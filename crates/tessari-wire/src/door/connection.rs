@@ -1,5 +1,7 @@
 use super::*;
 
+mod pushing;
+
 /// Everything one connection needs, owned so the task can hold it.
 pub(super) struct Connection<H> {
     /// The door's own stop, so a held stream ends with the door rather than
@@ -80,7 +82,9 @@ impl<H: Holding> Connection<H> {
             // A held stream (ADR-0106 D5): recorded now, because it may stay
             // open for hours and a greeting bound only at its end would leave a
             // joining follower's row unbound all that time.
-            Some((tag, body)) if tag == PeerFrame::Stream.tag() => {
+            Some((tag, body))
+                if tag == PeerFrame::Stream.tag() || tag == PeerFrame::StreamFrom.tag() =>
+            {
                 let holding = Arc::clone(&self.holding);
                 let met = Met {
                     said,
@@ -92,8 +96,15 @@ impl<H: Holding> Connection<H> {
                 {
                     tracing::warn!("a peer opened a stream but could not be recorded");
                 }
-                self.stream(&mut link, said.node, body, shown.as_ref())
-                    .await?;
+                // A follower the leader pushes to (ADR-0120) opens with its
+                // own frame, and is served by the loop that reads while it waits.
+                if tag == PeerFrame::StreamFrom.tag() {
+                    self.stream_pushed(&mut link, said.node, body, shown.as_ref())
+                        .await?;
+                } else {
+                    self.stream(&mut link, said.node, body, shown.as_ref())
+                        .await?;
+                }
                 return Ok(None);
             }
             // A copy streams (ADR-0094 D3): the store side runs on the bridge

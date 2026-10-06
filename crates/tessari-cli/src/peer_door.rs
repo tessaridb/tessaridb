@@ -20,6 +20,23 @@ impl tessari_wire::Origin for PeerDoor {
         tessari_wire::Serving::declared(self.db.store()).collected(follower, asked)
     }
 
+    // A round the leader pushes, and the report that vouches for it (ADR-0120).
+    fn collected_pushed(
+        &self,
+        follower: [u8; tessari_storage::NODE_ID_LEN],
+        asked: tessari_wire::Collect,
+    ) -> tessari_wire::Result<tessari_wire::Collected> {
+        tessari_wire::Serving::declared(self.db.store()).collected_pushed(follower, asked)
+    }
+
+    fn held(
+        &self,
+        follower: [u8; tessari_storage::NODE_ID_LEN],
+        asked: tessari_wire::Collect,
+    ) -> tessari_wire::Result<()> {
+        tessari_wire::Serving::declared(self.db.store()).held(follower, asked)
+    }
+
     fn gathered(
         &self,
         asker: [u8; tessari_storage::NODE_ID_LEN],

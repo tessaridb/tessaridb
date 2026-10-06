@@ -131,6 +131,16 @@ pub enum PeerFrame {
     AcrossDone,
     /// The leader declining, with its reason.
     NotAcross,
+    /// A follower asking to be SENT every log from these positions, without
+    /// asking again — the opening of a pushed stream and its restart; the
+    /// positions are durable, so they count as held (ADR-0120 D1, D4).
+    StreamFrom,
+    /// What a follower on a pushed stream holds durably, per log, after it
+    /// applied a round — the acknowledgement an ask used to carry (ADR-0120 D2).
+    Held,
+    /// The leader took a restart: every round after this one is cut from the
+    /// positions the restart named (ADR-0120 D4).
+    Restarted,
 }
 
 impl PeerFrame {
@@ -179,6 +189,9 @@ impl PeerFrame {
             Self::Across => 31,
             Self::AcrossDone => 32,
             Self::NotAcross => 33,
+            Self::StreamFrom => 34,
+            Self::Held => 35,
+            Self::Restarted => 36,
         }
     }
 
@@ -212,6 +225,9 @@ impl PeerFrame {
             31 => Some(Self::Across),
             32 => Some(Self::AcrossDone),
             33 => Some(Self::NotAcross),
+            34 => Some(Self::StreamFrom),
+            35 => Some(Self::Held),
+            36 => Some(Self::Restarted),
             _ => None,
         }
     }

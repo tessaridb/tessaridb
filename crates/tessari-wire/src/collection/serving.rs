@@ -148,6 +148,45 @@ impl Origin for Serving<'_> {
     }
 
     fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
+        self.collecting(follower, asked, true)
+    }
+
+    fn collected_pushed(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
+        self.collecting(follower, asked, false)
+    }
+
+    // ADR-0120 D2: what an ask used to vouch for, said on its own. Counted only
+    // as far as this leader sent it, like an ask — so a report naming a log
+    // this follower was never sent counts for nothing.
+    fn held(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<()> {
+        if self.granted.granted(follower)?.is_none() {
+            return Err(Error::Unsubscribed);
+        }
+        let served = self
+            .log
+            .history_log(asked.home)
+            .map_err(|why| Error::Refused {
+                message: why.to_string(),
+                class: None,
+            })?;
+        self.log.follower_asked(
+            follower,
+            served,
+            Sequence::new(asked.from.get().saturating_sub(1)),
+        );
+        Ok(())
+    }
+}
+
+impl Serving<'_> {
+    /// Answer a collection ask, counting it as the follower's acknowledgement
+    /// when `acknowledges` — a plain ask does, a pushed round does not (ADR-0120).
+    fn collecting(
+        &self,
+        follower: [u8; NODE_ID_LEN],
+        asked: Collect,
+        acknowledges: bool,
+    ) -> Result<Collected> {
         let Some(over) = self.granted.granted(follower)? else {
             // Not `Uncollectable`: *you may not ask* and *I cannot state what
             // precedes your position* send an operator to two different people,
@@ -191,11 +230,15 @@ impl Origin for Serving<'_> {
         // first position it does not hold, once it has applied and synced what
         // it was sent. Counted only as far as this leader sent it — see
         // `tessari_storage::Store::follower_asked`.
-        self.log.follower_asked(
-            follower,
-            served,
-            Sequence::new(asked.from.get().saturating_sub(1)),
-        );
+        // A pushed round is cut by the leader and vouches for nothing, so it
+        // is not counted (ADR-0120 D1).
+        if acknowledges {
+            self.log.follower_asked(
+                follower,
+                served,
+                Sequence::new(asked.from.get().saturating_sub(1)),
+            );
+        }
         // A position below where this log now begins cannot be caught up from
         // the log: it is the answer to *copy my state*, not to *catch me up*
         // (ADR-0094 D3), and it crosses as the frame that already says so.

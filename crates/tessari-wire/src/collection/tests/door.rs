@@ -28,6 +28,14 @@ impl super::super::Origin for OnTheRuntime {
         Serving::declared(self.db.store()).collected(follower, asked)
     }
 
+    fn collected_pushed(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
+        Serving::declared(self.db.store()).collected_pushed(follower, asked)
+    }
+
+    fn held(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<()> {
+        Serving::declared(self.db.store()).held(follower, asked)
+    }
+
     fn gathered(
         &self,
         asker: [u8; NODE_ID_LEN],
@@ -246,4 +254,195 @@ fn a_held_stream_is_sent_a_commit_the_moment_it_lands() {
         waited < Duration::from_millis(250),
         "the commit took {waited:?} to reach a held stream"
     );
+}
+
+/// A leader's door on loopback serving `leader`, the follower's keys, and
+/// what keeps it running — for the pushed-stream tests (ADR-0120).
+fn a_pushing_door(
+    leader: &Arc<Db>,
+) -> (
+    Authority,
+    std::net::SocketAddr,
+    tokio_util::sync::CancellationToken,
+    tokio::runtime::Runtime,
+) {
+    let authority = Authority::new();
+    let peers = crate::link::tests::bind_with(
+        "127.0.0.1:0",
+        authority.issue(LEADER, Purpose::Peer),
+        &authority.der(),
+    )
+    .expect("a peer door on loopback");
+    let address = peers.address().expect("the door's address");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime for the door");
+    let stop = tokio_util::sync::CancellationToken::new();
+    let serving = stop.clone();
+    let holding = Arc::new(OnTheRuntime {
+        db: Arc::clone(leader),
+    });
+    drop(runtime.spawn(async move {
+        peers
+            .serve(
+                serving,
+                LEADER,
+                Arc::new(Deciding::holding(settled())),
+                holding,
+            )
+            .await
+    }));
+    (authority, address, stop, runtime)
+}
+
+/// Every log `leader` holds, asked from `from`.
+fn asked_from(leader: &Db, from: &[Sequence]) -> super::super::StreamAsk {
+    let homes = super::super::logs_to_collect(leader.store()).expect("the leader's logs");
+    super::super::StreamAsk {
+        asks: homes
+            .iter()
+            .zip(from)
+            .map(|(home, from)| Collect {
+                home: *home,
+                from: *from,
+                limit: 1024,
+            })
+            .collect(),
+    }
+}
+
+/// The next round on a pushed stream, past heartbeats; a restart mark is
+/// reported as `None`.
+fn next_round(following: &mut super::super::Following) -> Option<super::super::Streamed> {
+    let waiting = std::time::Instant::now();
+    loop {
+        match following.next_pushed().expect("a frame from the leader") {
+            super::super::Pushed::Round(round) => return Some(round),
+            super::super::Pushed::Restarted => return None,
+            super::super::Pushed::Heartbeat => assert!(
+                waiting.elapsed() < Duration::from_secs(3),
+                "no round reached the stream"
+            ),
+        }
+    }
+}
+
+/// Where a round leaves each log, from where it began.
+fn past(round: &super::super::Streamed, from: &[Sequence]) -> Vec<Sequence> {
+    round
+        .answers
+        .iter()
+        .zip(from)
+        .map(|(answer, from)| {
+            answer
+                .records
+                .last()
+                .map_or(*from, |(at, _)| Sequence::new(at.get().saturating_add(1)))
+        })
+        .collect()
+}
+
+/// ADR-0120 D1, D2: a leader pushes a commit without being asked, and counts
+/// the follower as holding a round only once it says so in `Held` — never on
+/// the strength of having sent it.
+#[test]
+fn a_pushed_round_is_held_only_once_the_follower_says_so() {
+    let leader = granting(" REPLICATES STORE");
+    let (authority, address, stop, _runtime) = a_pushing_door(&leader);
+    let mut following = super::super::Following::open(
+        (LEADER, address),
+        &authority.keys(THERE, Purpose::Peer),
+        &hello(THERE),
+        Duration::from_secs(5),
+    )
+    .expect("a held stream");
+    let logs = super::super::logs_to_collect(leader.store())
+        .expect("the leader's logs")
+        .len();
+    let start = vec![Sequence::new(1); logs];
+    following
+        .stream_from(&asked_from(&leader, &start))
+        .expect("the opening");
+    let first = next_round(&mut following).expect("the first round");
+    let sent: Vec<(tessari_encoding::LogId, Sequence)> = first
+        .answers
+        .iter()
+        .filter_map(|answer| answer.records.last().map(|(at, _)| (answer.log, *at)))
+        .collect();
+    assert!(!sent.is_empty(), "the leader held nothing to send");
+    // Not asked again: the commit has to be pushed.
+    leader
+        .session()
+        .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
+        .expect("the leader commits");
+    let second = next_round(&mut following).expect("the pushed round");
+    assert!(!second.is_quiet(), "the round carried the commit");
+    let store = leader.store();
+    for (log, at) in &sent {
+        assert!(
+            store
+                .await_held(*log, *at, &[THERE], 1, Duration::ZERO)
+                .is_empty(),
+            "a round was counted as held because it was sent: {log:?} through {at:?}"
+        );
+    }
+    let after_first = past(&first, &start);
+    following
+        .held(&asked_from(&leader, &after_first))
+        .expect("the held report");
+    for (log, at) in &sent {
+        assert_eq!(
+            store.await_held(*log, *at, &[THERE], 1, Duration::from_secs(3)),
+            vec![THERE],
+            "`Held` was not counted for {log:?} through {at:?}"
+        );
+    }
+    stop.cancel();
+}
+
+/// ADR-0120 D4: a restart is taken as the new place to send from, and the
+/// leader marks it, so the follower can tell the rounds cut before it from the
+/// rounds cut after.
+#[test]
+fn a_restart_is_marked_and_sends_from_where_it_names() {
+    let leader = granting(" REPLICATES STORE");
+    let (authority, address, stop, _runtime) = a_pushing_door(&leader);
+    let mut following = super::super::Following::open(
+        (LEADER, address),
+        &authority.keys(THERE, Purpose::Peer),
+        &hello(THERE),
+        Duration::from_secs(5),
+    )
+    .expect("a held stream");
+    let logs = super::super::logs_to_collect(leader.store())
+        .expect("the leader's logs")
+        .len();
+    let start = vec![Sequence::new(1); logs];
+    following
+        .stream_from(&asked_from(&leader, &start))
+        .expect("the opening");
+    let first = next_round(&mut following).expect("the first round");
+    // As if the first round had not applied at all: start again from 1.
+    following
+        .stream_from(&asked_from(&leader, &start))
+        .expect("the restart");
+    // Rounds before the mark are the ones to throw away; there may be none.
+    while next_round(&mut following).is_some() {}
+    let again = next_round(&mut following).expect("the round after the restart");
+    assert_eq!(
+        again
+            .answers
+            .iter()
+            .map(|answer| answer.records.first().map(|(at, _)| *at))
+            .collect::<Vec<_>>(),
+        first
+            .answers
+            .iter()
+            .map(|answer| answer.records.first().map(|(at, _)| *at))
+            .collect::<Vec<_>>(),
+        "the round after a restart did not begin where the restart named"
+    );
+    stop.cancel();
 }

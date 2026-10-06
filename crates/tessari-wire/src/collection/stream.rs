@@ -36,6 +36,17 @@
 //!
 //! A refusal ends the stream — the follower's round then meets it again on its
 //! own terms, which is where re-seeding and every other repair already live.
+//!
+//! # Pushed, from 0.31.2 (ADR-0120)
+//!
+//! One round in flight costs a commit that lands while a round is out a whole
+//! round trip: the leader cannot send it until the follower's next ask arrives.
+//! So a follower whose leader runs [`PUSHED_FROM`] or later names its positions
+//! once ([`PeerFrame::StreamFrom`]), the leader sends what lands as it lands —
+//! two rounds unacknowledged at most — and the acknowledgement travels on its
+//! own ([`PeerFrame::Held`]). A round that does not apply whole restarts the
+//! stream from where the follower stands, and the leader marks the restart
+//! ([`PeerFrame::Restarted`]) so the rounds cut before it can be thrown away.
 
 use std::net::{SocketAddr, TcpStream};
 
@@ -48,6 +59,13 @@ use crate::frame;
 use crate::keys::PeerKeys;
 use crate::link::{hear, open, say};
 use crate::peer::{Hello, PeerFrame};
+
+/// The first build whose leaders push a held stream (ADR-0120).
+pub const PUSHED_FROM: tessari_encoding::NodeVersion = tessari_encoding::NodeVersion {
+    major: 0,
+    minor: 31,
+    patch: 2,
+};
 
 /// What a follower asks for on a held stream: every log, from where it stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +188,41 @@ pub(crate) fn answer(
     Ok(Streamed { answers })
 }
 
+/// Cut one pushed round (ADR-0120 D1): [`answer`], recorded as sent and never
+/// as held.
+///
+/// # Errors
+///
+/// As [`answer`].
+pub(crate) fn answer_pushed(
+    origin: &dyn Origin,
+    follower: [u8; NODE_ID_LEN],
+    asked: &StreamAsk,
+) -> Result<Streamed> {
+    let answers = asked
+        .asks
+        .iter()
+        .map(|ask| origin.collected_pushed(follower, *ask))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Streamed { answers })
+}
+
+/// Count a follower's `Held` report, log by log (ADR-0120 D2).
+///
+/// # Errors
+///
+/// The first log's store failure.
+pub(crate) fn held(
+    origin: &dyn Origin,
+    follower: [u8; NODE_ID_LEN],
+    holds: &StreamAsk,
+) -> Result<()> {
+    holds
+        .asks
+        .iter()
+        .try_for_each(|ask| origin.held(follower, *ask))
+}
+
 /// A follower's held stream to one leader.
 ///
 /// Synchronous, like every dial on the peer link (`link.rs`): it is driven from
@@ -182,6 +235,9 @@ pub struct Following {
     /// a leader whose certificate is revoked while it streams is followed no
     /// further (ADR-0108 D6).
     keys: PeerKeys,
+    /// The build the leader's greeting named, which decides whether it pushes
+    /// (ADR-0120 D5).
+    leader_build: tessari_encoding::NodeVersion,
 }
 
 impl std::fmt::Debug for Following {
@@ -205,18 +261,50 @@ impl Following {
         silence: std::time::Duration,
     ) -> Result<Self> {
         let (mut session, mut socket) = open(peer.1, keys, peer.0)?;
-        {
+        let heard = {
             let mut link = rustls::Stream::new(&mut session, &mut socket);
             say(&mut link, said)?;
-            hear(&mut link)?;
-        }
+            hear(&mut link)?
+        };
         // After the greeting, which keeps the greeting's own deadline.
         socket.set_read_timeout(Some(silence))?;
         Ok(Self {
             session,
             socket,
             keys: keys.clone(),
+            leader_build: heard.build,
         })
+    }
+
+    /// Whether this leader pushes a held stream: its greeting named
+    /// [`PUSHED_FROM`] or later (ADR-0120 D5). An earlier one would not know
+    /// [`PeerFrame::StreamFrom`] and would end the stream.
+    #[must_use]
+    pub fn pushes(&self) -> bool {
+        self.leader_build >= PUSHED_FROM
+    }
+
+    /// Ask to be sent every log from these positions without asking again —
+    /// the opening of a pushed stream, and its restart (ADR-0120 D1, D4). The
+    /// positions are what this node holds durably, so they count as held.
+    ///
+    /// # Errors
+    ///
+    /// The transport's failure.
+    pub fn stream_from(&mut self, holds: &StreamAsk) -> Result<()> {
+        let mut link = rustls::Stream::new(&mut self.session, &mut self.socket);
+        frame::write_tagged(&mut link, PeerFrame::StreamFrom.tag(), &holds.encode())
+    }
+
+    /// Say what this node now holds durably, per log — the first position it
+    /// does not hold in each, as an ask names them (ADR-0120 D2).
+    ///
+    /// # Errors
+    ///
+    /// The transport's failure.
+    pub fn held(&mut self, holds: &StreamAsk) -> Result<()> {
+        let mut link = rustls::Stream::new(&mut self.session, &mut self.socket);
+        frame::write_tagged(&mut link, PeerFrame::Held.tag(), &holds.encode())
     }
 
     /// Ask from where this node stands. The leader answers with any number of
@@ -267,6 +355,60 @@ impl Following {
             None => Err(Error::UnknownFrame { tag }),
         }
     }
+}
+
+impl Following {
+    /// The leader's next frame on a pushed stream (ADR-0120): a round, a
+    /// heartbeat, or the mark that a restart was taken.
+    ///
+    /// # Errors
+    ///
+    /// As [`Following::heard`].
+    pub fn next_pushed(&mut self) -> Result<Pushed> {
+        let admitted = self
+            .session
+            .peer_certificates()
+            .and_then(<[_]>::first)
+            .is_some_and(|presented| self.keys.still_admits(presented));
+        if !admitted {
+            return Err(Error::Refused {
+                message: "the leader's certificate is no longer admitted here".to_owned(),
+                class: None,
+            });
+        }
+        let mut link = rustls::Stream::new(&mut self.session, &mut self.socket);
+        let (tag, body) = frame::read_tagged(&mut link)?.ok_or(Error::Truncated)?;
+        match PeerFrame::from_tag(tag) {
+            Some(PeerFrame::Restarted) => Ok(Pushed::Restarted),
+            Some(PeerFrame::Streamed) => {
+                let round = Streamed::decode(&body)?;
+                Ok(if round.is_heartbeat() {
+                    Pushed::Heartbeat
+                } else {
+                    Pushed::Round(round)
+                })
+            }
+            Some(PeerFrame::Uncollectable) => {
+                let (from, _) = frame::take_u64(&body, 0)?;
+                Err(Error::Uncollectable { from })
+            }
+            Some(PeerFrame::Unsubscribed) => Err(Error::Unsubscribed),
+            Some(_) => Err(Error::OutOfTurn { tag }),
+            None => Err(Error::UnknownFrame { tag }),
+        }
+    }
+}
+
+/// One frame of a pushed stream, as the follower reads it (ADR-0120).
+#[derive(Debug)]
+pub enum Pushed {
+    /// Records the leader sent without being asked.
+    Round(Streamed),
+    /// Nothing after what the leader sent has landed on it.
+    Heartbeat,
+    /// The leader took the follower's restart: rounds after this one are cut
+    /// from the positions it named.
+    Restarted,
 }
 
 impl Drop for Following {

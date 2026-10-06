@@ -45,8 +45,10 @@ use crate::gathering::{Gather, Page, Ungathered};
 pub(crate) use collector::refused;
 pub use collector::{Collector, logs_to_collect};
 pub use serving::Serving;
-pub(crate) use stream::answer as stream_answer;
-pub use stream::{Following, StreamAsk, Streamed};
+pub use stream::{Following, PUSHED_FROM, Pushed, StreamAsk, Streamed};
+pub(crate) use stream::{
+    answer as stream_answer, answer_pushed as stream_answer_pushed, held as stream_held,
+};
 
 /// What a follower asks a leader for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,6 +298,33 @@ pub trait Origin {
     /// cannot be stated, and [`Error::Refused`] carrying the store's own words
     /// when the log cannot be read.
     fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected>;
+
+    /// [`Self::collected`] for a round the leader pushes (ADR-0120 D1): the
+    /// same answer, recorded as sent and never as held.
+    ///
+    /// Defaults to refusing, the safe direction: the only other answer a door
+    /// that forgot it could give is `collected`'s, which counts the round as held
+    /// and so acknowledges a write by a copy that is not durable.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::collected`].
+    fn collected_pushed(&self, _follower: [u8; NODE_ID_LEN], _asked: Collect) -> Result<Collected> {
+        Err(Error::Unsubscribed)
+    }
+
+    /// Record that `follower` holds `asked.home` durably up to just before
+    /// `asked.from` — the acknowledgement an ask used to carry (ADR-0120 D2).
+    ///
+    /// Defaults to recording nothing, the safe direction: no write is ever
+    /// acknowledged by a report that was not counted.
+    ///
+    /// # Errors
+    ///
+    /// A store failure.
+    fn held(&self, _follower: [u8; NODE_ID_LEN], _asked: Collect) -> Result<()> {
+        Ok(())
+    }
 
     /// Answer a gather of one shard's records for the peer that asked (G033).
     ///

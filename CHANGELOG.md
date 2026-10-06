@@ -15,6 +15,20 @@ compares carries no pre-release suffix.
 
 ## Unreleased
 
+### Changed
+
+- **A leader pushes its followers what it commits, instead of waiting to be asked.** A follower used to ask for each
+  round only after applying the last, and its ask was the acknowledgement. So a commit that landed while a round was
+  out waited a whole extra round trip before it could even be sent: 104–110 ms for copies at a 50 ms round trip,
+  against 57 ms when nothing was in flight.
+  - Now the follower names its positions once, and the leader sends what lands as it lands, with two rounds
+    unacknowledged at most.
+  - The acknowledgement travels on its own, after the follower has made the round durable. A write is still
+    acknowledged only by copies that are durable.
+  - Measured at a 50 ms round trip: a commit across two leaders fell from 170 ms to 116 ms (p50), and a single write's
+    p99 from 120 ms to 72 ms. At 10 ms the commit across leaders fell from 38 ms to 25 ms.
+  - Only between nodes of this release or later. A follower of an older leader streams as before (ADR-0120).
+
 ### Fixed
 
 - **A barred part no longer stays barred for ever.** When status recovery aborts a transaction across leaders whose
