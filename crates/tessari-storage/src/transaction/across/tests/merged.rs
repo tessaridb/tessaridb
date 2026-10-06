@@ -237,3 +237,28 @@ fn a_bar_lands_in_the_range_and_refuses_the_prepare_after_it() -> Result<()> {
     assert_eq!(fixture.read()?, Some(b"old".to_vec()));
     Ok(())
 }
+
+#[test]
+fn concluding_on_the_leader_never_asks_about_its_own_transaction() -> Result<()> {
+    // The conclusion carries the decision it writes, so the commit writing it
+    // has nobody to ask about that transaction — and asking, under the write
+    // turn, with the record still staging here, sent status recovery across
+    // the network on every commit behind its answer (Q-931).
+    let leader = Fixture::new()?;
+    let counting = std::sync::Arc::new(Counting {
+        asked: std::sync::atomic::AtomicUsize::new(0),
+        record: leader.concluded(Decision::Committed),
+    });
+    leader
+        .store
+        .answer_decisions_with(std::sync::Arc::clone(&counting) as _);
+    leader.begin(leader.seen()?)?;
+    leader.conclude(leader.concluded(Decision::Committed))?;
+    assert_eq!(
+        counting.asked.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "the conclusion asked the record's leader about its own transaction"
+    );
+    assert_eq!(leader.read()?, Some(b"new".to_vec()));
+    Ok(())
+}

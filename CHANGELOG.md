@@ -27,6 +27,10 @@ compares carries no pre-release suffix.
     100 000 more records.
   - A bar written by an earlier build does not record where its record is, and stays.
   - No change to the store format.
+- **Concluding a commit across leaders no longer asks a peer about its own transaction.** The commit's own
+  bookkeeping read its record through the reader's visibility check, which still saw the record as staging and asked
+  the record's leader. The commit now answers that read from the decision it holds. At a 50 ms round trip a commit
+  across two leaders fell from 275 ms to 170 ms (p50), and fewer of its records dial a fresh link.
 
 ## 0.31.1-beta — 2026-10-06
 
