@@ -302,7 +302,11 @@ impl Session<'_> {
                         (
                             at,
                             scope.spawn(move || {
-                                carrier.ask(node, user, asked).map_err(AcrossRefusal::There)
+                                let began = std::time::Instant::now();
+                                let answered =
+                                    carrier.ask(node, user, asked).map_err(AcrossRefusal::There);
+                                answered_after(part, false, began);
+                                answered
                             }),
                         )
                     })
@@ -310,10 +314,12 @@ impl Session<'_> {
                 .collect();
             for (at, (part, asked)) in parts.iter().zip(asks).enumerate() {
                 if part.leader.is_none() {
+                    let began = std::time::Instant::now();
                     answers[at] = Some(
                         self.answer_across(asked)
                             .map_err(|refused| AcrossRefusal::Here(Box::new(refused))),
                     );
+                    answered_after(part, true, began);
                 }
             }
             for (at, waiting) in remote {
@@ -418,6 +424,13 @@ fn every_peer_reads_merged(
     rows.iter()
         .filter(|row| row.node != Some(me))
         .all(|row| heard(&row.endpoint).is_some_and(|build| build >= MERGED_FROM))
+}
+
+/// How long one part's prepare took to be answered, for the per-phase
+/// attribution of a commit across leaders (Q-931); off unless asked for.
+fn answered_after(part: &AcrossPart, local: bool, began: std::time::Instant) {
+    let elapsed_us = u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX);
+    tracing::debug!(range = ?part.home, local, elapsed_us, "a cross-leader part answered");
 }
 
 /// The records a part writes, as a resolution names them.
