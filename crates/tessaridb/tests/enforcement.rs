@@ -1048,7 +1048,19 @@ const TABLES: &[Table] = &[
         // verified the follower's credential. Re-classification trigger: a
         // caller that records a build for a node it did not verify, which would
         // let an unproven peer clear the finalize's check.
-        expected: 75,
+        //
+        // 77 since a restore syncs per chunk (Q-899, G068 SG5):
+        // `Store::restore_record_in` and `Store::sync_landed`. The first is
+        // **exempt on `restore_state_chunk`'s ground**: its one caller is
+        // `tessari_backup::read_until`, reached by `--restore` (a process
+        // holding the store) and the bench harness, and refusing a store that
+        // does not stand at the file's base; it writes with no identity, as the
+        // synced apply it replaces did — and taking the restore off
+        // `Store::apply_record_in` leaves that method its one caller again. The
+        // second is **not a data path**: it makes landed writes durable and
+        // reads or writes no record, catalog entry or grant. Re-classification
+        // trigger: any caller of either reachable from a session or a route.
+        expected: 77,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1271,7 +1283,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 160 since the format lags the binary (ADR-0118): three `Store` methods,
     // not data paths, classified above.
-    assert_eq!(total, 160, "the counted tables no longer sum to 160");
+    //
+    // 162 since a restore syncs per chunk (Q-899): `Store::restore_record_in`,
+    // exempt, and `Store::sync_landed`, not a data path, classified above.
+    assert_eq!(total, 162, "the counted tables no longer sum to 162");
 }
 
 /// Every `.rs` file under a directory.

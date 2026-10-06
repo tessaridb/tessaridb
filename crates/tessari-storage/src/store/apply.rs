@@ -98,6 +98,34 @@ impl Store {
         self.apply_at(log, at, record, Landing::Synced)
     }
 
+    /// [`Self::apply_record_in`] for a restore, landed without its own device
+    /// sync (Q-899).
+    ///
+    /// A restore acknowledges nothing until it returns, so a record it applies
+    /// owes durability only by then: the caller pays one [`Self::sync_landed`]
+    /// per chunk and one before it answers, where a synced apply paid a device
+    /// flush per record. A power loss part-way leaves a prefix of the records,
+    /// each whole with its applied position, which is what a synced restore
+    /// left too — only shorter.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::apply_record_in`].
+    pub fn restore_record_in(&self, log: LogId, at: Sequence, record: &LogRecord) -> Result<()> {
+        self.apply_at(log, at, record, Landing::Deferred)
+    }
+
+    /// Make every write landed so far durable, those landed unsynced included.
+    ///
+    /// # Errors
+    ///
+    /// The backend's failure to sync; what it could not make durable is then
+    /// not to be reported as restored.
+    pub fn sync_landed(&self) -> Result<()> {
+        self.backend().sync_applied()?;
+        Ok(())
+    }
+
     /// Apply one log record, at the sequence it carries.
     ///
     /// This is what a replica runs, and it is the same function a commit runs
