@@ -173,6 +173,11 @@ fn follow(
         peer: (leader, address),
         limit: COLLECTION_RECORDS,
     };
+    // ADR-0120: a leader that pushes is told where this node stands once,
+    // and sends what lands as it lands.
+    if following.pushes() {
+        return follow_pushed(db, &mut following, &collector, (homes, still), stop);
+    }
     loop {
         if stop.is_cancelled() || !still(db) {
             return Ok(());
@@ -229,6 +234,129 @@ fn follow(
             if let Err(why) = result {
                 return Err(format!("applying {home:?} was refused: {why}"));
             }
+        }
+    }
+}
+
+/// What this node holds of each log `homes` names: the first position it does
+/// not hold in each, read from the store's committed tails.
+fn holding(
+    db: &Db,
+    leader: [u8; NODE_ID_LEN],
+    homes: &HomesFor,
+) -> Result<Vec<(Reach, Sequence)>, String> {
+    let store = db.store();
+    let Some(logs) = homes(db) else {
+        return Err("this node cannot say which logs it should hold".to_owned());
+    };
+    logs.into_iter()
+        .map(|home| {
+            // The log the leader serves for this home (ADR-0107).
+            let log = store
+                .followed_log(home, Writer::new(leader))
+                .map_err(|why| why.to_string())?;
+            let tail = store.committed_tail(log).map_err(|why| why.to_string())?;
+            Ok((home, Sequence::new(tail.get().saturating_add(1))))
+        })
+        .collect()
+}
+
+/// The positions as the frame that names them.
+fn naming(holds: &[(Reach, Sequence)]) -> tessari_wire::StreamAsk {
+    tessari_wire::StreamAsk {
+        asks: holds
+            .iter()
+            .map(|(home, from)| tessari_wire::Collect {
+                home: *home,
+                from: *from,
+                limit: COLLECTION_RECORDS,
+            })
+            .collect(),
+    }
+}
+
+/// Hold a stream the leader pushes until it ends (ADR-0120).
+///
+/// The leader sends without being asked; this node applies each round, and
+/// says what it then holds in a `Held`. A round that does not apply whole — a
+/// record the writer-order rule held back — or a change in the logs this node
+/// holds restarts the stream from what it holds, and every round read before
+/// the leader's mark is thrown away, because it was cut from the old positions.
+fn follow_pushed(
+    db: &Db,
+    following: &mut tessari_wire::Following,
+    collector: &tessari_wire::Collector<'_>,
+    (homes, still): (&HomesFor, &StillFor),
+    stop: &CancellationToken,
+) -> Result<(), String> {
+    let store = db.store();
+    let leader = collector.peer.0;
+    let mut holds = holding(db, leader, homes)?;
+    following
+        .stream_from(&naming(&holds))
+        .map_err(|why| why.to_string())?;
+    let mut restarting = false;
+    loop {
+        if stop.is_cancelled() || !still(db) {
+            return Ok(());
+        }
+        let round = match following.next_pushed().map_err(|why| why.to_string())? {
+            tessari_wire::Pushed::Restarted => {
+                restarting = false;
+                continue;
+            }
+            tessari_wire::Pushed::Heartbeat => {
+                // Nothing after what the leader sent has landed on it, and this
+                // node applied all of it — level, as a plain stream's beat says.
+                if !restarting && let Some((_, from)) = holds.first() {
+                    store.collected(Sequence::new(from.get().saturating_sub(1)), Currency::Level);
+                }
+                continue;
+            }
+            tessari_wire::Pushed::Round(_) if restarting => continue,
+            tessari_wire::Pushed::Round(round) => round,
+        };
+        if round.answers.len() != holds.len() {
+            return Err(format!(
+                "the leader sent {} logs to a stream holding {}",
+                round.answers.len(),
+                holds.len()
+            ));
+        }
+        // Where the round leaves each log if it applies whole.
+        let whole: Vec<Sequence> = holds
+            .iter()
+            .zip(&round.answers)
+            .map(|((_, from), answer)| {
+                answer
+                    .records
+                    .last()
+                    .map_or(*from, |(at, _)| Sequence::new(at.get().saturating_add(1)))
+            })
+            .collect();
+        let applied = collector.apply(store, &holds, round.answers.into_iter().map(Ok).collect());
+        for ((home, _), result) in holds.iter().zip(applied) {
+            if let Err(why) = result {
+                return Err(format!("applying {home:?} was refused: {why}"));
+            }
+        }
+        let now = holding(db, leader, homes)?;
+        let in_step = now.len() == holds.len()
+            && now
+                .iter()
+                .zip(&holds)
+                .zip(&whole)
+                .all(|(((home, at), (was, _)), whole)| home == was && at == whole);
+        holds = now;
+        if in_step {
+            following
+                .held(&naming(&holds))
+                .map_err(|why| why.to_string())?;
+        } else {
+            following
+                .stream_from(&naming(&holds))
+                .map_err(|why| why.to_string())?;
+            restarting = true;
         }
     }
 }

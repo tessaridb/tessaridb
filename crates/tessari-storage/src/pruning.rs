@@ -43,8 +43,8 @@
 //! separate decision with separate evidence, and it is the thing that must never
 //! be guessed.
 
-use tessari_encoding::{LogId, LogKey, LogStartKey, StoreKey, StoreValue};
-use tessari_kv::{KeyRange, WriteBatch};
+use tessari_encoding::{AcrossBarredKey, Barred, LogId, LogKey, LogStartKey, StoreKey, StoreValue};
+use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::Sequence;
 
 use crate::error::Result;
@@ -118,12 +118,14 @@ impl Store {
 
         // The start first. A crash after this and before the removal leaves
         // records nothing can read; a crash the other way round leaves a hole
-        // under a start that still claims it.
-        self.backend().apply(WriteBatch::new().put(
+        // under a start that still claims it. The bars whose record goes with
+        // it go in the same batch (ADR-0119).
+        let batch = WriteBatch::new().put(
             LogStartKey::keyspace(),
             LogStartKey::new(log).encode(),
             start.encode(),
-        ))?;
+        );
+        self.backend().apply(self.unbar_below(log, start, batch)?)?;
 
         // From below every real sequence rather than from the recorded start:
         // an interrupted earlier pass may have left records under it, and a
@@ -142,6 +144,40 @@ impl Store {
                 .saturating_sub(held.get().max(1).saturating_sub(1)),
             start,
         })
+    }
+}
+
+impl Store {
+    /// Add to `batch` the deletion of every bar whose record is in `log` below
+    /// `start` (ADR-0119).
+    ///
+    /// A bar keeps out a prepare still in flight when status recovery decided
+    /// (ADR-0112 D14c). Every such prepare read a position below the bar's own
+    /// record, so once this node's log no longer reaches that record it refuses
+    /// the prepare as reading what the log no longer holds (D3a) — the bar adds
+    /// nothing, and goes. Each copy decides from its own log, so no leader ever
+    /// logs the prepare for a follower still holding its bar to refuse.
+    fn unbar_below(
+        &self,
+        log: LogId,
+        start: Sequence,
+        mut batch: WriteBatch,
+    ) -> Result<WriteBatch> {
+        let bars = self.backend().scan(&ScanRequest {
+            keyspace: AcrossBarredKey::keyspace(),
+            range: KeyRange::prefix(&[AcrossBarredKey::KIND.tag()]),
+            direction: ScanDirection::Forward,
+            limit: None,
+        })?;
+        for (key, value) in bars {
+            if let Some((written, at)) = Barred::decode(value.as_slice())?.written
+                && written == log
+                && at < start
+            {
+                batch = batch.delete(AcrossBarredKey::keyspace(), key);
+            }
+        }
+        Ok(batch)
     }
 }
 

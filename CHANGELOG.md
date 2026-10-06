@@ -13,6 +13,51 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.31.2-beta — 2026-10-07
+
+### Changed
+
+- **A leader pushes its followers what it commits, instead of waiting to be asked.** A follower used to ask for each
+  round only after applying the last, and its ask was the acknowledgement. So a commit that landed while a round was
+  out waited a whole extra round trip before it could even be sent: 104–110 ms for copies at a 50 ms round trip,
+  against 57 ms when nothing was in flight.
+  - Now the follower names its positions once, and the leader sends what lands as it lands, with two rounds
+    unacknowledged at most.
+  - The acknowledgement travels on its own, after the follower has made the round durable. A write is still
+    acknowledged only by copies that are durable.
+  - Measured at a 50 ms round trip: a commit across two leaders fell from 170 ms to 116 ms (p50), and a single write's
+    p99 from 120 ms to 72 ms. At 10 ms the commit across leaders fell from 38 ms to 25 ms.
+  - Only between nodes of this release or later. A follower of an older leader streams as before (ADR-0120).
+- **A node keeps three idle links to each peer for commits across leaders, not two.** Such a commit has three records
+  in flight to one peer at once, so with two kept links a tenth of prepares dialled a fresh link. At a 50 ms round
+  trip that prepare took 270 ms against 113 ms on a kept link. With three, 2 in 100 dial.
+
+### Fixed
+
+- **A barred part no longer stays barred for ever.** When status recovery aborts a transaction across leaders whose
+  part in some range never landed, it bars that part there, so a prepare still in flight can never land (ADR-0112
+  D14c). Before this release the marker stayed for the life of the store. It now goes in the batch that prunes the
+  range's log past the record that wrote it. Past that point the log no longer reaches back to anything the
+  transaction read, so a late prepare is refused as too old (`AcrossReadTooOld`) without the bar. Each node drops its
+  own copy when its own log is pruned (ADR-0119).
+  - Bars are therefore bounded as the log is: under the default retention they last until their range has written
+    100 000 more records.
+  - A bar written by an earlier build does not record where its record is, and stays.
+  - No change to the store format.
+- **A node leading a range and the store no longer loses the store's lease at a distance.** One campaign pass renewed
+  the two leases one after the other, and it judged the second against the instant the pass began. At a 50 ms round
+  trip the second canvass opened 210 ms late, with 13 ms of its lease left, and landed after its fence every time.
+  Every write in between was refused with `the lease this node writes under ran out`. The two canvasses now run at
+  once, and both open with about 330 ms left.
+- **Concluding a commit across leaders no longer asks a peer about its own transaction.** The commit's own
+  bookkeeping read its record through the reader's visibility check, which still saw the record as staging and asked
+  the record's leader. The commit now answers that read from the decision it holds. At a 50 ms round trip a commit
+  across two leaders fell from 275 ms to 170 ms (p50), and fewer of its records dial a fresh link.
+
+### Tested
+
+- The store `0.31.1-beta` wrote joins the released stores this build opens and reads back unchanged.
+
 ## 0.31.1-beta — 2026-10-06
 
 A release that measures itself (G066), and a restore that no longer pays a device flush per record (G068). No change to the

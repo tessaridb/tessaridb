@@ -70,6 +70,19 @@ impl Participants for Coordinator {
         // Everything short of the leader's own answer — no route, no key, a
         // link that failed or timed out — is a part not reached, which asking
         // again can get past.
+        let began = std::time::Instant::now();
+        let what = match asked {
+            AcrossAsk::Prepare { .. } => "prepare",
+            AcrossAsk::Resolve { .. } => "resolve",
+            AcrossAsk::Begin { .. } | AcrossAsk::Conclude { .. } | AcrossAsk::Decide { .. } => {
+                "record"
+            }
+            AcrossAsk::Settle { .. } => "settle",
+            AcrossAsk::Lookup { .. } => "lookup",
+            AcrossAsk::Holds { .. } => "holds",
+            AcrossAsk::Forget { .. } => "forget",
+            AcrossAsk::Bar { .. } => "bar",
+        };
         let asked = asked.encode();
         let carried = Carried {
             signed: Assertion {
@@ -95,6 +108,7 @@ impl Participants for Coordinator {
             match kept::across_on(&mut link, &carried) {
                 Ok(reply) => {
                     self.kept().keep(to, link);
+                    carried_after(what, "kept", began);
                     return replied(reply, "a kept link");
                 }
                 Err(kept::KeptFailed::Sent(why)) => {
@@ -117,11 +131,19 @@ impl Participants for Coordinator {
                 if let Some(link) = link {
                     self.kept().keep(to, link);
                 }
+                carried_after(what, "dialled", began);
                 replied(reply, &endpoint)
             }
             Err(why) => Err(PartRefused::retriable(format!("{endpoint}: {why}"))),
         }
     }
+}
+
+/// How long a record took to be carried and answered, and on which kind of
+/// link, for the per-phase attribution of a commit across leaders (Q-931).
+fn carried_after(what: &'static str, link: &'static str, began: std::time::Instant) {
+    let elapsed_us = u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX);
+    tracing::debug!(what, link, elapsed_us, "a cross-leader record was carried");
 }
 
 /// The leader's answer as the coordinator takes it: its refusal keeps the kind

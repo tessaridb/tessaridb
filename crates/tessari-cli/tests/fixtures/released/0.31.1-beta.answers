@@ -1,0 +1,48 @@
+ok
+ok
+1: { age: 36, name: 'ada', tags: ['math', 'engines'] }
+2: { age: 85, name: 'grace', tags: ['compilers'] }
+3: { age: 42, name: 'alan' }
+(3 record(s), via scan)
+3: { name: 'alan' }
+2: { name: 'grace' }
+(2 record(s), via index)
+2: { age: 85, name: 'grace', tags: ['compilers'] }
+(1 record(s), via index)
+1: {  }
+3: {  }
+(2 record(s), via index)
+2: {  }
+(1 record(s), via index)
+2: {  }
+3: {  }
+(2 record(s), via scan)
+1: {  }
+3: {  }
+(2 record(s), via index)
+2: { age: 85, name: 'grace', tags: ['compilers'] }
+(1 record(s), via graph)
+'on'
+3
+0x89504e47
+1: { url: 'https://example.test/a' }
+2: { url: 'https://example.test/b' }
+(2 record(s), via scan)
+1: { position: 1, value: { kind: 'created' } }
+2: { position: 2, value: { kind: 'updated' } }
+(2 record(s), via scan)
+uuid '019b76e3-cfc0-7000-a29b-000000000000': { sensor: 'a', v: 1.5 }
+uuid '019b76ec-f780-7000-b8f1-000000000000': { sensor: 'a', v: 2.25 }
+uuid '019b76f6-1f40-7000-985a-000000000000': { sensor: 'a', v: 0.25 }
+uuid '019b7716-2a60-7000-8ace-000000000000': { sensor: 'b', v: 4 }
+(4 record(s), via scan)
+uuid '019b76da-a800-7000-8629-75c9230c13ff': { high: 2.25, n: 3, sensor: 'a', total: 4.0 }
+uuid '019b7711-9680-7000-8971-268082579bba': { high: 4, n: 1, sensor: 'b', total: 4 }
+(2 record(s), via scan)
+3: { age: 42, name: 'alan' }
+2: { age: 85, name: 'grace' }
+(2 record(s), via scan)
+0x04038000000233360000: { age: 36, n: 1 }
+0x04038000000234320000: { age: 42, n: 1 }
+0x04038000000238350000: { age: 85, n: 1 }
+(3 record(s), via scan)

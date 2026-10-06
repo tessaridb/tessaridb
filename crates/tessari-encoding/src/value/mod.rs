@@ -23,7 +23,7 @@ use crate::error::{Error, Result};
 use crate::node::NODE_ID_LEN;
 use crate::order::{KeyReader, KeyWriter};
 pub use across::{
-    Across, Decision, Part, Participant, Provenance, TRANSACTION_ID_LEN, TransactionId,
+    Across, Barred, Decision, Part, Participant, Provenance, TRANSACTION_ID_LEN, TransactionId,
     TransactionRecord,
 };
 pub use format::FormatVersion;

@@ -109,3 +109,67 @@ fn an_intent_under_a_staging_record_is_never_resolved_by_the_pass() {
     assert_eq!(decision(&db), Some(Decision::Staging));
     assert_eq!(note(&db, &address), Value::from("old"));
 }
+
+#[test]
+fn a_bar_ends_with_its_log_and_a_late_prepare_is_refused_as_too_old() {
+    // ADR-0119: recovery barred the missing part and aborted; once the barred
+    // range's log is pruned past the bar, the bar is gone and the prepare
+    // still in flight is refused for reading what the log no longer holds.
+    let (db, _) = left_behind(&[]);
+    let (home, _) = ranges(&db);
+    db.session()
+        .run("USE NAMESPACE prod; DEFINE DATABASE other; USE DATABASE other; DEFINE COLLECTION more;")
+        .unwrap();
+    let store = db.store();
+    let (elsewhere, late) = {
+        let mut reading = store.begin().unwrap();
+        let catalog = tessari_storage::Catalog::new(&mut reading);
+        let namespace = catalog.namespace_id("prod").unwrap().unwrap();
+        let other = catalog.database_id(namespace, "other").unwrap().unwrap();
+        let more = catalog.table_id(namespace, other, "more").unwrap().unwrap();
+        reading.rollback();
+        // The barred part's write, as its prepare carries it.
+        let late = tessari_encoding::Mutation {
+            namespace,
+            database: other,
+            table: more,
+            id: tessari_types::RecordId::Int(9),
+            shard: None,
+            value: tessari_encoding::StampedValue::new(tessari_encoding::RecordValue::Present(
+                tessari_encoding::encode_payload(&Value::from("late")).into_bytes(),
+            )),
+        };
+        (Reach::Database(namespace, other), late)
+    };
+    // What the late prepare read: the barred range's log before the bar.
+    let log = store.history_log(elsewhere).unwrap();
+    let seen = store.committed_tail(log).unwrap();
+    stage(&db, &[home, elsewhere], 0);
+    db.settle_across().unwrap();
+    assert_eq!(decision(&db), Some(Decision::Aborted));
+    let bars = || store.bars_across().unwrap();
+    assert_eq!(bars(), 1, "recovery barred the missing part");
+    // Writes into the barred range after the bar, so its log has a tail to
+    // prune under.
+    db.session()
+        .run("USE NAMESPACE prod; USE DATABASE other; CREATE more:1 = 'a'; CREATE more:2 = 'b';")
+        .unwrap();
+    let tail = store.committed_tail(log).unwrap();
+    store.prune_log(log, tail).unwrap();
+    assert_eq!(bars(), 0, "the bar went with the record that wrote it");
+    let refused = db.session().answer_across(&AcrossAsk::Prepare {
+        transaction: TRANSACTION,
+        coordinator: home,
+        seen,
+        writes: vec![late],
+    });
+    assert!(
+        matches!(
+            refused,
+            Err(tessari_session::Error::Store(
+                tessari_storage::Error::AcrossReadTooOld { .. }
+            ))
+        ),
+        "{refused:?}"
+    );
+}

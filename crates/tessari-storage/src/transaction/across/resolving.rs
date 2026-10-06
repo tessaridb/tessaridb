@@ -243,6 +243,18 @@ impl Transaction<'_> {
             .map(|work| work.coordinator)
     }
 
+    /// The outcome this commit resolves `transaction`'s intents to, when it
+    /// writes that transaction's resolution: `true` committed, `false` aborted.
+    pub(in crate::transaction) fn resolution_of(
+        &self,
+        transaction: tessari_encoding::TransactionId,
+    ) -> Option<bool> {
+        self.across
+            .as_ref()
+            .filter(|work| work.across.transaction == transaction)
+            .and_then(|work| work.across.part.resolution())
+    }
+
     /// Whether `provenance` is an intent this commit itself resolves, which
     /// the conflict check must not refuse it for.
     pub(in crate::transaction) fn resolves(&self, provenance: Option<&Provenance>) -> bool {

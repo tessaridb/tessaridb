@@ -8,8 +8,9 @@
 //! `across_model` requires of both sides before anything can prepare.
 
 use tessari_encoding::{
-    Across, AcrossBarredKey, AcrossPartKey, Decision, IntentOfKey, LogRecord, Part, Provenance,
-    RecordKey, StampedValue, StoreKey, StoreValue, TransactionRecord, TransactionRecordKey,
+    Across, AcrossBarredKey, AcrossPartKey, Barred, Decision, IntentOfKey, LogId, LogRecord, Part,
+    Provenance, RecordKey, StampedValue, StoreKey, StoreValue, TransactionRecord,
+    TransactionRecordKey,
 };
 use tessari_kv::WriteBatch;
 use tessari_types::Sequence;
@@ -57,6 +58,9 @@ pub(crate) fn derives_nothing(record: &LogRecord) -> bool {
 /// the intents it replaces. Every record of one is checked against what it
 /// claims to be, here, where leader and follower both apply it.
 ///
+/// `written` is the log and position the record lands at, where it lands in
+/// one: a bar keeps it, to end when that log is pruned past it (ADR-0119).
+///
 /// # Errors
 ///
 /// [`Error::AcrossMalformed`] for a record that contradicts itself, and
@@ -66,6 +70,7 @@ pub(crate) fn settle(
     record: &LogRecord,
     batch: WriteBatch,
     version: Sequence,
+    written: Option<(LogId, Sequence)>,
 ) -> Result<WriteBatch> {
     let Some(across) = record.part_of() else {
         return Ok(batch);
@@ -195,7 +200,11 @@ pub(crate) fn settle(
             {
                 return Ok(batch);
             }
-            Ok(batch.put(AcrossBarredKey::keyspace(), barred, version.encode()))
+            Ok(batch.put(
+                AcrossBarredKey::keyspace(),
+                barred,
+                Barred { version, written }.encode(),
+            ))
         }
     }
 }

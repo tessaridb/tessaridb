@@ -19,7 +19,8 @@ use tessari_kv::Value;
 
 use super::{StoreValue, split_header, with_header};
 use crate::error::{Error, Result};
-use crate::keys::{put_reach, take_reach};
+use crate::keys::{put_log, put_reach, take_log, take_reach};
+use crate::log_id::LogId;
 use crate::order::{KeyReader, KeyWriter};
 
 /// Bytes a transaction id occupies.
@@ -383,6 +384,51 @@ impl StoreValue for TransactionRecord {
         let record = take_record(&mut reader)?;
         reader.finish()?;
         Ok(record)
+    }
+}
+
+/// What a barred part's marker (`0x54`) holds on one node: the local version
+/// the bar was applied at and, where the record that wrote it is known, that
+/// record's log and position — the bar lasts until this node's copy of that
+/// log is pruned past it (ADR-0119).
+///
+/// A marker written before the bar ended with its log holds the version alone,
+/// so `written` is `None` and nothing ever drops it. Every build only asks
+/// whether a marker exists, which is why the longer value reads everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Barred {
+    /// The local version the bar was applied at.
+    pub version: Sequence,
+    /// The log the bar's record is in, and its position there.
+    pub written: Option<(LogId, Sequence)>,
+}
+
+impl StoreValue for Barred {
+    fn encode(&self) -> Value {
+        let mut writer = KeyWriter::with_capacity(48);
+        writer.put_u64(self.version.get());
+        if let Some((log, at)) = self.written {
+            writer.put_u64(at.get());
+            put_log(&mut writer, log);
+        }
+        let payload = writer.finish();
+        let mut buffer = with_header(0, payload.len());
+        buffer.extend_from_slice(&payload);
+        Value::from(buffer)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let (_, payload) = split_header(bytes, 0)?;
+        let mut reader = KeyReader::new(crate::kind::KeyKind::AcrossBarred, payload);
+        let version = Sequence::new(reader.take_u64()?);
+        let written = if reader.remaining() == 0 {
+            None
+        } else {
+            let at = Sequence::new(reader.take_u64()?);
+            Some((take_log(&mut reader)?, at))
+        };
+        reader.finish()?;
+        Ok(Self { version, written })
     }
 }
 

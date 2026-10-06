@@ -223,6 +223,7 @@ impl Store {
             record,
             crate::log::apply_batch(log, at, version, record),
             version,
+            Some((log, at)),
             landing,
         )
     }
@@ -237,11 +238,12 @@ impl Store {
         record: &LogRecord,
         batch: tessari_kv::WriteBatch,
         version: Sequence,
+        written: Option<(LogId, Sequence)>,
         landing: Landing,
     ) -> Result<()> {
         // A record of a transaction across leaders is checked and settled here,
         // and an intent derives nothing until its resolution does (ADR-0112).
-        let batch = crate::intents::settle(self, record, batch, version)?;
+        let batch = crate::intents::settle(self, record, batch, version, written)?;
         if crate::intents::derives_nothing(record) {
             self.writing.apply(batch, self.backend.as_ref(), landing)?;
             return Ok(());

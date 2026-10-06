@@ -79,7 +79,7 @@ pub use transaction_key::{
     TransactionRecordKey,
 };
 pub use value::{
-    Across, CODEC_VERSION, Decision, FormatVersion, LogRecord, Mutation, Part, Participant,
+    Across, Barred, CODEC_VERSION, Decision, FormatVersion, LogRecord, Mutation, Part, Participant,
     Provenance, RecordValue, StampedValue, StoreValue, TRANSACTION_ID_LEN, TransactionId,
     TransactionRecord,
 };

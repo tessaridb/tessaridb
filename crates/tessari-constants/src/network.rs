@@ -84,9 +84,15 @@ pub const ACROSS_KEPT_IDLE_SECONDS: u64 = 4;
 
 /// The most idle links a coordinator keeps to one peer (ADR-0112 D13j): each
 /// holds one of that peer's [`PEER_CONNECTIONS`] while it waits, so a dozen
-/// peers keeping two each leave most of a door for greetings, ballots and
+/// peers keeping three each still leave a door room for greetings, ballots and
 /// streams.
-pub const ACROSS_KEPT_PER_PEER: usize = 2;
+///
+/// Three because a commit across leaders has three records with one peer in
+/// flight at once — the next prepare beside the last commit's resolve and its
+/// holds — and a fourth ask dials. Measured at a 50 ms round trip (G068 SG3):
+/// with two, 10 of 100 prepares dialled a fresh link at 270 ms against 113 ms on
+/// a kept one; with three, 2 of 100.
+pub const ACROSS_KEPT_PER_PEER: usize = 3;
 
 /// The largest request body the HTTP surface reads.
 ///

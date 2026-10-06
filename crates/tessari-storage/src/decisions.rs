@@ -40,6 +40,17 @@ impl Store {
         transaction: TransactionId,
         coordinator: Reach,
     ) -> Option<TransactionRecord> {
-        self.decisions.get()?.decided(transaction, coordinator)
+        let asker = self.decisions.get()?;
+        let began = std::time::Instant::now();
+        let decided = asker.decided(transaction, coordinator);
+        // For the per-phase attribution of a commit across leaders (Q-931):
+        // a read that waits on another node is time nobody sees otherwise.
+        let elapsed_us = u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX);
+        tracing::debug!(
+            known = decided.is_some(),
+            elapsed_us,
+            "a reader asked a cross-leader record's leader"
+        );
+        decided
     }
 }

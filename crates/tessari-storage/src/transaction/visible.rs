@@ -40,6 +40,12 @@ impl Transaction<'_> {
 
     /// Whether this transaction sees the transaction `provenance` names.
     pub(super) fn sees(&self, provenance: &Provenance) -> Result<bool> {
+        // A commit writing this transaction's resolution carries its decision,
+        // so it asks nobody about it — least of all the record's leader, under
+        // the write turn, while the record it is deciding still stages (Q-931).
+        if let Some(committed) = self.resolution_of(provenance.transaction) {
+            return Ok(committed);
+        }
         if let Some(seen) = self.decided.borrow().get(&provenance.transaction) {
             return Ok(*seen);
         }

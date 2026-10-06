@@ -121,6 +121,27 @@ impl Store {
         Ok(standing)
     }
 
+    /// How many parts of transactions across leaders are barred on this node
+    /// (ADR-0112 D14c), each until this node's log is pruned past the record
+    /// that barred it (ADR-0119).
+    ///
+    /// # Errors
+    ///
+    /// Whatever the backend returns.
+    pub fn bars_across(&self) -> Result<usize> {
+        Ok(self
+            .backend()
+            .scan(&tessari_kv::ScanRequest {
+                keyspace: tessari_encoding::AcrossBarredKey::keyspace(),
+                range: tessari_kv::KeyRange::prefix(&[
+                    tessari_encoding::KeyKind::AcrossBarred.tag()
+                ]),
+                direction: tessari_kv::ScanDirection::Forward,
+                limit: None,
+            })?
+            .len())
+    }
+
     /// Whether `transaction` holds an intent here.
     ///
     /// # Errors

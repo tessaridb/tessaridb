@@ -207,6 +207,12 @@ impl Session<'_> {
         );
         let confirmed = held.len() >= waiting.needed;
         store.acknowledgement_waited(began.elapsed(), !confirmed);
+        let waited_us = u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX);
+        tracing::debug!(
+            home = ?committed.log.home,
+            waited_us,
+            "a commit waited for its acknowledgement"
+        );
         if confirmed {
             return Ok(());
         }

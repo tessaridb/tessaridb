@@ -943,6 +943,22 @@ restored store then decides as the source did at the cut, and the log above
 the cut applies on top of it.
 
 ```
+<0x54> <transaction:16> <range reach>   → <version:u64> [<position:u64> <log home> <log writer:16>]
+```
+
+`AcrossBarred` marks one transaction's part in one range barred by status
+recovery before its prepare landed (ADR-0112 D14c): applying a later prepare of
+that transaction there is refused. The value is the local version the bar was
+applied at, then the log the bar's record is in and its position there. A
+marker lasts until this node prunes that log past that position — from then on
+the log no longer reaches back to anything the transaction read, so its prepare
+is refused as too old without it — and is deleted in the batch that advances
+the log's start (ADR-0119). A marker written before `0.31.2-beta` is the version
+alone, says nothing of where its record is, and is never deleted; every build
+only asks whether a marker exists, so both forms read everywhere. A state
+snapshot does not carry it.
+
+```
 <0x53> <table:u32> <transaction:16>   → <transaction record>
 ```
 

@@ -34,6 +34,9 @@ pub(crate) struct Explored {
     /// Status recovery committed a staging record, and barred a prepare.
     pub(crate) recovered_committed: bool,
     pub(crate) prevented: bool,
+    /// A bar was pruned away, and a prepare then refused as too old.
+    pub(crate) bar_pruned: bool,
+    pub(crate) refused_as_too_old: bool,
 }
 
 /// Every state reachable under `rules`, or the first one that breaks an
@@ -56,6 +59,9 @@ pub(crate) fn explore(rules: Rules, world: World) -> Result<Explored, Found> {
         explored.told_while_staging |=
             state.told == Some(true) && state.record() == Some(Decision::Staging);
         explored.prevented |= state.log(Range::B).contains(&Entry::Prevent);
+        explored.bar_pruned |= state.pruned;
+        explored.refused_as_too_old |=
+            state.pruned && state.replies[Range::B.slot()] == Some(false);
         let next = successors(&state, rules, world);
         // Recovery committed: a successor decided committed while the
         // coordinator had not concluded.
