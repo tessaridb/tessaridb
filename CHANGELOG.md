@@ -15,7 +15,8 @@ compares carries no pre-release suffix.
 
 ## 0.31.1-beta — 2026-10-06
 
-A release that measures itself (G066). No change to the store, the language or the wire.
+A release that measures itself (G066), and a restore that no longer pays a device flush per record (G068). No change to the
+store format, the language or the wire.
 
 ### Added
 
@@ -26,6 +27,13 @@ A release that measures itself (G066). No change to the store, the language or t
   run of a phase is past the threshold (p50 10 %, p99 50 %), past every run the baseline saw and at least 1 µs
   slower; it exits 2 rather than passing when the machine, build, backend or run count differ. Every release now
   runs it before the tag.
+
+### Fixed
+
+- **A log restore syncs per thousand records, not per record.** `--restore` landed every record with its own device sync —
+  about 5 ms each on macOS at `PowerLossSafe`, so 10 003 records took 50.6 s. Records now land without their own sync,
+  and the restore syncs every 1024 and once more before it answers, a refused restore included: 0.40 s for the same file,
+  with the same store at the end. A restore killed part-way still reopens holding a whole prefix of the records.
 
 ### Tested
 
