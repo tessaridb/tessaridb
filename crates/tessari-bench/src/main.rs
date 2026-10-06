@@ -13,8 +13,9 @@
 //! # What a number here is worth, and what it is not
 //!
 //! A baseline is recorded **per machine**, with the machine written into the
-//! file. It is compared by a person, deliberately. It is deliberately not a CI
-//! gate: a shared runner's timings vary by more than the regressions worth
+//! file. The markdown one is compared by a person. The `--record`/`--compare`
+//! pair is the release's gate (see `gate.rs`), run on the machine the baseline
+//! names. It is deliberately not a CI gate: a shared runner's timings vary by more than the regressions worth
 //! catching, so an automatic check would either fail constantly or be loosened
 //! until it never failed — and a check that never fails is worse than none,
 //! because it is also believed.
@@ -27,6 +28,8 @@
 //! cargo run -p tessari-bench --release -- --workload write one of them
 //! cargo run -p tessari-bench --release -- --backend disk   against the on-disk engine
 //! cargo run -p tessari-bench --release -- --baseline benchmarks/today.md
+//! cargo run -p tessari-bench --release -- --record benchmarks/baselines/<machine>-memory.tsv --label <tag>
+//! cargo run -p tessari-bench --release -- --compare benchmarks/baselines/<machine>-memory.tsv
 //! ```
 //!
 //! Release matters and the harness says so if it was not: a debug build measures
@@ -36,9 +39,11 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
+mod baseline;
 mod concurrent;
 #[cfg(feature = "counting")]
 mod counting;
+mod gate;
 mod guard;
 #[cfg(feature = "counting")]
 mod memory;
@@ -105,6 +110,14 @@ struct Asked {
     /// so a profiler sampling the process sees seconds of the workload rather
     /// than milliseconds. The reports printed are the last run's.
     repeat: u32,
+    /// Write the release set's baseline here.
+    record: Option<PathBuf>,
+    /// Compare the release set with the baseline here.
+    compare: Option<PathBuf>,
+    /// How many fresh runs each release workload gets.
+    runs: u32,
+    /// What the recorded baseline was taken from, such as a tag.
+    label: String,
 }
 
 fn main() -> ExitCode {
@@ -121,6 +134,12 @@ fn main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
+    if asked.record.is_some() || asked.compare.is_some() {
+        return gated(&asked).unwrap_or_else(|complaint| {
+            eprintln!("{complaint}");
+            ExitCode::from(2)
+        });
+    }
     match run(&asked) {
         Ok(()) => ExitCode::SUCCESS,
         Err(complaint) => {
@@ -131,7 +150,8 @@ fn main() -> ExitCode {
 }
 
 const USAGE: &str = "\
-usage: tessari-bench [--backend memory|disk] [--workload <name>] [--baseline <path>] [--repeat <n>] [--list]";
+usage: tessari-bench [--backend memory|disk] [--workload <name>] [--baseline <path>] [--repeat <n>] [--list]\n\
+       tessari-bench [--backend memory|disk] (--record <path> [--label <text>] | --compare <path>) [--runs <n>]";
 
 /// Read the arguments, refusing anything unrecognised.
 ///
@@ -149,6 +169,10 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
         baseline: None,
         list: false,
         repeat: 1,
+        record: None,
+        compare: None,
+        runs: 5,
+        label: String::new(),
     };
     let mut arguments = arguments.peekable();
     while let Some(argument) = arguments.next() {
@@ -185,11 +209,54 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                     .filter(|count| *count > 0)
                     .ok_or_else(|| "--repeat wants a count above zero".to_owned())?;
             }
+            "--record" | "--compare" => {
+                let path = arguments
+                    .next()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| format!("{argument} wants a path"))?;
+                if argument == "--record" {
+                    asked.record = Some(path);
+                } else {
+                    asked.compare = Some(path);
+                }
+            }
+            "--runs" => {
+                asked.runs = arguments
+                    .next()
+                    .and_then(|count| count.parse().ok())
+                    .filter(|count| *count > 0)
+                    .ok_or_else(|| "--runs wants a count above zero".to_owned())?;
+            }
+            "--label" => {
+                asked.label = arguments
+                    .next()
+                    .ok_or_else(|| "--label wants a text".to_owned())?;
+            }
             "--help" | "-h" => return Err(USAGE.to_owned()),
             other => return Err(format!("unknown option {other:?}")),
         }
     }
+    if asked.record.is_some() && asked.compare.is_some() {
+        return Err("--record and --compare are two different runs".to_owned());
+    }
+    if (asked.record.is_some() || asked.compare.is_some()) && asked.only.is_some() {
+        return Err(
+            "--record and --compare measure the release set; --workload does not apply".to_owned(),
+        );
+    }
     Ok(asked)
+}
+
+/// Record the release set's baseline, or compare the release set with one.
+fn gated(asked: &Asked) -> Result<ExitCode, String> {
+    let now = gate::measured(asked.backend.name(), asked.runs, &asked.label, |held| {
+        measure(held, asked.backend)
+    })?;
+    match (&asked.record, &asked.compare) {
+        (Some(path), _) => gate::record(path, &now),
+        (_, Some(path)) => gate::compare(path, &now),
+        (None, None) => Err("nothing to record or compare".to_owned()),
+    }
 }
 
 /// A temporary directory that removes itself.
@@ -351,6 +418,18 @@ mod tests {
         assert!(asked(&["--workload"]).is_err());
         assert!(asked(&["--baseline"]).is_err());
         assert!(asked(&["--backend"]).is_err());
+    }
+
+    #[test]
+    fn the_release_gate_measures_its_own_set_and_one_thing_at_a_time() {
+        assert!(asked(&["--record", "a.tsv", "--compare", "b.tsv"]).is_err());
+        assert!(asked(&["--compare", "b.tsv", "--workload", "write"]).is_err());
+        assert!(asked(&["--runs", "0"]).is_err());
+        let held = asked(&["--compare", "b.tsv"]).expect("a comparison");
+        assert_eq!(held.runs, 5);
+        for name in super::gate::RELEASE {
+            assert!(super::workload::by_name(name).is_some(), "{name}");
+        }
     }
 
     #[test]

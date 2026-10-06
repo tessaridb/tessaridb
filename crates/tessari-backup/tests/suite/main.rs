@@ -17,6 +17,7 @@ mod gap;
 mod produced_identity;
 mod reseed;
 mod restore;
+mod restore_sync;
 mod state;
 mod vault_restore;
 mod vault_shredding;

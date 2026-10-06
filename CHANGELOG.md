@@ -13,6 +13,32 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.31.1-beta — 2026-10-06
+
+A release that measures itself (G066), and a restore that no longer pays a device flush per record (G068). No change to the
+store format, the language or the wire.
+
+### Added
+
+- **A performance gate for releases.** `tessari-bench --record <file> --label <tag>` runs eight workloads (write,
+  read-by-id, filter, range, search, paging, update, vector) five times each on a fresh store and writes every
+  phase's median p50 and p99 with the range its runs covered, plus the thresholds, into
+  `benchmarks/baselines/macos-aarch64-memory.tsv`. `--compare <file>` runs the same set and exits 1 when the fastest
+  run of a phase is past the threshold (p50 10 %, p99 50 %), past every run the baseline saw and at least 1 µs
+  slower; it exits 2 rather than passing when the machine, build, backend or run count differ. Every release now
+  runs it before the tag.
+
+### Fixed
+
+- **A log restore syncs per thousand records, not per record.** `--restore` landed every record with its own device sync —
+  about 5 ms each on macOS at `PowerLossSafe`, so 10 003 records took 50.6 s. Records now land without their own sync,
+  and the restore syncs every 1024 and once more before it answers, a refused restore included: 0.40 s for the same file,
+  with the same store at the end. A restore killed part-way still reopens holding a whole prefix of the records.
+
+### Tested
+
+- The store `0.31.0-beta` wrote joins the released stores this build opens and reads back unchanged.
+
 ## 0.31.0-beta — 2026-10-05
 
 An upgrade that can be taken back (G065, ADR-0118).

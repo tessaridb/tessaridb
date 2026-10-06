@@ -39,7 +39,24 @@ pub fn read_until(
             logs: usize::try_from(head.sections).unwrap_or(usize::MAX),
         });
     }
+    let replayed = replay(store, input, upto, head);
+    // Nothing above acknowledged a record, so the sync it owes is here, and
+    // after a refusal too: what was applied before it stays applied, durably.
+    // A failed sync is answered first, because a record it could not make
+    // durable must not be reported as restored.
+    let synced = store.sync_landed();
+    synced?;
+    replayed
+}
 
+/// The frames of a backup applied into `store` without a sync each, with one
+/// sync per [`crate::RESTORE_CHUNK`] records; [`read_until`] syncs the rest.
+fn replay(
+    store: &Store,
+    input: &mut impl Read,
+    upto: Option<Sequence>,
+    head: Head,
+) -> Result<Restored> {
     let mut applied = 0_u64;
     // The logs this file has opened, so a later section can tell *a range this
     // file is restoring* from *a range the target already held*.
@@ -115,8 +132,11 @@ pub fn read_until(
                 // the record instead refused every store whose records were
                 // filed before each database had a log of its own — they sit in
                 // the store log and derive a database home today.
-                store.apply_record_in(section.log, sequence, &record)?;
+                store.restore_record_in(section.log, sequence, &record)?;
                 applied = applied.saturating_add(1);
+                if applied.is_multiple_of(crate::RESTORE_CHUNK) {
+                    store.sync_landed()?;
+                }
                 *reached = sequence;
             }
         }

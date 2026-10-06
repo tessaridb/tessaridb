@@ -105,6 +105,11 @@ use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, ShardId, TableId};
 
 pub use writing::{only_log, write, write_from};
 
+/// How many records a restore applies between two syncs (Q-899). A restore
+/// answers nobody until it returns, so this bounds only the records a power
+/// loss part-way would take with it, never anything acknowledged.
+pub const RESTORE_CHUNK: u64 = 1024;
+
 mod check;
 mod error;
 mod format;
