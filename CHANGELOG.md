@@ -13,7 +13,7 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
-## Unreleased
+## 0.31.2-beta — 2026-10-07
 
 ### Changed
 
@@ -28,6 +28,9 @@ compares carries no pre-release suffix.
   - Measured at a 50 ms round trip: a commit across two leaders fell from 170 ms to 116 ms (p50), and a single write's
     p99 from 120 ms to 72 ms. At 10 ms the commit across leaders fell from 38 ms to 25 ms.
   - Only between nodes of this release or later. A follower of an older leader streams as before (ADR-0120).
+- **A node keeps three idle links to each peer for commits across leaders, not two.** Such a commit has three records
+  in flight to one peer at once, so with two kept links a tenth of prepares dialled a fresh link. At a 50 ms round
+  trip that prepare took 270 ms against 113 ms on a kept link. With three, 2 in 100 dial.
 
 ### Fixed
 
@@ -50,6 +53,10 @@ compares carries no pre-release suffix.
   bookkeeping read its record through the reader's visibility check, which still saw the record as staging and asked
   the record's leader. The commit now answers that read from the decision it holds. At a 50 ms round trip a commit
   across two leaders fell from 275 ms to 170 ms (p50), and fewer of its records dial a fresh link.
+
+### Tested
+
+- The store `0.31.1-beta` wrote joins the released stores this build opens and reads back unchanged.
 
 ## 0.31.1-beta — 2026-10-06
 
