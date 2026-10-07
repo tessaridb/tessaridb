@@ -92,6 +92,7 @@ fn a_change_written_after_a_subscribe_arrives() {
                 + 1,
             table: None,
             cursor: None,
+            condition: None,
         },
     );
 
@@ -138,6 +139,7 @@ fn a_connection_that_subscribes_close_behind_its_statements_is_fed() {
                 + 1,
             table: None,
             cursor: None,
+            condition: None,
         },
     );
 
@@ -167,6 +169,7 @@ fn a_change_committed_past_the_node_reaches_its_feeds() {
                 + 1,
             table: None,
             cursor: None,
+            condition: None,
         },
     );
 
@@ -214,6 +217,7 @@ fn dropping_the_subscriber_ends_its_running_feed_with_nothing_else_written() {
                 + 1,
             table: None,
             cursor: None,
+            condition: None,
         })
         .unwrap();
     let (ended, ending) = mpsc::channel();
@@ -253,6 +257,7 @@ fn a_subscription_from_an_earlier_position_replays_what_it_missed() {
             from: before,
             table: None,
             cursor: None,
+            condition: None,
         },
     );
 
@@ -279,6 +284,7 @@ fn watching_one_table_is_not_told_about_another() {
                 + 1,
             table: Some("orders".to_owned()),
             cursor: None,
+            condition: None,
         },
     );
 
@@ -314,6 +320,7 @@ fn a_removal_is_told_apart_from_a_write() {
                 + 1,
             table: None,
             cursor: None,
+            condition: None,
         },
     );
 
@@ -342,6 +349,7 @@ fn a_pushed_value_is_the_value_it_was_and_not_a_projection() {
                 + 1,
             table: None,
             cursor: None,
+            condition: None,
         },
     );
 
@@ -379,6 +387,7 @@ fn watching_a_table_that_is_not_there_is_refused_rather_than_silently_empty() {
             from: 0,
             table: Some("nonesuch".to_owned()),
             cursor: None,
+            condition: None,
         })
         .unwrap();
     let refused = feed.wait().expect_err("a refusal");
@@ -398,6 +407,7 @@ fn watching_a_table_before_a_database_is_selected_says_so() {
             from: 0,
             table: Some("users".to_owned()),
             cursor: None,
+            condition: None,
         })
         .unwrap();
     let refused = feed.wait().expect_err("a refusal");
@@ -419,6 +429,7 @@ fn a_node_with_a_subscriber_still_answers_everybody_else() {
             from: 0,
             table: None,
             cursor: None,
+            condition: None,
         })
         .unwrap();
 
@@ -451,6 +462,7 @@ fn a_closed_store_refuses_an_unauthenticated_subscription() {
             from: 0,
             table: None,
             cursor: None,
+            condition: None,
         })
         .unwrap();
     let said = refused.wait().expect_err("a refusal");
@@ -470,6 +482,7 @@ fn a_closed_store_refuses_an_unauthenticated_subscription() {
             from: 0,
             table: None,
             cursor: None,
+            condition: None,
         },
     );
     // The store is closed now, so even the connection that closed it signs in.
@@ -512,6 +525,7 @@ fn a_subscription_is_confined_to_the_database_the_session_selected() {
                 + 1,
             table: None,
             cursor: None,
+            condition: None,
         },
     );
 
@@ -548,6 +562,7 @@ fn following_before_a_database_is_selected_says_so_even_watching_everything() {
             from: 0,
             table: None,
             cursor: None,
+            condition: None,
         })
         .unwrap();
     let refused = feed.wait().expect_err("a refusal");
@@ -573,6 +588,7 @@ fn a_subscriber_that_hangs_up_on_a_quiet_feed_gives_its_place_back() {
             from: 0,
             table: None,
             cursor: None,
+            condition: None,
         })
         .unwrap();
     let stopping = node.stopping();
@@ -620,6 +636,7 @@ fn a_node_holds_more_idle_feeds_than_store_calls_and_still_answers() {
                     from: 0,
                     table: None,
                     cursor: None,
+                    condition: None,
                 })
                 .unwrap()
         })
@@ -674,6 +691,7 @@ fn a_subscriber_that_stops_reading_is_cut_off_rather_than_buffered_and_loses_not
             from: 0,
             table: None,
             cursor: None,
+            condition: None,
         })
         .unwrap();
 
@@ -712,6 +730,7 @@ fn a_subscriber_that_stops_reading_is_cut_off_rather_than_buffered_and_loses_not
             from: last + 1,
             table: None,
             cursor: None,
+            condition: None,
         },
     );
     let next = within(&resumed, "the change after the last one delivered");
@@ -771,6 +790,7 @@ fn a_grant_governed_subscriber_is_told_only_about_tables_it_was_granted() {
                 + 1,
             table: None,
             cursor: None,
+            condition: None,
         },
     );
 
@@ -793,6 +813,7 @@ fn a_grant_governed_subscriber_is_told_only_about_tables_it_was_granted() {
             from: 0,
             table: Some("users".to_owned()),
             cursor: None,
+            condition: None,
         })
         .unwrap();
     let said = refused.wait().expect_err("a refusal");
@@ -841,6 +862,7 @@ fn a_field_grant_reaches_the_feed_too() {
                 + 1,
             table: Some("users".to_owned()),
             cursor: None,
+            condition: None,
         },
     );
 
@@ -862,4 +884,177 @@ fn serve_until_the_test_ends(node: &Node) {
         .build()
         .unwrap();
     drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
+}
+
+/// G069 C3 — a subscription narrowed by a condition sends what matches, and
+/// a position past what it skipped (ADR-0122 Part B) over the wire.
+#[test]
+fn a_narrowed_subscription_sends_what_matches_and_says_how_far_it_read() {
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (_node, address) = serving(Arc::clone(&db));
+    let mut writer = Client::connect(&address).unwrap();
+    writer.run(READY, None).unwrap();
+    writer
+        .run(
+            "CREATE users:1 = { chat: 'b' }; CREATE users:2 = { chat: 'b' };",
+            None,
+        )
+        .unwrap();
+    let skipped_to = db
+        .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+        .unwrap()
+        .get();
+    let mut feed = selected(&address)
+        .follow(&Follow {
+            from: 0,
+            table: Some("users".to_owned()),
+            cursor: None,
+            condition: Some(tessari_wire::Narrow {
+                text: "chat = $chat".to_owned(),
+                parameters: [("chat".to_owned(), Value::from("a"))].into(),
+            }),
+        })
+        .unwrap();
+    // Only skipped changes are in the log, so the first thing sent is how far
+    // the feed read; the match is written after it has said so.
+    let (sent, waiting) = mpsc::channel();
+    drop(std::thread::spawn(move || {
+        while let Ok(Some(pushed)) = feed.receive() {
+            if sent.send(pushed).is_err() {
+                break;
+            }
+        }
+    }));
+    let next = || {
+        waiting
+            .recv_timeout(Duration::from_secs(5))
+            .expect("nothing arrived")
+    };
+    let tessari_wire::Sent::Progress(progressed) = next() else {
+        panic!("a progress frame first");
+    };
+    assert_eq!(progressed.sequence, skipped_to);
+    writer.run("CREATE users:3 = { chat: 'a' };", None).unwrap();
+    let tessari_wire::Sent::Change(change) = next() else {
+        panic!("the matching change");
+    };
+    assert_eq!(change.id, "3");
+    assert!(progressed.sequence < change.sequence);
+}
+
+/// A frame kind reaches only a peer whose greeting carried the minor that
+/// introduced it (protocol §2.3): a client greeting with minor 3 is never sent a
+/// `Progress` frame, even on a feed that skipped changes, and reads the match
+/// as the first frame.
+#[test]
+fn a_client_below_minor_four_is_never_sent_progress() {
+    use std::io::{Read, Write};
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (_node, address) = serving(Arc::clone(&db));
+    let mut writer = Client::connect(&address).unwrap();
+    writer.run(READY, None).unwrap();
+    writer
+        .run(
+            "CREATE users:1 = { chat: 'b' }; CREATE users:2 = { chat: 'b' };",
+            None,
+        )
+        .unwrap();
+    let mut socket = std::net::TcpStream::connect(&address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    socket.write_all(b"TESS").unwrap();
+    socket.write_all(&[1, 3]).unwrap();
+    let mut greeting = [0_u8; 6];
+    socket.read_exact(&mut greeting).unwrap();
+    let frame = |socket: &mut std::net::TcpStream, tag: u8, body: &[u8]| {
+        socket.write_all(&[tag]).unwrap();
+        socket
+            .write_all(&u32::try_from(body.len()).unwrap().to_be_bytes())
+            .unwrap();
+        socket.write_all(body).unwrap();
+    };
+    let read = |socket: &mut std::net::TcpStream| {
+        let mut header = [0_u8; 5];
+        socket.read_exact(&mut header).unwrap();
+        let length = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
+        let mut body = vec![0_u8; usize::try_from(length).unwrap()];
+        socket.read_exact(&mut body).unwrap();
+        (header[0], body)
+    };
+    let selecting = tessari_wire::Request {
+        script: "USE NAMESPACE prod; USE DATABASE orders;".to_owned(),
+        credentials: None,
+        parameters: std::collections::BTreeMap::new(),
+    };
+    frame(&mut socket, 1, &selecting.encode());
+    assert_eq!(read(&mut socket).0, 2, "the selection was answered");
+    let asked = Follow {
+        from: 0,
+        table: Some("users".to_owned()),
+        cursor: None,
+        condition: Some(tessari_wire::Narrow {
+            text: "chat = 'a'".to_owned(),
+            parameters: std::collections::BTreeMap::new(),
+        }),
+    };
+    frame(&mut socket, 4, &asked.encode());
+    // A barrier: a second feed over the same skipped changes, subscribed after
+    // this one, has said how far it read — so the rounds have run, and the
+    // first of this feed's has already decided whether to send progress.
+    let mut later = selected(&address).follow(&asked).unwrap();
+    assert!(matches!(
+        later.receive().unwrap(),
+        Some(tessari_wire::Sent::Progress(_))
+    ));
+    writer.run("CREATE users:3 = { chat: 'a' };", None).unwrap();
+    let (tag, body) = read(&mut socket);
+    assert_eq!(tag, 5, "a Change, and no Progress before it");
+    assert_eq!(Happened::decode(&body).unwrap().id, "3");
+}
+
+/// A node below minor 4 would read past a condition and deliver every change,
+/// so the client refuses to send one there, before anything is sent.
+#[test]
+fn a_condition_is_never_sent_to_a_node_below_minor_four() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let older = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut greeting = [0_u8; 6];
+        socket.read_exact(&mut greeting).unwrap();
+        socket.write_all(b"TESS").unwrap();
+        socket.write_all(&[1, 3]).unwrap();
+        // Whatever the client sends next: nothing, if it refused first.
+        let mut rest = Vec::new();
+        drop(socket.read_to_end(&mut rest));
+        rest
+    });
+    let refused = Client::connect(&address)
+        .unwrap()
+        .follow(&Follow {
+            from: 0,
+            table: Some("users".to_owned()),
+            cursor: None,
+            condition: Some(tessari_wire::Narrow {
+                text: "chat = 'a'".to_owned(),
+                parameters: std::collections::BTreeMap::new(),
+            }),
+        })
+        .err();
+    assert!(
+        matches!(
+            refused,
+            Some(tessari_wire::Error::NodeTooOld {
+                found: 3,
+                needed: 4
+            })
+        ),
+        "{refused:?}"
+    );
+    assert!(
+        older.join().unwrap().is_empty(),
+        "the subscription was sent"
+    );
 }

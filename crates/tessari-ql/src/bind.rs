@@ -33,7 +33,7 @@ use tessari_types::Value;
 
 use crate::ast::{
     CreateTarget, Edit, InfoSubject, JoinSide, RangeExpr, RecordTarget, Script, SetCondition,
-    Statement, StatementKind,
+    Statement, StatementKind, WriteExpiry,
 };
 use crate::error::{Error, Result};
 use crate::token::Span;
@@ -45,6 +45,31 @@ pub(crate) use nested::{bind_expr, bind_identity, bind_select};
 /// questions, and a caller must not have to know how this store would have
 /// parsed a string to ask the one they meant.
 pub type Parameters = BTreeMap<String, Value>;
+
+/// Replace every parameter in one expression with the value bound to it.
+///
+/// For an expression that arrives on its own rather than inside a script — a
+/// subscription's condition — so a supplied value is bound after the text is
+/// read and can never become syntax, exactly as [`Script::bind`] binds one.
+///
+/// # Errors
+///
+/// [`Error::UnboundParameter`] for the first parameter `parameters` holds no
+/// value for.
+pub fn bind_expression(
+    mut expr: crate::ast::Expr,
+    parameters: &Parameters,
+) -> Result<crate::ast::Expr> {
+    bind_expr(
+        &mut expr,
+        &Binding {
+            supplied: parameters,
+            deferred: BTreeSet::new(),
+            strict: true,
+        },
+    )?;
+    Ok(expr)
+}
 
 /// What a name may resolve to during the walk.
 ///
@@ -162,11 +187,17 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
     match kind {
         // A generated identity holds no parameter to replace: the statement
         // never wrote an id, so there is no position for one to have stood in.
-        StatementKind::Create { target, value, .. } => {
+        StatementKind::Create {
+            target,
+            value,
+            expire,
+            ..
+        } => {
             if let CreateTarget::Named(named) = target {
                 bind_target(named, binding)?;
             }
-            bind_expr(value, binding)
+            bind_expr(value, binding)?;
+            bind_write_expiry(expire.as_mut(), binding)
         }
         StatementKind::Set {
             target,
@@ -200,13 +231,13 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // column list is not walked because it holds **names**, and a name is
         // grammar: there is no stage at which a supplied value could arrive
         // there and be read as one.
-        StatementKind::Insert { rows, .. } => {
+        StatementKind::Insert { rows, expire, .. } => {
             for row in rows {
                 for value in row {
                     bind_expr(value, binding)?;
                 }
             }
-            Ok(())
+            bind_write_expiry(expire.as_mut(), binding)
         }
         // Both shapes of an update hold expressions, and the field shape holds
         // one per assignment: a parameter is legal in each of them, the same as
@@ -215,8 +246,10 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             target,
             edit,
             condition,
+            expire,
             ..
         } => {
+            bind_write_expiry(expire.as_mut(), binding)?;
             bind_target(target, binding)?;
             // The condition before the edit, because a compare-and-set carries
             // its expected value as a parameter far more often than it carries
@@ -227,9 +260,15 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             }
             bind_edit(edit, binding)
         }
-        StatementKind::Upsert { target, edit, .. } => {
+        StatementKind::Upsert {
+            target,
+            edit,
+            expire,
+            ..
+        } => {
             bind_target(target, binding)?;
-            bind_edit(edit, binding)
+            bind_edit(edit, binding)?;
+            bind_write_expiry(expire.as_mut(), binding)
         }
         // `REVEAL` binds its target like every other statement that names one
         // record. Its field list is names, and its passphrase sibling below is
@@ -462,6 +501,15 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::Commit
         | StatementKind::Cancel
         | StatementKind::Verify => Ok(()),
+    }
+}
+
+/// A write's `EXPIRE` clause binds like any other value (ADR-0122 A2): a client
+/// sends a lifetime as a parameter rather than formatting it into the text.
+fn bind_write_expiry(expire: Option<&mut WriteExpiry>, binding: &Binding<'_>) -> Result<()> {
+    match expire {
+        Some(WriteExpiry::At(when)) => bind_expr(when, binding),
+        Some(WriteExpiry::Never(_)) | None => Ok(()),
     }
 }
 

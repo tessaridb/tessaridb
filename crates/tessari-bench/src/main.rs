@@ -43,6 +43,7 @@ mod baseline;
 mod concurrent;
 #[cfg(feature = "counting")]
 mod counting;
+mod feeds;
 mod gate;
 mod guard;
 #[cfg(feature = "counting")]

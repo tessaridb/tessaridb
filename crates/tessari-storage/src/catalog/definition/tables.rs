@@ -3,8 +3,8 @@
 use super::ShardMap;
 use super::{
     EdgeDeclaration, FIELD_AUTO_SPLIT, FIELD_BUCKET, FIELD_CEILING, FIELD_COLLECTION,
-    FIELD_CONFLICT, FIELD_DATABASE, FIELD_EDGE, FIELD_ENDPOINTS, FIELD_EVENTS, FIELD_GEO,
-    FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY, FIELD_NAME, FIELD_NAMESPACE, FIELD_PARTITION,
+    FIELD_CONFLICT, FIELD_DATABASE, FIELD_EDGE, FIELD_ENDPOINTS, FIELD_EVENTS, FIELD_EXPIRE,
+    FIELD_GEO, FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY, FIELD_NAME, FIELD_NAMESPACE, FIELD_PARTITION,
     FIELD_QUEUE, FIELD_SCHEMAFULL, FIELD_SERIES, FIELD_SHARDS, FIELD_SPACE, FIELD_SPREAD,
     FIELD_TOPIC, FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW, QueueDeclaration, SeriesDeclaration,
     StoredKind, TableKind, VaultCustody, VaultDeclaration, VectorDeclaration, ViewDeclaration,
@@ -102,6 +102,9 @@ pub struct TableDefinition {
     /// order; written only when there is one, so an entry without events is
     /// the bytes it always was.
     pub events: Vec<super::EventDeclaration>,
+    /// Whether the table's records expire, and the lifetime a new one gets
+    /// (ADR-0122 A1); written only when declared.
+    pub expire: Option<super::TableExpiry>,
 }
 
 impl TableDefinition {

@@ -73,7 +73,10 @@ pub(super) fn note(table: &TableDefinition) -> Option<&'static str> {
         ),
         TableKind::Queue(_) => Some("holds and attempt counts are not carried"),
         TableKind::Vault(_) => Some("its secrets are not carried"),
-        TableKind::Space(_) => Some("an expiry is carried as the time it had left"),
+        TableKind::Space(_) => Some(
+            "an expiry is carried as the instant it falls at, and a key whose instant has \
+             passed by the time the script runs is not written back",
+        ),
         TableKind::Bucket(_) => Some("a file's `updated` becomes the time it is written again"),
         _ => None,
     }
@@ -115,16 +118,19 @@ pub(super) fn records(
                 );
             }
             TableKind::Space(_) => {
-                let expiry = match reader.run(&format!("RETURN TTL {target};"))?.pop() {
-                    Some(Outcome::Value(left @ Value::Duration(_))) => {
-                        format!(" EXPIRE {}", tessari_ql::literal::value(&left, names))
-                    }
-                    _ => String::new(),
-                };
-                let _ = writeln!(body, "SET {target} = {held}{expiry};");
+                let _ = writeln!(body, "SET {target} = {held};");
+                write_instant(reader, &target, names, body)?;
             }
             _ => {
-                let _ = writeln!(body, "CREATE {target} = {held};");
+                // A table that declares expiry stamps its default on a create, so
+                // a record that had no instant says so (ADR-0122 A9).
+                let never = if table.expire.is_some() {
+                    " EXPIRE NONE"
+                } else {
+                    ""
+                };
+                let _ = writeln!(body, "CREATE {target} = {held}{never};");
+                write_instant(reader, &target, names, body)?;
             }
         }
         written = written.saturating_add(1);
@@ -133,4 +139,55 @@ pub(super) fn records(
         body.push_str("COMMIT;\n");
     }
     Ok(written)
+}
+
+/// `EXPIRE <record> <instant>` after a record that carries one — the instant as
+/// a datetime rather than the time it had left, so a script run later does not
+/// extend every lifetime by the delay (ADR-0122 A9, Q-952). An instant that has
+/// passed by then removes the record, which is the verb's own rule, so a script
+/// never writes back a record a snapshot of the same moment would hide.
+fn write_instant(
+    reader: &mut Session<'_>,
+    target: &str,
+    names: &tessari_ql::literal::Names,
+    body: &mut String,
+) -> Result<()> {
+    let left = match reader.run(&format!("RETURN TTL {target};"))?.pop() {
+        Some(Outcome::Value(left @ Value::Duration(_))) => left,
+        _ => return Ok(()),
+    };
+    let (Value::Duration(left), Some(Outcome::Value(Value::Datetime(now)))) =
+        (left, reader.run("RETURN time::now();")?.pop())
+    else {
+        return Ok(());
+    };
+    let Some(at) = later(now, left) else {
+        return Ok(());
+    };
+    let at = Value::Datetime(at);
+    let _ = writeln!(
+        body,
+        "EXPIRE {target} {};",
+        tessari_ql::literal::value(&at, names)
+    );
+    Ok(())
+}
+
+/// `now` moved on by `left`, or `None` past what a datetime holds.
+fn later(
+    now: tessari_types::Datetime,
+    left: tessari_types::Duration,
+) -> Option<tessari_types::Datetime> {
+    const NANOS_PER_SECOND: u32 = 1_000_000_000;
+    let nanos = now.nanos().checked_add(left.nanos())?;
+    let (carry, nanos) = if nanos >= NANOS_PER_SECOND {
+        (1, nanos.checked_sub(NANOS_PER_SECOND)?)
+    } else {
+        (0, nanos)
+    };
+    let seconds = now
+        .seconds()
+        .checked_add(left.seconds())?
+        .checked_add(carry)?;
+    tessari_types::Datetime::new(seconds, nanos)
 }

@@ -71,7 +71,9 @@ mod apply;
 mod build;
 mod entries;
 mod projecting;
+mod released;
 mod settling;
+pub(crate) use released::release_expired_holders;
 use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_encoding::{

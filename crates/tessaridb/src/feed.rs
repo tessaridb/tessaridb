@@ -30,15 +30,17 @@ use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use tessari_session::redact::Visible;
-use tessari_storage::{Change, Watch};
+use tessari_storage::{Change, ChangeKind, Watch};
 use tessari_types::{DatabaseId, NamespaceId, TableId};
 
 use crate::{Db, Sequence, Session};
 
 mod cursor;
+mod narrowed;
 mod refused;
 mod source;
 
+pub use narrowed::{Condition, Progress};
 pub use refused::FeedRefused;
 
 /// How long a pusher blocks before looking at the world again.
@@ -127,6 +129,9 @@ pub struct Following<'a> {
     /// handled carried. Without one, `from` counts in the database's log and
     /// each shard's log is read from its beginning.
     pub cursor: Option<&'a str>,
+    /// What a change to the named table must satisfy to be delivered
+    /// (ADR-0122 Part B); `None` for every change.
+    pub condition: Option<narrowed::Condition<'a>>,
 }
 
 /// Whether a delivered change reached its subscriber.
@@ -175,6 +180,8 @@ pub struct Feed {
     /// What a subscriber may see of each table, resolved once per table per
     /// round rather than once per change.
     visible: BTreeMap<TableId, Visible>,
+    /// The condition the feed is narrowed by, and the table it is about.
+    narrowed: Option<(TableId, narrowed::Narrowed)>,
 }
 
 impl Feed {
@@ -205,6 +212,9 @@ impl Feed {
         let Some(tenancy) = db.tenancy_in(namespace, database).ok().flatten() else {
             return Err(FeedRefused::TenancyGone);
         };
+        if asked.condition.is_some() && asked.table.is_none() {
+            return Err(FeedRefused::ConditionWithoutTable);
+        }
         let watch = match asked.table {
             None => Watch::default(),
             Some(name) => match db.table_in(namespace, database, name) {
@@ -236,6 +246,13 @@ impl Feed {
         // with a cursor per log (Q-791). A scope with none reads the database's
         // log alone.
         let split = in_scope(table.as_deref(), db.split_tables_in(tenancy.0, tenancy.1)?);
+        let narrowed = match (asked.condition, watch.table) {
+            (Some(condition), Some(about)) => {
+                let visible = session.visible(db.store(), about)?;
+                Some((about, narrowed::Narrowed::open(&condition, &visible)?))
+            }
+            _ => None,
+        };
         let source = source::Source::open(db, tenancy, &split, asked.from, asked.cursor, watch)?;
         Ok(Self {
             table,
@@ -243,6 +260,7 @@ impl Feed {
             split,
             source,
             visible: BTreeMap::new(),
+            narrowed,
         })
     }
 
@@ -280,10 +298,23 @@ impl Feed {
         if now != self.split {
             return Err(FeedRefused::SplitAfterStart);
         }
+        // And the fields the condition reads: a grant that hides one ends the
+        // feed rather than leaving it filtering on a field it may not see.
+        if let Some((about, narrowed)) = &self.narrowed {
+            let held = session.visible(db.store(), *about)?;
+            narrowed.still_visible(&held)?;
+            self.visible.insert(*about, held);
+        }
         let changes = self.source.next(db, MOUTHFUL)?;
         if changes.is_empty() {
             return Ok(Round::Empty);
         }
+        // One snapshot per round for judging conditions; nothing in a
+        // condition reads the store, so it is never asked for more.
+        let mut judging = match self.narrowed {
+            Some(_) => Some(db.store().begin()?),
+            None => None,
+        };
         for (change, resume) in &changes {
             // The log is every tenancy's. `Watch` filters by table and knows
             // nothing about namespaces, so this is where a subscriber is kept
@@ -306,15 +337,50 @@ impl Feed {
                     held
                 }
             };
+            let mut removal = None;
+            if let (Some((_, narrowed)), Some(transaction)) = (&mut self.narrowed, &mut judging) {
+                match narrowed.judge(db, session, transaction, change, &allowed)? {
+                    narrowed::Verdict::Deliver => narrowed.delivered(),
+                    narrowed::Verdict::Removal => {
+                        narrowed.delivered();
+                        removal = Some(Change {
+                            kind: ChangeKind::Removed,
+                            ..change.clone()
+                        });
+                    }
+                    narrowed::Verdict::Skip => {
+                        narrowed.skipped(change, resume.as_deref());
+                        continue;
+                    }
+                }
+            }
             // A change whose table has been dropped has no name to give, and
             // inventing one would be worse than not sending it. The cursor has
-            // already moved past it either way.
+            // already moved past it either way. Asked only of a change that is
+            // sent: a narrowed feed skips most of what it reads.
             let named = db.table_name(change.table).unwrap_or(None);
-            if !deliver(change, named.as_deref(), &allowed, resume.as_deref()) {
+            let given = removal.as_ref().unwrap_or(change);
+            if !deliver(given, named.as_deref(), &allowed, resume.as_deref()) {
                 return Ok(Round::Ended);
             }
         }
+        if let Some(transaction) = judging {
+            transaction.rollback();
+        }
         Ok(Round::Delivered)
+    }
+
+    /// How far a narrowed feed has read, when it skipped changes since it last
+    /// said a position and has been quiet for [`PATIENCE_BETWEEN_ROUNDS`] —
+    /// `None` otherwise, and always for a feed with no condition (ADR-0122 B3).
+    ///
+    /// A surface asks after each round and sends what it is given, so a
+    /// subscriber's resume point moves past a long run of changes it was not
+    /// sent, and a log pruned behind it never strands it.
+    pub fn progress(&mut self, now: std::time::Instant) -> Option<Progress> {
+        self.narrowed
+            .as_mut()
+            .and_then(|(_, narrowed)| narrowed.progress(now))
     }
 }
 

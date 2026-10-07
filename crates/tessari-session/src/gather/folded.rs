@@ -122,7 +122,13 @@ impl Session<'_> {
                         }
                         kept.push((record_id, record));
                     }
-                    self.fold_into(transaction, &mut groups, kept, &occurrences, &select.group)?;
+                    self.fold_into(
+                        transaction,
+                        &mut groups,
+                        kept,
+                        &occurrences,
+                        (&select.group, None),
+                    )?;
                     if !full {
                         break;
                     }

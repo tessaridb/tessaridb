@@ -33,7 +33,7 @@ const MILLIS_PER_SECOND: i64 = 1_000;
 const NANOS_PER_MILLI: u32 = 1_000_000;
 
 /// What an `EXPIRE` clause asked for, resolved against the transaction's clock.
-enum Instant {
+pub(crate) enum Instant {
     /// Later than the clock: the key stops being answered then.
     Future(u64),
     /// Now or earlier: the key would already be gone.
@@ -122,7 +122,10 @@ impl Session<'_> {
         let Some(held) = transaction.get(&address)? else {
             return Ok(Outcome::Value(Value::Bool(false)));
         };
-        transaction.put(address, held);
+        transaction.put(address.clone(), held);
+        // Said on purpose, which a table that declares expiry would otherwise
+        // read as a plain write and keep the instant (ADR-0122 A3).
+        transaction.persist_pending(&address);
         Ok(Outcome::Value(Value::Bool(true)))
     }
 
@@ -148,7 +151,11 @@ impl Session<'_> {
     }
 
     /// Resolve an `EXPIRE` operand against the transaction's clock.
-    fn instant(&self, transaction: &mut Transaction<'_>, when: &Expr) -> Result<Instant> {
+    pub(crate) fn instant(
+        &self,
+        transaction: &mut Transaction<'_>,
+        when: &Expr,
+    ) -> Result<Instant> {
         let refused = |reason| Error::InvalidExpiry {
             reason,
             span: when.span,

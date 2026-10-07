@@ -23,6 +23,7 @@ mod cluster;
 mod containers;
 mod defaults;
 mod editing;
+mod expiry;
 mod fields;
 mod format;
 mod relations;
@@ -145,6 +146,7 @@ impl Session<'_> {
                 partition,
                 spread,
                 conflict,
+                expire,
                 if_not_exists,
             } => {
                 // The endpoints are resolved **before** the table is created, so
@@ -158,7 +160,13 @@ impl Session<'_> {
                 // membership nothing resolves belongs to no graph anyone can
                 // name, and `INFO FOR GRAPH` would never list it.
                 let graph = self.resolve_graph(transaction, graph.as_ref())?;
-                self.define_table_with_columns(
+                // Before anything is created, so a refused expiry writes nothing
+                // (ADR-0122 A1, A8).
+                if expire.is_some() {
+                    self.refuse_an_expiry_it_cannot_carry(&name.text, &kind, name.span)?;
+                }
+                let existed = expire.is_some() && self.names_a_table(transaction, name);
+                let defined = self.define_table_with_columns(
                     transaction,
                     name,
                     columns,
@@ -174,7 +182,13 @@ impl Session<'_> {
                     },
                     *if_not_exists,
                     span,
-                )
+                )?;
+                if let Some(expire) = expire
+                    && !existed
+                {
+                    self.declare_expiry_on(transaction, name, *expire)?;
+                }
+                Ok(defined)
             }
             // A space holds single values rather than named fields (ADR-0010),
             // so there is nothing for a schema to declare about one.
@@ -661,6 +675,24 @@ impl Session<'_> {
                         Catalog::new(transaction).set_auto_split(id, None)?;
                         return Ok(Outcome::Done);
                     }
+                    TableChange::Expire(expire) => {
+                        return self.alter_expiry(
+                            transaction,
+                            id,
+                            &table.name.text,
+                            Some(*expire),
+                            table.span,
+                        );
+                    }
+                    TableChange::DropExpire => {
+                        return self.alter_expiry(
+                            transaction,
+                            id,
+                            &table.name.text,
+                            None,
+                            table.span,
+                        );
+                    }
                     TableChange::Schemafull | TableChange::Schemaless => {}
                 }
                 // A vault is declared strict and cannot be talked out of it.
@@ -714,8 +746,11 @@ impl Session<'_> {
                 target: CreateTarget::Named(target),
                 value,
                 answer,
+                expire,
             } => {
                 let (_, address) = self.writable(transaction, target)?;
+                let settled =
+                    self.resolve_write_expiry(transaction, address.table, expire.as_ref())?;
                 // A create over a record that is already there is refused. The
                 // alternative is silent replacement, which loses a record with
                 // nothing anywhere to notice — and `UPDATE` and `SET` both say
@@ -728,26 +763,39 @@ impl Session<'_> {
                 }
                 let payload = self.evaluate(transaction, value)?;
                 let payload = self.with_defaults(transaction, address.table, payload)?;
-                self.put_record(transaction, address, payload.clone(), span)?;
+                self.put_record(transaction, address.clone(), payload.clone(), span)?;
+                expiry::settle_write_expiry(transaction, &address, settled);
                 Ok(answered(*answer, Value::None, payload))
             }
             StatementKind::Create {
                 target: CreateTarget::Generated(table),
                 value,
                 answer,
-            } => self.create_named_by_the_store(transaction, table, value, *answer, span),
+                expire,
+            } => self.create_named_by_the_store(
+                transaction,
+                table,
+                value,
+                *answer,
+                expire.as_ref(),
+                span,
+            ),
             StatementKind::Insert {
                 table,
                 columns,
                 rows,
-            } => self.insert(transaction, table, columns, rows, span),
+                expire,
+            } => self.insert(transaction, table, columns, rows, expire.as_ref(), span),
             StatementKind::Update {
                 target,
                 edit,
                 condition,
                 answer,
+                expire,
             } => {
                 let (_, address) = self.writable(transaction, target)?;
+                let settled =
+                    self.resolve_write_expiry(transaction, address.table, expire.as_ref())?;
                 // A record in a shard this node lacks is not absent (G051 C4).
                 self.refuse_reading_a_part(
                     transaction,
@@ -792,11 +840,12 @@ impl Session<'_> {
                     self.defaults_over(transaction, address.table, payload, partial)?;
                 self.put_record_sealing(
                     transaction,
-                    address,
+                    address.clone(),
                     payload.clone(),
                     partial.as_ref(),
                     span,
                 )?;
+                expiry::settle_write_expiry(transaction, &address, settled);
                 Ok(answered(*answer, before, payload))
             }
             // Neither `CREATE`'s "it must be absent" nor `UPDATE`'s "it must be
@@ -820,8 +869,11 @@ impl Session<'_> {
                 target,
                 edit,
                 answer,
+                expire,
             } => {
                 let (_, address) = self.writable(transaction, target)?;
+                let settled =
+                    self.resolve_write_expiry(transaction, address.table, expire.as_ref())?;
                 let held = transaction.get(&address)?;
                 // `BEFORE` over a record that was not there answers `NONE`. That
                 // is the true answer to the question the caller asked, and it is
@@ -840,11 +892,12 @@ impl Session<'_> {
                     self.defaults_over(transaction, address.table, payload, partial)?;
                 self.put_record_sealing(
                     transaction,
-                    address,
+                    address.clone(),
                     payload.clone(),
                     partial.as_ref(),
                     span,
                 )?;
+                expiry::settle_write_expiry(transaction, &address, settled);
                 Ok(answered(*answer, before, payload))
             }
             // A key-value write replaces whatever was there, which is why it is
@@ -943,23 +996,40 @@ impl Session<'_> {
             StatementKind::DefineCollection {
                 name,
                 identity,
+                expire,
                 if_not_exists,
-            } => self.define_table(
-                transaction,
-                name,
-                TableShape {
-                    schemafull: false,
-                    kind: TableKind::Collection,
-                    identity: *identity,
-                    graph: None,
-                    conflict: None,
-                    split: Vec::new(),
-                    partition: None,
-                    spread: false,
-                },
-                *if_not_exists,
-                span,
-            ),
+            } => {
+                if expire.is_some() {
+                    self.refuse_an_expiry_it_cannot_carry(
+                        &name.text,
+                        &TableKind::Collection,
+                        name.span,
+                    )?;
+                }
+                let existed = expire.is_some() && self.names_a_table(transaction, name);
+                let defined = self.define_table(
+                    transaction,
+                    name,
+                    TableShape {
+                        schemafull: false,
+                        kind: TableKind::Collection,
+                        identity: *identity,
+                        graph: None,
+                        conflict: None,
+                        split: Vec::new(),
+                        partition: None,
+                        spread: false,
+                    },
+                    *if_not_exists,
+                    span,
+                )?;
+                if let Some(expire) = expire
+                    && !existed
+                {
+                    self.declare_expiry_on(transaction, name, *expire)?;
+                }
+                Ok(defined)
+            }
             StatementKind::DefineVector {
                 name,
                 dimension,
@@ -1081,19 +1151,35 @@ impl Session<'_> {
                 computes,
                 retain,
                 if_not_exists,
-            } => self.define_rollup(
-                transaction,
-                &crate::rollup::Declared {
-                    name,
-                    source,
-                    window: *window,
-                    by: by.as_ref(),
-                    computes,
-                    retain: *retain,
-                    if_not_exists: *if_not_exists,
-                },
-                span,
-            ),
+            } => {
+                if computes.iter().any(|compute| {
+                    matches!(
+                        tessari_storage::RollupFold::parse(&compute.fold.text),
+                        Some(
+                            tessari_storage::RollupFold::ApproxDistinct
+                                | tessari_storage::RollupFold::ApproxQuantile
+                        )
+                    )
+                }) {
+                    self.refuse_a_format_the_store_does_not_hold(
+                        "a rollup that keeps a sketch",
+                        tessari_encoding::FormatVersion::SKETCH_ROLLUP,
+                    )?;
+                }
+                self.define_rollup(
+                    transaction,
+                    &crate::rollup::Declared {
+                        name,
+                        source,
+                        window: *window,
+                        by: by.as_ref(),
+                        computes,
+                        retain: *retain,
+                        if_not_exists: *if_not_exists,
+                    },
+                    span,
+                )
+            }
             StatementKind::DropRollup { name } => self.drop_rollup(transaction, name, span),
             StatementKind::DefineView {
                 name,

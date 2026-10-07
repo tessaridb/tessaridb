@@ -64,6 +64,7 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
         from: Sequence::new(0),
         table: None,
         cursor: None,
+        condition: None,
     };
 
     let outcome = follow(
@@ -171,6 +172,7 @@ fn a_subscription_is_never_told_about_a_tenancy_the_session_could_not_select() {
         from: Sequence::new(0),
         table: None,
         cursor: None,
+        condition: None,
     };
     drop(follow(
         &db,
@@ -222,6 +224,7 @@ fn fed(
             from: Sequence::new(from),
             table,
             cursor,
+            condition: None,
         },
         &Commits::default(),
         &|| {
@@ -437,6 +440,7 @@ fn a_feed_ends_when_a_split_table_appears_in_its_scope() {
             from: Sequence::new(0),
             table: None,
             cursor: None,
+            condition: None,
         },
         &Commits::default(),
         &|| {
@@ -466,3 +470,6 @@ fn a_feed_ends_when_a_split_table_appears_in_its_scope() {
         "{refusal:?}"
     );
 }
+
+#[path = "feeding/narrowed.rs"]
+mod narrowed;

@@ -65,6 +65,20 @@ pub struct Follow {
     /// the last change handled. Opaque; travels after the table, so a body
     /// without it is the frame every earlier client sends.
     pub cursor: Option<String>,
+    /// What a change must satisfy to be sent (ADR-0122 Part B). Travels last,
+    /// and only then, so a body without it is the frame every earlier client
+    /// sends — and only a feed that named one is ever sent a [`Progressed`].
+    pub condition: Option<Narrow>,
+}
+
+/// A subscription's condition: TessariQL text, and the values its parameters
+/// are bound to after the node has read it — never spliced into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Narrow {
+    /// The condition, without `WHERE`.
+    pub text: String,
+    /// What its `$name`s stand for.
+    pub parameters: std::collections::BTreeMap<String, Value>,
 }
 
 impl Follow {
@@ -80,8 +94,15 @@ impl Follow {
             }
             None => body.push(0),
         }
-        if let Some(cursor) = &self.cursor {
-            put_text(&mut body, cursor);
+        // A condition needs the cursor's place filled, so an absent cursor is
+        // written as empty text — never a cursor a feed hands out.
+        if self.cursor.is_some() || self.condition.is_some() {
+            put_text(&mut body, self.cursor.as_deref().unwrap_or(""));
+        }
+        if let Some(narrow) = &self.condition {
+            put_text(&mut body, &narrow.text);
+            let parameters = Value::Object(narrow.parameters.clone());
+            put_bytes(&mut body, encode_payload(&parameters).as_slice());
         }
         body
     }
@@ -102,8 +123,20 @@ impl Follow {
             }
             _ => return Err(Error::Malformed),
         };
-        let cursor = if at < body.len() {
-            Some(take_text(body, at)?.0)
+        let (cursor, at) = if at < body.len() {
+            let (text, at) = take_text(body, at)?;
+            ((!text.is_empty()).then_some(text), at)
+        } else {
+            (None, at)
+        };
+        let condition = if at < body.len() {
+            let (text, at) = take_text(body, at)?;
+            let (bytes, _) = take_bytes(body, at)?;
+            let Value::Object(parameters) = decode_payload(&bytes).map_err(|_| Error::Malformed)?
+            else {
+                return Err(Error::Malformed);
+            };
+            Some(Narrow { text, parameters })
         } else {
             None
         };
@@ -111,6 +144,7 @@ impl Follow {
             from,
             table,
             cursor,
+            condition,
         })
     }
 }
@@ -266,6 +300,45 @@ pub(crate) fn sequence_of(sequence: Sequence) -> u64 {
     sequence.get()
 }
 
+/// How far a narrowed feed has read, sent when it skipped changes and
+/// delivered nothing for a while (ADR-0122 B3): resume at `sequence + 1`, or
+/// from `cursor` on a feed over a split table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Progressed {
+    /// The sequence of the last change read.
+    pub sequence: u64,
+    /// The cursor after it, on a feed over a split table.
+    pub cursor: Option<String>,
+}
+
+impl Progressed {
+    /// The body of a progress frame.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut body = Vec::new();
+        put_u64(&mut body, self.sequence);
+        if let Some(cursor) = &self.cursor {
+            put_text(&mut body, cursor);
+        }
+        body
+    }
+
+    /// Read one back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Malformed`] when the body does not hold what it claims.
+    pub fn decode(body: &[u8]) -> Result<Self> {
+        let (sequence, at) = take_u64(body, 0)?;
+        let cursor = if at < body.len() {
+            Some(take_text(body, at)?.0)
+        } else {
+            None
+        };
+        Ok(Self { sequence, cursor })
+    }
+}
+
 // The node's encoding half is what these exercise — `encode_outcome`, the
 // access-path tag, `named` — so they belong to the same feature it does.
 #[cfg(all(test, feature = "server"))]
@@ -284,6 +357,7 @@ mod tests {
                     from: 12_043,
                     table: table.clone(),
                     cursor,
+                    condition: None,
                 };
                 assert_eq!(Follow::decode(&held.encode()).expect("a follow"), held);
             }
@@ -296,6 +370,7 @@ mod tests {
             from: 1,
             table: Some("users".to_owned()),
             cursor: None,
+            condition: None,
         };
         let body = held.encode();
         for cut in 0..body.len() {
@@ -357,6 +432,65 @@ mod tests {
             assert!(
                 Happened::decode(&body[..cut]).is_err(),
                 "a cut at {cut} parsed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_follow_round_trips_with_and_without_a_condition() {
+        let narrow = super::Narrow {
+            text: "chat = $chat".to_owned(),
+            parameters: [("chat".to_owned(), Value::from("a"))].into(),
+        };
+        for asked in [
+            super::Follow {
+                from: 7,
+                table: Some("msgs".to_owned()),
+                cursor: None,
+                condition: None,
+            },
+            super::Follow {
+                from: 7,
+                table: Some("msgs".to_owned()),
+                cursor: Some("1.1:d=3".to_owned()),
+                condition: None,
+            },
+            super::Follow {
+                from: 7,
+                table: Some("msgs".to_owned()),
+                cursor: None,
+                condition: Some(narrow.clone()),
+            },
+            super::Follow {
+                from: 7,
+                table: Some("msgs".to_owned()),
+                cursor: Some("1.1:d=3".to_owned()),
+                condition: Some(narrow.clone()),
+            },
+        ] {
+            assert_eq!(super::Follow::decode(&asked.encode()).ok(), Some(asked));
+        }
+        // A body without a condition is the frame every earlier client sends.
+        let earlier = super::Follow {
+            from: 7,
+            table: None,
+            cursor: None,
+            condition: None,
+        };
+        assert_eq!(earlier.encode().len(), 9);
+        for reached in [
+            super::Progressed {
+                sequence: 9,
+                cursor: None,
+            },
+            super::Progressed {
+                sequence: 9,
+                cursor: Some("1.1:d=10".to_owned()),
+            },
+        ] {
+            assert_eq!(
+                super::Progressed::decode(&reached.encode()).ok(),
+                Some(reached)
             );
         }
     }

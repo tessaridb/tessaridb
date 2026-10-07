@@ -4,7 +4,8 @@ use super::{
     Answer, ColumnDeclaration, ConsumerSource, CreateTarget, Credential, DeleteBound, EdgeClause,
     Edit, Expr, FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name,
     NamespaceChange, OnFailure, RangeExpr, ReachRef, RecordTarget, Select, SetCondition,
-    SpaceBound, TableChange, TableRef, TopicClauses, UserChange, UserGrant, Written,
+    SpaceBound, TableChange, TableExpiry, TableRef, TopicClauses, UserChange, UserGrant,
+    WriteExpiry, Written,
 };
 use crate::token::Span;
 use tessari_types::{
@@ -142,6 +143,10 @@ pub enum StatementKind {
         /// sits, because a counter can tolerate a dropped update beside a ledger
         /// row in the same namespace that cannot (Q-633).
         conflict: Option<ConflictPolicy>,
+        /// Whether the table's records expire: `DEFINE TABLE message (…) EXPIRE
+        /// AFTER 7d` (ADR-0122 A1). `None` is a table that said nothing, and
+        /// behaves exactly as every table did before the clause existed.
+        expire: Option<TableExpiry>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -313,6 +318,9 @@ pub enum StatementKind {
         /// What the collection names a record with when the caller does not:
         /// `DEFINE COLLECTION sessions IDENTITY uuid`.
         identity: IdentityKind,
+        /// Whether the collection's records expire: `DEFINE COLLECTION drafts
+        /// EXPIRE` (ADR-0122 A1).
+        expire: Option<TableExpiry>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -1177,9 +1185,8 @@ pub enum StatementKind {
         window: Duration,
         /// The raw field a row is kept per.
         by: Option<Name>,
-        /// What each row computes: the fold word, its field (`None` for
-        /// `count(*)`) and the name it answers under.
-        computes: Vec<(Name, Option<Name>, Name)>,
+        /// What each row computes.
+        computes: Vec<RollupCompute>,
         /// How far back the rollup answers — required, like a series'.
         retain: Duration,
         /// Whether re-defining an existing name is accepted.
@@ -1526,6 +1533,10 @@ pub enum StatementKind {
         /// somebody meant would be worse than one that says the question does
         /// not apply.
         answer: Answer,
+        /// `EXPIRE 30m` / `EXPIRE NONE` after the value: when the record stops
+        /// being answered, or that it never does (ADR-0122 A2). Taken only by a
+        /// table that declares expiry; absent keeps the instant the record has.
+        expire: Option<WriteExpiry>,
     },
     /// `INSERT INTO users (name, email) VALUES ('ada', 'a@x'), ('grace', 'g@x')`
     ///
@@ -1556,6 +1567,10 @@ pub enum StatementKind {
         /// statement the author mistyped, and finding out at the write means
         /// finding out after some of the batch is already decided.
         rows: Vec<Vec<Expr>>,
+        /// `EXPIRE 30m` / `EXPIRE NONE` after the value: when the record stops
+        /// being answered, or that it never does (ADR-0122 A2). Taken only by a
+        /// table that declares expiry; absent keeps the instant the record has.
+        expire: Option<WriteExpiry>,
     },
     /// `SELECT * FROM …`
     ///
@@ -1718,6 +1733,10 @@ pub enum StatementKind {
         condition: Option<Expr>,
         /// What the statement answers with.
         answer: Answer,
+        /// `EXPIRE 30m` / `EXPIRE NONE` after the value: when the record stops
+        /// being answered, or that it never does (ADR-0122 A2). Taken only by a
+        /// table that declares expiry; absent keeps the instant the record has.
+        expire: Option<WriteExpiry>,
     },
     /// `THROW 'this order is already paid'` — refuse the script.
     ///
@@ -1748,6 +1767,10 @@ pub enum StatementKind {
         /// there answers `NONE`, which is the true answer rather than a silent
         /// one — the caller asked what was there, and nothing was.
         answer: Answer,
+        /// `EXPIRE 30m` / `EXPIRE NONE` after the value: when the record stops
+        /// being answered, or that it never does (ADR-0122 A2). Taken only by a
+        /// table that declares expiry; absent keeps the instant the record has.
+        expire: Option<WriteExpiry>,
     },
     /// `DELETE users:1`
     Delete {
@@ -2064,4 +2087,17 @@ pub enum SearchOperator {
     Fuzzy,
     /// `MATCHES INFIX`: every word a piece of a held word.
     Infix,
+}
+
+/// One `COMPUTE fold(field) AS name` of a `DEFINE ROLLUP`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollupCompute {
+    /// The fold word.
+    pub fold: Name,
+    /// The raw field it folds; `None` for `count(*)`.
+    pub of: Option<Name>,
+    /// The rank `approx_quantile(field, rank)` keeps (ADR-0122 C5).
+    pub rank: Option<tessari_types::Number>,
+    /// The name the value answers under.
+    pub name: Name,
 }

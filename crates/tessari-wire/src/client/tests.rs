@@ -200,6 +200,7 @@ fn a_subscriber_still_refuses_a_redirect() {
             from: 0,
             table: None,
             cursor: None,
+            condition: None,
         })
         .expect("the subscription this test sends");
     assert!(matches!(feed.wait(), Err(Error::UnknownFrame { tag: 13 })));

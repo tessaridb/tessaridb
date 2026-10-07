@@ -1255,3 +1255,49 @@ fn a_queue_is_described_with_its_priority_and_its_delay() {
         "{described}"
     );
 }
+
+/// G069 C5 / ADR-0122 D2 — periodic work is a queue record whose `NOT BEFORE`
+/// field is its next run: due once, handed to one worker, re-armed by the worker,
+/// and claimable again when a worker dies holding it. A tick missed while no
+/// worker ran is one run, not a backlog.
+#[test]
+fn a_queue_record_is_a_schedule_that_fires_once_per_period_and_survives_its_worker() {
+    let store = store();
+    let mut session = empty(&store);
+    run(
+        &mut session,
+        "DEFINE QUEUE ticks TIMEOUT 5m NOT BEFORE next; \
+         CREATE ticks:1 = { next: time::now(), every: 3600 };",
+    );
+    // Due: one worker takes it, a second is told there is nothing.
+    assert_eq!(claimed(&run(&mut session, "CLAIM FROM ticks;")), ["1"]);
+    assert!(claimed(&run(&mut session, "CLAIM FROM ticks;")).is_empty());
+    // The worker did its work: re-armed from now, then released. Not due again.
+    run(
+        &mut session,
+        "BEGIN; UPDATE ticks:1 SET next = time::from_unix(time::unix(time::now()) + every); RELEASE ticks:1; COMMIT;",
+    );
+    assert!(claimed(&run(&mut session, "CLAIM FROM ticks;")).is_empty());
+    // Ten periods passed with no worker: the tick is due once, and re-arming
+    // from now leaves no backlog behind it.
+    run(
+        &mut session,
+        "UPDATE ticks:1 SET next = time::from_unix(time::unix(time::now()) - 36000);",
+    );
+    assert_eq!(claimed(&run(&mut session, "CLAIM FROM ticks;")), ["1"]);
+    run(
+        &mut session,
+        "BEGIN; UPDATE ticks:1 SET next = time::from_unix(time::unix(time::now()) + every); RELEASE ticks:1; COMMIT;",
+    );
+    assert!(claimed(&run(&mut session, "CLAIM FROM ticks;")).is_empty());
+
+    // A worker that dies holding the tick: once its hold lapses the tick is
+    // claimable again — at least once, never lost.
+    run(
+        &mut session,
+        "DEFINE QUEUE brief TIMEOUT 1ns NOT BEFORE next; \
+         CREATE brief:1 = { next: time::now(), every: 3600 };",
+    );
+    assert_eq!(claimed(&run(&mut session, "CLAIM FROM brief;")), ["1"]);
+    assert_eq!(claimed(&run(&mut session, "CLAIM FROM brief;")), ["1"]);
+}

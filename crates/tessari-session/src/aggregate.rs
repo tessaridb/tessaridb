@@ -167,6 +167,10 @@ type Group = (RecordId, Holding);
 /// the value system's order.
 pub(crate) type Groups = BTreeMap<Vec<Value>, Group>;
 
+/// A grouping read's rows, how many windows `FILL` answered, and the notes its
+/// approximate folds carry.
+pub(crate) type Answered = (Vec<(RecordId, Value)>, u64, Vec<crate::outcome::Note>);
+
 /// Which folds each projection holds, in walk order — resolved once per read,
 /// because the tree does not change under one.
 pub(crate) fn occurrences(wanted: &[Projected]) -> Vec<Vec<&Expr>> {
@@ -253,12 +257,18 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         records: Vec<(RecordId, Value)>,
         wanted: &[Projected],
-        group: &[Expr],
+        (group, merging): (&[Expr], Option<&crate::rollup::Merging>),
         fill: Option<&tessari_ql::Fill>,
-    ) -> Result<(Vec<(RecordId, Value)>, u64)> {
+    ) -> Result<Answered> {
         let occurrences = occurrences(wanted);
         let mut groups = Groups::new();
-        self.fold_into(transaction, &mut groups, records, &occurrences, group)?;
+        self.fold_into(
+            transaction,
+            &mut groups,
+            records,
+            &occurrences,
+            (group, merging),
+        )?;
         self.answer_groups(transaction, groups, wanted, &occurrences, group, fill)
     }
 
@@ -271,7 +281,7 @@ impl Session<'_> {
         wanted: &[Projected],
         group: &[Expr],
         fill: Option<&tessari_ql::Fill>,
-    ) -> Result<(Vec<(RecordId, Value)>, u64)> {
+    ) -> Result<Answered> {
         let occurrences = occurrences(wanted);
         self.answer_groups(transaction, groups, wanted, &occurrences, group, fill)
     }
@@ -291,7 +301,7 @@ impl Session<'_> {
         groups: &mut Groups,
         records: Vec<(RecordId, Value)>,
         occurrences: &[Vec<&Expr>],
-        group: &[Expr],
+        (group, merging): (&[Expr], Option<&crate::rollup::Merging>),
     ) -> Result<()> {
         for (id, record) in records {
             // Evaluated rather than resolved, so a window — `time::bucket(at,
@@ -305,11 +315,40 @@ impl Session<'_> {
             let entry = groups
                 .entry(key)
                 .or_insert_with(|| (id.clone(), holding(occurrences)));
+            let mut walked = 0_usize;
             for (position, held) in occurrences.iter().enumerate() {
                 for (which, fold) in held.iter().enumerate() {
-                    let ExprKind::Fold { over, at, .. } = &fold.kind else {
+                    let index = walked;
+                    walked = walked.saturating_add(1);
+                    let ExprKind::Fold { over, at, span, .. } = &fold.kind else {
                         continue;
                     };
+                    // A sketch fold over a rollup's sketch column merges the
+                    // state kept beside the row (ADR-0122 C5).
+                    if let Some((merging, column)) =
+                        merging.and_then(|merging| Some((merging, merging.column(index)?)))
+                    {
+                        let rank = match at {
+                            Some(at) => {
+                                Some(self.evaluate_in(transaction, at, Scope::of(&record))?)
+                            }
+                            None => None,
+                        };
+                        if let Some(accumulator) = entry
+                            .1
+                            .get_mut(position)
+                            .and_then(|held| held.get_mut(which))
+                        {
+                            merging.merge_row(
+                                transaction,
+                                accumulator,
+                                (&record, column),
+                                rank.as_ref(),
+                                *span,
+                            )?;
+                        }
+                        continue;
+                    }
                     let value = match over {
                         // `count(*)` folds over the records themselves, so what
                         // it is offered is one placeholder per record rather
@@ -349,7 +388,17 @@ impl Session<'_> {
         occurrences: &[Vec<&Expr>],
         group: &[Expr],
         fill: Option<&tessari_ql::Fill>,
-    ) -> Result<(Vec<(RecordId, Value)>, u64)> {
+    ) -> Result<Answered> {
+        let estimated = crate::accumulate::estimated(
+            occurrences
+                .iter()
+                .flatten()
+                .filter_map(|fold| match fold.kind {
+                    ExprKind::Fold { fold, .. } => Some(fold),
+                    _ => None,
+                }),
+            groups.values().flat_map(|(_, held)| held.iter().flatten()),
+        );
         let mut answered: Vec<crate::fill::Row> = Vec::with_capacity(groups.len());
         for (key, (id, accumulated)) in groups {
             let mut fields = BTreeMap::new();
@@ -383,16 +432,17 @@ impl Session<'_> {
             }
             answered.push((key, id, fields));
         }
-        match fill {
-            Some(fill) => self.fill_windows(transaction, answered, wanted, group, fill),
-            None => Ok((
+        let (rows, filled) = match fill {
+            Some(fill) => self.fill_windows(transaction, answered, wanted, group, fill)?,
+            None => (
                 answered
                     .into_iter()
                     .map(|(_, id, fields)| (id, Value::Object(fields)))
                     .collect(),
                 0,
-            )),
-        }
+            ),
+        };
+        Ok((rows, filled, estimated))
     }
 }
 

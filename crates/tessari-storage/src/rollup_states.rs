@@ -59,6 +59,11 @@ impl Transaction<'_> {
         );
     }
 
+    /// Remove the state kept for one key of a rollup, if any.
+    pub fn forget_rollup_state(&mut self, rollup: TableId, key: &[u8]) {
+        self.delete(system::address(ROLLUP_STATES, state_id(rollup, key)));
+    }
+
     /// Remove every state a rollup has.
     ///
     /// # Errors

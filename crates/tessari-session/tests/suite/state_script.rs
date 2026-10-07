@@ -38,6 +38,9 @@ RELATE people:1->follows->people:2;
 DEFINE SPACE cache;
 SET cache:'forever' = { v: 1 };
 SET cache:'soon' = 'x' EXPIRE 1h;
+DEFINE TABLE message (body string) EXPIRE AFTER 1h;
+CREATE message:1 = { body: 'kept' };
+CREATE message:2 = { body: 'forever' } EXPIRE NONE;
 DEFINE BUCKET media;
 PUT media:'/logo.png' = 0x89504e470d0a1a0a;
 DEFINE QUEUE jobs TIMEOUT 30s;
@@ -72,6 +75,7 @@ const INTERROGATION: &[&str] = &[
     "SELECT * FROM events;",
     "SELECT * FROM embeddings;",
     "SELECT * FROM places;",
+    "SELECT * FROM message;",
 ];
 
 fn store() -> Store {
@@ -129,6 +133,21 @@ fn a_script_rebuilds_a_store_that_answers_what_the_source_answers() {
     assert!(
         forever.contains("Null"),
         "an expiry was invented: {forever}"
+    );
+    // The same for a table that declares expiry, whose default a restore must
+    // not stamp on a record that had none (ADR-0122 A9).
+    let mut message = |id: u32| {
+        format!(
+            "{:?}",
+            there.run(&format!("RETURN TTL message:{id};")).unwrap()
+        )
+    };
+    assert!(message(1).contains("Duration"), "{}", message(1));
+    assert!(message(2).contains("Null"), "{}", message(2));
+    // As an instant rather than the time it had left (Q-952).
+    assert!(
+        script.contains("EXPIRE message:1 datetime"),
+        "the instant is written as a datetime:\n{script}"
     );
     // The viewer is back with her grant: two fields of one table, nothing else.
     let mut bea = signed_in(&target, "bea");
@@ -216,4 +235,36 @@ fn a_part_with_no_faithful_spelling_is_refused_by_name_and_not_written() {
             if named { "also" } else { "not" }
         );
     }
+}
+
+/// A script run after an instant has passed does not write that record back,
+/// and does not stop either (ADR-0122 A9).
+#[test]
+fn a_record_whose_instant_passed_before_the_restore_is_not_written_back() {
+    let source = store();
+    Session::new(&source)
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; USE DATABASE orders; \
+             DEFINE TABLE message (body string) EXPIRE; \
+             CREATE message:1 = { body: 'soon' } EXPIRE 300ms; \
+             CREATE message:2 = { body: 'stays' }; \
+             DEFINE USER root ROLE owner PASSWORD 'a long one';",
+        )
+        .unwrap();
+    let answered = signed_in(&source, "root").run("BACKUP SCRIPT;").unwrap();
+    let Some(Outcome::Value(tessari_types::Value::String(script))) = answered.last() else {
+        panic!("BACKUP SCRIPT answered {answered:?}");
+    };
+    std::thread::sleep(std::time::Duration::from_millis(450));
+    let target = store();
+    Session::new(&target)
+        .run(script)
+        .unwrap_or_else(|refusal| panic!("the script did not restore: {refusal}\n{script}"));
+    let read = format!(
+        "{:?}",
+        signed_in(&target, "root")
+            .run("SELECT * FROM message;")
+            .unwrap()
+    );
+    assert!(read.contains("stays") && !read.contains("soon"), "{read}");
 }

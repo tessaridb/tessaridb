@@ -150,6 +150,11 @@ const query = (): Node =>
       ),
       row(
         "default",
+        field("Condition", text("condition", { placeholder: "chat = $chat" })),
+        field("Values", text("condition-values", { placeholder: "{\"chat\": \"'a'\"}" })),
+      ),
+      row(
+        "default",
         button("follow", "Follow"),
         button("stop", "Stop", "quiet", { disabled: true }),
       ),

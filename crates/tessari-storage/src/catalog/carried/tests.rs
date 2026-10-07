@@ -381,3 +381,30 @@ fn a_store_subscription_reaches_every_class() {
         !Carried::Within(Reach::Namespace(NamespaceId::new(8))).reaches(Reach::Namespace(PROD))
     );
 }
+
+/// A table's identity counter is advanced only by a write to that table, so it
+/// files where the write files rather than widening it to the store — filed at
+/// the store, a record created with a generated identity was in no log a
+/// database's change feed reads, and the feed went without it. Alone, the
+/// counter still files at the store.
+#[test]
+fn an_identity_counter_files_with_the_write_that_advanced_it() {
+    let counter = system(
+        system::RECORD_SEQUENCES,
+        RecordId::Int(4),
+        Some(Value::Null),
+    );
+    let created = LogRecord::new(vec![data(PROD, SHOP, 1), counter.clone()]);
+    assert_eq!(home_of(&created).unwrap(), Reach::Database(PROD, SHOP));
+    assert_eq!(
+        home_of(&LogRecord::new(vec![counter])).unwrap(),
+        Reach::Store
+    );
+    // A store-wide counter still widens: two leaders allocating table ids
+    // under two databases' leaderships would hand out the same one.
+    let allocated = LogRecord::new(vec![
+        data(PROD, SHOP, 1),
+        system(system::ALLOCATORS, RecordId::Int(1), Some(Value::Null)),
+    ]);
+    assert_eq!(home_of(&allocated).unwrap(), Reach::Store);
+}

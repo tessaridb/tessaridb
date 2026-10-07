@@ -150,6 +150,8 @@ impl Error {
             | Self::NotIndexable { .. }
             | Self::SecretNeedsVault { .. }
             | Self::VaultIsStrict { .. }
+            | Self::ExpiryNotOnThisKind { .. }
+            | Self::TableDoesNotExpire { .. }
             | Self::NotASecret { .. }
             | Self::NotCastable { .. }
             | Self::DefaultDoesNotMatch { .. }

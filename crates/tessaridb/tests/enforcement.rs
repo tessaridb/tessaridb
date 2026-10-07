@@ -1060,7 +1060,15 @@ const TABLES: &[Table] = &[
         // second is **not a data path**: it makes landed writes durable and
         // reads or writes no record, catalog entry or grant. Re-classification
         // trigger: any caller of either reachable from a session or a route.
-        expected: 77,
+        //
+        // 78 since a narrowed feed reads the version before a change (G069
+        // C3, ADR-0122 B1): `Store::held_at`. **Exempt, on the feed's
+        // ground**: its one caller is `feed::narrowed`, inside a round that has
+        // just asked every authority again, and what it reads is only judged —
+        // through `Session::holds_for`, on the record redacted for the
+        // subscriber — and never sent. Re-classification trigger: a caller that
+        // returns what it read.
+        expected: 78,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1089,7 +1097,13 @@ const TABLES: &[Table] = &[
         // signed in to ask the status), the passphrase throttle and the answer
         // are the statement's. It carries no record and returns only the seal
         // status.
-        expected: 7,
+        //
+        // 8 since a narrowed feed says how far it read (G069 C3, ADR-0122 B3,
+        // tag 37). **Not an entry point**: the node sends it and never reads
+        // one; it goes only to a subscriber already admitted by `Subscribe`'s
+        // checks who named a condition, and carries a sequence and a cursor of
+        // that subscriber's own feed — no record, name or value.
+        expected: 8,
         count: |text| variants(&block(text, "pub(crate) enum Kind")),
     },
     Table {
@@ -1286,7 +1300,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 162 since a restore syncs per chunk (Q-899): `Store::restore_record_in`,
     // exempt, and `Store::sync_landed`, not a data path, classified above.
-    assert_eq!(total, 162, "the counted tables no longer sum to 162");
+    //
+    // 164 since a narrowed feed (G069 C3): `Store::held_at`, exempt, and the
+    // `Progress` frame, not an entry point, classified above.
+    assert_eq!(total, 164, "the counted tables no longer sum to 164");
 }
 
 /// Every `.rs` file under a directory.

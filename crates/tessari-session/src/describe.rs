@@ -402,7 +402,9 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         if !definition.is_bucket() {
             write_identity(script, definition);
         }
+        write_expire(script, definition);
         script.push_str(";\n");
+        write_retired_expiry(script, name, definition);
         return Ok(());
     }
     let _ = write!(script, "DEFINE TABLE {name}");
@@ -417,7 +419,9 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
     write_identity(script, definition);
     write_conflict(script, definition);
     write_split(script, definition);
+    write_expire(script, definition);
     script.push_str(";\n");
+    write_retired_expiry(script, name, definition);
     // Its own statement, as an operator writes it: a table restored without it
     // would stop splitting itself with nothing in an error state (ADR-0113 D2).
     if let Some(policy) = definition.auto_split {
@@ -432,6 +436,25 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         let _ = writeln!(script, " MERGE BELOW {} RECORDS;", policy.merge_below);
     }
     Ok(())
+}
+
+/// `EXPIRE [AFTER d]`, written only when the table declared it (ADR-0122 A1).
+fn write_expire(script: &mut String, definition: &TableDefinition) {
+    let Some(expire) = definition.expire else {
+        return;
+    };
+    script.push_str(" EXPIRE");
+    if let Some(after) = expire.after {
+        let _ = write!(script, " AFTER {}", after.to_literal());
+    }
+}
+
+/// A retired declaration is its own statement, as an operator writes it: a
+/// table restored without it would stamp a default again (ADR-0122 A6).
+fn write_retired_expiry(script: &mut String, name: &str, definition: &TableDefinition) {
+    if definition.expire.is_some_and(|expire| expire.retired) {
+        let _ = writeln!(script, "ALTER TABLE {name} DROP EXPIRE;");
+    }
 }
 
 /// What the table does with a write it cannot order, written only when the

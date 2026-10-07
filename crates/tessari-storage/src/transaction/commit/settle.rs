@@ -175,6 +175,28 @@ impl Transaction<'_> {
                 )? {
                     evicted = Some(admitted);
                 }
+                // And a table that declares expiry settles each write's instant
+                // here, on the same state and clock: kept, defaulted or cleared
+                // as the write said (ADR-0122 A3).
+                if let Some(admitted) = crate::lifetime::admit(
+                    self.store,
+                    evicted.as_ref().unwrap_or(&record),
+                    self.clock(),
+                    &self.lifetimes,
+                )? {
+                    evicted = Some(admitted);
+                }
+                // A unique value an expired record still holds is released by
+                // deleting that record ahead of the write claiming it (Q-949).
+                if let Some(admitted) = crate::index::release_expired_holders(
+                    self.store,
+                    evicted.as_ref().unwrap_or(&record),
+                    self.clock(),
+                    identity.id,
+                    |address| placement.shard_of(address),
+                )? {
+                    evicted = Some(admitted);
+                }
                 let carried = match evicted.as_mut() {
                     Some(carrying) => carrying,
                     None => &mut record,

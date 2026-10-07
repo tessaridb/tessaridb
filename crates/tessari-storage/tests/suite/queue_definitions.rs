@@ -80,6 +80,7 @@ fn a_queue_definition_round_trips_with_both_clauses() {
         partition: None,
         spread: false,
         auto_split: None,
+        expire: None,
         events: Vec::new(),
     };
 
@@ -111,6 +112,7 @@ fn a_queue_declared_without_a_ceiling_reads_back_as_unlimited() {
         partition: None,
         spread: false,
         auto_split: None,
+        expire: None,
         events: Vec::new(),
     };
 
@@ -144,6 +146,7 @@ fn a_definition_claiming_to_be_a_queue_and_an_edge_is_refused() {
         partition: None,
         spread: false,
         auto_split: None,
+        expire: None,
         events: Vec::new(),
     };
     let tessari_types::Value::Object(mut fields) = definition.to_value() else {

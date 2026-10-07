@@ -84,7 +84,13 @@ fn a_constant_space_fold_holds_at_most_one_value_however_many_it_is_offered() {
     {
         let mut accumulator = Accumulator::for_aggregate(*aggregate, span());
         for held in 0..OFFERED {
-            accumulator.offer(&integer(held)).unwrap();
+            // A quantile is offered each value with its rank.
+            let offered = if *aggregate == Aggregate::ApproxQuantile {
+                Value::Array(vec![integer(held), float(0.5)])
+            } else {
+                integer(held)
+            };
+            accumulator.offer(&offered).unwrap();
             assert!(
                 accumulator.held() <= 1,
                 "{aggregate:?} held {} values after {} offers",

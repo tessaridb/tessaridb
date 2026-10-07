@@ -10,7 +10,7 @@ Eleven engines. One transaction. One binary. A real-time multi-model database,
 written in Rust, for AI applications and the products built around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.32.0--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.33.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.98%2B-6B5FD1?style=flat-square)](Cargo.toml)
 [![conformance](https://img.shields.io/badge/conformance-1588%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
@@ -22,8 +22,8 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.32.0-beta`.** It is released and tested, published as
-> a container image (`tessaridb/tessaridb:0.32.0-beta`; the image tracks the
+> **TessariDB is a beta — `0.33.0-beta`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.33.0-beta`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of the language and the wire:
@@ -203,7 +203,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.32.0-beta` · not published to crates.io.** What
+**Stage: active development · `0.33.0-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -306,6 +306,17 @@ follows is what runs today, not a roadmap.
   back until then; after it, the way back is a backup. A write the engine could
   not make durable stops the store until it is reopened and recovers from its log
   ([`docs/storage-contract.md`](docs/storage-contract.md)).
+- ✅ **Primitives an application would otherwise build itself:**
+  - a table or collection can declare that its records **expire** (`EXPIRE AFTER 7d`). Every read path hides an
+    expired record at its instant, a plain write keeps the instant rather than making the record permanent, and
+    declaring it changes no record already there;
+  - **`approx_distinct`** and **`approx_quantile`** answer in bounded memory and say so with an `estimated` note. They
+    merge exactly across a split table's leaders and inside a rollup;
+  - a subscription can be **narrowed by a condition** with bound values. A record that leaves the condition arrives
+    as a removal, the condition is judged on what the subscriber may see, and a feed that skipped changes says how
+    far it read;
+  - **periodic work** is a queue record whose `NOT BEFORE` field is its next run: once per period across a cluster,
+    and never lost when a worker dies.
 - 🔄 **Not promised yet:** before 1.0 the query language and the wire format may
   still change.
 

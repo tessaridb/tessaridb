@@ -34,16 +34,16 @@ pub use ast::{
     Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field, FieldMapping,
     FieldPath, Fill, FillMode, Fusion, GroupClauses, Hop, Identity, InfoSubject, JoinSide, Name,
     NamespaceChange, OnFailure, Ordering, Password, PathTo, Projected, Projection, RangeExpr,
-    ReachRef, RecordTarget, ReplicaChange, Retention, Script, SearchAsk, SearchCosts, SearchField,
-    SearchMember, SearchOperator, Select, SetCondition, Source, SpaceBound, Statement,
-    StatementKind, TableChange, TableRef, Timeout, TopicClauses, UserChange, UserGrant, Using,
-    Version, Written,
+    ReachRef, RecordTarget, ReplicaChange, Retention, RollupCompute, Script, SearchAsk,
+    SearchCosts, SearchField, SearchMember, SearchOperator, Select, SetCondition, Source,
+    SpaceBound, Statement, StatementKind, TableChange, TableExpiry, TableRef, Timeout,
+    TopicClauses, UserChange, UserGrant, Using, Version, WriteExpiry, Written,
 };
-pub use bind::Parameters;
+pub use bind::{Parameters, bind_expression};
 pub use error::{Error, Result};
 pub use function::{Function, Purity};
 pub use lexer::tokenize;
-pub use parser::{parse, parse_expression, parse_read};
+pub use parser::{parse, parse_condition, parse_expression, parse_read};
 pub use portable::{bound_condition, portable};
 pub use render::render;
 pub use tessari_types::BinaryOp;

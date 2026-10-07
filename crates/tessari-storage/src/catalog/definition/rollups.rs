@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use tessari_types::{Duration, TableId, Value};
+use tessari_types::{Duration, Number, TableId, Value};
 
 use super::{field_id, number, object};
 use crate::error::{Error, Result};
@@ -20,8 +20,10 @@ const FIELD_COMPUTES: &str = "computes";
 const FIELD_NAME: &str = "name";
 const FIELD_FOLD: &str = "fold";
 const FIELD_OF: &str = "of";
+const FIELD_RANK: &str = "rank";
 
-/// The folds a rollup keeps: the ones that merge exactly from the row alone.
+/// The folds a rollup keeps: the ones that merge exactly from the row alone,
+/// and the two sketches, which merge exactly from the state kept beside it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RollupFold {
     /// `count(*)`, or `count(f)` for the records holding `f`.
@@ -32,6 +34,10 @@ pub enum RollupFold {
     Min,
     /// `max(f)`.
     Max,
+    /// `approx_distinct(f)`, its sketch kept beside the row (ADR-0122 C5).
+    ApproxDistinct,
+    /// `approx_quantile(f, rank)`, its sketch kept beside the row.
+    ApproxQuantile,
 }
 
 impl RollupFold {
@@ -43,15 +49,24 @@ impl RollupFold {
             Self::Sum => "sum",
             Self::Min => "min",
             Self::Max => "max",
+            Self::ApproxDistinct => "approx_distinct",
+            Self::ApproxQuantile => "approx_quantile",
         }
     }
 
     /// The fold a word spells, if a rollup keeps it.
     #[must_use]
     pub fn parse(word: &str) -> Option<Self> {
-        [Self::Count, Self::Sum, Self::Min, Self::Max]
-            .into_iter()
-            .find(|fold| fold.spelling().eq_ignore_ascii_case(word))
+        [
+            Self::Count,
+            Self::Sum,
+            Self::Min,
+            Self::Max,
+            Self::ApproxDistinct,
+            Self::ApproxQuantile,
+        ]
+        .into_iter()
+        .find(|fold| fold.spelling().eq_ignore_ascii_case(word))
     }
 }
 
@@ -64,6 +79,8 @@ pub struct RollupCompute {
     pub fold: RollupFold,
     /// The raw record's field it folds, or `None` for `count(*)`.
     pub of: Option<String>,
+    /// The rank an `approx_quantile` row answers at.
+    pub rank: Option<Number>,
 }
 
 /// One rollup of a series: where it is kept and what it computes.
@@ -96,6 +113,9 @@ impl RollupDeclaration {
                 ]);
                 if let Some(of) = &compute.of {
                     fields.insert(FIELD_OF.to_owned(), Value::String(of.clone()));
+                }
+                if let Some(rank) = &compute.rank {
+                    fields.insert(FIELD_RANK.to_owned(), Value::Number(rank.clone()));
                 }
                 Value::Object(fields)
             })
@@ -137,10 +157,16 @@ impl RollupDeclaration {
                 .as_deref()
                 .and_then(RollupFold::parse)
                 .ok_or_else(|| malformed(FIELD_FOLD, fields.get(FIELD_FOLD)))?;
+            let rank = match fields.get(FIELD_RANK) {
+                None => None,
+                Some(Value::Number(rank)) => Some(rank.clone()),
+                Some(other) => return Err(malformed(FIELD_RANK, Some(other))),
+            };
             computes.push(RollupCompute {
                 name,
                 fold,
                 of: text(fields, FIELD_OF)?,
+                rank,
             });
         }
         Ok(Self {

@@ -24,8 +24,14 @@ pub(crate) fn fold(aggregate: Aggregate, values: &[Value], span: Span) -> Result
         Aggregate::Median => median(values, span),
         Aggregate::Collect => Ok(collect(values)),
         // No batch twin: the counter folds are checked against a hand oracle
-        // in the suite (`counters::`) rather than against a second copy.
-        Aggregate::Increase | Aggregate::Rate | Aggregate::Delta => {
+        // in the suite (`counters::`), and the sketches against the exact
+        // answer within their bound (`approximate_folds::`), rather than
+        // against a second copy.
+        Aggregate::Increase
+        | Aggregate::Rate
+        | Aggregate::Delta
+        | Aggregate::ApproxDistinct
+        | Aggregate::ApproxQuantile => {
             let mut running = crate::accumulate::Accumulator::for_aggregate(aggregate, span);
             for value in values {
                 running.offer(value)?;

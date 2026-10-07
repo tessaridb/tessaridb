@@ -622,6 +622,12 @@ tbody tr:hover td {
   color: var(--text-muted);
 }
 
+/* A narrowed feed's position past what it skipped: a marker, not a change. */
+.changes li.progress {
+  border-left-style: dashed;
+  color: var(--text-muted);
+}
+
 /* Two panes' worth of controls in one pane, separated rather than merged: the
    one above acts on somebody else and the one below acts on you, and that is a
    difference worth a line. */

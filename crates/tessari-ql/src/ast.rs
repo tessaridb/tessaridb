@@ -38,7 +38,8 @@ pub use select::{
     Projected, Projection, Select, Source, Staleness, Timeout, Using, Version,
 };
 pub use statement::{
-    BackupForm, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator, StatementKind,
+    BackupForm, RollupCompute, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator,
+    StatementKind,
 };
 
 /// A parsed script: statements in the order they were written.
@@ -208,6 +209,7 @@ pub struct Assignment {
 pub use info::InfoSubject;
 pub use tables::{
     AutoSplit, ColumnDeclaration, Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, TableChange,
+    TableExpiry, WriteExpiry,
 };
 pub use tessari_types::BinaryOp;
 pub use users::{Credential, Password, UserChange, UserGrant};

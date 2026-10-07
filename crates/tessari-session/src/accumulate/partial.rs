@@ -74,6 +74,7 @@ impl Accumulator {
                 moments.squares.state()?,
             ])),
             Self::Extreme { held, .. } => Some(held.clone().unwrap_or(Value::None)),
+            Self::Distinct { .. } | Self::Quantile { .. } => self.sketch_state(),
             _ => self.holding_state(),
         }
     }
@@ -148,6 +149,7 @@ impl Accumulator {
                 }
             }
             Self::Extreme { .. } => self.offer(state)?,
+            Self::Distinct { .. } | Self::Quantile { .. } => return Ok(self.merge_sketch(state)),
             _ => return Ok(self.merge_holding(state).unwrap_or(false)),
         }
         Ok(true)

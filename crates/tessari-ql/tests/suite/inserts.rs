@@ -40,6 +40,7 @@ fn a_single_row_names_its_table_its_fields_and_its_values() {
         table,
         columns,
         rows,
+        ..
     } = one("INSERT INTO users (name, email) VALUES ('ada', 'ada@example.com');")
     else {
         panic!("not an insert");

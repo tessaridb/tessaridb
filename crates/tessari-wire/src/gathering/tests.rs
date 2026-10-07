@@ -218,6 +218,46 @@ fn the_holding_folds_round_trip_and_only_a_counter_fold_carries_the_samples_byte
     assert!(tessari_session::Folded::named("median", text("n"), text("at")).is_none());
 }
 
+/// ADR-0122 C5 — the sketches round trip, the quantile with its rank and no
+/// samples byte, and a quantile without its rank is not a request.
+#[test]
+fn the_sketch_folds_round_trip_with_the_rank_and_no_samples_byte() {
+    let text = |text: &str| Some((text.to_owned(), tessari_session::Parameters::new()));
+    let reduce = |samples: bool| tessari_session::Reduce {
+        visible: None,
+        condition: None,
+        keys: Vec::new(),
+        folds: vec![
+            // bgv-allow(unwrap): a test fails loudly by design; the module allows it
+            tessari_session::Folded::named("approx_distinct", text("n"), None).unwrap(),
+            // bgv-allow(unwrap): a test fails loudly by design; the module allows it
+            tessari_session::Folded::named("approx_quantile", text("n"), text("0.5")).unwrap(),
+        ],
+        samples,
+    };
+    let asking = |reduce: tessari_session::Reduce| Gather {
+        namespace: NamespaceId::new(1),
+        database: DatabaseId::new(2),
+        table: TableId::new(3),
+        shard: ShardId::new(4),
+        from: None,
+        to: None,
+        after: None,
+        pushed: None,
+        enough: None,
+        reduce: Some(reduce),
+        ordered: None,
+        counting: None,
+    };
+    let asked = asking(reduce(false));
+    // bgv-allow(unwrap): a test fails loudly by design; the module allows it
+    assert_eq!(Gather::decode(&asked.encode()).unwrap(), asked);
+    // No counter fold, so the flag has nowhere to go.
+    assert_eq!(asked.encode(), asking(reduce(true)).encode());
+    assert!(tessari_session::Folded::named("approx_quantile", text("n"), None).is_none());
+    assert!(tessari_session::Folded::named("approx_distinct", text("n"), text("q")).is_none());
+}
+
 #[test]
 fn a_count_and_its_answer_round_trip_and_a_term_the_body_lacks_is_refused() {
     let asked = Gather {

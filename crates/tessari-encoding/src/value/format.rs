@@ -53,7 +53,25 @@ impl FormatVersion {
     /// the kind refuses a store this build created at `open`, rather than reading
     /// the catalog without its `contains` flag and serving an equality from
     /// entries it cannot read.
-    pub const CURRENT: Self = Self(6);
+    ///
+    /// Moved to 7 when a table could declare that its records expire (ADR-0122
+    /// A8). The version-2 shape once more: an expiring version has been readable
+    /// by every build since the key-value verbs arrived, so nothing on disk
+    /// changes. What an older build cannot do is **write** such a table by its
+    /// rules — it would clear a record's instant on a plain write and stamp no
+    /// default — so the declaration waits for this format, and once a store
+    /// holds it no older build opens it at all.
+    pub const CURRENT: Self = Self(7);
+
+    /// The first format whose tables may declare that their records expire
+    /// (ADR-0122 A8). Named for the reason [`Self::HOMED_LOG`] is.
+    pub const TABLE_EXPIRY: Self = Self(7);
+
+    /// The first format whose rollups may keep a sketch (ADR-0122 C5): an
+    /// older build reading the declaration would refuse a fold it does not
+    /// know, and could not keep the state beside the row. Format 7 was not yet
+    /// released when this joined it, so one bump carries both.
+    pub const SKETCH_ROLLUP: Self = Self(7);
 
     /// The first format whose stores may hold a containment index's entries
     /// (ADR-0116 D4).
@@ -90,6 +108,7 @@ impl FormatVersion {
         let (major, minor) = match self.0 {
             1..=5 => (0, 22),
             6 => (0, 28),
+            7 => (0, 33),
             _ => return None,
         };
         Some(crate::NodeVersion {

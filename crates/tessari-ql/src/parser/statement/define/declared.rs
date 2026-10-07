@@ -1,7 +1,7 @@
 //! The declared stores: vectors, series, views, indexes and analyzers.
 
 use super::super::Parser;
-use crate::ast::StatementKind;
+use crate::ast::{RollupCompute, StatementKind};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
 use tessari_types::Filter;
@@ -144,11 +144,27 @@ impl Parser<'_> {
             } else {
                 Some(self.name()?)
             };
+            // `approx_quantile(latency, 0.99)` keeps its rank beside the field.
+            let rank = if self.eat_punct(Punct::Comma) {
+                let Some(Token::Number(rank)) = self.peek() else {
+                    return Err(self.error_here("the rank, a number from 0 to 1"));
+                };
+                let rank = rank.clone();
+                self.advance();
+                Some(rank)
+            } else {
+                None
+            };
             self.expect_punct(Punct::ParenClose, "`)` after what is folded")?;
             if !self.eat_keyword(Keyword::As) {
                 return Err(self.error_here("`AS` and the name the value is kept under"));
             }
-            computes.push((fold, of, self.name()?));
+            computes.push(RollupCompute {
+                fold,
+                of,
+                rank,
+                name: self.name()?,
+            });
             if !self.eat_punct(Punct::Comma) {
                 break;
             }

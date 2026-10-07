@@ -144,6 +144,7 @@ fn every_definition_round_trips_through_its_value() {
         partition: None,
         spread: false,
         auto_split: None,
+        expire: None,
         // Not the default either, for the identity's reason: an empty list
         // round trips through a field that was never written.
         events: vec![super::super::EventDeclaration {

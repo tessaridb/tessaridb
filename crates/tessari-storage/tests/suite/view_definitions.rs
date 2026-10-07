@@ -67,6 +67,7 @@ fn view(id: u32, read: &str) -> TableDefinition {
         partition: None,
         spread: false,
         auto_split: None,
+        expire: None,
         events: Vec::new(),
     }
 }

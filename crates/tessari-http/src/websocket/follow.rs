@@ -36,6 +36,9 @@ pub(crate) struct Asked {
     /// On a feed over a split table, the `cursor` the last change handled
     /// carried.
     pub(crate) cursor: Option<String>,
+    /// A condition narrowing the feed, and its parameters as TessariQL values
+    /// read the way `/script` reads them (ADR-0122 Part B).
+    pub(crate) condition: Option<(String, tessaridb::Parameters)>,
     /// A credential, when the handshake could not carry one.
     pub(crate) credentials: Option<(String, String)>,
     /// A token from an earlier sign-in, when the handshake could not carry one.
@@ -86,6 +89,8 @@ pub(crate) fn read(body: &str) -> Result<Asked, String> {
     let mut from = 0;
     let mut table = None;
     let mut cursor = None;
+    let mut condition = None;
+    let mut written = std::collections::BTreeMap::new();
     let mut user = None;
     let mut password = None;
     let mut token = None;
@@ -103,6 +108,8 @@ pub(crate) fn read(body: &str) -> Result<Asked, String> {
                 "from" => from = at.number()?,
                 "table" => table = Some(at.string()?),
                 "cursor" => cursor = Some(at.string()?),
+                "condition" => condition = Some(at.string()?),
+                "parameters" => written = at.strings()?,
                 "user" => user = Some(at.string()?),
                 "password" => password = Some(at.string()?),
                 "token" => token = Some(at.string()?),
@@ -120,12 +127,22 @@ pub(crate) fn read(body: &str) -> Result<Asked, String> {
     if !at.done() {
         return Err("the request ends before the message does".to_owned());
     }
+    let mut parameters = tessaridb::Parameters::new();
+    for (name, value) in &written {
+        let held =
+            tessaridb::value_of(value).map_err(|reason| format!("parameter {name}: {reason}"))?;
+        parameters.insert(name.clone(), held);
+    }
+    if condition.is_none() && !parameters.is_empty() {
+        return Err("`parameters` are bound into a `condition`, and there is none".to_owned());
+    }
     Ok(Asked {
         namespace: namespace.ok_or_else(|| "a follow request needs a `namespace`".to_owned())?,
         database: database.ok_or_else(|| "a follow request needs a `database`".to_owned())?,
         from,
         table,
         cursor,
+        condition: condition.map(|text| (text, parameters)),
         // Both or neither: a name without a password is a request that would
         // sign in as somebody with no proof, and refusing it here is clearer
         // than letting the sign-in fail for a reason nobody wrote down.
@@ -181,6 +198,18 @@ pub(crate) fn encode(
 }
 
 /// What a refusal looks like, so a client can tell one from a change.
+/// How far a narrowed feed read past what it sent (ADR-0122 B3).
+pub(crate) fn progress(sequence: u64, cursor: Option<&str>) -> String {
+    let mut out = String::from(r#"{"progress":"#);
+    out.push_str(&sequence.to_string());
+    if let Some(cursor) = cursor {
+        out.push_str(r#","cursor":"#);
+        json::string(&mut out, cursor);
+    }
+    out.push('}');
+    out
+}
+
 pub(crate) fn refusal(reason: &str) -> String {
     let mut out = String::from(r#"{"error":"#);
     json::string(&mut out, reason);
@@ -262,5 +291,23 @@ mod tests {
             reason.contains("limit"),
             "the refusal must name the field it did not recognise, said: {reason}"
         );
+    }
+
+    #[test]
+    fn a_request_names_a_condition_with_values_read_the_way_a_script_reads_them() {
+        let asked = read(
+            r#"{"namespace":"n","database":"d","table":"msgs","condition":"chat = $chat","parameters":{"chat":"'a'"}}"#,
+        )
+        .expect("a well-formed request");
+        let (text, parameters) = asked.condition.clone().expect("the condition");
+        assert_eq!(text, "chat = $chat");
+        assert_eq!(parameters.get("chat"), Some(&tessaridb::Value::from("a")));
+        // Values with nothing to bind into are a mistake, said as one.
+        assert!(read(r#"{"namespace":"n","database":"d","parameters":{"x":"1"}}"#).is_err());
+        assert_eq!(
+            super::progress(9, Some("1.1:d=10")),
+            r#"{"progress":9,"cursor":"1.1:d=10"}"#
+        );
+        assert_eq!(super::progress(9, None), r#"{"progress":9}"#);
     }
 }

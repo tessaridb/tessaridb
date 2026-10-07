@@ -9,7 +9,7 @@
 //! below it, so it behaves the same on the memory backend and the disk one.
 
 mod atomic;
-mod expiry;
+pub(crate) mod expiry;
 mod space;
 mod walk;
 

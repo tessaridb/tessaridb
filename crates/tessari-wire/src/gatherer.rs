@@ -330,6 +330,14 @@ const HOLDING_FOLD_FROM: NodeVersion = NodeVersion {
     patch: 0,
 };
 
+/// The first build whose leaders fold `approx_distinct` and
+/// `approx_quantile` (ADR-0122 C5).
+const SKETCH_FOLD_FROM: NodeVersion = NodeVersion {
+    major: 0,
+    minor: 33,
+    patch: 0,
+};
+
 /// Whether a leader that greeted as `build` reads every fold `reduce` asks
 /// for; a leader not heard from is not assumed to.
 fn reads_every_fold(reduce: &Reduce, build: Option<NodeVersion>) -> bool {
@@ -342,7 +350,10 @@ fn reads_every_fold(reduce: &Reduce, build: Option<NodeVersion>) -> bool {
         .folds
         .iter()
         .any(tessari_session::Folded::holds_its_group);
-    (!spreads || from(SPREADS_FOLD_FROM)) && (!holds || from(HOLDING_FOLD_FROM))
+    let sketches = reduce.folds.iter().any(|folded| folded.fold.estimates());
+    (!spreads || from(SPREADS_FOLD_FROM))
+        && (!holds || from(HOLDING_FOLD_FROM))
+        && (!sketches || from(SKETCH_FOLD_FROM))
 }
 
 #[cfg(test)]
@@ -406,5 +417,22 @@ mod tests {
         }
         // A `0.31` leader is still asked what it already folds.
         assert!(reads_every_fold(&asking(&["count", "stddev"]), build(31)));
+    }
+
+    #[test]
+    fn a_sketch_is_asked_only_of_a_leader_that_folds_one() {
+        let text = || Some(("n".to_owned(), tessari_session::Parameters::new()));
+        for (spelling, rank) in [("approx_distinct", None), ("approx_quantile", text())] {
+            let mut sketching = asking(&["count", "median"]);
+            sketching
+                .folds
+                .extend(tessari_session::Folded::named(spelling, text(), rank));
+            assert_eq!(sketching.folds.len(), 3, "{spelling}");
+            assert!(!reads_every_fold(&sketching, build(32)), "{spelling}");
+            assert!(!reads_every_fold(&sketching, None), "{spelling}");
+            assert!(reads_every_fold(&sketching, build(33)), "{spelling}");
+        }
+        // A `0.32` leader is still asked what it already folds.
+        assert!(reads_every_fold(&asking(&["count", "median"]), build(32)));
     }
 }

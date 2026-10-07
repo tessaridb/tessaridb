@@ -222,7 +222,7 @@ fn filled_fields(
         } else if matches!(
             value.value.kind,
             ExprKind::Fold {
-                fold: tessari_ql::Aggregate::Count,
+                fold: tessari_ql::Aggregate::Count | tessari_ql::Aggregate::ApproxDistinct,
                 ..
             }
         ) {

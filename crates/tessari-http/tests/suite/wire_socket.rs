@@ -93,7 +93,7 @@ fn frame(kind: u8, body: &[u8]) -> Vec<u8> {
     out
 }
 
-const GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 3];
+const GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 4];
 
 fn request(script: &str) -> Vec<u8> {
     frame(
@@ -360,6 +360,7 @@ fn a_subscription_over_the_socket_delivers_a_change() {
                 from: 0,
                 table: Some("notes".to_owned()),
                 cursor: None,
+                condition: None,
             }
             .encode(),
         ),

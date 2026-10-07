@@ -124,7 +124,7 @@ pub use crate::budget::{Attempt, SharedBudget, Try};
 pub use crate::campaign::{Standing, Stood};
 #[cfg(feature = "server")]
 pub use crate::carrier::{Admission, Carrier};
-pub use crate::client::{Client, Feed, Served};
+pub use crate::client::{Client, Feed, Sent, Served};
 #[cfg(feature = "server")]
 pub use crate::collection::{
     Collect, Collected, Collector, Following, NoLog, Origin, PUSHED_FROM, Pushed, Serving,
@@ -168,7 +168,7 @@ pub use crate::message::{Answer, Correction, Exact, Names, Remark, Request, Sugg
 pub use crate::node::Node;
 #[cfg(feature = "server")]
 pub use crate::peer::{Hello, Line, PeerFrame, Presented, Purpose, admit};
-pub use crate::push::{Became, Follow, Happened};
+pub use crate::push::{Became, Follow, Happened, Narrow, Progressed};
 
 pub use crate::redirect::{Elsewhere, Settlement};
 pub use crate::vault::{VaultAsk, VaultCall, VaultPlace};

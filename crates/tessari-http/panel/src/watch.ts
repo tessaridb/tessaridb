@@ -34,6 +34,8 @@ interface Change {
   readonly became?: string;
   readonly value?: unknown;
   readonly cursor?: string;
+  /** How far a narrowed feed read past what it sent. */
+  readonly progress?: number;
   readonly refused?: string;
   readonly error?: string;
 }
@@ -45,6 +47,8 @@ interface Asked {
   from: number;
   table?: string;
   cursor?: string;
+  condition?: string;
+  parameters?: Record<string, string>;
   token?: string;
   user?: string;
   password?: string;
@@ -87,6 +91,52 @@ function change(what: Change): void {
   list.insertBefore(line, list.firstChild);
 }
 
+/**
+ * A narrowed feed's position past changes it did not send: shown, and kept as
+ * the resume point — one past it, or its cursor over a split table.
+ */
+function progressed(what: Change): void {
+  const line = made("li");
+  line.classList.add("progress");
+  line.textContent =
+    "#" +
+    String(what.progress) +
+    "  read this far" +
+    (what.cursor === undefined ? "" : "  cursor " + what.cursor);
+  if (typeof what.cursor === "string") {
+    (at("cursor") as HTMLInputElement).value = what.cursor;
+  } else if (typeof what.progress === "number") {
+    (at("from") as HTMLInputElement).value = String(what.progress + 1);
+  }
+  const list = at("changes");
+  list.insertBefore(line, list.firstChild);
+}
+
+/** The values a condition's parameters are bound to, or why they cannot be. */
+function boundValues(): Record<string, string> | string {
+  const written = value("condition-values").trim();
+  if (written === "") {
+    return {};
+  }
+  let read: unknown;
+  try {
+    read = JSON.parse(written);
+  } catch {
+    return "the values are not JSON";
+  }
+  if (typeof read !== "object" || read === null || Array.isArray(read)) {
+    return "the values are an object of names to TessariQL literals";
+  }
+  const values: Record<string, string> = {};
+  for (const [name, held] of Object.entries(read)) {
+    if (typeof held !== "string") {
+      return "each value is a TessariQL literal written as a string, such as \"'a'\" or \"3\"";
+    }
+    values[name] = held;
+  }
+  return values;
+}
+
 /** The socket's address: this page's own, with the scheme it was served over. */
 function where(): URL {
   // Resolved against this page's own address rather than assembled from pieces:
@@ -99,8 +149,8 @@ function where(): URL {
   return address;
 }
 
-/** What authenticates this subscription, put into the message body. */
-function asked(): Asked {
+/** What this page asks to follow, and who it asks as. */
+function asked(values: Record<string, string>): Asked {
   const wanted: Asked = {
     namespace: value("namespace"),
     database: value("database"),
@@ -113,6 +163,11 @@ function asked(): Asked {
   const cursor = value("cursor");
   if (cursor !== "") {
     wanted.cursor = cursor;
+  }
+  const condition = value("condition");
+  if (condition !== "") {
+    wanted.condition = condition;
+    wanted.parameters = values;
   }
   // A browser cannot set a header on a `WebSocket`, so whatever authenticates
   // this travels in the message. A token when there is one — it expires and can
@@ -138,6 +193,11 @@ export function wire(): void {
   at("follow").addEventListener("click", () => {
     stop();
     clear("changes");
+    const values = boundValues();
+    if (typeof values === "string") {
+      say("watch-status", values, true);
+      return;
+    }
 
     const socket = new WebSocket(where());
     following = socket;
@@ -147,7 +207,7 @@ export function wire(): void {
     say("watch-status", "connecting…");
 
     socket.addEventListener("open", () => {
-      socket.send(JSON.stringify(asked()));
+      socket.send(JSON.stringify(asked(values)));
       say("watch-status", "following");
     });
 
@@ -170,6 +230,10 @@ export function wire(): void {
       if (typeof what.error === "string") {
         say("watch-status", what.error, true);
         toldWhy = true;
+        return;
+      }
+      if (typeof what.progress === "number") {
+        progressed(what);
         return;
       }
       change(what);

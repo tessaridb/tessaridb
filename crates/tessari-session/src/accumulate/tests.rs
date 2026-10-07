@@ -3,6 +3,7 @@ use crate::aggregate::fold;
 
 mod holding;
 mod order;
+mod sketches;
 mod spread;
 
 /// A span the corpus can share; no assertion reads it.
@@ -33,6 +34,8 @@ const EVERY: &[Aggregate] = &[
     Aggregate::Rate,
     Aggregate::Delta,
     Aggregate::Collect,
+    Aggregate::ApproxDistinct,
+    Aggregate::ApproxQuantile,
 ];
 
 /// A number as a value, spelled once.

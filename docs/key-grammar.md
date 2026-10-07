@@ -1157,6 +1157,7 @@ and is rewritten at open only where the row below says so.
 | `4` | a record version carries its causal stamp — flag `0x04` | opened as is: a clear bit reads as an empty stamp |
 | `5` | a log key carries the writer that allocated it (G027 S2.2) | rewritten: an old and a new key differ in length |
 | `6` | a containment index's entries, key kind `0x44` (ADR-0116) | opened as is and keeps its stamp; a containment index is refused until the store is finalized (ADR-0118) |
+| `7` | a table may declare that its records expire — no key or value changes (the `expires` flag is §7.1's), so the surface digest is format 6's; what moves is the **write rule**: a build before it would clear a record's instant on a plain write and stamp no default (ADR-0122 A8) | opened as is and keeps its stamp; `DEFINE`/`ALTER … EXPIRE` is refused until the store is finalized |
 
 **The stamp is the format the store holds, and it lags this build** (ADR-0118,
 from `0.31.0-beta`). A build opens an older store and keeps its stamp, so the
