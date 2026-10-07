@@ -5032,6 +5032,24 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
         folded.contains("Float(0.30000000000000004)") && folded.contains("Float(0.0)"),
         "{folded}"
     );
+    // G068 C2 (ADR-0121): the folds that hold their group fold on the two
+    // leaders too — this build greeted as 0.32.0 — and answer what a node
+    // holding the whole table answers.
+    let holding = "USE NAMESPACE prod; USE DATABASE shop; \
+                   SELECT median(n) AS middle, collect(n) AS every FROM orders;";
+    let answered = |surface: &str| {
+        let answers = Client::connect(surface)
+            .unwrap()
+            .run(holding, None)
+            .unwrap();
+        let Some(Answer::Records { records, .. }) = answers.last() else {
+            panic!("not records: {answers:?}");
+        };
+        format!("{:?}", records.first().map(|(_, value)| value))
+    };
+    let gathered = answered(GATHERING[2].0);
+    assert_eq!(gathered.matches("Integer(1)").count(), 3, "{gathered}");
+    assert_eq!(gathered, answered(GATHERING[0].0));
     let in_the_middle = whole.get(1).unwrap().clone();
     assert_eq!(
         read_at(
