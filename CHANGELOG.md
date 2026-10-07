@@ -13,6 +13,49 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.33.0-beta — 2026-10-07
+
+### Added
+
+- **Records of a table can expire.**
+  - `DEFINE TABLE … EXPIRE [AFTER d]`, `DEFINE COLLECTION … EXPIRE`, and `ALTER TABLE … SET EXPIRE [AFTER d] | DROP
+    EXPIRE`. A write may carry `EXPIRE <duration | datetime | NONE>`.
+  - An expired record is gone to every read path at its instant: scans, every index, joins, `FETCH`, a gathered
+    read, a follower. The removal pass reclaims it and says what it removed.
+  - A plain write keeps the instant. Declaring or changing expiry changes no record already stored. Dropping it
+    leaves stored instants standing.
+  - New refusals: `ExpiryNotOnThisKind`, `TableDoesNotExpire`. On a store an earlier build wrote, the declaration
+    waits for format 7 (`ALTER STORE FINALIZE FORMAT`).
+- **`approx_distinct(x)` and `approx_quantile(x, q)`.**
+  - `approx_distinct` is exact up to 1 024 values, then HyperLogLog with 16 384 registers; measured within 2.5 %.
+  - `approx_quantile` is a DDSketch within 1 % of the value at rank `q`.
+  - Every answer that used one carries the note `estimated { fold, method, bound, collapsed }`.
+  - Both are folded on a split table's leaders: the merged answer is the one a whole node gives, bit for bit.
+    Leaders older than this release are asked for records instead.
+  - A rollup can keep both. Folding the column with its own fold merges the kept sketches and answers what the raw
+    series answers. Declaring such a rollup waits for format 7 on an older store.
+- **A subscription narrowed by a condition.**
+  - A feed over one table may name a condition with bound values: on the wire after the cursor, on `/watch` as
+    `condition` and `parameters`.
+  - It delivers what matches. A record that stops matching, or is removed while matching, arrives as a removal.
+  - The condition is judged on what the subscriber may see; one naming a field they may not see is refused, at
+    open and after a grant takes the field away (`FieldNotVisible`).
+  - A narrowed feed that skipped changes says how far it read: a `Progress` frame (tag 37) or a
+    `{"progress": n}` line. Resume one past it.
+  - Also refused: `ConditionReadsTheStore`, `ConditionWithoutTable`, `PreviousVersionGone`. The cost was measured
+    in release: about 7.5 µs per narrowed feed per commit.
+- **Periodic work, documented as a queue recipe.** A tick is a queue record whose `NOT BEFORE` field is its next run
+  (`docs/tessariql.md`, *Work on a schedule*). There is no schedule statement.
+- **Protocol 1.4.** A node greets with minor 4. It sends `Progress` only to a peer at minor 4 or above, and the
+  client refuses to send a condition to a node below it (`NodeTooOld`). Older clients and nodes work unchanged.
+
+### Fixed
+
+- A record created with a generated identity (`CREATE t = { … }`) is delivered by a change feed. Its identity counter
+  had filed the whole commit in the store's log, which a database's feed does not read.
+- A rollup declared over a series that already held records keeps its exact sums and sketches beside the rows it
+  fills, as the writes do.
+
 ## 0.32.0-beta — 2026-10-07
 
 ### Added
