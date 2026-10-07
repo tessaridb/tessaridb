@@ -348,8 +348,21 @@ pub(crate) fn home_of(record: &LogRecord) -> Result<Reach> {
     {
         return Ok(*range);
     }
+    // A table's identity counter is advanced only by a write to that table, in
+    // the same transaction, so it files wherever that write files. Counted
+    // toward the home it would widen every record created with a generated
+    // identity to the store — a log no database's change feed reads.
+    let counted = |mutation: &tessari_encoding::Mutation| {
+        mutation.namespace == system::SYSTEM_NAMESPACE
+            && mutation.database == system::SYSTEM_DATABASE
+            && mutation.table == system::RECORD_SEQUENCES
+    };
+    let rides = record.mutations().iter().any(|mutation| !counted(mutation));
     let mut home = None;
     for mutation in record.mutations() {
+        if rides && counted(mutation) {
+            continue;
+        }
         let own = match carried_to(mutation)? {
             Carried::Within(reach) | Carried::Schema(reach) => reach,
             Carried::Everywhere | Carried::StoreOnly => Reach::Store,
