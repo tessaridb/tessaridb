@@ -66,14 +66,14 @@ pub struct Folded {
     pub fold: Aggregate,
     /// What it folds over; `None` for `count(*)`.
     pub over: Option<Portable>,
-    /// The instant each value was observed at, which a counter fold and only
-    /// a counter fold takes.
+    /// The fold's second argument: the instant each value was observed at,
+    /// which a counter fold takes, or the rank `approx_quantile` is asked at.
     pub at: Option<Portable>,
 }
 
 impl Folded {
     /// A fold named by its spelling, when it is one that merges exactly and
-    /// `at` is there exactly when the fold takes an instant.
+    /// `at` is there exactly when the fold takes a second argument.
     #[must_use]
     pub fn named(spelling: &str, over: Option<Portable>, at: Option<Portable>) -> Option<Self> {
         let fold = [
@@ -89,10 +89,12 @@ impl Folded {
             Aggregate::Increase,
             Aggregate::Rate,
             Aggregate::Delta,
+            Aggregate::ApproxDistinct,
+            Aggregate::ApproxQuantile,
         ]
         .into_iter()
         .find(|fold| fold.spelling() == spelling)?;
-        (fold.takes_an_instant() == at.is_some()).then_some(Self { fold, over, at })
+        (fold.second().is_some() == at.is_some()).then_some(Self { fold, over, at })
     }
 
     /// Whether this fold holds its group rather than a constant — what a
@@ -205,8 +207,8 @@ pub fn reducing(
                     value
                 }
             };
-            // Offered as the asker's walk offers it: the value with the instant
-            // it was observed at.
+            // Offered as the asker's walk offers it: the value with the fold's
+            // second argument — the instant, or the rank.
             let value = match at {
                 Some(at) => {
                     let Ok(instant) = session.evaluate_in(&mut transaction, at, Scope::of(&record))

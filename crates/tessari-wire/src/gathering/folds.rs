@@ -124,7 +124,9 @@ fn take_value(bytes: &[u8]) -> Result<tessari_types::Value> {
 /// A counter fold adds the instant it orders by and one byte, `1` when the
 /// read asks for its samples (ADR-0121 D3, D6). Only a counter fold reads that
 /// byte, and only a leader of `0.32.0` or later is ever sent one, so what an
-/// older leader is sent is byte for byte what it always was.
+/// older leader is sent is byte for byte what it always was. `approx_quantile`
+/// adds its rank and no byte, and is sent only to a leader of `0.33.0` or later
+/// (ADR-0122 C5).
 pub(super) fn put_reduce(into: &mut Vec<u8>, reduce: &tessari_session::Reduce) {
     put_visible(into, &reduce.visible);
     match &reduce.condition {
@@ -150,7 +152,9 @@ pub(super) fn put_reduce(into: &mut Vec<u8>, reduce: &tessari_session::Reduce) {
         }
         if let Some((text, parameters)) = &folded.at {
             put_portable(into, text, parameters);
-            into.push(u8::from(reduce.samples));
+            if folded.fold.takes_an_instant() {
+                into.push(u8::from(reduce.samples));
+            }
         }
     }
 }
@@ -182,16 +186,18 @@ pub(super) fn take_reduce(from: &[u8], at: usize) -> Result<(tessari_session::Re
     for _ in 0..count {
         let (spelling, next_at) = frame::take_text(from, at)?;
         let (over, mut next_at) = optional(next_at)?;
-        let at_instant = if tessari_ql::Aggregate::parse(&spelling)
-            .is_some_and(tessari_ql::Aggregate::takes_an_instant)
-        {
+        let fold = tessari_ql::Aggregate::parse(&spelling);
+        let at_instant = if fold.and_then(tessari_ql::Aggregate::second).is_some() {
             let (held, after) = take_portable(from, next_at)?;
-            samples = match from.get(after) {
-                Some(0) => samples,
-                Some(1) => true,
-                _ => return Err(Error::Malformed),
-            };
-            next_at = next(after)?;
+            next_at = after;
+            if fold.is_some_and(tessari_ql::Aggregate::takes_an_instant) {
+                samples = match from.get(after) {
+                    Some(0) => samples,
+                    Some(1) => true,
+                    _ => return Err(Error::Malformed),
+                };
+                next_at = next(after)?;
+            }
             Some(held)
         } else {
             None

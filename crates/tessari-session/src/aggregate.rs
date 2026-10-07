@@ -167,6 +167,10 @@ type Group = (RecordId, Holding);
 /// the value system's order.
 pub(crate) type Groups = BTreeMap<Vec<Value>, Group>;
 
+/// A grouping read's rows, how many windows `FILL` answered, and the notes its
+/// approximate folds carry.
+pub(crate) type Answered = (Vec<(RecordId, Value)>, u64, Vec<crate::outcome::Note>);
+
 /// Which folds each projection holds, in walk order — resolved once per read,
 /// because the tree does not change under one.
 pub(crate) fn occurrences(wanted: &[Projected]) -> Vec<Vec<&Expr>> {
@@ -255,7 +259,7 @@ impl Session<'_> {
         wanted: &[Projected],
         group: &[Expr],
         fill: Option<&tessari_ql::Fill>,
-    ) -> Result<(Vec<(RecordId, Value)>, u64)> {
+    ) -> Result<Answered> {
         let occurrences = occurrences(wanted);
         let mut groups = Groups::new();
         self.fold_into(transaction, &mut groups, records, &occurrences, group)?;
@@ -271,7 +275,7 @@ impl Session<'_> {
         wanted: &[Projected],
         group: &[Expr],
         fill: Option<&tessari_ql::Fill>,
-    ) -> Result<(Vec<(RecordId, Value)>, u64)> {
+    ) -> Result<Answered> {
         let occurrences = occurrences(wanted);
         self.answer_groups(transaction, groups, wanted, &occurrences, group, fill)
     }
@@ -349,7 +353,17 @@ impl Session<'_> {
         occurrences: &[Vec<&Expr>],
         group: &[Expr],
         fill: Option<&tessari_ql::Fill>,
-    ) -> Result<(Vec<(RecordId, Value)>, u64)> {
+    ) -> Result<Answered> {
+        let estimated = crate::accumulate::estimated(
+            occurrences
+                .iter()
+                .flatten()
+                .filter_map(|fold| match fold.kind {
+                    ExprKind::Fold { fold, .. } => Some(fold),
+                    _ => None,
+                }),
+            groups.values().flat_map(|(_, held)| held.iter().flatten()),
+        );
         let mut answered: Vec<crate::fill::Row> = Vec::with_capacity(groups.len());
         for (key, (id, accumulated)) in groups {
             let mut fields = BTreeMap::new();
@@ -383,16 +397,17 @@ impl Session<'_> {
             }
             answered.push((key, id, fields));
         }
-        match fill {
-            Some(fill) => self.fill_windows(transaction, answered, wanted, group, fill),
-            None => Ok((
+        let (rows, filled) = match fill {
+            Some(fill) => self.fill_windows(transaction, answered, wanted, group, fill)?,
+            None => (
                 answered
                     .into_iter()
                     .map(|(_, id, fields)| (id, Value::Object(fields)))
                     .collect(),
                 0,
-            )),
-        }
+            ),
+        };
+        Ok((rows, filled, estimated))
     }
 }
 

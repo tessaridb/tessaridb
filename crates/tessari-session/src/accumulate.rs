@@ -69,9 +69,12 @@
 
 mod arithmetic;
 mod counter;
+mod distinct;
 pub(crate) mod exact;
 mod holding;
 mod partial;
+mod quantile;
+mod sketch;
 use rust_decimal::Decimal;
 #[cfg(test)]
 use tessari_ql::Retention;
@@ -82,6 +85,7 @@ use crate::aggregate::{approximate, present};
 use crate::error::Result;
 pub(crate) use arithmetic::{Moments, add_exact, add_float, failed, middle, summable};
 pub(crate) use exact::ExactSum;
+pub(crate) use sketch::estimated;
 
 /// A running value that may already have failed, holding why.
 ///
@@ -169,6 +173,20 @@ pub(crate) enum Accumulator {
         /// What has been offered so far, which is also the answer.
         held: Vec<Value>,
     },
+    /// `approx_distinct`'s sketch (ADR-0122 C2).
+    Distinct {
+        /// The sketch so far.
+        sketch: distinct::Distinct,
+    },
+    /// `approx_quantile`'s sketch and the rank it answers at (ADR-0122 C3).
+    Quantile {
+        /// The sketch so far.
+        sketch: quantile::Quantile,
+        /// The rank, once a record has offered it.
+        rank: Option<f64>,
+        /// Where to point a failure.
+        span: Span,
+    },
 }
 
 impl Accumulator {
@@ -229,6 +247,14 @@ impl Accumulator {
                 span,
             },
             Aggregate::Collect => Self::Every { held: Vec::new() },
+            Aggregate::ApproxDistinct => Self::Distinct {
+                sketch: distinct::Distinct::default(),
+            },
+            Aggregate::ApproxQuantile => Self::Quantile {
+                sketch: quantile::Quantile::default(),
+                rank: None,
+                span,
+            },
             Aggregate::Increase | Aggregate::Rate | Aggregate::Delta => Self::Counter {
                 fold: aggregate,
                 held: Vec::new(),
@@ -349,6 +375,29 @@ impl Accumulator {
                     held.push(value.clone());
                 }
             }
+            Self::Distinct { sketch } => {
+                if present(value) {
+                    sketch.offer(value);
+                }
+            }
+            // Offered `[value, rank]`: the rank is the fold's second argument.
+            Self::Quantile { sketch, rank, span } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(sample), Some(asked)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                sketch::settle_rank(rank, asked, *span)?;
+                if let Some(number) = summable(sample, "approx_quantile", *span)? {
+                    let held = approximate(number)
+                        .filter(|held| held.is_finite())
+                        .ok_or_else(|| {
+                            failed("approx_quantile", "a number no float can hold", *span)
+                        })?;
+                    sketch.offer(held);
+                }
+            }
         }
         Ok(())
     }
@@ -449,6 +498,10 @@ impl Accumulator {
                 parts,
                 span,
             } => counter::finish(*fold, held, parts, *span),
+            Self::Distinct { sketch } => Ok(sketch.answer()),
+            Self::Quantile { sketch, rank, .. } => {
+                Ok(rank.map_or(Value::None, |rank| sketch.answer(rank)))
+            }
         }
     }
 
@@ -466,7 +519,14 @@ impl Accumulator {
     #[cfg(test)]
     pub(crate) fn held(&self) -> usize {
         match self {
-            Self::Count { .. } | Self::Sum { .. } | Self::Mean { .. } | Self::Spread { .. } => 0,
+            Self::Count { .. }
+            | Self::Sum { .. }
+            | Self::Mean { .. }
+            | Self::Spread { .. }
+            // A sketch holds no value it was offered; what it keeps is
+            // bounded by its own size (ADR-0122 C2, C3), not by the group's.
+            | Self::Distinct { .. }
+            | Self::Quantile { .. } => 0,
             Self::Extreme { held, .. } => usize::from(held.is_some()),
             Self::Middle { held, runs, .. } => held.len().saturating_add(runs.len()),
             Self::Every { held } => held.len(),

@@ -45,12 +45,10 @@ impl Parser<'_> {
         } else {
             Some(Box::new(self.condition()?))
         };
-        // The counter folds order their values by an instant, written second.
-        let at = if fold.takes_an_instant() {
-            self.expect_punct(
-                Punct::Comma,
-                "`,` and the instant each value was observed at",
-            )?;
+        // The counter folds order their values by an instant, and a quantile is
+        // asked at a rank, each written second.
+        let at = if let Some(second) = fold.second() {
+            self.expect_punct(Punct::Comma, second)?;
             Some(Box::new(self.condition()?))
         } else {
             None

@@ -305,7 +305,7 @@ impl Session<'_> {
             // the group rather than about a record — so the star has nothing to
             // contribute here and the grammar has already refused one written
             // beside a fold.
-            let (rows, filled) = match folded.take() {
+            let (rows, filled, estimated) = match folded.take() {
                 Some(groups) => self.grouped_from(
                     transaction,
                     groups,
@@ -324,6 +324,7 @@ impl Session<'_> {
             if filled > 0 {
                 notes.push(Note::Filled { windows: filled });
             }
+            notes.extend(estimated);
             rows
         } else if let Some(wanted) = self.shaped(transaction, select)? {
             let mut projected = Vec::with_capacity(records.len());

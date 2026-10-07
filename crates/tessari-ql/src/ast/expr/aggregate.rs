@@ -52,6 +52,19 @@ pub enum Aggregate {
     /// Over nothing, `[]` and not `NONE`, by `sum`'s rule: an answer every
     /// caller has to write `?? []` after is the wrong answer.
     Collect,
+    /// `approx_distinct(<expr>)` — an estimate of how many distinct present
+    /// values there are (ADR-0122 C2).
+    ///
+    /// The only distinct count in the language, and named for what it is: an
+    /// exact one holds every value, which is what a fold over a large group
+    /// cannot afford. Over nothing, zero, by `count`'s rule.
+    ApproxDistinct,
+    /// `approx_quantile(<expr>, <rank>)` — an estimate of the value at the
+    /// rank, within a stated relative error (ADR-0122 C3).
+    ///
+    /// Numeric like `median`, which it estimates at any rank in space that does
+    /// not grow with the group. Over nothing, `NONE`, by `mean`'s rule.
+    ApproxQuantile,
 }
 
 /// How much a fold holds while its group is still arriving.
@@ -92,6 +105,8 @@ impl Aggregate {
         Self::Rate,
         Self::Delta,
         Self::Collect,
+        Self::ApproxDistinct,
+        Self::ApproxQuantile,
     ];
 
     /// How the fold is written.
@@ -110,6 +125,8 @@ impl Aggregate {
             Self::Rate => "rate",
             Self::Delta => "delta",
             Self::Collect => "collect",
+            Self::ApproxDistinct => "approx_distinct",
+            Self::ApproxQuantile => "approx_quantile",
         }
     }
 
@@ -128,7 +145,9 @@ impl Aggregate {
             | Self::Min
             | Self::Max
             | Self::Variance
-            | Self::Stddev => Retention::Constant,
+            | Self::Stddev
+            | Self::ApproxDistinct
+            | Self::ApproxQuantile => Retention::Constant,
             Self::Median | Self::Increase | Self::Rate | Self::Delta | Self::Collect => {
                 Retention::WholeGroup
             }
@@ -139,6 +158,25 @@ impl Aggregate {
     #[must_use]
     pub const fn takes_an_instant(self) -> bool {
         matches!(self, Self::Increase | Self::Rate | Self::Delta)
+    }
+
+    /// What the fold's second argument is, for a fold that takes one: the
+    /// instant a counter fold orders by, or the rank a quantile is asked at.
+    #[must_use]
+    pub const fn second(self) -> Option<&'static str> {
+        match self {
+            Self::Increase | Self::Rate | Self::Delta => {
+                Some("`,` and the instant each value was observed at")
+            }
+            Self::ApproxQuantile => Some("`,` and the rank, a number from 0 to 1"),
+            _ => None,
+        }
+    }
+
+    /// Whether the fold's answer is an estimate rather than exact.
+    #[must_use]
+    pub const fn estimates(self) -> bool {
+        matches!(self, Self::ApproxDistinct | Self::ApproxQuantile)
     }
 
     /// The fold a word spells, if it spells one.

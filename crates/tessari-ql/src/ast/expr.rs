@@ -178,8 +178,9 @@ pub enum ExprKind {
         /// records themselves rather than over a value in them.
         over: Option<Box<Expr>>,
         /// The instant each value was observed at, for the counter folds —
-        /// `increase(v, at)` orders its values by it (ADR-0088 §5). `None` for
-        /// every other fold.
+        /// `increase(v, at)` orders its values by it (ADR-0088 §5) — or the rank
+        /// `approx_quantile(v, q)` is asked at (ADR-0122 C3). `None` for every
+        /// other fold.
         at: Option<Box<Expr>>,
         /// Where it was written.
         span: Span,

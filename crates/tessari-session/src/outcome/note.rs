@@ -157,6 +157,22 @@ pub enum Note {
         /// Whether it is a search's member rather than a field's index.
         member: bool,
     },
+    /// A fold in this answer is an estimate, and this is its bound (ADR-0122
+    /// C4) — one note per approximate fold the read holds.
+    ///
+    /// The number looks exactly like an exact one, so the note is the only
+    /// place the answer says it is not.
+    Estimated {
+        /// The fold: `approx_distinct` or `approx_quantile`.
+        fold: &'static str,
+        /// How it estimates: `hll-14` or `ddsketch`.
+        method: &'static str,
+        /// The declared bound on its relative error.
+        bound: &'static str,
+        /// For a quantile, whether a sketch folded buckets to keep its size,
+        /// past which the ranks in them are no longer within the bound.
+        collapsed: Option<bool>,
+    },
 }
 
 impl Note {
@@ -175,6 +191,7 @@ impl Note {
             Self::Filled { .. } => "filled",
             Self::Path { .. } => "path",
             Self::NeedsRebuild { .. } => "needs-rebuild",
+            Self::Estimated { .. } => "estimated",
         }
     }
 
@@ -250,6 +267,28 @@ impl Note {
                          REBUILD INDEX {index} ON {table} rebuilds it"
                     )
                 }
+            }
+            Self::Estimated {
+                fold,
+                method,
+                bound,
+                collapsed,
+            } => {
+                let what = if *fold == "approx_quantile" {
+                    "the value at its rank"
+                } else {
+                    "the count"
+                };
+                let caveat = if *collapsed == Some(true) {
+                    "; buckets were folded to keep the sketch's size, so the lowest ranks \
+                     are outside that bound"
+                } else {
+                    ""
+                };
+                format!(
+                    "`{fold}` is an estimate by {method}, within a relative error of {bound} \
+                     of {what}{caveat}"
+                )
             }
             Self::Gathered { table, shards } => format!(
                 "shard{} {} of `{table}` {} read from {} leader{} on other nodes, each when \

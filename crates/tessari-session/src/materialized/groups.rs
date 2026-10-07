@@ -105,7 +105,7 @@ impl Session<'_> {
         members: Vec<(RecordId, Value)>,
     ) -> Result<()> {
         let select = &kept.understood.select;
-        let (mut rows, _) = self.grouped(
+        let (mut rows, ..) = self.grouped(
             transaction,
             members,
             select.projection.written(),
