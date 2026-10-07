@@ -187,7 +187,27 @@ where
                 Ok(_) => {}
             },
             _ = commits.changed() => due = true,
-            () = tokio::time::sleep(feed::PATIENCE_BETWEEN_ROUNDS) => {}
+            () = tokio::time::sleep(feed::PATIENCE_BETWEEN_ROUNDS) => {
+                // A skip right after a delivery waits out the patience, and
+                // nothing may land to start another round: say it now, from
+                // what the feed holds, without touching the store (Q-956).
+                let reached = (theirs >= frame::NARROWED)
+                    .then(|| following.progress(std::time::Instant::now()))
+                    .flatten();
+                if let Some(at) = reached {
+                    let body = push::Progressed {
+                        sequence: at.sequence.get(),
+                        cursor: at.cursor,
+                    }
+                    .encode();
+                    tokio::time::timeout(
+                        READING,
+                        frame_async::write(&mut writer, frame::Kind::Progress, &body),
+                    )
+                    .await
+                    .map_err(|_| Error::Io(std::io::ErrorKind::TimedOut.into()))??;
+                }
+            }
         }
     }
 }

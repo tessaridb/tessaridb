@@ -942,6 +942,60 @@ fn a_narrowed_subscription_sends_what_matches_and_says_how_far_it_read() {
     assert!(progressed.sequence < change.sequence);
 }
 
+/// A skip right after a delivery is said once the feed has been quiet, with
+/// nothing landing after it: the position is not held back until the next
+/// commit, which may never come (Q-956).
+#[test]
+fn a_skip_after_a_delivery_is_said_while_the_feed_is_quiet() {
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (_node, address) = serving(Arc::clone(&db));
+    let mut writer = Client::connect(&address).unwrap();
+    writer.run(READY, None).unwrap();
+    let mut feed = selected(&address)
+        .follow(&Follow {
+            from: 0,
+            table: Some("users".to_owned()),
+            cursor: None,
+            condition: Some(tessari_wire::Narrow {
+                text: "chat = $chat".to_owned(),
+                parameters: [("chat".to_owned(), Value::from("a"))].into(),
+            }),
+        })
+        .unwrap();
+    let (sent, waiting) = mpsc::channel();
+    drop(std::thread::spawn(move || {
+        while let Ok(Some(pushed)) = feed.receive() {
+            if sent.send(pushed).is_err() {
+                break;
+            }
+        }
+    }));
+    let next = || {
+        waiting
+            .recv_timeout(Duration::from_secs(5))
+            .expect("nothing arrived")
+    };
+    writer.run("CREATE users:1 = { chat: 'a' };", None).unwrap();
+    writer.run("CREATE users:2 = { chat: 'b' };", None).unwrap();
+    let skipped_to = db
+        .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+        .unwrap()
+        .get();
+    let delivered = loop {
+        if let tessari_wire::Sent::Change(change) = next() {
+            break change;
+        }
+    };
+    assert_eq!(delivered.id, "1");
+    let tessari_wire::Sent::Progress(progressed) = next() else {
+        panic!("only the skip follows the match");
+    };
+    assert_eq!(
+        progressed.sequence, skipped_to,
+        "the skip is said, unprompted"
+    );
+}
+
 /// A frame kind reaches only a peer whose greeting carried the minor that
 /// introduced it (protocol §2.3): a client greeting with minor 3 is never sent a
 /// `Progress` frame, even on a feed that skipped changes, and reads the match

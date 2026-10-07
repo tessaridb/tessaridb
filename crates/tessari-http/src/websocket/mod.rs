@@ -260,7 +260,17 @@ async fn follow(mut socket: WebSocket, node: &Shared, presented: Presented, body
                 Some(Ok(_)) => {}
             },
             _ = commits.changed() => due = true,
-            () = tokio::time::sleep(feed::PATIENCE_BETWEEN_ROUNDS) => {}
+            () = tokio::time::sleep(feed::PATIENCE_BETWEEN_ROUNDS) => {
+                // A skip right after a delivery waits out the patience, and
+                // nothing may land to start another round: say it now, from
+                // what the feed holds, without touching the store (Q-956).
+                if let Some(at) = following.progress(std::time::Instant::now()) {
+                    let text = follow::progress(at.sequence.get(), at.cursor.as_deref());
+                    if socket.send(Message::Text(text.into())).await.is_err() {
+                        return;
+                    }
+                }
+            }
         }
     }
 }
