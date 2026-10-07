@@ -6956,6 +6956,33 @@ that wants to retry later updates the field when it releases. A value in `f`
 that is not a datetime is no delay at all, so a mistyped value cannot keep a
 record waiting forever with nothing in an error state.
 
+### Work on a schedule: a queue record as the timer
+
+There is no schedule statement. Periodic work is one queue record whose `NOT BEFORE` field is its next run:
+
+```tessariql
+DEFINE QUEUE ticks TIMEOUT 5m NOT BEFORE next;
+CREATE ticks:1 = { job: 'cleanup', next: time::now(), every: 3600 };
+
+-- each worker, in a loop:
+CLAIM FROM ticks;
+-- … the work …
+BEGIN;
+UPDATE ticks:1 SET next = time::from_unix(time::unix(time::now()) + every);
+RELEASE ticks:1;
+COMMIT;
+```
+
+**Once per period, cluster-wide.** A claim is a write, and a write is fenced by leadership, so two workers on two
+nodes cannot both hold the tick.
+
+**At least once, never lost.** A worker that dies holding the tick loses it when the hold lapses, after `TIMEOUT`,
+and another worker claims it. Across a leader change that can mean one run twice; it never means a run skipped.
+
+**Missed runs.** A tick whose `next` passed while no worker ran is claimable once. Re-arming from `time::now()`
+coalesces the backlog into that one run. Re-arming from `next + every` would replay every missed period instead,
+one claim each, which is the right choice only when each period's run matters on its own.
+
 ### Saying who you are
 
 ```tessariql
