@@ -1,6 +1,7 @@
 //! Tables and collections whose records expire (G069 SG2, ADR-0122 Part A).
 
 mod declaration;
+mod gathered;
 mod reads;
 mod unique;
 mod writes;

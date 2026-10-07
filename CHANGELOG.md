@@ -13,6 +13,19 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.33.1-beta — 2026-10-07
+
+### Fixed
+
+- `TTL`, `PERSIST` and `INCR` inside a transaction on an expiring table read the instant the commit will keep or
+  assign. They used to answer as if the record never expired.
+- A narrowed feed that skips changes right after a delivery says how far it read while it is quiet. That `Progress`
+  used to wait for the next commit, so a feed with no further writes kept its old resume point.
+
+### Tested
+
+- A gathered read of a split table answers no record past its instant, from any shard's leader.
+
 ## 0.33.0-beta — 2026-10-07
 
 ### Added

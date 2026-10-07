@@ -98,6 +98,48 @@ pub(crate) fn admit(
     Ok(Some(carried))
 }
 
+/// The instant [`admit`] will settle for this transaction's own present write
+/// at `address` that carries none of its own, as the transaction sees it now:
+/// what `TTL`, `PERSIST` and `INCR` answer before the commit (Q-953).
+///
+/// The same branches as [`admit`], read at this transaction's snapshot rather
+/// than the committed state the commit builds on; a second writer of the
+/// record between the two is the ordinary write–write conflict, so the commit
+/// cannot settle another instant for a record it lands.
+///
+/// # Errors
+///
+/// A backend or catalog error.
+pub(crate) fn pending(
+    transaction: &mut crate::transaction::Transaction<'_>,
+    address: &RecordAddress,
+    lifetime: Option<Lifetime>,
+    now: u64,
+) -> Result<Option<u64>> {
+    let Some(definition) = Catalog::new(transaction).table(address.table)? else {
+        return Ok(None);
+    };
+    if definition.namespace != address.namespace || definition.database != address.database {
+        return Ok(None);
+    }
+    let Some(expire) = definition.expire else {
+        return Ok(None);
+    };
+    Ok(match lifetime {
+        Some(Lifetime::Cleared) => None,
+        Some(Lifetime::Carried(at)) => Some(at),
+        None => match transaction.read_stamped_at(address)? {
+            Some(held) if !held.value().is_tombstone() && !held.is_expired_at(now) => {
+                held.expires()
+            }
+            _ => expire
+                .default_lifetime()
+                .map(|lifetime| now.saturating_add(millis(lifetime))),
+        },
+    }
+    .filter(|at| *at > now))
+}
+
 /// The tables `record` writes that declare expiry, by tenancy and id.
 fn declared_in(
     view: &mut crate::transaction::Transaction<'_>,

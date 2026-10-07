@@ -711,3 +711,35 @@ fn an_anonymous_subscriber_is_told_nothing_by_a_closed_store() {
         "the subscriber was not told why it is following nothing: {text}"
     );
 }
+
+#[test]
+fn a_skip_after_a_delivery_is_said_on_a_narrowed_watch_while_it_is_quiet() {
+    // Q-956: a narrowed feed that delivered a match and then skipped a change
+    // says how far it read once quiet, with nothing landing after the skip.
+    let (_node, address) = node();
+    assert_eq!(script(&address, READY), 200, "the fixture did not build");
+    let (mut stream, status, _) = upgrade(&address);
+    assert_eq!(status, 101);
+    send(
+        &mut stream,
+        true,
+        1,
+        br#"{"namespace":"prod","database":"library","from":0,"table":"users","condition":"name = $name","parameters":{"name":"'ada'"}}"#,
+    );
+    assert_eq!(
+        script(
+            &address,
+            "USE NAMESPACE prod; USE DATABASE library; CREATE users:1 = { name: 'ada' }; \
+             CREATE users:2 = { name: 'alan' };"
+        ),
+        200
+    );
+    let mut said = Vec::new();
+    while said.len() < 2 {
+        let (_, opcode, payload) = receive(&mut stream);
+        assert_eq!(opcode, 1, "a feed sends text frames");
+        said.push(String::from_utf8(payload).unwrap());
+    }
+    assert!(said[0].contains(r#""became":"written""#), "{said:?}");
+    assert!(said[1].starts_with(r#"{"progress":"#), "{said:?}");
+}
