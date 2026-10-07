@@ -153,10 +153,69 @@ fn folds(condition: Option<&str>) -> tessari_session::Reduce {
         }),
         keys: vec![text("note")],
         folds: vec![
-            tessari_session::Folded::named("count", None).unwrap(),
-            tessari_session::Folded::named("sum", Some(text("total"))).unwrap(),
+            tessari_session::Folded::named("count", None, None).unwrap(),
+            tessari_session::Folded::named("sum", Some(text("total")), None).unwrap(),
         ],
+        samples: false,
     }
+}
+
+/// ADR-0121 D6 — the holding folds round-trip, a counter fold with its instant
+/// and the samples byte; a read with no counter fold encodes as it always did,
+/// so what an older leader is sent does not depend on the new flag.
+#[test]
+fn the_holding_folds_round_trip_and_only_a_counter_fold_carries_the_samples_byte() {
+    let text = |text: &str| Some((text.to_owned(), tessari_session::Parameters::new()));
+    let reduce = |samples: bool| tessari_session::Reduce {
+        visible: None,
+        condition: None,
+        keys: Vec::new(),
+        folds: vec![
+            tessari_session::Folded::named("median", text("n"), None).unwrap(),
+            tessari_session::Folded::named("collect", text("n"), None).unwrap(),
+            tessari_session::Folded::named("increase", text("n"), text("at")).unwrap(),
+        ],
+        samples,
+    };
+    let asking = |reduce: tessari_session::Reduce| Gather {
+        namespace: NamespaceId::new(1),
+        database: DatabaseId::new(2),
+        table: TableId::new(3),
+        shard: ShardId::new(4),
+        from: None,
+        to: None,
+        after: None,
+        pushed: None,
+        enough: None,
+        reduce: Some(reduce),
+        ordered: None,
+        counting: None,
+    };
+    for samples in [false, true] {
+        let asked = asking(reduce(samples));
+        assert_eq!(Gather::decode(&asked.encode()).unwrap(), asked);
+    }
+    let summary = asking(reduce(false)).encode();
+    let samples = asking(reduce(true)).encode();
+    let differ: Vec<usize> = (0..summary.len())
+        .filter(|at| summary.get(*at) != samples.get(*at))
+        .collect();
+    assert_eq!(differ.len(), 1, "one byte says which");
+    let mut third = samples;
+    *third.get_mut(*differ.first().unwrap()).unwrap() = 2;
+    assert!(matches!(Gather::decode(&third), Err(Error::Malformed)));
+    // No counter fold: the flag has nowhere to go.
+    let constant = |samples| tessari_session::Reduce {
+        samples,
+        ..folds(None)
+    };
+    assert_eq!(
+        asking(constant(false)).encode(),
+        asking(constant(true)).encode()
+    );
+    // A counter fold without its instant is not a request this build reads.
+    assert!(tessari_session::Folded::named("increase", text("n"), None).is_none());
+    assert!(tessari_session::Folded::named("median", text("n"), text("at")).is_none());
 }
 
 #[test]

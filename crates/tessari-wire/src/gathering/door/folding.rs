@@ -12,13 +12,15 @@ fn a_shard_is_folded_page_by_page_and_no_record_travels() {
         condition: None,
         keys: Vec::new(),
         folds: vec![
-            tessari_session::Folded::named("count", None).unwrap(),
+            tessari_session::Folded::named("count", None, None).unwrap(),
             tessari_session::Folded::named(
                 "sum",
                 Some(("n".to_owned(), tessari_session::Parameters::new())),
+                None,
             )
             .unwrap(),
         ],
+        samples: false,
     };
     let first = ask(
         &authority,
@@ -146,7 +148,8 @@ fn a_page_of_groups_past_the_budget_declines() {
                 visible: None,
                 condition: None,
                 keys: Vec::new(),
-                folds: vec![tessari_session::Folded::named("count", None).unwrap()],
+                folds: vec![tessari_session::Folded::named("count", None, None).unwrap()],
+                samples: false,
             }),
             ..asking(table, 1)
         },
@@ -212,13 +215,15 @@ fn a_bounded_or_narrowed_gather_moves_fewer_bytes() {
             condition: None,
             keys: Vec::new(),
             folds: vec![
-                tessari_session::Folded::named("count", None).unwrap(),
+                tessari_session::Folded::named("count", None, None).unwrap(),
                 tessari_session::Folded::named(
                     "sum",
                     Some(("n".to_owned(), tessari_session::Parameters::new())),
+                    None,
                 )
                 .unwrap(),
             ],
+            samples: false,
         }),
         ..asking(table, 1)
     });

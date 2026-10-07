@@ -74,7 +74,7 @@ impl Accumulator {
                 moments.squares.state()?,
             ])),
             Self::Extreme { held, .. } => Some(held.clone().unwrap_or(Value::None)),
-            _ => None,
+            _ => self.holding_state(),
         }
     }
 
@@ -148,7 +148,7 @@ impl Accumulator {
                 }
             }
             Self::Extreme { .. } => self.offer(state)?,
-            _ => return Ok(false),
+            _ => return Ok(self.merge_holding(state).unwrap_or(false)),
         }
         Ok(true)
     }

@@ -53,21 +53,29 @@ pub struct Reduce {
     pub keys: Vec<Portable>,
     /// Every fold the read's projection holds, in the order a walk meets them.
     pub folds: Vec<Folded>,
+    /// Whether a counter fold sends its samples rather than its summary — the
+    /// second asking, after two shards' samples interleaved in time
+    /// (ADR-0121 D3).
+    pub samples: bool,
 }
 
 /// One fold of a [`Reduce`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Folded {
-    /// Which fold — one of the seven that merge exactly.
+    /// Which fold — one of the twelve that merge exactly.
     pub fold: Aggregate,
     /// What it folds over; `None` for `count(*)`.
     pub over: Option<Portable>,
+    /// The instant each value was observed at, which a counter fold and only
+    /// a counter fold takes.
+    pub at: Option<Portable>,
 }
 
 impl Folded {
-    /// A fold named by its spelling, when it is one that merges exactly.
+    /// A fold named by its spelling, when it is one that merges exactly and
+    /// `at` is there exactly when the fold takes an instant.
     #[must_use]
-    pub fn named(spelling: &str, over: Option<Portable>) -> Option<Self> {
+    pub fn named(spelling: &str, over: Option<Portable>, at: Option<Portable>) -> Option<Self> {
         let fold = [
             Aggregate::Count,
             Aggregate::Sum,
@@ -76,10 +84,23 @@ impl Folded {
             Aggregate::Max,
             Aggregate::Variance,
             Aggregate::Stddev,
+            Aggregate::Median,
+            Aggregate::Collect,
+            Aggregate::Increase,
+            Aggregate::Rate,
+            Aggregate::Delta,
         ]
         .into_iter()
         .find(|fold| fold.spelling() == spelling)?;
-        Some(Self { fold, over })
+        (fold.takes_an_instant() == at.is_some()).then_some(Self { fold, over, at })
+    }
+
+    /// Whether this fold holds its group rather than a constant — what a
+    /// leader folds it into is asked only of a build that sends it
+    /// (ADR-0121 D6).
+    #[must_use]
+    pub fn holds_its_group(&self) -> bool {
+        self.fold.retention() == tessari_ql::Retention::WholeGroup
     }
 }
 
@@ -123,7 +144,11 @@ pub fn reducing(
         .collect::<core::result::Result<Vec<_>, _>>()?;
     let mut folds = Vec::with_capacity(reduce.folds.len());
     for folded in &reduce.folds {
-        folds.push((folded.fold, folded.over.as_ref().map(read).transpose()?));
+        folds.push((
+            folded.fold,
+            folded.over.as_ref().map(read).transpose()?,
+            folded.at.as_ref().map(read).transpose()?,
+        ));
     }
     let session = Session::new(store);
     let mut transaction = store.begin()?;
@@ -165,11 +190,11 @@ pub fn reducing(
             // message is never shown — the asker's own fold names the place.
             let held = folds
                 .iter()
-                .map(|(fold, _)| Accumulator::for_aggregate(*fold, tessari_ql::Span::new(0, 0)))
+                .map(|(fold, ..)| Accumulator::for_aggregate(*fold, tessari_ql::Span::new(0, 0)))
                 .collect();
             (id.clone(), held)
         });
-        for ((_, over), accumulator) in folds.iter().zip(entry.1.iter_mut()) {
+        for ((_, over, at), accumulator) in folds.iter().zip(entry.1.iter_mut()) {
             let value = match over {
                 None => Value::Bool(true),
                 Some(over) => {
@@ -179,6 +204,18 @@ pub fn reducing(
                     };
                     value
                 }
+            };
+            // Offered as the asker's walk offers it: the value with the instant
+            // it was observed at.
+            let value = match at {
+                Some(at) => {
+                    let Ok(instant) = session.evaluate_in(&mut transaction, at, Scope::of(&record))
+                    else {
+                        return Ok(None);
+                    };
+                    Value::Array(vec![value, instant])
+                }
+                None => value,
             };
             if accumulator.offer(&value).is_err() {
                 return Ok(None);
@@ -190,7 +227,13 @@ pub fn reducing(
     for (key, (first, held)) in groups {
         let Some(states) = held
             .iter()
-            .map(Accumulator::state)
+            .map(|accumulator| {
+                if reduce.samples {
+                    accumulator.samples().or_else(|| accumulator.state())
+                } else {
+                    accumulator.state()
+                }
+            })
             .collect::<Option<Vec<_>>>()
         else {
             return Ok(None);
@@ -235,20 +278,22 @@ pub(crate) fn reduce_of(select: &tessari_ql::Select) -> Option<Reduce> {
         let ExprKind::Fold { fold, over, at, .. } = &held.kind else {
             return None;
         };
-        if at.is_some() {
-            return None;
-        }
         let over = match over {
             Some(over) => Some(tessari_ql::portable(over)?),
             None => None,
         };
-        folds.push(Folded::named(fold.spelling(), over)?);
+        let at = match at {
+            Some(at) => Some(tessari_ql::portable(at)?),
+            None => None,
+        };
+        folds.push(Folded::named(fold.spelling(), over, at)?);
     }
     Some(Reduce {
         visible: None,
         condition,
         keys,
         folds,
+        samples: false,
     })
 }
 
