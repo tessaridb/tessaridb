@@ -591,12 +591,47 @@
     const list = at("changes");
     list.insertBefore(line, list.firstChild);
   }
+  function progressed(what) {
+    const line = made("li");
+    line.classList.add("progress");
+    line.textContent = "#" + String(what.progress) + "  read this far" + (what.cursor === void 0 ? "" : "  cursor " + what.cursor);
+    if (typeof what.cursor === "string") {
+      at("cursor").value = what.cursor;
+    } else if (typeof what.progress === "number") {
+      at("from").value = String(what.progress + 1);
+    }
+    const list = at("changes");
+    list.insertBefore(line, list.firstChild);
+  }
+  function boundValues() {
+    const written = value("condition-values").trim();
+    if (written === "") {
+      return {};
+    }
+    let read;
+    try {
+      read = JSON.parse(written);
+    } catch {
+      return "the values are not JSON";
+    }
+    if (typeof read !== "object" || read === null || Array.isArray(read)) {
+      return "the values are an object of names to TessariQL literals";
+    }
+    const values = {};
+    for (const [name, held5] of Object.entries(read)) {
+      if (typeof held5 !== "string") {
+        return `each value is a TessariQL literal written as a string, such as "'a'" or "3"`;
+      }
+      values[name] = held5;
+    }
+    return values;
+  }
   function where() {
     const address = new URL(WATCH_ROUTE, window.location.href);
     address.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     return address;
   }
-  function asked() {
+  function asked(values) {
     const wanted2 = {
       namespace: value("namespace"),
       database: value("database"),
@@ -609,6 +644,11 @@
     const cursor = value("cursor");
     if (cursor !== "") {
       wanted2.cursor = cursor;
+    }
+    const condition = value("condition");
+    if (condition !== "") {
+      wanted2.condition = condition;
+      wanted2.parameters = values;
     }
     const carried = token();
     if (carried !== null) {
@@ -627,6 +667,11 @@
     at("follow").addEventListener("click", () => {
       stop();
       clear("changes");
+      const values = boundValues();
+      if (typeof values === "string") {
+        say("watch-status", values, true);
+        return;
+      }
       const socket = new WebSocket(where());
       following = socket;
       toldWhy = false;
@@ -634,7 +679,7 @@
       disable("stop", false);
       say("watch-status", "connecting…");
       socket.addEventListener("open", () => {
-        socket.send(JSON.stringify(asked()));
+        socket.send(JSON.stringify(asked(values)));
         say("watch-status", "following");
       });
       socket.addEventListener("message", (event) => {
@@ -653,6 +698,10 @@
         if (typeof what.error === "string") {
           say("watch-status", what.error, true);
           toldWhy = true;
+          return;
+        }
+        if (typeof what.progress === "number") {
+          progressed(what);
           return;
         }
         change(what);

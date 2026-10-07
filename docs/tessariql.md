@@ -2125,6 +2125,51 @@ refused, writing neither the removal nor the replacement. The same holds for
 `REQUIRED`: a field cannot become required while a stored record leaves it empty,
 and the refusal names every record that does, not the first one it meets.
 
+### Records that expire: `EXPIRE` on a table
+
+```tessariql
+DEFINE TABLE message (chat string, body string) EXPIRE AFTER 7d;
+DEFINE COLLECTION drafts EXPIRE;
+CREATE message:1 = { chat: 'a', body: 'hi' };
+CREATE drafts:1 = { text: 'later' } EXPIRE 1h;
+UPDATE message:1 SET body = 'hello';
+UPDATE message:1 SET body = 'kept' EXPIRE NONE;
+ALTER TABLE message SET EXPIRE AFTER 30d;
+ALTER TABLE message DROP EXPIRE;
+```
+
+A table or a collection may declare that its records expire. **It is opt-in.** A table that never says `EXPIRE`
+stores, writes and reads exactly as before, and nothing is kept per record for it.
+
+- **`EXPIRE AFTER d`** gives every record **created** from then on the instant `commit + d`. A record that already
+  stands keeps the instant it has.
+- **`EXPIRE`** with no `AFTER` lets records carry an instant without giving them one by default.
+- **A write may say its own instant**: `EXPIRE <duration>` or `EXPIRE <datetime>` after the value, on `CREATE`,
+  `INSERT`, `UPSERT` and `UPDATE`. `EXPIRE NONE` makes the record permanent.
+  - An instant that is not in the future is refused (`InvalidExpiry`) rather than writing a record nobody can read.
+  - The clause on a table that did not declare expiry is refused (`TableDoesNotExpire`).
+- **A plain write keeps the instant.** `UPDATE`, `MERGE`, a whole-record replace and an `UPSERT` that updates never
+  silently make an expiring record permanent, and never extend it. A sliding lifetime is said out loud:
+  `UPDATE session:x SET seen = time::now() EXPIRE 30m`.
+- **Declaring is never retroactive.** `DEFINE`/`ALTER … SET EXPIRE` changes no stored record, and its answer says
+  `existing: 'unchanged'`. A new default applies to records created after it.
+- **`DROP EXPIRE` stops new instants and lets the stored ones stand** (`existing: 'still expire at their instants'`):
+  a record an application promised would disappear still does. `PERSIST t:x` or `EXPIRE NONE` makes one permanent.
+
+An expired record is gone to every reader at its instant: scans, point reads, every index, joins, subqueries,
+`FETCH`, a gathered read and a follower. The instant travels with the record, so a follower hides it at the same
+moment. The removal pass reclaims the space later and reports what it removed. Until it runs, a full-text score's
+statistics and a materialized view built from the log can still count the record. The **record set** of every
+answer never includes it.
+
+`EXPIRE`, `PERSIST` and `TTL` on one record work as they do on a key (§6). `INFO FOR TABLE` reports
+`expire: { after, state }` for a table that declared it, and its `definition` re-creates the clause.
+
+Expiry is for tables and collections, including a node kind in a graph. Every other kind is refused by name
+(`ExpiryNotOnThisKind`): spaces and topics keep their own `EXPIRE` and `RETAIN`, and a series has its floor. On a
+store an earlier build wrote, the declaration waits for `ALTER STORE FINALIZE FORMAT` (format 7), because a leader of
+an older build would apply a plain write without keeping the instant. A new store is at format 7 already.
+
 ### Asking whether the records still fit: `CHECK TABLE`
 
 ```tessariql
@@ -4816,6 +4861,23 @@ rollup was declared is refused with `Conflict` and succeeds on retry, folded in.
 The raw series ageing past its floor does not change a rollup, which may keep
 windows for longer than the raw records last.
 
+A rollup may also keep **`approx_distinct`** and **`approx_quantile`**:
+
+```
+DEFINE ROLLUP hourly_pages FROM visits WINDOW 1h BY page
+    COMPUTE count(*) AS n, approx_distinct(visitor) AS users, approx_quantile(ms, 0.99) AS p99
+    RETAIN 365d;
+SELECT page, approx_distinct(users) AS users, approx_quantile(p99, 0.5) AS median_ms FROM hourly_pages GROUP BY page;
+```
+
+The row holds each column's estimate. The sketch it came from is kept beside the row, written by the same
+transaction as the raw record. Estimates do not add up: two hours of 1 000 distinct users each are not 2 000. So
+folding a sketch column **with its own fold** merges the kept sketches, and the answer equals the fold over the raw
+series, bit for bit. Any other fold over the column reads the estimates as numbers.
+
+- A reader who may not see the column merges nothing from beside its rows.
+- On a store an earlier build wrote, declaring such a rollup waits for `ALTER STORE FINALIZE FORMAT` (format 7).
+
 ### Counting per window
 
 `GROUP BY` takes an **expression**, so a window is a key like any other:
@@ -4933,6 +4995,28 @@ SELECT city, count(*) AS n FROM users GROUP BY city ORDER BY n DESC LIMIT 3;
 | `stddev(<expr>)` | its square root, sample for the same reason |
 | `median(<expr>)` | the middle number, or the mean of the two middles; over no numbers, `NONE` |
 | `collect(<expr>)` | every present value, as an array, in the order the records arrived; over nothing, `[]` |
+| `approx_distinct(<expr>)` | an **estimate** of how many distinct present values; exact up to 1 024 of them; over nothing, `0` |
+| `approx_quantile(<expr>, q)` | an **estimate** of the value at rank `q` (0 to 1) within 1 % of the true one; over no numbers, `NONE` |
+
+**The two `approx_` folds are the ones that say so.** They answer in bounded memory however many records they
+read, and every answer that used one carries a note:
+
+```
+SELECT page, approx_distinct(visitor) AS users, approx_quantile(ms, 0.99) AS p99 FROM visits GROUP BY page;
+```
+
+- **`approx_distinct`** keeps the exact set of values up to 1 024 of them. Past that it keeps a HyperLogLog of
+  16 384 registers, with a standard error of about 0.8 %; measured over a million values, the answer stayed within
+  2.5 %.
+- **`approx_quantile(x, q)`** keeps a DDSketch with relative accuracy 1 %, so the answer is within 1 % of the
+  value at that rank. The rank `q` is a number from 0 to 1, the same for every record. A rank outside 0 to 1, or
+  one that is not a number, is refused.
+- The note is `estimated { fold, method, bound, collapsed }`. `collapsed` is `true` only when a quantile sketch
+  had to fold buckets together: that takes data spanning about 10¹⁷ in magnitude, and the ranks in the folded
+  buckets are no longer within the bound.
+- **The same records give the same answer however the work was split.** On a split table each leader folds its own
+  shards and the node merges the sketches, and the merged state is the one a single node reading every record
+  reaches. A rollup merges them the same way.
 
 **`variance` and `stddev` are the sample forms**, dividing by `n − 1`, because a
 table's rows are usually a sample of something — the same reason the SQL
@@ -8493,6 +8577,7 @@ The kinds include:
 | `nearing-ceiling` | a held read is four fifths of the way to the ceiling that will refuse it, so a view reading fine today stops working as the table grows (§6d) |
 | `path` | the answer is a shortest path, and this is how many steps it took and what they cost (§4a, *The shortest path*) |
 | `needs-rebuild` | a search index this read met may hold an earlier tokenizer's terms: a field's index was not answered from (the read scanned) and a search's member was read and can miss records; the message names the statement that rebuilds it (§4, *Which tokenizer built an index*) |
+| `estimated` | an `approx_distinct` or `approx_quantile` answered: `fold`, `method` (`hll-14` or `ddsketch`), the declared `bound`, and whether a quantile sketch `collapsed` (§5, *One answer per group*) |
 
 **`fell-back` fires on an index that declined, never on a table that has none.**
 A bounded ordered read over an unindexed table is the most ordinary read in the
