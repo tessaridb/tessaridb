@@ -111,13 +111,16 @@ where
                             });
                         // How far a narrowed feed read past what it sent, when
                         // it has said nothing for a while.
-                        let reached = open.progress(std::time::Instant::now()).map(|at| {
-                            push::Progressed {
-                                sequence: at.sequence.get(),
-                                cursor: at.cursor,
-                            }
-                            .encode()
-                        });
+                        let reached = (theirs >= frame::NARROWED)
+                            .then(|| open.progress(std::time::Instant::now()))
+                            .flatten()
+                            .map(|at| {
+                                push::Progressed {
+                                    sequence: at.sequence.get(),
+                                    cursor: at.cursor,
+                                }
+                                .encode()
+                            });
                         ((attached.detach(), open), round, frames, reached)
                     },
                 )

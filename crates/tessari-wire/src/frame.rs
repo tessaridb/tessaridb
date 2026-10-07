@@ -82,7 +82,7 @@ pub(crate) const MAJOR: u8 = 1;
 /// sends is worse than the gap**: a peer that believed this build could redirect
 /// would have been believing something false. This build sends one, so the minor
 /// moves with the sender and not with the frame.
-pub(crate) const MINOR: u8 = 3;
+pub(crate) const MINOR: u8 = 4;
 
 /// The minor at which a peer can be sent a [`Kind::Elsewhere`] frame.
 ///
@@ -123,6 +123,17 @@ pub(crate) const CODES: u8 = 3;
 
 /// This build's node classes the refusals this build's client reads.
 const _: () = assert!(MINOR >= CODES);
+
+/// The minor at which a subscription may carry a condition and be sent a
+/// [`Kind::Progress`] (ADR-0122 B3).
+///
+/// Asked on both sides: a node below it would ignore the condition's bytes and
+/// deliver every change, so the client refuses to send one; and a node sends
+/// progress only to a client at or above it.
+pub(crate) const NARROWED: u8 = 4;
+
+/// This build's node narrows the feeds this build's client asks for.
+const _: () = assert!(MINOR >= NARROWED);
 
 /// The bytes a refusal body starts with when it carries a class: one, from
 /// `0` (the node could not class it) to `9`. A message is UTF-8 prose and never

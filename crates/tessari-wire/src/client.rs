@@ -309,6 +309,14 @@ impl Client {
     /// Returns [`Error::Refused`] carrying the node's own words when the table
     /// is not one it can watch, and the stream's failure otherwise.
     pub fn follow(mut self, asked: &Follow) -> Result<Feed> {
+        // An older node would read past the condition and deliver every
+        // change — the wrong answer, silently — so it is never sent one.
+        if asked.condition.is_some() && self.minor < frame::NARROWED {
+            return Err(Error::NodeTooOld {
+                found: self.minor,
+                needed: frame::NARROWED,
+            });
+        }
         frame::write(&mut self.writer, frame::Kind::Subscribe, &asked.encode())?;
         Ok(Feed {
             reader: self.reader,
