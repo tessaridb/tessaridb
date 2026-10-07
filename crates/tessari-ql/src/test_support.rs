@@ -37,7 +37,7 @@ mod erasing;
 use crate::ast::{
     CreateTarget, Edit, Expr, ExprKind, FieldPath, InfoSubject, JoinSide, Name, Projection,
     ReachRef, RecordTarget, Script, Select, SetCondition, Source, Statement, StatementKind,
-    TableRef, UserChange, UserGrant, Written,
+    TableRef, UserChange, UserGrant, WriteExpiry, Written,
 };
 use crate::token::Span;
 use erasing::{erase_expr, erase_reach, erase_select};
@@ -419,7 +419,9 @@ fn erase_statement(statement: &mut Statement) {
             table,
             columns,
             rows,
+            expire,
         } => {
+            erase_write_expiry(expire.as_mut());
             erase_table(table);
             for column in columns.iter_mut() {
                 erase_name(column);
@@ -430,7 +432,13 @@ fn erase_statement(statement: &mut Statement) {
                 }
             }
         }
-        StatementKind::Create { target, value, .. } => {
+        StatementKind::Create {
+            target,
+            value,
+            expire,
+            ..
+        } => {
+            erase_write_expiry(expire.as_mut());
             match target {
                 CreateTarget::Named(named) => erase_record(named),
                 CreateTarget::Generated(table) => erase_table(table),
@@ -462,7 +470,19 @@ fn erase_statement(statement: &mut Statement) {
                 erase_expr(by);
             }
         }
-        StatementKind::Update { target, edit, .. } | StatementKind::Upsert { target, edit, .. } => {
+        StatementKind::Update {
+            target,
+            edit,
+            expire,
+            ..
+        }
+        | StatementKind::Upsert {
+            target,
+            edit,
+            expire,
+            ..
+        } => {
+            erase_write_expiry(expire.as_mut());
             erase_record(target);
             match edit {
                 Edit::Whole(value) | Edit::Merge(value) => erase_expr(value),
@@ -623,6 +643,15 @@ fn erase_table(table: &mut TableRef) {
 /// A route into a record.
 fn erase_path(path: &mut FieldPath) {
     path.span = CANONICAL;
+}
+
+/// A write's `EXPIRE` clause.
+fn erase_write_expiry(expire: Option<&mut WriteExpiry>) {
+    match expire {
+        Some(WriteExpiry::At(when)) => erase_expr(when),
+        Some(WriteExpiry::Never(span)) => *span = CANONICAL,
+        None => {}
+    }
 }
 
 /// A name as written.

@@ -70,8 +70,8 @@ pub use definition::{
     EdgeOrder, EngineField, EngineMember, EventDeclaration, GEO_FIELD, IndexDefinition, IndexShape,
     NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
     RECORD_LEVEL, RollupCompute, RollupDeclaration, RollupFold, SearchCosts, SeriesDeclaration,
-    StoredKind, TableDefinition, TableKind, TableShape, UNIT_WEIGHT, VECTOR_FIELD, VaultCustody,
-    VaultDeclaration, VectorDeclaration, VectorDistance, ViewDeclaration,
+    StoredKind, TableDefinition, TableExpiry, TableKind, TableShape, UNIT_WEIGHT, VECTOR_FIELD,
+    VaultCustody, VaultDeclaration, VectorDeclaration, VectorDistance, ViewDeclaration,
 };
 pub use edge_kind::EdgeKindDefinition;
 pub use failover::{FailoverDefinition, FailoverStamp};
@@ -326,6 +326,23 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             }
         }
         definition.auto_split = policy;
+        self.write(system::TABLES, id.get(), &definition.to_value());
+        Ok(true)
+    }
+
+    /// Set the table's expiry declaration (ADR-0122 A1, A6), keeping everything
+    /// else about it. Changes the declaration and no stored record.
+    ///
+    /// Answers `false` when there is no table under that id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub fn set_expiry(&mut self, id: TableId, expire: TableExpiry) -> Result<bool> {
+        let Some(mut definition) = self.table(id)? else {
+            return Ok(false);
+        };
+        definition.expire = Some(expire);
         self.write(system::TABLES, id.get(), &definition.to_value());
         Ok(true)
     }

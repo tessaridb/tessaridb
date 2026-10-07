@@ -1,7 +1,7 @@
 //! Inserts, answers and the edit an UPDATE or UPSERT carries.
 
 use super::super::Parser;
-use crate::ast::{Answer, Assignment, Edit, Expr, RecordTarget, StatementKind};
+use crate::ast::{Answer, Assignment, Edit, Expr, RecordTarget, StatementKind, WriteExpiry};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct};
 
@@ -74,10 +74,12 @@ impl Parser<'_> {
             }
         }
 
+        let expire = self.write_expiry()?;
         Ok(StatementKind::Insert {
             table,
             columns,
             rows,
+            expire,
         })
     }
 
@@ -114,12 +116,14 @@ impl Parser<'_> {
         edit: Edit,
         condition: Option<Expr>,
         answer: Answer,
+        expire: Option<WriteExpiry>,
     ) -> StatementKind {
         if verb == Keyword::Upsert {
             StatementKind::Upsert {
                 target,
                 edit,
                 answer,
+                expire,
             }
         } else {
             StatementKind::Update {
@@ -127,6 +131,7 @@ impl Parser<'_> {
                 edit,
                 condition,
                 answer,
+                expire,
             }
         }
     }

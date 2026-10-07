@@ -83,6 +83,11 @@ pub(crate) fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> 
         fields.insert("merge_below".to_owned(), number(policy.merge_below));
         shape.insert("auto_split".to_owned(), Value::Object(fields));
     }
+    // Present only on a table that declared that its records expire
+    // (ADR-0122 A1): the lifetime a new record gets, and whether it is in force.
+    if let Some(expire) = definition.expire {
+        shape.insert("expire".to_owned(), described_expiry(expire));
+    }
     // Present only on a table whose identities spread (ADR-0113 D1).
     if definition.spread {
         shape.insert("spread".to_owned(), Value::Bool(true));
@@ -269,4 +274,18 @@ pub(crate) fn described_sample(sampled: &tessari_storage::SampledTable) -> Value
             sampled.last_act.as_deref().map_or(Value::Null, Value::from),
         ),
     ]))
+}
+
+/// A table's expiry declaration as `INFO FOR TABLE` and an `ALTER`'s answer
+/// report it: the lifetime when there is one, and whether it is in force.
+pub(crate) fn described_expiry(expire: tessari_storage::TableExpiry) -> Value {
+    let mut fields = BTreeMap::new();
+    if let Some(after) = expire.after {
+        fields.insert("after".to_owned(), Value::Duration(after));
+    }
+    fields.insert(
+        "state".to_owned(),
+        Value::from(if expire.retired { "retired" } else { "on" }),
+    );
+    Value::Object(fields)
 }

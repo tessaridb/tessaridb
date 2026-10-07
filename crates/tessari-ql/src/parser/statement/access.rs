@@ -96,6 +96,12 @@ impl Parser<'_> {
                 return self.field_declaration(name, table, true);
             }
             if self.eat_keyword(Keyword::Drop) {
+                if self.eat_word("expire") {
+                    return Ok(StatementKind::AlterTable {
+                        table,
+                        change: TableChange::DropExpire,
+                    });
+                }
                 self.expect_keyword(Keyword::Field, "`FIELD` and the field to remove")?;
                 return Ok(StatementKind::DropField {
                     name: self.declared_field_name()?,
@@ -146,8 +152,10 @@ impl Parser<'_> {
                 TableChange::Schemafull
             } else if self.eat_keyword(Keyword::Schemaless) {
                 TableChange::Schemaless
+            } else if self.eat_word("expire") {
+                TableChange::Expire(self.table_expiry()?)
             } else {
-                return Err(self.error_here("`SCHEMAFULL` or `SCHEMALESS`"));
+                return Err(self.error_here("`SCHEMAFULL`, `SCHEMALESS` or `EXPIRE`"));
             };
             return Ok(StatementKind::AlterTable { table, change });
         }

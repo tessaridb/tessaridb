@@ -105,6 +105,7 @@ fn an_edge_table_round_trips_its_endpoints_and_the_order_its_edges_are_held_in()
         partition: None,
         spread: false,
         auto_split: None,
+        expire: None,
         events: Vec::new(),
         kind: TableKind::Edge(Some(EdgeDeclaration {
             from: TableId::new(4),
@@ -167,6 +168,7 @@ fn a_vector_store_round_trips_its_width_and_its_distance() {
         partition: None,
         spread: false,
         auto_split: None,
+        expire: None,
         events: Vec::new(),
         // Deliberately the second distance rather than the first: a store
         // that round tripped as `cosine` whatever it was declared with

@@ -120,6 +120,22 @@ pub enum TableChange {
     SplitAutomatically(AutoSplit),
     /// `SPLIT MANUALLY` — the shards change only by statement again.
     SplitManually,
+    /// `SET EXPIRE [AFTER 30m]` — the table's records may carry an expiry, and
+    /// a record created from the commit onwards gets the default when one is
+    /// given (ADR-0122 A1). Records already stored are not touched (A4, A5).
+    Expire(TableExpiry),
+    /// `DROP EXPIRE` — no default is stamped and no new expiry is written, and
+    /// the instants records already carry stand (ADR-0122 A6).
+    DropExpire,
+}
+
+/// What a table's expiry declaration says (ADR-0122 A1): that its records may
+/// carry an expiry, and the lifetime a new record gets when it states none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TableExpiry {
+    /// `AFTER 7d` — the lifetime a created record gets, from its commit.
+    /// `None` is a bare `EXPIRE`: records expire only when a write says so.
+    pub after: Option<tessari_types::Duration>,
 }
 
 /// When a table's shards are split and merged without being asked
@@ -162,4 +178,13 @@ impl Direction {
             Self::Incoming => "out",
         }
     }
+}
+
+/// What a write's `EXPIRE` clause said about the record it writes (ADR-0122 A2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteExpiry {
+    /// `EXPIRE 30m` or `EXPIRE <datetime>` — a duration from now or an instant.
+    At(Expr),
+    /// `EXPIRE NONE` — the record never expires.
+    Never(Span),
 }

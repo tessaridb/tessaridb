@@ -36,8 +36,8 @@ pub use ast::{
     NamespaceChange, OnFailure, Ordering, Password, PathTo, Projected, Projection, RangeExpr,
     ReachRef, RecordTarget, ReplicaChange, Retention, Script, SearchAsk, SearchCosts, SearchField,
     SearchMember, SearchOperator, Select, SetCondition, Source, SpaceBound, Statement,
-    StatementKind, TableChange, TableRef, Timeout, TopicClauses, UserChange, UserGrant, Using,
-    Version, Written,
+    StatementKind, TableChange, TableExpiry, TableRef, Timeout, TopicClauses, UserChange,
+    UserGrant, Using, Version, WriteExpiry, Written,
 };
 pub use bind::Parameters;
 pub use error::{Error, Result};

@@ -54,7 +54,7 @@ impl Expiring {
         Ok(Self(AtomicBool::new(!first.is_empty())))
     }
 
-    fn seen(&self) -> bool {
+    pub(crate) fn seen(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
 

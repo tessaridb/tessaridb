@@ -221,6 +221,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             spread: shape.spread,
             auto_split: None,
             events: Vec::new(),
+            expire: None,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

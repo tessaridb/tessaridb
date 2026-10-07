@@ -6,7 +6,7 @@ mod search;
 use super::Parser;
 use tessari_types::{ConflictPolicy, IdentityKind, RecordId};
 
-use crate::ast::{EdgeClause, Name, StatementKind};
+use crate::ast::{EdgeClause, Name, StatementKind, TableExpiry};
 use crate::error::{Error, Result};
 use crate::token::Keyword;
 
@@ -69,6 +69,7 @@ impl Parser<'_> {
                 let mut split: Option<Vec<RecordId>> = None;
                 let mut partition: Option<Name> = None;
                 let mut spread = false;
+                let mut expire: Option<TableExpiry> = None;
                 loop {
                     if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
                         strictness = Some(true);
@@ -110,6 +111,11 @@ impl Parser<'_> {
                     } else if partition.is_none() && self.eat_word("partition") {
                         self.expect_word("by", "`BY` and the field a record's identity begins with")?;
                         partition = Some(self.name()?);
+                    // `EXPIRE [AFTER 7d]` — contextual for the reason the rest
+                    // are: `expire` is a field a session table already has
+                    // (ADR-0122 A1).
+                    } else if expire.is_none() && self.eat_word("expire") {
+                        expire = Some(self.table_expiry()?);
                     } else {
                         break;
                     }
@@ -145,6 +151,7 @@ impl Parser<'_> {
                     partition,
                     spread,
                     conflict,
+                    expire,
                     if_not_exists,
                 })
             }
@@ -210,9 +217,15 @@ impl Parser<'_> {
                 } else {
                     IdentityKind::default()
                 };
+                let expire = if self.eat_word("expire") {
+                    Some(self.table_expiry()?)
+                } else {
+                    None
+                };
                 Ok(StatementKind::DefineCollection {
                     name,
                     identity,
+                    expire,
                     if_not_exists,
                 })
             }
@@ -307,5 +320,18 @@ impl Parser<'_> {
             name: self.name()?,
             if_not_exists,
         })
+    }
+
+    /// What follows `EXPIRE` in a table's declaration: nothing, or `AFTER` and
+    /// the lifetime a created record gets (ADR-0122 A1).
+    pub(super) fn table_expiry(&mut self) -> Result<TableExpiry> {
+        let after = if self.eat_word("after") {
+            Some(self.positive_duration(
+                "a duration above zero, like `7d` — how long a new record lives",
+            )?)
+        } else {
+            None
+        };
+        Ok(TableExpiry { after })
     }
 }

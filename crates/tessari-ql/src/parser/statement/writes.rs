@@ -4,7 +4,7 @@ mod edits;
 use super::Parser;
 use tessari_types::{IdentityKind, RecordId};
 
-use crate::ast::{CreateTarget, Edit, Identity, StatementKind};
+use crate::ast::{CreateTarget, Edit, Identity, StatementKind, WriteExpiry};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct};
 
@@ -190,10 +190,12 @@ impl Parser<'_> {
         if matches!(verb, Keyword::Create) && !self.at_punct(Punct::Colon) {
             self.expect_punct(Punct::Equals, "`=` and the value to write")?;
             let value = self.expression()?;
+            let expire = self.write_expiry()?;
             return Ok(StatementKind::Create {
                 target: CreateTarget::Generated(table),
                 value,
                 answer: self.answer(verb)?,
+                expire,
             });
         }
         let target = self.record_target_after(table)?;
@@ -211,12 +213,14 @@ impl Parser<'_> {
             }
             let edit = Edit::Fields(assignments);
             let condition = self.edit_condition(verb)?;
+            let expire = self.write_expiry()?;
             return Ok(Self::changed(
                 verb,
                 target,
                 edit,
                 condition,
                 self.answer(verb)?,
+                expire,
             ));
         }
         if edits && self.eat_keyword(Keyword::Merge) {
@@ -225,12 +229,14 @@ impl Parser<'_> {
             // from the record it is changing.
             let edit = Edit::Merge(self.expression()?);
             let condition = self.edit_condition(verb)?;
+            let expire = self.write_expiry()?;
             return Ok(Self::changed(
                 verb,
                 target,
                 edit,
                 condition,
                 self.answer(verb)?,
+                expire,
             ));
         }
         self.expect_punct(Punct::Equals, "`=` and the value to write")?;
@@ -238,20 +244,26 @@ impl Parser<'_> {
         Ok(match verb {
             Keyword::Update | Keyword::Upsert => {
                 let condition = self.edit_condition(verb)?;
+                let expire = self.write_expiry()?;
                 Self::changed(
                     verb,
                     target,
                     Edit::Whole(value),
                     condition,
                     self.answer(verb)?,
+                    expire,
                 )
             }
             Keyword::Set => self.set_statement(target, value)?,
-            _ => StatementKind::Create {
-                target: CreateTarget::Named(target),
-                value,
-                answer: self.answer(verb)?,
-            },
+            _ => {
+                let expire = self.write_expiry()?;
+                StatementKind::Create {
+                    target: CreateTarget::Named(target),
+                    value,
+                    answer: self.answer(verb)?,
+                    expire,
+                }
+            }
         })
     }
 
@@ -298,5 +310,20 @@ impl Parser<'_> {
             word: word.text,
             span: word.span,
         })
+    }
+
+    /// `EXPIRE <when>` or `EXPIRE NONE` after a write's value (ADR-0122 A2).
+    ///
+    /// `expire` is contextual: a field of that name keeps working, and nothing
+    /// but this clause can stand in this position.
+    pub(super) fn write_expiry(&mut self) -> Result<Option<WriteExpiry>> {
+        let start = self.span_here();
+        if !self.eat_word("expire") {
+            return Ok(None);
+        }
+        if self.eat_keyword(Keyword::None) {
+            return Ok(Some(WriteExpiry::Never(start)));
+        }
+        Ok(Some(WriteExpiry::At(self.expression()?)))
     }
 }

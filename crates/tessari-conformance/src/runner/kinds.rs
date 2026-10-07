@@ -152,6 +152,8 @@ pub(crate) fn kind_name(error: &Error) -> &'static str {
         Error::SecretNeedsVault { .. } => "SecretNeedsVault",
         Error::NotASecret { .. } => "NotASecret",
         Error::VaultIsStrict { .. } => "VaultIsStrict",
+        Error::ExpiryNotOnThisKind { .. } => "ExpiryNotOnThisKind",
+        Error::TableDoesNotExpire { .. } => "TableDoesNotExpire",
         Error::VaultEditComputesFromTheRecord { .. } => "VaultEditComputesFromTheRecord",
         Error::RecipientIsNotAName { .. } => "RecipientIsNotAName",
         Error::ReplicationUnstated { .. } => "ReplicationUnstated",

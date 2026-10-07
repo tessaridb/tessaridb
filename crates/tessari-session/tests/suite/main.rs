@@ -50,6 +50,7 @@ mod differential;
 mod effect;
 mod events;
 mod exactness;
+mod expiring_tables;
 mod explain;
 mod fetch;
 mod file_ranges;

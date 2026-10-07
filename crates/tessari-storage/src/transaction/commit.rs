@@ -154,7 +154,7 @@ pub(crate) struct Placement {
 
 impl Placement {
     /// The shard `address` falls in, or `None` when its table is not split.
-    pub(super) fn shard_of(&self, address: &RecordAddress) -> Option<ShardId> {
+    pub(crate) fn shard_of(&self, address: &RecordAddress) -> Option<ShardId> {
         self.maps
             .get(&address.table)
             .map(|map| map.shard_of(&address.id))
@@ -168,8 +168,20 @@ impl Transaction<'_> {
         // rule a key-value `SET` keeps in the system this engine's cache
         // semantics follow, and the only reading under which a write says
         // everything about the version it makes.
-        self.expiring.remove(&address);
+        if let Some(at) = self.expiring.remove(&address) {
+            self.lifetimes
+                .insert(address.clone(), super::Lifetime::Carried(at));
+        }
         self.writes.insert(address, RecordValue::Present(payload));
+    }
+
+    /// Make the write already buffered for `address` never expire, on purpose
+    /// (`EXPIRE NONE`, `PERSIST`) — which a table that declares expiry tells
+    /// apart from a write that merely said nothing (ADR-0122 A3).
+    pub fn persist_pending(&mut self, address: &RecordAddress) {
+        self.expiring.remove(address);
+        self.lifetimes
+            .insert(address.clone(), super::Lifetime::Cleared);
     }
 
     /// Make the write already buffered for `address` stop being answered at
@@ -194,6 +206,7 @@ impl Transaction<'_> {
             self.delete(address.clone());
             return;
         }
+        self.lifetimes.remove(address);
         self.expiring.insert(address.clone(), at);
     }
 
@@ -232,6 +245,7 @@ impl Transaction<'_> {
     /// at an older snapshot must still see the record.
     pub fn delete(&mut self, address: RecordAddress) {
         self.expiring.remove(&address);
+        self.lifetimes.remove(&address);
         self.writes.insert(address, RecordValue::Tombstone);
     }
 

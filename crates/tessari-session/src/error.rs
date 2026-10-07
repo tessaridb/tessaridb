@@ -1640,6 +1640,42 @@ pub enum Error {
         span: Span,
     },
 
+    /// A declaration asked a kind of table other than a table or a collection
+    /// to expire its records (ADR-0122 A1).
+    ///
+    /// A space and a topic keep their own expiry (`SET … EXPIRE`, `RETAIN`); a
+    /// series has its floor; a queue's records are work whose hold already
+    /// lapses; an edge, a vault, a bucket, a vector or a geo store has a
+    /// structure the expiry would leave pointing at nothing.
+    #[error(
+        "{kind} `{table}` cannot declare that its records expire; only a table or a collection can (at {span})"
+    )]
+    ExpiryNotOnThisKind {
+        /// The table named.
+        table: String,
+        /// What kind it is, as its declaring word says.
+        kind: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A write stated an expiry for a record of a table that does not declare
+    /// one, or has retired it (ADR-0122 A2, A6).
+    ///
+    /// Refused rather than written, because the table's operator said its
+    /// records do not expire: `ALTER TABLE … SET EXPIRE` is the statement that
+    /// changes that. `EXPIRE NONE` is never refused, since it only makes a
+    /// record permanent.
+    #[error(
+        "`{table}` does not declare that its records expire; `ALTER TABLE {table} SET EXPIRE` first (at {span})"
+    )]
+    TableDoesNotExpire {
+        /// The table named.
+        table: String,
+        /// Where the clause is.
+        span: Span,
+    },
+
     /// `REVEAL` was asked for a field that is not declared `SECRET`.
     ///
     /// Refused rather than answered in the clear. `REVEAL` returns plaintext, so

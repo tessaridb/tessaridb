@@ -51,6 +51,7 @@ mod index_unchanged_tests;
 mod intents;
 mod lapse;
 mod lease;
+mod lifetime;
 mod lines;
 mod log;
 mod log_holds;
@@ -89,8 +90,8 @@ pub use catalog::{
     QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach,
     ReplicaDefinition, Role, RollupCompute, RollupDeclaration, RollupFold, SYSTEM_DATABASE,
     SYSTEM_NAMESPACE, SearchCosts, SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration,
-    SpaceLimit, StoredKind, TableDefinition, TableKind, TableShape, TopicDeclaration, UNIT_WEIGHT,
-    UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
+    SpaceLimit, StoredKind, TableDefinition, TableExpiry, TableKind, TableShape, TopicDeclaration,
+    UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
     VectorDistance, Verb, ViewDeclaration, WordSet, WordSetKind, another_node_may_write, governing,
     names_a_peer, the_row_a_greeting_binds,
 };

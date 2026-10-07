@@ -60,6 +60,9 @@ impl TableDefinition {
         if let Some(policy) = self.auto_split {
             fields.insert(FIELD_AUTO_SPLIT.to_owned(), policy.to_value());
         }
+        if let Some(expire) = self.expire {
+            fields.insert(FIELD_EXPIRE.to_owned(), expire.to_value());
+        }
         if !self.events.is_empty() {
             fields.insert(
                 FIELD_EVENTS.to_owned(),
@@ -261,6 +264,10 @@ impl TableDefinition {
             auto_split: fields
                 .get(FIELD_AUTO_SPLIT)
                 .map(super::super::AutoSplit::from_value)
+                .transpose()?,
+            expire: fields
+                .get(FIELD_EXPIRE)
+                .map(super::super::TableExpiry::from_value)
                 .transpose()?,
             events: match fields.get(FIELD_EVENTS) {
                 None => Vec::new(),

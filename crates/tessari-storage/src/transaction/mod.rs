@@ -82,6 +82,10 @@ pub struct Transaction<'a> {
     /// instant is at or before this transaction's clock is buffered as a
     /// deletion (see [`Transaction::put_expiring`]).
     expiring: BTreeMap<RecordAddress, u64>,
+    /// What a write said about a record's expiry beyond the instant it carries
+    /// (ADR-0122 A3), read at commit for a table that declares expiry: an
+    /// instant cleared on purpose, or one a later plain write replaced.
+    lifetimes: BTreeMap<RecordAddress, Lifetime>,
     /// The instant this transaction judges a series table's floor against.
     ///
     /// Read once, on the first question that needs it, for the reason the
@@ -105,6 +109,17 @@ pub struct Transaction<'a> {
     /// record's leader (ADR-0112 D13d) — a reader's question. A view that
     /// derives what a commit or an apply writes decides from this copy alone.
     asks_leaders: bool,
+}
+
+/// What a write said about a record's expiry that its buffered value does not
+/// carry (ADR-0122 A3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lifetime {
+    /// `EXPIRE NONE` or `PERSIST`: the record never expires.
+    Cleared,
+    /// A plain write replaced a write that carried this instant, and on a table
+    /// that declares expiry the instant stands.
+    Carried(u64),
 }
 
 impl Transaction<'_> {

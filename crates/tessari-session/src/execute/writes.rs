@@ -195,9 +195,11 @@ impl Session<'_> {
         table: &TableRef,
         value: &tessari_ql::Expr,
         answer: Answer,
+        expire: Option<&tessari_ql::WriteExpiry>,
         span: Span,
     ) -> Result<Outcome> {
         let (context, id) = self.resolve_table(transaction, table)?;
+        let settled = self.resolve_write_expiry(transaction, id, expire)?;
         // The same refusal `Session::writable` gives, reached directly for the
         // same reason `insert` reaches it directly: that one takes a record
         // target and this statement names no record.
@@ -220,7 +222,8 @@ impl Session<'_> {
         // it, so nothing here writes over a record that was already there.
         let identity = self.free_identity(transaction, &context, id, &payload, table.span)?;
         let address = RecordAddress::new(context.namespace, context.database, id, identity.clone());
-        self.put_record(transaction, address, payload.clone(), span)?;
+        self.put_record(transaction, address.clone(), payload.clone(), span)?;
+        super::expiry::settle_write_expiry(transaction, &address, settled);
         Ok(match answer {
             Answer::After => Outcome::Value(payload),
             _ => Outcome::Keys(vec![identity]),
@@ -388,9 +391,11 @@ impl Session<'_> {
         table: &TableRef,
         columns: &[Name],
         rows: &[Vec<tessari_ql::Expr>],
+        expire: Option<&tessari_ql::WriteExpiry>,
         span: Span,
     ) -> Result<Outcome> {
         let (context, id) = self.resolve_table(transaction, table)?;
+        let settled = self.resolve_write_expiry(transaction, id, expire)?;
         // A bucket's records describe bytes the store holds, so one written by
         // hand can lie about them. The same refusal `Session::writable` gives,
         // for the same reason — reached here directly because that one takes a
@@ -416,7 +421,8 @@ impl Session<'_> {
             let identity = self.free_identity(transaction, &context, id, &payload, table.span)?;
             let address =
                 RecordAddress::new(context.namespace, context.database, id, identity.clone());
-            self.put_record(transaction, address, payload, span)?;
+            self.put_record(transaction, address.clone(), payload, span)?;
+            super::expiry::settle_write_expiry(transaction, &address, settled);
             produced.push(identity);
         }
         Ok(Outcome::Keys(produced))

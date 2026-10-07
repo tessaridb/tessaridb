@@ -38,8 +38,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use tessari_encoding::{NODE_ID_LEN, Roles};
-use tessari_kv::{KvBackend, MemoryBackend};
+use tessari_encoding::{ExpiryKey, KeyKind, NODE_ID_LEN, Roles, StoreKey};
+use tessari_kv::{KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
 use tessari_storage::{Catalog, Error, LEASE_TTL, Lease, Reach, RecordAddress, Store};
 use tessari_types::{DatabaseId, Epoch, NamespaceId, RecordId, ReplicationClass, TableId};
 
@@ -65,7 +65,16 @@ fn store() -> Store {
 /// a cluster, so a second statement would be judged against a catalog that had
 /// already fenced it.
 fn between_two_leaders(leading: Reach, followed: Reach, their_node: [u8; NODE_ID_LEN]) -> Store {
-    let store = store();
+    declared_between(store(), leading, followed, their_node)
+}
+
+/// [`between_two_leaders`] over a store that may already hold records.
+fn declared_between(
+    store: Store,
+    leading: Reach,
+    followed: Reach,
+    their_node: [u8; NODE_ID_LEN],
+) -> Store {
     let me = store.node_identity().unwrap().id;
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
@@ -583,4 +592,45 @@ fn a_declared_range_does_not_exempt_an_undeclared_one_written_beside_it() {
         matches!(refused, Error::WriteIsElsewhere { node, .. } if node == THEIR_NODE),
         "an undeclared range travelled under a declared one's cover: {refused:?}"
     );
+}
+
+/// The expiry pass removes what this node leads and leaves the rest to its
+/// leader, rather than offering both to one commit that can only be refused
+/// (ADR-0122 A9, Q-950). Written while standalone, so the store holds expiring
+/// versions in both namespaces before either has a leader.
+#[test]
+fn the_expiry_pass_removes_what_this_node_leads_beside_a_range_led_elsewhere() {
+    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let mut transaction = store.begin().unwrap();
+    let soon = transaction.clock().saturating_add(50);
+    for (namespace, id) in [(THEIRS, "theirs"), (MINE, "ours")] {
+        transaction.put(at(namespace, id), b"{}".to_vec());
+        transaction.expire_pending(&at(namespace, id), soon);
+    }
+    transaction.commit().unwrap();
+    let store = declared_between(
+        store,
+        Reach::Namespace(NamespaceId::new(MINE)),
+        Reach::Namespace(NamespaceId::new(THEIRS)),
+        THEIR_NODE,
+    );
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    let lapsed = store
+        .remove_expired()
+        .expect("a range led elsewhere does not fail the pass");
+    assert_eq!(lapsed.records, 1, "{lapsed:?}");
+    // The expiry index's own entries: the one left is the other leader's.
+    let left: Vec<u32> = backend
+        .scan(&ScanRequest {
+            keyspace: ExpiryKey::keyspace(),
+            range: KeyRange::prefix(&[KeyKind::ExpiryIndex.tag()]),
+            direction: ScanDirection::Forward,
+            limit: None,
+        })
+        .unwrap()
+        .iter()
+        .map(|(key, _)| ExpiryKey::decode(key.as_slice()).unwrap().namespace.get())
+        .collect();
+    assert_eq!(left, vec![THEIRS], "only the other leader's record is left");
 }
