@@ -30,9 +30,9 @@
 use std::sync::Arc;
 
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_session::{Note, Outcome, Session};
+use tessari_session::{Note, Outcome, Parameters, Session};
 use tessari_storage::Store;
-use tessari_types::{RecordId, Value};
+use tessari_types::{Number, RecordId, Value};
 
 const SCHEMA: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;
@@ -404,4 +404,36 @@ fn an_ordered_page_inside_a_write_transaction_also_visits_its_own_write_once() {
         vec![9, 1, 2, 3, 4, 5],
         "aa, ada, bo, cy, di, ed — each once: {walked:?}"
     );
+}
+
+#[test]
+fn the_anchor_may_be_a_bound_value_like_any_record_identity() {
+    // A cursor is a value the caller carries between pages, so it arrives as a
+    // parameter; the alternative is formatting it into the text, which is the
+    // injection the binding exists to rule out. Bound, it must answer the page
+    // the literal does, and seek as the literal does.
+    let store = store();
+    let mut session = ready(&store);
+    let literal = run(&mut session, "SELECT * FROM people AFTER people:2 LIMIT 2;");
+    let mut supplied = Parameters::new();
+    supplied.insert("anchor".to_owned(), Value::Number(Number::Integer(2)));
+    let bound = session
+        .run_with(
+            "SELECT * FROM people AFTER people:$anchor LIMIT 2;",
+            &supplied,
+        )
+        .unwrap_or_else(|error| panic!("a bound anchor: {error}"))
+        .pop()
+        .expect("one outcome");
+    assert_eq!(int(&ids(&bound)), vec![3, 4]);
+    assert_eq!(
+        bound.notes(),
+        literal.notes(),
+        "a bound anchor seeks exactly as a literal one"
+    );
+    let let_bound = run(
+        &mut session,
+        "LET $anchor = 2; SELECT * FROM people AFTER people:$anchor LIMIT 2;",
+    );
+    assert_eq!(int(&ids(&let_bound)), vec![3, 4]);
 }

@@ -112,6 +112,11 @@ pub(crate) fn bind_select(select: &mut Select, binding: &Binding<'_>) -> Result<
         // this node's identity is not addressed at all.
         Source::Node | Source::Table(_) => {}
     }
+    // `AFTER table:$anchor` — a cursor is the record the caller's last page
+    // ended on, so it arrives as a value like any other record identity.
+    if let Some(after) = &mut select.after {
+        bind_target(after, binding)?;
+    }
     for key in &mut select.group {
         bind_expr(key, binding)?;
     }

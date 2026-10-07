@@ -13,6 +13,14 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.33.2-beta — 2026-10-08
+
+### Fixed
+
+- `AFTER table:$anchor` takes its anchor as a bound value, as every other record identity does. It used to answer
+  that no value was supplied for the parameter, so a caller paging with a cursor had to write the record id into
+  the statement text.
+
 ## 0.33.1-beta — 2026-10-07
 
 ### Fixed

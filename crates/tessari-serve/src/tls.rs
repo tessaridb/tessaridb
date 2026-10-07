@@ -151,7 +151,7 @@ fn certified(chain: Pem<'_>, key: Pem<'_>) -> Result<Arc<CertifiedKey>, Refused>
 /// the bytes are read, so a refused key is never held in memory. Off Unix there
 /// is no mode to check.
 ///
-/// One allowance, PostgreSQL's: a file **owned by root** may also be readable by
+/// One allowance, the usual one for server keys: a file **owned by root** may also be readable by
 /// its group. That is how an orchestrator mounts a secret for a process running
 /// as another user — root owns it, the process's group may read it — and refusing
 /// it would leave no way to hand this node a key there.
