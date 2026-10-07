@@ -443,8 +443,9 @@ impl Session<'_> {
         Ok(())
     }
 
-    /// Write a row whole, as the engine rather than as a caller.
-    fn keep_row(
+    /// Write a row whole, as the engine rather than as a caller — with what is
+    /// kept beside it, so the backfill and the writes leave one shape.
+    pub(super) fn keep_row(
         &self,
         transaction: &mut Transaction<'_>,
         rows: &RecordAddress,

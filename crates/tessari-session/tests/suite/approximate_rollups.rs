@@ -264,3 +264,27 @@ fn a_sketch_column_the_reader_may_not_see_merges_nothing() {
         assert!(fields.contains_key("c"), "{fields:?}");
     }
 }
+
+/// A rollup declared over a series that already holds records fills its rows
+/// in a second commit, and keeps their sketches as the writes do: folding a
+/// sketch column then merges them rather than refusing.
+#[test]
+fn a_rollup_declared_over_written_records_keeps_their_sketches() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE SERIES visits RETAIN 36500d TIME at;\n\
+             CREATE visits = { page: 'a', visitor: 'u1', ms: 10, at: datetime '2026-10-07T10:00:00Z' };\n\
+             CREATE visits = { page: 'a', visitor: 'u2', ms: 30, at: datetime '2026-10-07T10:10:00Z' };\n\
+             CREATE visits = { page: 'a', visitor: 'u1', ms: 20, at: datetime '2026-10-07T11:00:00Z' };",
+        )
+        .unwrap();
+    session.run(DEFINE).unwrap();
+    let merged = "SELECT page, approx_distinct(users) AS u, approx_quantile(p99, 0.5) AS m \
+                  FROM hourly GROUP BY page;";
+    let raw = "SELECT page, approx_distinct(visitor) AS u, approx_quantile(ms, 0.5) AS m \
+               FROM visits GROUP BY page;";
+    assert_eq!(rows(&mut session, merged), rows(&mut session, raw));
+}

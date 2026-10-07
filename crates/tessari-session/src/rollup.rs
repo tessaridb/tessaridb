@@ -36,7 +36,7 @@ use crate::error::{Error, Result};
 use crate::outcome::Outcome;
 use crate::session::Session;
 
-pub(crate) use maintain::{Row, fold_rows, row_identity};
+pub(crate) use maintain::{fold_rows, row_identity};
 pub(crate) use merging::Merging;
 
 /// The field a rollup row carries its window's first instant in.
@@ -145,10 +145,16 @@ impl Session<'_> {
         for (_, payload) in raw {
             records.push(decode_payload(&payload).map_err(tessari_storage::Error::from)?);
         }
-        for (key, row) in fold_rows(rollup, time, &records)? {
-            let id = row_identity(key.0, &key.1);
-            let address = RecordAddress::new(context.namespace, context.database, table, id);
-            self.put_engine_record(transaction, address, row.into_value(rollup), name.span)?;
+        // Through the path the writes take, so a backfilled row keeps its
+        // exact sums and sketches beside it exactly as a maintained one does.
+        let rows = RecordAddress::new(
+            context.namespace,
+            context.database,
+            table,
+            row_identity(0, &Value::None),
+        );
+        for row in fold_rows(rollup, time, &records)?.into_values() {
+            self.keep_row(transaction, &rows, rollup, row, name.span)?;
         }
         Ok(())
     }
@@ -264,11 +270,4 @@ fn computes_of(written: &[tessari_ql::RollupCompute]) -> Result<Vec<RollupComput
         });
     }
     Ok(computes)
-}
-
-impl Row {
-    /// The row as the record the rollup table holds.
-    pub(crate) fn into_value(self, rollup: &RollupDeclaration) -> Value {
-        maintain::row_value(self, rollup)
-    }
 }
