@@ -222,18 +222,30 @@ impl Transaction<'_> {
     /// The instant a record stops being answered at, as this transaction sees
     /// it: its own buffered write first, then the stored version.
     ///
+    /// A buffered write that carries no instant of its own, to a table that
+    /// declares expiry, answers the instant its commit will settle (ADR-0122
+    /// A3, Q-953) — the instant it keeps, or the declared lifetime for a record
+    /// it creates — and not "never".
+    ///
     /// `None` both for a record that never expires and for one that is not
     /// there — ask [`Transaction::get`] to tell the two apart.
     ///
     /// # Errors
     ///
-    /// Returns an error when the backend fails or stored bytes cannot be
-    /// decoded.
-    pub fn expires(&self, address: &RecordAddress) -> Result<Option<u64>> {
-        if self.writes.contains_key(address) {
-            return Ok(self.expiring.get(address).copied());
-        }
+    /// Returns an error when the backend fails, stored bytes cannot be
+    /// decoded, or the catalog cannot be read.
+    pub fn expires(&mut self, address: &RecordAddress) -> Result<Option<u64>> {
         let now = self.reading_at();
+        if let Some(buffered) = self.writes.get(address) {
+            if !matches!(buffered, RecordValue::Present(_)) {
+                return Ok(None);
+            }
+            if let Some(at) = self.expiring.get(address) {
+                return Ok(Some(*at));
+            }
+            let lifetime = self.lifetimes.get(address).copied();
+            return crate::lifetime::pending(self, address, lifetime, now);
+        }
         Ok(self
             .read_stamped_at(address)?
             .and_then(|stamped| stamped.expires().filter(|at| *at > now)))

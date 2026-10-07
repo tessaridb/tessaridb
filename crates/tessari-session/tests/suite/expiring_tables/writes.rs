@@ -10,7 +10,7 @@ use tessari_session::{Error, Outcome, Session};
 use tessari_storage::Store;
 use tessari_types::Value;
 
-use super::{opened, run};
+use super::{field, opened, run};
 
 /// A short lifetime, and a wait past it — real time, as the key-value suite
 /// does, because the clock is the transaction's own.
@@ -184,4 +184,65 @@ fn a_write_is_refused_an_expiry_its_table_does_not_take_and_writes_nothing() {
     // Clearing is never refused: it only makes a record permanent.
     run(&mut session, "CREATE gone:2 = { body: 'y' } EXPIRE NONE;");
     assert_eq!(ttl(&mut session, "gone:2"), Value::Null);
+}
+
+/// More than six days left of a seven-day lifetime: the declared default, and
+/// not some other instant.
+fn about_a_week(left: &Value) -> bool {
+    matches!(left, Value::Duration(left) if left.seconds() > 6 * 86_400)
+}
+
+/// The outcomes of a script that holds one transaction.
+fn outcomes(session: &mut Session<'_>, script: &str) -> Vec<Outcome> {
+    session.run(script).unwrap()
+}
+
+#[test]
+fn inside_a_transaction_a_record_answers_the_instant_its_commit_will_give_it() {
+    let store = store();
+    let mut session = opened(&store);
+    run(
+        &mut session,
+        "DEFINE TABLE message (body string) EXPIRE AFTER 7d; DEFINE TABLE items SCHEMALESS;",
+    );
+    run(&mut session, "CREATE message:1 = { body: 'kept' };");
+    run(&mut session, "CREATE message:3 = { body: 'kept' };");
+    run(&mut session, "SET items:1 = { n: 1 } EXPIRE 1h;");
+    let seen = outcomes(
+        &mut session,
+        "BEGIN; CREATE message:2 = { body: 'new' }; LET $created = TTL message:2;\n\
+         UPDATE message:1 SET body = 'edited'; LET $kept = TTL message:1;\n\
+         UPDATE message:2 SET body = 'never' EXPIRE NONE; LET $cleared = TTL message:2;\n\
+         UPDATE items:1 MERGE { n: 2 }; LET $plain = TTL items:1;\n\
+         RETURN { created: $created, kept: $kept, cleared: $cleared, plain: $plain }; COMMIT;",
+    );
+    let Some(answer) = seen.iter().find_map(|outcome| match outcome {
+        Outcome::Value(value @ Value::Object(_)) => Some(value.clone()),
+        _ => None,
+    }) else {
+        panic!("no answer in {seen:?}");
+    };
+    assert!(
+        about_a_week(&field(&answer, "created")),
+        "a create takes the default: {answer:?}"
+    );
+    assert!(
+        about_a_week(&field(&answer, "kept")),
+        "a plain write keeps the instant: {answer:?}"
+    );
+    assert_eq!(field(&answer, "cleared"), Value::Null, "cleared on purpose");
+    assert_eq!(
+        field(&answer, "plain"),
+        Value::Null,
+        "a table that did not opt in keeps the key-value rule"
+    );
+    let persisted = outcomes(
+        &mut session,
+        "BEGIN; UPDATE message:3 SET body = 'edited'; PERSIST message:3; COMMIT;",
+    );
+    assert!(
+        persisted.contains(&Outcome::Value(Value::Bool(true))),
+        "the edited record had an instant to clear: {persisted:?}"
+    );
+    assert_eq!(ttl(&mut session, "message:3"), Value::Null);
 }
