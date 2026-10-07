@@ -4905,7 +4905,11 @@ the samples are ordered by that instant rather than by storage. `increase` adds
 the rises and counts a fall as a reset — the counter restarted and counted the
 new value; `delta` is last minus first; `rate` is the increase per second between
 the first and last sample, and a single sample has none. Over `10, 15, 3, 8, 20`
-ten seconds apart they answer `25`, `10` and `0.625`.
+ten seconds apart they answer `25`, `10` and `0.625`. Over floats, each rise is
+the float difference of its two samples and the rises are summed exactly and
+rounded once, as `sum` sums floats (from `0.32.0-beta`), so the answer is the same
+bits however the samples were split or gathered: rises of `0.1`, `0.2` and `0.3`
+give `0.6`.
 
 ### One answer per group
 
@@ -9214,7 +9218,12 @@ shard and what refused. A gathered read holds what it needs before it answers,
 so past 100 000 of it — records, or groups for a read the leaders fold — it is
 refused with **`GatheredTooMuch`** rather than shortened. A `WHERE` or `LIMIT`
 that travelled counts only the records kept, and a folded read counts groups,
-so `SELECT count(*) FROM orders` answers over any number of records. Read a span
+so `SELECT count(*) FROM orders` answers over any number of records. A fold
+that holds its group counts what it holds beside it (from `0.32.0-beta`): a
+`median` its distinct values, a `collect` its values, a counter fold its samples
+only when it had to be asked for them — so a `median` over a few distinct values
+or a counter whose shards follow one another in time answers over any number of
+records, and a `collect`, whose answer is its values, still stops at 100 000. Read a span
 inside the shards the node holds, or read on a node that holds the whole table,
 when what is held would be larger than that.
 
@@ -9848,7 +9857,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.31.2", "build": "0.31.2-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.32.0", "build": "0.32.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],
@@ -10101,7 +10110,7 @@ with a doubling wait (`SignInThrottled`), its counts kept per store.
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
-| more of a gathered read **pushed to the shards' leaders** | a `WHERE`, a `LIMIT`, an `ORDER BY … LIMIT` over record-only keys and the folds that merge exactly (`count`, `sum`, `mean`, `min`, `max`) travel, as do `variance` and `stddev` and folds over floats (from `0.25.0-beta`, exact totals); `median`, `collect` and the counter folds gather the records and run here — they hold their group, so a state would be the values themselves — and a suggestion is withheld on a node holding part of the table. A join side (its far side narrowed to the near side's keys) and a `FETCH` are gathered from `0.25.0-beta`. §7d |
+| more of a gathered read **pushed to the shards' leaders** | a `WHERE`, a `LIMIT`, an `ORDER BY … LIMIT` over record-only keys and the folds that merge exactly (`count`, `sum`, `mean`, `min`, `max`) travel, as do `variance` and `stddev` and folds over floats (from `0.25.0-beta`, exact totals); from `0.32.0-beta` every fold travels — `median` as runs of exact values and counts, `collect` as its values in key order, the counter folds as a summary or, when two shards' samples interleave in time, as the samples, asked once more — and a suggestion is withheld on a node holding part of the table. A join side (its far side narrowed to the near side's keys) and a `FETCH` are gathered from `0.25.0-beta`. §7d |
 | a change feed over a split table **on a node that does not write all of it** | a feed merges one writer's logs in that writer's order, and two writers' orders are unrelated counters — so a shard led elsewhere, or a follower, is refused by name rather than merged by a guess. Following it there needs an order across writers, and a transaction across leaders does not supply one: it commits whole, and each leader's log keeps its own count. §4 |
 | **an index serving a branch of a fused read** (`ORDER BY FUSE`) | every branch is ranked over every record that passed the `WHERE`, which is exact and costs the filtered read. A branch served from the search walk or the vector graph would stop early, and a fused order needs each branch's places down to its depth — the bound is the depth, not the `LIMIT`, and proving the walk answers the same places is its own piece of work. §5 |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |

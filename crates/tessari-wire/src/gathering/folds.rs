@@ -120,6 +120,11 @@ fn take_value(bytes: &[u8]) -> Result<tessari_types::Value> {
 
 /// Folds to answer: the visible fields, the condition if any, the keys, then
 /// each fold as its spelling and what it folds over if anything.
+///
+/// A counter fold adds the instant it orders by and one byte, `1` when the
+/// read asks for its samples (ADR-0121 D3, D6). Only a counter fold reads that
+/// byte, and only a leader of `0.32.0` or later is ever sent one, so what an
+/// older leader is sent is byte for byte what it always was.
 pub(super) fn put_reduce(into: &mut Vec<u8>, reduce: &tessari_session::Reduce) {
     put_visible(into, &reduce.visible);
     match &reduce.condition {
@@ -142,6 +147,10 @@ pub(super) fn put_reduce(into: &mut Vec<u8>, reduce: &tessari_session::Reduce) {
                 put_portable(into, text, parameters);
             }
             None => into.push(0),
+        }
+        if let Some((text, parameters)) = &folded.at {
+            put_portable(into, text, parameters);
+            into.push(u8::from(reduce.samples));
         }
     }
 }
@@ -169,12 +178,29 @@ pub(super) fn take_reduce(from: &[u8], at: usize) -> Result<(tessari_session::Re
     let (count, next_at) = frame::take_u32(from, at)?;
     at = next_at;
     let mut folds = Vec::new();
+    let mut samples = false;
     for _ in 0..count {
         let (spelling, next_at) = frame::take_text(from, at)?;
-        let (over, next_at) = optional(next_at)?;
+        let (over, mut next_at) = optional(next_at)?;
+        let at_instant = if tessari_ql::Aggregate::parse(&spelling)
+            .is_some_and(tessari_ql::Aggregate::takes_an_instant)
+        {
+            let (held, after) = take_portable(from, next_at)?;
+            samples = match from.get(after) {
+                Some(0) => samples,
+                Some(1) => true,
+                _ => return Err(Error::Malformed),
+            };
+            next_at = next(after)?;
+            Some(held)
+        } else {
+            None
+        };
         // A fold this build does not merge exactly is not a request it can
         // answer, and reading it as some other fold would answer another one.
-        folds.push(tessari_session::Folded::named(&spelling, over).ok_or(Error::Malformed)?);
+        folds.push(
+            tessari_session::Folded::named(&spelling, over, at_instant).ok_or(Error::Malformed)?,
+        );
         at = next_at;
     }
     Ok((
@@ -183,6 +209,7 @@ pub(super) fn take_reduce(from: &[u8], at: usize) -> Result<(tessari_session::Re
             condition,
             keys,
             folds,
+            samples,
         },
         at,
     ))

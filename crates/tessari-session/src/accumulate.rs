@@ -70,6 +70,7 @@
 mod arithmetic;
 mod counter;
 pub(crate) mod exact;
+mod holding;
 mod partial;
 use rust_decimal::Decimal;
 #[cfg(test)]
@@ -144,6 +145,9 @@ pub(crate) enum Accumulator {
         /// The numbers so far, unsorted — sorting once at the end costs
         /// `n log n` where keeping the vector sorted costs `n²` moves.
         held: Vec<Value>,
+        /// The other parts' numbers as exact values and how many times each
+        /// was offered, merged from a leader's state (ADR-0121 D1).
+        runs: std::collections::BTreeMap<Decimal, u64>,
         /// Where to point a failure.
         span: Span,
     },
@@ -154,6 +158,9 @@ pub(crate) enum Accumulator {
         fold: Aggregate,
         /// The samples, in record order.
         held: Vec<(tessari_types::Datetime, Number)>,
+        /// The parts merged so far in key order, each a leader's summary or
+        /// its samples, with this node's own samples between them (ADR-0121 D3).
+        parts: Vec<counter::Part>,
         /// Where to point a failure.
         span: Span,
     },
@@ -218,12 +225,14 @@ impl Accumulator {
             },
             Aggregate::Median => Self::Middle {
                 held: Vec::new(),
+                runs: std::collections::BTreeMap::new(),
                 span,
             },
             Aggregate::Collect => Self::Every { held: Vec::new() },
             Aggregate::Increase | Aggregate::Rate | Aggregate::Delta => Self::Counter {
                 fold: aggregate,
                 held: Vec::new(),
+                parts: Vec::new(),
                 span,
             },
         }
@@ -305,14 +314,16 @@ impl Accumulator {
                 };
                 state.offer(held);
             }
-            Self::Middle { held, span } => {
+            Self::Middle { held, span, .. } => {
                 if summable(value, "median", *span)?.is_some() {
                     held.push(value.clone());
                 }
             }
             // Offered `[value, instant]`: a sample without a number is not a
             // sample, and one without an instant has no place in the order.
-            Self::Counter { fold, held, span } => {
+            Self::Counter {
+                fold, held, span, ..
+            } => {
                 let Value::Array(pair) = value else {
                     return Ok(());
                 };
@@ -427,12 +438,17 @@ impl Accumulator {
                 let answer = if *rooted { spread.sqrt() } else { spread };
                 Ok(Value::Number(Number::float(answer)))
             }
-            Self::Middle { held, span } => middle(held, *span),
+            Self::Middle { held, runs, span } => middle(held, runs, *span),
             // Over nothing this is the empty array, deliberately, and for the
             // reason `sum` answers zero: an answer every caller has to write
             // `?? []` after is the wrong answer.
             Self::Every { held } => Ok(Value::Array(held.clone())),
-            Self::Counter { fold, held, span } => counter::finish(*fold, held, *span),
+            Self::Counter {
+                fold,
+                held,
+                parts,
+                span,
+            } => counter::finish(*fold, held, parts, *span),
         }
     }
 
@@ -452,8 +468,9 @@ impl Accumulator {
         match self {
             Self::Count { .. } | Self::Sum { .. } | Self::Mean { .. } | Self::Spread { .. } => 0,
             Self::Extreme { held, .. } => usize::from(held.is_some()),
-            Self::Middle { held, .. } | Self::Every { held } => held.len(),
-            Self::Counter { held, .. } => held.len(),
+            Self::Middle { held, runs, .. } => held.len().saturating_add(runs.len()),
+            Self::Every { held } => held.len(),
+            Self::Counter { held, parts, .. } => held.len().saturating_add(parts.len()),
         }
     }
 }

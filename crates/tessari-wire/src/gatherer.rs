@@ -322,14 +322,27 @@ const SPREADS_FOLD_FROM: NodeVersion = NodeVersion {
     patch: 0,
 };
 
+/// The first build whose leaders fold `median`, `collect` and the counter
+/// folds (ADR-0121 D6).
+const HOLDING_FOLD_FROM: NodeVersion = NodeVersion {
+    major: 0,
+    minor: 32,
+    patch: 0,
+};
+
 /// Whether a leader that greeted as `build` reads every fold `reduce` asks
 /// for; a leader not heard from is not assumed to.
 fn reads_every_fold(reduce: &Reduce, build: Option<NodeVersion>) -> bool {
+    let from = |least: NodeVersion| build.is_some_and(|build| build >= least);
     let spreads = reduce
         .folds
         .iter()
         .any(|folded| matches!(folded.fold, Aggregate::Variance | Aggregate::Stddev));
-    !spreads || build.is_some_and(|build| build >= SPREADS_FOLD_FROM)
+    let holds = reduce
+        .folds
+        .iter()
+        .any(tessari_session::Folded::holds_its_group);
+    (!spreads || from(SPREADS_FOLD_FROM)) && (!holds || from(HOLDING_FOLD_FROM))
 }
 
 #[cfg(test)]
@@ -343,8 +356,9 @@ mod tests {
             keys: Vec::new(),
             folds: folds
                 .iter()
-                .filter_map(|fold| tessari_session::Folded::named(fold, None))
+                .filter_map(|fold| tessari_session::Folded::named(fold, None, None))
                 .collect(),
+            samples: false,
         }
     }
 
@@ -369,5 +383,28 @@ mod tests {
             &asking(&["count", "sum", "mean"]),
             build(24)
         ));
+    }
+
+    #[test]
+    fn a_fold_that_holds_its_group_is_asked_only_of_a_leader_that_sends_one() {
+        let text = || Some(("n".to_owned(), tessari_session::Parameters::new()));
+        for (spelling, at) in [
+            ("median", None),
+            ("collect", None),
+            ("increase", text()),
+            ("rate", text()),
+            ("delta", text()),
+        ] {
+            let mut holding = asking(&["count"]);
+            holding
+                .folds
+                .extend(tessari_session::Folded::named(spelling, text(), at));
+            assert_eq!(holding.folds.len(), 2, "{spelling}");
+            assert!(!reads_every_fold(&holding, build(31)), "{spelling}");
+            assert!(!reads_every_fold(&holding, None), "{spelling}");
+            assert!(reads_every_fold(&holding, build(32)), "{spelling}");
+        }
+        // A `0.31` leader is still asked what it already folds.
+        assert!(reads_every_fold(&asking(&["count", "stddev"]), build(31)));
     }
 }

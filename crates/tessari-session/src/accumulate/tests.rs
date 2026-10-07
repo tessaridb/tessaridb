@@ -1,6 +1,7 @@
 use super::{Accumulator, Aggregate, Decimal, Number, Retention, Span, Value};
 use crate::aggregate::fold;
 
+mod holding;
 mod order;
 mod spread;
 

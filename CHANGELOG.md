@@ -13,6 +13,37 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.32.0-beta — 2026-10-07
+
+### Added
+
+- **`median`, `collect`, `increase`, `rate` and `delta` are folded on the shards' leaders.** A node holding only some
+  shards of a split table used to fetch every record of the others to answer these five folds, and refused
+  `GatheredTooMuch` past 100 000 of them. Each leader now sends what the fold needs instead (ADR-0121):
+  - `median` sends its values as runs of exact values and counts, so it answers over any number of records whose
+    distinct values fit;
+  - `collect` sends its values in key order, and the parts in key order are the walk. Its answer is those values, so
+    it still stops at 100 000;
+  - a counter fold sends a summary: how many samples, the first and the last, and its rises. Summaries of shards
+    whose samples follow one another in time join with the rise across each seam, a reset included. When two shards'
+    samples interleave in time, the read asks every leader once more, for the samples.
+  - The answer is the one a node holding every shard gives, and the field visibility of the asking session applies on
+    the leaders as everywhere else.
+  - Only of leaders of this release or later: an older leader is asked for the records, as before.
+  <!-- landed: holistic-folds-on-the-leaders -->
+
+### Changed
+
+- **A counter fold's float rises are summed exactly and rounded once.** `increase` and `rate` over float samples
+  used to add their rises left to right in floating point, so the answer depended on the order and the grouping of
+  the additions. They are now summed exactly, as `sum` sums floats, and rounded once. On any node, split or not, an
+  answer may move in its last bits toward the exact sum: rises of 0.1, 0.2 and 0.3 give 0.6, not
+  0.6000000000000001. `delta` and each rise between two samples are unchanged.
+
+### Tested
+
+- The store `0.31.2-beta` wrote joins the released stores this build opens and reads back unchanged.
+
 ## 0.31.2-beta — 2026-10-07
 
 ### Changed

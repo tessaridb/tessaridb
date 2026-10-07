@@ -7,8 +7,40 @@ impl Session<'_> {
     /// leader declined and the read gathers records instead.
     ///
     /// The ceiling is on what travels: groups, never the records they fold
-    /// (ADR-0097 D3).
+    /// (ADR-0097 D3), and what a holding fold keeps beside each (ADR-0121 D5).
+    ///
+    /// When two shards' counter samples interleave in time their summaries
+    /// cannot be put end to end, and the read is asked again, of every leader,
+    /// for the samples; the second asking replaces the first wholesale, so the
+    /// answer is still one asking of each leader (ADR-0121 D3).
     pub(crate) fn gather_folded(
+        &self,
+        transaction: &mut Transaction<'_>,
+        id: TableId,
+        reduce: &crate::Reduce,
+        read: (&tessari_ql::Select, Option<&tessari_ql::Expr>),
+        noticed: &Noticed,
+        within: Option<crate::budget::Deadline>,
+    ) -> Result<Option<(Groups, Note)>> {
+        let folded = self.folded_once(transaction, id, reduce, read, noticed, within)?;
+        if !folded
+            .as_ref()
+            .is_some_and(|(groups, _)| needs_samples(groups))
+        {
+            return Ok(folded);
+        }
+        let samples = crate::Reduce {
+            samples: true,
+            ..reduce.clone()
+        };
+        let folded = self.folded_once(transaction, id, &samples, read, noticed, within)?;
+        // Samples always put themselves in order; a leader that answered a
+        // summary anyway is not trusted with the answer, and the records are.
+        Ok(folded.filter(|(groups, _)| !needs_samples(groups)))
+    }
+
+    /// One asking of every leader [`Self::gather_folded`] needs.
+    fn folded_once(
         &self,
         transaction: &mut Transaction<'_>,
         id: TableId,
@@ -97,7 +129,7 @@ impl Session<'_> {
                     in_time(folded)?;
                 }
             }
-            if groups.len() > GATHER_RECORDS {
+            if travelling(&groups) > GATHER_RECORDS {
                 return Err(missing.too_much());
             }
         }
@@ -113,6 +145,23 @@ impl Session<'_> {
         }
         Ok(Some((groups, missing.note())))
     }
+}
+
+/// Whether a counter fold in any group met parts that interleave in time.
+fn needs_samples(groups: &Groups) -> bool {
+    groups
+        .values()
+        .any(|(_, held)| held.iter().flatten().any(Accumulator::needs_samples))
+}
+
+/// What the read holds against the ceiling: one per group, and one per entry a
+/// holding fold keeps beside it (ADR-0121 D5).
+fn travelling(groups: &Groups) -> usize {
+    groups
+        .values()
+        .flat_map(|(_, held)| held.iter().flatten())
+        .map(Accumulator::retained)
+        .fold(groups.len(), usize::saturating_add)
 }
 
 /// The part of `span` that `part` needs, or `None` when they do not meet.

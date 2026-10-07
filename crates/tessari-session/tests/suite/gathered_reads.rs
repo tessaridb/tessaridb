@@ -120,7 +120,7 @@ fn follower_of(leader: &Store, over: Reach) -> Store {
 }
 
 /// One question the session put to the gatherer: the shard and the window.
-type Question = (u32, Option<RecordId>, Option<(RecordId, bool)>);
+pub(crate) type Question = (u32, Option<RecordId>, Option<(RecordId, bool)>);
 
 /// The leader's store, answering as its peer door would, and remembering what
 /// it was asked.
@@ -309,7 +309,11 @@ impl Pair {
         &self.leader
     }
 
-    fn asked(&self) -> Vec<Question> {
+    pub(crate) fn follower(&self) -> &Store {
+        &self.follower
+    }
+
+    pub(crate) fn asked(&self) -> Vec<Question> {
         std::mem::take(&mut *self.gatherer.asked.lock().unwrap())
     }
 
@@ -399,10 +403,6 @@ fn a_grouping_read_is_folded_on_the_leader_and_no_record_travels() {
             "{read}: {notes:?}"
         );
     }
-    // A fold that does not merge exactly gathers the records, as before.
-    let read = "SELECT median(total) AS middle FROM ledger;";
-    assert_eq!(answer(&mut follower, read).0, answer(&mut whole, read).0);
-    assert_eq!(pair.sent(), 5, "{read}");
 }
 
 /// A leader still running `0.24`: it folds a total only when its shard met no

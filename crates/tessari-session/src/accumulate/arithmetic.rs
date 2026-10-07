@@ -120,22 +120,30 @@ pub(crate) fn count(counted: u64) -> f64 {
 /// a determinism the alternative cannot state — and it is the same promise the
 /// other numeric fold already makes, including the same refusal of a number no
 /// exact form holds.
-pub(crate) fn middle(held: &[Value], span: Span) -> Result<Value> {
-    if held.is_empty() {
+pub(crate) fn middle(
+    held: &[Value],
+    runs: &std::collections::BTreeMap<Decimal, u64>,
+    span: Span,
+) -> Result<Value> {
+    let mut counted = runs.clone();
+    for value in held {
+        let entry = counted.entry(exact(value, span)?).or_insert(0);
+        *entry = entry.saturating_add(1);
+    }
+    let size: u64 = counted
+        .values()
+        .fold(0, |size, many| size.saturating_add(*many));
+    if size == 0 {
         // Nothing to be in the middle of, and zero would be a claim — the rule
         // `mean` already follows over an empty group.
         return Ok(Value::None);
     }
-    let mut sorted = Vec::with_capacity(held.len());
-    for value in held {
-        sorted.push(exact(value, span)?);
+    let at = size / 2;
+    let upper = ranked(&counted, at);
+    if size % 2 == 1 {
+        return Ok(upper.map_or(Value::None, exactly));
     }
-    sorted.sort_unstable();
-    let at = sorted.len() / 2;
-    if sorted.len() % 2 == 1 {
-        return Ok(sorted.get(at).map_or(Value::None, exactly));
-    }
-    let (Some(lower), Some(upper)) = (sorted.get(at.saturating_sub(1)), sorted.get(at)) else {
+    let (Some(lower), Some(upper)) = (ranked(&counted, at.saturating_sub(1)), upper) else {
         return Ok(Value::None);
     };
     let pair = lower
@@ -145,6 +153,18 @@ pub(crate) fn middle(held: &[Value], span: Span) -> Result<Value> {
         .checked_div(Decimal::from(2))
         .ok_or_else(|| failed("median", "a group of no size", span))?;
     Ok(exactly(&averaged))
+}
+
+/// The value at zero-based `rank` of a multiset held as value → how many.
+fn ranked(counted: &std::collections::BTreeMap<Decimal, u64>, rank: u64) -> Option<&Decimal> {
+    let mut below = 0_u64;
+    for (value, many) in counted {
+        below = below.saturating_add(*many);
+        if rank < below {
+            return Some(value);
+        }
+    }
+    None
 }
 
 /// The number this value offers a numeric fold, or nothing when it offers none.

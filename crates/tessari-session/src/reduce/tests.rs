@@ -63,8 +63,9 @@ fn reduced(
         keys: Vec::new(),
         folds: folds
             .iter()
-            .map(|(fold, over)| Folded::named(fold, over.map(text)).unwrap())
+            .map(|(fold, over)| Folded::named(fold, over.map(text), None).unwrap())
             .collect(),
+        samples: false,
     };
     reducing(&store, &reduce, found).unwrap()
 }

@@ -12,13 +12,15 @@ fn a_shard_is_folded_page_by_page_and_no_record_travels() {
         condition: None,
         keys: Vec::new(),
         folds: vec![
-            tessari_session::Folded::named("count", None).unwrap(),
+            tessari_session::Folded::named("count", None, None).unwrap(),
             tessari_session::Folded::named(
                 "sum",
                 Some(("n".to_owned(), tessari_session::Parameters::new())),
+                None,
             )
             .unwrap(),
         ],
+        samples: false,
     };
     let first = ask(
         &authority,
@@ -146,7 +148,8 @@ fn a_page_of_groups_past_the_budget_declines() {
                 visible: None,
                 condition: None,
                 keys: Vec::new(),
-                folds: vec![tessari_session::Folded::named("count", None).unwrap()],
+                folds: vec![tessari_session::Folded::named("count", None, None).unwrap()],
+                samples: false,
             }),
             ..asking(table, 1)
         },
@@ -212,13 +215,15 @@ fn a_bounded_or_narrowed_gather_moves_fewer_bytes() {
             condition: None,
             keys: Vec::new(),
             folds: vec![
-                tessari_session::Folded::named("count", None).unwrap(),
+                tessari_session::Folded::named("count", None, None).unwrap(),
                 tessari_session::Folded::named(
                     "sum",
                     Some(("n".to_owned(), tessari_session::Parameters::new())),
+                    None,
                 )
                 .unwrap(),
             ],
+            samples: false,
         }),
         ..asking(table, 1)
     });
@@ -232,4 +237,90 @@ fn a_bounded_or_narrowed_gather_moves_fewer_bytes() {
         bounded.0 * 100 < whole.0 && narrowed.0 * 100 < whole.0 && folded.0 * 100 < whole.0,
         "{whole:?} {bounded:?} {narrowed:?} {folded:?}"
     );
+}
+
+/// ADR-0121: asked for the folds that hold their group, a leader sends their
+/// states — a median's runs, a collect's values in key order, a counter's
+/// summary, or its samples when asked again for them — and no record.
+#[test]
+fn the_folds_that_hold_their_group_travel_as_states_and_no_record_travels() {
+    let authority = Authority::new();
+    let (db, table) = leader();
+    let (address, handle) = folding_door(&authority, &db, Some(shard(table, 2)), (1 << 20, 16), 2);
+    let text = |text: &str| Some((text.to_owned(), tessari_session::Parameters::new()));
+    let holding = |samples| tessari_session::Reduce {
+        visible: None,
+        condition: None,
+        keys: Vec::new(),
+        folds: [
+            tessari_session::Folded::named("median", text("n"), None),
+            tessari_session::Folded::named("collect", text("n"), None),
+            tessari_session::Folded::named(
+                "increase",
+                text("n"),
+                text("datetime '2026-10-07T10:00:00Z'"),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        samples,
+    };
+    let states = |samples| {
+        let page = ask(
+            &authority,
+            address,
+            &Gather {
+                reduce: Some(holding(samples)),
+                ..asking(table, 1)
+            },
+        )
+        .unwrap();
+        assert!(page.records.is_empty() && !page.more, "{page:?}");
+        match page.reduced {
+            Some(tessari_session::Reduced::Partials(mut partials)) if partials.len() == 1 => {
+                partials.remove(0).states
+            }
+            other => panic!("{other:?}"),
+        }
+    };
+    let summary = states(false);
+    let samples = states(true);
+    handle.join().unwrap();
+    assert_eq!(summary.len(), 3, "{summary:?}");
+    let run = |value: &str, many: i64| {
+        tessari_types::Value::Array(vec![
+            tessari_types::Value::Number(tessari_types::Number::Decimal(value.parse().unwrap())),
+            tessari_types::Value::from(many),
+        ])
+    };
+    // Shard 1 holds a, b and c: 1, 2 and 3.
+    assert_eq!(
+        summary.first(),
+        Some(&tessari_types::Value::Array(vec![
+            run("1", 1),
+            run("2", 1),
+            run("3", 1)
+        ]))
+    );
+    assert_eq!(
+        summary.get(1),
+        Some(&tessari_types::Value::Array(
+            [1_i64, 2, 3].map(tessari_types::Value::from).to_vec()
+        ))
+    );
+    let tag = |state: Option<&tessari_types::Value>| match state {
+        Some(tessari_types::Value::Array(held)) => held.first().cloned(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        tag(summary.get(2)),
+        Some(tessari_types::Value::from("summary"))
+    );
+    assert_eq!(
+        tag(samples.get(2)),
+        Some(tessari_types::Value::from("samples"))
+    );
+    // Only the counter answers differently when asked for its samples.
+    assert_eq!(samples.get(..2), summary.get(..2));
 }
