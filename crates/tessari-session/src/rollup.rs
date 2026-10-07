@@ -19,6 +19,7 @@
 //! window empty at its snapshot is created by the raw write alone.
 
 mod maintain;
+mod merging;
 
 use std::collections::BTreeMap;
 
@@ -36,6 +37,7 @@ use crate::outcome::Outcome;
 use crate::session::Session;
 
 pub(crate) use maintain::{Row, fold_rows, row_identity};
+pub(crate) use merging::Merging;
 
 /// The field a rollup row carries its window's first instant in.
 pub(crate) const WINDOW_FIELD: &str = "window";
@@ -46,7 +48,7 @@ pub(crate) struct Declared<'s> {
     pub(crate) source: &'s Name,
     pub(crate) window: Duration,
     pub(crate) by: Option<&'s Name>,
-    pub(crate) computes: &'s [(Name, Option<Name>, Name)],
+    pub(crate) computes: &'s [tessari_ql::RollupCompute],
     pub(crate) retain: Duration,
     pub(crate) if_not_exists: bool,
 }
@@ -220,10 +222,16 @@ impl Session<'_> {
 }
 
 /// The written `COMPUTE` list, checked against the folds a rollup keeps.
-fn computes_of(written: &[(Name, Option<Name>, Name)]) -> Result<Vec<RollupCompute>> {
+fn computes_of(written: &[tessari_ql::RollupCompute]) -> Result<Vec<RollupCompute>> {
     let mut computes = Vec::with_capacity(written.len());
     let mut names: BTreeMap<&str, ()> = BTreeMap::new();
-    for (fold, of, name) in written {
+    for tessari_ql::RollupCompute {
+        fold,
+        of,
+        rank,
+        name,
+    } in written
+    {
         let refused = || Error::RollupFold {
             fold: fold.text.clone(),
             span: fold.span,
@@ -231,6 +239,15 @@ fn computes_of(written: &[(Name, Option<Name>, Name)]) -> Result<Vec<RollupCompu
         let parsed = RollupFold::parse(&fold.text).ok_or_else(refused)?;
         // Only `count` may fold over the records themselves.
         if of.is_none() && parsed != RollupFold::Count {
+            return Err(refused());
+        }
+        // A quantile keeps one rank from 0 to 1, and nothing else keeps one.
+        let ranked = rank.as_ref().and_then(tessari_types::Number::as_float);
+        let fits = match parsed {
+            RollupFold::ApproxQuantile => ranked.is_some_and(|rank| (0.0..=1.0).contains(&rank)),
+            _ => rank.is_none(),
+        };
+        if !fits {
             return Err(refused());
         }
         if name.text == WINDOW_FIELD || names.insert(&name.text, ()).is_some() {
@@ -243,6 +260,7 @@ fn computes_of(written: &[(Name, Option<Name>, Name)]) -> Result<Vec<RollupCompu
             name: name.text.clone(),
             fold: parsed,
             of: of.as_ref().map(|field| field.text.clone()),
+            rank: rank.clone(),
         });
     }
     Ok(computes)

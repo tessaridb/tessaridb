@@ -7,6 +7,7 @@
 //! no moment at which the two disagree.
 
 mod exact;
+pub(crate) mod sketches;
 
 use std::collections::BTreeMap;
 
@@ -49,6 +50,8 @@ const fn aggregate_of(fold: RollupFold) -> Aggregate {
         RollupFold::Sum => Aggregate::Sum,
         RollupFold::Min => Aggregate::Min,
         RollupFold::Max => Aggregate::Max,
+        RollupFold::ApproxDistinct => Aggregate::ApproxDistinct,
+        RollupFold::ApproxQuantile => Aggregate::ApproxQuantile,
     }
 }
 
@@ -95,6 +98,11 @@ impl Row {
                 (None, _) => Value::Bool(true),
                 (Some(of), Value::Object(fields)) => fields.get(of).cloned().unwrap_or(Value::None),
                 (Some(_), _) => Value::None,
+            };
+            // A quantile is offered each value with the rank it keeps.
+            let offered = match &compute.rank {
+                Some(rank) => Value::Array(vec![offered, Value::Number(rank.clone())]),
+                None => offered,
             };
             if let Some(accumulator) = self.values.get_mut(&compute.name) {
                 accumulator.offer(&offered)?;
@@ -250,14 +258,17 @@ impl Session<'_> {
                     let row =
                         match self.stored_row(transaction, &rows, rollup, window, &key, span)? {
                             None => Some(Row::new(rollup, window, key.clone())),
-                            Some(existing) if !exact::has_sums(rollup) => Some(existing),
                             // A sum is folded into from its exact state, never from
-                            // the rounded total the row shows (Q-927).
+                            // the rounded total the row shows (Q-927), and a sketch
+                            // from the state kept beside the row, never from its
+                            // estimate (ADR-0122 C5).
                             Some(mut existing) => {
-                                let kept = transaction
-                                    .rollup_state(rollup.table, &exact::state_key(&key))?;
-                                existing
-                                    .take_sums(rollup, kept.as_ref())?
+                                let sums = !exact::has_sums(rollup) || {
+                                    let kept = transaction
+                                        .rollup_state(rollup.table, &exact::state_key(&key))?;
+                                    existing.take_sums(rollup, kept.as_ref())?
+                                };
+                                (sums && existing.take_sketches(transaction, rollup)?)
                                     .then_some(existing)
                             }
                         };
@@ -331,9 +342,14 @@ impl Session<'_> {
             return Err(Error::RollupKeyCollision { span });
         }
         // Each kept value re-enters its accumulator as the one value folded so
-        // far — a count as that many, the rest as themselves.
+        // far — a count as that many, the rest as themselves. A sketch's
+        // estimate cannot; its state is merged from beside the row instead.
         let mut row = Row::new(rollup, window, key.clone());
-        for compute in &rollup.computes {
+        for compute in rollup
+            .computes
+            .iter()
+            .filter(|compute| !sketches::is_sketch(compute.fold))
+        {
             let Some(accumulator) = row.values.get_mut(&compute.name) else {
                 continue;
             };
@@ -387,10 +403,11 @@ impl Session<'_> {
             rows.table,
             row_identity(window, &key),
         );
-        match fold_rows(rollup, time, &records)?.remove(&(window, key)) {
+        match fold_rows(rollup, time, &records)?.remove(&(window, key.clone())) {
             Some(row) => self.keep_row(transaction, rows, rollup, row, span),
             None => {
                 transaction.delete(at);
+                sketches::forget_sketches(transaction, rollup, window, &key);
                 Ok(())
             }
         }
@@ -448,6 +465,7 @@ impl Session<'_> {
                 &row.sums_state(rollup),
             );
         }
+        row.keep_sketches(transaction, rollup);
         self.put_engine_record(transaction, at, row_value(row, rollup), span)
     }
 }

@@ -1151,19 +1151,35 @@ impl Session<'_> {
                 computes,
                 retain,
                 if_not_exists,
-            } => self.define_rollup(
-                transaction,
-                &crate::rollup::Declared {
-                    name,
-                    source,
-                    window: *window,
-                    by: by.as_ref(),
-                    computes,
-                    retain: *retain,
-                    if_not_exists: *if_not_exists,
-                },
-                span,
-            ),
+            } => {
+                if computes.iter().any(|compute| {
+                    matches!(
+                        tessari_storage::RollupFold::parse(&compute.fold.text),
+                        Some(
+                            tessari_storage::RollupFold::ApproxDistinct
+                                | tessari_storage::RollupFold::ApproxQuantile
+                        )
+                    )
+                }) {
+                    self.refuse_a_format_the_store_does_not_hold(
+                        "a rollup that keeps a sketch",
+                        tessari_encoding::FormatVersion::SKETCH_ROLLUP,
+                    )?;
+                }
+                self.define_rollup(
+                    transaction,
+                    &crate::rollup::Declared {
+                        name,
+                        source,
+                        window: *window,
+                        by: by.as_ref(),
+                        computes,
+                        retain: *retain,
+                        if_not_exists: *if_not_exists,
+                    },
+                    span,
+                )
+            }
             StatementKind::DropRollup { name } => self.drop_rollup(transaction, name, span),
             StatementKind::DefineView {
                 name,

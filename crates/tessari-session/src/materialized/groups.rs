@@ -109,7 +109,7 @@ impl Session<'_> {
             transaction,
             members,
             select.projection.written(),
-            &select.group,
+            (&select.group, None),
             None,
         )?;
         let row = self.row(kept, RecordId::Bytes(group));

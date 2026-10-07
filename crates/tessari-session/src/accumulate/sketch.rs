@@ -132,4 +132,41 @@ impl Accumulator {
             _ => None,
         }
     }
+
+    /// Merge a sketch a rollup kept beside a row, answering at the rank this
+    /// fold was asked rather than the one the rollup keeps (ADR-0122 C5).
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::NotSummable`] for a row whose sketch is not kept or is
+    /// not this fold's, and whatever the rank refuses.
+    pub(crate) fn merge_kept(
+        &mut self,
+        kept: Option<&Value>,
+        asked: Option<&Value>,
+        span: Span,
+    ) -> Result<()> {
+        const MISSING: &str = "a rollup row whose sketch is not kept";
+        match self {
+            Self::Distinct { sketch } => {
+                let more = kept
+                    .and_then(Distinct::from_state)
+                    .ok_or_else(|| failed("approx_distinct", MISSING, span))?;
+                sketch.absorb(&more);
+            }
+            Self::Quantile { sketch, rank, .. } => {
+                if let Some(asked) = asked {
+                    settle_rank(rank, asked, span)?;
+                }
+                let more = match kept {
+                    Some(Value::Array(held)) => held.get(1).and_then(Quantile::from_state),
+                    _ => None,
+                }
+                .ok_or_else(|| failed("approx_quantile", MISSING, span))?;
+                sketch.absorb(&more);
+            }
+            _ => return Err(failed("a fold", MISSING, span)),
+        }
+        Ok(())
+    }
 }

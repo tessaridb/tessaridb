@@ -257,12 +257,18 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         records: Vec<(RecordId, Value)>,
         wanted: &[Projected],
-        group: &[Expr],
+        (group, merging): (&[Expr], Option<&crate::rollup::Merging>),
         fill: Option<&tessari_ql::Fill>,
     ) -> Result<Answered> {
         let occurrences = occurrences(wanted);
         let mut groups = Groups::new();
-        self.fold_into(transaction, &mut groups, records, &occurrences, group)?;
+        self.fold_into(
+            transaction,
+            &mut groups,
+            records,
+            &occurrences,
+            (group, merging),
+        )?;
         self.answer_groups(transaction, groups, wanted, &occurrences, group, fill)
     }
 
@@ -295,7 +301,7 @@ impl Session<'_> {
         groups: &mut Groups,
         records: Vec<(RecordId, Value)>,
         occurrences: &[Vec<&Expr>],
-        group: &[Expr],
+        (group, merging): (&[Expr], Option<&crate::rollup::Merging>),
     ) -> Result<()> {
         for (id, record) in records {
             // Evaluated rather than resolved, so a window — `time::bucket(at,
@@ -309,11 +315,40 @@ impl Session<'_> {
             let entry = groups
                 .entry(key)
                 .or_insert_with(|| (id.clone(), holding(occurrences)));
+            let mut walked = 0_usize;
             for (position, held) in occurrences.iter().enumerate() {
                 for (which, fold) in held.iter().enumerate() {
-                    let ExprKind::Fold { over, at, .. } = &fold.kind else {
+                    let index = walked;
+                    walked = walked.saturating_add(1);
+                    let ExprKind::Fold { over, at, span, .. } = &fold.kind else {
                         continue;
                     };
+                    // A sketch fold over a rollup's sketch column merges the
+                    // state kept beside the row (ADR-0122 C5).
+                    if let Some((merging, column)) =
+                        merging.and_then(|merging| Some((merging, merging.column(index)?)))
+                    {
+                        let rank = match at {
+                            Some(at) => {
+                                Some(self.evaluate_in(transaction, at, Scope::of(&record))?)
+                            }
+                            None => None,
+                        };
+                        if let Some(accumulator) = entry
+                            .1
+                            .get_mut(position)
+                            .and_then(|held| held.get_mut(which))
+                        {
+                            merging.merge_row(
+                                transaction,
+                                accumulator,
+                                (&record, column),
+                                rank.as_ref(),
+                                *span,
+                            )?;
+                        }
+                        continue;
+                    }
                     let value = match over {
                         // `count(*)` folds over the records themselves, so what
                         // it is offered is one placeholder per record rather

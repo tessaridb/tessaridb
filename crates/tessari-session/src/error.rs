@@ -813,9 +813,10 @@ pub enum Error {
         span: Span,
     },
 
-    /// A `COMPUTE` a rollup cannot keep exactly from its row alone.
+    /// A `COMPUTE` a rollup cannot keep exactly from its row and the sketches
+    /// kept beside it.
     #[error(
-        "a rollup keeps `count`, `sum`, `min` and `max`, each once and under its own name — `{fold}` is not one; for a mean keep `sum` and `count` and divide (at {span})"
+        "a rollup keeps `count`, `sum`, `min`, `max`, `approx_distinct` and `approx_quantile(field, rank)` with a rank from 0 to 1, each once and under its own name — `{fold}` is not one; for a mean keep `sum` and `count` and divide (at {span})"
     )]
     RollupFold {
         /// What was written.

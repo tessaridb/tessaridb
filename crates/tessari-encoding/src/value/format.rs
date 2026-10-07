@@ -67,6 +67,12 @@ impl FormatVersion {
     /// (ADR-0122 A8). Named for the reason [`Self::HOMED_LOG`] is.
     pub const TABLE_EXPIRY: Self = Self(7);
 
+    /// The first format whose rollups may keep a sketch (ADR-0122 C5): an
+    /// older build reading the declaration would refuse a fold it does not
+    /// know, and could not keep the state beside the row. Format 7 was not yet
+    /// released when this joined it, so one bump carries both.
+    pub const SKETCH_ROLLUP: Self = Self(7);
+
     /// The first format whose stores may hold a containment index's entries
     /// (ADR-0116 D4).
     ///

@@ -171,27 +171,34 @@ impl Session<'_> {
         // A grouping read of a table this node holds only part of is folded on
         // the leaders when it can be (ADR-0097 D2): its groups stand in for the
         // records, and every stage after the fold runs below as it always has.
-        let (prepared, searched, mut folded) =
-            match self.prepare_folded(transaction, select, (&mut notes, &noticed), within)? {
-                Some((groups, plan)) => (
-                    Prepared::Held(Vec::new(), plan),
-                    crate::search::Searched::default(),
-                    Some(groups),
-                ),
-                None => {
-                    let (prepared, searched) = self.prepare_source(
-                        transaction,
-                        select,
-                        Reporting {
-                            collected: &mut notes,
-                            noticed: &noticed,
-                        },
-                        within,
-                    )?;
-                    notes.extend(searched.rebuild_notes().iter().cloned());
-                    (prepared, searched, None)
-                }
-            };
+        // A read merging a rollup's sketches reads them here, beside its rows,
+        // and is never folded on the leaders (ADR-0122 C5).
+        let merging = self.rollup_merging(transaction, select)?;
+        let leaders = if merging.is_none() {
+            self.prepare_folded(transaction, select, (&mut notes, &noticed), within)?
+        } else {
+            None
+        };
+        let (prepared, searched, mut folded) = match leaders {
+            Some((groups, plan)) => (
+                Prepared::Held(Vec::new(), plan),
+                crate::search::Searched::default(),
+                Some(groups),
+            ),
+            None => {
+                let (prepared, searched) = self.prepare_source(
+                    transaction,
+                    select,
+                    Reporting {
+                        collected: &mut notes,
+                        noticed: &noticed,
+                    },
+                    within,
+                )?;
+                notes.extend(searched.rebuild_notes().iter().cloned());
+                (prepared, searched, None)
+            }
+        };
         // The bound the sort may keep to. `bounded` is applied to the ordering
         // stage's output below, so keeping only what it will keep is an identity
         // between two adjacent stages rather than a decision about the
@@ -317,7 +324,7 @@ impl Session<'_> {
                     transaction,
                     records,
                     select.projection.written(),
-                    &select.group,
+                    (&select.group, merging.as_ref()),
                     select.fill.as_ref(),
                 )?,
             };

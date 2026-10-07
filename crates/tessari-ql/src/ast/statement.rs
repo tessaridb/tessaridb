@@ -1185,9 +1185,8 @@ pub enum StatementKind {
         window: Duration,
         /// The raw field a row is kept per.
         by: Option<Name>,
-        /// What each row computes: the fold word, its field (`None` for
-        /// `count(*)`) and the name it answers under.
-        computes: Vec<(Name, Option<Name>, Name)>,
+        /// What each row computes.
+        computes: Vec<RollupCompute>,
         /// How far back the rollup answers — required, like a series'.
         retain: Duration,
         /// Whether re-defining an existing name is accepted.
@@ -2088,4 +2087,17 @@ pub enum SearchOperator {
     Fuzzy,
     /// `MATCHES INFIX`: every word a piece of a held word.
     Infix,
+}
+
+/// One `COMPUTE fold(field) AS name` of a `DEFINE ROLLUP`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollupCompute {
+    /// The fold word.
+    pub fold: Name,
+    /// The raw field it folds; `None` for `count(*)`.
+    pub of: Option<Name>,
+    /// The rank `approx_quantile(field, rank)` keeps (ADR-0122 C5).
+    pub rank: Option<tessari_types::Number>,
+    /// The name the value answers under.
+    pub name: Name,
 }

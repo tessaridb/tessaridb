@@ -343,12 +343,12 @@ fn erase_statement(statement: &mut Statement) {
             if let Some(by) = by {
                 erase_name(by);
             }
-            for (fold, of, alias) in computes {
-                erase_name(fold);
-                if let Some(of) = of {
+            for compute in computes {
+                erase_name(&mut compute.fold);
+                if let Some(of) = &mut compute.of {
                     erase_name(of);
                 }
-                erase_name(alias);
+                erase_name(&mut compute.name);
             }
         }
         StatementKind::DefineTopicConsumer {
