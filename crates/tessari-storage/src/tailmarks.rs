@@ -190,14 +190,23 @@ mod tests {
     fn an_unmoved_tail_is_redated_rather_than_appended() {
         let marks = TailMarks::default();
         marks.mark(HOME, sequence(10));
-        let first = marks.age_of(HOME, sequence(10)).expect("a mark was made");
+        // Taken between the two marks: a re-dated mark is no older than this,
+        // and one left at its first instant is. Compared directly rather than
+        // through two `elapsed()` readings, whose difference is how long each
+        // read took and not whether the mark moved.
+        let between = std::time::Instant::now();
         marks.mark(HOME, sequence(10));
-        let second = marks
-            .age_of(HOME, sequence(10))
+        let dated = marks
+            .marks
+            .lock()
+            .expect("not poisoned")
+            .marks
+            .back()
+            .map(|(_, at)| *at)
             .expect("the mark is still there");
         assert!(
-            second <= first,
-            "re-marking the same tail must date it later, not earlier: {second:?} vs {first:?}"
+            dated >= between,
+            "re-marking the same tail must date it later, not leave it at its first instant"
         );
         assert_eq!(
             marks.marks.lock().expect("not poisoned").marks.len(),
