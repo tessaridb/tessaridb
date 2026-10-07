@@ -152,6 +152,10 @@ async fn follow(mut socket: WebSocket, node: &Shared, presented: Presented, body
                 from: Sequence::new(asked.from),
                 table: asked.table.as_deref(),
                 cursor: asked.cursor.as_deref(),
+                condition: asked
+                    .condition
+                    .as_ref()
+                    .map(|(text, parameters)| tessaridb::feed::Condition { text, parameters }),
             };
             let opened =
                 Feed::open(&db, &mut session, &following).map_err(|refusal| refusal.to_string())?;
@@ -204,6 +208,11 @@ async fn follow(mut socket: WebSocket, node: &Shared, presented: Presented, body
                                 texts.push(follow::encode(change, table, allowed, &names, cursor));
                                 true
                             });
+                        // How far a narrowed feed read past what it sent, when
+                        // it has said nothing for a while.
+                        if let Some(at) = open.progress(std::time::Instant::now()) {
+                            texts.push(follow::progress(at.sequence.get(), at.cursor.as_deref()));
+                        }
                         ((attached.detach(), open), round, texts)
                     },
                 )

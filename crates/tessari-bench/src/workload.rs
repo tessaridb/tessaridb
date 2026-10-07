@@ -200,6 +200,11 @@ pub const ALL: &[Workload] = &[
         run: planner,
     },
     Workload {
+        name: "feeds",
+        about: "what 1, 100 and 10 000 subscriptions narrowed by a condition cost per commit, beside the same feeds on the table alone",
+        run: crate::feeds::feeds,
+    },
+    Workload {
         name: "queue",
         about: "what a claim costs behind a prefix of held and of dead-lettered records, and a drain taken one at a time against one taken in a batch",
         run: crate::queue::queue,

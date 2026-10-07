@@ -200,6 +200,12 @@ pub(crate) enum Kind {
     /// Numbered **17** because the peer link holds 14-16 (ADR-0092 D2). Its own
     /// kind rather than a script, so the passphrase is never statement text.
     Vault,
+    /// How far a narrowed feed has read, sent because it skipped changes and
+    /// had nothing to send (ADR-0122 B3) — only to a feed that named a
+    /// condition, so no earlier client is ever sent one.
+    ///
+    /// Numbered **37** because the peer link holds 18-36.
+    Progress,
 }
 
 impl Kind {
@@ -212,6 +218,7 @@ impl Kind {
             Self::Change => 5,
             Self::Elsewhere => 13,
             Self::Vault => 17,
+            Self::Progress => 37,
         }
     }
 
@@ -224,6 +231,7 @@ impl Kind {
             5 => Some(Self::Change),
             13 => Some(Self::Elsewhere),
             17 => Some(Self::Vault),
+            37 => Some(Self::Progress),
             // 6-12 belong to the peer link and are refused here on purpose, so a
             // peer frame arriving on the client port closes the connection
             // instead of being misread. Everything else is simply unclaimed, and

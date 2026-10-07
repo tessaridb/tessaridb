@@ -57,6 +57,24 @@ pub enum FeedRefused {
         /// The cursor sent.
         cursor: String,
     },
+    /// A condition was named with no table: it is about one table's records.
+    ConditionWithoutTable,
+    /// The condition reads the store — a subquery, a fold, a record's lifetime
+    /// — which no change carries, so it cannot be judged from one.
+    ConditionReadsTheStore,
+    /// The condition reads a field the subscriber may not see; judged anyway,
+    /// which records arrive would say what the field holds.
+    FieldNotVisible {
+        /// The field.
+        field: String,
+    },
+    /// A change that does not match had to be compared with the record as it
+    /// stood just before, and that version is no longer held — a guess would
+    /// leave a mirror holding a record it should have dropped.
+    PreviousVersionGone {
+        /// The sequence of the change.
+        sequence: u64,
+    },
 }
 
 impl FeedRefused {
@@ -66,7 +84,7 @@ impl FeedRefused {
         use tessari_types::RefusalClass;
         match self {
             Self::Store(error) => error.class(),
-            Self::TableNotGranted { .. } => RefusalClass::Forbidden,
+            Self::TableNotGranted { .. } | Self::FieldNotVisible { .. } => RefusalClass::Forbidden,
             // The table moved under the feed: follow it again, from the cursor.
             Self::SplitAfterStart => RefusalClass::Conflict,
             // This node's log is another writer's; the feed belongs elsewhere.
@@ -77,7 +95,10 @@ impl FeedRefused {
             | Self::CursorWithoutSplit { .. }
             | Self::StrayLog { .. }
             | Self::CursorUnreadable { .. }
-            | Self::CursorFromAnotherDatabase { .. } => RefusalClass::Invalid,
+            | Self::CursorFromAnotherDatabase { .. }
+            | Self::ConditionWithoutTable
+            | Self::ConditionReadsTheStore
+            | Self::PreviousVersionGone { .. } => RefusalClass::Invalid,
         }
     }
 }
@@ -125,6 +146,21 @@ impl fmt::Display for FeedRefused {
                 formatter,
                 "{cursor:?} was given by a feed over another database, and its positions mean \
                  nothing in this one"
+            ),
+            Self::ConditionWithoutTable => formatter
+                .write_str("a condition is about one table's records — name the table it narrows"),
+            Self::ConditionReadsTheStore => formatter.write_str(
+                "this condition reads the store, and a feed judges each change by the record \
+                 it carries — compare the record's own fields",
+            ),
+            Self::FieldNotVisible { field } => write!(
+                formatter,
+                "the condition reads {field:?}, which this session may not see"
+            ),
+            Self::PreviousVersionGone { sequence } => write!(
+                formatter,
+                "the change at {sequence} must be compared with the record as it stood before \
+                 it, and that version has been reclaimed — subscribe again from the present"
             ),
         }
     }

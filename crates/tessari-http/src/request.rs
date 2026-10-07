@@ -251,7 +251,7 @@ impl Reader {
     }
 
     /// An object whose every value is a string.
-    fn strings(&mut self) -> Result<BTreeMap<String, String>, String> {
+    pub(crate) fn strings(&mut self) -> Result<BTreeMap<String, String>, String> {
         self.expect('{')?;
         let mut held = BTreeMap::new();
         self.space();

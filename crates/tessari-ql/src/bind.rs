@@ -46,6 +46,31 @@ pub(crate) use nested::{bind_expr, bind_identity, bind_select};
 /// parsed a string to ask the one they meant.
 pub type Parameters = BTreeMap<String, Value>;
 
+/// Replace every parameter in one expression with the value bound to it.
+///
+/// For an expression that arrives on its own rather than inside a script — a
+/// subscription's condition — so a supplied value is bound after the text is
+/// read and can never become syntax, exactly as [`Script::bind`] binds one.
+///
+/// # Errors
+///
+/// [`Error::UnboundParameter`] for the first parameter `parameters` holds no
+/// value for.
+pub fn bind_expression(
+    mut expr: crate::ast::Expr,
+    parameters: &Parameters,
+) -> Result<crate::ast::Expr> {
+    bind_expr(
+        &mut expr,
+        &Binding {
+            supplied: parameters,
+            deferred: BTreeSet::new(),
+            strict: true,
+        },
+    )?;
+    Ok(expr)
+}
+
 /// What a name may resolve to during the walk.
 ///
 /// Two sources, and they are not interchangeable. `supplied` is the caller's

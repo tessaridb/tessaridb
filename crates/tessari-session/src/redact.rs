@@ -91,6 +91,33 @@ impl Session<'_> {
         Ok(held)
     }
 
+    /// Whether `condition` holds for one record as this session may see it —
+    /// the test a narrowed change feed puts to a change (ADR-0122 B2).
+    ///
+    /// The record is redacted before the condition reads it, so the permission
+    /// and the filter are one value: a field the session may not see is absent
+    /// to the condition exactly as it is absent from what is delivered.
+    ///
+    /// # Errors
+    ///
+    /// Whatever evaluating the condition refuses, and a condition that is not a
+    /// truth.
+    pub fn holds_for(
+        &self,
+        transaction: &mut Transaction<'_>,
+        condition: &tessari_ql::Expr,
+        (id, record): (&RecordId, Value),
+        visible: &Visible,
+    ) -> Result<bool> {
+        let shown = seen(record, visible);
+        let held = self.evaluate_in(
+            transaction,
+            condition,
+            crate::evaluate::Scope::of(&shown).identified(id),
+        )?;
+        crate::condition::boolean(&held, condition.span)
+    }
+
     /// One record, as this session may see it.
     ///
     /// # Errors

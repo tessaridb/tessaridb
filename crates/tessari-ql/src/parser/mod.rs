@@ -109,6 +109,32 @@ pub fn parse_expression(source: &str) -> Result<Expr> {
     Ok(expression)
 }
 
+/// Read `source` as one condition, the way a `WHERE` reads one: a bare name is
+/// a field of the record being tested.
+///
+/// For a condition that arrives on its own — a subscription's (ADR-0122 Part
+/// B) — where [`parse_expression`] would read `chat` as a table.
+///
+/// # Errors
+///
+/// Returns the first failure, and refuses a condition followed by anything
+/// else.
+pub fn parse_condition(source: &str) -> Result<Expr> {
+    let tokens = tokenize(source)?;
+    let mut parser = Parser {
+        source,
+        tokens,
+        position: 0,
+        reading_paths: false,
+        depth: 0,
+    };
+    let condition = parser.condition()?;
+    if parser.peek().is_some() {
+        return Err(parser.error_here("the end of the condition"));
+    }
+    Ok(condition)
+}
+
 /// Read `source` into one read, with nothing around it.
 ///
 /// The way a view stored in the catalog is read back — the same shape

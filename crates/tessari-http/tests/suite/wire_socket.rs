@@ -360,6 +360,7 @@ fn a_subscription_over_the_socket_delivers_a_change() {
                 from: 0,
                 table: Some("notes".to_owned()),
                 cursor: None,
+                condition: None,
             }
             .encode(),
         ),

@@ -41,6 +41,10 @@ where
                 from: Sequence::new(asked.from),
                 table: asked.table.as_deref(),
                 cursor: asked.cursor.as_deref(),
+                condition: asked.condition.as_ref().map(|narrow| feed::Condition {
+                    text: &narrow.text,
+                    parameters: &narrow.parameters,
+                }),
             };
             let opened = Feed::open(&db, &mut attached, &following);
             (attached.detach(), opened)
@@ -105,12 +109,21 @@ where
                                 }
                                 true
                             });
-                        ((attached.detach(), open), round, frames)
+                        // How far a narrowed feed read past what it sent, when
+                        // it has said nothing for a while.
+                        let reached = open.progress(std::time::Instant::now()).map(|at| {
+                            push::Progressed {
+                                sequence: at.sequence.get(),
+                                cursor: at.cursor,
+                            }
+                            .encode()
+                        });
+                        ((attached.detach(), open), round, frames, reached)
                     },
                 )
                 .await;
             let round = match ran {
-                Bridged::Answered(((back, open), round, frames)) => {
+                Bridged::Answered(((back, open), round, frames, reached)) => {
                     (session, following) = (back, open);
                     due = false;
                     for change in &frames {
@@ -119,6 +132,14 @@ where
                         tokio::time::timeout(
                             READING,
                             frame_async::write(&mut writer, frame::Kind::Change, change),
+                        )
+                        .await
+                        .map_err(|_| Error::Io(std::io::ErrorKind::TimedOut.into()))??;
+                    }
+                    if let Some(reached) = &reached {
+                        tokio::time::timeout(
+                            READING,
+                            frame_async::write(&mut writer, frame::Kind::Progress, reached),
                         )
                         .await
                         .map_err(|_| Error::Io(std::io::ErrorKind::TimedOut.into()))??;

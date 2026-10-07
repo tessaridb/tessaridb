@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use tessari_ql::Parameters;
 
 use crate::message::{Answer, Request};
-use crate::push::{Follow, Happened};
+use crate::push::{Follow, Happened, Progressed};
 use crate::redirect::Elsewhere;
 use crate::transport::Transport;
 use crate::{frame, message};
@@ -260,7 +260,8 @@ impl Client {
             frame::Kind::Request
             | frame::Kind::Subscribe
             | frame::Kind::Change
-            | frame::Kind::Vault => Err(Error::UnknownFrame { tag: kind.tag() }),
+            | frame::Kind::Vault
+            | frame::Kind::Progress => Err(Error::UnknownFrame { tag: kind.tag() }),
         }
     }
 
@@ -311,8 +312,18 @@ impl Client {
         frame::write(&mut self.writer, frame::Kind::Subscribe, &asked.encode())?;
         Ok(Feed {
             reader: self.reader,
+            progressed: None,
         })
     }
+}
+
+/// What a feed is sent: a change, or a position past changes it skipped.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Sent {
+    /// A change.
+    Change(Happened),
+    /// How far a narrowed feed read (ADR-0122 B3).
+    Progress(Progressed),
 }
 
 /// Changes, as they arrive.
@@ -326,6 +337,8 @@ impl Client {
 #[derive(Debug)]
 pub struct Feed {
     reader: BufReader<Transport>,
+    /// The latest progress a narrowed feed sent (ADR-0122 B3).
+    progressed: Option<Progressed>,
 }
 
 impl Feed {
@@ -348,11 +361,35 @@ impl Feed {
     /// Returns [`Error::Refused`] with the node's words when it refused the
     /// subscription, and the stream's failure otherwise.
     pub fn wait(&mut self) -> Result<Option<Happened>> {
+        loop {
+            match self.receive()? {
+                None => return Ok(None),
+                Some(Sent::Change(change)) => return Ok(Some(change)),
+                // Kept for [`Feed::progressed`]; the wait goes on for a change.
+                Some(Sent::Progress(_)) => {}
+            }
+        }
+    }
+
+    /// The next thing the node sends: a change, or — on a feed narrowed by a
+    /// condition — how far it read past changes it did not send, which a
+    /// subscriber stores as its resume point exactly as it stores a change's
+    /// (ADR-0122 B3). `None` when the node hung up.
+    ///
+    /// # Errors
+    ///
+    /// As [`Feed::wait`].
+    pub fn receive(&mut self) -> Result<Option<Sent>> {
         let Some((kind, body)) = frame::read(&mut self.reader)? else {
             return Ok(None);
         };
         match kind {
-            frame::Kind::Change => Ok(Some(Happened::decode(&body)?)),
+            frame::Kind::Change => Ok(Some(Sent::Change(Happened::decode(&body)?))),
+            frame::Kind::Progress => {
+                let reached = Progressed::decode(&body)?;
+                self.progressed = Some(reached.clone());
+                Ok(Some(Sent::Progress(reached)))
+            }
             // The refusal for a subscription that could not be started arrives
             // here rather than at `follow`, because the node reads the frame
             // before it can judge it.
@@ -367,6 +404,13 @@ impl Feed {
             | frame::Kind::Elsewhere
             | frame::Kind::Vault => Err(Error::UnknownFrame { tag: kind.tag() }),
         }
+    }
+
+    /// How far a narrowed feed had read when it last said so — resume at one
+    /// past its sequence if that is later than the last change handled.
+    #[must_use]
+    pub const fn progressed(&self) -> Option<&Progressed> {
+        self.progressed.as_ref()
     }
 }
 

@@ -76,6 +76,11 @@ pub struct Change {
     pub id: RecordId,
     /// What became of it.
     pub kind: ChangeKind,
+    /// The writer's commit order the change was made at, which is the version
+    /// the record holds it under — so the version before it is the record as
+    /// it stood just before this change. `None` for a record written before
+    /// commits carried an order.
+    pub order: Option<Sequence>,
 }
 
 /// What became of a record.
@@ -114,6 +119,7 @@ pub(crate) fn changes_in(sequence: Sequence, record: &LogRecord) -> Result<Vec<C
             table: mutation.table,
             id: mutation.id.clone(),
             kind,
+            order: record.order(),
         });
     }
     Ok(changes)
