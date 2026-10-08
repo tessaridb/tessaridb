@@ -13,6 +13,15 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.33.3-beta — 2026-10-08
+
+### Changed
+
+- The web console is redrawn. Its sections are a menu on the left with an icon each instead of a row of tabs, every
+  section opens under its own heading with the search beside it, and the page has a light and a dark theme that
+  follows the system until one is chosen. On a narrow screen the menu becomes a row of buttons under the header and
+  every control is large enough to touch. The console now shows the TessariDB mark, in the tab as well.
+
 ## 0.33.2-beta — 2026-10-08
 
 ### Fixed
