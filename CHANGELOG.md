@@ -13,6 +13,51 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.33.4-beta — 2026-10-09
+
+### Added
+
+- **`DEFINE PARAM $name VALUE <expr>`: named values a database holds.**
+  - Scripts, event bodies and views read them as `$name`. A parameter bound to the statement wins over one of the
+    same name.
+  - `OR REPLACE` changes the value, `IF NOT EXISTS` keeps it, and `DROP PARAM [IF EXISTS] $name` removes it.
+  - `INFO FOR DATABASE` lists them under `params`. They replicate with the catalog, and the snapshot and
+    `BACKUP SCRIPT` carry them. New refusal: `ParamExists`.
+- **`DEFINE EVENT OR REPLACE`** replaces an event's `FOR`, `WHEN` and body in one catalog write, so no commit sees the
+  table without the event. The body may read the database's params.
+- **`DROP … IF EXISTS`** on every `DROP` that names one object: events, tables, indexes, analyzers, users, groups,
+  queues, topics, views, series, params and the rest.
+- **A route after any parenthesised expression**, an event body included: `(SELECT grace FROM ONLY t:1).grace`,
+  `(…)[0]`.
+- **Time arithmetic.**
+  - `datetime + duration`, `datetime - duration` and `datetime - datetime` (a duration).
+  - `duration::from_secs(n)`.
+  - A result past the range a datetime or duration holds is refused rather than wrapped.
+- **A bound count:** `LIMIT $n`, `START $n` and `CLAIM $n FROM q` take a parameter. A value that is not a whole
+  number at or above the floor is refused as `CountNotAWholeNumber`. `CLAIM` keeps its ceiling of 500.
+- **`RELEASE q:id NOT BEFORE <datetime | duration>`** (and `RELEASE ALL … NOT BEFORE`) sets the queue's `NOT BEFORE`
+  field and clears the hold in one write. New refusals: `NoDelayField` (the queue declares no such field) and
+  `NotAnInstant`.
+- **Deduplication on queues and topics.**
+  - `DEFINE QUEUE … DEDUPLICATE <window>`: a `CREATE` of an identity first written less than the window ago writes
+    nothing and answers no record. This holds whether that identity is queued, held, or finished and deleted.
+  - `DEFINE TOPIC … DEDUPLICATE <window> ON <field>` does the same for a message whose key was published inside the
+    window.
+  - The window counts from the first write. New refusal: `DeduplicationKey`.
+- **1609 conformance cases** define the language and run in the build.
+
+### Changed
+
+- **`NoSuchRecord` is `conflict` (HTTP 409), not `invalid` (400).** Asking for a record that is not there is a
+  disagreement with the store's state, not a malformed statement.
+- **`EventFailed` takes the class of the refusal its body met.** A body that met contention is `retry`, and one that
+  ran `THROW` is `invalid`. It used to be `invalid` whatever happened inside.
+
+### Documented
+
+- A record removed because its expiry passed fires no event: the removal belongs to no writer's transaction. Work
+  that must follow an expiry is a queue record whose `NOT BEFORE` is the instant.
+
 ## 0.33.3-beta — 2026-10-08
 
 ### Changed
