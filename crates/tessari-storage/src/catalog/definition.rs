@@ -47,6 +47,8 @@ pub use tables::{TableDefinition, TableShape};
 const FIELD_ID: &str = "id";
 const FIELD_NAME: &str = "name";
 const FIELD_NAMESPACE: &str = "namespace";
+/// A database's `DEFINE PARAM` values (ADR-0124 D2).
+const FIELD_PARAMS: &str = "params";
 const FIELD_DATABASE: &str = "database";
 const FIELD_TABLE: &str = "table";
 const FIELD_FIELDS: &str = "fields";
@@ -85,6 +87,7 @@ const FIELD_TIMEOUT: &str = "timeout";
 const FIELD_ATTEMPTS: &str = "attempts";
 const FIELD_PRIORITY: &str = "priority";
 const FIELD_NOT_BEFORE: &str = "not_before";
+const FIELD_DEDUPLICATE: &str = "deduplicate";
 const FIELD_SERIES: &str = "series";
 /// A space's declaration: present (possibly empty) exactly when the table is one.
 const FIELD_SPACE: &str = "space";
@@ -165,6 +168,11 @@ pub struct DatabaseDefinition {
     pub namespace: NamespaceId,
     /// Its name, unique within that namespace.
     pub name: String,
+    /// `DEFINE PARAM` values, by name without the marker (ADR-0124 D2).
+    ///
+    /// Written **only when there is one**, so a database without params
+    /// encodes to the exact object it encoded to before this field existed.
+    pub params: BTreeMap<String, Value>,
 }
 
 impl NamespaceDefinition {
@@ -250,11 +258,15 @@ impl DatabaseDefinition {
     /// The value written to the catalog.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        Value::Object(BTreeMap::from([
+        let mut fields = BTreeMap::from([
             (FIELD_ID.to_owned(), number(self.id.get())),
             (FIELD_NAMESPACE.to_owned(), number(self.namespace.get())),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
-        ]))
+        ]);
+        if !self.params.is_empty() {
+            fields.insert(FIELD_PARAMS.to_owned(), Value::Object(self.params.clone()));
+        }
+        Value::Object(fields)
     }
 
     /// Read a definition back.
@@ -269,6 +281,17 @@ impl DatabaseDefinition {
             id: DatabaseId::new(field_id(fields, FIELD_ID, "database")?),
             namespace: NamespaceId::new(field_id(fields, FIELD_NAMESPACE, "database")?),
             name: field_name(fields, "database")?,
+            params: match fields.get(FIELD_PARAMS) {
+                Some(Value::Object(params)) => params.clone(),
+                None => BTreeMap::new(),
+                Some(other) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: "database",
+                        field: FIELD_PARAMS,
+                        found: other.type_name(),
+                    });
+                }
+            },
         })
     }
 }

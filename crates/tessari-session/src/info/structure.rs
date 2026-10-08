@@ -168,7 +168,14 @@ impl Session<'_> {
             })
             .filter_map(|member| member.engine.map(|engine| engine.search))
             .collect();
+        // The database's own named values (ADR-0124 D2), readable by anybody who
+        // may run a statement here, as `$name` is.
+        let params = Catalog::new(transaction)
+            .database(context.database)?
+            .map(|definition| definition.params)
+            .unwrap_or_default();
         Ok(BTreeMap::from([
+            ("params".to_owned(), Value::Object(params)),
             ("tables".to_owned(), by_name(names)),
             ("topics".to_owned(), by_name(topics)),
             ("vaults".to_owned(), by_name(vaults)),

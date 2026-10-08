@@ -17,6 +17,10 @@ impl Error {
     pub fn class(&self) -> RefusalClass {
         match self {
             Self::Script(_) => RefusalClass::Invalid,
+            // The class of what failed in the body: a body that met contention
+            // is retried like any write, one that wrote a missing table is a
+            // request to fix (ADR-0124 D7).
+            Self::EventFailed { cause, .. } => cause.class(),
             Self::Store(error) => store(error),
             Self::AcrossAborted { refusal, .. } => match refusal {
                 AcrossRefusal::Here(cause) => cause.class(),
@@ -54,8 +58,12 @@ impl Error {
             | Self::AcrossInDoubt { .. }
             | Self::NotAcknowledgedInTime { .. }
             | Self::ConditionNotMet { .. }
+            // The request assumed a record the store does not hold: re-read,
+            // as for the compare-and-set beside it (ADR-0124 D7).
+            | Self::NoSuchRecord { .. }
             | Self::HeldByAnother { .. }
             | Self::EventExists { .. }
+            | Self::ParamExists { .. }
             | Self::SearchExists { .. }
             | Self::GroupExists { .. } => RefusalClass::Conflict,
             Self::NoBackupFolder
@@ -125,7 +133,6 @@ impl Error {
             | Self::RollupKeyCollision { .. }
             | Self::RollupsDependOn { .. }
             | Self::RecipientIsNotAName { .. }
-            | Self::NoSuchRecord { .. }
             | Self::NotAnEdgeTable { .. }
             | Self::EndpointsNotDeclared { .. }
             | Self::TableBelongsToGraph { .. }
@@ -165,7 +172,6 @@ impl Error {
             | Self::SearchNeedsText { .. }
             | Self::SearchIsItsOwnOrder { .. }
             | Self::NotSearched { .. }
-            | Self::EventFailed { .. }
             | Self::EventDepth { .. }
             | Self::EventOnKind { .. }
             | Self::SearchNamesTableTwice { .. }
@@ -203,6 +209,9 @@ impl Error {
             | Self::QueueFieldIsTheEngines { .. }
             | Self::NoConsumerDeclared { .. }
             | Self::ClaimAboveCeiling { .. }
+            | Self::NoDelayField { .. }
+            | Self::NotAnInstant { .. }
+            | Self::DeduplicationKey { .. }
             | Self::ClaimDeadlineUnreachable { .. }
             | Self::NotWrittenByHand { .. }
             | Self::FileIsNotBytes { .. }

@@ -8,6 +8,24 @@ use tessari_types::Number;
 
 impl Parser<'_> {
     /// `LIMIT 10` or `START 20`, when it is there.
+    /// `<word> n` or `<word> $n` — a count written out, or one a parameter
+    /// will supply when the script is bound (ADR-0124 D5).
+    pub(crate) fn bound_count(
+        &mut self,
+        word: &str,
+    ) -> Result<(Option<u64>, Option<crate::ast::CountParameter>)> {
+        if let Some(Token::Parameter(name)) = self.peek_ahead(1)
+            && self.peek_word(word)
+        {
+            let name = name.clone();
+            self.advance();
+            let span = self.span_here();
+            self.advance();
+            return Ok((None, Some(crate::ast::CountParameter { name, span })));
+        }
+        Ok((self.bound(word)?, None))
+    }
+
     pub(crate) fn bound(&mut self, word: &str) -> Result<Option<u64>> {
         if !self.eat_word(word) {
             return Ok(None);

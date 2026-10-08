@@ -32,7 +32,7 @@ impl Atomic<'_, '_> {
     /// transaction to be rolled back when [`Session::atomically`] returns.
     pub fn run_with(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
         let store = self.session.store;
-        let mut script = parse(source)?.bind(parameters)?;
+        let mut script = self.session.bind_script(parse(source)?, parameters)?;
         if let Some(verb) = script.statements.iter().find(|statement| {
             matches!(
                 statement.kind,

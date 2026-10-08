@@ -62,6 +62,7 @@ impl Function {
             | Self::TimeSecond
             | Self::TimeUnix
             | Self::TimeFromUnix
+            | Self::DurationFromSecs
             | Self::TypeOf
             | Self::TypeBool
             | Self::TypeInt
@@ -199,6 +200,7 @@ impl Function {
             | Self::TimeSecond
             | Self::TimeUnix
             | Self::TimeFromUnix
+            | Self::DurationFromSecs
             | Self::TypeOf
             | Self::TypeBool
             | Self::TypeInt

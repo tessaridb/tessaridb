@@ -279,6 +279,8 @@ impl Select<Sourced> {
             // a builder that named the leader by default would send every read
             // it assembles to the one node a cluster exists to take load off.
             answered_by: None,
+            start_parameter: None,
+            limit_parameter: None,
             span: BUILT,
         };
         Ok(Query {

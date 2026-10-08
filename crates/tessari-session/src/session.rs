@@ -15,6 +15,7 @@ pub use across::{
     across_lapse_millis, recover_staging,
 };
 mod atomic;
+mod defaults;
 mod running;
 mod signing;
 mod step;
@@ -298,7 +299,7 @@ impl<'a> Session<'a> {
     /// this map has no value for, and nothing is written when it does. Otherwise
     /// as [`Session::run`].
     pub fn run_with(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
-        let script = parse(source)?.bind(parameters)?;
+        let script = self.bind_script(parse(source)?, parameters)?;
         self.run_script(script)
     }
 

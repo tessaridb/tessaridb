@@ -1,7 +1,5 @@
 //! Running a table's events after a write (ADR-0110 D2, D4, D5, D6).
 
-use std::collections::BTreeMap;
-
 use tessari_constants::EVENT_DEPTH_LIMIT;
 use tessari_encoding::decode_payload;
 use tessari_ql::{
@@ -101,7 +99,14 @@ impl<'a> Session<'a> {
     ) -> Result<(Session<'a>, Parameters)> {
         let catalog = Catalog::new(transaction);
         let namespace = catalog.namespace(address.namespace)?.map(|held| held.name);
-        let database = catalog.database(address.database)?.map(|held| held.name);
+        let defined = catalog.database(address.database)?;
+        // The database's params as they stand in this transaction, so a body
+        // reads the value `OR REPLACE` last stored (ADR-0124 D2).
+        let params = defined
+            .as_ref()
+            .map(|held| held.params.clone())
+            .unwrap_or_default();
+        let database = defined.map(|held| held.name);
         let mut session = Session {
             store: self.store,
             namespace,
@@ -150,7 +155,9 @@ impl<'a> Session<'a> {
             Some(value) if readable => crate::redact::seen(value.clone(), &visible),
             _ => Value::None,
         };
-        let bindings = BTreeMap::from([
+        let mut bindings = params;
+        // The four names are the write's own and are never shadowed by a param.
+        bindings.extend([
             ("event".to_owned(), Value::from(kind.word())),
             ("before".to_owned(), seen(pending.old.as_ref())),
             ("after".to_owned(), seen(new)),

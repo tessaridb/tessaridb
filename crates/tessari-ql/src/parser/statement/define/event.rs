@@ -29,7 +29,7 @@ impl Parser<'_> {
     /// would have refused. What the statement then carries is the source text,
     /// as a view's read is.
     pub(crate) fn define_event(&mut self) -> Result<StatementKind> {
-        let if_not_exists = self.eat_if_not_exists()?;
+        let (if_not_exists, or_replace) = self.eat_definition_mode()?;
         let name = self.name()?;
         self.expect_keyword(Keyword::On, "`ON` and the table whose writes run it")?;
         let table = self.table_ref()?;
@@ -100,7 +100,7 @@ impl Parser<'_> {
         }
         // `$id` stands in as an identity, because it is written where one is
         // read (`orders:$id`) and `NONE` would be refused there.
-        let stand_ins: BTreeMap<String, Value> = EVENT_BINDINGS
+        let mut stand_ins: BTreeMap<String, Value> = EVENT_BINDINGS
             .iter()
             .map(|name| {
                 let stand_in = if *name == "id" {
@@ -111,11 +111,24 @@ impl Parser<'_> {
                 ((*name).to_owned(), stand_in)
             })
             .collect();
-        Script {
+        // A name the write does not supply is a database param the body reads
+        // (ADR-0124 D2): collected here, one bind at a time, and checked against
+        // the database's params when the event is defined.
+        let checked = Script {
             span: self.span_behind(),
             statements: checked,
+        };
+        let mut params = Vec::new();
+        loop {
+            match checked.clone().bind(&stand_ins) {
+                Ok(_) => break,
+                Err(Error::UnboundParameter { name, span }) => {
+                    stand_ins.insert(name.clone(), Value::from(0_i64));
+                    params.push((name, span));
+                }
+                Err(other) => return Err(other),
+            }
         }
-        .bind(&stand_ins)?;
         Ok(StatementKind::DefineEvent {
             name,
             table,
@@ -123,6 +136,8 @@ impl Parser<'_> {
             when: when.map(|condition| condition.text),
             body,
             if_not_exists,
+            or_replace,
+            params,
         })
     }
 

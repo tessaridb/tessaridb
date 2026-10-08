@@ -88,6 +88,11 @@ pub(crate) fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> 
     if let Some(expire) = definition.expire {
         shape.insert("expire".to_owned(), described_expiry(expire));
     }
+    // Present only on a queue or topic that deduplicates (ADR-0124 D8): how long
+    // a written key is remembered.
+    if let Some(window) = definition.deduplication_window() {
+        shape.insert("deduplicate".to_owned(), Value::Duration(window));
+    }
     // Present only on a table whose identities spread (ADR-0113 D1).
     if definition.spread {
         shape.insert("spread".to_owned(), Value::Bool(true));

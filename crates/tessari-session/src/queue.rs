@@ -56,6 +56,7 @@
 //! neither is discovered.
 
 mod claims;
+mod delay;
 mod priority;
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
@@ -66,7 +67,7 @@ use tessari_ql::{RecordTarget, Span, TableRef};
 use tessari_storage::{
     QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, RecordAddress, Transaction,
 };
-use tessari_types::{Number, RecordId, Value};
+use tessari_types::{Datetime, Number, RecordId, Value};
 
 use crate::error::{Error, Result};
 use crate::outcome::{AccessPath, Outcome};
@@ -76,6 +77,7 @@ pub(crate) use claims::{
     claimable, claimant_of, deadline, hold_engine_fields, later, mark_claimant, nothing_claimed,
     queue_declaration,
 };
+use delay::delay_field;
 
 impl Session<'_> {
     /// `CLAIM 10 FROM jobs`
@@ -286,15 +288,17 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
         consumer: Option<&str>,
+        not_before: Option<Datetime>,
         span: Span,
     ) -> Result<Outcome> {
         let (context, address) = self.address(transaction, target)?;
-        queue_declaration(
+        let declared = queue_declaration(
             transaction,
             address.table,
             &target.table.name.text,
             target.span,
         )?;
+        let delay = delay_field(&declared, not_before, &target.table.name.text, span)?;
         let Some(stored) = transaction.get(&address)? else {
             return Err(Error::Unknown {
                 entity: "record",
@@ -341,6 +345,9 @@ impl Session<'_> {
         }
         fields.remove(QUEUE_CLAIMED_UNTIL);
         fields.remove(QUEUE_CLAIMED_BY);
+        if let Some((field, instant)) = &delay {
+            fields.insert(field.clone(), Value::Datetime(*instant));
+        }
         let _ = context;
         self.put_engine_record(transaction, address, Value::Object(fields), span)?;
         Ok(Outcome::Done)
@@ -366,10 +373,12 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         table: &TableRef,
         consumer: Option<&str>,
+        not_before: Option<Datetime>,
         span: Span,
     ) -> Result<Outcome> {
         let (context, id) = self.resolve_table(transaction, table)?;
-        queue_declaration(transaction, id, &table.name.text, table.span)?;
+        let declared = queue_declaration(transaction, id, &table.name.text, table.span)?;
+        let delay = delay_field(&declared, not_before, &table.name.text, span)?;
         // The bare form is refused rather than answered, because a session with
         // no instance has no *everything mine* to name. Succeeding on nothing
         // would tell a worker its work was freed when it was not, and freeing
@@ -399,6 +408,9 @@ impl Session<'_> {
                 }
                 fields.remove(QUEUE_CLAIMED_UNTIL);
                 fields.remove(QUEUE_CLAIMED_BY);
+                if let Some((field, instant)) = &delay {
+                    fields.insert(field.clone(), Value::Datetime(*instant));
+                }
                 // The attempt count is left alone, for `release`'s reason: it
                 // was taken at the hand-out, and a record that was handed out
                 // was handed out whatever happened next.

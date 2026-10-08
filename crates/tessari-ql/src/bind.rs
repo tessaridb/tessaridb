@@ -71,6 +71,28 @@ pub fn bind_expression(
     Ok(expr)
 }
 
+/// Replace every parameter in a stored read — a view's — with the value bound
+/// to it (ADR-0124 D2: a view reads its database's params).
+///
+/// # Errors
+///
+/// [`Error::UnboundParameter`] for the first parameter `parameters` holds no
+/// value for.
+pub fn bind_read(
+    mut read: crate::ast::Select,
+    parameters: &Parameters,
+) -> Result<crate::ast::Select> {
+    bind_select(
+        &mut read,
+        &Binding {
+            supplied: parameters,
+            deferred: BTreeSet::new(),
+            strict: true,
+        },
+    )?;
+    Ok(read)
+}
+
 /// What a name may resolve to during the walk.
 ///
 /// Two sources, and they are not interchangeable. `supplied` is the caller's
@@ -113,7 +135,27 @@ impl Script {
     /// was written. [`Error::BindingCollidesWithParameter`] where a `LET` and
     /// the caller name the same thing. Nothing is bound when either happens: the
     /// script is consumed and no partly-bound tree escapes.
-    pub fn bind(mut self, parameters: &Parameters) -> Result<Self> {
+    pub fn bind(self, parameters: &Parameters) -> Result<Self> {
+        self.bind_with_defaults(parameters, &[])
+    }
+
+    /// [`Self::bind`], with a further map per statement of values a name falls
+    /// back to when neither the caller nor a `LET` above binds it — the params
+    /// of the database each statement runs in (ADR-0124 D2). `defaults[i]`
+    /// belongs to the `i`th statement; a script longer than the slice has no
+    /// fallback past its end.
+    ///
+    /// A `DEFINE PARAM` the caller did not also bind is treated as a `LET`
+    /// is: the statements below it see the value it stores when it runs.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::bind`].
+    pub fn bind_with_defaults(
+        mut self,
+        parameters: &Parameters,
+        defaults: &[Parameters],
+    ) -> Result<Self> {
         // Collected first, and borrowed from a copy of the names rather than
         // from `self`, because the walk below needs `&mut` on each statement
         // while holding the set.
@@ -133,20 +175,63 @@ impl Script {
                 });
             }
         }
-        let mut binding = Binding {
-            supplied: parameters,
-            deferred: BTreeSet::new(),
-            strict: true,
-        };
+        let defined: Vec<String> = self
+            .statements
+            .iter()
+            .filter_map(|statement| match &statement.kind {
+                StatementKind::DefineParam { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut deferred: BTreeSet<&str> = BTreeSet::new();
+        // A `DROP PARAM` above a statement takes the name out of its fallback:
+        // the statement runs after the drop, so it must not see the old value.
+        let mut dropped: BTreeSet<String> = BTreeSet::new();
         let mut bound_so_far = 0usize;
-        for statement in &mut self.statements {
+        let mut defined_so_far = 0usize;
+        for (at, statement) in self.statements.iter_mut().enumerate() {
+            // The caller's value is the closest, so it overlays the database's.
+            let merged;
+            let supplied = match defaults.get(at) {
+                Some(fallback) if !fallback.is_empty() => {
+                    let mut both = fallback.clone();
+                    both.retain(|name, _| !dropped.contains(name));
+                    both.extend(
+                        parameters
+                            .iter()
+                            .map(|(name, value)| (name.clone(), value.clone())),
+                    );
+                    merged = both;
+                    &merged
+                }
+                _ => parameters,
+            };
+            let binding = Binding {
+                supplied,
+                deferred: deferred.clone(),
+                strict: true,
+            };
             // A `LET`'s own value is bound against the names above it and not
             // its own: `LET $x = $x + 1` binds nothing, it names a value that
             // does not exist yet.
             bind_statement(&mut statement.kind, &binding)?;
-            if let StatementKind::Let { .. } = &statement.kind {
-                binding.deferred.insert(names[bound_so_far].0.as_str());
-                bound_so_far = bound_so_far.saturating_add(1);
+            match &statement.kind {
+                StatementKind::Let { .. } => {
+                    deferred.insert(names[bound_so_far].0.as_str());
+                    bound_so_far = bound_so_far.saturating_add(1);
+                }
+                StatementKind::DefineParam { .. } => {
+                    let name = defined[defined_so_far].as_str();
+                    if !parameters.contains_key(name) {
+                        deferred.insert(name);
+                    }
+                    defined_so_far = defined_so_far.saturating_add(1);
+                }
+                StatementKind::DropParam { name, .. } => {
+                    deferred.remove(name.as_str());
+                    dropped.insert(name.clone());
+                }
+                _ => {}
             }
         }
         Ok(self)
@@ -313,10 +398,34 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::Del { target }
         // A release names one record, and a record's identity may be a
         // parameter wherever a record's identity may be one.
-        | StatementKind::Release { target, .. }
         // A targeted claim names one record for the same reason a release does.
         | StatementKind::ClaimRecord { target, .. }
         | StatementKind::Read { target, .. } => bind_target(target, binding),
+        StatementKind::Release {
+            target, not_before, ..
+        } => {
+            bind_target(target, binding)?;
+            not_before
+                .as_mut()
+                .map_or(Ok(()), |instant| bind_expr(instant, binding))
+        }
+        // The value is computed once when the param is defined, from what the
+        // caller and the script above supplied (ADR-0124 D2).
+        StatementKind::DefineParam { value, .. } => bind_expr(value, binding),
+        StatementKind::DropParam { .. } => Ok(()),
+        StatementKind::Claim {
+            count,
+            count_parameter,
+            ..
+        } => {
+            let mut bound = Some(*count);
+            nested::bind_count(count_parameter, &mut bound, true, binding)?;
+            *count = bound.unwrap_or(*count);
+            Ok(())
+        }
+        StatementKind::ReleaseAll { not_before, .. } => not_before
+            .as_mut()
+            .map_or(Ok(()), |instant| bind_expr(instant, binding)),
         StatementKind::Relate {
             from, to, value, ..
         } => {
@@ -380,8 +489,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // parameter: it selects for the session rather than naming data, and a
         // caller that could bind it could change who a session is from outside
         // the script that declared it.
-        StatementKind::ReleaseAll { .. }
-        | StatementKind::Use { .. }
+        StatementKind::Use { .. }
         | StatementKind::DefineNamespace { .. }
         | StatementKind::DefineDatabase { .. }
         | StatementKind::DefineTable { .. }
@@ -419,7 +527,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // supplies, never to the caller's (ADR-0110).
         | StatementKind::DefineEvent { .. }
         | StatementKind::DropEvent { .. }
-        | StatementKind::Claim { .. }
+        | StatementKind::DropIfExists(_)
         // `UNSEAL` takes a string literal and never a parameter, so there is
         // nothing here to substitute into. That is the grammar's decision and
         // this arm is where it shows: a passphrase that could arrive as `$p`

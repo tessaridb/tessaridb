@@ -295,7 +295,7 @@ pub enum ExprKind {
 
 /// What `DEFINE TOPIC` declares after the name (G037). Every clause is optional
 /// and each appears at most once.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TopicClauses {
     /// `RETAIN 7d` — how long a message is kept.
     pub retain: Option<Duration>,
@@ -307,6 +307,9 @@ pub struct TopicClauses {
     /// `PUBLIC RATE n PER d` — appends a caller nobody signed in may make, per
     /// window, on each node.
     pub public: Option<(u64, Duration)>,
+    /// `DEDUPLICATE 5m ON msg_id` — a message whose `msg_id` was published less
+    /// than the window ago is not appended (ADR-0124 D8).
+    pub deduplicate: Option<(Duration, String)>,
 }
 
 /// What `DEFINE GROUP` declares after the topic (G042, ADR-0086).

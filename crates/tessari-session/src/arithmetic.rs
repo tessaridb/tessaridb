@@ -22,6 +22,8 @@
 //! infinity. A wrapped integer or an infinity written into a record is a value
 //! nobody meant, and by the time anyone notices it is stored.
 
+mod time;
+
 use rust_decimal::Decimal;
 use tessari_ql::{ArithmeticOp, Span};
 use tessari_types::{Number, Value};
@@ -35,6 +37,9 @@ pub(crate) fn arithmetic(
     right: &Value,
     span: Span,
 ) -> Result<Value> {
+    if let Some(answer) = time::time(op, left, right, span) {
+        return answer;
+    }
     let (Value::Number(left), Value::Number(right)) = (left, right) else {
         return Err(Error::NotArithmetic {
             operator: op.spelling(),
@@ -82,6 +87,17 @@ pub(crate) fn arithmetic(
 
 /// Negate a number, refusing anything else.
 pub(crate) fn negate(value: &Value, span: Span) -> Result<Value> {
+    // A span the other way, which a negative duration literal is (ADR-0124 D4).
+    if let Value::Duration(held) = value {
+        return held
+            .checked_neg()
+            .map(Value::Duration)
+            .ok_or(Error::ArithmeticFailed {
+                operator: "-",
+                reason: "the result is outside the range a duration can hold",
+                span,
+            });
+    }
     let Value::Number(number) = value else {
         return Err(Error::NotArithmetic {
             operator: "-",

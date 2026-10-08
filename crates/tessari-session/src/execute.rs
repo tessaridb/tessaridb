@@ -21,6 +21,7 @@ use crate::session::Session;
 mod analyzed;
 mod cluster;
 mod containers;
+mod dedup;
 mod defaults;
 mod editing;
 mod expiry;
@@ -92,6 +93,14 @@ impl Session<'_> {
         kind: &StatementKind,
         span: Span,
     ) -> Result<Outcome> {
+        // Every drop looks its object up before it writes, so "no such object"
+        // leaves nothing behind to undo (ADR-0124 D1).
+        if let StatementKind::DropIfExists(dropped) = kind {
+            return match self.execute(transaction, dropped, span) {
+                Err(Error::Unknown { .. } | Error::NoSuchGroup { .. }) => Ok(Outcome::Done),
+                answered => answered,
+            };
+        }
         let outcome = self.carry_out(transaction, kind, span)?;
         if let Some((statement, subject)) = crate::administration::administered(kind) {
             tessari_storage::administered(
@@ -216,7 +225,7 @@ impl Session<'_> {
                 transaction,
                 name,
                 TableShape {
-                    kind: TableKind::Topic(crate::topic::declared_topic(*clauses)),
+                    kind: TableKind::Topic(crate::topic::declared_topic(clauses)),
                     ..TableShape::default()
                 },
                 *if_not_exists,
@@ -474,6 +483,24 @@ impl Session<'_> {
             StatementKind::RevokeAuthority { kinds, reach, user } => {
                 self.revoke_authority(transaction, kinds, reach, user, span)
             }
+            StatementKind::DropIfExists(dropped) => self.carry_out(transaction, dropped, span),
+            StatementKind::DefineParam {
+                name,
+                value,
+                if_not_exists,
+                or_replace,
+                span,
+            } => self.define_param(
+                transaction,
+                name,
+                value,
+                &crate::param::Mode {
+                    keep: *if_not_exists,
+                    replace: *or_replace,
+                },
+                *span,
+            ),
+            StatementKind::DropParam { name, span } => self.drop_param(transaction, name, *span),
             StatementKind::DropField { name, table } => {
                 let (_, id) = self.resolve_table(transaction, table)?;
                 let field = self.field_named(transaction, id, name)?;
@@ -751,6 +778,24 @@ impl Session<'_> {
                 let (_, address) = self.writable(transaction, target)?;
                 let settled =
                     self.resolve_write_expiry(transaction, address.table, expire.as_ref())?;
+                let payload = self.evaluate(transaction, value)?;
+                let payload = self.with_defaults(transaction, address.table, payload)?;
+                // A repeat inside a deduplication window writes nothing and
+                // answers no record (ADR-0124 D8) — asked before the refusal
+                // below, because a queued record repeated is the case it covers.
+                let definition = Catalog::new(transaction).table(address.table)?;
+                let marker = self.dedup_marker(
+                    transaction,
+                    definition.as_ref(),
+                    Some(&address.id),
+                    &payload,
+                    target.span,
+                )?;
+                if let Some(marker) = &marker
+                    && marker.seen(transaction)?
+                {
+                    return Ok(answered(*answer, Value::None, Value::None));
+                }
                 // A create over a record that is already there is refused. The
                 // alternative is silent replacement, which loses a record with
                 // nothing anywhere to notice — and `UPDATE` and `SET` both say
@@ -761,10 +806,11 @@ impl Session<'_> {
                         span: target.span,
                     });
                 }
-                let payload = self.evaluate(transaction, value)?;
-                let payload = self.with_defaults(transaction, address.table, payload)?;
                 self.put_record(transaction, address.clone(), payload.clone(), span)?;
                 expiry::settle_write_expiry(transaction, &address, settled);
+                if let Some(marker) = marker {
+                    marker.leave(transaction);
+                }
                 Ok(answered(*answer, Value::None, payload))
             }
             StatementKind::Create {
@@ -1073,6 +1119,7 @@ impl Session<'_> {
                 graph,
                 priority,
                 not_before,
+                deduplicate,
                 if_not_exists,
             } => {
                 // Resolved before the queue is created, on `DEFINE TABLE`'s own
@@ -1095,6 +1142,7 @@ impl Session<'_> {
                             attempts: *attempts,
                             priority: priority.as_ref().map(|field| field.text.clone()),
                             not_before: not_before.as_ref().map(|field| field.text.clone()),
+                            deduplicate: *deduplicate,
                         }),
                         identity: IdentityKind::default(),
                         graph,
@@ -1223,6 +1271,8 @@ impl Session<'_> {
                 when,
                 body,
                 if_not_exists,
+                or_replace,
+                params,
             } => self.define_event(
                 transaction,
                 &crate::event::Declared {
@@ -1232,26 +1282,36 @@ impl Session<'_> {
                     when: when.as_ref(),
                     body,
                     if_not_exists: *if_not_exists,
+                    or_replace: *or_replace,
+                    params,
                 },
                 span,
             ),
             StatementKind::DropEvent { name, table } => self.drop_event(transaction, name, table),
-            StatementKind::Claim { table, count, span } => {
-                self.claim(transaction, table, *count, *span)
-            }
+            StatementKind::Claim {
+                table, count, span, ..
+            } => self.claim(transaction, table, *count, *span),
             StatementKind::ClaimRecord { target, span } => {
                 self.claim_record(transaction, target, *span)
             }
             StatementKind::Release {
                 target,
                 consumer,
+                not_before,
                 span,
-            } => self.release(transaction, target, consumer.as_deref(), *span),
+            } => {
+                let not_before = self.release_instant(transaction, not_before.as_ref(), *span)?;
+                self.release(transaction, target, consumer.as_deref(), not_before, *span)
+            }
             StatementKind::ReleaseAll {
                 table,
                 consumer,
+                not_before,
                 span,
-            } => self.release_all(transaction, table, consumer.as_deref(), *span),
+            } => {
+                let not_before = self.release_instant(transaction, not_before.as_ref(), *span)?;
+                self.release_all(transaction, table, consumer.as_deref(), not_before, *span)
+            }
             StatementKind::Reveal {
                 target,
                 fields,

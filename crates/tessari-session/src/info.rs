@@ -230,6 +230,8 @@ fn reading(table: &TableRef) -> StatementKind {
         // Nor an answerer, for the same reason: which node answers has no
         // bearing on whether the read would be permitted.
         answered_by: None,
+        start_parameter: None,
+        limit_parameter: None,
         span: table.span,
     }))
 }

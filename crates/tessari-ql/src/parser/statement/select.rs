@@ -164,7 +164,7 @@ impl Parser<'_> {
             return Err(self.error_here("`SELECT` — a source in parentheses is a read"));
         }
         let read = self.select_statement()?;
-        if read.limit.is_none() {
+        if read.limit.is_none() && read.limit_parameter.is_none() {
             return Err(self.error_here(
                 "`LIMIT n` on the inner read — a materialised source states how much \
                  it may hold, so that a truncated answer is never mistaken for a whole one",
@@ -212,8 +212,8 @@ impl Parser<'_> {
         // `START` before `LIMIT`, because that is the order they are applied in
         // and a grammar that let them be written either way would suggest they
         // commute.
-        let skip = self.bound("start")?;
-        let limit = self.bound("limit")?;
+        let (skip, start_parameter) = self.bound_count("start")?;
+        let (limit, limit_parameter) = self.bound_count("limit")?;
         // Last, because it qualifies the whole read rather than any one clause,
         // and contextual like the rest: a field called `approximate` stays a
         // field.
@@ -355,6 +355,8 @@ impl Parser<'_> {
             version,
             staleness,
             answered_by,
+            start_parameter,
+            limit_parameter,
             span: start.to(self.span_behind()),
         })
     }

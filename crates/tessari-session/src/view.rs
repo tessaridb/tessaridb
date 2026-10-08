@@ -312,14 +312,19 @@ impl Session<'_> {
         let mut transaction = store.begin()?;
         let found = self.stored_view(&mut transaction, table);
         transaction.rollback();
-        let Some(declared) = found? else {
+        let Some((declared, params)) = found? else {
             return Ok(None);
         };
-        let mut read = parse_read(&declared).map_err(|why| Error::ViewUnreadable {
+        let unreadable = |why: tessari_ql::Error| Error::ViewUnreadable {
             name: table.name.text.clone(),
             detail: why.to_string(),
             span: table.span,
-        })?;
+        };
+        // The view's own database's params, read as the view is read
+        // (ADR-0124 D2).
+        let mut read = parse_read(&declared)
+            .and_then(|read| tessari_ql::bind_read(read, &params))
+            .map_err(unreadable)?;
         chain.push(table.name.text.clone());
         // A view's own read may name a view, so the expansion recurses — and the
         // depth check at the head of `expand_read` is what stops a chain, a
@@ -334,7 +339,7 @@ impl Session<'_> {
         &self,
         transaction: &mut tessari_storage::Transaction<'_>,
         table: &TableRef,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<(String, tessari_ql::Parameters)>> {
         let qualified = table.database.as_ref().map(|name| name.text.as_str());
         let Ok(context) = self.context(transaction, qualified, table.span) else {
             return Ok(None);
@@ -347,11 +352,17 @@ impl Session<'_> {
         else {
             return Ok(None);
         };
+        let params = Catalog::new(transaction)
+            .database(context.database)?
+            .map(|database| database.params)
+            .unwrap_or_default();
         Ok(match Catalog::new(transaction).table(id)? {
             Some(definition) => match definition.kind {
                 // A materialized view is read for its stored rows, not expanded
                 // into its read (ADR-0109).
-                TableKind::View(declared) if !declared.materialized => Some(declared.read),
+                TableKind::View(declared) if !declared.materialized => {
+                    Some((declared.read, params))
+                }
                 _ => None,
             },
             None => None,

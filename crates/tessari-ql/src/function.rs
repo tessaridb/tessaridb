@@ -169,6 +169,9 @@ pub enum Function {
     TimeUnix,
     /// `time::from_unix(seconds)` — the instant a second count names.
     TimeFromUnix,
+    /// `duration::from_secs(seconds)` — the span a number of seconds names,
+    /// whole or fractional (ADR-0124 D4).
+    DurationFromSecs,
     /// `rand::uuid()` — a fresh version-4 identifier, once per call.
     RandUuid,
     /// `type::of(value)` — the type's name, as §3 spells it.

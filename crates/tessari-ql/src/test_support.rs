@@ -142,6 +142,21 @@ fn erase_statement(statement: &mut Statement) {
             }
         }
         // An event's condition and body are text, as a view's read is.
+        StatementKind::DefineParam { value, span, .. } => {
+            erase_expr(value);
+            *span = CANONICAL;
+        }
+        StatementKind::DropParam { span, .. } => *span = CANONICAL,
+        StatementKind::DropIfExists(dropped) => {
+            let mut held = Statement {
+                kind: std::mem::replace(dropped.as_mut(), StatementKind::Begin),
+                span: CANONICAL,
+                acknowledge: None,
+                across: false,
+            };
+            erase_statement(&mut held);
+            **dropped = held.kind;
+        }
         StatementKind::DefineEvent { name, table, .. } | StatementKind::DropEvent { name, table } => {
             erase_name(name);
             erase_table(table);
@@ -513,12 +528,28 @@ fn erase_statement(statement: &mut Statement) {
             erase_table(table);
             *span = CANONICAL;
         }
-        StatementKind::ClaimRecord { target, span } | StatementKind::Release { target, span, .. } => {
+        StatementKind::ClaimRecord { target, span } => {
             erase_record(target);
             *span = CANONICAL;
         }
-        StatementKind::ReleaseAll { table, span, .. } => {
+        StatementKind::Release {
+            target,
+            span,
+            not_before,
+            ..
+        } => {
+            erase_record(target);
+            not_before.iter_mut().for_each(erase_expr);
+            *span = CANONICAL;
+        }
+        StatementKind::ReleaseAll {
+            table,
+            span,
+            not_before,
+            ..
+        } => {
             erase_table(table);
+            not_before.iter_mut().for_each(erase_expr);
             *span = CANONICAL;
         }
         StatementKind::ReadTopic {

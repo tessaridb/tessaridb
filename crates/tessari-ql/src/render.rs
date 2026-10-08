@@ -89,6 +89,9 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DropView { .. } => Err(unrenderable("DROP VIEW", span)),
         StatementKind::DefineEvent { .. } => Err(unrenderable("DEFINE EVENT", span)),
         StatementKind::DropEvent { .. } => Err(unrenderable("DROP EVENT", span)),
+        StatementKind::DropIfExists(_) => Err(unrenderable("DROP … IF EXISTS", span)),
+        StatementKind::DefineParam { .. } => Err(unrenderable("DEFINE PARAM", span)),
+        StatementKind::DropParam { .. } => Err(unrenderable("DROP PARAM", span)),
         StatementKind::Claim { .. } | StatementKind::ClaimRecord { .. } => {
             Err(unrenderable("CLAIM", span))
         }

@@ -901,3 +901,27 @@ fn every_interleaving_of_homes_ends_level_on_a_follower_at_every_page_size() {
         }
     }
 }
+
+/// A database's params are on its own catalog record, so a follower that holds
+/// the database holds them (ADR-0124 D2).
+#[test]
+fn a_follower_holds_the_params_its_database_defines() {
+    let leader = store();
+    two_tenants(&leader);
+    signed_in(&leader, "root")
+        .run("USE NAMESPACE prod; USE DATABASE shop; DEFINE PARAM $grace VALUE 10m;")
+        .unwrap();
+    let over = Reach::Namespace(NamespaceId::new(1));
+    let follower = follow(&leader, over, "node");
+    follower.record_served(over).unwrap();
+    let mut reader = signed_in(&follower, "prod_reader");
+    let outcomes = reader
+        .run("USE NAMESPACE prod; USE DATABASE shop; RETURN $grace;")
+        .unwrap();
+    assert_eq!(
+        outcomes.last(),
+        Some(&Outcome::Value(tessari_types::Value::Duration(
+            tessari_types::Duration::from_seconds(600)
+        )))
+    );
+}

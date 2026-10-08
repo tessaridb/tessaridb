@@ -55,6 +55,8 @@ impl Effect {
     /// routing decision that compiles.
     pub const fn of(kind: &StatementKind) -> Self {
         match kind {
+            // What the drop it wraps is (ADR-0124 D1).
+            StatementKind::DropIfExists(dropped) => Self::of(dropped),
             // Reads, including the ones that look heavier than they are.
             // `BACKUP` streams the whole log and writes nothing to the store —
             // it is the largest read in the language, not a write.
@@ -123,6 +125,8 @@ impl Effect {
             // Structure.
             StatementKind::DefineNamespace { .. }
             | StatementKind::DefineDatabase { .. }
+            | StatementKind::DefineParam { .. }
+            | StatementKind::DropParam { .. }
             | StatementKind::DefineTable { .. }
             | StatementKind::DefineSpace { .. }
             | StatementKind::DefineTopic { .. }

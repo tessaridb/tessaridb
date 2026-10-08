@@ -18,6 +18,8 @@ impl Needs {
     /// compile until somebody says what it needs.
     pub(crate) fn of(kind: &StatementKind) -> Self {
         match kind {
+            // What the drop it wraps needs (ADR-0124 D1).
+            StatementKind::DropIfExists(dropped) => Self::of(dropped),
             // Reading **this node** is administering, and it is the one read
             // that is. Every other `SELECT` is governed by a grant on the table
             // it names, and `$node` names none — so left as `Read` it would be
@@ -298,6 +300,9 @@ impl Needs {
             // remove.
             StatementKind::DefineDatabase { .. }
             | StatementKind::DropDatabase { .. }
+            // A param is part of the database's own definition (ADR-0124 D2).
+            | StatementKind::DefineParam { .. }
+            | StatementKind::DropParam { .. }
             | StatementKind::DefineTable { .. }
             | StatementKind::DropTable { .. }
             | StatementKind::DefineSpace { .. }

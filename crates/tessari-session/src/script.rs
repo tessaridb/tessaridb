@@ -178,6 +178,14 @@ fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken> {
             );
             let _ = writeln!(body, "DEFINE DATABASE {database}; USE DATABASE {database};");
             reader.run(&selection)?;
+            // Before every definition that may read one (ADR-0124 D2).
+            for (name, value) in params_of(reader)? {
+                let _ = writeln!(
+                    body,
+                    "DEFINE PARAM ${name} VALUE {};",
+                    tessari_ql::literal::value(&value, &names)
+                );
+            }
             let mut writable = Vec::new();
             for table in tables {
                 match data::declared(reader, table)? {
@@ -278,4 +286,17 @@ fn placed_ids(store: &Store) -> Result<Vec<(TableId, String, String, String)>> {
 /// Whether a table's kind carries records a script writes.
 const fn holds_records(kind: &TableKind) -> bool {
     !matches!(kind, TableKind::View(_) | TableKind::Vault(_))
+}
+
+/// The params of the database `reader` has selected, in name order.
+fn params_of(reader: &mut Session<'_>) -> Result<Vec<(String, tessari_types::Value)>> {
+    let answered = reader.run("INFO FOR DATABASE;")?;
+    let Some(crate::outcome::Outcome::Value(tessari_types::Value::Object(info))) = answered.last()
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(match info.get("params") {
+        Some(tessari_types::Value::Object(params)) => params.clone().into_iter().collect(),
+        _ => Vec::new(),
+    })
 }

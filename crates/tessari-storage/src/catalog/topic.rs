@@ -30,7 +30,7 @@ pub struct PublicAppend {
 }
 
 /// A topic's declaration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TopicDeclaration {
     /// How long a message is kept after it was appended, or forever.
     pub retain: Option<Duration>,
@@ -41,6 +41,9 @@ pub struct TopicDeclaration {
     pub retain_bytes: Option<u64>,
     /// Whether, and how often, an anonymous caller may append.
     pub public: Option<PublicAppend>,
+    /// How long a published key is remembered, and the field holding it: a
+    /// message repeating a key inside the window is not appended (ADR-0124 D8).
+    pub deduplicate: Option<(Duration, String)>,
 }
 
 const ENTITY: &str = "topic";
@@ -49,6 +52,8 @@ const FIELD_MAX_BYTES: &str = "max_bytes";
 const FIELD_RETAIN_BYTES: &str = "retain_bytes";
 const FIELD_PUBLIC_RATE: &str = "public_rate";
 const FIELD_PUBLIC_PER: &str = "public_per";
+const FIELD_DEDUPLICATE: &str = "deduplicate";
+const FIELD_DEDUPLICATE_ON: &str = "deduplicate_on";
 
 fn positive(fields: &BTreeMap<String, Value>, field: &'static str) -> Result<Option<u64>> {
     match fields.get(field) {
@@ -96,6 +101,10 @@ impl TopicDeclaration {
             fields.insert(FIELD_PUBLIC_RATE.to_owned(), integer(public.rate));
             fields.insert(FIELD_PUBLIC_PER.to_owned(), Value::Duration(public.per));
         }
+        if let Some((window, field)) = &self.deduplicate {
+            fields.insert(FIELD_DEDUPLICATE.to_owned(), Value::Duration(*window));
+            fields.insert(FIELD_DEDUPLICATE_ON.to_owned(), Value::from(field.as_str()));
+        }
         Value::Object(fields)
     }
 
@@ -126,6 +135,20 @@ impl TopicDeclaration {
             max_bytes: positive(fields, FIELD_MAX_BYTES)?,
             retain_bytes: positive(fields, FIELD_RETAIN_BYTES)?,
             public,
+            deduplicate: match (
+                duration(fields, FIELD_DEDUPLICATE)?,
+                fields.get(FIELD_DEDUPLICATE_ON),
+            ) {
+                (None, None) => None,
+                (Some(window), Some(Value::String(field))) => Some((window, field.clone())),
+                _ => {
+                    return Err(Error::CatalogMalformed {
+                        entity: ENTITY,
+                        field: FIELD_DEDUPLICATE_ON,
+                        found: "a deduplication window without its key field",
+                    });
+                }
+            },
         })
     }
 }

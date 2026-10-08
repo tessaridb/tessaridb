@@ -115,6 +115,7 @@ fn every_definition_round_trips_through_its_value() {
         id: DatabaseId::new(3),
         namespace: NamespaceId::new(7),
         name: "orders".to_owned(),
+        params: std::collections::BTreeMap::new(),
     };
     assert_eq!(
         DatabaseDefinition::from_value(&database.to_value()).unwrap(),

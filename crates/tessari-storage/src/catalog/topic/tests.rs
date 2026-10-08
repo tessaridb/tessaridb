@@ -14,12 +14,14 @@ fn every_shape_round_trips() {
                 rate: 100,
                 per: Duration::from_seconds(60),
             }),
+            deduplicate: Some((Duration::from_seconds(300), "msg_id".to_owned())),
         },
         TopicDeclaration {
             retain: None,
             max_bytes: Some(1),
             retain_bytes: None,
             public: None,
+            deduplicate: None,
         },
     ];
     for shape in shapes {

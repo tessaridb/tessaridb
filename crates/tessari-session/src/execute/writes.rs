@@ -203,10 +203,8 @@ impl Session<'_> {
         // The same refusal `Session::writable` gives, reached directly for the
         // same reason `insert` reaches it directly: that one takes a record
         // target and this statement names no record.
-        if Catalog::new(transaction)
-            .table(id)?
-            .is_some_and(|found| found.is_bucket())
-        {
+        let definition = Catalog::new(transaction).table(id)?;
+        if definition.as_ref().is_some_and(|found| found.is_bucket()) {
             return Err(Error::NotWrittenByHand {
                 table: table.name.text.clone(),
                 span: table.span,
@@ -218,12 +216,27 @@ impl Session<'_> {
         // and a gap in a sequence reads as a deletion.
         let payload = self.evaluate(transaction, value)?;
         let payload = self.with_defaults(transaction, id, payload)?;
+        // A topic's repeated key, asked before an identity is spent on it
+        // (ADR-0124 D8); a record the store names has no identity to repeat.
+        let marker =
+            self.dedup_marker(transaction, definition.as_ref(), None, &payload, table.span)?;
+        if let Some(marker) = &marker
+            && marker.seen(transaction)?
+        {
+            return Ok(match answer {
+                Answer::After => Outcome::Value(Value::None),
+                _ => Outcome::Keys(Vec::new()),
+            });
+        }
         // Free by construction — `free_identity` does the read that establishes
         // it, so nothing here writes over a record that was already there.
         let identity = self.free_identity(transaction, &context, id, &payload, table.span)?;
         let address = RecordAddress::new(context.namespace, context.database, id, identity.clone());
         self.put_record(transaction, address.clone(), payload.clone(), span)?;
         super::expiry::settle_write_expiry(transaction, &address, settled);
+        if let Some(marker) = marker {
+            marker.leave(transaction);
+        }
         Ok(match answer {
             Answer::After => Outcome::Value(payload),
             _ => Outcome::Keys(vec![identity]),
@@ -400,10 +413,8 @@ impl Session<'_> {
         // hand can lie about them. The same refusal `Session::writable` gives,
         // for the same reason — reached here directly because that one takes a
         // record target and an insert names no record.
-        if Catalog::new(transaction)
-            .table(id)?
-            .is_some_and(|found| found.is_bucket())
-        {
+        let definition = Catalog::new(transaction).table(id)?;
+        if definition.as_ref().is_some_and(|found| found.is_bucket()) {
             return Err(Error::NotWrittenByHand {
                 table: table.name.text.clone(),
                 span: table.span,
@@ -417,12 +428,24 @@ impl Session<'_> {
                 fields.insert(column.text.clone(), self.evaluate(transaction, value)?);
             }
             let payload = self.with_defaults(transaction, id, Value::Object(fields))?;
+            // A row repeating a topic's key is skipped, its siblings appended
+            // (ADR-0124 D8).
+            let marker =
+                self.dedup_marker(transaction, definition.as_ref(), None, &payload, table.span)?;
+            if let Some(marker) = &marker
+                && marker.seen(transaction)?
+            {
+                continue;
+            }
 
             let identity = self.free_identity(transaction, &context, id, &payload, table.span)?;
             let address =
                 RecordAddress::new(context.namespace, context.database, id, identity.clone());
             self.put_record(transaction, address.clone(), payload, span)?;
             super::expiry::settle_write_expiry(transaction, &address, settled);
+            if let Some(marker) = marker {
+                marker.leave(transaction);
+            }
             produced.push(identity);
         }
         Ok(Outcome::Keys(produced))

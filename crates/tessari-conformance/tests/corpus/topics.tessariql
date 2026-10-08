@@ -180,3 +180,20 @@ CREATE recent:8 = { body: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
 CREATE recent:9 = { body: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
 COMMIT;
 --- expect: error TopicRetainExceeded
+
+--- case: a deduplicating topic appends a key once inside its window (ADR-0124 D8)
+DEFINE TOPIC payments DEDUPLICATE 5m ON payment_id;
+CREATE payments = { payment_id: 'p1', amount: 10 };
+CREATE payments = { payment_id: 'p1', amount: 10 };
+INSERT INTO payments (payment_id, amount) VALUES ('p1', 10), ('p2', 20);
+CREATE payments = { amount: 30 };
+READ FROM payments;
+--- expect: rows 3
+
+--- case: and refuses a key no identity can hold
+CREATE payments = { payment_id: 1.5 };
+--- expect: error DeduplicationKey
+
+--- case: a topic that deduplicates names the field it reads the key from
+DEFINE TOPIC unkeyed DEDUPLICATE 5m;
+--- expect: error UnexpectedToken

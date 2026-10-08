@@ -64,6 +64,14 @@ impl Parser<'_> {
                     "a duration above zero, like `1m` — the window the rate counts in",
                 )?;
                 clauses.public = Some((rate, per));
+            } else if clauses.deduplicate.is_none() && self.eat_word("deduplicate") {
+                // A topic names its messages itself, so the key is a field the
+                // publisher writes, and it has no default (ADR-0124 D8).
+                let window = self.positive_duration(
+                    "a duration above zero, like `5m` — how long a published key is remembered",
+                )?;
+                self.expect_keyword(Keyword::On, "`ON` and the field a repeat is recognised by")?;
+                clauses.deduplicate = Some((window, self.name()?.text));
             } else {
                 break;
             }
@@ -73,6 +81,14 @@ impl Parser<'_> {
         if clauses.public.is_some() && clauses.max_bytes.is_none() {
             return Err(self.error_here(
                 "`MAX BYTES n` — a topic anonymous callers may append to must bound a message's size",
+            ));
+        }
+        // A repeat answers no record and a new key answers the message, so on a
+        // topic strangers append to the answer would say which keys were
+        // published — the disclosure `CREATE topic:'x'` is refused there for.
+        if clauses.public.is_some() && clauses.deduplicate.is_some() {
+            return Err(self.error_here(
+                "no `DEDUPLICATE` — a topic anonymous callers append to would tell them which keys were published",
             ));
         }
         Ok(StatementKind::DefineTopic {

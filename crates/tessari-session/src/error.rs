@@ -2033,6 +2033,17 @@ pub enum Error {
         span: Span,
     },
 
+    /// A param of this name is already defined in the database (ADR-0124 D2).
+    #[error(
+        "a param named `${name}` is already defined here (at {span}) — `DEFINE PARAM OR REPLACE` changes its value"
+    )]
+    ParamExists {
+        /// The name, without its marker.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
     /// An event of this name is already defined on the table (ADR-0110).
     #[error("an event named `{event}` is already defined on `{table}` (at {span})")]
     EventExists {
@@ -2772,6 +2783,46 @@ pub enum Error {
     #[error("`RELEASE ALL` needs `USE CONSUMER` first, or a named consumer (at {span})")]
     NoConsumerDeclared {
         /// Where the release was written.
+        span: Span,
+    },
+
+    /// `RELEASE … NOT BEFORE` on a queue that declares no `NOT BEFORE` field
+    /// (ADR-0124 D6): there is nowhere to write the instant, and writing it
+    /// into a field of the caller's naming would be a delay nothing reads.
+    #[error(
+        "queue `{queue}` declares no `NOT BEFORE` field, so a release cannot hold a record back (at {span}) — declare one, as in `DEFINE QUEUE {queue} … NOT BEFORE send_at`"
+    )]
+    NoDelayField {
+        /// The queue as written.
+        queue: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// `NOT BEFORE` given something that is neither an instant nor a span from
+    /// now (ADR-0124 D6).
+    #[error("`NOT BEFORE` takes a datetime or a duration from now, not {found} (at {span})")]
+    NotAnInstant {
+        /// The value's type.
+        found: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A deduplicating topic's key field holds a value no identity can be made
+    /// of (ADR-0124 D8).
+    ///
+    /// Refused rather than appended, because a key that cannot be compared is a
+    /// repeat nobody would be told about.
+    #[error(
+        "`{field}` is the topic's deduplication key and holds {found}, which is not a string, an integer, a uuid or bytes (at {span})"
+    )]
+    DeduplicationKey {
+        /// The key field the topic declares.
+        field: String,
+        /// The value's type.
+        found: &'static str,
+        /// Where the statement is.
         span: Span,
     },
 

@@ -2030,7 +2030,24 @@ Every catalog object this language can declare can be undeclared, except one:
 | `DEFINE KAFKA CONSUMER` | `DROP KAFKA CONSUMER` |
 | `DEFINE TOPIC CONSUMER` | `DROP TOPIC CONSUMER` |
 | `DEFINE QUEUE` | `DROP QUEUE` |
+| `DEFINE EVENT` | `DROP EVENT` |
+| `DEFINE PARAM` | `DROP PARAM` |
 | `DEFINE NODE` | **nothing — see below** |
+
+**`IF EXISTS` makes a drop re-runnable.** It stands after the kind words, where
+`IF NOT EXISTS` stands in a definition, and an object that is not there — or
+whose table is not there — answers `ok` instead of a refusal:
+
+```tessariql
+DROP INDEX IF EXISTS by_email ON users;
+DROP EVENT IF EXISTS audit ON orders;
+DROP PARAM IF EXISTS $grace;
+```
+
+Without it a drop of nothing is refused naming what was not found, so a script
+that meant to remove something learns that it removed nothing. The one exception
+is `DROP USER`, which has always answered `ok` for a name nobody holds: the store
+it asks for, one without that user, is already the store there is.
 
 **A drop removes its own definition and nothing beneath it**, and refuses while
 anything still points at it:
@@ -3572,6 +3589,45 @@ around its table's grant, and that holds at the fourth hop as much as the first.
 step landed on, so the work multiplies by the branching factor at each hop. A
 three-hop walk from a well-connected record is not a cheap query, and nothing
 here pretends otherwise.
+
+### Named values: `DEFINE PARAM`
+
+```tessariql
+DEFINE PARAM $reclaim_grace VALUE 10m;
+DEFINE PARAM OR REPLACE $reclaim_grace VALUE 15m;
+DEFINE PARAM IF NOT EXISTS $page_size VALUE 50;
+SELECT * FROM objects WHERE deleted_at < time::now() - $reclaim_grace LIMIT $page_size;
+DROP PARAM $page_size;
+```
+
+A param is a value the **database** holds under a name, read wherever a
+parameter is read: in a script, in an event's body and in a view. It is
+configuration rather than data, and it lets a setting change without anything
+that reads it being redefined: an event that reads `$reclaim_grace` reads the
+value `OR REPLACE` last stored, on its next run.
+
+- **The value is computed once**, when the statement runs, and kept.
+  `VALUE time::now()` stores that instant, not a clock.
+- **The closest binding wins.** A value the caller bound, then a `LET` above the
+  statement, then the param of the database the statement runs in. A param never
+  overrides what a caller passed on purpose, so one script does not mean two
+  things in two databases.
+- **It belongs to its database.** A statement after `USE DATABASE other` does not
+  see it, and a `DEFINE PARAM` or `DROP PARAM` earlier in the same script is seen
+  by the statements below it, as a `LET` is.
+- **An event's body is checked when it is defined.** A name the body reads that
+  is neither one of the four the write supplies nor a param of the database is
+  refused where it is written. A param dropped later makes the event fail its
+  write, naming the param.
+- **It travels with the database.** It is part of the database's catalog
+  record, so a follower, a snapshot and a restore hold it, `BACKUP SCRIPT` writes
+  it back as `DEFINE PARAM`, and `INFO FOR DATABASE` lists it under `params`.
+- **It is not a secret.** Anybody who may run a statement in the database reads
+  it. A credential belongs in a vault.
+
+Defining or dropping one needs the authority to define in the database.
+`DEFINE PARAM` of a name already held is refused `ParamExists` unless it says
+`OR REPLACE` or `IF NOT EXISTS`, and the two together are refused.
 
 ## 5. Record statements
 
@@ -5227,6 +5283,14 @@ ambiguous, and reserving them would take seven perfectly good names away from
 data that already exists — `SELECT * FROM order ORDER BY by LIMIT 1` is a legal
 statement.
 
+**`START` and `LIMIT` take a parameter**, so a page size never has to be written
+into the statement's text: `SELECT * FROM users START $skip LIMIT $size`. The
+number is written in when the script is bound, so every rule a written number
+meets — the ceilings, the bound handed to the source — is met by the bound one,
+and a value that is not a whole number is refused naming the parameter
+(`CountNotAWholeNumber`). `CLAIM $n FROM jobs` takes one the same way and keeps
+its ceiling of 500.
+
 ### Resuming a page from a record
 
 ```
@@ -5785,6 +5849,20 @@ SELECT count(*) AS held, time::year(at) AS year FROM events GROUP BY time::year(
 | `time::second(at)` | the second **of the minute**, 0 through 59 |
 | `time::unix(at)` | whole seconds since the epoch |
 | `time::from_unix(n)` | the instant a second count names |
+| `duration::from_secs(n)` | the span `n` seconds names, whole or fractional, to the nanosecond |
+
+**Instants and spans have arithmetic of their own.** `+` and `-` move an instant
+by a span, `-` between two instants answers the span between them (negative when
+the right one is later), and two spans add and subtract:
+
+```
+RETURN time::now() + 10m;
+RETURN datetime '2026-10-08T01:00:00Z' - datetime '2026-10-08T00:00:00Z' = 1h;
+RETURN duration::from_secs(1.5) = 1500ms;
+```
+
+Nothing else is defined — an instant plus an instant names no moment — and a
+result past what the type holds is refused by name, never wrapped.
 
 **Everything is UTC**, because an instant has no zone. A zone is a rendering
 choice made where a value is displayed, and storing one would make two instants
@@ -7018,7 +7096,7 @@ DEFINE INDEX by_severity ON alerts FIELDS severity;
 DEFINE QUEUE mail TIMEOUT 5m ATTEMPTS 3 NOT BEFORE send_at;
 
 CREATE alerts = { severity: 9, text: 'disk full' };
-CREATE mail = { to: 'ada@example.test', send_at: time::from_unix(time::unix(time::now()) + 600) };
+CREATE mail = { to: 'ada@example.test', send_at: time::now() + 10m };
 ```
 
 Without either clause a claim takes records in arrival order — identity order,
@@ -7036,9 +7114,33 @@ served it, and `scan` when none did.
 `f` is a datetime after now is not handed out, by `CLAIM FROM` or by `CLAIM
 q:id`. It is delayed delivery written as a value in the record, the way a hold's
 deadline is — every node compares the same instant, nothing sweeps, and a worker
-that wants to retry later updates the field when it releases. A value in `f`
+that wants to retry later hands the record back with `RELEASE q:id NOT BEFORE
+<instant | duration>`, which sets `f` and clears the hold in one write. A value in `f`
 that is not a datetime is no delay at all, so a mistyped value cannot keep a
 record waiting forever with nothing in an error state.
+
+### Enqueueing once: `DEDUPLICATE`
+
+```tessariql
+DEFINE QUEUE reclaim TIMEOUT 1m DEDUPLICATE 10m;
+CREATE reclaim:'bucket/key' = { reason: 'overwritten' };
+CREATE reclaim:'bucket/key' = { reason: 'overwritten' };  -- writes nothing
+```
+
+`DEDUPLICATE d` makes a `CREATE` of an identity first written less than `d` ago
+**write nothing** and answer no record (`NONE` where it would have answered the
+record). That covers the three repeats a producer meets: the record is still
+queued, it is held by a worker, or its work is done and it was deleted. Without
+the clause a queued identity is refused with `RecordExists` and a finished one is
+queued again.
+
+The window counts from the **first** write and a repeat does not extend it, as
+in the deduplication windows message brokers keep. The store remembers each
+identity as a record with an expiry instant in a companion table no statement
+can name; it replicates with the write that made it, goes when the window ends,
+and goes with the queue when it is dropped. A record the store names
+(`CREATE reclaim = { … }`) has no identity to repeat and is never deduplicated.
+`INFO FOR TABLE` reports `deduplicate`.
 
 ### Work on a schedule: a queue record as the timer
 
@@ -7046,15 +7148,12 @@ There is no schedule statement. Periodic work is one queue record whose `NOT BEF
 
 ```tessariql
 DEFINE QUEUE ticks TIMEOUT 5m NOT BEFORE next;
-CREATE ticks:1 = { job: 'cleanup', next: time::now(), every: 3600 };
+CREATE ticks:1 = { job: 'cleanup', next: time::now() };
 
 -- each worker, in a loop:
 CLAIM FROM ticks;
 -- … the work …
-BEGIN;
-UPDATE ticks:1 SET next = time::from_unix(time::unix(time::now()) + every);
-RELEASE ticks:1;
-COMMIT;
+RELEASE ticks:1 NOT BEFORE 1h;
 ```
 
 **Once per period, cluster-wide.** A claim is a write, and a write is fenced by leadership, so two workers on two
@@ -7063,8 +7162,9 @@ nodes cannot both hold the tick.
 **At least once, never lost.** A worker that dies holding the tick loses it when the hold lapses, after `TIMEOUT`,
 and another worker claims it. Across a leader change that can mean one run twice; it never means a run skipped.
 
-**Missed runs.** A tick whose `next` passed while no worker ran is claimable once. Re-arming from `time::now()`
-coalesces the backlog into that one run. Re-arming from `next + every` would replay every missed period instead,
+**Missed runs.** A tick whose `next` passed while no worker ran is claimable once. Re-arming with a duration counts
+from now, which coalesces the backlog into that one run. Re-arming from the passed instant —
+`RELEASE ticks:1 NOT BEFORE (SELECT next FROM ONLY ticks:1).next + 1h` — would replay every missed period instead,
 one claim each, which is the right choice only when each period's run matters on its own.
 
 ### Saying who you are
@@ -7619,6 +7719,24 @@ read carries a `lapsed` note naming how many messages it passed over, and moves 
 named reader's position past them so the note is given once. Nothing is ever
 skipped silently.
 
+### Publishing once: `DEDUPLICATE … ON`
+
+```tessariql
+DEFINE TOPIC payments DEDUPLICATE 5m ON payment_id;
+CREATE payments = { payment_id: 'p1', amount: 10 };
+CREATE payments = { payment_id: 'p1', amount: 10 };  -- not appended
+```
+
+A message whose `payment_id` was published less than the window ago is **not
+appended** — no position is spent on it — and answers no record; an `INSERT`
+appends its other rows and answers their identities. The window counts from the
+first message carrying the key. A message without the field is appended; a key
+that is not a string, an integer, a uuid or bytes is refused as
+`DeduplicationKey`, because a key that cannot be compared is a repeat nobody
+would be told about. `INFO FOR TABLE`, `INFO FOR TOPIC` and `BACKUP SCRIPT` carry the clause. A
+topic declared `PUBLIC` cannot deduplicate: its answer would tell a stranger which keys were published, which is
+why `CREATE topic:'x'` is refused there too.
+
 ### Size, and letting anyone append
 
 `MAX BYTES n` refuses a message whose encoded value is larger, naming the topic
@@ -7734,6 +7852,7 @@ DEFINE EVENT outbox ON orders FOR CREATE THEN {
     CREATE order_events = $line;
 };
 DROP EVENT big ON orders;
+DEFINE EVENT OR REPLACE positive ON orders WHEN $after.total < 0 THEN THROW 'no negative orders';
 ```
 
 An event is statements a table runs **after each write of one of its records,
@@ -7769,6 +7888,29 @@ one commit: they land together, or neither does.
   applied. A body that updates its own record writes a `WHEN` that excludes its
   own change: `WHEN $after.v < 5 THEN UPDATE orders:$id SET v = $after.v + 1`.
 
+**Changing an event.** `DEFINE EVENT OR REPLACE` replaces an event's `FOR`,
+`WHEN` and body, or defines it when there is none, in one catalog write: no
+commit sees the table without the event, and a write that straddles the change
+runs again and sees the new body. It is the form a migration that runs on every
+start wants. `IF NOT EXISTS` keeps the old body, and the two together are
+refused. `DROP EVENT IF EXISTS` removes one that may not be there.
+
+**What else a body reads.** Beside the four names the write supplies, a body may
+read the database's params (`DEFINE PARAM`, §4), and reads the value they hold
+when the write runs. Any other name is refused when the event is defined.
+
+**A failing event's class is its cause's.** A refusal in the body reaches the
+writer as `EventFailed`, carrying the body's own refusal, and its class (§7c and
+the refusal catalog) is that refusal's class. A body that met contention is
+`retry`, one that wrote a table that is not there is `invalid`, and one that ran
+`THROW` is `invalid` as any `THROW` is.
+
+**Expiry runs no event.** A record removed because its expiry passed (`EXPIRE`)
+is removed by the store's own pass, in no writer's transaction, so there is no
+writer to run as and `FOR DELETE` does not fire. The removal reaches the change
+feed as `Removed`. Work that must follow an expiry is a queue record whose
+`NOT BEFORE` is the instant.
+
 What a body may run: `CREATE`, `INSERT`, `UPDATE`, `UPSERT`, every `DELETE`,
 `RELATE`, the key-value verbs (`SET`, `INCR`, `DEL`, `EXPIRE`, `PERSIST`), `LET`
 and `THROW`. Several go in braces. A body runs in its table's namespace and
@@ -7799,6 +7941,19 @@ at its own pace: exactly once for what it writes into this store, at least once
 for anything outside it, with a dead letter for what will not go. There is no
 second, "after commit" kind of event, because it would need everything a topic
 already is — a durable queue, a position, a retry, a dead letter — built again.
+
+**Once per record.** An event has no "run once" option, because the place a
+repeat does harm is where the work lands. An event that enqueues by the
+record's own identity into a queue declared `DEDUPLICATE` (§6c) leaves one
+piece of work however often its record is written inside the window, in one
+transaction or across many:
+
+```tessariql
+DEFINE QUEUE reindex TIMEOUT 1m DEDUPLICATE 10m;
+DEFINE EVENT reindex ON pages FOR UPDATE THEN CREATE reindex:$id = { page: $id };
+```
+
+The same goes for a topic declared `DEDUPLICATE … ON` with a key the body writes.
 
 ### What it costs
 
@@ -9969,7 +10124,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.33.3", "build": "0.33.3-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.33.4", "build": "0.33.4-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

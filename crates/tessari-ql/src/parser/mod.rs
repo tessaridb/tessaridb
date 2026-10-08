@@ -77,6 +77,7 @@ pub fn parse(source: &str) -> Result<Script> {
         position: 0,
         reading_paths: false,
         depth: 0,
+        dropping_if_exists: false,
     }
     .script()
 }
@@ -101,6 +102,7 @@ pub fn parse_expression(source: &str) -> Result<Expr> {
         position: 0,
         reading_paths: false,
         depth: 0,
+        dropping_if_exists: false,
     };
     let expression = parser.expression()?;
     if parser.peek().is_some() {
@@ -127,6 +129,7 @@ pub fn parse_condition(source: &str) -> Result<Expr> {
         position: 0,
         reading_paths: false,
         depth: 0,
+        dropping_if_exists: false,
     };
     let condition = parser.condition()?;
     if parser.peek().is_some() {
@@ -154,6 +157,7 @@ pub fn parse_read(source: &str) -> Result<Select> {
         position: 0,
         reading_paths: false,
         depth: 0,
+        dropping_if_exists: false,
     };
     if parser.peek_keyword() != Some(Keyword::Select) {
         return Err(parser.error_here("`SELECT` — a view is a read"));
@@ -181,6 +185,8 @@ struct Parser<'a> {
     /// How many expressions deep the reader is, so a statement nested past
     /// [`MAX_EXPRESSION_DEPTH`] is refused instead of exhausting the stack.
     depth: usize,
+    /// Whether the `DROP` being read said `IF EXISTS` (ADR-0124 D1).
+    dropping_if_exists: bool,
 }
 
 /// How many expressions deep a statement may nest.
@@ -382,6 +388,31 @@ impl Parser<'_> {
     /// `IF NOT EXISTS`, when it is there.
     ///
     /// Written before the name, as every other statement that takes it does.
+    /// `IF NOT EXISTS` or `OR REPLACE`, whichever stands here: keep what is
+    /// there, or replace it (ADR-0124 D1). Both together are refused, because
+    /// keeping and replacing cannot both be meant.
+    fn eat_definition_mode(&mut self) -> Result<(bool, bool)> {
+        let keep = self.eat_if_not_exists()?;
+        let replace = self.peek_keyword() == Some(Keyword::Or);
+        if replace {
+            if keep {
+                return Err(self.error_here(
+                    "the name — `IF NOT EXISTS` keeps what is there and `OR REPLACE` \
+                     replaces it, so a definition says one of them",
+                ));
+            }
+            self.advance();
+            self.expect_word("replace", "`REPLACE` after `OR`")?;
+            if self.peek_keyword() == Some(Keyword::If) {
+                return Err(self.error_here(
+                    "the name — `OR REPLACE` replaces what is there and `IF NOT EXISTS` \
+                     keeps it, so a definition says one of them",
+                ));
+            }
+        }
+        Ok((keep, replace))
+    }
+
     fn eat_if_not_exists(&mut self) -> Result<bool> {
         if !self.eat_keyword(Keyword::If) {
             return Ok(false);

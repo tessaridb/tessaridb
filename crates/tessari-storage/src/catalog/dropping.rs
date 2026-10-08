@@ -39,6 +39,17 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         ));
         self.transaction
             .delete(system::address(system::NAMES, RecordId::from(qualified)));
+        // A deduplicating queue's or topic's markers go with it, as they were
+        // made with it (`Self::create_table`).
+        if definition.deduplication_window().is_some()
+            && let Some(seen) = self.table_id(
+                definition.namespace,
+                definition.database,
+                &Self::seen_named(&definition.name),
+            )?
+        {
+            self.drop_table(seen)?;
+        }
         Ok(true)
     }
 

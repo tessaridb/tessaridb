@@ -61,6 +61,7 @@ mod materialized;
 pub use materialized::{Maintained, maintain_views};
 mod noticed;
 mod outcome;
+mod param;
 mod plan;
 mod presented;
 pub use presented::{Certificates, ClientTransport, Presented};

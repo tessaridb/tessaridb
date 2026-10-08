@@ -30,16 +30,16 @@ mod token;
 
 pub use ast::{
     Admitted, Aggregate, Answer, AnsweredBy, Approximation, ArithmeticOp, Assignment, AutoSplit,
-    BackupForm, ColumnDeclaration, ConsumerSource, CreateTarget, Credential, DeleteBound,
-    Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field, FieldMapping,
-    FieldPath, Fill, FillMode, Fusion, GroupClauses, Hop, Identity, InfoSubject, JoinSide, Name,
-    NamespaceChange, OnFailure, Ordering, Password, PathTo, Projected, Projection, RangeExpr,
-    ReachRef, RecordTarget, ReplicaChange, Retention, RollupCompute, Script, SearchAsk,
+    BackupForm, ColumnDeclaration, ConsumerSource, CountParameter, CreateTarget, Credential,
+    DeleteBound, Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field,
+    FieldMapping, FieldPath, Fill, FillMode, Fusion, GroupClauses, Hop, Identity, InfoSubject,
+    JoinSide, Name, NamespaceChange, OnFailure, Ordering, Password, PathTo, Projected, Projection,
+    RangeExpr, ReachRef, RecordTarget, ReplicaChange, Retention, RollupCompute, Script, SearchAsk,
     SearchCosts, SearchField, SearchMember, SearchOperator, Select, SetCondition, Source,
     SpaceBound, Statement, StatementKind, TableChange, TableExpiry, TableRef, Timeout,
     TopicClauses, UserChange, UserGrant, Using, Version, WriteExpiry, Written,
 };
-pub use bind::{Parameters, bind_expression};
+pub use bind::{Parameters, bind_expression, bind_read};
 pub use error::{Error, Result};
 pub use function::{Function, Purity};
 pub use lexer::tokenize;

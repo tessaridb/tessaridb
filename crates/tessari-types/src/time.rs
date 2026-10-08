@@ -87,6 +87,77 @@ macro_rules! define_time {
 define_time!(Datetime, "instant");
 define_time!(Duration, "span");
 
+/// Nanoseconds in one second, as the width the arithmetic below runs in.
+const NANOS: i128 = 1_000_000_000;
+
+/// A pair as one count of nanoseconds. Exact: an `i64` of seconds times a
+/// billion is far inside an `i128`.
+fn total(seconds: i64, nanos: u32) -> i128 {
+    i128::from(seconds)
+        .saturating_mul(NANOS)
+        .saturating_add(i128::from(nanos))
+}
+
+/// A count of nanoseconds back as a normalised pair, or `None` when the whole
+/// seconds do not fit.
+fn split(count: i128) -> Option<(i64, u32)> {
+    let seconds = i64::try_from(count.div_euclid(NANOS)).ok()?;
+    let nanos = u32::try_from(count.rem_euclid(NANOS)).ok()?;
+    Some((seconds, nanos))
+}
+
+impl Datetime {
+    /// This instant moved by `by`, either way; `None` past what an instant holds.
+    #[must_use]
+    pub fn checked_add(self, by: Duration) -> Option<Self> {
+        let moved = total(self.seconds, self.nanos).checked_add(total(by.seconds, by.nanos))?;
+        split(moved).map(|(seconds, nanos)| Self { seconds, nanos })
+    }
+
+    /// This instant moved back by `by`; `None` past what an instant holds.
+    #[must_use]
+    pub fn checked_sub(self, by: Duration) -> Option<Self> {
+        self.checked_add(by.checked_neg()?)
+    }
+
+    /// The span from `earlier` to this instant, negative when `earlier` is
+    /// later; `None` past what a span holds.
+    #[must_use]
+    pub fn checked_since(self, earlier: Self) -> Option<Duration> {
+        let span =
+            total(self.seconds, self.nanos).checked_sub(total(earlier.seconds, earlier.nanos))?;
+        split(span).map(|(seconds, nanos)| Duration { seconds, nanos })
+    }
+}
+
+impl Duration {
+    /// The two spans together; `None` past what a span holds.
+    #[must_use]
+    pub fn checked_add(self, other: Self) -> Option<Self> {
+        let sum = total(self.seconds, self.nanos).checked_add(total(other.seconds, other.nanos))?;
+        split(sum).map(|(seconds, nanos)| Self { seconds, nanos })
+    }
+
+    /// This span less `other`; `None` past what a span holds.
+    #[must_use]
+    pub fn checked_sub(self, other: Self) -> Option<Self> {
+        self.checked_add(other.checked_neg()?)
+    }
+
+    /// The same span the other way; `None` for the one span with no opposite.
+    #[must_use]
+    pub fn checked_neg(self) -> Option<Self> {
+        split(total(self.seconds, self.nanos).checked_neg()?)
+            .map(|(seconds, nanos)| Self { seconds, nanos })
+    }
+
+    /// The span a count of nanoseconds names; `None` past what a span holds.
+    #[must_use]
+    pub fn from_nanos(count: i128) -> Option<Self> {
+        split(count).map(|(seconds, nanos)| Self { seconds, nanos })
+    }
+}
+
 impl fmt::Display for Datetime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{:09}", self.seconds, self.nanos)
