@@ -29,7 +29,8 @@ const head = (): Node =>
     "head",
     {},
     el("meta", { charset: "utf-8" }),
-    el("meta", { name: "viewport", content: "width=device-width, initial-scale=1" }),
+    el("meta", { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" }),
+    el("meta", { name: "color-scheme", content: "light dark" }),
     el("title", {}, "TessariDB console"),
     el("link", { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" }),
     el("link", { rel: "stylesheet", href: "/console.css" }),
@@ -78,19 +79,46 @@ const identity = (): Node =>
     ),
   );
 
-const bar = (): Node =>
+/**
+ * The sidebar: the mark, the seven destinations as a vertical menu, and at its
+ * foot the two things that belong to the reader rather than to any screen — the
+ * theme and the identity. The same frame as the S3 console, so the two read as
+ * one product.
+ */
+const side = (): Node =>
   el(
-    "header",
-    { class: "bar" },
+    "aside",
+    { class: "side" },
     el(
       "div",
-      { class: "who" },
-      el("span", { class: "mark", "aria-hidden": "true" }),
-      el("h1", {}, "TessariDB"),
-      el("p", { id: "where", class: "faint" }, "served by this node"),
+      { class: "brand" },
+      el("img", { class: "logo", src: "/favicon.svg", alt: "", width: 28, height: 28 }),
+      el(
+        "div",
+        {},
+        el("p", { class: "brand-name" }, "TessariDB"),
+        el("p", { id: "where", class: "faint" }, "served by this node"),
+      ),
     ),
-    // In the bar and not behind a destination. An operator arrives holding a
-    // name, and an entry point you have to navigate to first is not one.
+    tabs(DESTINATIONS),
+    el(
+      "div",
+      { class: "side-foot" },
+      button("theme", "Dark theme", "quiet"),
+      identity(),
+    ),
+  );
+
+/**
+ * The top of every destination: its name, and the search opposite it. On every
+ * destination rather than being one — an operator arrives holding a name, and
+ * an entry point you have to navigate to first is not one.
+ */
+const pageHead = (): Node =>
+  el(
+    "div",
+    { class: "page-head" },
+    el("h1", { id: "view-title", tabindex: -1 }, DESTINATIONS[0]?.label ?? ""),
     el(
       "div",
       { class: "finding" },
@@ -100,7 +128,6 @@ const bar = (): Node =>
       ),
       status("search-says"),
     ),
-    identity(),
   );
 
 const query = (): Node =>
@@ -115,7 +142,7 @@ const query = (): Node =>
           { id: "script", rows: 8, spellcheck: "false", "aria-label": "Script" },
           "USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;",
         ),
-        row("spread", button("run", "Run", "primary"), status("script-status")),
+        row("spread", button("run-script", "Run", "primary"), status("script-status")),
       ),
       pane(
         paneHead(
@@ -273,6 +300,7 @@ const tray = (): Node =>
       { id: "keys-open", type: "button", class: "quiet", "aria-controls": "keys-sheet" },
       "Keys ?",
     ),
+    el("p", { class: "credit" }, "© boogvar 2026 · Powered by TessariDB"),
   );
 
 const logSheet = (): Node =>
@@ -304,27 +332,59 @@ export const index = (): string =>
       el(
         "body",
         {},
-        bar(),
-        // Shown on load when this page arrived in the clear from another machine:
-        // every password and token typed below then crosses the network as it is.
+        el("a", { id: "skip", class: "skip", href: "#view" }, "Skip to content"),
         el(
-          "p",
-          { id: "clear-banner", class: "note warn", hidden: true },
-          "This console arrived without TLS from another machine: what you type here, ",
-          "passwords included, crosses the network unencrypted. Give the node ",
-          el("code", {}, "--tls-cert"),
-          " and ",
-          el("code", {}, "--tls-key"),
-          ", or reach it over an SSH tunnel to localhost.",
+          "div",
+          { class: "shell" },
+          side(),
+          el(
+            "div",
+            { class: "main-col" },
+            el(
+              "main",
+              { id: "view", tabindex: -1 },
+              // Shown on load when this page arrived in the clear from another machine:
+              // every password and token typed below then crosses the network as it is.
+              el(
+                "p",
+                { id: "clear-banner", class: "note warn", hidden: true },
+                "This console arrived without TLS from another machine: what you type here, ",
+                "passwords included, crosses the network unencrypted. Give the node ",
+                el("code", {}, "--tls-cert"),
+                " and ",
+                el("code", {}, "--tls-key"),
+                ", or reach it over an SSH tunnel to localhost.",
+              ),
+              pageHead(),
+              // In the menu's own order, so the reading order of the page and the
+              // order of the controls beside it are one thing rather than two.
+              query(), topics(), cluster(), access(), node(), backup(), vault(),
+            ),
+            // In the column and not under the whole page, so it never covers the
+            // sidebar's foot while it stays pinned to the bottom of the screen.
+            tray(),
+          ),
         ),
-        tabs(DESTINATIONS),
-        // In the tab strip's own order, so the reading order of the page and the
-        // order of the controls above it are one thing rather than two.
-        el("main", {}, query(), topics(), cluster(), access(), node(), backup(), vault()),
-        tray(),
         logSheet(),
         keysSheet(),
         detailSheet(),
+        // The frame every icon is cloned from. Parsed here, it is born in the SVG
+        // namespace, so the script never has to name that namespace by its URI.
+        el(
+          "template",
+          { id: "icon-frame" },
+          el("svg", {
+            class: "icon",
+            viewBox: "0 0 24 24",
+            "aria-hidden": "true",
+            focusable: "false",
+            fill: "none",
+            stroke: "currentColor",
+            "stroke-width": 2,
+            "stroke-linecap": "round",
+            "stroke-linejoin": "round",
+          }),
+        ),
         el("script", { src: "/console.js" }),
       ),
     ),

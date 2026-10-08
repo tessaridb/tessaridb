@@ -87,10 +87,17 @@ export function show(name: string): void {
     tab.setAttribute("aria-selected", String(chosen));
     tab.tabIndex = chosen ? 0 : -1;
     pane(tab).hidden = !chosen;
+    if (chosen) {
+      // The page's heading names where you are, in the menu's own words.
+      at("view-title").textContent = tab.textContent?.trim() ?? "";
+    }
   }
   if (window.location.hash !== "#" + wanted) {
     window.location.hash = wanted;
   }
+  // A destination is a new screen, so it opens at its top rather than at the
+  // scroll position of the one the reader just left.
+  requestAnimationFrame(() => window.scrollTo(0, 0));
   for (const arrival of arrivals) {
     if (arrival.names.includes(wanted)) {
       arrival.todo();
@@ -102,9 +109,16 @@ export function wire(): void {
   for (const tab of tabs()) {
     tab.addEventListener("click", () => show(tab.id.replace("tab-", "")));
     // Arrow keys move between tabs, which is what a tablist owes anybody not
-    // using a mouse — the roles alone promise it and do not provide it.
+    // using a mouse — the roles alone promise it and do not provide it. Down and
+    // Up because the menu is vertical; Right and Left still work, so a hand that
+    // learned the old strip is not punished for it.
     tab.addEventListener("keydown", (event) => {
-      const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+      const step =
+        event.key === "ArrowDown" || event.key === "ArrowRight"
+          ? 1
+          : event.key === "ArrowUp" || event.key === "ArrowLeft"
+            ? -1
+            : 0;
       if (step === 0) {
         return;
       }

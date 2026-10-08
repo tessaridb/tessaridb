@@ -2,859 +2,874 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
     <title>TessariDB console</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/console.css" />
   </head>
   <body>
-    <header class="bar">
-      <div class="who">
-        <span class="mark" aria-hidden="true"></span>
-        <h1>TessariDB</h1>
-        <p id="where" class="faint">served by this node</p>
-      </div>
-      <div class="finding">
-        <label>Find <input id="search" type="text" placeholder="an account, a table, app.main.orders:1  —  / or ⌘K" /></label>
-        <span id="search-says" class="status" role="status"></span>
-      </div>
-      <details class="identity">
-        <summary><span id="signed-in">not signed in</span></summary>
-        <div class="sheet">
-          <p class="note">Leave both empty against a store that has no users yet. The first <code>DEFINE USER</code> closes it, and everything after that needs a name.</p>
-          <div class="row">
-            <label>User <input id="user" type="text" autocomplete="username" /></label>
-            <label>Password <input id="password" type="password" autocomplete="current-password" /></label>
-          </div>
-          <p class="note">The password is checked once. What this page keeps afterwards is a token, held for as long as the tab is open and no longer — so the password is cleared from the field above, and closing the tab ends the session.</p>
-          <p id="transport-says" class="note warn">Credentials travel as typed unless this page arrived over https.</p>
-          <div class="row spread">
-            <div class="row tight">
-              <button id="sign-in" type="button" class="primary">Sign in</button>
-              <button id="sign-out" type="button" class="quiet">Forget</button>
-            </div>
-            <span id="identity-status" class="status" role="status"></span>
+    <a id="skip" class="skip" href="#view">Skip to content</a>
+    <div class="shell">
+      <aside class="side">
+        <div class="brand">
+          <img class="logo" src="/favicon.svg" alt="" width="28" height="28" />
+          <div>
+            <p class="brand-name">TessariDB</p>
+            <p id="where" class="faint">served by this node</p>
           </div>
         </div>
-      </details>
-    </header>
-    <p id="clear-banner" class="note warn" hidden>This console arrived without TLS from another machine: what you type here, passwords included, crosses the network unencrypted. Give the node <code>--tls-cert</code> and <code>--tls-key</code>, or reach it over an SSH tunnel to localhost.</p>
-    <nav class="tabs">
-      <div role="tablist" aria-label="Sections">
-        <button type="button" role="tab" id="tab-run" aria-controls="panel-run" aria-selected="true">Run</button>
-        <button type="button" role="tab" id="tab-topics" aria-controls="panel-topics" aria-selected="false" tabindex="-1">Topics</button>
-        <button type="button" role="tab" id="tab-cluster" aria-controls="panel-cluster" aria-selected="false" tabindex="-1">Cluster</button>
-        <button type="button" role="tab" id="tab-access" aria-controls="panel-access" aria-selected="false" tabindex="-1">Access</button>
-        <button type="button" role="tab" id="tab-this-node" aria-controls="panel-this-node" aria-selected="false" tabindex="-1">This node</button>
-        <button type="button" role="tab" id="tab-backup" aria-controls="panel-backup" aria-selected="false" tabindex="-1">Backup</button>
-        <button type="button" role="tab" id="tab-vault" aria-controls="panel-vault" aria-selected="false" tabindex="-1">Vault</button>
-      </div>
-    </nav>
-    <main>
-      <section id="panel-run" role="tabpanel" aria-labelledby="tab-run" tabindex="0">
-        <div class="split">
-          <div class="pane">
-            <div class="pane-head">
-              <h2>Script</h2>
-              <span class="faint">⌘↵ or Ctrl↵ to run</span>
-            </div>
-            <textarea id="script" rows="8" spellcheck="false" aria-label="Script">USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea>
-            <div class="row spread">
-              <button id="run" type="button" class="primary">Run</button>
-              <span id="script-status" class="status" role="status"></span>
-            </div>
+        <nav class="tabs">
+          <div role="tablist" aria-label="Sections" aria-orientation="vertical">
+            <button type="button" role="tab" id="tab-run" data-destination="run" aria-controls="panel-run" aria-selected="true">Run</button>
+            <button type="button" role="tab" id="tab-topics" data-destination="topics" aria-controls="panel-topics" aria-selected="false" tabindex="-1">Topics</button>
+            <button type="button" role="tab" id="tab-cluster" data-destination="cluster" aria-controls="panel-cluster" aria-selected="false" tabindex="-1">Cluster</button>
+            <button type="button" role="tab" id="tab-access" data-destination="access" aria-controls="panel-access" aria-selected="false" tabindex="-1">Access</button>
+            <button type="button" role="tab" id="tab-this-node" data-destination="this-node" aria-controls="panel-this-node" aria-selected="false" tabindex="-1">This node</button>
+            <button type="button" role="tab" id="tab-backup" data-destination="backup" aria-controls="panel-backup" aria-selected="false" tabindex="-1">Backup</button>
+            <button type="button" role="tab" id="tab-vault" data-destination="vault" aria-controls="panel-vault" aria-selected="false" tabindex="-1">Vault</button>
           </div>
-          <div class="pane">
-            <div class="pane-head">
-              <h2>Answer</h2>
-              <div class="row tight">
-                <button type="button" class="quiet chosen" data-shape="auto">Auto</button>
-                <button type="button" class="quiet" data-shape="json">JSON</button>
-              </div>
-            </div>
-            <div id="answer" class="answer" aria-live="polite"></div>
-          </div>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>Follow a table</h2>
-            <span id="watch-status" class="status" role="status"></span>
-          </div>
-          <p class="note"><code>from</code> is a position in the log rather than a moment in time, so <code>0</code> replays everything the log still holds. Leave the table empty to follow every table you may read. A split table resumes from its <code>cursor</code>.</p>
-          <div class="row">
-            <label>Namespace <input id="namespace" type="text" value="prod" /></label>
-            <label>Database <input id="database" type="text" value="library" /></label>
-            <label>Table <input id="table" type="text" placeholder="every table" /></label>
-            <label>From <input id="from" type="number" value="0" min="0" /></label>
-            <label>Cursor <input id="cursor" type="text" placeholder="split tables only" /></label>
-          </div>
-          <div class="row">
-            <label>Condition <input id="condition" type="text" placeholder="chat = $chat" /></label>
-            <label>Values <input id="condition-values" type="text" placeholder="{&quot;chat&quot;: &quot;'a'&quot;}" /></label>
-          </div>
-          <div class="row">
-            <button id="follow" type="button">Follow</button>
-            <button id="stop" type="button" class="quiet" disabled>Stop</button>
-          </div>
-          <ol id="changes" class="changes" reversed></ol>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>Series</h2>
-            <div class="row tight">
-              <span id="series-status" class="status" role="status"></span>
-              <button id="series-refresh" type="button" class="quiet">Refresh</button>
-            </div>
-          </div>
-          <p class="note">A series ordered by its time field keeps each event where it happened; one ordered by arrival keeps it where it was written. A rollup is kept by the writes to its series.</p>
-          <div class="row">
-            <label>
-              Namespace 
-              <select id="series-namespace"></select>
-            </label>
-            <label>
-              Database 
-              <select id="series-database"></select>
-            </label>
-          </div>
-          <div id="series-list" class="answer small" aria-live="polite"></div>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>Spaces</h2>
-            <div class="row tight">
-              <span id="kv-status" class="status" role="status"></span>
-              <button id="kv-refresh" type="button" class="quiet">Refresh</button>
-            </div>
-          </div>
-          <p class="note">A space keeps one value per key. A plain write clears the key's expiry; a lock's value names its holder until its lease runs out.</p>
-          <div class="row">
-            <label>
-              Namespace 
-              <select id="kv-namespace"></select>
-            </label>
-            <label>
-              Database 
-              <select id="kv-database"></select>
-            </label>
-            <label>
-              Space 
-              <select id="kv-space"></select>
-            </label>
-          </div>
-          <div class="row">
-            <label>Prefix <input id="kv-prefix" type="text" placeholder="every key" /></label>
-            <button id="kv-list-them" type="button" class="quiet">List</button>
-          </div>
-          <div id="kv-list" class="answer small" aria-live="polite"></div>
-          <div id="kv-value" class="answer small" aria-live="polite"></div>
-        </div>
-      </section>
-      <section id="panel-topics" role="tabpanel" aria-labelledby="tab-topics" tabindex="0" hidden>
-        <div class="pane-head">
-          <h2>Topics</h2>
-          <div class="row tight">
-            <span id="topics-status" class="status" role="status"></span>
-            <button id="topics-refresh" type="button" class="quiet">Refresh</button>
-          </div>
-        </div>
-        <div class="row">
-          <label>
-            Namespace 
-            <select id="topics-namespace"></select>
-          </label>
-          <label>
-            Database 
-            <select id="topics-database"></select>
-          </label>
-        </div>
-        <div id="topics-list" class="answer" aria-live="polite"></div>
-        <div class="split">
-          <div class="pane">
-            <div class="pane-head">
-              <h2>Topic</h2>
-              <span id="topic-chosen" class="faint">none chosen</span>
-            </div>
-            <span id="topic-status" class="status" role="status"></span>
-            <div id="topic-facts" class="answer small" aria-live="polite"></div>
-            <h3>Readers</h3>
-            <p class="note">A reader keeps one position; its lag is how many messages it has still to read.</p>
-            <div id="topic-readers" class="answer small" aria-live="polite"></div>
-            <h3>Groups</h3>
-            <p class="note">A group hands each message out and waits for it to be acknowledged. Its <em>committed</em> position is the last one below which everything is settled, and its lag counts from there.</p>
-            <div id="topic-groups" class="answer small" aria-live="polite"></div>
-            <h3>Into tables</h3>
-            <p class="note">A topic consumer reads this topic as a group member and writes each message into a table in the transaction that acknowledges it, so each message lands once. Declare one on Run; the documentation's topics page has the statement.</p>
-            <div id="topic-ingested" class="answer small" aria-live="polite"></div>
-          </div>
-          <div class="pane">
-            <div class="pane-head">
-              <h2>Messages</h2>
-              <span id="browse-status" class="status" role="status"></span>
-            </div>
-            <p class="note">Reading here moves nobody's position: it is a look, and every reader is left where it was.</p>
-            <div class="row">
-              <label>After position <input id="browse-after" type="number" value="0" min="0" /></label>
-              <label>How many <input id="browse-count" type="number" value="20" min="1" max="100" /></label>
-            </div>
-            <div class="row tight">
-              <button id="browse-read" type="button" disabled>Read</button>
-              <button id="browse-next" type="button" class="quiet" disabled>Next page</button>
-            </div>
-            <div id="browse-list" class="answer" aria-live="polite"></div>
-          </div>
-        </div>
-        <div class="split">
-          <div class="pane">
-            <div class="pane-head">
-              <h2>New group on the chosen topic</h2>
-              <span id="new-group-status" class="status" role="status"></span>
-            </div>
-            <div class="row">
-              <label>Group <input id="new-group-name" type="text" placeholder="billing" /></label>
-              <label>Acknowledge within <input id="new-group-deadline" type="text" placeholder="30s" /></label>
-              <label>In flight <input id="new-group-width" type="text" placeholder="1" /></label>
-            </div>
-            <div class="row">
-              <label>Give up after <input id="new-group-deliveries" type="text" placeholder="deliveries, optional" /></label>
-              <label>Dead letters to <input id="new-group-dead" type="text" placeholder="a topic, optional" /></label>
-            </div>
-            <p id="new-group-says" class="note says"></p>
-            <div class="row">
-              <button id="new-group" type="button" class="primary" disabled>Create group</button>
-            </div>
-          </div>
-          <div class="pane">
-            <div class="pane-head">
-              <h2>Move or remove a group</h2>
-              <span id="group-status" class="status" role="status"></span>
-            </div>
-            <div class="row">
-              <label>
-                Group 
-                <select id="group-which"></select>
-              </label>
-              <label>
-                Do 
-                <select id="group-action">
-                  <option value="move" selected>hand out from a position</option>
-                  <option value="drop">remove the group</option>
-                </select>
-              </label>
-              <label>After position <input id="group-start" type="number" value="0" min="0" /></label>
-            </div>
-            <div class="row">
-              <label>Type the group to confirm <input id="group-confirm" type="text" /></label>
-              <label>Why <input id="group-why" type="text" placeholder="replay after the fix" /></label>
-            </div>
-            <p id="group-says" class="note says"></p>
-            <div class="row">
-              <button id="group-apply" type="button" disabled>Apply</button>
-            </div>
-          </div>
-        </div>
-        <div class="split">
-          <div class="pane">
-            <div class="pane-head">
-              <h2>New topic</h2>
-              <span id="new-topic-status" class="status" role="status"></span>
-            </div>
-            <div class="row">
-              <label>Name <input id="new-topic-name" type="text" placeholder="events" /></label>
-              <label>Keep for <input id="new-topic-retain" type="text" placeholder="7d, or empty to keep all" /></label>
-              <label>Keep at most <input id="new-topic-kept" type="text" placeholder="bytes, optional" /></label>
-              <label>Largest message <input id="new-topic-bytes" type="text" placeholder="bytes, optional" /></label>
-            </div>
-            <p id="new-topic-says" class="note says"></p>
-            <div class="row">
-              <button id="new-topic" type="button" class="primary" disabled>Create</button>
-            </div>
-          </div>
-          <div class="pane">
-            <div class="pane-head">
-              <h2>Remove the chosen topic</h2>
-              <span id="drop-topic-status" class="status" role="status"></span>
-            </div>
-            <div class="row">
-              <label>Type its name to confirm <input id="drop-topic-confirm" type="text" /></label>
-              <label>Why <input id="drop-topic-why" type="text" placeholder="replaced by events_v2" /></label>
-            </div>
-            <p id="drop-topic-says" class="note says"></p>
-            <div class="row">
-              <button id="drop-topic" type="button" disabled>Remove</button>
-            </div>
-          </div>
-        </div>
-      </section>
-      <section id="panel-cluster" role="tabpanel" aria-labelledby="tab-cluster" tabindex="0" hidden>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>The cluster, as this node sees it</h2>
-            <span id="cluster-status" class="status" role="status"></span>
-          </div>
-          <div id="cluster-map" class="map"></div>
-          <div id="drawer" class="sheet drawer" hidden>
-            <div class="row spread">
-              <h3 id="drawer-title">a node</h3>
-              <button id="drawer-close" type="button" class="quiet">Close</button>
-            </div>
-            <div id="drawer-missing"></div>
-            <div class="row">
-              <label class="tick">serving <input id="drawer-serving" type="checkbox" /></label>
-              <label class="tick">writable <input id="drawer-writable" type="checkbox" /></label>
-              <label class="tick">coordinating <input id="drawer-coordinating" type="checkbox" /></label>
-            </div>
-            <p id="drawer-says" class="note says"></p>
-            <div class="row">
-              <button id="drawer-apply" type="button" class="primary">Declare it</button>
-              <span id="drawer-status" class="status" role="status"></span>
-            </div>
-            <div id="drawer-remove-part">
+        </nav>
+        <div class="side-foot">
+          <button id="theme" type="button" class="quiet">Dark theme</button>
+          <details class="identity">
+            <summary><span id="signed-in">not signed in</span></summary>
+            <div class="sheet">
+              <p class="note">Leave both empty against a store that has no users yet. The first <code>DEFINE USER</code> closes it, and everything after that needs a name.</p>
               <div class="row">
-                <label>Type its name to remove it <input id="drawer-remove-confirm" type="text" /></label>
-                <label>Why <input id="drawer-remove-why" type="text" placeholder="machine retired" /></label>
+                <label>User <input id="user" type="text" autocomplete="username" /></label>
+                <label>Password <input id="password" type="password" autocomplete="current-password" /></label>
               </div>
-              <p id="drawer-remove-says" class="note says"></p>
+              <p class="note">The password is checked once. What this page keeps afterwards is a token, held for as long as the tab is open and no longer — so the password is cleared from the field above, and closing the tab ends the session.</p>
+              <p id="transport-says" class="note warn">Credentials travel as typed unless this page arrived over https.</p>
+              <div class="row spread">
+                <div class="row tight">
+                  <button id="sign-in" type="button" class="primary">Sign in</button>
+                  <button id="sign-out" type="button" class="quiet">Forget</button>
+                </div>
+                <span id="identity-status" class="status" role="status"></span>
+              </div>
+            </div>
+          </details>
+        </div>
+      </aside>
+      <div class="main-col">
+        <main id="view" tabindex="-1">
+          <p id="clear-banner" class="note warn" hidden>This console arrived without TLS from another machine: what you type here, passwords included, crosses the network unencrypted. Give the node <code>--tls-cert</code> and <code>--tls-key</code>, or reach it over an SSH tunnel to localhost.</p>
+          <div class="page-head">
+            <h1 id="view-title" tabindex="-1">Run</h1>
+            <div class="finding">
+              <label>Find <input id="search" type="text" placeholder="an account, a table, app.main.orders:1  —  / or ⌘K" /></label>
+              <span id="search-says" class="status" role="status"></span>
+            </div>
+          </div>
+          <section id="panel-run" role="tabpanel" aria-labelledby="tab-run" tabindex="0">
+            <div class="split">
+              <div class="pane">
+                <div class="pane-head">
+                  <h2>Script</h2>
+                  <span class="faint">⌘↵ or Ctrl↵ to run</span>
+                </div>
+                <textarea id="script" rows="8" spellcheck="false" aria-label="Script">USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea>
+                <div class="row spread">
+                  <button id="run-script" type="button" class="primary">Run</button>
+                  <span id="script-status" class="status" role="status"></span>
+                </div>
+              </div>
+              <div class="pane">
+                <div class="pane-head">
+                  <h2>Answer</h2>
+                  <div class="row tight">
+                    <button type="button" class="quiet chosen" data-shape="auto">Auto</button>
+                    <button type="button" class="quiet" data-shape="json">JSON</button>
+                  </div>
+                </div>
+                <div id="answer" class="answer" aria-live="polite"></div>
+              </div>
+            </div>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Follow a table</h2>
+                <span id="watch-status" class="status" role="status"></span>
+              </div>
+              <p class="note"><code>from</code> is a position in the log rather than a moment in time, so <code>0</code> replays everything the log still holds. Leave the table empty to follow every table you may read. A split table resumes from its <code>cursor</code>.</p>
               <div class="row">
-                <button id="drawer-remove" type="button" disabled>Remove from the cluster</button>
-                <span id="drawer-remove-status" class="status" role="status"></span>
+                <label>Namespace <input id="namespace" type="text" value="prod" /></label>
+                <label>Database <input id="database" type="text" value="library" /></label>
+                <label>Table <input id="table" type="text" placeholder="every table" /></label>
+                <label>From <input id="from" type="number" value="0" min="0" /></label>
+                <label>Cursor <input id="cursor" type="text" placeholder="split tables only" /></label>
               </div>
+              <div class="row">
+                <label>Condition <input id="condition" type="text" placeholder="chat = $chat" /></label>
+                <label>Values <input id="condition-values" type="text" placeholder="{&quot;chat&quot;: &quot;'a'&quot;}" /></label>
+              </div>
+              <div class="row">
+                <button id="follow" type="button">Follow</button>
+                <button id="stop" type="button" class="quiet" disabled>Stop</button>
+              </div>
+              <ol id="changes" class="changes" reversed></ol>
             </div>
-            <p class="note">Handing the store's leadership over has no statement yet, so no control is offered for it. A placed range moves with ALTER REPLICA &lt;peer&gt; LEADS &lt;range&gt; or LEADS NONE, run on the store's leader from the query tab.</p>
-          </div>
-          <details class="tucked">
-            <summary>The answer this was drawn from</summary>
-            <div id="cluster-facts" class="answer small" aria-live="polite"></div>
-          </details>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>Declare the membership</h2>
-            <span id="form-status" class="status" role="status"></span>
-          </div>
-          <p class="note">Every member at once, this node included, in one transaction: the first declaration clusters this node and costs it the authority to accept a second. A row with neither id nor fingerprint waits for a join token.</p>
-          <div class="row">
-            <label>Name <input id="peer-0-name" type="text" placeholder="warsaw" /></label>
-            <label>Peer address <input id="peer-0-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
-            <label>Client address <input id="peer-0-clients" type="text" placeholder="10.0.0.2:9080" /></label>
-            <label>Node id <input id="peer-0-node" type="text" placeholder="9f2c4e1a-…" /></label>
-            <label>or its fingerprint <input id="peer-0-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
-            <label>Replicates <input id="peer-0-replicates" type="text" value="STORE" size="14" /></label>
-            <label class="tick">serving <input id="peer-0-serving" type="checkbox" /></label>
-            <label class="tick">writable <input id="peer-0-writable" type="checkbox" /></label>
-            <label class="tick">coordinating <input id="peer-0-coordinating" type="checkbox" /></label>
-          </div>
-          <div class="row">
-            <label>Name <input id="peer-1-name" type="text" placeholder="warsaw" /></label>
-            <label>Peer address <input id="peer-1-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
-            <label>Client address <input id="peer-1-clients" type="text" placeholder="10.0.0.2:9080" /></label>
-            <label>Node id <input id="peer-1-node" type="text" placeholder="9f2c4e1a-…" /></label>
-            <label>or its fingerprint <input id="peer-1-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
-            <label>Replicates <input id="peer-1-replicates" type="text" value="STORE" size="14" /></label>
-            <label class="tick">serving <input id="peer-1-serving" type="checkbox" /></label>
-            <label class="tick">writable <input id="peer-1-writable" type="checkbox" /></label>
-            <label class="tick">coordinating <input id="peer-1-coordinating" type="checkbox" /></label>
-          </div>
-          <div class="row">
-            <label>Name <input id="peer-2-name" type="text" placeholder="warsaw" /></label>
-            <label>Peer address <input id="peer-2-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
-            <label>Client address <input id="peer-2-clients" type="text" placeholder="10.0.0.2:9080" /></label>
-            <label>Node id <input id="peer-2-node" type="text" placeholder="9f2c4e1a-…" /></label>
-            <label>or its fingerprint <input id="peer-2-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
-            <label>Replicates <input id="peer-2-replicates" type="text" value="STORE" size="14" /></label>
-            <label class="tick">serving <input id="peer-2-serving" type="checkbox" /></label>
-            <label class="tick">writable <input id="peer-2-writable" type="checkbox" /></label>
-            <label class="tick">coordinating <input id="peer-2-coordinating" type="checkbox" /></label>
-          </div>
-          <div class="row">
-            <label>Name <input id="peer-3-name" type="text" placeholder="warsaw" /></label>
-            <label>Peer address <input id="peer-3-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
-            <label>Client address <input id="peer-3-clients" type="text" placeholder="10.0.0.2:9080" /></label>
-            <label>Node id <input id="peer-3-node" type="text" placeholder="9f2c4e1a-…" /></label>
-            <label>or its fingerprint <input id="peer-3-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
-            <label>Replicates <input id="peer-3-replicates" type="text" value="STORE" size="14" /></label>
-            <label class="tick">serving <input id="peer-3-serving" type="checkbox" /></label>
-            <label class="tick">writable <input id="peer-3-writable" type="checkbox" /></label>
-            <label class="tick">coordinating <input id="peer-3-coordinating" type="checkbox" /></label>
-          </div>
-          <div class="row">
-            <label>Name <input id="peer-4-name" type="text" placeholder="warsaw" /></label>
-            <label>Peer address <input id="peer-4-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
-            <label>Client address <input id="peer-4-clients" type="text" placeholder="10.0.0.2:9080" /></label>
-            <label>Node id <input id="peer-4-node" type="text" placeholder="9f2c4e1a-…" /></label>
-            <label>or its fingerprint <input id="peer-4-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
-            <label>Replicates <input id="peer-4-replicates" type="text" value="STORE" size="14" /></label>
-            <label class="tick">serving <input id="peer-4-serving" type="checkbox" /></label>
-            <label class="tick">writable <input id="peer-4-writable" type="checkbox" /></label>
-            <label class="tick">coordinating <input id="peer-4-coordinating" type="checkbox" /></label>
-          </div>
-          <p id="form-says" class="note says"></p>
-          <details class="tucked">
-            <summary>The transaction this will send</summary>
-            <div id="form-statement" class="answer small"></div>
-          </details>
-          <div class="row">
-            <button id="form-cluster" type="button" class="primary">Declare it</button>
-          </div>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>Certificates and trust</h2>
-            <span id="trust-status" class="status" role="status"></span>
-          </div>
-          <p class="note">What this node presents now; a renewal shows from its next connection on. A newcomer's peer fingerprint pins its row, read off the newcomer like its node id.</p>
-          <div id="trust-mine"></div>
-          <h3>Refused certificates</h3>
-          <div id="trust-revoked"></div>
-          <h3>Removed nodes</h3>
-          <div id="trust-removed"></div>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>Revoke a certificate</h2>
-            <span id="revoke-status" class="status" role="status"></span>
-          </div>
-          <p class="note">Every node refuses it in both directions of the peer link within seconds, and a held stream presenting it ends. A revocation is permanent: its holder is given a new certificate.</p>
-          <div class="row">
-            <label>Fingerprint (SHA-256) <input id="revoke-fingerprint" type="text" placeholder="0f1e2d3c…" size="66" /></label>
-          </div>
-          <div class="row">
-            <label>Type its first eight digits again <input id="revoke-confirm" type="text" size="10" /></label>
-            <label>Why <input id="revoke-why" type="text" placeholder="laptop lost" /></label>
-          </div>
-          <p id="revoke-says" class="note says"></p>
-          <div class="row">
-            <button id="revoke-apply" type="button" disabled>Revoke</button>
-          </div>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>Approve a joining node</h2>
-            <span id="join-status" class="status" role="status"></span>
-          </div>
-          <p class="note">For a row declared without a node id or a fingerprint. The token is shown once and the node keeps only its digest; start the newcomer with --join-token beside its --seed.</p>
-          <div class="row">
-            <label>
-              Row 
-              <select id="join-row"></select>
-            </label>
-            <label>
-              Binds for 
-              <select id="join-life">
-                <option value="10m" selected>10 minutes</option>
-                <option value="1h">1 hour</option>
-                <option value="24h">24 hours</option>
-              </select>
-            </label>
-          </div>
-          <p id="join-says" class="note says"></p>
-          <div class="row">
-            <button id="join-apply" type="button" disabled>Issue a token</button>
-          </div>
-          <pre id="join-token" class="answer small" hidden></pre>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>Failover policy</h2>
-            <span id="failover-status" class="status" role="status"></span>
-          </div>
-          <p id="failover-held" class="note"></p>
-          <div class="row">
-            <label>AWARENESS <input id="failover-awareness" type="text" placeholder="1s" size="6" /></label>
-            <label>COLLECTION <input id="failover-collection" type="text" placeholder="1s" size="6" /></label>
-            <label>ROUND <input id="failover-round" type="text" placeholder="200ms" size="6" /></label>
-            <label>CAMPAIGN <input id="failover-campaign" type="text" placeholder="100ms" size="6" /></label>
-            <label>LEASE <input id="failover-lease" type="text" placeholder="800ms" size="6" /></label>
-            <label class="tick">balance leaderships <input id="failover-balance" type="checkbox" /></label>
-          </div>
-          <p id="failover-says" class="note says"></p>
-          <div class="row">
-            <button id="failover-apply" type="button" disabled>Set the policy</button>
-          </div>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>What is here, and what is not</h2>
-          </div>
-          <p class="note">What the pane above shows is what this node itself knows: its own roles, the peers it has been told about, and the addresses it answers on. It is read from the node, not from anything standing beside it.</p>
-          <details class="tucked">
-            <summary>How membership works</summary>
-            <p class="note">Membership is a record and not a control plane: a node learns its peers through the same log it replicates data with, so there is nothing to stand up beside the database. A namespace declares how many copies the cluster keeps, and a peer's subscription decides which of them it receives. A leader holds a renewable lease granted by a majority and stops writing before that lease expires, measured on elapsed time rather than on the clock. A read may name the staleness it will accept, and a bound tighter than the cluster can know about itself is refused with the floor named. A write sent to a node that may not take it is forwarded to the one that may; one into a range another node leads, and a read only another node can answer, come back as a redirect carrying the client address, the node and the epoch it was decided under. A divergence is refused at the first divergent record and counted, never silently ranked.</p>
-          </details>
-          <p class="note"><strong>A split table's shards and placements change while it serves.</strong> Each change is a statement, and the store's leader can make some itself.</p>
-          <details class="tucked">
-            <summary>Which statements change them</summary>
-            <p class="note">ALTER TABLE … SPLIT AT and MERGE SHARD change the map in place, and SPLIT AUTOMATICALLY lets the store's leader do it by size and load. IDENTITY uuid SPREAD spreads new records over the shards, PARTITION BY gives each region its shard. ALTER REPLICA … LEADS moves a placement, LEADS NONE gives a range back to the store line, PREFERRED names the candidate that should lead it, and DEFINE FAILOVER … BALANCE LEADERSHIPS evens out who leads what.</p>
-          </details>
-          <p class="note"><strong>Lag is per follower, and leadership is what the log recorded.</strong></p>
-          <details class="tucked">
-            <summary>What the two figures are, and are not</summary>
-            <p class="note">A follower's lag is how many records it is short of this node's tail, as this node last served it — the leader pushes each commit, so a level follower reads 0. A leadership is the row the winner wrote under its own epoch, so it says which node led a range as of that epoch; whether that node is alive now is its lease, which only it can report.</p>
-          </details>
-        </div>
-      </section>
-      <section id="panel-access" role="tabpanel" aria-labelledby="tab-access" tabindex="0" hidden>
-        <div class="split">
-          <div class="pane">
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Series</h2>
+                <div class="row tight">
+                  <span id="series-status" class="status" role="status"></span>
+                  <button id="series-refresh" type="button" class="quiet">Refresh</button>
+                </div>
+              </div>
+              <p class="note">A series ordered by its time field keeps each event where it happened; one ordered by arrival keeps it where it was written. A rollup is kept by the writes to its series.</p>
+              <div class="row">
+                <label>
+                  Namespace 
+                  <select id="series-namespace"></select>
+                </label>
+                <label>
+                  Database 
+                  <select id="series-database"></select>
+                </label>
+              </div>
+              <div id="series-list" class="answer small" aria-live="polite"></div>
+            </div>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Spaces</h2>
+                <div class="row tight">
+                  <span id="kv-status" class="status" role="status"></span>
+                  <button id="kv-refresh" type="button" class="quiet">Refresh</button>
+                </div>
+              </div>
+              <p class="note">A space keeps one value per key. A plain write clears the key's expiry; a lock's value names its holder until its lease runs out.</p>
+              <div class="row">
+                <label>
+                  Namespace 
+                  <select id="kv-namespace"></select>
+                </label>
+                <label>
+                  Database 
+                  <select id="kv-database"></select>
+                </label>
+                <label>
+                  Space 
+                  <select id="kv-space"></select>
+                </label>
+              </div>
+              <div class="row">
+                <label>Prefix <input id="kv-prefix" type="text" placeholder="every key" /></label>
+                <button id="kv-list-them" type="button" class="quiet">List</button>
+              </div>
+              <div id="kv-list" class="answer small" aria-live="polite"></div>
+              <div id="kv-value" class="answer small" aria-live="polite"></div>
+            </div>
+          </section>
+          <section id="panel-topics" role="tabpanel" aria-labelledby="tab-topics" tabindex="0" hidden>
             <div class="pane-head">
-              <h2>Who there is</h2>
+              <h2>Topics</h2>
               <div class="row tight">
-                <span id="user-status" class="status" role="status"></span>
-                <button id="list" type="button" class="quiet">Refresh</button>
+                <span id="topics-status" class="status" role="status"></span>
+                <button id="topics-refresh" type="button" class="quiet">Refresh</button>
               </div>
             </div>
-            <p class="note">What you are shown is the tenancy you administer.</p>
-            <details class="tucked">
-              <summary>What that means for a short list</summary>
-              <p class="note">An owner of a space sees that space; an <strong>admin</strong> — an owner with no space at all — sees the whole node. It refuses rather than narrowing, so a short list is a short tenancy and never a filtered one.</p>
-            </details>
-            <div class="row spread">
-              <label>Filter <input id="user-filter" type="text" placeholder="part of a name" /></label>
-              <span id="user-count" class="status" role="status"></span>
-            </div>
-            <div id="user-list" class="answer small" aria-live="polite"></div>
             <div class="row">
-              <label>Detail for <input id="lookup-name" type="text" placeholder="ada" /></label>
-              <button id="lookup" type="button">Show</button>
-            </div>
-            <div id="user-answer" class="answer small" aria-live="polite"></div>
-          </div>
-          <div class="pane">
-            <div class="pane-head">
-              <h2>Define one</h2>
-              <span id="define-status" class="status" role="status"></span>
-            </div>
-            <p class="note">A password reaches the node and goes no further: what is stored is a hash, so no plaintext reaches the log or any replica.</p>
-            <div class="row">
-              <label>Name <input id="new-name" type="text" placeholder="ada" /></label>
               <label>
-                Reach 
-                <select id="new-reach">
-                  <option value="space">one space</option>
-                  <option value="node">the whole node — an admin</option>
-                </select>
+                Namespace 
+                <select id="topics-namespace"></select>
               </label>
-              <label id="scope-field">Space <input id="new-scope" type="text" placeholder="prod.library" /></label>
               <label>
-                Role 
-                <select id="new-role">
-                  <option value="viewer">viewer</option>
-                  <option value="editor" selected>editor</option>
-                  <option value="owner">owner</option>
-                  <option value="other">something else…</option>
-                </select>
+                Database 
+                <select id="topics-database"></select>
               </label>
-              <label id="role-other-field" hidden>Which <input id="new-role-other" type="text" placeholder="a role this build knows" /></label>
-              <label>Password <input id="new-password" type="password" autocomplete="new-password" /></label>
             </div>
-            <p id="role-says" class="note"></p>
-            <p id="define-preview" class="note says"></p>
-            <div class="row">
-              <button id="define" type="button" class="primary">Run it</button>
+            <div id="topics-list" class="answer" aria-live="polite"></div>
+            <div class="split">
+              <div class="pane">
+                <div class="pane-head">
+                  <h2>Topic</h2>
+                  <span id="topic-chosen" class="faint">none chosen</span>
+                </div>
+                <span id="topic-status" class="status" role="status"></span>
+                <div id="topic-facts" class="answer small" aria-live="polite"></div>
+                <h3>Readers</h3>
+                <p class="note">A reader keeps one position; its lag is how many messages it has still to read.</p>
+                <div id="topic-readers" class="answer small" aria-live="polite"></div>
+                <h3>Groups</h3>
+                <p class="note">A group hands each message out and waits for it to be acknowledged. Its <em>committed</em> position is the last one below which everything is settled, and its lag counts from there.</p>
+                <div id="topic-groups" class="answer small" aria-live="polite"></div>
+                <h3>Into tables</h3>
+                <p class="note">A topic consumer reads this topic as a group member and writes each message into a table in the transaction that acknowledges it, so each message lands once. Declare one on Run; the documentation's topics page has the statement.</p>
+                <div id="topic-ingested" class="answer small" aria-live="polite"></div>
+              </div>
+              <div class="pane">
+                <div class="pane-head">
+                  <h2>Messages</h2>
+                  <span id="browse-status" class="status" role="status"></span>
+                </div>
+                <p class="note">Reading here moves nobody's position: it is a look, and every reader is left where it was.</p>
+                <div class="row">
+                  <label>After position <input id="browse-after" type="number" value="0" min="0" /></label>
+                  <label>How many <input id="browse-count" type="number" value="20" min="1" max="100" /></label>
+                </div>
+                <div class="row tight">
+                  <button id="browse-read" type="button" disabled>Read</button>
+                  <button id="browse-next" type="button" class="quiet" disabled>Next page</button>
+                </div>
+                <div id="browse-list" class="answer" aria-live="polite"></div>
+              </div>
             </div>
-          </div>
-        </div>
-        <div class="split">
-          <div class="pane">
+            <div class="split">
+              <div class="pane">
+                <div class="pane-head">
+                  <h2>New group on the chosen topic</h2>
+                  <span id="new-group-status" class="status" role="status"></span>
+                </div>
+                <div class="row">
+                  <label>Group <input id="new-group-name" type="text" placeholder="billing" /></label>
+                  <label>Acknowledge within <input id="new-group-deadline" type="text" placeholder="30s" /></label>
+                  <label>In flight <input id="new-group-width" type="text" placeholder="1" /></label>
+                </div>
+                <div class="row">
+                  <label>Give up after <input id="new-group-deliveries" type="text" placeholder="deliveries, optional" /></label>
+                  <label>Dead letters to <input id="new-group-dead" type="text" placeholder="a topic, optional" /></label>
+                </div>
+                <p id="new-group-says" class="note says"></p>
+                <div class="row">
+                  <button id="new-group" type="button" class="primary" disabled>Create group</button>
+                </div>
+              </div>
+              <div class="pane">
+                <div class="pane-head">
+                  <h2>Move or remove a group</h2>
+                  <span id="group-status" class="status" role="status"></span>
+                </div>
+                <div class="row">
+                  <label>
+                    Group 
+                    <select id="group-which"></select>
+                  </label>
+                  <label>
+                    Do 
+                    <select id="group-action">
+                      <option value="move" selected>hand out from a position</option>
+                      <option value="drop">remove the group</option>
+                    </select>
+                  </label>
+                  <label>After position <input id="group-start" type="number" value="0" min="0" /></label>
+                </div>
+                <div class="row">
+                  <label>Type the group to confirm <input id="group-confirm" type="text" /></label>
+                  <label>Why <input id="group-why" type="text" placeholder="replay after the fix" /></label>
+                </div>
+                <p id="group-says" class="note says"></p>
+                <div class="row">
+                  <button id="group-apply" type="button" disabled>Apply</button>
+                </div>
+              </div>
+            </div>
+            <div class="split">
+              <div class="pane">
+                <div class="pane-head">
+                  <h2>New topic</h2>
+                  <span id="new-topic-status" class="status" role="status"></span>
+                </div>
+                <div class="row">
+                  <label>Name <input id="new-topic-name" type="text" placeholder="events" /></label>
+                  <label>Keep for <input id="new-topic-retain" type="text" placeholder="7d, or empty to keep all" /></label>
+                  <label>Keep at most <input id="new-topic-kept" type="text" placeholder="bytes, optional" /></label>
+                  <label>Largest message <input id="new-topic-bytes" type="text" placeholder="bytes, optional" /></label>
+                </div>
+                <p id="new-topic-says" class="note says"></p>
+                <div class="row">
+                  <button id="new-topic" type="button" class="primary" disabled>Create</button>
+                </div>
+              </div>
+              <div class="pane">
+                <div class="pane-head">
+                  <h2>Remove the chosen topic</h2>
+                  <span id="drop-topic-status" class="status" role="status"></span>
+                </div>
+                <div class="row">
+                  <label>Type its name to confirm <input id="drop-topic-confirm" type="text" /></label>
+                  <label>Why <input id="drop-topic-why" type="text" placeholder="replaced by events_v2" /></label>
+                </div>
+                <p id="drop-topic-says" class="note says"></p>
+                <div class="row">
+                  <button id="drop-topic" type="button" disabled>Remove</button>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section id="panel-cluster" role="tabpanel" aria-labelledby="tab-cluster" tabindex="0" hidden>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>The cluster, as this node sees it</h2>
+                <span id="cluster-status" class="status" role="status"></span>
+              </div>
+              <div id="cluster-map" class="map"></div>
+              <div id="drawer" class="sheet drawer" hidden>
+                <div class="row spread">
+                  <h3 id="drawer-title">a node</h3>
+                  <button id="drawer-close" type="button" class="quiet">Close</button>
+                </div>
+                <div id="drawer-missing"></div>
+                <div class="row">
+                  <label class="tick">serving <input id="drawer-serving" type="checkbox" /></label>
+                  <label class="tick">writable <input id="drawer-writable" type="checkbox" /></label>
+                  <label class="tick">coordinating <input id="drawer-coordinating" type="checkbox" /></label>
+                </div>
+                <p id="drawer-says" class="note says"></p>
+                <div class="row">
+                  <button id="drawer-apply" type="button" class="primary">Declare it</button>
+                  <span id="drawer-status" class="status" role="status"></span>
+                </div>
+                <div id="drawer-remove-part">
+                  <div class="row">
+                    <label>Type its name to remove it <input id="drawer-remove-confirm" type="text" /></label>
+                    <label>Why <input id="drawer-remove-why" type="text" placeholder="machine retired" /></label>
+                  </div>
+                  <p id="drawer-remove-says" class="note says"></p>
+                  <div class="row">
+                    <button id="drawer-remove" type="button" disabled>Remove from the cluster</button>
+                    <span id="drawer-remove-status" class="status" role="status"></span>
+                  </div>
+                </div>
+                <p class="note">Handing the store's leadership over has no statement yet, so no control is offered for it. A placed range moves with ALTER REPLICA &lt;peer&gt; LEADS &lt;range&gt; or LEADS NONE, run on the store's leader from the query tab.</p>
+              </div>
+              <details class="tucked">
+                <summary>The answer this was drawn from</summary>
+                <div id="cluster-facts" class="answer small" aria-live="polite"></div>
+              </details>
+            </div>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Declare the membership</h2>
+                <span id="form-status" class="status" role="status"></span>
+              </div>
+              <p class="note">Every member at once, this node included, in one transaction: the first declaration clusters this node and costs it the authority to accept a second. A row with neither id nor fingerprint waits for a join token.</p>
+              <div class="row">
+                <label>Name <input id="peer-0-name" type="text" placeholder="warsaw" /></label>
+                <label>Peer address <input id="peer-0-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+                <label>Client address <input id="peer-0-clients" type="text" placeholder="10.0.0.2:9080" /></label>
+                <label>Node id <input id="peer-0-node" type="text" placeholder="9f2c4e1a-…" /></label>
+                <label>or its fingerprint <input id="peer-0-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
+                <label>Replicates <input id="peer-0-replicates" type="text" value="STORE" size="14" /></label>
+                <label class="tick">serving <input id="peer-0-serving" type="checkbox" /></label>
+                <label class="tick">writable <input id="peer-0-writable" type="checkbox" /></label>
+                <label class="tick">coordinating <input id="peer-0-coordinating" type="checkbox" /></label>
+              </div>
+              <div class="row">
+                <label>Name <input id="peer-1-name" type="text" placeholder="warsaw" /></label>
+                <label>Peer address <input id="peer-1-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+                <label>Client address <input id="peer-1-clients" type="text" placeholder="10.0.0.2:9080" /></label>
+                <label>Node id <input id="peer-1-node" type="text" placeholder="9f2c4e1a-…" /></label>
+                <label>or its fingerprint <input id="peer-1-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
+                <label>Replicates <input id="peer-1-replicates" type="text" value="STORE" size="14" /></label>
+                <label class="tick">serving <input id="peer-1-serving" type="checkbox" /></label>
+                <label class="tick">writable <input id="peer-1-writable" type="checkbox" /></label>
+                <label class="tick">coordinating <input id="peer-1-coordinating" type="checkbox" /></label>
+              </div>
+              <div class="row">
+                <label>Name <input id="peer-2-name" type="text" placeholder="warsaw" /></label>
+                <label>Peer address <input id="peer-2-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+                <label>Client address <input id="peer-2-clients" type="text" placeholder="10.0.0.2:9080" /></label>
+                <label>Node id <input id="peer-2-node" type="text" placeholder="9f2c4e1a-…" /></label>
+                <label>or its fingerprint <input id="peer-2-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
+                <label>Replicates <input id="peer-2-replicates" type="text" value="STORE" size="14" /></label>
+                <label class="tick">serving <input id="peer-2-serving" type="checkbox" /></label>
+                <label class="tick">writable <input id="peer-2-writable" type="checkbox" /></label>
+                <label class="tick">coordinating <input id="peer-2-coordinating" type="checkbox" /></label>
+              </div>
+              <div class="row">
+                <label>Name <input id="peer-3-name" type="text" placeholder="warsaw" /></label>
+                <label>Peer address <input id="peer-3-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+                <label>Client address <input id="peer-3-clients" type="text" placeholder="10.0.0.2:9080" /></label>
+                <label>Node id <input id="peer-3-node" type="text" placeholder="9f2c4e1a-…" /></label>
+                <label>or its fingerprint <input id="peer-3-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
+                <label>Replicates <input id="peer-3-replicates" type="text" value="STORE" size="14" /></label>
+                <label class="tick">serving <input id="peer-3-serving" type="checkbox" /></label>
+                <label class="tick">writable <input id="peer-3-writable" type="checkbox" /></label>
+                <label class="tick">coordinating <input id="peer-3-coordinating" type="checkbox" /></label>
+              </div>
+              <div class="row">
+                <label>Name <input id="peer-4-name" type="text" placeholder="warsaw" /></label>
+                <label>Peer address <input id="peer-4-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+                <label>Client address <input id="peer-4-clients" type="text" placeholder="10.0.0.2:9080" /></label>
+                <label>Node id <input id="peer-4-node" type="text" placeholder="9f2c4e1a-…" /></label>
+                <label>or its fingerprint <input id="peer-4-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
+                <label>Replicates <input id="peer-4-replicates" type="text" value="STORE" size="14" /></label>
+                <label class="tick">serving <input id="peer-4-serving" type="checkbox" /></label>
+                <label class="tick">writable <input id="peer-4-writable" type="checkbox" /></label>
+                <label class="tick">coordinating <input id="peer-4-coordinating" type="checkbox" /></label>
+              </div>
+              <p id="form-says" class="note says"></p>
+              <details class="tucked">
+                <summary>The transaction this will send</summary>
+                <div id="form-statement" class="answer small"></div>
+              </details>
+              <div class="row">
+                <button id="form-cluster" type="button" class="primary">Declare it</button>
+              </div>
+            </div>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Certificates and trust</h2>
+                <span id="trust-status" class="status" role="status"></span>
+              </div>
+              <p class="note">What this node presents now; a renewal shows from its next connection on. A newcomer's peer fingerprint pins its row, read off the newcomer like its node id.</p>
+              <div id="trust-mine"></div>
+              <h3>Refused certificates</h3>
+              <div id="trust-revoked"></div>
+              <h3>Removed nodes</h3>
+              <div id="trust-removed"></div>
+            </div>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Revoke a certificate</h2>
+                <span id="revoke-status" class="status" role="status"></span>
+              </div>
+              <p class="note">Every node refuses it in both directions of the peer link within seconds, and a held stream presenting it ends. A revocation is permanent: its holder is given a new certificate.</p>
+              <div class="row">
+                <label>Fingerprint (SHA-256) <input id="revoke-fingerprint" type="text" placeholder="0f1e2d3c…" size="66" /></label>
+              </div>
+              <div class="row">
+                <label>Type its first eight digits again <input id="revoke-confirm" type="text" size="10" /></label>
+                <label>Why <input id="revoke-why" type="text" placeholder="laptop lost" /></label>
+              </div>
+              <p id="revoke-says" class="note says"></p>
+              <div class="row">
+                <button id="revoke-apply" type="button" disabled>Revoke</button>
+              </div>
+            </div>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Approve a joining node</h2>
+                <span id="join-status" class="status" role="status"></span>
+              </div>
+              <p class="note">For a row declared without a node id or a fingerprint. The token is shown once and the node keeps only its digest; start the newcomer with --join-token beside its --seed.</p>
+              <div class="row">
+                <label>
+                  Row 
+                  <select id="join-row"></select>
+                </label>
+                <label>
+                  Binds for 
+                  <select id="join-life">
+                    <option value="10m" selected>10 minutes</option>
+                    <option value="1h">1 hour</option>
+                    <option value="24h">24 hours</option>
+                  </select>
+                </label>
+              </div>
+              <p id="join-says" class="note says"></p>
+              <div class="row">
+                <button id="join-apply" type="button" disabled>Issue a token</button>
+              </div>
+              <pre id="join-token" class="answer small" hidden></pre>
+            </div>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Failover policy</h2>
+                <span id="failover-status" class="status" role="status"></span>
+              </div>
+              <p id="failover-held" class="note"></p>
+              <div class="row">
+                <label>AWARENESS <input id="failover-awareness" type="text" placeholder="1s" size="6" /></label>
+                <label>COLLECTION <input id="failover-collection" type="text" placeholder="1s" size="6" /></label>
+                <label>ROUND <input id="failover-round" type="text" placeholder="200ms" size="6" /></label>
+                <label>CAMPAIGN <input id="failover-campaign" type="text" placeholder="100ms" size="6" /></label>
+                <label>LEASE <input id="failover-lease" type="text" placeholder="800ms" size="6" /></label>
+                <label class="tick">balance leaderships <input id="failover-balance" type="checkbox" /></label>
+              </div>
+              <p id="failover-says" class="note says"></p>
+              <div class="row">
+                <button id="failover-apply" type="button" disabled>Set the policy</button>
+              </div>
+            </div>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>What is here, and what is not</h2>
+              </div>
+              <p class="note">What the pane above shows is what this node itself knows: its own roles, the peers it has been told about, and the addresses it answers on. It is read from the node, not from anything standing beside it.</p>
+              <details class="tucked">
+                <summary>How membership works</summary>
+                <p class="note">Membership is a record and not a control plane: a node learns its peers through the same log it replicates data with, so there is nothing to stand up beside the database. A namespace declares how many copies the cluster keeps, and a peer's subscription decides which of them it receives. A leader holds a renewable lease granted by a majority and stops writing before that lease expires, measured on elapsed time rather than on the clock. A read may name the staleness it will accept, and a bound tighter than the cluster can know about itself is refused with the floor named. A write sent to a node that may not take it is forwarded to the one that may; one into a range another node leads, and a read only another node can answer, come back as a redirect carrying the client address, the node and the epoch it was decided under. A divergence is refused at the first divergent record and counted, never silently ranked.</p>
+              </details>
+              <p class="note"><strong>A split table's shards and placements change while it serves.</strong> Each change is a statement, and the store's leader can make some itself.</p>
+              <details class="tucked">
+                <summary>Which statements change them</summary>
+                <p class="note">ALTER TABLE … SPLIT AT and MERGE SHARD change the map in place, and SPLIT AUTOMATICALLY lets the store's leader do it by size and load. IDENTITY uuid SPREAD spreads new records over the shards, PARTITION BY gives each region its shard. ALTER REPLICA … LEADS moves a placement, LEADS NONE gives a range back to the store line, PREFERRED names the candidate that should lead it, and DEFINE FAILOVER … BALANCE LEADERSHIPS evens out who leads what.</p>
+              </details>
+              <p class="note"><strong>Lag is per follower, and leadership is what the log recorded.</strong></p>
+              <details class="tucked">
+                <summary>What the two figures are, and are not</summary>
+                <p class="note">A follower's lag is how many records it is short of this node's tail, as this node last served it — the leader pushes each commit, so a level follower reads 0. A leadership is the row the winner wrote under its own epoch, so it says which node led a range as of that epoch; whether that node is alive now is its lease, which only it can report.</p>
+              </details>
+            </div>
+          </section>
+          <section id="panel-access" role="tabpanel" aria-labelledby="tab-access" tabindex="0" hidden>
+            <div class="split">
+              <div class="pane">
+                <div class="pane-head">
+                  <h2>Who there is</h2>
+                  <div class="row tight">
+                    <span id="user-status" class="status" role="status"></span>
+                    <button id="list" type="button" class="quiet">Refresh</button>
+                  </div>
+                </div>
+                <p class="note">What you are shown is the tenancy you administer.</p>
+                <details class="tucked">
+                  <summary>What that means for a short list</summary>
+                  <p class="note">An owner of a space sees that space; an <strong>admin</strong> — an owner with no space at all — sees the whole node. It refuses rather than narrowing, so a short list is a short tenancy and never a filtered one.</p>
+                </details>
+                <div class="row spread">
+                  <label>Filter <input id="user-filter" type="text" placeholder="part of a name" /></label>
+                  <span id="user-count" class="status" role="status"></span>
+                </div>
+                <div id="user-list" class="answer small" aria-live="polite"></div>
+                <div class="row">
+                  <label>Detail for <input id="lookup-name" type="text" placeholder="ada" /></label>
+                  <button id="lookup" type="button">Show</button>
+                </div>
+                <div id="user-answer" class="answer small" aria-live="polite"></div>
+              </div>
+              <div class="pane">
+                <div class="pane-head">
+                  <h2>Define one</h2>
+                  <span id="define-status" class="status" role="status"></span>
+                </div>
+                <p class="note">A password reaches the node and goes no further: what is stored is a hash, so no plaintext reaches the log or any replica.</p>
+                <div class="row">
+                  <label>Name <input id="new-name" type="text" placeholder="ada" /></label>
+                  <label>
+                    Reach 
+                    <select id="new-reach">
+                      <option value="space">one space</option>
+                      <option value="node">the whole node — an admin</option>
+                    </select>
+                  </label>
+                  <label id="scope-field">Space <input id="new-scope" type="text" placeholder="prod.library" /></label>
+                  <label>
+                    Role 
+                    <select id="new-role">
+                      <option value="viewer">viewer</option>
+                      <option value="editor" selected>editor</option>
+                      <option value="owner">owner</option>
+                      <option value="other">something else…</option>
+                    </select>
+                  </label>
+                  <label id="role-other-field" hidden>Which <input id="new-role-other" type="text" placeholder="a role this build knows" /></label>
+                  <label>Password <input id="new-password" type="password" autocomplete="new-password" /></label>
+                </div>
+                <p id="role-says" class="note"></p>
+                <p id="define-preview" class="note says"></p>
+                <div class="row">
+                  <button id="define" type="button" class="primary">Run it</button>
+                </div>
+              </div>
+            </div>
+            <div class="split">
+              <div class="pane">
+                <div class="pane-head">
+                  <h2>Change one</h2>
+                  <span id="change-status" class="status" role="status"></span>
+                </div>
+                <p class="note">One field per change. A space cannot be changed here at all.</p>
+                <details class="tucked">
+                  <summary>Why a space is not offered</summary>
+                  <p class="note">A password rotation does not touch a role, and a role correction does not invalidate a password. Widening somebody's reach is the one change an owner of a part could use to reach the whole, so it is not offered here at all.</p>
+                </details>
+                <div class="row">
+                  <label>Who <input id="change-name" type="text" placeholder="ada" /></label>
+                  <label>
+                    What 
+                    <select id="change-what">
+                      <option value="password">password</option>
+                      <option value="role">role</option>
+                    </select>
+                  </label>
+                  <label id="change-password-field">New password <input id="change-password" type="password" autocomplete="new-password" /></label>
+                  <label id="change-role-field" hidden>
+                    New role 
+                    <select id="change-role">
+                      <option value="viewer">viewer</option>
+                      <option value="editor">editor</option>
+                      <option value="owner">owner</option>
+                      <option value="other">something else…</option>
+                    </select>
+                  </label>
+                  <label id="change-role-other-field" hidden>Which <input id="change-role-other" type="text" placeholder="a role this build knows" /></label>
+                </div>
+                <div class="row">
+                  <label class="wide">Why <input id="change-why" type="text" placeholder="rotating a credential that leaked" /></label>
+                </div>
+                <p id="change-preview" class="note says"></p>
+                <div class="row">
+                  <button id="change" type="button" class="primary">Run it</button>
+                </div>
+              </div>
+              <div class="pane">
+                <div class="pane-head">
+                  <h2>Remove one</h2>
+                  <span id="remove-status" class="status" role="status"></span>
+                </div>
+                <p class="note warn"><strong>This does not come back.</strong> The user's grants go with them, and a new user of the same name is a different user with none of them. If it is the last owner of the whole node, nothing can let anybody back in — a closed store has no door from outside, and the way back is a restore from backup.</p>
+                <p class="note">You may only remove somebody in the tenancy you administer. The node refuses the rest, and what it says is shown here as it said it.</p>
+                <div class="row">
+                  <label>Who <input id="remove-name" type="text" placeholder="ada" /></label>
+                  <label>Type the name again <input id="remove-confirm" type="text" placeholder="ada" /></label>
+                </div>
+                <div class="row">
+                  <label class="wide">Why <input id="remove-why" type="text" placeholder="left the team on Friday" /></label>
+                </div>
+                <p id="remove-radius" class="note says"></p>
+                <details class="tucked">
+                  <summary>The statement this will send</summary>
+                  <pre id="remove-preview" class="answer small"></pre>
+                </details>
+                <div class="row">
+                  <button id="remove" type="button" disabled>Remove</button>
+                </div>
+                <hr class="between" />
+                <div class="pane-head">
+                  <h2>Your own password</h2>
+                  <span id="mine-status" class="status" role="status"></span>
+                </div>
+                <p class="note">Yours, and any role may use it.</p>
+                <details class="tucked">
+                  <summary>Why this one is not the pane above</summary>
+                  <p class="note">That pane is for somebody else's credential and needs an owner. A viewer whose password may have leaked should not have to ask an owner to choose them a new one.</p>
+                </details>
+                <div class="row">
+                  <label>Current <input id="mine-current" type="password" autocomplete="current-password" /></label>
+                  <label>New <input id="mine-new" type="password" autocomplete="new-password" /></label>
+                  <label>New again <input id="mine-again" type="password" autocomplete="new-password" /></label>
+                </div>
+                <div class="row">
+                  <button id="mine" type="button" disabled>Change it</button>
+                </div>
+                <p class="note">Changing it ends every session you hold, this one included.</p>
+                <details class="tucked">
+                  <summary>Why the current one is asked for</summary>
+                  <p class="note">Being signed in is not proof of a password — otherwise a token copied off this connection would be a way to take the account rather than borrow it.</p>
+                </details>
+              </div>
+            </div>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Give or take away</h2>
+                <span id="grant-status" class="status" role="status"></span>
+              </div>
+              <p class="note"><strong>A grant is not only an addition.</strong> The line under the form says which of the two this one is.</p>
+              <details class="tucked">
+                <summary>Why a grant can narrow</summary>
+                <p class="note">A user with no table grants is governed by their role; a user with one reaches exactly what they were granted. So the first grant narrows, and taking the last one away widens them back to the role — which the node refuses.</p>
+              </details>
+              <div class="row">
+                <label>Who <input id="grant-who" type="text" placeholder="ada" /></label>
+                <label>
+                  Direction 
+                  <select id="grant-direction">
+                    <option value="give" selected>give</option>
+                    <option value="take">take away</option>
+                  </select>
+                </label>
+                <label>
+                  On 
+                  <select id="grant-reach">
+                    <option value="table" selected>a table</option>
+                    <option value="namespace">a namespace</option>
+                    <option value="database">a database</option>
+                    <option value="store">the whole store</option>
+                  </select>
+                </label>
+                <label id="grant-name-field">Named <input id="grant-name" type="text" placeholder="app.main.orders" /></label>
+                <label>What <input id="grant-what" type="text" placeholder="read, write" /></label>
+              </div>
+              <div class="row">
+                <label class="wide">Why <input id="grant-why" type="text" placeholder="joining the billing rota" /></label>
+              </div>
+              <p id="grant-says" class="note says"></p>
+              <div class="row">
+                <button id="grant-apply" type="button" class="primary">Run it</button>
+              </div>
+            </div>
+          </section>
+          <section id="panel-this-node" role="tabpanel" aria-labelledby="tab-this-node" tabindex="0" hidden>
             <div class="pane-head">
-              <h2>Change one</h2>
-              <span id="change-status" class="status" role="status"></span>
+              <h2>This node</h2>
+              <div class="row tight">
+                <span id="node-status" class="status" role="status"></span>
+                <button id="node-refresh" type="button" class="quiet">Refresh</button>
+              </div>
             </div>
-            <p class="note">One field per change. A space cannot be changed here at all.</p>
-            <details class="tucked">
-              <summary>Why a space is not offered</summary>
-              <p class="note">A password rotation does not touch a role, and a role correction does not invalidate a password. Widening somebody's reach is the one change an owner of a part could use to reach the whole, so it is not offered here at all.</p>
-            </details>
-            <div class="row">
-              <label>Who <input id="change-name" type="text" placeholder="ada" /></label>
-              <label>
-                What 
-                <select id="change-what">
-                  <option value="password">password</option>
-                  <option value="role">role</option>
-                </select>
-              </label>
-              <label id="change-password-field">New password <input id="change-password" type="password" autocomplete="new-password" /></label>
-              <label id="change-role-field" hidden>
-                New role 
-                <select id="change-role">
-                  <option value="viewer">viewer</option>
-                  <option value="editor">editor</option>
-                  <option value="owner">owner</option>
-                  <option value="other">something else…</option>
-                </select>
-              </label>
-              <label id="change-role-other-field" hidden>Which <input id="change-role-other" type="text" placeholder="a role this build knows" /></label>
+            <div class="split">
+              <div class="pane">
+                <div class="pane-head">
+                  <h2>Identity and settings</h2>
+                </div>
+                <div id="node-facts" class="answer small" aria-live="polite"></div>
+              </div>
+              <div class="pane">
+                <div class="pane-head">
+                  <h2>Health and readiness</h2>
+                </div>
+                <div id="node-health" class="answer small" aria-live="polite"></div>
+                <p class="note">They are two answers, not one. A node says <em>not ready</em> and goes on serving for five seconds while it drains, so whatever routes traffic to it can stop doing so while it can still answer.</p>
+              </div>
             </div>
-            <div class="row">
-              <label class="wide">Why <input id="change-why" type="text" placeholder="rotating a credential that leaked" /></label>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Metrics</h2>
+              </div>
+              <div id="node-metrics" class="answer small" aria-live="polite"></div>
             </div>
-            <p id="change-preview" class="note says"></p>
-            <div class="row">
-              <button id="change" type="button" class="primary">Run it</button>
-            </div>
-          </div>
-          <div class="pane">
+          </section>
+          <section id="panel-backup" role="tabpanel" aria-labelledby="tab-backup" tabindex="0" hidden>
             <div class="pane-head">
-              <h2>Remove one</h2>
-              <span id="remove-status" class="status" role="status"></span>
+              <h2>Backup</h2>
+              <span id="backup-status" class="status" role="status"></span>
             </div>
-            <p class="note warn"><strong>This does not come back.</strong> The user's grants go with them, and a new user of the same name is a different user with none of them. If it is the last owner of the whole node, nothing can let anybody back in — a closed store has no door from outside, and the way back is a restore from backup.</p>
-            <p class="note">You may only remove somebody in the tenancy you administer. The node refuses the rest, and what it says is shown here as it said it.</p>
-            <div class="row">
-              <label>Who <input id="remove-name" type="text" placeholder="ada" /></label>
-              <label>Type the name again <input id="remove-confirm" type="text" placeholder="ada" /></label>
+            <div class="pane">
+              <p class="note">The node writes the file into its backup folder (<code>--backup-dir</code>, or <code>TESSARIDB_BACKUP_DIR</code> in the image). The name may include subfolders and never replaces an existing file. Store-wide owners only.</p>
+              <div class="row">
+                <label>
+                  What to write 
+                  <select id="backup-form">
+                    <option value="state" selected>the current state — a snapshot</option>
+                    <option value="log">the log — every commit, in order</option>
+                    <option value="script">the current state as TessariQL</option>
+                  </select>
+                </label>
+                <label>File name <input id="backup-name" type="text" autocomplete="off" /></label>
+              </div>
+              <div class="row">
+                <label>
+                  What to include 
+                  <select id="backup-part">
+                    <option value="store" selected>the whole store</option>
+                    <option value="places">chosen namespaces and databases</option>
+                  </select>
+                </label>
+                <label>Namespaces and databases <input id="backup-places" type="text" placeholder="crm, prod.orders" autocomplete="off" /></label>
+              </div>
+              <p id="backup-says" class="note says"></p>
+              <div class="row">
+                <button id="backup-run" type="button" class="primary" disabled>Back up</button>
+              </div>
+              <div id="backup-answer" class="answer small" aria-live="polite"></div>
             </div>
-            <div class="row">
-              <label class="wide">Why <input id="remove-why" type="text" placeholder="left the team on Friday" /></label>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Restore a script</h2>
+                <span id="restore-status" class="status" role="status"></span>
+              </div>
+              <p class="note">Runs a script from the same folder beside what the store holds: it creates the databases it carries and is refused, with nothing written, when one of them already exists.</p>
+              <div class="row">
+                <label>File name <input id="restore-name" type="text" autocomplete="off" /></label>
+              </div>
+              <p id="restore-says" class="note says"></p>
+              <div class="row">
+                <button id="restore-run" type="button" disabled>Restore</button>
+              </div>
+              <div id="restore-answer" class="answer small" aria-live="polite"></div>
             </div>
-            <p id="remove-radius" class="note says"></p>
-            <details class="tucked">
-              <summary>The statement this will send</summary>
-              <pre id="remove-preview" class="answer small"></pre>
-            </details>
-            <div class="row">
-              <button id="remove" type="button" disabled>Remove</button>
-            </div>
-            <hr class="between" />
+          </section>
+          <section id="panel-vault" role="tabpanel" aria-labelledby="tab-vault" tabindex="0" hidden>
             <div class="pane-head">
-              <h2>Your own password</h2>
-              <span id="mine-status" class="status" role="status"></span>
+              <h2>The store's key</h2>
+              <span id="vault-store-status" class="status" role="status"></span>
             </div>
-            <p class="note">Yours, and any role may use it.</p>
-            <details class="tucked">
-              <summary>Why this one is not the pane above</summary>
-              <p class="note">That pane is for somebody else's credential and needs an owner. A viewer whose password may have leaked should not have to ask an owner to choose them a new one.</p>
-            </details>
-            <div class="row">
-              <label>Current <input id="mine-current" type="password" autocomplete="current-password" /></label>
-              <label>New <input id="mine-new" type="password" autocomplete="new-password" /></label>
-              <label>New again <input id="mine-again" type="password" autocomplete="new-password" /></label>
+            <div class="pane">
+              <p class="note">Opens every vault declared without a passphrase of its own for the node's period (<code>--unseal-for</code>, ten minutes by default), then closes by itself. Store-wide operators only.</p>
+              <div id="vault-store-answer" class="answer small" aria-live="polite"></div>
+              <div class="row">
+                <label>Passphrase <input id="vault-store-passphrase" type="password" autocomplete="current-password" /></label>
+              </div>
+              <div class="row">
+                <button id="vault-store-unseal" type="button" class="primary" disabled>Unseal</button>
+                <button id="vault-store-seal" type="button">Seal</button>
+                <button id="vault-store-refresh" type="button">Refresh</button>
+              </div>
+              <div class="row">
+                <label>Current passphrase <input id="vault-store-current" type="password" autocomplete="current-password" /></label>
+                <label>New passphrase <input id="vault-store-new" type="password" autocomplete="new-password" /></label>
+              </div>
+              <div class="row">
+                <button id="vault-store-change" type="button" disabled>Change passphrase</button>
+              </div>
             </div>
-            <div class="row">
-              <button id="mine" type="button" disabled>Change it</button>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>One vault</h2>
+                <span id="vault-one-status" class="status" role="status"></span>
+              </div>
+              <p class="note">A vault declared with <code>PASSPHRASE '…'</code> opens with its own passphrase. Readers of its database may open or close it; changing the passphrase needs manage there.</p>
+              <div class="row">
+                <label>Namespace <input id="vault-one-namespace" type="text" autocomplete="off" /></label>
+                <label>Database <input id="vault-one-database" type="text" autocomplete="off" /></label>
+                <label>Vault <input id="vault-one-name" type="text" autocomplete="off" /></label>
+              </div>
+              <p id="vault-one-says" class="note says"></p>
+              <div id="vault-one-answer" class="answer small" aria-live="polite"></div>
+              <div class="row">
+                <label>Passphrase <input id="vault-one-passphrase" type="password" autocomplete="current-password" /></label>
+              </div>
+              <div class="row">
+                <button id="vault-one-show" type="button" disabled>Status</button>
+                <button id="vault-one-unseal" type="button" class="primary" disabled>Unseal</button>
+                <button id="vault-one-seal" type="button" disabled>Seal</button>
+              </div>
+              <div class="row">
+                <label>Current passphrase <input id="vault-one-current" type="password" autocomplete="current-password" /></label>
+                <label>New passphrase <input id="vault-one-new" type="password" autocomplete="new-password" /></label>
+              </div>
+              <div class="row">
+                <button id="vault-one-change" type="button" disabled>Change passphrase</button>
+              </div>
             </div>
-            <p class="note">Changing it ends every session you hold, this one included.</p>
-            <details class="tucked">
-              <summary>Why the current one is asked for</summary>
-              <p class="note">Being signed in is not proof of a password — otherwise a token copied off this connection would be a way to take the account rather than borrow it.</p>
-            </details>
-          </div>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>Give or take away</h2>
-            <span id="grant-status" class="status" role="status"></span>
-          </div>
-          <p class="note"><strong>A grant is not only an addition.</strong> The line under the form says which of the two this one is.</p>
-          <details class="tucked">
-            <summary>Why a grant can narrow</summary>
-            <p class="note">A user with no table grants is governed by their role; a user with one reaches exactly what they were granted. So the first grant narrows, and taking the last one away widens them back to the role — which the node refuses.</p>
-          </details>
-          <div class="row">
-            <label>Who <input id="grant-who" type="text" placeholder="ada" /></label>
-            <label>
-              Direction 
-              <select id="grant-direction">
-                <option value="give" selected>give</option>
-                <option value="take">take away</option>
-              </select>
-            </label>
-            <label>
-              On 
-              <select id="grant-reach">
-                <option value="table" selected>a table</option>
-                <option value="namespace">a namespace</option>
-                <option value="database">a database</option>
-                <option value="store">the whole store</option>
-              </select>
-            </label>
-            <label id="grant-name-field">Named <input id="grant-name" type="text" placeholder="app.main.orders" /></label>
-            <label>What <input id="grant-what" type="text" placeholder="read, write" /></label>
-          </div>
-          <div class="row">
-            <label class="wide">Why <input id="grant-why" type="text" placeholder="joining the billing rota" /></label>
-          </div>
-          <p id="grant-says" class="note says"></p>
-          <div class="row">
-            <button id="grant-apply" type="button" class="primary">Run it</button>
-          </div>
-        </div>
-      </section>
-      <section id="panel-this-node" role="tabpanel" aria-labelledby="tab-this-node" tabindex="0" hidden>
-        <div class="pane-head">
-          <h2>This node</h2>
-          <div class="row tight">
-            <span id="node-status" class="status" role="status"></span>
-            <button id="node-refresh" type="button" class="quiet">Refresh</button>
-          </div>
-        </div>
-        <div class="split">
-          <div class="pane">
-            <div class="pane-head">
-              <h2>Identity and settings</h2>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Records in a vault</h2>
+                <span id="vault-rec-status" class="status" role="status"></span>
+              </div>
+              <p class="note">Ids come a page at a time with no value beside them. A reveal is recorded by the store before it answers; the plaintext stays on this page until you hide it or reveal another.</p>
+              <div class="row">
+                <label>Namespace <input id="vault-rec-namespace" type="text" autocomplete="off" /></label>
+                <label>Database <input id="vault-rec-database" type="text" autocomplete="off" /></label>
+                <button id="vault-rec-list" type="button">Vaults here</button>
+              </div>
+              <div id="vault-rec-vaults"></div>
+              <div class="row">
+                <label>Vault <input id="vault-rec-name" type="text" autocomplete="off" /></label>
+                <button id="vault-rec-records" type="button" class="primary">Records</button>
+                <button id="vault-rec-more" type="button" disabled>Next page</button>
+              </div>
+              <div id="vault-rec-ids"></div>
+              <div id="vault-rec-shown" aria-live="polite"></div>
+              <div class="row">
+                <button id="vault-rec-hide" type="button" class="quiet" disabled>Hide the revealed values</button>
+              </div>
+              <div class="row">
+                <label>Record id <input id="vault-rec-id" type="text" autocomplete="off" /></label>
+                <label>Field <input id="vault-rec-field" type="text" autocomplete="off" /></label>
+                <label>Value <input id="vault-rec-value" type="password" autocomplete="new-password" /></label>
+                <button id="vault-rec-write" type="button" disabled>Write</button>
+              </div>
+              <div class="row">
+                <label>Read by (optional) <input id="vault-rec-actor" type="text" autocomplete="off" /></label>
+                <button id="vault-rec-audit" type="button">Audit trail</button>
+              </div>
+              <div id="vault-rec-trail"></div>
             </div>
-            <div id="node-facts" class="answer small" aria-live="polite"></div>
-          </div>
-          <div class="pane">
-            <div class="pane-head">
-              <h2>Health and readiness</h2>
-            </div>
-            <div id="node-health" class="answer small" aria-live="polite"></div>
-            <p class="note">They are two answers, not one. A node says <em>not ready</em> and goes on serving for five seconds while it drains, so whatever routes traffic to it can stop doing so while it can still answer.</p>
-          </div>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>Metrics</h2>
-          </div>
-          <div id="node-metrics" class="answer small" aria-live="polite"></div>
-        </div>
-      </section>
-      <section id="panel-backup" role="tabpanel" aria-labelledby="tab-backup" tabindex="0" hidden>
-        <div class="pane-head">
-          <h2>Backup</h2>
-          <span id="backup-status" class="status" role="status"></span>
-        </div>
-        <div class="pane">
-          <p class="note">The node writes the file into its backup folder (<code>--backup-dir</code>, or <code>TESSARIDB_BACKUP_DIR</code> in the image). The name may include subfolders and never replaces an existing file. Store-wide owners only.</p>
-          <div class="row">
-            <label>
-              What to write 
-              <select id="backup-form">
-                <option value="state" selected>the current state — a snapshot</option>
-                <option value="log">the log — every commit, in order</option>
-                <option value="script">the current state as TessariQL</option>
-              </select>
-            </label>
-            <label>File name <input id="backup-name" type="text" autocomplete="off" /></label>
-          </div>
-          <div class="row">
-            <label>
-              What to include 
-              <select id="backup-part">
-                <option value="store" selected>the whole store</option>
-                <option value="places">chosen namespaces and databases</option>
-              </select>
-            </label>
-            <label>Namespaces and databases <input id="backup-places" type="text" placeholder="crm, prod.orders" autocomplete="off" /></label>
-          </div>
-          <p id="backup-says" class="note says"></p>
-          <div class="row">
-            <button id="backup-run" type="button" class="primary" disabled>Back up</button>
-          </div>
-          <div id="backup-answer" class="answer small" aria-live="polite"></div>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>Restore a script</h2>
-            <span id="restore-status" class="status" role="status"></span>
-          </div>
-          <p class="note">Runs a script from the same folder beside what the store holds: it creates the databases it carries and is refused, with nothing written, when one of them already exists.</p>
-          <div class="row">
-            <label>File name <input id="restore-name" type="text" autocomplete="off" /></label>
-          </div>
-          <p id="restore-says" class="note says"></p>
-          <div class="row">
-            <button id="restore-run" type="button" disabled>Restore</button>
-          </div>
-          <div id="restore-answer" class="answer small" aria-live="polite"></div>
-        </div>
-      </section>
-      <section id="panel-vault" role="tabpanel" aria-labelledby="tab-vault" tabindex="0" hidden>
-        <div class="pane-head">
-          <h2>The store's key</h2>
-          <span id="vault-store-status" class="status" role="status"></span>
-        </div>
-        <div class="pane">
-          <p class="note">Opens every vault declared without a passphrase of its own for the node's period (<code>--unseal-for</code>, ten minutes by default), then closes by itself. Store-wide operators only.</p>
-          <div id="vault-store-answer" class="answer small" aria-live="polite"></div>
-          <div class="row">
-            <label>Passphrase <input id="vault-store-passphrase" type="password" autocomplete="current-password" /></label>
-          </div>
-          <div class="row">
-            <button id="vault-store-unseal" type="button" class="primary" disabled>Unseal</button>
-            <button id="vault-store-seal" type="button">Seal</button>
-            <button id="vault-store-refresh" type="button">Refresh</button>
-          </div>
-          <div class="row">
-            <label>Current passphrase <input id="vault-store-current" type="password" autocomplete="current-password" /></label>
-            <label>New passphrase <input id="vault-store-new" type="password" autocomplete="new-password" /></label>
-          </div>
-          <div class="row">
-            <button id="vault-store-change" type="button" disabled>Change passphrase</button>
-          </div>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>One vault</h2>
-            <span id="vault-one-status" class="status" role="status"></span>
-          </div>
-          <p class="note">A vault declared with <code>PASSPHRASE '…'</code> opens with its own passphrase. Readers of its database may open or close it; changing the passphrase needs manage there.</p>
-          <div class="row">
-            <label>Namespace <input id="vault-one-namespace" type="text" autocomplete="off" /></label>
-            <label>Database <input id="vault-one-database" type="text" autocomplete="off" /></label>
-            <label>Vault <input id="vault-one-name" type="text" autocomplete="off" /></label>
-          </div>
-          <p id="vault-one-says" class="note says"></p>
-          <div id="vault-one-answer" class="answer small" aria-live="polite"></div>
-          <div class="row">
-            <label>Passphrase <input id="vault-one-passphrase" type="password" autocomplete="current-password" /></label>
-          </div>
-          <div class="row">
-            <button id="vault-one-show" type="button" disabled>Status</button>
-            <button id="vault-one-unseal" type="button" class="primary" disabled>Unseal</button>
-            <button id="vault-one-seal" type="button" disabled>Seal</button>
-          </div>
-          <div class="row">
-            <label>Current passphrase <input id="vault-one-current" type="password" autocomplete="current-password" /></label>
-            <label>New passphrase <input id="vault-one-new" type="password" autocomplete="new-password" /></label>
-          </div>
-          <div class="row">
-            <button id="vault-one-change" type="button" disabled>Change passphrase</button>
-          </div>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>Records in a vault</h2>
-            <span id="vault-rec-status" class="status" role="status"></span>
-          </div>
-          <p class="note">Ids come a page at a time with no value beside them. A reveal is recorded by the store before it answers; the plaintext stays on this page until you hide it or reveal another.</p>
-          <div class="row">
-            <label>Namespace <input id="vault-rec-namespace" type="text" autocomplete="off" /></label>
-            <label>Database <input id="vault-rec-database" type="text" autocomplete="off" /></label>
-            <button id="vault-rec-list" type="button">Vaults here</button>
-          </div>
-          <div id="vault-rec-vaults"></div>
-          <div class="row">
-            <label>Vault <input id="vault-rec-name" type="text" autocomplete="off" /></label>
-            <button id="vault-rec-records" type="button" class="primary">Records</button>
-            <button id="vault-rec-more" type="button" disabled>Next page</button>
-          </div>
-          <div id="vault-rec-ids"></div>
-          <div id="vault-rec-shown" aria-live="polite"></div>
-          <div class="row">
-            <button id="vault-rec-hide" type="button" class="quiet" disabled>Hide the revealed values</button>
-          </div>
-          <div class="row">
-            <label>Record id <input id="vault-rec-id" type="text" autocomplete="off" /></label>
-            <label>Field <input id="vault-rec-field" type="text" autocomplete="off" /></label>
-            <label>Value <input id="vault-rec-value" type="password" autocomplete="new-password" /></label>
-            <button id="vault-rec-write" type="button" disabled>Write</button>
-          </div>
-          <div class="row">
-            <label>Read by (optional) <input id="vault-rec-actor" type="text" autocomplete="off" /></label>
-            <button id="vault-rec-audit" type="button">Audit trail</button>
-          </div>
-          <div id="vault-rec-trail"></div>
-        </div>
-      </section>
-    </main>
-    <footer class="tray">
-      <button id="log-open" type="button" class="quiet" aria-controls="log-sheet" aria-expanded="false">Statements <span id="log-count" class="count">0</span></button>
-      <span class="faint">everything this panel sent for you</span>
-      <button id="keys-open" type="button" class="quiet" aria-controls="keys-sheet">Keys ?</button>
-    </footer>
+          </section>
+        </main>
+        <footer class="tray">
+          <button id="log-open" type="button" class="quiet" aria-controls="log-sheet" aria-expanded="false">Statements <span id="log-count" class="count">0</span></button>
+          <span class="faint">everything this panel sent for you</span>
+          <button id="keys-open" type="button" class="quiet" aria-controls="keys-sheet">Keys ?</button>
+          <p class="credit">© boogvar 2026 · Powered by TessariDB</p>
+        </footer>
+      </div>
+    </div>
     <div id="log-sheet" class="sheet log" hidden role="region" aria-label="Statements">
       <div class="pane-head">
         <h2>Statements this session</h2>
@@ -886,6 +901,9 @@
         <p class="note">A record’s history is read from the log the store already writes, so it is what was committed rather than anything this panel assembled.</p>
       </details>
     </div>
+    <template id="icon-frame">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+    </template>
     <script src="/console.js"></script>
   </body>
 </html>
