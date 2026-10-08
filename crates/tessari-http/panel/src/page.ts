@@ -122,8 +122,12 @@ const pageHead = (): Node =>
     el(
       "div",
       { class: "finding" },
-      field(
-        "Find",
+      // The word stays for a screen reader; on screen the placeholder already
+      // says what to type, and the field lines up with the heading beside it.
+      el(
+        "label",
+        {},
+        el("span", { class: "label" }, "Find "),
         text("search", { placeholder: "an account, a table, app.main.orders:1  —  / or ⌘K" }),
       ),
       status("search-says"),

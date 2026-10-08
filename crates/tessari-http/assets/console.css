@@ -1093,6 +1093,16 @@ label.tick input {
   min-inline-size: 0;
 }
 
+/* Its word is for a screen reader only; the placeholder says it on screen. */
+.finding .label {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .finding input {
   inline-size: 100%;
   font-family: var(--sans);
