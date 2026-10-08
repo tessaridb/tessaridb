@@ -1040,6 +1040,7 @@ fn a_client_below_minor_four_is_never_sent_progress() {
         script: "USE NAMESPACE prod; USE DATABASE orders;".to_owned(),
         credentials: None,
         parameters: std::collections::BTreeMap::new(),
+        stream: false,
     };
     frame(&mut socket, 1, &selecting.encode());
     assert_eq!(read(&mut socket).0, 2, "the selection was answered");

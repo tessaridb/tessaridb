@@ -82,7 +82,7 @@ pub(crate) const MAJOR: u8 = 1;
 /// sends is worse than the gap**: a peer that believed this build could redirect
 /// would have been believing something false. This build sends one, so the minor
 /// moves with the sender and not with the frame.
-pub(crate) const MINOR: u8 = 4;
+pub(crate) const MINOR: u8 = 5;
 
 /// The minor at which a peer can be sent a [`Kind::Elsewhere`] frame.
 ///
@@ -134,6 +134,16 @@ pub(crate) const NARROWED: u8 = 4;
 
 /// This build's node narrows the feeds this build's client asks for.
 const _: () = assert!(MINOR >= NARROWED);
+
+/// The minor at which a request may ask for its snapshot in [`Kind::Part`]
+/// frames (ADR-0125 D1).
+///
+/// Asked by the client: an older node reads past the request's last byte and
+/// answers the snapshot as a value, so the flag is sent only at or above it.
+pub(crate) const STREAMS: u8 = 5;
+
+/// This build's node streams the snapshots this build's client asks for.
+const _: () = assert!(MINOR >= STREAMS);
 
 /// The bytes a refusal body starts with when it carries a class: one, from
 /// `0` (the node could not class it) to `9`. A message is UTF-8 prose and never
@@ -217,6 +227,10 @@ pub(crate) enum Kind {
     ///
     /// Numbered **37** because the peer link holds 18-36.
     Progress,
+    /// Some of a snapshot a request asked to stream, sent ahead of the answer
+    /// that ends the request (ADR-0125 D2) — only to a request that asked, so no
+    /// earlier client is ever sent one.
+    Part,
 }
 
 impl Kind {
@@ -230,6 +244,7 @@ impl Kind {
             Self::Elsewhere => 13,
             Self::Vault => 17,
             Self::Progress => 37,
+            Self::Part => 38,
         }
     }
 
@@ -243,6 +258,7 @@ impl Kind {
             13 => Some(Self::Elsewhere),
             17 => Some(Self::Vault),
             37 => Some(Self::Progress),
+            38 => Some(Self::Part),
             // 6-12 belong to the peer link and are refused here on purpose, so a
             // peer frame arriving on the client port closes the connection
             // instead of being misread. Everything else is simply unclaimed, and
@@ -263,6 +279,39 @@ impl Kind {
 /// what it would refuse to read has two protocols.
 pub(crate) fn write(out: &mut impl Write, kind: Kind, body: &[u8]) -> Result<()> {
     write_tagged(out, kind.tag(), body)
+}
+
+/// How many bytes of a streamed snapshot one [`Kind::Part`] carries.
+///
+/// Well under the ceiling, so a part is never the frame a client refuses, and
+/// small enough that neither side holds more than this of the file at once.
+pub(crate) const PART_BYTES: usize = 1024 * 1024;
+
+/// Send a spooled snapshot from its start as [`Kind::Part`] frames (ADR-0125).
+///
+/// The outer error is the socket's, which ends the connection; the inner one is
+/// the spool's, which the caller answers with a refusal so the client discards
+/// the parts it already has.
+///
+/// # Errors
+///
+/// Returns the stream's failure when a part cannot be written.
+pub(crate) fn write_parts(
+    out: &mut impl Write,
+    spool: &std::fs::File,
+) -> Result<std::io::Result<()>> {
+    let mut reading = spool;
+    if let Err(why) = std::io::Seek::rewind(&mut reading) {
+        return Ok(Err(why));
+    }
+    let mut part = vec![0_u8; PART_BYTES];
+    loop {
+        match reading.read(&mut part) {
+            Ok(0) => return Ok(Ok(())),
+            Ok(read) => write(out, Kind::Part, part.get(..read).unwrap_or_default())?,
+            Err(why) => return Ok(Err(why)),
+        }
+    }
 }
 
 /// Write one frame under a tag this module does not interpret.

@@ -99,8 +99,8 @@ impl Store for Embedded<'_> {
 
 /// A node reached over the wire protocol.
 pub struct Remote {
-    client: Client,
-    credentials: Option<(String, String)>,
+    pub(crate) client: Client,
+    pub(crate) credentials: Option<(String, String)>,
     parameters: Parameters,
 }
 

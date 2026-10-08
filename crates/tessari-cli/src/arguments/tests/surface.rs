@@ -115,7 +115,7 @@ fn what_reaches_past_the_session_is_refused_over_an_address() {
     // against a store in this process is the opposite of what was asked.
     for reaching in [
         vec!["--at", "127.0.0.1:7654", "--health"],
-        vec!["--at", "127.0.0.1:7654", "--backup", "out"],
+        vec!["--at", "127.0.0.1:7654", "--backup", "out", "--from", "1"],
         vec!["--at", "127.0.0.1:7654", "--restore", "in"],
         vec!["--at", "127.0.0.1:7654", "--serve", "0.0.0.0:1"],
     ] {
@@ -127,6 +127,9 @@ fn what_reaches_past_the_session_is_refused_over_an_address() {
     }
     // A script is not, because a script is what the protocol carries.
     assert!(asked(&["--at", "127.0.0.1:7654", "-e", "SELECT 1;"]).is_ok());
+    // Nor is a snapshot: the node takes it and streams it back (ADR-0125).
+    assert!(asked(&["--at", "127.0.0.1:7654", "--backup", "out"]).is_ok());
+    assert!(asked(&["--at", "127.0.0.1:7654", "--snapshot", "out"]).is_ok());
 }
 
 #[test]

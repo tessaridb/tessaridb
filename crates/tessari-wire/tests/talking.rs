@@ -404,7 +404,7 @@ fn a_bounded_read_this_node_cannot_answer_is_redirected_over_the_wire() {
         .run_routed(
             "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users STALENESS 60s;",
             None,
-            &tessaridb::Parameters::new(),
+            &std::collections::BTreeMap::new(),
         )
         .expect("a redirect is an instruction, and an instruction is not a failure");
     let tessari_wire::Served::Elsewhere(sent) = served else {
@@ -609,22 +609,7 @@ fn an_answer_above_the_frame_ceiling_is_refused_by_name_and_the_connection_lives
     // A 16 MiB frame cannot carry it, and the node used to fail the write and
     // drop the connection, which a client reads as a network fault. It is a
     // refusal instead: the request was fine to send and cannot be answered so.
-    let db = Db::in_memory().unwrap();
-    {
-        let mut session = db.session();
-        session
-            .run(&format!("{READY} DEFINE COLLECTION big;"))
-            .unwrap();
-        let nine_megabytes = Value::String("x".repeat(9 * 1024 * 1024));
-        let body = std::collections::BTreeMap::from([("body".to_owned(), nine_megabytes)]);
-        for statement in [
-            "CREATE big:1 = { body: $body };",
-            "CREATE big:2 = { body: $body };",
-        ] {
-            session.run_with(statement, &body).unwrap();
-        }
-    }
-    let (_node, address) = serving(db);
+    let (_node, address) = serving(above_the_ceiling());
     let mut client = Client::connect(&address).unwrap();
     client
         .run("USE NAMESPACE prod; USE DATABASE orders;", None)
@@ -645,4 +630,124 @@ fn an_answer_above_the_frame_ceiling_is_refused_by_name_and_the_connection_lives
     // And the same connection answers the next request.
     let answers = client.run("SELECT id FROM big;", None).unwrap();
     assert_eq!(answers.len(), 1);
+}
+
+/// A store holding two 9 MB records, so a read of both, or its snapshot, is
+/// more than one 16 MiB frame carries.
+fn above_the_ceiling() -> Db {
+    let db = Db::in_memory().unwrap();
+    {
+        let mut session = db.session();
+        session
+            .run(&format!("{READY} DEFINE COLLECTION big;"))
+            .unwrap();
+        let nine_megabytes = Value::String("x".repeat(9 * 1024 * 1024));
+        let body = std::collections::BTreeMap::from([("body".to_owned(), nine_megabytes)]);
+        for statement in [
+            "CREATE big:1 = { body: $body };",
+            "CREATE big:2 = { body: $body };",
+        ] {
+            session.run_with(statement, &body).unwrap();
+        }
+    }
+    db
+}
+
+#[test]
+fn a_snapshot_above_the_ceiling_streams_in_parts_and_arrives_whole() {
+    // ADR-0125: asked for, the snapshot arrives as parts ahead of the answer,
+    // and the answer is the summary, since the bytes have already left.
+    let (_node, address) = serving(above_the_ceiling());
+    let mut client = Client::connect(&address).unwrap();
+    let mut sink = Vec::new();
+    let answers = client
+        .run_streaming(
+            "BACKUP STATE;",
+            None,
+            &std::collections::BTreeMap::new(),
+            &mut sink,
+        )
+        .unwrap();
+
+    assert!(sink.len() > 16 * 1024 * 1024, "{} bytes", sink.len());
+    let verified = tessari_backup::verify_state(&mut sink.as_slice()).unwrap();
+    let [
+        Answer::Value {
+            value: Value::Object(summary),
+            ..
+        },
+    ] = answers.as_slice()
+    else {
+        panic!("one summary, got {answers:?}");
+    };
+    assert_eq!(summary.get("form"), Some(&Value::from("state")));
+    assert_eq!(
+        summary.get("records"),
+        Some(&Value::from(i64::try_from(verified.records).unwrap()))
+    );
+
+    // The connection goes on, and a request that takes no snapshot streams
+    // nothing — including one sent after the streamed one, so no sink is left
+    // behind for it.
+    let mut nothing = Vec::new();
+    let answers = client
+        .run_streaming(
+            "USE NAMESPACE prod; USE DATABASE orders; SELECT id FROM big;",
+            None,
+            &std::collections::BTreeMap::new(),
+            &mut nothing,
+        )
+        .unwrap();
+    assert_eq!(answers.len(), 3);
+    assert!(nothing.is_empty(), "{} bytes", nothing.len());
+}
+
+#[test]
+fn a_snapshot_not_asked_to_stream_is_still_refused_above_the_ceiling() {
+    // Without the flag nothing changes: the snapshot is the statement's value,
+    // and above one frame it is the named refusal.
+    let (_node, address) = serving(above_the_ceiling());
+    let mut client = Client::connect(&address).unwrap();
+    match client.run("BACKUP STATE;", None) {
+        Err(tessari_wire::Error::Refused { class, message }) => {
+            assert_eq!(
+                class,
+                Some(Some(tessari_types::RefusalClass::Invalid)),
+                "{message}"
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_stream_the_script_never_took_does_not_catch_the_next_snapshot() {
+    // A request that asked to stream and took no snapshot leaves nothing set on
+    // the connection: the next plain BACKUP answers with its bytes as before.
+    //
+    // Three requests back to back, because the node keeps one session attached
+    // across requests that arrive close behind each other (`hot.rs`), and that is
+    // the session a sink left behind would still be set on.
+    let (_node, address) = serving(Db::in_memory().unwrap());
+    let mut client = Client::connect(&address).unwrap();
+    client.run(READY, None).unwrap();
+    let mut nothing = Vec::new();
+    client
+        .run_streaming(
+            "USE NAMESPACE prod;",
+            None,
+            &std::collections::BTreeMap::new(),
+            &mut nothing,
+        )
+        .unwrap();
+    assert!(nothing.is_empty());
+
+    let answers = client.run("BACKUP STATE;", None).unwrap();
+    let [Answer::Value { value, .. }] = answers.as_slice() else {
+        panic!("one value, got {answers:?}");
+    };
+    let Value::Bytes(bytes) = value else {
+        panic!("the snapshot's bytes, got {value:?}");
+    };
+    tessari_backup::verify_state(&mut bytes.as_slice()).unwrap();
 }

@@ -15,6 +15,7 @@ pub(crate) fn respond(
         kind: frame::Kind::Refusal,
         body: frame::refusal(theirs, class, &message),
         redirect: None,
+        snapshot: None,
     };
     if let Some((name, password)) = &request.credentials
         && let Err(refused) = session.sign_in(name, password)
@@ -30,7 +31,26 @@ pub(crate) fn respond(
         session.namespace().map(str::to_owned),
         session.database().map(str::to_owned),
     );
+    let spool = if request.stream && theirs >= frame::STREAMS {
+        match spooled(session) {
+            Ok(spool) => Some(spool),
+            Err(why) => {
+                return refusal(
+                    RefusalClass::Unavailable,
+                    format!(
+                        "the node could not open a file to stream the snapshot through: {}",
+                        why.kind()
+                    ),
+                );
+            }
+        }
+    } else {
+        None
+    };
     let ran = session.run_with(&request.script, &request.parameters);
+    // Cleared whatever the script did, so a sink it never took cannot catch the
+    // next request's snapshot.
+    let streamed = spool.filter(|_| session.snapshot_was_written());
     // Coordinated (ADR-0108 D1): a write this node may not take, or a request
     // whose caller cannot follow a redirect, is carried over the peer link to
     // the node that can answer it, as the caller this session verified — never
@@ -60,6 +80,7 @@ pub(crate) fn respond(
                     kind,
                     body: answer.body,
                     redirect: None,
+                    snapshot: None,
                 },
                 None => refusal(
                     RefusalClass::Internal,
@@ -108,9 +129,41 @@ pub(crate) fn respond(
             kind: frame::Kind::Elsewhere,
             body: sent.encode(),
             redirect: Some(sent.settlement == redirect::Settlement::Settled),
+            snapshot: None,
         };
     }
-    render(db, &ran, theirs)
+    let mut answer = render(db, &ran, theirs);
+    // Parts precede only an answer: a refusal ends the request without them,
+    // and the spooled file goes with it.
+    if answer.kind == frame::Kind::Answer {
+        answer.snapshot = streamed;
+    }
+    answer
+}
+
+/// Spools this process has made, so two at once never share a name. A count
+/// and nothing else, so `Relaxed` is all it needs.
+static SPOOLED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// An unlinked file in the temporary folder, set as the session's sink for the
+/// snapshot the next script takes (ADR-0125 D5).
+///
+/// Unlinked as soon as it is open, as `GET /backup`'s spool is: the open handle
+/// keeps the bytes, and nothing outlives the request whatever ends it.
+fn spooled(session: &mut tessaridb::Session<'_>) -> std::io::Result<std::fs::File> {
+    let path = std::env::temp_dir().join(format!(
+        "tessaridb-stream-{}-{}.tessarisnap",
+        std::process::id(),
+        SPOOLED.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    std::fs::remove_file(&path)?;
+    session.snapshot_next_into(Box::new(std::io::BufWriter::new(file.try_clone()?)));
+    Ok(file)
 }
 
 /// A run's answer as this surface writes it: one outcome per statement, or the
@@ -146,12 +199,14 @@ pub(super) fn render(
                     kind: frame::Kind::Refusal,
                     body: frame::refusal(theirs, RefusalClass::Invalid, &too_large.to_string()),
                     redirect: None,
+                    snapshot: None,
                 };
             }
             Answer {
                 kind: frame::Kind::Answer,
                 body: answer,
                 redirect: None,
+                snapshot: None,
             }
         }
         // A refusal does not close the connection: a client that mistyped a
@@ -167,6 +222,7 @@ pub(crate) fn refused_as(refused: &tessaridb::Error, theirs: u8) -> Answer {
         kind: frame::Kind::Refusal,
         body: frame::refusal(theirs, refused.class(), &refused.to_string()),
         redirect: None,
+        snapshot: None,
     }
 }
 
@@ -230,6 +286,7 @@ pub(crate) fn respond_vault(
                 kind: frame::Kind::Answer,
                 body,
                 redirect: None,
+                snapshot: None,
             }
         }
         Err(refused) => refused_as(&refused, theirs),

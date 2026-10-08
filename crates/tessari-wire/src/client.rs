@@ -219,11 +219,69 @@ impl Client {
             script: script.to_owned(),
             credentials: credentials.map(|(name, password)| (name.to_owned(), password.to_owned())),
             parameters: parameters.clone(),
+            stream: false,
         };
+        self.exchange(&request, None)
+    }
+
+    /// Run a script, writing the snapshot it takes into `sink` as it arrives
+    /// rather than receiving it as a value (ADR-0125).
+    ///
+    /// A `BACKUP STATE` in the script answers with its summary — form, records,
+    /// version — and its bytes go to `sink` in parts, so neither side holds the
+    /// whole file. A script that takes no snapshot writes nothing to `sink`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NodeTooOld`] before anything is sent to a node below minor 5;
+    /// otherwise as [`Self::run_with`]. On any error, what `sink` already holds
+    /// is not a snapshot and is the caller's to discard.
+    pub fn run_streaming(
+        &mut self,
+        script: &str,
+        credentials: Option<(&str, &str)>,
+        parameters: &Parameters,
+        sink: &mut dyn std::io::Write,
+    ) -> Result<Vec<Answer>> {
+        if self.minor < frame::STREAMS {
+            return Err(Error::NodeTooOld {
+                found: self.minor,
+                needed: frame::STREAMS,
+            });
+        }
+        let request = Request {
+            script: script.to_owned(),
+            credentials: credentials.map(|(name, password)| (name.to_owned(), password.to_owned())),
+            parameters: parameters.clone(),
+            stream: true,
+        };
+        match self.exchange(&request, Some(sink))? {
+            Served::Answers(answers) => Ok(answers),
+            Served::Elsewhere(elsewhere) => Err(Error::Redirected {
+                endpoint: elsewhere.endpoint,
+                node: elsewhere.node,
+            }),
+        }
+    }
+
+    /// Send one request and read until the frame that ends it, writing any
+    /// snapshot parts ahead of it into `sink` — and refusing them as an unknown
+    /// kind when the request did not ask for any.
+    fn exchange(
+        &mut self,
+        request: &Request,
+        mut sink: Option<&mut dyn std::io::Write>,
+    ) -> Result<Served> {
         frame::write(&mut self.writer, frame::Kind::Request, &request.encode())?;
 
-        let Some((kind, body)) = frame::read(&mut self.reader)? else {
-            return Err(Error::Truncated);
+        let (kind, body) = loop {
+            let Some((kind, body)) = frame::read(&mut self.reader)? else {
+                return Err(Error::Truncated);
+            };
+            match (kind, sink.as_mut()) {
+                (frame::Kind::Part, Some(sink)) => sink.write_all(&body)?,
+                _ => break (kind, body),
+            }
         };
         match kind {
             frame::Kind::Refusal => Err(refused(&body)),
@@ -261,7 +319,8 @@ impl Client {
             | frame::Kind::Subscribe
             | frame::Kind::Change
             | frame::Kind::Vault
-            | frame::Kind::Progress => Err(Error::UnknownFrame { tag: kind.tag() }),
+            | frame::Kind::Progress
+            | frame::Kind::Part => Err(Error::UnknownFrame { tag: kind.tag() }),
         }
     }
 
@@ -410,7 +469,8 @@ impl Feed {
             | frame::Kind::Answer
             | frame::Kind::Subscribe
             | frame::Kind::Elsewhere
-            | frame::Kind::Vault => Err(Error::UnknownFrame { tag: kind.tag() }),
+            | frame::Kind::Vault
+            | frame::Kind::Part => Err(Error::UnknownFrame { tag: kind.tag() }),
         }
     }
 

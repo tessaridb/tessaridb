@@ -255,6 +255,19 @@ impl<'a> Session<'a> {
         self
     }
 
+    /// As [`Self::snapshot_into`], for the next script on a session that is
+    /// already open — a wire connection streaming a snapshot (ADR-0125 D5).
+    pub fn snapshot_next_into(&mut self, out: Box<dyn std::io::Write + Send>) {
+        self.sink = crate::backup_to::Sink::to(out);
+    }
+
+    /// Whether the sink set by [`Self::snapshot_next_into`] was written by a
+    /// `BACKUP STATE`, clearing it either way, so a sink the script never took
+    /// cannot catch the next script's snapshot.
+    pub fn snapshot_was_written(&mut self) -> bool {
+        self.sink.take().is_none()
+    }
+
     /// The namespace `USE` selected, if any.
     #[must_use]
     pub fn namespace(&self) -> Option<&str> {

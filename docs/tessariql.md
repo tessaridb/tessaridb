@@ -8094,6 +8094,14 @@ class `invalid`, naming its size, and the connection goes on to the next request
 Up to `0.33.4-beta` the node failed the write instead and dropped the connection,
 which a client reported as `the connection ended mid-frame`.
 
+A client can ask instead for the snapshot to be **streamed** (protocol minor 5):
+the node writes it to an unlinked spool file and sends it in parts of 1 MiB
+ahead of the answer, and the `BACKUP STATE` outcome is then its summary —
+`{ form, records, version }` — because the bytes have already left. Neither side
+holds the whole file. Only the snapshot streams; `BACKUP LOG` and
+`BACKUP SCRIPT` are still answered whole, as over HTTP. The command line asks
+for it with `--at <address> --backup <file>`.
+
 ### The store's current state, as a snapshot or as a script
 
 ```
@@ -8122,7 +8130,10 @@ reason, and take no `FROM`. Over HTTP they are `GET /backup?as=state` and
 `GET /backup?as=script`; on the command line, `--backup <file>` (or
 `--snapshot <file>`) and `--dump <file>` for a store the process opens itself.
 `--backup <file> --from <n>` writes the log from `n`, and `--from 1` the whole
-log.
+log. With `--at <address>`, `--backup <file>` takes the snapshot from that
+running node instead, streamed over the connection whatever its size, written
+aside and renamed once the node has answered; `--from` and `--dump` are still
+refused beside `--at`.
 
 A script brings a user back with the hash the store holds, since nobody knows the
 password:

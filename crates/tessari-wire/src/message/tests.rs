@@ -19,6 +19,7 @@ fn a_request_round_trips_with_and_without_credentials() {
             script: "SELECT * FROM users;".to_owned(),
             credentials,
             parameters: Parameters::new(),
+            stream: false,
         };
         let read = Request::decode(&held.encode()).expect("a request");
         assert_eq!(read, held);
@@ -33,6 +34,7 @@ fn a_request_does_not_print_the_password_it_carries() {
         script: "SELECT * FROM users;".to_owned(),
         credentials: Some(("ada".to_owned(), "a long one".to_owned())),
         parameters: Parameters::new(),
+        stream: false,
     };
     let printed = format!("{held:?}");
     assert!(!printed.contains("a long one"), "{printed}");
@@ -47,6 +49,7 @@ fn a_request_body_that_promises_more_than_it_holds_is_refused() {
         script: "SELECT * FROM users WHERE name = $who;".to_owned(),
         credentials: Some(("ada".to_owned(), "x".to_owned())),
         parameters,
+        stream: false,
     };
     let body = held.encode();
     for cut in 0..body.len() {

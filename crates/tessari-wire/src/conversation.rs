@@ -78,6 +78,9 @@ pub(crate) struct Answer {
     /// redirect is settled — kept beside the frame so the surface counts it
     /// without reading back what it just encoded (G053 C6).
     pub(crate) redirect: Option<bool>,
+    /// The snapshot a request asked to stream, spooled to an unlinked file and
+    /// sent in [`frame::Kind::Part`] frames ahead of this answer (ADR-0125 D5).
+    pub(crate) snapshot: Option<std::fs::File>,
 }
 
 /// Hold one connection until it ends.
@@ -219,8 +222,13 @@ pub(crate) async fn converse<C: Carried>(
             })
             .await;
         match bridged {
-            Bridged::Answered((back, answer)) => {
+            Bridged::Answered((back, mut answer)) => {
                 session = back;
+                if let Some(spool) = answer.snapshot.take()
+                    && let Err(why) = frame_async::write_parts(&mut writer, spool).await?
+                {
+                    answer = spool_unreadable(theirs, &why);
+                }
                 reply(&mut writer, &talk.stopping, answer.kind, &answer.body).await?;
                 if let Some(settled) = answer.redirect {
                     talk.stopping.redirected(settled);
@@ -248,6 +256,24 @@ pub(crate) async fn converse<C: Carried>(
         }
     }
     Ok(())
+}
+
+/// The refusal that ends a stream whose spool could not be read back, so the
+/// client discards the parts it already holds (ADR-0125 D3).
+pub(crate) fn spool_unreadable(theirs: u8, why: &std::io::Error) -> Answer {
+    Answer {
+        kind: frame::Kind::Refusal,
+        body: frame::refusal(
+            theirs,
+            RefusalClass::Internal,
+            &format!(
+                "the snapshot could not be read back from the node's spool: {}",
+                why.kind()
+            ),
+        ),
+        redirect: None,
+        snapshot: None,
+    }
 }
 
 /// Write one answer to a request, and count it.

@@ -26,6 +26,30 @@ pub(crate) async fn write(
     write_tagged(out, kind.tag(), body).await
 }
 
+/// As [`frame::write_parts`], without holding a thread: the spool is read
+/// through tokio's file, so the runtime never waits on the disk.
+///
+/// # Errors
+///
+/// As [`frame::write_parts`].
+pub(crate) async fn write_parts(
+    out: &mut (impl AsyncWrite + Unpin),
+    spool: std::fs::File,
+) -> Result<std::io::Result<()>> {
+    let mut reading = tokio::fs::File::from_std(spool);
+    if let Err(why) = tokio::io::AsyncSeekExt::rewind(&mut reading).await {
+        return Ok(Err(why));
+    }
+    let mut part = vec![0_u8; frame::PART_BYTES];
+    loop {
+        match reading.read(&mut part).await {
+            Ok(0) => return Ok(Ok(())),
+            Ok(read) => write(out, Kind::Part, part.get(..read).unwrap_or_default()).await?,
+            Err(why) => return Ok(Err(why)),
+        }
+    }
+}
+
 /// Write one frame under a raw tag — the peer link's tag space.
 ///
 /// # Errors

@@ -325,8 +325,10 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
         // carries scripts. Ignoring the address would run them against a store
         // in this process, which is the opposite of what was asked for.
         let reached_past_the_session = match source {
-            Source::Backup(_) => Some("--backup"),
-            Source::Snapshot(_) => Some("--snapshot"),
+            // A snapshot the node takes and streams over the connection
+            // (ADR-0125). The log is answered whole, so a `--from` stays here.
+            Source::Backup(_) if sequence.is_some() => Some("--from"),
+            Source::Backup(_) | Source::Snapshot(_) => None,
             Source::Dump(_) => Some("--dump"),
             Source::Restore(_) => Some("--restore"),
             Source::Health => Some("--health"),

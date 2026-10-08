@@ -86,6 +86,12 @@ pub struct Request {
     /// else, which is the thing binding after parsing exists to make impossible
     /// — undoing it at the wire would be a strange place to give it back.
     pub parameters: Parameters,
+    /// Whether the snapshot this script takes is sent in [`crate::frame`] parts
+    /// ahead of the answer rather than as its value (ADR-0125 D1).
+    ///
+    /// One byte after the parameters, written only when set: a node below
+    /// minor 5 reads past it, so a client sends it only to a node at or above.
+    pub stream: bool,
 }
 
 /// A node wipes the password a request carried when the request is dropped, so
@@ -145,6 +151,9 @@ impl Request {
             put_text(&mut body, name);
             put_bytes(&mut body, encode_payload(value).as_slice());
         }
+        if self.stream {
+            body.push(1);
+        }
         body
     }
 
@@ -177,10 +186,16 @@ impl Request {
             parameters.insert(name, decode_payload(&bytes)?);
             at = next;
         }
+        let stream = match body.get(at) {
+            None | Some(0) => false,
+            Some(1) => true,
+            Some(_) => return Err(Error::Malformed),
+        };
         Ok(Self {
             script,
             credentials,
             parameters,
+            stream,
         })
     }
 }
