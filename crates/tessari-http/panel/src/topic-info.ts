@@ -41,6 +41,8 @@ export interface Topic {
   /** The bytes it holds now — reported only beside `retainBytes`. */
   readonly bytes: number | null;
   readonly maxBytes: number | null;
+  /** `DEDUPLICATE d ON f`: the key a repeat is recognised by, and for how long. */
+  readonly repeats: { readonly key: string; readonly window: string } | null;
   readonly readers: ReadonlyMap<string, Reader>;
   readonly groups: ReadonlyMap<string, Group>;
   readonly ingestedBy: ReadonlyMap<string, Ingest>;
@@ -116,6 +118,8 @@ export function topic(value: unknown): Topic | null {
     return null;
   }
   const retain = fields["retain"];
+  const window = fields["deduplicate"];
+  const key = fields["deduplicate_on"];
   return {
     name,
     first: whole(fields["first"]),
@@ -124,6 +128,7 @@ export function topic(value: unknown): Topic | null {
     retainBytes: whole(fields["retain_bytes"]),
     bytes: whole(fields["bytes"]),
     maxBytes: whole(fields["max_bytes"]),
+    repeats: typeof window === "string" && typeof key === "string" ? { key, window } : null,
     readers: entries(fields["consumers"], reader),
     groups: entries(fields["groups"], group),
     ingestedBy: entries(fields["ingested_by"], ingest),
@@ -137,6 +142,13 @@ export function keeps(topic: Topic): string {
     ...(topic.retainBytes === null ? [] : [`${topic.retainBytes} bytes`]),
   ];
   return limits.length === 0 ? "everything" : limits.join(", ");
+}
+
+/** What happens to a message repeating a key: dropped inside the window, or kept. */
+export function repeats(topic: Topic): string {
+  return topic.repeats === null
+    ? "kept"
+    : `dropped within ${topic.repeats.window} by ${topic.repeats.key}`;
 }
 
 /** How many messages the topic holds right now — positions are dense. */

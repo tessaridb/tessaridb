@@ -207,6 +207,9 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         if let Some(field) = &declared.not_before {
             let _ = write!(script, " NOT BEFORE {field}");
         }
+        if let Some(window) = declared.deduplicate {
+            let _ = write!(script, " DEDUPLICATE {}", window.to_literal());
+        }
         // Always written, on this function's own rule: a declaration leaning on
         // a default is one whose meaning changes when the default moves, and
         // changes silently, in a script somebody kept.

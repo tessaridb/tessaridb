@@ -47,6 +47,8 @@ pub(crate) struct Declared<'s> {
     pub(crate) when: Option<&'s String>,
     pub(crate) body: &'s str,
     pub(crate) if_not_exists: bool,
+    pub(crate) or_replace: bool,
+    pub(crate) params: &'s [(String, Span)],
 }
 
 /// The word a refused kind is named by.
@@ -94,10 +96,32 @@ impl<'a> Session<'a> {
                 span: declared.table.span,
             });
         }
+        // Every name the body reads beyond the write's own is a param of this
+        // database, or the event is refused where the name is written, as an
+        // unbound parameter always was (ADR-0124 D2).
+        let held = Catalog::new(transaction)
+            .database(definition.database)?
+            .map(|database| database.params)
+            .unwrap_or_default();
+        if let Some((name, at)) = declared
+            .params
+            .iter()
+            .find(|(name, _)| !held.contains_key(name))
+        {
+            return Err(Error::Script(tessari_ql::Error::UnboundParameter {
+                name: name.clone(),
+                span: *at,
+            }));
+        }
         // A write straddling this definition retries and sees it, the rule
         // `DEFINE ROLLUP` keeps (ADR-0110 D10).
         transaction.guard_table_entry(id);
         let mut events = definition.events;
+        // One catalog write either way, so no commit sees the table without the
+        // event; a write straddling it retries and sees the new body.
+        if declared.or_replace {
+            events.retain(|held| held.name != declared.name.text);
+        }
         if events.iter().any(|held| held.name == declared.name.text) {
             if declared.if_not_exists {
                 return Ok(Outcome::Done);

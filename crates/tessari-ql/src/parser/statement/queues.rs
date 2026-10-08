@@ -1,7 +1,7 @@
 //! Queues and stream consumers: claims, releases and consumer declarations.
 
 use super::Parser;
-use tessari_types::Number;
+use tessari_types::{Duration, Number};
 
 use crate::ast::{ConsumerSource, FieldMapping, Name, OnFailure, StatementKind};
 use crate::error::{Error, Result};
@@ -31,9 +31,11 @@ impl Parser<'_> {
     pub(super) fn release_statement(&mut self, start: Span) -> Result<StatementKind> {
         if !self.eat_word("all") {
             let target = self.record_target()?;
+            let consumer = self.for_consumer()?;
             return Ok(StatementKind::Release {
                 target,
-                consumer: self.for_consumer()?,
+                consumer,
+                not_before: self.release_not_before()?,
                 span: start.to(self.span_behind()),
             });
         }
@@ -43,8 +45,18 @@ impl Parser<'_> {
         Ok(StatementKind::ReleaseAll {
             table,
             consumer,
+            not_before: self.release_not_before()?,
             span: start.to(self.span_behind()),
         })
+    }
+
+    /// `NOT BEFORE <instant | duration>` after a release (ADR-0124 D6).
+    fn release_not_before(&mut self) -> Result<Option<crate::ast::Expr>> {
+        if !self.eat_keyword(Keyword::Not) {
+            return Ok(None);
+        }
+        self.expect_word("before", "`BEFORE` and the instant the record waits for")?;
+        Ok(Some(self.expression()?))
     }
 
     /// The optional `FOR CONSUMER '<name>'` both release forms accept.
@@ -79,6 +91,24 @@ impl Parser<'_> {
             return Ok(StatementKind::Claim {
                 table,
                 count,
+                count_parameter: None,
+                span: start.to(self.span_behind()),
+            });
+        }
+        // `CLAIM $n FROM jobs`: the count binding supplies, checked then
+        // exactly as a written one is (ADR-0124 D5).
+        if let Some(Token::Parameter(name)) = self.peek() {
+            let parameter = crate::ast::CountParameter {
+                name: name.clone(),
+                span: self.span_here(),
+            };
+            self.advance();
+            self.expect_keyword(Keyword::From, "`FROM` and the queue to take from")?;
+            let table = self.table_ref()?;
+            return Ok(StatementKind::Claim {
+                table,
+                count: 1,
+                count_parameter: Some(parameter),
                 span: start.to(self.span_behind()),
             });
         }
@@ -87,6 +117,7 @@ impl Parser<'_> {
             return Ok(StatementKind::Claim {
                 table,
                 count: 1,
+                count_parameter: None,
                 span: start.to(self.span_behind()),
             });
         }
@@ -182,6 +213,7 @@ impl Parser<'_> {
         let mut graph: Option<Name> = None;
         let mut priority: Option<Name> = None;
         let mut not_before: Option<Name> = None;
+        let mut deduplicate: Option<Duration> = None;
         loop {
             // `PRIORITY BY` and `NOT BEFORE` name a field of the records, and
             // `priority`, `by` and `before` stay ordinary names (G055 C8).
@@ -194,6 +226,10 @@ impl Parser<'_> {
                     "`BEFORE` and the field holding when a record may be handed out",
                 )?;
                 not_before = Some(self.name()?);
+            } else if deduplicate.is_none() && self.eat_word("deduplicate") {
+                deduplicate = Some(self.positive_duration(
+                    "a duration above zero, like `5m` — how long a written identity is remembered",
+                )?);
             } else if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
                 strictness = Some(true);
             } else if strictness.is_none() && self.eat_keyword(Keyword::Schemaless) {
@@ -215,6 +251,7 @@ impl Parser<'_> {
             graph,
             priority,
             not_before,
+            deduplicate,
             if_not_exists,
         })
     }

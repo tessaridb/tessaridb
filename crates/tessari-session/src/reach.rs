@@ -23,6 +23,8 @@ use tessari_ql::{Edit, InfoSubject, JoinSide, StatementKind, TableRef};
 #[must_use]
 pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
     match kind {
+        // The tables the drop it wraps names (ADR-0124 D1).
+        StatementKind::DropIfExists(dropped) => tables_named(dropped),
         // Declarations of a table itself. A grant names a table that already
         // exists, so these are handled by the caller rather than by listing the
         // table they are about to create — see `Error::GrantedUserCannotDeclare`.
@@ -85,6 +87,8 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // A replication policy is a property of the tenancy, not of anything in it.
         | StatementKind::AlterNamespace { .. }
         | StatementKind::DefineDatabase { .. }
+        | StatementKind::DefineParam { .. }
+        | StatementKind::DropParam { .. }
         | StatementKind::DefineAnalyzer { .. }
         // Undeclaring one names no table either. That an analyzer is still
         // attached to a field somewhere is a question this statement asks for

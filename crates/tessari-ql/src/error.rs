@@ -767,6 +767,23 @@ pub enum Error {
         span: Span,
     },
 
+    /// A count bound to something that is not a whole number of records:
+    /// `LIMIT $n`, `START $n` or `CLAIM $n` (ADR-0124 D5). Refused where it was
+    /// bound, before anything runs, rather than rounded or clamped.
+    #[error(
+        "`${name}` is bound to {found}, and a count there is a whole number{floor} (at {span})"
+    )]
+    CountNotAWholeNumber {
+        /// The parameter's name, without its marker.
+        name: String,
+        /// What it held — its type, or the number when it is one.
+        found: String,
+        /// `" above zero"` where zero is not a count.
+        floor: &'static str,
+        /// Where the count was written.
+        span: Span,
+    },
+
     /// A statement [`crate::render`] does not write back out as text.
     ///
     /// The renderer covers `SELECT` at this milestone. Every other form names
@@ -890,6 +907,7 @@ impl Error {
             | Self::OneSidedJoin { span, .. }
             | Self::JoinKeyIsNotAField { span, .. }
             | Self::UnboundParameter { span, .. }
+            | Self::CountNotAWholeNumber { span, .. }
             | Self::BoundTwice { span, .. }
             | Self::BindingCollidesWithParameter { span, .. }
             | Self::ReturnedTwice { span }

@@ -3,10 +3,10 @@
 mod vaults;
 
 use super::{
-    FIELD_ATTEMPTS, FIELD_DESCENDING, FIELD_DIMENSION, FIELD_DISTANCE, FIELD_EVENT_TIME,
-    FIELD_FROM, FIELD_KEY_ID, FIELD_MATERIALIZED, FIELD_NOT_BEFORE, FIELD_ORDER, FIELD_PRIORITY,
-    FIELD_READ, FIELD_RETAIN, FIELD_TIMEOUT, FIELD_TO, FIELD_WRAPPED, VectorDistance, field_id,
-    flag, number, object,
+    FIELD_ATTEMPTS, FIELD_DEDUPLICATE, FIELD_DESCENDING, FIELD_DIMENSION, FIELD_DISTANCE,
+    FIELD_EVENT_TIME, FIELD_FROM, FIELD_KEY_ID, FIELD_MATERIALIZED, FIELD_NOT_BEFORE, FIELD_ORDER,
+    FIELD_PRIORITY, FIELD_READ, FIELD_RETAIN, FIELD_TIMEOUT, FIELD_TO, FIELD_WRAPPED,
+    VectorDistance, field_id, flag, number, object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -286,6 +286,9 @@ pub struct QueueDeclaration {
     /// The field holding the instant before which a record is not handed out,
     /// when one was named (G055 C8); written only when present.
     pub not_before: Option<String>,
+    /// How long a written identity is remembered, so a `CREATE` of it inside
+    /// the window writes nothing (ADR-0124 D8); written only when present.
+    pub deduplicate: Option<Duration>,
 }
 
 impl QueueDeclaration {
@@ -309,6 +312,9 @@ impl QueueDeclaration {
                 FIELD_NOT_BEFORE.to_owned(),
                 Value::from(not_before.as_str()),
             );
+        }
+        if let Some(window) = self.deduplicate {
+            fields.insert(FIELD_DEDUPLICATE.to_owned(), Value::Duration(window));
         }
         Value::Object(fields)
     }
@@ -339,6 +345,17 @@ impl QueueDeclaration {
             },
             priority: named(fields, FIELD_PRIORITY, ENTITY)?,
             not_before: named(fields, FIELD_NOT_BEFORE, ENTITY)?,
+            deduplicate: match fields.get(FIELD_DEDUPLICATE) {
+                None => None,
+                Some(Value::Duration(window)) => Some(*window),
+                Some(other) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: ENTITY,
+                        field: FIELD_DEDUPLICATE,
+                        found: other.type_name(),
+                    });
+                }
+            },
         })
     }
 }

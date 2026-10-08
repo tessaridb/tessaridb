@@ -3,7 +3,7 @@
 use super::arguments::{datetime_at, number_at};
 use crate::error::{Error, Result};
 use tessari_ql::{Function, Span};
-use tessari_types::{Datetime, Number, Value};
+use tessari_types::{Datetime, Duration, Number, Value};
 
 /// The instant this statement is being evaluated at.
 ///
@@ -98,6 +98,29 @@ pub(crate) fn from_unix(function: Function, arguments: &[Value], span: Span) -> 
         });
     };
     Ok(Value::Datetime(Datetime::from_seconds(seconds)))
+}
+
+/// `duration::from_secs(n)` — the span `n` seconds names, whole or fractional,
+/// to the nanosecond (ADR-0124 D4).
+///
+/// Computed in exact decimal rather than in floating point, so `1.5` is exactly
+/// 1 500 milliseconds; a count past what a span holds is refused, never wrapped.
+pub(crate) fn from_secs(function: Function, arguments: &[Value], span: Span) -> Result<Value> {
+    let number = number_at(function, arguments, 0, span)?;
+    let outside = || Error::CallFailed {
+        function,
+        reason: "that many seconds is past what a duration can hold",
+        span,
+    };
+    let nanos = number
+        .as_decimal()
+        .and_then(|seconds| seconds.checked_mul(rust_decimal::Decimal::from(1_000_000_000_u32)))
+        .map(|nanos| nanos.round())
+        .and_then(|nanos| rust_decimal::prelude::ToPrimitive::to_i128(&nanos))
+        .ok_or_else(outside)?;
+    Duration::from_nanos(nanos)
+        .map(Value::Duration)
+        .ok_or_else(outside)
 }
 
 /// The instant this process's clock reads.

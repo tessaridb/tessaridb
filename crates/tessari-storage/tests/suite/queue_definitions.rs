@@ -65,6 +65,8 @@ fn a_queue_definition_round_trips_with_both_clauses() {
         // their absence (G055 C8).
         priority: Some("p".to_owned()),
         not_before: Some("due".to_owned()),
+        // ADR-0124 D8: written only when declared, so declared here.
+        deduplicate: Some(Duration::new(300, 0).unwrap()),
     };
     let definition = TableDefinition {
         id: TableId::new(7),
@@ -97,6 +99,7 @@ fn a_queue_declared_without_a_ceiling_reads_back_as_unlimited() {
         attempts: None,
         priority: None,
         not_before: None,
+        deduplicate: None,
     };
     let definition = TableDefinition {
         id: TableId::new(8),
@@ -138,6 +141,7 @@ fn a_definition_claiming_to_be_a_queue_and_an_edge_is_refused() {
             attempts: None,
             priority: None,
             not_before: None,
+            deduplicate: None,
         }),
         identity: IdentityKind::default(),
         graph: None,

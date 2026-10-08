@@ -1334,6 +1334,24 @@ fn every_error_answer_names_its_class_beside_its_message() {
             409,
             "conflict",
         ),
+        // ADR-0124 D7: a record that is not there is a conflict with the
+        // store's state, and an event failing on one carries that class.
+        (
+            in_prod("UPDATE notes:404 MERGE { body: 'x' };"),
+            Some(ROOT),
+            409,
+            "conflict",
+        ),
+        (
+            in_prod(
+                "DEFINE COLLECTION other; \
+                 DEFINE EVENT touch ON notes FOR CREATE THEN UPDATE other:1 MERGE { x: 1 }; \
+                 CREATE notes:9 = { body: 'z' };",
+            ),
+            Some(ROOT),
+            409,
+            "conflict",
+        ),
     ] {
         let (got, _, body) = send(&address, "POST", "/script", &script, credential);
         assert_eq!(got, status, "{script}: {body}");

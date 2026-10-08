@@ -172,6 +172,10 @@ pub struct Select {
     pub start: Option<u64>,
     /// How many to answer with at most.
     pub limit: Option<u64>,
+    /// `START $n`, until binding writes the number into [`Self::start`].
+    pub start_parameter: Option<CountParameter>,
+    /// `LIMIT $n`, until binding writes the number into [`Self::limit`].
+    pub limit_parameter: Option<CountParameter>,
     /// What the author expects the read to have done, when they said.
     ///
     /// `None` is the ordinary case: the statement asks a question and the store
@@ -478,4 +482,15 @@ pub struct Projected {
     /// projections collide is a property of the statement, so it is knowable
     /// before anything runs and is refused there.
     pub name: Name,
+}
+
+/// A count written as a parameter — `LIMIT $n`, `START $n`, `CLAIM $n FROM q` —
+/// which binding replaces with the number it holds, so that everything after
+/// binding sees exactly what a literal would have given it (ADR-0124 D5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CountParameter {
+    /// The parameter's name, without its marker.
+    pub name: String,
+    /// Where it was written.
+    pub span: Span,
 }

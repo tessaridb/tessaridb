@@ -50,8 +50,43 @@ impl Parser<'_> {
         })
     }
 
+    /// `DROP <kind> [IF EXISTS] <name> …`
+    ///
+    /// `IF EXISTS` stands after the kind words, where `IF NOT EXISTS` stands in
+    /// a `DEFINE`, and wraps whatever drop was read: the drop runs as written
+    /// and its "no such object" answer becomes `ok` (ADR-0124 D1).
     pub(super) fn drop_statement(&mut self) -> Result<StatementKind> {
         self.advance();
+        self.dropping_if_exists = false;
+        let dropped = self.drop_kind()?;
+        if std::mem::take(&mut self.dropping_if_exists) {
+            return Ok(StatementKind::DropIfExists(Box::new(dropped)));
+        }
+        Ok(dropped)
+    }
+
+    /// `IF EXISTS`, when it stands here, remembered for [`Self::drop_statement`].
+    fn drop_if_exists(&mut self) -> Result<()> {
+        if self.eat_keyword(Keyword::If) {
+            self.expect_keyword(Keyword::Exists, "`EXISTS` after `IF`")?;
+            self.dropping_if_exists = true;
+        }
+        Ok(())
+    }
+
+    /// The name a drop undefines, after an optional `IF EXISTS`.
+    fn dropped_name(&mut self) -> Result<crate::ast::Name> {
+        self.drop_if_exists()?;
+        self.name()
+    }
+
+    /// The table a drop undefines, after an optional `IF EXISTS`.
+    fn dropped_table(&mut self) -> Result<crate::ast::TableRef> {
+        self.drop_if_exists()?;
+        self.table_ref()
+    }
+
+    fn drop_kind(&mut self) -> Result<StatementKind> {
         match self.peek_keyword() {
             // A bucket is a table row carrying `bucket: true` — `DEFINE BUCKET`
             // reaches `define_table` — so the words undefine the same catalog
@@ -59,46 +94,60 @@ impl Parser<'_> {
             Some(Keyword::Table | Keyword::Space | Keyword::Bucket) => {
                 self.advance();
                 Ok(StatementKind::DropTable {
-                    table: self.table_ref()?,
+                    table: self.dropped_table()?,
                 })
             }
             Some(Keyword::User) => {
                 self.advance();
-                Ok(StatementKind::DropUser { name: self.name()? })
+                Ok(StatementKind::DropUser {
+                    name: self.dropped_name()?,
+                })
             }
             Some(Keyword::Analyzer) => {
                 self.advance();
-                Ok(StatementKind::DropAnalyzer { name: self.name()? })
+                Ok(StatementKind::DropAnalyzer {
+                    name: self.dropped_name()?,
+                })
             }
             Some(Keyword::Search) => {
                 self.advance();
-                Ok(StatementKind::DropSearch { name: self.name()? })
+                Ok(StatementKind::DropSearch {
+                    name: self.dropped_name()?,
+                })
             }
-            _ if self.eat_word("synonyms") => {
-                Ok(StatementKind::DropSynonyms { name: self.name()? })
-            }
-            _ if self.eat_word("stopwords") => {
-                Ok(StatementKind::DropStopwords { name: self.name()? })
-            }
+            _ if self.eat_word("synonyms") => Ok(StatementKind::DropSynonyms {
+                name: self.dropped_name()?,
+            }),
+            _ if self.eat_word("stopwords") => Ok(StatementKind::DropStopwords {
+                name: self.dropped_name()?,
+            }),
             Some(Keyword::Database) => {
                 self.advance();
-                Ok(StatementKind::DropDatabase { name: self.name()? })
+                Ok(StatementKind::DropDatabase {
+                    name: self.dropped_name()?,
+                })
             }
             Some(Keyword::Namespace) => {
                 self.advance();
-                Ok(StatementKind::DropNamespace { name: self.name()? })
+                Ok(StatementKind::DropNamespace {
+                    name: self.dropped_name()?,
+                })
             }
             Some(Keyword::Graph) => {
                 self.advance();
-                Ok(StatementKind::DropGraph { name: self.name()? })
+                Ok(StatementKind::DropGraph {
+                    name: self.dropped_name()?,
+                })
             }
             Some(Keyword::Edge) => {
                 self.advance();
-                Ok(StatementKind::DropEdge { name: self.name()? })
+                Ok(StatementKind::DropEdge {
+                    name: self.dropped_name()?,
+                })
             }
             Some(Keyword::Index) => {
                 self.advance();
-                let name = self.name()?;
+                let name = self.dropped_name()?;
                 self.expect_keyword(Keyword::On, "`ON` and the table the index reads")?;
                 Ok(StatementKind::DropIndex {
                     name,
@@ -107,7 +156,7 @@ impl Parser<'_> {
             }
             Some(Keyword::Field) => {
                 self.advance();
-                let name = self.name()?;
+                let name = self.dropped_name()?;
                 self.expect_keyword(Keyword::On, "`ON` and the table the field is on")?;
                 Ok(StatementKind::DropField {
                     name,
@@ -119,7 +168,9 @@ impl Parser<'_> {
             // but a subject can stand here.
             _ if self.eat_word("kafka") => {
                 self.expect_word("consumer", "`CONSUMER` after `KAFKA`")?;
-                Ok(StatementKind::DropConsumer { name: self.name()? })
+                Ok(StatementKind::DropConsumer {
+                    name: self.dropped_name()?,
+                })
             }
             _ if self.peek_word("consumer") => Err(self.error_here(
                 "`DROP KAFKA CONSUMER` — the bare word now belongs to a \
@@ -128,30 +179,56 @@ impl Parser<'_> {
             // Contextual for the same reason `consumer` is, and listed before
             // `node` so that reading these two in order tells you which of them
             // a bare word reaches.
-            _ if self.eat_word("replica") => Ok(StatementKind::DropReplica { name: self.name()? }),
+            _ if self.eat_word("replica") => Ok(StatementKind::DropReplica {
+                name: self.dropped_name()?,
+            }),
             // Contextual, as the word is everywhere else it appears.
-            _ if self.eat_word("vector") => Ok(StatementKind::DropVector { name: self.name()? }),
-            _ if self.eat_word("geo") => Ok(StatementKind::DropGeo { name: self.name()? }),
-            _ if self.eat_word("vault") => Ok(StatementKind::DropVault { name: self.name()? }),
-            _ if self.eat_word("queue") => Ok(StatementKind::DropQueue { name: self.name()? }),
+            _ if self.eat_word("vector") => Ok(StatementKind::DropVector {
+                name: self.dropped_name()?,
+            }),
+            _ if self.eat_word("geo") => Ok(StatementKind::DropGeo {
+                name: self.dropped_name()?,
+            }),
+            _ if self.eat_word("vault") => Ok(StatementKind::DropVault {
+                name: self.dropped_name()?,
+            }),
+            _ if self.eat_word("queue") => Ok(StatementKind::DropQueue {
+                name: self.dropped_name()?,
+            }),
             // A topic is a table carrying its declaration, as a space is, so the
             // word undefines the same catalog entry (G037).
             _ if self.eat_word("topic") => {
                 if self.topic_consumer_follows(false) {
                     self.eat_word("consumer");
-                    Ok(StatementKind::DropTopicConsumer { name: self.name()? })
+                    Ok(StatementKind::DropTopicConsumer {
+                        name: self.dropped_name()?,
+                    })
                 } else {
                     Ok(StatementKind::DropTable {
-                        table: self.table_ref()?,
+                        table: self.dropped_table()?,
                     })
                 }
             }
-            _ if self.eat_word("group") => self.drop_group(),
-            _ if self.eat_word("series") => Ok(StatementKind::DropSeries { name: self.name()? }),
-            _ if self.eat_word("rollup") => Ok(StatementKind::DropRollup { name: self.name()? }),
-            _ if self.eat_word("view") => Ok(StatementKind::DropView { name: self.name()? }),
+            _ if self.eat_word("group") => {
+                self.drop_if_exists()?;
+                self.drop_group()
+            }
+            _ if self.eat_word("series") => Ok(StatementKind::DropSeries {
+                name: self.dropped_name()?,
+            }),
+            _ if self.eat_word("rollup") => Ok(StatementKind::DropRollup {
+                name: self.dropped_name()?,
+            }),
+            _ if self.eat_word("view") => Ok(StatementKind::DropView {
+                name: self.dropped_name()?,
+            }),
+            _ if self.eat_word("param") => {
+                self.drop_if_exists()?;
+                let (name, span) = self.param_name()?;
+                Ok(StatementKind::DropParam { name, span })
+            }
             _ if self.eat_word("event") => {
-                let name = self.name()?;
+                let name = self.dropped_name()?;
                 self.expect_keyword(Keyword::On, "`ON` and the table the event is defined on")?;
                 Ok(StatementKind::DropEvent {
                     name,

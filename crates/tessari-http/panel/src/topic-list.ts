@@ -9,7 +9,7 @@ import { facts } from "./draw.js";
 import { told } from "./session.js";
 import { settled, state } from "./states.js";
 import { onArrival } from "./tabs.js";
-import { behind, fieldsOf, held, keeps, topic as asTopic, type Topic } from "./topic-info.js";
+import { behind, fieldsOf, held, keeps, repeats, topic as asTopic, type Topic } from "./topic-info.js";
 import { aName, aWhole, tenancy } from "./topic-names.js";
 
 const SCREEN = "Topics";
@@ -160,7 +160,7 @@ function draw(read: Topic[]): void {
   }
   clear("topics-list");
   if (read.length > 0) {
-    const table = headed(["topic", "held", "last", "keeps", "readers", "groups", "most behind"]);
+    const table = headed(["topic", "held", "last", "keeps", "repeats", "readers", "groups", "most behind"]);
     const body = table.createTBody();
     for (const each of read) {
       const row = body.insertRow();
@@ -173,6 +173,7 @@ function draw(read: Topic[]): void {
       numberCell(row, held(each));
       numberCell(row, each.last);
       row.insertCell().textContent = keeps(each);
+      row.insertCell().textContent = repeats(each);
       numberCell(row, each.readers.size);
       numberCell(row, each.groups.size);
       numberCell(row, behind(each));

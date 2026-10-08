@@ -22,12 +22,13 @@ use tessari_ql::TopicClauses;
 use tessari_storage::{PublicAppend, TopicDeclaration};
 
 /// The declaration a `DEFINE TOPIC` statement's clauses describe.
-pub(crate) fn declared_topic(clauses: TopicClauses) -> TopicDeclaration {
+pub(crate) fn declared_topic(clauses: &TopicClauses) -> TopicDeclaration {
     TopicDeclaration {
         retain: clauses.retain,
         max_bytes: clauses.max_bytes,
         retain_bytes: clauses.retain_bytes,
         public: clauses.public.map(|(rate, per)| PublicAppend { rate, per }),
+        deduplicate: clauses.deduplicate.clone(),
     }
 }
 
@@ -50,6 +51,9 @@ pub(crate) fn topic_clauses(declared: &TopicDeclaration) -> String {
             public.rate,
             public.per.to_literal()
         );
+    }
+    if let Some((window, field)) = &declared.deduplicate {
+        let _ = write!(clauses, " DEDUPLICATE {} ON {field}", window.to_literal());
     }
     clauses
 }

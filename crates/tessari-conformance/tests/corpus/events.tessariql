@@ -83,3 +83,39 @@ SELECT * FROM orders WHERE v = 1000;
 --- case: dropping one that is not there is refused by name
 DROP EVENT big ON orders;
 --- expect: error Unknown
+
+--- case: OR REPLACE changes an event's body in one statement (ADR-0124 D1)
+DEFINE COLLECTION replaced;
+DEFINE EVENT swapped ON replaced THEN CREATE log = { event: 'old' };
+DEFINE EVENT OR REPLACE swapped ON replaced THEN CREATE log = { event: 'new' };
+CREATE replaced:1 = {};
+SELECT * FROM log WHERE event = 'new' OR event = 'old';
+--- expect: rows 1
+
+--- case: IF NOT EXISTS and OR REPLACE are not both meant
+DEFINE EVENT IF NOT EXISTS OR REPLACE swapped ON replaced THEN THROW 'x';
+--- expect: error UnexpectedToken
+
+--- case: DROP IF EXISTS skips an event that is not there, and a plain DROP still refuses
+DROP EVENT IF EXISTS nothing ON replaced;
+DROP EVENT IF EXISTS swapped ON replaced;
+--- expect: ok
+
+--- case: a plain DROP of an event that is not there is refused
+DROP EVENT swapped ON replaced;
+--- expect: error Unknown
+
+--- case: a database param is read wherever a parameter is (ADR-0124 D2)
+DEFINE PARAM $floor VALUE 10;
+RETURN $floor + 1;
+--- expect: value 11
+
+--- case: OR REPLACE changes a param, and a second plain DEFINE is refused
+DEFINE PARAM OR REPLACE $floor VALUE 20;
+DEFINE PARAM $floor VALUE 30;
+--- expect: error ParamExists
+
+--- case: a dropped param is unbound again
+DROP PARAM $floor;
+RETURN $floor;
+--- expect: error UnboundParameter

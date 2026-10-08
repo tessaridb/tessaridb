@@ -177,6 +177,7 @@ mod vector_walk_freshness;
 mod vector_width;
 mod views;
 mod windows;
+mod workarounds;
 mod write_answers;
 mod write_bounds;
 mod write_shapes;

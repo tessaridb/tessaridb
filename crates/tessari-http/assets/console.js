@@ -2873,6 +2873,8 @@ Shown once. The node keeps only its digest.`);
       return null;
     }
     const retain = fields["retain"];
+    const window2 = fields["deduplicate"];
+    const key = fields["deduplicate_on"];
     return {
       name,
       first: whole(fields["first"]),
@@ -2881,6 +2883,7 @@ Shown once. The node keeps only its digest.`);
       retainBytes: whole(fields["retain_bytes"]),
       bytes: whole(fields["bytes"]),
       maxBytes: whole(fields["max_bytes"]),
+      repeats: typeof window2 === "string" && typeof key === "string" ? { key, window: window2 } : null,
       readers: entries(fields["consumers"], reader),
       groups: entries(fields["groups"], group),
       ingestedBy: entries(fields["ingested_by"], ingest)
@@ -2892,6 +2895,9 @@ Shown once. The node keeps only its digest.`);
       ...topic2.retainBytes === null ? [] : [`${topic2.retainBytes} bytes`]
     ];
     return limits.length === 0 ? "everything" : limits.join(", ");
+  }
+  function repeats(topic2) {
+    return topic2.repeats === null ? "kept" : `dropped within ${topic2.repeats.window} by ${topic2.repeats.key}`;
   }
   var held4 = (topic2) => topic2.first === null || topic2.last < topic2.first ? 0 : topic2.last - topic2.first + 1;
   function behind(topic2) {
@@ -3024,7 +3030,7 @@ Shown once. The node keeps only its digest.`);
     }
     clear("topics-list");
     if (read.length > 0) {
-      const table = headed(["topic", "held", "last", "keeps", "readers", "groups", "most behind"]);
+      const table = headed(["topic", "held", "last", "keeps", "repeats", "readers", "groups", "most behind"]);
       const body = table.createTBody();
       for (const each of read) {
         const row = body.insertRow();
@@ -3037,6 +3043,7 @@ Shown once. The node keeps only its digest.`);
         numberCell(row, held4(each));
         numberCell(row, each.last);
         row.insertCell().textContent = keeps(each);
+        row.insertCell().textContent = repeats(each);
         numberCell(row, each.readers.size);
         numberCell(row, each.groups.size);
         numberCell(row, behind(each));

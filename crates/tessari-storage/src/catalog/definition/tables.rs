@@ -168,6 +168,17 @@ impl TableDefinition {
         matches!(self.kind, TableKind::Queue(_))
     }
 
+    /// How long this queue or topic remembers a written key, when it declares
+    /// `DEDUPLICATE` (ADR-0124 D8) — and so whether it has a marker table.
+    #[must_use]
+    pub fn deduplication_window(&self) -> Option<tessari_types::Duration> {
+        match &self.kind {
+            TableKind::Queue(declared) => declared.deduplicate,
+            TableKind::Topic(declared) => declared.deduplicate.as_ref().map(|(window, _)| *window),
+            _ => None,
+        }
+    }
+
     /// The vault's key and what it is sealed under (ADR-0093).
     ///
     /// `None` for everything that is not a vault, which is the same answer a

@@ -73,6 +73,7 @@ impl Function {
         TimeSecond => "time::second",
         TimeUnix => "time::unix",
         TimeFromUnix => "time::from_unix",
+        DurationFromSecs => "duration::from_secs",
         RandUuid => "rand::uuid",
         TypeOf => "type::of",
         TypeBool => "type::bool",

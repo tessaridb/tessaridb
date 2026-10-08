@@ -151,6 +151,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             id,
             namespace,
             name: name.to_owned(),
+            params: std::collections::BTreeMap::new(),
         };
         self.write(system::DATABASES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
@@ -275,6 +276,17 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 TableShape::default(),
             )?;
         }
+        if definition.deduplication_window().is_some() {
+            // Where a deduplicating queue or topic remembers the keys it has
+            // written (ADR-0124 D8). Unnameable for the chunk table's reason,
+            // so no statement reads, writes or backs it up by name.
+            self.create_table(
+                namespace,
+                database,
+                &Self::seen_named(name),
+                TableShape::default(),
+            )?;
+        }
         Ok(definition)
     }
 
@@ -300,5 +312,13 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     #[must_use]
     pub fn edges_named(kind: &str) -> String {
         format!("{kind}\u{1}edges")
+    }
+
+    /// The name of the table a deduplicating queue or topic keeps its markers
+    /// in: one record per key written inside the window, expiring with it.
+    /// Derived and unnameable for the chunk table's reasons.
+    #[must_use]
+    pub fn seen_named(table: &str) -> String {
+        format!("{table}\u{1}seen")
     }
 }

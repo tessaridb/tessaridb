@@ -345,3 +345,48 @@ CLAIM FROM later;
 CREATE later:2 = { due: time::from_unix(0) };
 CLAIM FROM later;
 --- expect: rows 1
+
+--- case: RELEASE … NOT BEFORE hands a record back for later in one write (ADR-0124 D6)
+RELEASE later:2 NOT BEFORE 1h;
+CLAIM FROM later;
+--- expect: rows 0
+
+--- case: and a queue that declares no NOT BEFORE field refuses it by name
+DEFINE QUEUE plain TIMEOUT 30s;
+CREATE plain:1 = {};
+CLAIM FROM plain;
+RELEASE plain:1 NOT BEFORE 1h;
+--- expect: error NoDelayField
+
+--- case: CLAIM takes a count a parameter holds (ADR-0124 D5)
+CREATE plain:2 = {};
+CREATE plain:3 = {};
+LET $n = 2;
+CLAIM $n FROM plain;
+--- expect: rows 2
+
+--- case: LIMIT and START take one too
+LET $l = 1;
+SELECT * FROM plain START $l LIMIT $l;
+--- expect: rows 1
+
+--- case: a deduplicating queue queues an identity once inside its window (ADR-0124 D8)
+DEFINE QUEUE once TIMEOUT 30s DEDUPLICATE 5m;
+CREATE once:'k' = { n: 1 };
+CREATE once:'k' = { n: 2 };
+SELECT * FROM once WHERE n = 1;
+--- expect: rows 1
+
+--- case: and not again after it was done
+DELETE once:'k';
+CREATE once:'k' = { n: 3 };
+SELECT * FROM once;
+--- expect: rows 0
+
+--- case: a repeat answers no record
+CREATE once:'k' = { n: 4 } RETURN AFTER;
+--- expect: value NONE
+
+--- case: and the window must be longer than nothing
+DEFINE QUEUE never TIMEOUT 30s DEDUPLICATE 0s;
+--- expect: error UnexpectedToken

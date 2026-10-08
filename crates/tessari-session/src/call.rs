@@ -19,7 +19,7 @@ pub(crate) use arguments::{
     array_at, bytes_at, datetime_at, duration_at, number_at, object_at, text_at, whole, wrong_type,
 };
 pub(crate) use numbers::{count, folded, power, reshape, truncated};
-pub(crate) use time::{bucket, from_unix, instant, reading};
+pub(crate) use time::{bucket, from_secs, from_unix, instant, reading};
 
 /// Evaluate a call, with its arguments already values.
 ///
@@ -328,6 +328,7 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
             datetime_at(function, arguments, 0, span)?.seconds(),
         ))),
         Function::TimeFromUnix => from_unix(function, arguments, span),
+        Function::DurationFromSecs => from_secs(function, arguments, span),
         // The one call in this match that must not be evaluated above the
         // records. Nothing here enforces that — `plan::fold` does, by asking
         // `Function::purity` — and the arrangement is deliberate: an evaluator

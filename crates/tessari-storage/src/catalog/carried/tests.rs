@@ -165,6 +165,7 @@ fn every_system_table_has_a_recorded_replication_class() {
                     id: SHOP,
                     namespace: PROD,
                     name: "shop".to_owned(),
+                    params: std::collections::BTreeMap::new(),
                 }
                 .to_value()
             )

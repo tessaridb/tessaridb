@@ -52,7 +52,8 @@ impl<'a> Session<'a> {
                 },
             );
         }
-        let ran = self.run_script(script.bind(parameters)?)?;
+        let script = self.bind_script(script, parameters)?;
+        let ran = self.run_script(script)?;
         // The built `USE` answered too; the caller sent none and is owed none.
         Ok(if namespace.is_some() || database.is_some() {
             ran.into_iter().skip(1).collect()
@@ -145,6 +146,24 @@ impl<'a> Session<'a> {
                     supplied.insert(name, bound);
                     for later in &mut script.statements[at.saturating_add(1)..] {
                         later.substitute(&supplied)?;
+                    }
+                    Outcome::Done
+                }
+                // The value a `DEFINE PARAM` stored reaches the statements below
+                // it as a `LET`'s does; the caller's own binding of the name was
+                // already written in and is left alone (ADR-0124 D2).
+                StatementKind::DefineParam { name, .. } => {
+                    if let Outcome::Value(value) = outcome {
+                        let name = name.clone();
+                        let supplied = Parameters::from([(name.clone(), value)]);
+                        for later in &mut script.statements[at.saturating_add(1)..] {
+                            // Past a drop of the same name the value is gone.
+                            if matches!(&later.kind, StatementKind::DropParam { name: gone, .. } if *gone == name)
+                            {
+                                break;
+                            }
+                            later.substitute(&supplied)?;
+                        }
                     }
                     Outcome::Done
                 }

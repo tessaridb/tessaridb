@@ -574,3 +574,32 @@ fn a_node_with_a_certificate_refuses_a_client_that_offers_only_tls_1_2() {
         "{refused}"
     );
 }
+
+#[test]
+fn a_missing_record_and_an_event_that_met_one_arrive_as_conflicts() {
+    // ADR-0124 D7: the class follows the cause, over the wire as in the session.
+    let (_node, address) = serving(Db::in_memory().unwrap());
+    let mut client = Client::connect(&address).unwrap();
+    client
+        .run(
+            &format!(
+                "{READY} DEFINE COLLECTION notes; DEFINE COLLECTION other; \
+                 DEFINE EVENT touch ON notes FOR CREATE THEN UPDATE other:1 MERGE {{ x: 1 }};"
+            ),
+            None,
+        )
+        .unwrap();
+    for statement in [
+        "UPDATE other:404 MERGE { x: 1 };",
+        "CREATE notes:1 = { body: 'a' };",
+    ] {
+        match client.run(statement, None) {
+            Err(tessari_wire::Error::Refused { class, message }) => assert_eq!(
+                class,
+                Some(Some(tessari_types::RefusalClass::Conflict)),
+                "{statement}: {message}"
+            ),
+            other => panic!("{statement}: {other:?}"),
+        }
+    }
+}

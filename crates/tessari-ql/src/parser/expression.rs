@@ -153,7 +153,12 @@ impl Parser<'_> {
                 })
             }
             Some(Token::Punct(Punct::BraceOpen)) => self.object(span),
-            Some(Token::Punct(Punct::ParenOpen)) => self.embedded_select(span),
+            // A route reads into whatever the parentheses hold — an embedded
+            // read or any value — wherever an expression stands (ADR-0124 D3).
+            Some(Token::Punct(Punct::ParenOpen)) => {
+                let grouped = self.embedded_select(span)?;
+                self.route_into(grouped)
+            }
             Some(_) => self.literal_token(span),
             None => Err(self.error_here("a value")),
         }

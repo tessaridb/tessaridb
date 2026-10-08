@@ -1141,6 +1141,9 @@ pub enum StatementKind {
         /// `NOT BEFORE f`: a record whose `f` holds a datetime after now is not
         /// handed out yet — delayed delivery, the delay a value in the record.
         not_before: Option<Name>,
+        /// `DEDUPLICATE 5m`: a `CREATE` of an identity first written less than
+        /// the window ago writes nothing (ADR-0124 D8).
+        deduplicate: Option<Duration>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -1282,7 +1285,39 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted rather than
         /// refused.
         if_not_exists: bool,
+        /// `OR REPLACE`: an existing event of this name is replaced in this
+        /// statement's commit (ADR-0124 D1).
+        or_replace: bool,
+        /// The names the body reads that the write does not supply, with where
+        /// each was written: database params, checked when the event is defined
+        /// (ADR-0124 D2).
+        params: Vec<(String, Span)>,
     },
+    /// `DEFINE PARAM [IF NOT EXISTS | OR REPLACE] $name VALUE <expr>` — a
+    /// database's named value, read wherever a parameter is (ADR-0124 D2).
+    DefineParam {
+        /// The name, without its marker.
+        name: String,
+        /// The value, computed once when the statement runs.
+        value: Expr,
+        /// Keep an existing param of this name.
+        if_not_exists: bool,
+        /// Replace an existing param of this name.
+        or_replace: bool,
+        /// Where the name was written.
+        span: Span,
+    },
+    /// `DROP PARAM $name`
+    DropParam {
+        /// The name, without its marker.
+        name: String,
+        /// Where the name was written.
+        span: Span,
+    },
+    /// `DROP <kind> IF EXISTS …` — the drop it wraps, whose "no such object"
+    /// answer is `ok` instead of a refusal (ADR-0124 D1). Only a drop is ever
+    /// wrapped; the parser builds nothing else here.
+    DropIfExists(Box<StatementKind>),
     /// `DROP EVENT audit ON orders`
     DropEvent {
         /// The event to undefine.
@@ -1322,6 +1357,9 @@ pub enum StatementKind {
         /// store's question, and unbounded it is one statement holding the whole
         /// queue for the whole timeout while every other worker waits.
         count: u64,
+        /// `CLAIM $n FROM q`, until binding writes the number into
+        /// [`Self::Claim::count`] (ADR-0124 D5).
+        count_parameter: Option<crate::ast::CountParameter>,
         /// Where the statement sits.
         span: Span,
     },
@@ -1381,6 +1419,9 @@ pub enum StatementKind {
         target: RecordTarget,
         /// The group whose hold to clear, when the statement named one.
         consumer: Option<String>,
+        /// `NOT BEFORE`: an instant, or a span from now, written into the
+        /// queue's declared `NOT BEFORE` field in the same write (ADR-0124 D6).
+        not_before: Option<Expr>,
         /// Where the statement sits.
         span: Span,
     },
@@ -1412,6 +1453,9 @@ pub enum StatementKind {
         table: TableRef,
         /// Whose holds to drop, or this session's instance when absent.
         consumer: Option<String>,
+        /// `NOT BEFORE`: an instant, or a span from now, written into the
+        /// queue's declared `NOT BEFORE` field in the same write (ADR-0124 D6).
+        not_before: Option<Expr>,
         /// Where the statement sits.
         span: Span,
     },

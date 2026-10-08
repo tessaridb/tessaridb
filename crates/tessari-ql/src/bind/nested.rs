@@ -49,7 +49,64 @@ pub(crate) fn bind_identity(id: &mut Identity, at: Span, binding: &Binding<'_>) 
     Ok(())
 }
 
+/// The number a count parameter is bound to, written where a literal would
+/// have put it (ADR-0124 D5). Left standing for a `LET` that has not run.
+pub(crate) fn bind_count(
+    parameter: &mut Option<crate::ast::CountParameter>,
+    count: &mut Option<u64>,
+    above_zero: bool,
+    binding: &Binding<'_>,
+) -> Result<()> {
+    let Some(written) = parameter.as_ref() else {
+        return Ok(());
+    };
+    if binding.deferred.contains(written.name.as_str()) {
+        return Ok(());
+    }
+    let Some(value) = binding.supplied.get(written.name.as_str()) else {
+        if !binding.strict {
+            return Ok(());
+        }
+        return Err(Error::UnboundParameter {
+            name: written.name.clone(),
+            span: written.span,
+        });
+    };
+    let held = match value {
+        Value::Number(Number::Integer(held)) => u64::try_from(*held)
+            .ok()
+            .filter(|held| !above_zero || *held > 0)
+            .ok_or_else(|| held.to_string()),
+        other => Err(format!("a {}", other.type_name())),
+    };
+    match held {
+        Ok(held) => {
+            *count = Some(held);
+            *parameter = None;
+            Ok(())
+        }
+        Err(found) => Err(Error::CountNotAWholeNumber {
+            name: written.name.clone(),
+            found,
+            floor: if above_zero { " above zero" } else { "" },
+            span: written.span,
+        }),
+    }
+}
+
 pub(crate) fn bind_select(select: &mut Select, binding: &Binding<'_>) -> Result<()> {
+    bind_count(
+        &mut select.start_parameter,
+        &mut select.start,
+        false,
+        binding,
+    )?;
+    bind_count(
+        &mut select.limit_parameter,
+        &mut select.limit,
+        false,
+        binding,
+    )?;
     if let Projection::Values {
         values: projected, ..
     } = &mut select.projection

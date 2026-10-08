@@ -2,6 +2,7 @@
 
 mod declared;
 mod event;
+mod param;
 mod search;
 use super::Parser;
 use tessari_types::{ConflictPolicy, IdentityKind, RecordId};
@@ -302,8 +303,10 @@ impl Parser<'_> {
             _ if self.eat_word("view") => self.define_view(),
             // Contextual, as `view` is: `event` is an ordinary table name.
             _ if self.eat_word("event") => self.define_event(),
+            // Contextual, as `event` is.
+            _ if self.eat_word("param") => self.define_param(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `KAFKA CONSUMER`, `VECTOR`, `GEO`, `VAULT`, `QUEUE`, `TOPIC`, `VIEW` or `EVENT`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `KAFKA CONSUMER`, `VECTOR`, `GEO`, `VAULT`, `QUEUE`, `TOPIC`, `VIEW`, `EVENT` or `PARAM`",
             )),
         }
     }

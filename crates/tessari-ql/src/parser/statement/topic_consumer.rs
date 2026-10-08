@@ -29,7 +29,7 @@ impl Parser<'_> {
         if declaring {
             is_keyword(1, Keyword::If) || (is_name(1) && is_keyword(2, Keyword::From))
         } else {
-            is_name(1)
+            is_name(1) || is_keyword(1, Keyword::If)
         }
     }
 
