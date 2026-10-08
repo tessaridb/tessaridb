@@ -8087,6 +8087,13 @@ the script are still answered whole, as is any `BACKUP` run over `POST /script`
 or the wire, because a statement answers with a value — for a large store use
 `GET /backup` or `BACKUP … TO`.
 
+Over the wire one answer is one frame, and a frame carries at most 16 MiB
+(16 777 216 bytes). An answer above that — a snapshot of a store that has grown
+past it, or any read returning that much — is **refused** as `AnswerTooLarge`,
+class `invalid`, naming its size, and the connection goes on to the next request.
+Up to `0.33.4-beta` the node failed the write instead and dropped the connection,
+which a client reported as `the connection ended mid-frame`.
+
 ### The store's current state, as a snapshot or as a script
 
 ```

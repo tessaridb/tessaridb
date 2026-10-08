@@ -603,3 +603,46 @@ fn a_missing_record_and_an_event_that_met_one_arrive_as_conflicts() {
         }
     }
 }
+
+#[test]
+fn an_answer_above_the_frame_ceiling_is_refused_by_name_and_the_connection_lives() {
+    // A 16 MiB frame cannot carry it, and the node used to fail the write and
+    // drop the connection, which a client reads as a network fault. It is a
+    // refusal instead: the request was fine to send and cannot be answered so.
+    let db = Db::in_memory().unwrap();
+    {
+        let mut session = db.session();
+        session
+            .run(&format!("{READY} DEFINE COLLECTION big;"))
+            .unwrap();
+        let nine_megabytes = Value::String("x".repeat(9 * 1024 * 1024));
+        let body = std::collections::BTreeMap::from([("body".to_owned(), nine_megabytes)]);
+        for statement in [
+            "CREATE big:1 = { body: $body };",
+            "CREATE big:2 = { body: $body };",
+        ] {
+            session.run_with(statement, &body).unwrap();
+        }
+    }
+    let (_node, address) = serving(db);
+    let mut client = Client::connect(&address).unwrap();
+    client
+        .run("USE NAMESPACE prod; USE DATABASE orders;", None)
+        .unwrap();
+
+    match client.run("SELECT * FROM big;", None) {
+        Err(tessari_wire::Error::Refused { class, message }) => {
+            assert_eq!(
+                class,
+                Some(Some(tessari_types::RefusalClass::Invalid)),
+                "{message}"
+            );
+            assert!(message.contains("16777216"), "{message}");
+            assert!(message.contains("BACKUP"), "{message}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    // And the same connection answers the next request.
+    let answers = client.run("SELECT id FROM big;", None).unwrap();
+    assert_eq!(answers.len(), 1);
+}

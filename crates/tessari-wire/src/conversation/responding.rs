@@ -134,6 +134,20 @@ pub(super) fn render(
                 let names = message::names_for(db, outcome);
                 answer.extend_from_slice(&message::encode_outcome(outcome, &names));
             }
+            // Checked here, where every answer body is made, and not at the
+            // write: a failed write ends the connection, and the client reads
+            // that as a network fault rather than as an answer about its request.
+            if u32::try_from(answer.len()).map_or(true, |length| length > frame::CEILING) {
+                let too_large = Error::AnswerTooLarge {
+                    length: answer.len(),
+                    ceiling: frame::CEILING,
+                };
+                return Answer {
+                    kind: frame::Kind::Refusal,
+                    body: frame::refusal(theirs, RefusalClass::Invalid, &too_large.to_string()),
+                    redirect: None,
+                };
+            }
             Answer {
                 kind: frame::Kind::Answer,
                 body: answer,
