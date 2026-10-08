@@ -94,7 +94,7 @@ export function wire(): void {
     });
   }
 
-  at("run").addEventListener("click", run);
+  at("run-script").addEventListener("click", run);
 
   at("script").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {

@@ -218,17 +218,30 @@ fn a_table_row_computes_into_the_density_band() {
         .map(|(name, _)| name.to_owned())
         .expect("the cell rule declares no padding");
 
+    // The text size is read out of the table rule too, for the same reason.
+    let size = css
+        .split_once("table {")
+        .and_then(|(_, body)| body.split_once('}'))
+        .and_then(|(body, _)| body.split_once("font-size: var("))
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(name, _)| name.to_owned())
+        .expect("the table rule declares no font-size token");
+
     let root_px = 16.0_f64;
-    let text = token("--t-12") * root_px;
+    let text = token(&size) * root_px;
     let line = text * 1.5;
     let row = line + token(&padding) * root_px * 2.0;
 
+    // The band is the owner's dial of 2026-10-08 — the S3 console's
+    // VISUAL_DENSITY 55, which puts rows in 40-48px (designer ref 28). It was
+    // 32-40px under the 2026-09-15 brief's DENSITY 70.
     assert!(
-        (32.0..=40.0).contains(&row),
-        "VISUAL_DENSITY 70 puts table rows in 32-40px and the declared tokens \
-         compute to {row}px ({text}px text at line-height 1.5, plus var({padding}) \
-         above and below). This is arithmetic over the stylesheet, not a measured \
-         layout — it says what the sheet asks for, not what a browser draws."
+        (40.0..=48.0).contains(&row),
+        "VISUAL_DENSITY 55 puts table rows in 40-48px and the declared tokens \
+         compute to {row}px ({text}px text from var({size}) at line-height 1.5, \
+         plus var({padding}) above and below). This is arithmetic over the \
+         stylesheet, not a measured layout — it says what the sheet asks for, not \
+         what a browser draws."
     );
 }
 
@@ -374,8 +387,16 @@ fn every_text_colour_clears_the_contrast_the_release_gate_asks_for() {
     // Every text token against every surface it is actually drawn on. The pairs
     // are named rather than crossed, because a cross would measure combinations
     // the console never draws and would fail for a colour nobody sees.
-    let surfaces = [("n-1000", of("n-1000")), ("n-950", of("n-950"))];
-    let text = [
+    // Two themes since 2026-10-08, each measured against its own surfaces: the
+    // dark inks on the dark page, the dark raised card and the darkest well; the
+    // light inks on the light page, the white card and the sunken well. A pair
+    // across themes is never drawn and is not measured.
+    let dark_surfaces = [
+        ("n-1000", of("n-1000")),
+        ("n-950", of("n-950")),
+        ("n-850", of("n-850")),
+    ];
+    let dark_text = [
         ("n-100", of("n-100")),
         ("n-200", of("n-200")),
         ("n-400", of("n-400")),
@@ -385,13 +406,31 @@ fn every_text_colour_clears_the_contrast_the_release_gate_asks_for() {
         ("amber-400", of("amber-400")),
         ("red-400", of("red-400")),
     ];
+    let light_surfaces = [
+        ("n-0", of("n-0")),
+        ("n-100", of("n-100")),
+        ("n-150", of("n-150")),
+    ];
+    let light_text = [
+        ("n-1000", of("n-1000")),
+        ("n-500", of("n-500")),
+        ("violet-600", of("violet-600")),
+        ("green-600", of("green-600")),
+        ("amber-600", of("amber-600")),
+        ("red-600", of("red-600")),
+    ];
 
     let mut failing: Vec<String> = Vec::new();
-    for (surface_name, surface) in surfaces {
-        for (ink_name, ink) in text {
-            let ratio = contrast(ink, surface);
-            if ratio < 4.5 {
-                failing.push(format!("--{ink_name} on --{surface_name} = {ratio:.2}:1"));
+    for (surfaces, text) in [
+        (&dark_surfaces[..], &dark_text[..]),
+        (&light_surfaces[..], &light_text[..]),
+    ] {
+        for (surface_name, surface) in surfaces {
+            for (ink_name, ink) in text {
+                let ratio = contrast(*ink, *surface);
+                if ratio < 4.5 {
+                    failing.push(format!("--{ink_name} on --{surface_name} = {ratio:.2}:1"));
+                }
             }
         }
     }
@@ -434,11 +473,19 @@ fn the_focus_ring_and_the_targets_clear_the_release_gate() {
         "the focus ring is not drawn in the accent, so the ratio below would be \
          measuring a colour the ring does not use"
     );
-    for surface in ["n-1000", "n-950"] {
-        let ratio = contrast(of("violet-400"), of(surface));
+    // `--accent` is violet-400 in the dark theme and violet-600 in the light one.
+    for (ring_colour, surface) in [
+        ("violet-400", "n-1000"),
+        ("violet-400", "n-950"),
+        ("violet-400", "n-850"),
+        ("violet-600", "n-0"),
+        ("violet-600", "n-100"),
+    ] {
+        let ratio = contrast(of(ring_colour), of(surface));
         assert!(
             ratio >= 3.0,
-            "the focus ring measures {ratio:.2}:1 against --{surface} and needs 3:1"
+            "the focus ring (--{ring_colour}) measures {ratio:.2}:1 against \
+             --{surface} and needs 3:1"
         );
     }
 

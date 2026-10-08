@@ -111,10 +111,14 @@
       tab.setAttribute("aria-selected", String(chosen2));
       tab.tabIndex = chosen2 ? 0 : -1;
       pane(tab).hidden = !chosen2;
+      if (chosen2) {
+        at("view-title").textContent = tab.textContent?.trim() ?? "";
+      }
     }
     if (window.location.hash !== "#" + wanted2) {
       window.location.hash = wanted2;
     }
+    requestAnimationFrame(() => window.scrollTo(0, 0));
     for (const arrival of arrivals) {
       if (arrival.names.includes(wanted2)) {
         arrival.todo();
@@ -125,7 +129,7 @@
     for (const tab of tabs()) {
       tab.addEventListener("click", () => show(tab.id.replace("tab-", "")));
       tab.addEventListener("keydown", (event) => {
-        const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+        const step = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 0;
         if (step === 0) {
           return;
         }
@@ -866,10 +870,10 @@
       const row = body.insertRow();
       row.insertCell().textContent = record2.id;
       fields.forEach((field, index) => {
-        const box = row.insertCell();
-        box.textContent = cell(values[position]?.[field]);
+        const box2 = row.insertCell();
+        box2.textContent = cell(values[position]?.[field]);
         if (numeric[index] === true) {
-          box.classList.add("number");
+          box2.classList.add("number");
         }
       });
     });
@@ -888,10 +892,10 @@
       const label = made("th");
       label.textContent = name;
       row.appendChild(label);
-      const box = row.insertCell();
-      box.textContent = typeof value2 === "string" ? value2 : JSON.stringify(value2);
+      const box2 = row.insertCell();
+      box2.textContent = typeof value2 === "string" ? value2 : JSON.stringify(value2);
       if (typeof value2 === "number") {
-        box.classList.add("number");
+        box2.classList.add("number");
       }
     }
     at(where3).appendChild(table);
@@ -1952,6 +1956,62 @@ Shown once. The node keeps only its digest.`);
     shape2();
   }
 
+  // src/icons.ts
+  //! The console's icons: one outline family on a 24px grid — stroke 2, round
+  //! caps and joins, `currentColor` so they follow the theme and the state they
+  //! sit in. The same family as the S3 console's, so the two consoles read as one
+  //! product. Every icon here sits beside a text label, so each is hidden from
+  //! screen readers; an icon never carries meaning on its own.
+  //!
+  //! Drawn at run time rather than written into the page: the page's controls keep
+  //! their words as their first text, which is what the tests that read the page
+  //! measure, and an icon is decoration on top of that.
+  var box = (x, y, w, h, r) => `M${x + r} ${y}h${w - 2 * r}a${r} ${r} 0 0 1 ${r} ${r}v${h - 2 * r}a${r} ${r} 0 0 1 -${r} ${r}h-${w - 2 * r}a${r} ${r} 0 0 1 -${r} -${r}v-${h - 2 * r}a${r} ${r} 0 0 1 ${r} -${r}z`;
+  var ring = (cx, cy, r) => `M${cx - r} ${cy}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 -${2 * r} 0`;
+  var SHAPES = {
+    run: [box(3, 4, 18, 16, 2), "M7 9l3 3-3 3", "M12.5 15H17"],
+    topics: ["M4 6h16", "M4 12h10", "M4 18h13", "M19 10.5l2 1.5-2 1.5"],
+    cluster: [ring(6, 7, 2.5), ring(18, 7, 2.5), ring(12, 18, 2.5), "M8.5 7h7", "M7.3 9.2l3.4 6.6", "M16.7 9.2l-3.4 6.6"],
+    access: [ring(8, 15, 4), "M10.8 12.2L20 3", "M16 7l3 3", "M18.5 4.5l2 2"],
+    "this-node": [box(3, 4, 18, 7, 2), box(3, 13, 18, 7, 2), "M7 7.5h.01", "M7 16.5h.01"],
+    backup: ["M4 7.5l8-4 8 4-8 4z", "M4 12l8 4 8-4", "M4 16.5l8 4 8-4"],
+    vault: [box(4, 11, 16, 10, 2), "M8 11V7.5a4 4 0 0 1 8 0V11", "M12 15v2"],
+    sun: [ring(12, 12, 4), "M12 2.5v2", "M12 19.5v2", "M2.5 12h2", "M19.5 12h2", "M5.3 5.3l1.4 1.4", "M17.3 17.3l1.4 1.4", "M5.3 18.7l1.4-1.4", "M17.3 6.7l1.4-1.4"],
+    moon: ["M20 14.5A8.5 8.5 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"],
+    user: [ring(12, 8, 4), "M4.5 20a7.5 7.5 0 0 1 15 0"]
+  };
+  var isIcon = (name) => Object.hasOwn(SHAPES, name);
+  function frame() {
+    const template = at("icon-frame");
+    const svg = template instanceof HTMLTemplateElement ? template.content.firstElementChild : null;
+    if (!(svg instanceof SVGSVGElement)) {
+      throw new Error("the page's #icon-frame holds no <svg>");
+    }
+    return svg;
+  }
+  function icon(name) {
+    const blank = frame();
+    const svg = blank.cloneNode(false);
+    if (!(svg instanceof SVGSVGElement)) {
+      throw new Error("cloning the icon frame did not give an <svg>");
+    }
+    for (const d of SHAPES[name]) {
+      const path = document.createElementNS(blank.namespaceURI, "path");
+      path.setAttribute("d", d);
+      svg.append(path);
+    }
+    return svg;
+  }
+  function wire12() {
+    for (const item of all("[data-destination]")) {
+      const name = item.dataset["destination"] ?? "";
+      if (isIcon(name)) {
+        item.prepend(icon(name));
+      }
+    }
+    at("signed-in").before(icon("user"));
+  }
+
   // src/map.ts
   //! The cluster, drawn.
   //!
@@ -2052,12 +2112,12 @@ Shown once. The node keeps only its digest.`);
   }
   var drained = (has) => has.length === 0;
   function figure(title, has, wanted2, facts2, kind2, subject) {
-    const box = made("article", "node " + kind2);
-    box.tabIndex = 0;
-    box.setAttribute("role", "button");
-    box.setAttribute("aria-label", `${title} — open its drawer`);
-    box.addEventListener("click", () => show3(subject));
-    box.addEventListener("keydown", (pressed) => {
+    const box2 = made("article", "node " + kind2);
+    box2.tabIndex = 0;
+    box2.setAttribute("role", "button");
+    box2.setAttribute("aria-label", `${title} — open its drawer`);
+    box2.addEventListener("click", () => show3(subject));
+    box2.addEventListener("keydown", (pressed) => {
       if (pressed.key === "Enter" || pressed.key === " ") {
         pressed.preventDefault();
         show3(subject);
@@ -2067,23 +2127,23 @@ Shown once. The node keeps only its digest.`);
     const name = made("h3");
     name.textContent = title;
     head.append(name, lamps(has, wanted2));
-    box.appendChild(head);
+    box2.appendChild(head);
     if (drained(has)) {
       const note2 = made("p", "note warn");
       note2.textContent = kind2 === "self" ? "Drained — it holds its data and answers nothing." : "Declared with no roles — drained.";
-      box.appendChild(note2);
+      box2.appendChild(note2);
     }
     if (kind2 === "peer") {
       const note2 = made("p", "faint");
       note2.textContent = "lamps as declared here; this node has not asked it";
-      box.appendChild(note2);
+      box2.appendChild(note2);
     }
     for (const one2 of facts2) {
       if (one2 !== null) {
-        box.appendChild(one2);
+        box2.appendChild(one2);
       }
     }
-    return box;
+    return box2;
   }
   function furthest(followers) {
     let most = null;
@@ -2345,7 +2405,7 @@ Shown once. The node keeps only its digest.`);
     );
     say("node-status", "");
   }
-  function wire12() {
+  function wire13() {
     at("node-refresh").addEventListener("click", readNode);
     onArrival(["cluster", "this-node"], () => void readNode());
   }
@@ -2353,14 +2413,14 @@ Shown once. The node keeps only its digest.`);
   // src/password.ts
   //! Changing your own password.
   function shapeMine() {
-    const current = value("mine-current");
+    const current2 = value("mine-current");
     const fresh = value("mine-new");
     const again = value("mine-again");
-    disable("mine", current === "" || fresh === "" || fresh !== again);
+    disable("mine", current2 === "" || fresh === "" || fresh !== again);
     const differ = fresh !== "" && again !== "" && fresh !== again;
     say("mine-status", differ ? "the two new ones differ" : "", differ);
   }
-  function wire13() {
+  function wire14() {
     for (const field of ["mine-current", "mine-new", "mine-again"]) {
       at(field).addEventListener("input", shapeMine);
     }
@@ -2465,7 +2525,7 @@ Shown once. The node keeps only its digest.`);
       say("script-status", "the node did not answer: " + told(failure), true);
     }
   }
-  function wire14() {
+  function wire15() {
     for (const button of all("[data-shape]")) {
       button.addEventListener("click", () => {
         drawing = button.dataset["shape"] ?? "auto";
@@ -2475,7 +2535,7 @@ Shown once. The node keeps only its digest.`);
         paint();
       });
     }
-    at("run").addEventListener("click", run);
+    at("run-script").addEventListener("click", run);
     at("script").addEventListener("keydown", (event) => {
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
@@ -2612,7 +2672,7 @@ Shown once. The node keeps only its digest.`);
       text.includes(":") ? "nothing here answers to that — name a record in full, as namespace.database.table:key" : text.includes(".") ? "nothing here answers to that name" : "nothing here answers to that name — a table is named in full, as namespace.database.table"
     );
   }
-  function wire15() {
+  function wire16() {
     at("search").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -2677,7 +2737,7 @@ Shown once. The node keeps only its digest.`);
     at("keys-sheet").hidden = true;
   }
   var DESTINATIONS = ["run", "topics", "cluster", "access", "this-node", "backup", "vault"];
-  function wire16() {
+  function wire17() {
     draw4();
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !at("keys-sheet").hidden) {
@@ -2703,6 +2763,51 @@ Shown once. The node keeps only its digest.`);
     at("keys-open").addEventListener("click", () => {
       at("keys-sheet").hidden = !at("keys-sheet").hidden;
     });
+  }
+
+  // src/theme.ts
+  //! Light or dark. Until the operator chooses, the page follows the system's
+  //! preference; a choice is remembered in this browser only. It is a viewer's
+  //! convenience and not console state — it names no account, no namespace and no
+  //! statement, which is the line `context.ts` holds for everything it keeps — and
+  //! a browser that refuses storage simply forgets it.
+  var KEY2 = "tessaridb-console-theme";
+  var darkQuery = matchMedia("(prefers-color-scheme: dark)");
+  function remembered() {
+    try {
+      const value2 = localStorage.getItem(KEY2);
+      return value2 === "light" || value2 === "dark" ? value2 : null;
+    } catch {
+      return null;
+    }
+  }
+  function remember2(theme) {
+    try {
+      localStorage.setItem(KEY2, theme);
+    } catch {
+    }
+  }
+  var current = () => remembered() ?? (darkQuery.matches ? "dark" : "light");
+  function wire18() {
+    const button = at("theme");
+    const show4 = () => {
+      const theme = current();
+      if (remembered() === null) {
+        document.documentElement.removeAttribute("data-theme");
+      } else {
+        document.documentElement.setAttribute("data-theme", theme);
+      }
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = theme === "dark" ? "Light theme" : "Dark theme";
+      button.replaceChildren(icon(theme === "dark" ? "sun" : "moon"), label);
+    };
+    button.addEventListener("click", () => {
+      remember2(current() === "dark" ? "light" : "dark");
+      show4();
+    });
+    darkQuery.addEventListener("change", show4);
+    show4();
   }
 
   // src/topic-info.ts
@@ -2898,9 +3003,9 @@ Shown once. The node keeps only its digest.`);
     }
   }
   function numberCell(row, figure2) {
-    const box = row.insertCell();
-    box.textContent = String(figure2);
-    box.classList.add("number");
+    const box2 = row.insertCell();
+    box2.textContent = String(figure2);
+    box2.classList.add("number");
   }
   function headed(names) {
     const table = made("table");
@@ -3066,7 +3171,7 @@ Shown once. The node keeps only its digest.`);
       state("browse-status", "wrong", words(failure));
     }
   }
-  function wire17() {
+  function wire19() {
     at("topics-namespace").addEventListener("change", () => void readDatabases());
     at("topics-database").addEventListener("change", () => void readTopics());
     at("topics-refresh").addEventListener("click", () => void readNamespaces());
@@ -3230,7 +3335,7 @@ Shown once. The node keeps only its digest.`);
     }
     shape3(form);
   }
-  function wire18() {
+  function wire20() {
     for (const form of FORMS) {
       for (const field of form.fields) {
         at(field).addEventListener("input", () => shape3(form));
@@ -3394,7 +3499,7 @@ ${bytes.toLocaleString("en")} bytes`;
       return `${databases.join(", ") || "no database"} created · ${statements.toLocaleString("en")} statements`;
     });
   }
-  function wire19() {
+  function wire21() {
     setValue("backup-name", suggested(chosenForm()));
     for (const id of ["backup-form", "backup-part"]) {
       at(id).addEventListener("change", () => {
@@ -3640,7 +3745,7 @@ ${bytes.toLocaleString("en")} bytes`;
     setValue(id, "");
     return held5;
   }
-  var change3 = (current, next) => JSON.stringify({ current, new: next });
+  var change3 = (current2, next) => JSON.stringify({ current: current2, new: next });
   function onePath() {
     const names = [
       ["namespace", trimmed("vault-one-namespace")],
@@ -3672,7 +3777,7 @@ ${bytes.toLocaleString("en")} bytes`;
     if ("path" in one2) await act_(one2.path);
     shape6();
   }
-  function wire20() {
+  function wire22() {
     const store = (method, path, body) => act(method, path, "vault-store-status", "vault-store-answer", body).finally(shape6);
     const one2 = (method, path, body) => act(method, path, "vault-one-status", "vault-one-answer", body);
     at("vault-store-refresh").addEventListener("click", () => void store("GET", "/vault"));
@@ -3875,7 +3980,7 @@ ${JSON.stringify(held5, null, 2)}`;
       state("kv-status", "wrong", words2(failure));
     }
   }
-  function wire21() {
+  function wire23() {
     at("kv-namespace").addEventListener("change", () => void readDatabases2());
     at("kv-database").addEventListener("change", () => void readSpaces());
     at("kv-space").addEventListener("change", () => void listKeys());
@@ -4000,7 +4105,7 @@ ${JSON.stringify(held5, null, 2)}`;
     }
     at("series-list").appendChild(table);
   }
-  function wire22() {
+  function wire24() {
     at("series-namespace").addEventListener("change", () => void readDatabases3());
     at("series-database").addEventListener("change", () => void readSeries());
     at("series-refresh").addEventListener("click", () => void readNamespaces3());
@@ -4122,7 +4227,7 @@ ${JSON.stringify(held5, null, 2)}`;
     }
     write("user-count", tally(matched));
   }
-  function wire23() {
+  function wire25() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     onArrival(["access"], () => void listUsers());
@@ -4230,12 +4335,18 @@ ${JSON.stringify(held5, null, 2)}`;
   //! graph first reaches it, which makes the order of everything on this page an
   //! accident of who imports whom. One list is cheaper to read and cannot drift.
   write("where", "served by " + window.location.host);
+  wire12();
+  wire18();
+  at("skip").addEventListener("click", (event) => {
+    event.preventDefault();
+    at("view").focus();
+  });
   wire2();
   wire();
   wire3();
-  wire14();
   wire15();
   wire16();
+  wire17();
   wire10();
   wire8();
   wire11();
@@ -4244,13 +4355,13 @@ ${JSON.stringify(held5, null, 2)}`;
   wire5();
   wire4();
   wire9();
-  wire23();
-  wire12();
+  wire25();
   wire13();
-  wire17();
-  wire18();
+  wire14();
   wire19();
   wire20();
-  wire22();
   wire21();
+  wire22();
+  wire24();
+  wire23();
 })();

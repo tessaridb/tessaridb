@@ -16,12 +16,13 @@
 //! graph first reaches it, which makes the order of everything on this page an
 //! accident of who imports whom. One list is cheaper to read and cannot drift.
 
-import { write } from "./dom.js";
+import { at, write } from "./dom.js";
 import * as context from "./context.js";
 import * as detail from "./detail.js";
 import * as drawer from "./drawer.js";
 import * as formation from "./formation.js";
 import * as grants from "./grants.js";
+import * as icons from "./icons.js";
 import * as log from "./log.js";
 import * as node from "./node.js";
 import * as password from "./password.js";
@@ -30,6 +31,7 @@ import * as search from "./search.js";
 import * as session from "./session.js";
 import * as shortcuts from "./shortcuts.js";
 import * as tabs from "./tabs.js";
+import * as theme from "./theme.js";
 import * as topicForms from "./topic-forms.js";
 import * as trust from "./trust.js";
 import * as backup from "./backup.js";
@@ -42,6 +44,18 @@ import * as users from "./users.js";
 import * as watch from "./watch.js";
 
 write("where", "served by " + window.location.host);
+
+// Before the menu is wired, so the first heading it writes reads the label and
+// not the icon; the theme before anything is drawn in the wrong one.
+icons.wire();
+theme.wire();
+
+// The skip link must move focus, not the hash: the hash is the destination,
+// and `#view` names none, so following it would land on Run from anywhere.
+at("skip").addEventListener("click", (event) => {
+  event.preventDefault();
+  at("view").focus();
+});
 
 // The log first, so the count in the tray reads zero before anything can add
 // to it — and so a statement sent during start-up has somewhere to land.

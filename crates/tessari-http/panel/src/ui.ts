@@ -149,7 +149,7 @@ export interface Destination {
 }
 
 /**
- * The tab strip and the panes are built from ONE list, so a tab that reaches
+ * The menu and the panes are built from ONE list, so a tab that reaches
  * nothing is not expressible. Two of the panel's tests exist because it used to
  * be two lists.
  */
@@ -157,9 +157,10 @@ export const tabs = (destinations: readonly Destination[]): Node =>
   el(
     "nav",
     { class: "tabs" },
+    // A menu down the left side, so the list says which way the arrows go.
     el(
       "div",
-      { role: "tablist", "aria-label": "Sections" },
+      { role: "tablist", "aria-label": "Sections", "aria-orientation": "vertical" },
       ...destinations.map((destination, at) =>
         el(
           "button",
@@ -167,6 +168,7 @@ export const tabs = (destinations: readonly Destination[]): Node =>
             type: "button",
             role: "tab",
             id: `tab-${destination.name}`,
+            "data-destination": destination.name,
             "aria-controls": `panel-${destination.name}`,
             "aria-selected": at === 0 ? "true" : "false",
             ...(at === 0 ? {} : { tabindex: -1 }),

@@ -1,33 +1,36 @@
 /*
- * The console, in the same clothes as the rest of the project.
+ * The console, in the same clothes as the TessariDB S3 console and the rest of
+ * the project. Mode: neo-grotesque — a calm modern product surface with room
+ * between things, and still a working tool (owner, 2026-10-08: the S3 console's
+ * look, applied here). System fonts only: nothing is fetched from off this node.
  *
  * Three token tiers, in this order and never skipped:
  *
  *   1. PRIMITIVE  raw values with no meaning attached. Nothing outside this
  *                 block writes a colour literal.
  *   2. SEMANTIC   roles. Everything below reads these and only these, so a
- *                 re-theme is an edit to one block rather than a sweep.
+ *                 theme is a remap of this tier and nothing else: dark by the
+ *                 system preference unless the reader chose light, or by
+ *                 `data-theme="dark"` on <html>. Every role is mapped in both.
  *   3. COMPONENT  the few places something needs a value of its own.
  *
  * The violet is inherited rather than invented: oklch(0.647 0.137 289) is the
- * colour the two squares of the mark are drawn in, and it is the same violet the
- * product site and the documentation use. Two different violets across one
- * product would read as two products.
- *
- * The neutrals are one hue (286), so the greys are never dead and never tinted
- * enough to read as a second colour.
+ * colour the mark is drawn in, and the same violet the product site, the
+ * documentation and the S3 console use. Two violets across one product would
+ * read as two products. The neutrals are one hue (286), so the greys are never
+ * dead and never tinted enough to read as a second colour.
  *
  * No web font, no CDN, no framework. This page is meant to work on a machine
- * with no route out at all, and one remote reference would quietly take that
- * away — which is the whole reason the console is in the binary (ADR-0017).
+ * with no route out at all (ADR-0017).
  */
 
 /* ─────────────────────────────────────────────────────────── 1. PRIMITIVE ── */
 
 :root {
-  --violet-500: oklch(0.647 0.137 289);
-  --violet-400: oklch(0.72 0.145 289);
   --violet-300: oklch(0.8 0.11 289);
+  --violet-400: oklch(0.72 0.145 289);
+  --violet-500: oklch(0.647 0.137 289);
+  --violet-600: oklch(0.54 0.15 289);
   --violet-a12: oklch(0.647 0.137 289 / 0.12);
   --violet-a20: oklch(0.647 0.137 289 / 0.2);
   --violet-a40: oklch(0.647 0.137 289 / 0.4);
@@ -38,15 +41,22 @@
   --n-850: oklch(0.2 0.015 286);
   --n-800: oklch(0.24 0.016 286);
   --n-700: oklch(0.28 0.018 286);
+  --n-500: oklch(0.52 0.022 286);
   --n-450: oklch(0.62 0.02 286);
   --n-400: oklch(0.7 0.018 286);
   --n-200: oklch(0.93 0.01 286);
+  --n-150: oklch(0.95 0.008 286);
   --n-100: oklch(0.97 0.006 286);
+  --n-50: oklch(0.985 0.003 286);
+  --n-0: oklch(1 0 0);
 
-  /* Two signal hues only; a third would be a palette breach. */
+  /* The signal hues, a light-surface and a dark-surface step of each. */
   --green-400: oklch(0.76 0.14 155);
+  --green-600: oklch(0.5 0.13 155);
   --amber-400: oklch(0.79 0.13 75);
+  --amber-600: oklch(0.52 0.11 75);
   --red-400: oklch(0.7 0.17 25);
+  --red-600: oklch(0.53 0.19 25);
 
   --s-1: 0.25rem;
   --s-2: 0.5rem;
@@ -54,44 +64,36 @@
   --s-4: 1rem;
   --s-5: 1.5rem;
   --s-6: 2rem;
+  --s-7: 2.5rem;
 
-  /* Motion. `MOTION_INTENSITY 20` buys state feedback and nothing else: one
-     duration, mid-band at 100ms so a later nudge stays legal in both
-     directions, and ease-out-quad because a state that is arriving should
-     decelerate into place. No spring, no loop, no decorative motion. */
-  --motion-fast: 100ms;
-  --ease: cubic-bezier(0.5, 1, 0.89, 1);
-
+  /* Type: caption 12, data 14 (tables, controls, values), body 16, heading 28 —
+     a compact ratio for a surface that is mostly data. `--t-13` is the one
+     in-between step, for the small print beside a control. */
   --t-12: 0.75rem;
   --t-13: 0.8125rem;
   --t-14: 0.875rem;
-  --t-15: 0.9375rem;
-  --t-18: 1.125rem;
+  --t-16: 1rem;
+  --t-28: 1.75rem;
 
-  /* ──────────────────────────────────────────────────────── 2. SEMANTIC ── */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
 
-  --surface: var(--n-1000);
-  --surface-raised: var(--n-950);
-  --surface-sunken: var(--n-900);
-  --line: var(--n-800);
-  --line-strong: var(--n-700);
+  --z-sticky: 20;
+  --z-sheet: 40;
 
-  --text: var(--n-100);
-  --text-muted: var(--n-400);
-  /* The 450 step and not the 500: faint text is still text, and WCAG 2.2 AA
-     asks 4.5:1 under 24px. Table headers and captions are faint, and none of
-     them is decoration. */
-  --text-faint: var(--n-450);
+  /* Dials (designer ref 28), the S3 console's own: quiet, near-static, airy
+     enough to breathe and dense enough to work in. */
+  --dial-variance: 30;
+  --dial-motion: 25;
+  --dial-density: 55;
 
-  --accent: var(--violet-400);
-  --accent-strong: var(--violet-500);
-  --accent-text: var(--violet-300);
-  --accent-wash: var(--violet-a12);
-  --accent-edge: var(--violet-a40);
-
-  --ok: var(--green-400);
-  --warn: var(--amber-400);
-  --bad: var(--red-400);
+  /* Motion buys state feedback and nothing else: one duration at the top of the
+     band, and a strong ease-out, because a state that is arriving should
+     decelerate into place. No spring, no loop, no decorative motion. */
+  --motion-fast: 120ms;
+  --ease: cubic-bezier(0.23, 1, 0.32, 1);
 
   --sans:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
@@ -99,25 +101,113 @@
   --mono:
     ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     "Liberation Mono", monospace;
+}
 
-  /* ─────────────────────────────────────────────────────── 3. COMPONENT ── */
+/* ──────────────────────────────────────────────────────────── 2. SEMANTIC ── */
 
-  --bar-height: 3.25rem;
-  --radius: 6px;
-  --radius-small: 4px;
+/* Light. */
+:root {
+  color-scheme: light;
+  --surface: var(--n-100);
+  --surface-raised: var(--n-0);
+  --surface-sunken: var(--n-150);
+  --side: var(--n-50);
+  --line: var(--n-200);
+  /* A control's edge is a boundary the reader has to find, so it clears 3:1. */
+  --line-strong: var(--n-450);
+  --text: var(--n-1000);
+  --text-muted: var(--n-500);
+  /* Faint text is still text: table headers and captions are faint and none of
+     them is decoration, so on a light surface it is the muted step. */
+  --text-faint: var(--n-500);
+  --accent: var(--violet-600);
+  --accent-strong: var(--violet-600);
+  --accent-text: var(--violet-600);
+  --accent-wash: var(--violet-a12);
+  --accent-wash-strong: var(--violet-a20);
+  --accent-edge: var(--violet-a40);
+  --on-accent: var(--n-0);
+  --ok: var(--green-600);
+  --warn: var(--amber-600);
+  --bad: var(--red-600);
+  --shadow: 0 1px 2px oklch(0.13 0.009 286 / 0.06);
+  --shadow-sheet: 0 12px 32px oklch(0.13 0.009 286 / 0.14);
+}
+
+/* Dark — the product's own surfaces. Written twice (system preference, explicit
+   choice) because CSS cannot name one block for two conditions. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface: var(--n-950);
+    --surface-raised: var(--n-850);
+    --surface-sunken: var(--n-1000);
+    --side: var(--n-900);
+    --line: var(--n-700);
+    --line-strong: var(--n-500);
+    --text: var(--n-200);
+    --text-muted: var(--n-400);
+    --text-faint: var(--n-450);
+    --accent: var(--violet-400);
+    --accent-strong: var(--violet-500);
+    --accent-text: var(--violet-300);
+    --accent-wash: var(--violet-a20);
+    --accent-wash-strong: var(--violet-a40);
+    --accent-edge: var(--violet-a40);
+    --on-accent: var(--n-1000);
+    --ok: var(--green-400);
+    --warn: var(--amber-400);
+    --bad: var(--red-400);
+    --shadow: none;
+    --shadow-sheet: 0 12px 32px oklch(0 0 0 / 0.45);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface: var(--n-950);
+  --surface-raised: var(--n-850);
+  --surface-sunken: var(--n-1000);
+  --side: var(--n-900);
+  --line: var(--n-700);
+  --line-strong: var(--n-500);
+  --text: var(--n-200);
+  --text-muted: var(--n-400);
+  --text-faint: var(--n-450);
+  --accent: var(--violet-400);
+  --accent-strong: var(--violet-500);
+  --accent-text: var(--violet-300);
+  --accent-wash: var(--violet-a20);
+  --accent-wash-strong: var(--violet-a40);
+  --accent-edge: var(--violet-a40);
+  --on-accent: var(--n-1000);
+  --ok: var(--green-400);
+  --warn: var(--amber-400);
+  --bad: var(--red-400);
+  --shadow: none;
+  --shadow-sheet: 0 12px 32px oklch(0 0 0 / 0.45);
+}
+
+/* ─────────────────────────────────────────────────────────── 3. COMPONENT ── */
+
+:root {
+  --side-width: 16rem;
+  --control-height: 2.5rem; /* 40px, one height across every form */
+  --card-radius: var(--radius-lg);
+  --card-inset: var(--s-5);
+  --control-radius: var(--radius-md);
+  --button-radius: var(--radius-pill); /* the product's buttons are pills */
+  --page-inset: var(--s-7);
+  --stack: var(--s-5); /* between cards and sections */
+  --page-max: 90rem;
+  --measure: 68ch;
+  --icon: 1.125rem;
 
   /* The chevron a `<select>` draws for itself, drawn by us instead — inline, so
      it is still a page that needs nothing from the network. `%23` is a `#`: a
-     bare one would start the fragment of the data URI. */
+     bare one would start the fragment of the data URI. A mid grey, legible on
+     both themes. */
   --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%238f8aa3' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-}
-
-/* One line, and it does more for the dark panel than any rule below: it tells
-   the browser this page is dark, so the parts it draws itself — the dropdown a
-   `<select>` opens, the scrollbars, the number spinners, the focus rings — stop
-   arriving white. */
-:root {
-  color-scheme: dark;
 }
 
 /* ───────────────────────────────────────────────────────────────── base ── */
@@ -128,32 +218,49 @@
   box-sizing: border-box;
 }
 
+html {
+  /* The statement footer is pinned to the bottom of the screen; a control
+     reached by Tab is scrolled clear of it rather than under it. */
+  scroll-padding-block-end: 5rem;
+}
+
 body {
   margin: 0;
+  min-height: 100dvh;
   background: var(--surface);
   color: var(--text);
   font-family: var(--sans);
-  font-size: var(--t-14);
+  font-size: var(--t-16);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
 
-h1,
+/* Tracking tightens as size grows; leading loosens as size falls. */
+h1 {
+  margin: 0;
+  font-size: var(--t-28);
+  line-height: 1.2;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
 h2 {
   margin: 0;
+  font-size: var(--t-12);
+  line-height: 1.4;
   font-weight: 600;
-}
-
-h1 {
-  font-size: var(--t-15);
-  letter-spacing: 0.01em;
-}
-
-h2 {
-  font-size: var(--t-13);
   color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--accent-text);
+  text-underline-offset: 0.15em;
 }
 
 code {
@@ -161,6 +268,7 @@ code {
   font-variant-numeric: tabular-nums;
   font-size: 0.92em;
   color: var(--accent-text);
+  overflow-wrap: anywhere;
 }
 
 .faint {
@@ -171,9 +279,9 @@ code {
 
 .note {
   color: var(--text-muted);
-  font-size: var(--t-13);
+  font-size: var(--t-14);
   margin: 0 0 var(--s-3);
-  max-width: 68ch;
+  max-inline-size: var(--measure);
 }
 
 .note.warn {
@@ -185,177 +293,251 @@ code {
   outline-offset: 2px;
 }
 
-/* ────────────────────────────────────────────────────────────────── bar ── */
+/* `hidden` must win over the display a component's own rule sets. */
+[hidden] {
+  display: none !important;
+}
 
-.bar {
+.icon {
+  inline-size: var(--icon);
+  block-size: var(--icon);
+  flex: none;
+}
+
+.skip {
+  position: absolute;
+  inset-inline-start: var(--s-2);
+  inset-block-start: -10rem;
+  z-index: var(--z-sheet);
+  padding: var(--s-2) var(--s-3);
+  background: var(--surface-raised);
+  border-radius: var(--control-radius);
+}
+
+.skip:focus {
+  inset-block-start: var(--s-2);
+}
+
+/* ─────────────────────────────────────────────────────────────── shell ── */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--side-width) minmax(0, 1fr);
+  min-height: 100dvh;
+  /* The sidebar's colour and edge run the whole height of a long page, while
+     the sidebar itself stays pinned to the viewport. */
+  background: linear-gradient(
+    to right,
+    var(--side) calc(var(--side-width) - 1px),
+    var(--line) calc(var(--side-width) - 1px),
+    var(--line) var(--side-width),
+    transparent var(--side-width)
+  );
+}
+
+.side {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: var(--z-sticky);
+  align-self: start;
+  block-size: 100dvh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-6);
+  padding: var(--s-6) var(--s-4);
+}
+
+.brand {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--s-4);
-  min-height: var(--bar-height);
-  padding: 0 var(--s-5);
-  background: var(--surface-raised);
-  border-bottom: 1px solid var(--line);
-}
-
-.who {
-  display: flex;
-  align-items: baseline;
   gap: var(--s-3);
+  padding-inline: var(--s-2);
+  min-inline-size: 0;
 }
 
-/* The mark, drawn rather than fetched: two squares, one filled, in the brand
-   violet. An <img> would be a fourth asset for eleven pixels of identity. */
-.mark {
-  align-self: center;
-  width: 14px;
-  height: 14px;
-  border: 2px solid var(--accent-strong);
-  border-radius: 2px;
-  position: relative;
+.brand > div {
+  min-inline-size: 0;
 }
 
-.mark::after {
-  content: "";
-  position: absolute;
-  inset: 2px;
-  background: var(--accent-strong);
-  border-radius: 1px;
+.brand-name {
+  font-weight: 650;
+  line-height: 1.25;
 }
 
-/* ───────────────────────────────────────────────────────────── identity ── */
-
-.identity {
-  position: relative;
+.brand .faint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.identity > summary {
-  cursor: pointer;
-  list-style: none;
-  padding: var(--s-1) var(--s-3);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-small);
-  color: var(--text-muted);
-  font-size: var(--t-13);
+.logo {
+  inline-size: 1.75rem;
+  block-size: 1.75rem;
+  flex: none;
 }
 
-.identity > summary::-webkit-details-marker {
-  display: none;
-}
-
-.identity[open] > summary {
-  border-color: var(--accent-edge);
-  color: var(--accent-text);
-}
-
-.sheet {
-  position: absolute;
-  right: 0;
-  top: calc(100% + var(--s-2));
-  z-index: 10;
-  width: min(30rem, calc(100vw - var(--s-6)));
-  padding: var(--s-4);
-  background: var(--surface-sunken);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  box-shadow: 0 12px 32px oklch(0 0 0 / 0.45);
-}
-
-/* ───────────────────────────────────────────────────────────────── tabs ── */
-
-/* The console reached in the clear from another machine (ADR-0111 D3). */
-#clear-banner {
-  margin: 0;
-  max-width: none;
-  padding: var(--s-2) var(--s-5);
-  border-bottom: 1px solid var(--warn);
-}
-
-.tabs {
-  padding: 0 var(--s-5);
-  background: var(--surface-raised);
-  border-bottom: 1px solid var(--line);
-}
-
+/* The seven destinations, a vertical menu. Still a tablist — the panes are on
+   one page and only one is shown — so the roles, the ids and the arrow keys
+   carry over; only the direction changed. */
 .tabs [role="tablist"] {
-  display: flex;
+  display: grid;
   gap: var(--s-1);
 }
 
 .tabs [role="tab"] {
   appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--s-3);
+  inline-size: 100%;
+  min-block-size: var(--control-height);
+  padding: 0 var(--s-3);
+  border: 0;
+  border-radius: var(--control-radius);
   background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  padding: var(--s-2) var(--s-3);
   color: var(--text-muted);
   font: inherit;
-  font-size: var(--t-13);
+  font-size: var(--t-14);
+  font-weight: 500;
+  text-align: start;
+  white-space: nowrap;
   cursor: pointer;
   transition:
+    background-color var(--motion-fast) var(--ease),
     color var(--motion-fast) var(--ease),
-    border-bottom-color var(--motion-fast) var(--ease);
+    transform var(--motion-fast) var(--ease);
 }
 
 .tabs [role="tab"]:hover {
   color: var(--text);
+  background: var(--surface-sunken);
 }
 
 .tabs [role="tab"][aria-selected="true"] {
   color: var(--accent-text);
-  border-bottom-color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.tabs [role="tab"]:active {
+  transform: scale(0.97);
 }
 
 [role="tabpanel"][hidden] {
   display: none;
 }
 
-/* ──────────────────────────────────────────────────────────────── panes ── */
+.side-foot {
+  margin-block-start: auto;
+  display: grid;
+  gap: var(--s-1);
+}
+
+.side-foot > button {
+  justify-content: flex-start;
+  padding-inline: var(--s-3);
+}
+
+.main-col {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
 
 main {
-  padding: var(--s-5);
+  flex: 1;
   display: grid;
-  gap: var(--s-5);
+  align-content: start;
+  gap: var(--stack);
+  padding: var(--page-inset);
+  inline-size: 100%;
+  max-inline-size: var(--page-max);
+}
+
+main:focus,
+#view-title:focus {
+  /* Focus lands here from the skip link; neither is a control, so there is no
+     ring to show. */
+  outline: none;
+}
+
+/* The console reached in the clear from another machine (ADR-0111 D3). */
+#clear-banner {
+  margin: 0;
+  max-inline-size: none;
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--warn);
+  border-radius: var(--control-radius);
+}
+
+/* ─────────────────────────────────────────────────────────── page header ── */
+
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s-4) var(--s-6);
+  margin-block-end: var(--s-2);
+}
+
+/* ──────────────────────────────────────────────────────────────── panes ── */
+
+/* A destination's panes stack with the same air between them as the page. */
+[role="tabpanel"] {
+  display: grid;
+  gap: var(--stack);
+  align-content: start;
 }
 
 .split {
   display: grid;
-  gap: var(--s-5);
-  grid-template-columns: 1fr;
+  gap: var(--stack);
+  grid-template-columns: minmax(0, 1fr);
 }
 
-@media (min-width: 60rem) {
+@media (min-width: 64rem) {
   .split {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
 }
 
 .pane {
+  position: relative;
   display: grid;
-  gap: var(--s-3);
+  gap: var(--s-4);
   align-content: start;
-  padding: var(--s-4);
+  min-inline-size: 0;
+  padding: var(--card-inset);
   background: var(--surface-raised);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border-radius: var(--card-radius);
+  box-shadow: var(--shadow);
 }
 
 .pane-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--s-3);
-  min-height: 1.75rem;
+  gap: var(--s-2) var(--s-3);
+  min-block-size: 2rem;
+}
+
+/* The heading keeps its line; a long status beside it wraps under it rather
+   than squeezing the heading into a column of single words. */
+.pane-head > h2 {
+  flex: none;
 }
 
 /* ─────────────────────────────────────────────────────────────── inputs ── */
 
 label {
   display: grid;
-  gap: var(--s-1);
-  font-size: var(--t-12);
-  color: var(--text-faint);
+  gap: var(--s-2);
+  font-size: var(--t-13);
+  font-weight: 600;
+  color: var(--text-muted);
 }
 
 input,
@@ -363,26 +545,39 @@ textarea,
 select {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-  font-size: var(--t-13);
+  font-size: var(--t-14);
+  font-weight: 400;
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius-small);
-  padding: var(--s-2);
+  border-radius: var(--control-radius);
+  padding: var(--s-2) var(--s-3);
+  min-block-size: var(--control-height);
   transition: border-color var(--motion-fast) var(--ease);
+}
+
+input:hover,
+textarea:hover,
+select:hover {
+  border-color: var(--text-muted);
 }
 
 input:focus,
 textarea:focus,
 select:focus {
-  border-color: var(--accent-edge);
+  border-color: var(--accent);
+}
+
+input[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--bad);
 }
 
 select {
   appearance: none;
   /* Room for the chevron, which is drawn in the padding rather than over the
      text — a long option should run out of room before it runs under it. */
-  padding-right: var(--s-6);
+  padding-inline-end: var(--s-6);
   background-image: var(--chevron);
   background-repeat: no-repeat;
   background-position: right var(--s-3) center;
@@ -390,15 +585,9 @@ select {
   cursor: pointer;
   /* Native width is the widest option, which makes one long label stretch a
      control that holds three short ones. */
-  max-width: 22rem;
+  max-inline-size: 22rem;
 }
 
-select:hover {
-  border-color: var(--accent-edge);
-}
-
-/* macOS draws the open list itself and `color-scheme` above is what makes it
-   dark; these two are for the platforms that let the page say. */
 option {
   background: var(--surface-raised);
   color: var(--text);
@@ -409,7 +598,7 @@ label[hidden] {
 }
 
 textarea {
-  width: 100%;
+  inline-size: 100%;
   resize: vertical;
   line-height: 1.6;
 }
@@ -418,7 +607,7 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
-  gap: var(--s-3);
+  gap: var(--s-3) var(--s-4);
 }
 
 .row.spread {
@@ -427,45 +616,70 @@ textarea {
 }
 
 .row.tight {
-  gap: var(--s-1);
+  gap: var(--s-2);
 }
+
+/* ────────────────────────────────────────────────────────────── buttons ── */
 
 button {
   appearance: none;
   font: inherit;
-  font-size: var(--t-13);
-  padding: var(--s-2) var(--s-4);
-  border-radius: var(--radius-small);
-  border: 1px solid var(--accent-edge);
-  background: var(--accent-wash);
-  color: var(--accent-text);
+  font-size: var(--t-14);
+  font-weight: 550;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  min-block-size: var(--control-height);
+  padding: var(--s-2) var(--s-5);
+  border-radius: var(--button-radius);
+  border: 1px solid var(--line);
+  background: var(--surface-raised);
+  color: var(--text);
   cursor: pointer;
+  touch-action: manipulation;
   transition:
-    background var(--motion-fast) var(--ease),
+    background-color var(--motion-fast) var(--ease),
     border-color var(--motion-fast) var(--ease),
-    color var(--motion-fast) var(--ease);
+    color var(--motion-fast) var(--ease),
+    transform var(--motion-fast) var(--ease);
 }
 
-button:hover:not(:disabled) {
-  background: var(--violet-a20);
+@media (hover: hover) and (pointer: fine) {
+  button:hover:not(:disabled) {
+    background: var(--surface-sunken);
+  }
 }
 
 button.primary {
-  background: var(--accent-strong);
-  border-color: var(--accent-strong);
-  color: var(--n-1000);
-  font-weight: 600;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  button.primary:hover:not(:disabled) {
+    background: var(--accent-strong);
+    border-color: var(--accent-strong);
+  }
 }
 
 button.quiet {
-  background: none;
-  border-color: var(--line-strong);
+  background: transparent;
+  border-color: transparent;
   color: var(--text-muted);
 }
 
+@media (hover: hover) and (pointer: fine) {
+  button.quiet:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--surface-sunken);
+  }
+}
+
 button.quiet.chosen {
-  border-color: var(--accent-edge);
   color: var(--accent-text);
+  background: var(--accent-wash);
 }
 
 /* The pressed state, and it is not decoration. Without it a click that has
@@ -473,18 +687,16 @@ button.quiet.chosen {
    operator presses again, and the action this console most needs pressed once
    is the one that does not come back. */
 button:active:not(:disabled) {
-  background: var(--accent-edge);
-  border-color: var(--accent);
-  transform: translateY(1px);
+  transform: scale(0.97);
 }
 
 .node[role="button"]:active {
   border-color: var(--accent);
-  transform: translateY(1px);
+  transform: scale(0.99);
 }
 
 button:disabled {
-  opacity: 0.45;
+  opacity: 0.5;
   cursor: default;
 }
 
@@ -504,16 +716,16 @@ button:disabled {
 /* ─────────────────────────────────────────────────────────────── answer ── */
 
 .answer {
-  min-height: 12rem;
-  max-height: 30rem;
+  min-block-size: 12rem;
+  max-block-size: 30rem;
   overflow: auto;
-  padding: var(--s-3);
+  padding: var(--s-3) var(--s-4);
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--radius-small);
+  border-radius: var(--control-radius);
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-  font-size: var(--t-12);
+  font-size: var(--t-13);
 }
 
 .answer pre {
@@ -526,7 +738,7 @@ button:disabled {
    A pane holding a handful of facts has no such problem and should not hold a
    screenful of nothing to prove it. */
 .answer.small {
-  min-height: 0;
+  min-block-size: 0;
 }
 
 .answer .empty {
@@ -535,7 +747,7 @@ button:disabled {
 
 .answer .trailer {
   color: var(--text-faint);
-  margin-top: var(--s-2);
+  margin-block-start: var(--s-2);
 }
 
 /* The same rule the terminal follows: records of one flat shape become an
@@ -547,23 +759,23 @@ table {
      columns across the pane and puts a two-character id half a screen from the
      name it belongs to. This is the width a terminal would give it. */
   width: auto;
-  font-size: var(--t-12);
+  font-size: var(--t-14);
 }
 
 th,
 td {
-  text-align: left;
-  /* 12px text at line-height 1.5 is 18px; 8px above and below puts the row at
-     34px, inside the 32-40px band `VISUAL_DENSITY 70` asks for. It was 26px,
-     which is denser than dense — a scanning eye loses its place in a table
-     whose rows are tighter than the text is tall. */
-  padding: var(--s-2) var(--s-3);
-  border-bottom: 1px solid var(--line);
+  text-align: start;
+  /* 14px text at line-height 1.5 is 21px; 12px above and below puts the row at
+     45px, inside the 40-48px band VISUAL_DENSITY 55 asks for — room to read a
+     row, and still a table you can scan. */
+  padding: var(--s-3) var(--s-4);
+  border-block-end: 1px solid var(--line);
   white-space: nowrap;
-  transition: background var(--motion-fast) var(--ease);
+  transition: background-color var(--motion-fast) var(--ease);
 }
 
 th {
+  font-size: var(--t-12);
   color: var(--text-faint);
   font-weight: 600;
 }
@@ -575,23 +787,29 @@ thead th {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   position: sticky;
-  top: calc(var(--s-3) * -1);
+  inset-block-start: calc(var(--s-3) * -1);
   background: var(--surface);
 }
 
 tbody th {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
+  font-size: var(--t-13);
   font-weight: 400;
-  padding-right: var(--s-5);
+  padding-inline-end: var(--s-5);
+}
+
+tbody tr:last-child td,
+tbody tr:last-child th {
+  border-block-end: 0;
 }
 
 td.number {
-  text-align: right;
+  text-align: end;
 }
 
 tbody tr:hover td {
-  background: var(--surface-raised);
+  background: var(--accent-wash);
 }
 
 /* ────────────────────────────────────────────────────────────── changes ── */
@@ -600,31 +818,34 @@ tbody tr:hover td {
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 20rem;
+  max-block-size: 20rem;
   overflow: auto;
+  display: grid;
+  gap: var(--s-1);
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-  font-size: var(--t-12);
+  font-size: var(--t-13);
 }
 
 .changes li {
-  padding: var(--s-1) var(--s-2);
-  border-left: 2px solid var(--line-strong);
-  margin-bottom: 1px;
+  padding: var(--s-2) var(--s-3);
+  border-inline-start: 2px solid var(--line-strong);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--surface);
 }
 
 .changes li.written {
-  border-left-color: var(--ok);
+  border-inline-start-color: var(--ok);
 }
 
 .changes li.removed {
-  border-left-color: var(--warn);
+  border-inline-start-color: var(--warn);
   color: var(--text-muted);
 }
 
 /* A narrowed feed's position past what it skipped: a marker, not a change. */
 .changes li.progress {
-  border-left-style: dashed;
+  border-inline-start-style: dashed;
   color: var(--text-muted);
 }
 
@@ -633,46 +854,116 @@ tbody tr:hover td {
    difference worth a line. */
 hr.between {
   border: 0;
-  border-top: 1px solid var(--line);
-  margin: 1.25rem 0 0.25rem;
+  border-block-start: 1px solid var(--line);
+  margin: var(--s-4) 0 var(--s-1);
+}
+
+/* ─────────────────────────────────────────────────────────────── sheets ── */
+
+/* One floating surface, used four ways: the identity, the drawer, the log, the
+   keys and the detail. One pattern used four times is cohesion, not four
+   signatures. */
+.sheet {
+  position: absolute;
+  z-index: var(--z-sheet);
+  display: grid;
+  gap: var(--s-3);
+  inline-size: min(30rem, calc(100vw - var(--s-6)));
+  padding: var(--card-inset);
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  box-shadow: var(--shadow-sheet);
+}
+
+/* ───────────────────────────────────────────────────────────── identity ── */
+
+.identity {
+  position: relative;
+}
+
+.identity > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-block-size: var(--control-height);
+  padding: 0 var(--s-3);
+  border-radius: var(--control-radius);
+  color: var(--text-muted);
+  font-size: var(--t-14);
+  font-weight: 500;
+  list-style: none;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+
+.identity > summary::-webkit-details-marker {
+  display: none;
+}
+
+.identity > summary:hover {
+  color: var(--text);
+  background: var(--surface-sunken);
+}
+
+.identity[open] > summary {
+  color: var(--accent-text);
+  background: var(--accent-wash);
+}
+
+#signed-in {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The sheet opens upward from the sidebar's foot, over the page beside it. */
+.identity > .sheet {
+  inset-block-end: calc(100% + var(--s-2));
+  inset-inline-start: 0;
 }
 
 /* Over the map, not instead of it. The map is the context the decision is being
    made in — a node during a failover is being read relative to the others — so a
    navigation that replaced the view would take away the reason it was opened. */
 .sheet.drawer {
-  position: absolute;
-  left: var(--s-3);
-  right: var(--s-3);
-  top: var(--s-5);
-  z-index: 8;
-  max-width: 34rem;
-}
-
-.pane {
-  position: relative;
+  inset-inline: var(--s-4);
+  inset-block-start: var(--s-6);
+  inline-size: auto;
+  max-inline-size: 34rem;
 }
 
 .node[role="button"] {
   cursor: pointer;
-  text-align: left;
+  text-align: start;
+  transition:
+    border-color var(--motion-fast) var(--ease),
+    transform var(--motion-fast) var(--ease);
 }
 
 .node[role="button"]:hover {
-  border-color: var(--line-strong);
+  border-color: var(--accent-edge);
 }
 
 /* A checkbox and its word, reading left to right like the sentence it is. The
-   other `field`s on the page put the label above the control; a tick reads the
+   other fields on the page put the label above the control; a tick reads the
    other way round, and forcing it into the column shape would put a word above
    a box that is narrower than it. */
 label.tick {
   display: inline-flex;
   flex-direction: row-reverse;
   align-items: center;
-  gap: var(--s-1);
-  font-size: var(--t-12);
+  gap: var(--s-2);
+  font-size: var(--t-13);
+  font-weight: 500;
   color: var(--text-muted);
+}
+
+label.tick input {
+  min-block-size: 0;
+  accent-color: var(--accent);
 }
 
 /* ──────────────────────────────────────────────────── the cluster map ── */
@@ -680,17 +971,17 @@ label.tick {
 .map {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--s-3);
-  margin: 0 0 var(--s-3);
+  gap: var(--s-4);
+  margin: 0;
 }
 
 .node {
   flex: 1 1 18rem;
-  min-width: 0;
+  min-inline-size: 0;
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: var(--s-3);
-  background: var(--surface-raised);
+  border-radius: var(--control-radius);
+  padding: var(--s-4);
+  background: var(--surface);
 }
 
 /* This node is the one the reader is connected to, and the border says so. A
@@ -705,11 +996,12 @@ label.tick {
   align-items: center;
   justify-content: space-between;
   gap: var(--s-3);
-  margin-bottom: var(--s-2);
+  margin-block-end: var(--s-3);
 }
 
 .node-head h3 {
   font-size: var(--t-14);
+  font-weight: 600;
   margin: 0;
   overflow-wrap: anywhere;
 }
@@ -727,9 +1019,9 @@ label.tick {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.5rem;
-  height: 1.5rem;
-  border-radius: var(--radius-small);
+  inline-size: 1.75rem;
+  block-size: 1.75rem;
+  border-radius: var(--radius-pill);
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   font-size: var(--t-12);
@@ -740,7 +1032,7 @@ label.tick {
 .lamp.held {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--surface);
+  color: var(--on-accent);
 }
 
 /* Declared and not yet reported: an outline in the accent, which is a
@@ -757,54 +1049,65 @@ label.tick {
 }
 
 .lease {
-  font-size: var(--t-12);
-  color: var(--accent-text);
-  border: 1px solid var(--accent-edge);
-  border-radius: var(--radius-small);
-  padding: var(--s-1) var(--s-2);
-  margin-bottom: var(--s-2);
   display: inline-block;
+  font-size: var(--t-12);
+  font-weight: 600;
+  color: var(--accent-text);
+  background: var(--accent-wash);
+  border-radius: var(--radius-pill);
+  padding: var(--s-1) var(--s-3);
+  margin-block-end: var(--s-3);
 }
 
 .fact {
   display: flex;
   justify-content: space-between;
   gap: var(--s-3);
-  font-size: var(--t-12);
-  padding: var(--s-1) 0;
-  border-top: 1px solid var(--line);
+  font-size: var(--t-13);
+  padding: var(--s-2) 0;
+  border-block-start: 1px solid var(--line);
 }
 
 .fact-value {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
-  text-align: right;
+  text-align: end;
 }
 
 /* ──────────────────────────────────────────────── finding a thing ── */
 
-/* The search field sits in the bar between the mark and the identity, so it is
-   present on every destination rather than being one. It takes the space the bar
-   has going spare, which on a narrow window is none — and then it wraps under
-   the mark rather than squeezing the identity out of reach. */
+/* The search sits opposite the destination's name, so it is present on every
+   destination rather than being one. It takes the room the header has spare,
+   and on a narrow window it wraps under the name at full width. */
 .finding {
   display: flex;
   align-items: end;
   gap: var(--s-3);
-  flex: 1 1 22rem;
-  min-width: 0;
-  justify-content: flex-end;
+  flex: 0 1 28rem;
+  min-inline-size: 0;
 }
 
 .finding label {
   flex: 1 1 auto;
-  max-width: 32rem;
-  min-width: 0;
+  min-inline-size: 0;
+}
+
+/* Its word is for a screen reader only; the placeholder says it on screen. */
+.finding .label {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .finding input {
-  width: 100%;
+  inline-size: 100%;
+  font-family: var(--sans);
+  border-radius: var(--radius-pill);
+  padding-inline: var(--s-4);
 }
 
 /* ──────────────────────────────────── what a button will do ── */
@@ -816,12 +1119,12 @@ label.tick {
    that parsing it was never the operator's job. */
 .says {
   color: var(--text);
-  font-size: var(--t-13);
+  font-size: var(--t-14);
   line-height: 1.55;
-  max-width: 68ch;
-  border-left: 2px solid var(--accent-edge);
-  padding-left: var(--s-3);
-  margin: var(--s-3) 0;
+  max-inline-size: var(--measure);
+  border-inline-start: 2px solid var(--accent-edge);
+  padding-inline-start: var(--s-3);
+  margin: var(--s-2) 0;
 }
 
 /* A field whose answer is a sentence and not a word. Without this the reason box
@@ -832,7 +1135,7 @@ label.wide {
 }
 
 label.wide input {
-  width: 100%;
+  inline-size: 100%;
 }
 
 /* The statement, kept reachable and out of the way: what is confirmed has to be
@@ -840,63 +1143,63 @@ label.wide input {
    is the browser's own, because a disclosure nobody recognises as one is a
    paragraph with a strange margin. */
 details.tucked {
-  margin: 0 0 var(--s-3);
+  margin: 0;
 }
 
 details.tucked > summary {
   color: var(--text-faint);
-  font-size: var(--t-12);
+  font-size: var(--t-13);
   cursor: pointer;
   padding: var(--s-1) 0;
 }
 
 /* One thing, looked at. Over whatever you were doing and never instead of it —
-   the cap is four destinations, and a detail view is not a place you go. */
+   a detail view is not a place you go. */
 .sheet.detail-sheet {
   position: fixed;
-  left: 50%;
-  top: 6rem;
+  inset-inline-start: 50%;
+  inset-block-start: 6rem;
   transform: translateX(-50%);
-  z-index: 11;
-  width: min(42rem, calc(100vw - 2rem));
-  max-height: calc(100vh - 12rem);
+  inline-size: min(42rem, calc(100vw - 2rem));
+  max-block-size: calc(100vh - 12rem);
   overflow-y: auto;
 }
 
 .detail-sheet h2 {
-  font-size: var(--t-15);
-  margin: 0;
+  font-size: var(--t-16);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
 }
 
 /* ──────────────────────────────────────────────────────── the keys ── */
 
 .sheet.keys-sheet {
   position: fixed;
-  left: 50%;
-  bottom: 4.5rem;
+  inset-inline-start: 50%;
+  inset-block-end: 5rem;
   transform: translateX(-50%);
-  z-index: 11;
-  width: min(30rem, calc(100vw - 2rem));
+  inline-size: min(30rem, calc(100vw - 2rem));
 }
 
 .keys {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: var(--s-2) var(--s-3);
+  gap: var(--s-3) var(--s-4);
   margin: 0;
 }
 
 .keys dt {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-  font-size: var(--t-12);
+  font-size: var(--t-13);
   color: var(--accent-text);
   white-space: nowrap;
 }
 
 .keys dd {
   margin: 0;
-  font-size: var(--t-13);
+  font-size: var(--t-14);
   color: var(--text-muted);
 }
 
@@ -928,30 +1231,43 @@ details.tucked > summary {
 
 /* ─────────────────────────────────────────────── the statement log ── */
 
-/* The tray is where the session's record lives, and it is the only element on
-   the page that belongs to no screen. It stays put while a pane scrolls,
-   because the point of a record you can always reach is that you can always
-   reach it. */
+/* The footer is where the session's record lives, and it is the only element
+   that belongs to no screen. It stays put while a pane scrolls, because the
+   point of a record you can always reach is that you can always reach it. */
 .tray {
   position: sticky;
-  bottom: 0;
-  z-index: 9;
+  inset-block-end: 0;
+  z-index: var(--z-sticky);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--s-3);
-  padding: var(--s-2) var(--s-5);
-  background: var(--surface-raised);
-  border-top: 1px solid var(--line);
+  gap: var(--s-2) var(--s-3);
+  padding: var(--s-2) var(--page-inset);
+  padding-block-end: max(var(--s-2), env(safe-area-inset-bottom));
+  background: var(--surface);
+  border-block-start: 1px solid var(--line);
+  color: var(--text-muted);
+  font-size: var(--t-13);
+}
+
+.tray > .faint {
+  font-size: var(--t-13);
+}
+
+.tray .credit {
+  margin-inline-start: auto;
+  color: var(--text-faint);
+  font-size: var(--t-12);
 }
 
 /* The count, in the mono stack so it does not shuffle the words beside it as
    it climbs past 9 and past 99. */
 .count {
   display: inline-block;
-  min-width: 1.5rem;
-  padding: 0 var(--s-1);
-  border-radius: var(--radius-small);
-  background: var(--violet-a12);
+  min-inline-size: 1.75rem;
+  padding: 0 var(--s-2);
+  border-radius: var(--radius-pill);
+  background: var(--accent-wash);
   color: var(--accent-text);
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
@@ -959,43 +1275,41 @@ details.tucked > summary {
   text-align: center;
 }
 
-/* `fixed` and not `absolute`: `.sheet` positions itself against the identity
-   control it lives inside, and this one is a child of the body with nothing to
+/* `fixed` and not `absolute`: this sheet is a child of the body with nothing to
    position against. Same surface, different anchor. */
 .sheet.log {
   position: fixed;
-  right: var(--s-4);
-  bottom: 3rem;
-  top: auto;
-  width: min(44rem, calc(100vw - var(--s-6)));
-  max-height: min(34rem, 70vh);
+  inset-inline-end: var(--s-5);
+  inset-block-end: 4.5rem;
+  inline-size: min(44rem, calc(100vw - var(--s-6)));
+  max-block-size: min(34rem, 70vh);
   overflow-y: auto;
 }
 
 .logged {
   padding: var(--s-3) 0;
-  border-top: 1px solid var(--line);
+  border-block-start: 1px solid var(--line);
 }
 
 .logged-head {
   display: flex;
   justify-content: space-between;
   gap: var(--s-3);
-  font-size: var(--t-12);
+  font-size: var(--t-13);
 }
 
 /* The statement as sent. It wraps rather than scrolls sideways, because a
    record you have to drag to read is a record nobody reads. */
 .logged-what {
   margin: var(--s-2) 0;
-  padding: var(--s-2);
+  padding: var(--s-3);
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--radius-small);
+  border-radius: var(--control-radius);
   color: var(--text);
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-  font-size: var(--t-12);
+  font-size: var(--t-13);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1007,16 +1321,15 @@ details.tucked > summary {
 /* ─────────────────────────────────────────────────── reduced motion ── */
 
 /* The dial's own clamp: `prefers-reduced-motion: reduce` takes MOTION_INTENSITY
-   to 0. Nothing is lost, because at 20 there was never anything but state
-   feedback — a colour that arrives in 100ms and a colour that is simply there
-   carry the same information. `0s` rather than removing the declarations, so a
-   rule added later inherits the clamp instead of escaping it.
+   to 0. Nothing is lost, because there was never anything but state feedback —
+   a colour that arrives in 120ms and a colour that is simply there carry the
+   same information. `0s` rather than removing the declarations, so a rule added
+   later inherits the clamp instead of escaping it.
 
-   `:focus-visible` is deliberately absent from every transition above and
-   therefore from this block. A focus ring is not state feedback, it is the
-   answer to "where am I", and a keyboard user moving quickly through a form
-   should never see it lagging behind the caret. Instant is correct there at
-   every motion setting. */
+   The focus ring is deliberately absent from every transition above and
+   therefore from this block. It is the answer to "where am I", and a keyboard
+   user moving quickly through a form should never see it lagging behind the
+   caret. Instant is correct there at every motion setting. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1028,47 +1341,239 @@ details.tucked > summary {
   }
 }
 
-/* ─────────────────────────────────────────── the second mandatory clamp ── */
+/* ───────────────────────────────────────────────────── phones and tablets ── */
 
-/* `VISUAL_DENSITY 70 → 60` below 768px (brief §3, ref 28 mobile collapse: −10).
+/* Below 768px the pointer is a finger and the screen is narrow (designer refs
+ * 07, 28, 45). What changes, and nothing else:
  *
- * The brief names two clamps and calls both mandatory, in one sentence. Its
- * sibling above was built; this one was not, and the pair was ticked as one
- * thing — so the console rendered at the DENSE dial on a phone, rows at 35px
- * and pressables at 38px, measured at 375×812 in W322. Nothing was broken,
- * which is why it survived a release gate marked as passing.
+ *  - the sidebar becomes a header: the mark, the theme and the identity on one
+ *    row, and the seven destinations as one row of pills under it that scrolls
+ *    sideways. A bottom bar holds three to five destinations and this console
+ *    has seven, so they stay at the top — always visible, never behind a menu
+ *    button you have to find first;
+ *  - every pressable thing is at least 44px tall, which is where the two
+ *    platform conventions agree (WCAG 2.2's 24px is a floor the desktop dial
+ *    already clears, not a target);
+ *  - forms become one column, a field the width of the screen;
+ *  - the page never scrolls sideways — a wide table scrolls inside its box;
+ *  - the footer and the header keep clear of the notch and the home indicator.
  *
- * The brief gives the band for 70 and not for 60, so the number comes from the
- * one thing that actually changes below this width: the pointer is a finger.
- * Apple's HIG asks 44×44pt and Material 48×48dp; WCAG 2.2 SC 2.5.8 asks 24×24
- * and is a FLOOR the desktop dial already clears, not a target. 44px is the
- * convention both platforms agree on, and it is what the geometry the dial
- * names relaxes to here — rows, pressables, card padding. Nothing else moves,
- * and nothing moves at all above 768px.
+ * VISUAL_DENSITY steps down rather than up here, and body text stays 16px.
  */
 @media (max-width: 48rem) {
+  :root {
+    --dial-density: 50;
+    --control-height: 2.75rem;
+    --card-inset: var(--s-4);
+    --page-inset: var(--s-4);
+    --stack: var(--s-4);
+  }
+
+  html {
+    scroll-padding-block-end: 7rem;
+  }
+
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+    background: none;
+  }
+
+  .side {
+    position: static;
+    block-size: auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-3) var(--page-inset);
+    padding-block-start: max(var(--s-3), env(safe-area-inset-top));
+    padding-inline: max(var(--page-inset), env(safe-area-inset-left)) max(var(--page-inset), env(safe-area-inset-right));
+    background: var(--side);
+    border-block-end: 1px solid var(--line);
+  }
+
+  .brand {
+    padding-inline: 0;
+  }
+
+  .side-foot {
+    grid-row: 1;
+    grid-column: 2;
+    margin-block-start: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--s-1);
+  }
+
+  /* The theme switch keeps its words for a screen reader and shows the icon. */
+  .side-foot > button .label {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .side-foot > button {
+    min-inline-size: 2.75rem;
+    padding-inline: var(--s-3);
+  }
+
+  #signed-in {
+    max-inline-size: 7rem;
+  }
+
+  /* Over the page, under the header, inside the gutters. */
+  .identity > .sheet {
+    position: fixed;
+    inset-block: auto;
+    inset-block-start: 4.5rem;
+    inset-inline: var(--page-inset);
+    inline-size: auto;
+    max-block-size: calc(100dvh - 6rem);
+    overflow-y: auto;
+  }
+
+  .tabs {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    margin-inline: calc(var(--page-inset) * -1);
+    overflow-x: auto;
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+  }
+
+  .tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tabs [role="tablist"] {
+    display: flex;
+    gap: var(--s-2);
+    padding-inline: var(--page-inset);
+    inline-size: max-content;
+  }
+
+  .tabs [role="tab"] {
+    inline-size: auto;
+    min-height: 2.75rem;
+    padding: 0 var(--s-4);
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--line);
+    background: var(--surface-raised);
+    scroll-snap-align: start;
+  }
+
+  .tabs [role="tab"][aria-selected="true"] {
+    border-color: transparent;
+  }
+
   button {
-    padding: var(--s-3) var(--s-4);
+    padding: var(--s-2) var(--s-4);
     min-height: 2.75rem;
-  }
-
-  [role="tab"] {
-    min-height: 2.75rem;
-  }
-
-  th,
-  td {
-    /* 12px text at line-height 1.5 is 18px; 13px above and below carries the
-       row to 44px, one notch out of the 32-40px dense band. */
-    padding: 0.8125rem var(--s-3);
-  }
-
-  .pane {
-    padding: var(--s-5);
   }
 
   input,
   select {
+    /* 16px, or a phone zooms the page in the moment a field is focused. */
+    font-size: var(--t-16);
     min-height: 2.75rem;
+  }
+
+  textarea {
+    font-size: var(--t-16);
+  }
+
+  select {
+    max-inline-size: 100%;
+  }
+
+  .identity > summary {
+    min-height: 2.75rem;
+  }
+
+  main {
+    padding-inline: max(var(--page-inset), env(safe-area-inset-left)) max(var(--page-inset), env(safe-area-inset-right));
+  }
+
+  h1 {
+    font-size: 1.5rem;
+  }
+
+  .page-head {
+    align-items: stretch;
+  }
+
+  .finding {
+    flex: 1 1 100%;
+  }
+
+  /* One column: a field the width of the screen, a button row that wraps. */
+  .row:not(.spread):not(.tight) > label {
+    flex: 1 1 100%;
+  }
+
+  .row:not(.spread):not(.tight) > label input,
+  .row:not(.spread):not(.tight) > label select {
+    inline-size: 100%;
+  }
+
+  th,
+  td {
+    /* 14px text at line-height 1.5 is 21px; 12px above and below keeps the row
+       at 45px — already over the 44px a finger needs. */
+    padding: var(--s-3);
+  }
+
+  .answer {
+    max-block-size: 24rem;
+  }
+
+  .tray {
+    padding-inline: var(--page-inset);
+  }
+
+  .tray > .faint,
+  .tray .credit {
+    display: none;
+  }
+
+  .sheet.log,
+  .sheet.keys-sheet,
+  .sheet.detail-sheet {
+    inset-inline: var(--page-inset);
+    transform: none;
+    inline-size: auto;
+  }
+
+  .sheet.detail-sheet {
+    inset-block-start: 4.5rem;
+    max-block-size: calc(100dvh - 10rem);
+  }
+
+  .sheet.drawer {
+    inset-inline: var(--s-2);
+  }
+
+  .keys {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s-1) 0;
+  }
+
+  .keys dd {
+    margin-block-end: var(--s-2);
+  }
+}
+
+/* Windows high contrast and other forced palettes keep every boundary visible. */
+@media (forced-colors: active) {
+  button,
+  .pane,
+  .sheet,
+  .node,
+  .lamp,
+  .tabs [role="tab"][aria-selected="true"] {
+    border: 1px solid CanvasText;
   }
 }
