@@ -6670,6 +6670,7 @@ fn ask_as_an_old_client(address: &str, script: &str, who: Option<(&str, &str)>) 
         script: script.to_owned(),
         credentials: who.map(|(name, password)| (name.to_owned(), password.to_owned())),
         parameters: tessari_ql::Parameters::new(),
+        stream: false,
     }
     .encode();
     let mut frame = vec![1_u8];
@@ -7045,3 +7046,72 @@ fn a_peer_certificate_rotates_under_writes_and_a_revoked_one_is_cut_off() {
 // ---- G057 C6: the same measurements across injected network distance ---
 #[path = "serving/distance.rs"]
 mod distance;
+
+/// The node whose snapshot is streamed to `--at … --backup` (ADR-0125).
+const STREAMING_WIRE: &str = "127.0.0.1:48070";
+
+#[test]
+fn a_snapshot_above_one_frame_is_taken_from_a_running_node_with_at_and_backup() {
+    // The command an operator runs against a node they cannot stop: the
+    // snapshot streams in parts, lands under the name asked for, and is whole —
+    // checked by the same binary's verifier, not by its size alone.
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    {
+        let db = tessaridb::Db::open(&path).unwrap();
+        let mut session = db.session();
+        session
+            .run(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
+                 USE DATABASE orders; DEFINE COLLECTION big;",
+            )
+            .unwrap();
+        let nine_megabytes = tessari_types::Value::String("x".repeat(9 * 1024 * 1024));
+        let body = BTreeMap::from([("body".to_owned(), nine_megabytes)]);
+        for statement in [
+            "CREATE big:1 = { body: $body };",
+            "CREATE big:2 = { body: $body };",
+        ] {
+            session.run_with(statement, &body).unwrap();
+        }
+    }
+    let _node = Running(serving(&path, STREAMING_WIRE));
+    let file = root.path().join("taken.tessarisnap");
+
+    let taken = Command::new(TESSARIDB)
+        .args(["--at", STREAMING_WIRE, "--backup"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&taken.stdout);
+    assert!(
+        taken.status.success(),
+        "{said}{}",
+        String::from_utf8_lossy(&taken.stderr)
+    );
+    assert!(said.contains("record(s) at version"), "{said}");
+    assert!(std::fs::metadata(&file).unwrap().len() > 16 * 1024 * 1024);
+    let verified = Command::new(TESSARIDB)
+        .arg("--verify")
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+
+    // The log is still answered whole, so a position stays refused with --at.
+    let refused = Command::new(TESSARIDB)
+        .args(["--at", STREAMING_WIRE, "--from", "1", "--backup"])
+        .arg(root.path().join("log.tessarilog"))
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("--from works on a store"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+}

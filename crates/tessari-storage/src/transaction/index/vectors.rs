@@ -164,10 +164,11 @@ impl Transaction<'_> {
     /// record's indexed values at the reader's own snapshot, so a stale entry
     /// can never produce a row that does not match.
     ///
-    /// What it cannot do is find a record that held `values` at the snapshot and
-    /// has since changed: its entry is gone, so there is no candidate to
-    /// confirm. A reader at the latest committed state is exact; an older one
-    /// gets no wrong rows and may get fewer.
+    /// What it cannot do on its own is find a record that held `values` at the
+    /// snapshot and has since changed: its entry is gone. A reader the session
+    /// let read behind the tail (`Transaction::plain_indexes_serve_behind_the_tail`)
+    /// takes the retired entries of a plain index as further candidates and is
+    /// exact; any other older reader gets no wrong rows and may get fewer.
     ///
     /// Uncommitted writes of this transaction participate, because entries are
     /// derived at commit and a writer would otherwise be unable to find what it

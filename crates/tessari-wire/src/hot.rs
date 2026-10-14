@@ -88,8 +88,17 @@ pub(crate) fn serve(
                     kind: frame::Kind::Refusal,
                     body: frame::refusal(theirs, tessari_types::RefusalClass::Unavailable, BUSY),
                     redirect: None,
+                    snapshot: None,
                 }
             }
+        };
+        // A streamed snapshot's parts go ahead of the answer (ADR-0125 D3).
+        let answer = match &answer.snapshot {
+            Some(spool) => match frame::write_parts(&mut writer, spool)? {
+                Ok(()) => answer,
+                Err(why) => conversation::spool_unreadable(theirs, &why),
+            },
+            None => answer,
         };
         reply(&mut writer, &talk.stopping, &answer)?;
         if reader.buffer().is_empty() {
@@ -190,6 +199,7 @@ mod tests {
             script: script.to_owned(),
             credentials: None,
             parameters: Parameters::new(),
+            stream: false,
         }
     }
 

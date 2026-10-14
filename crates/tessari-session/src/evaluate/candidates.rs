@@ -54,11 +54,7 @@ impl Session<'_> {
         // cannot use is one this statement does not have, and saying so here
         // keeps the reason in the one place that asks the catalog rather than
         // spread across every candidate that could have been built from it.
-        let declared = if transaction.indexes_are_current_for(table)? {
-            Catalog::new(transaction).field_indexes_on(table)?
-        } else {
-            Vec::new()
-        };
+        let (declared, exact) = declared_for(transaction, table)?;
         let offered = self.enumerate(transaction, condition, &declared, searched)?;
 
         // Resolved before either path, so an index-served read and a scan see
@@ -77,7 +73,9 @@ impl Session<'_> {
             // `EXPLAIN` calls on the candidate its own `serving` returned. The
             // two report one structure because one function writes it.
             let plan = chosen.plan(asked.named).seen_by(&chosen.index, &visible);
-            let answered = self.trusts(condition, &chosen, &visible);
+            // Behind the tail the entries are a superset of the answer, so the
+            // index is never believed there — every candidate is re-tested.
+            let answered = exact && self.trusts(condition, &chosen, &visible);
             // The field's, resolved once for the statement while the analyzers
             // were being read — the same value the query's terms were built
             // from, which is what keeps the index's half of a search and the
@@ -364,4 +362,34 @@ impl Session<'_> {
             visible,
         }))
     }
+}
+
+/// The indexes a condition read through `transaction` may be served by, and
+/// whether their entries describe its snapshot EXACTLY.
+///
+/// At the tail every index of the table, exactly. Behind it — a transaction the
+/// store has moved past — only the plain indexes, which keep what a removed
+/// entry said (Q-S3-34): their live and retired entries together are a superset
+/// of what matched at the snapshot, so a read served by one re-tests every
+/// candidate. Every other kind describes only the tail and is withheld, as is
+/// everything while a transaction across leaders is part-way in the table.
+///
+/// One function for the read and for `EXPLAIN`, so the plan reported is the
+/// plan run.
+pub(crate) fn declared_for(
+    transaction: &mut Transaction<'_>,
+    table: TableId,
+) -> Result<(Vec<tessari_storage::IndexDefinition>, bool)> {
+    if transaction.indexes_are_current_for(table)? {
+        return Ok((Catalog::new(transaction).field_indexes_on(table)?, true));
+    }
+    if transaction.plain_indexes_serve_behind_the_tail(table)? {
+        let plain = Catalog::new(transaction)
+            .field_indexes_on(table)?
+            .into_iter()
+            .filter(tessari_storage::IndexDefinition::keeps_retired_entries)
+            .collect();
+        return Ok((plain, false));
+    }
+    Ok((Vec::new(), false))
 }

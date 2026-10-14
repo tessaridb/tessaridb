@@ -6667,10 +6667,24 @@ of access path that is also a change of answer.
 
 **An index read is confirmed, not trusted.** Every candidate the index offers is
 re-checked against the reading transaction's own snapshot, so a stale entry can
-never produce a row that does not match. At an older snapshot the result is
-therefore correct and possibly short: a record that held the value then and has
-changed since has no entry left to find. Reading at the newest committed state is
+never produce a row that does not match. Reading at the newest committed state is
 exact.
+
+**A transaction the store has moved past still reads through a plain index**
+(from format 8). A transaction's snapshot falls behind the committed tail the
+moment anybody else commits, and an entry describes only the tail: a record that
+held the value at the snapshot and has changed since has lost its entry. So the
+commit that removes an entry of a plain index — not `UNIQUE`, not a search,
+spatial, containment or vector index — keeps what it said as a *retired* entry,
+stamped with the version that removed it. A read behind the tail takes the live
+entries and the ones retired after its snapshot, resolves every candidate at the
+snapshot and re-tests the whole condition: exactly the scan's answer, at an
+index's cost, and `USING INDEX` holds. The other kinds describe only the tail,
+so behind it they are not used and `USING INDEX` naming one is refused, as is
+every index while a transaction across leaders is part-way in the table. A store
+written by an older build keeps its format, and reads as before, until
+`ALTER STORE FINALIZE FORMAT`; retired entries no snapshot can need are removed
+by housekeeping.
 
 ### Several orders at once: `FUSE`
 
@@ -8087,6 +8101,21 @@ the script are still answered whole, as is any `BACKUP` run over `POST /script`
 or the wire, because a statement answers with a value — for a large store use
 `GET /backup` or `BACKUP … TO`.
 
+Over the wire one answer is one frame, and a frame carries at most 16 MiB
+(16 777 216 bytes). An answer above that — a snapshot of a store that has grown
+past it, or any read returning that much — is **refused** as `AnswerTooLarge`,
+class `invalid`, naming its size, and the connection goes on to the next request.
+Up to `0.33.4-beta` the node failed the write instead and dropped the connection,
+which a client reported as `the connection ended mid-frame`.
+
+A client can ask instead for the snapshot to be **streamed** (protocol minor 5):
+the node writes it to an unlinked spool file and sends it in parts of 1 MiB
+ahead of the answer, and the `BACKUP STATE` outcome is then its summary —
+`{ form, records, version }` — because the bytes have already left. Neither side
+holds the whole file. Only the snapshot streams; `BACKUP LOG` and
+`BACKUP SCRIPT` are still answered whole, as over HTTP. The command line asks
+for it with `--at <address> --backup <file>`.
+
 ### The store's current state, as a snapshot or as a script
 
 ```
@@ -8115,7 +8144,10 @@ reason, and take no `FROM`. Over HTTP they are `GET /backup?as=state` and
 `GET /backup?as=script`; on the command line, `--backup <file>` (or
 `--snapshot <file>`) and `--dump <file>` for a store the process opens itself.
 `--backup <file> --from <n>` writes the log from `n`, and `--from 1` the whole
-log.
+log. With `--at <address>`, `--backup <file>` takes the snapshot from that
+running node instead, streamed over the connection whatever its size, written
+aside and renamed once the node has answered; `--from` and `--dump` are still
+refused beside `--at`.
 
 A script brings a user back with the hash the store holds, since nobody knows the
 password:
@@ -8541,9 +8573,12 @@ gives two different wrong answers from one cause:
   snapshot, and comes back **not satisfying the condition it was selected by**.
 
 Neither raises anything, which is why a versioned read is served from the scan
-instead. The clause therefore has a cost, and it is the honest one: a read at an
-earlier version is a scan even where the same read in the present is not. The
-reported access path says so.
+instead — with one exception from format 8: a **plain** index keeps what its
+removed entries said (see "A transaction the store has moved past" above), so a
+versioned read at or above the point from which those are still kept is served by
+it, re-tested and exact. Below that point, and for every other kind of index, the
+read is a scan even where the same read in the present is not. The reported
+access path says which.
 
 **A graph traversal is refused rather than scanned.** Edges are followed through
 the edge table's direction indexes; that is the mechanism and not a shortcut past
@@ -10124,7 +10159,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.33.4", "build": "0.33.4-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.34.0", "build": "0.34.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

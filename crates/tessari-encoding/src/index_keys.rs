@@ -26,6 +26,7 @@
 mod containment;
 mod posting;
 mod quantized;
+mod retired;
 mod search;
 mod statistics;
 mod vectors;
@@ -43,6 +44,7 @@ pub use containment::ContainmentKey;
 use posting::take_values;
 pub use posting::{Located, Posting};
 pub use quantized::{QuantizedVector, StoredVector};
+pub use retired::RetiredIndexKey;
 pub use search::{
     PostingKey, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchSurfaceKey,
     SearchTermKey, TermStatistics, UniqueIndexKey,

@@ -93,6 +93,9 @@ impl Store {
         // And after it for the same reason: a finalize this node's older build
         // applied left the record and not the stamp (ADR-0118).
         store.catch_up_with_the_finalized_format()?;
+        // After the stamp is settled: a store holding format 8 keeps retired
+        // index entries from the first commit after this open (Q-S3-34).
+        store.begin_keeping_retired_entries()?;
         // Rows are held only for readers at or above this: history before the
         // open is not known to have left them unchanged.
         store.catalog_rows.changed(store.committed_version()?);

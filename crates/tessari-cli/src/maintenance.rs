@@ -69,6 +69,50 @@ pub(crate) fn snapshot(db: &Db, path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Take a snapshot from a running node into `path` (ADR-0125).
+///
+/// Written aside and renamed once the node's answer arrives, as a local one is.
+/// Not sealed here: a node with a key at rest seals what it sends.
+pub(crate) fn snapshot_from(
+    remote: &mut crate::store::Remote,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    let credentials = remote
+        .credentials
+        .as_ref()
+        .map(|(name, password)| (name.as_str(), password.as_str()));
+    let client = &mut remote.client;
+    let summary = aside(path, None, |out| {
+        let answers = client
+            .run_streaming(
+                "BACKUP STATE;",
+                credentials,
+                &tessaridb::Parameters::new(),
+                out,
+            )
+            .map_err(|held| held.to_string())?;
+        match answers.into_iter().next() {
+            Some(tessari_wire::Answer::Value {
+                value: tessaridb::Value::Object(summary),
+                ..
+            }) => Ok(summary),
+            other => Err(format!("the node answered a backup with {other:?}")),
+        }
+    })?;
+    let shown = |field: &str| {
+        summary
+            .get(field)
+            .map_or_else(|| "?".to_owned(), ToString::to_string)
+    };
+    println!(
+        "{} record(s) at version {} to {}",
+        shown("records"),
+        shown("version"),
+        path.display()
+    );
+    Ok(())
+}
+
 /// Write the store's current state as TessariQL that rebuilds it (ADR-0091).
 ///
 /// The parts it does not carry are named in the file's own header, and here.

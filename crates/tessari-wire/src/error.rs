@@ -218,6 +218,22 @@ pub enum Error {
         length: u32,
     },
 
+    /// An answer the node built and cannot send, because one frame carries no
+    /// more than the ceiling.
+    ///
+    /// Refused rather than written: a write that failed half way used to end the
+    /// connection, which the client cannot tell from a network fault.
+    #[error(
+        "the answer is {length} bytes, more than the {ceiling} one frame carries; ask for less, \
+         or write a snapshot of any size with BACKUP STATE TO '<name>' or GET /backup"
+    )]
+    AnswerTooLarge {
+        /// How long the encoded answer was.
+        length: usize,
+        /// The ceiling it is above.
+        ceiling: u32,
+    },
+
     /// The stream ended inside something.
     #[error("the connection ended mid-frame")]
     Truncated,

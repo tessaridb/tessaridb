@@ -109,6 +109,11 @@ pub struct Transaction<'a> {
     /// record's leader (ADR-0112 D13d) — a reader's question. A view that
     /// derives what a commit or an apply writes decides from this copy alone.
     asks_leaders: bool,
+    /// Whether the session has chosen to serve this transaction's reads from
+    /// plain indexes although its snapshot is behind the tail (Q-S3-34,
+    /// `crate::retired`). Set once, by the question that decides it, so a read
+    /// at the tail asks the store nothing extra.
+    pub(crate) retired_reads: std::cell::Cell<bool>,
 }
 
 /// What a write said about a record's expiry that its buffered value does not

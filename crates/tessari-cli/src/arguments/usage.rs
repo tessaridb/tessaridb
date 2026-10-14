@@ -41,7 +41,8 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   -e, --execute <script> run this and exit
   -f, --file <file> run this file and exit
   --backup <file> write the store's current state (a snapshot) to <file> and
-                  exit; with --from, its log instead
+                  exit; with --from, its log instead; with --at, the node's
+                  snapshot, streamed whatever its size
   --snapshot <file> write the store's current state to <file> and exit
   --dump <file>   write the store's current state as TessariQL to <file> and exit
   --verify <file> read <file> and say what it holds, changing nothing

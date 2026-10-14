@@ -167,6 +167,11 @@ fn run(asked: Asked) -> Result<Ended, String> {
             None => None,
         };
         let mut remote = store::Remote::connect(address, trusting, credentials, parameters)?;
+        // A snapshot the node streams (ADR-0125); the arguments refused every
+        // other store operation alongside `--at`.
+        if let Source::Backup(path) | Source::Snapshot(path) = &asked.source {
+            return maintenance::snapshot_from(&mut remote, path).map(|()| Ended::Fine);
+        }
         let mut out = io::stdout().lock();
         return statements(&mut remote, &mut out, &asked.source, Where::Node(address));
     }

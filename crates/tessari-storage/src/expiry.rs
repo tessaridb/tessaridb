@@ -211,6 +211,9 @@ impl Store {
                 view,
                 &LogRecord::new(mutations),
                 WriteBatch::new(),
+                // Nothing to retire: a record past the floor is hidden from every
+                // reader already, at every snapshot this pass can reach.
+                None,
             )?;
             self.backend().apply(batch)?;
         }

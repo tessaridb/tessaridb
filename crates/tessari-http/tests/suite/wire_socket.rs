@@ -93,7 +93,7 @@ fn frame(kind: u8, body: &[u8]) -> Vec<u8> {
     out
 }
 
-const GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 4];
+const GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 5];
 
 fn request(script: &str) -> Vec<u8> {
     frame(
@@ -102,6 +102,7 @@ fn request(script: &str) -> Vec<u8> {
             script: script.to_owned(),
             credentials: None,
             parameters: tessaridb::Parameters::new(),
+            stream: false,
         }
         .encode(),
     )

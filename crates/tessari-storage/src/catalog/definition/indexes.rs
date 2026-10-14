@@ -227,6 +227,14 @@ impl IndexDefinition {
             && self.engine.is_none()
     }
 
+    /// Whether this index keeps what a removed entry said (Q-S3-34): a plain
+    /// ordered index that is not unique. A unique entry's key is the value it
+    /// claims, so a removed claim cannot be kept beside the live one.
+    #[must_use]
+    pub const fn keeps_retired_entries(&self) -> bool {
+        self.is_ordered() && !self.unique
+    }
+
     /// The value written to the catalog.
     #[must_use]
     pub fn to_value(&self) -> Value {

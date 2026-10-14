@@ -319,6 +319,15 @@ impl Transaction<'_> {
             }
             Ok(())
         })?;
+        // Behind the tail, the records that matched at this snapshot and have
+        // changed since are named by retired entries (Q-S3-34).
+        let end = crate::transaction::address::after(bounds.clone());
+        for id in self.retired_candidates(index, &bounds, &end)? {
+            let record = RecordAddress::new(index.namespace, index.database, index.table, id);
+            if let Some(payload) = self.confirm_prefix(index, &record, prefix)? {
+                found.insert(record.id, payload);
+            }
+        }
 
         // The same reason as the equality path: a record this transaction wrote
         // has no entry yet, and one it changed still has the entry for its

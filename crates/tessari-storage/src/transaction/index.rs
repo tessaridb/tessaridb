@@ -135,6 +135,21 @@ impl Transaction<'_> {
         let end = after(within(upper));
 
         let mut found: BTreeMap<RecordId, Vec<u8>> = BTreeMap::new();
+        // Behind the tail, the records the range held at this snapshot and has
+        // lost since (Q-S3-34). Resolved at the snapshot like every candidate;
+        // the caller re-tests the condition that asked.
+        let retired: Vec<RecordAddress> = self
+            .retired_candidates(index, &start, &end)?
+            .into_iter()
+            .map(|id| RecordAddress::new(index.namespace, index.database, index.table, id))
+            .collect();
+        if !retired.is_empty() {
+            for (address, payload) in retired.iter().zip(self.get_each(&retired)?) {
+                if let Some(payload) = payload {
+                    found.insert(address.id.clone(), payload);
+                }
+            }
+        }
         let mut from = start;
         loop {
             let request = ScanRequest {
@@ -233,7 +248,9 @@ impl Transaction<'_> {
         let start = within(lower);
         let end = after(within(upper));
 
-        let mut found: BTreeSet<RecordId> = BTreeSet::new();
+        // Behind the tail, the records the range held at this snapshot and has
+        // lost since (Q-S3-34); the caller re-tests every identity it names.
+        let mut found: BTreeSet<RecordId> = self.retired_candidates(index, &start, &end)?;
         let mut from = start;
         loop {
             let request = ScanRequest {
@@ -387,11 +404,15 @@ impl Transaction<'_> {
         // A complete value of a secondary index is the one run whose entries are
         // already in record order, so it is walked and stopped rather than
         // collected (`index/equality.rs`).
+        //
+        // Not behind the tail, where the run is joined by retired entries that
+        // are not in it (Q-S3-34) — `ids_in_range` merges them.
         if !index.unique
             && lower.is_none()
             && upper.is_none()
             && !fixed.is_empty()
             && fixed.len() == index.fields.len()
+            && !self.reads_retired_entries()
         {
             return self.walk_complete_equality(index, fixed, hand);
         }

@@ -407,6 +407,44 @@ fn a_lookup_never_returns_a_record_that_no_longer_holds_the_value() {
 }
 
 #[test]
+fn a_reader_behind_the_tail_finds_the_value_through_retired_entries() {
+    // Q-S3-34: the commit that removed the old entry kept what it said, so a
+    // reader that asked to read behind the tail finds the record at its own
+    // snapshot — exact rather than merely sound.
+    let fixture = Fixture::new(false);
+    fixture
+        .write("u1", Some(Value::from("old@example.com")))
+        .unwrap();
+
+    let reader = fixture.store.begin().unwrap();
+    fixture
+        .write("u1", Some(Value::from("new@example.com")))
+        .unwrap();
+
+    assert!(
+        reader
+            .plain_indexes_serve_behind_the_tail(fixture.index.table)
+            .unwrap(),
+        "a store created at format 8 keeps retired entries from its first version"
+    );
+    let found = reader
+        .records_by_index(&fixture.index, &[Value::from("old@example.com")])
+        .unwrap();
+    assert_eq!(
+        found.len(),
+        1,
+        "the record held the old value at this snapshot"
+    );
+    let wrong = reader
+        .records_by_index(&fixture.index, &[Value::from("new@example.com")])
+        .unwrap();
+    assert!(
+        wrong.is_empty(),
+        "the new value arrived after this snapshot"
+    );
+}
+
+#[test]
 fn a_lookup_sees_this_transactions_own_uncommitted_writes() {
     // Entries are derived at commit, so without this the writer could not find
     // what it had just written through the index it declared.

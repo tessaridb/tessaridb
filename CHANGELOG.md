@@ -13,6 +13,37 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.34.0-beta — 2026-10-14
+
+### Fixed
+
+- **A transaction the store has moved past reads through a plain index again.** A transaction's snapshot falls
+  behind the committed tail as soon as anybody else commits, and an index entry describes only the tail, so until
+  now every index was withheld from such a transaction: a read with `USING INDEX` was refused (`IndexNotUsed`,
+  "used no index") and one without it scanned. With concurrent writers that was every multi-statement transaction.
+  - The commit that removes an entry of a plain index (not `UNIQUE`, search, spatial, containment or vector) now keeps
+    what it said as a retired entry stamped with the removing version. A read behind the tail takes the live entries
+    and those retired after its snapshot, resolves every candidate at the snapshot and re-tests the condition — the
+    scan's answer at an index's cost. A versioned read (`VERSION n`) is served the same way while the retired
+    entries it needs are still kept.
+  - Housekeeping removes retired entries no live snapshot can need.
+  - The other index kinds keep the old rule: behind the tail they are not used, and `USING INDEX` naming one is
+    refused.
+
+### Changed
+
+- **On-disk format 8** (key kinds `0x45`, `0x46`). A store written by an older build opens and keeps its format, and
+  reads as before, until `ALTER STORE FINALIZE FORMAT`; once finalized, no build before this one opens it.
+- **An answer above the 16 MiB frame ceiling is refused** as `AnswerTooLarge` (class `invalid`), naming its size, and
+  the connection answers the next request. Before, the node failed the write and dropped the connection, which a
+  client reported as `the connection ended mid-frame`.
+
+### Added
+
+- **A snapshot can be streamed over the wire** (protocol minor 5): the node spools it and sends it in 1 MiB parts
+  ahead of the answer, so a backup has no size ceiling. `tessaridb --at <address> --backup <file>` takes a snapshot
+  from a running node this way.
+
 ## 0.33.4-beta — 2026-10-09
 
 ### Added

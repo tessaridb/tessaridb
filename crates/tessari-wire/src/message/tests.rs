@@ -19,10 +19,42 @@ fn a_request_round_trips_with_and_without_credentials() {
             script: "SELECT * FROM users;".to_owned(),
             credentials,
             parameters: Parameters::new(),
+            stream: false,
         };
         let read = Request::decode(&held.encode()).expect("a request");
         assert_eq!(read, held);
     }
+}
+
+#[test]
+fn a_request_asking_to_stream_is_the_body_the_protocol_corpus_names() {
+    // `frames-v1.json` `request` (protocol §3.4 from minor 5): the stream byte
+    // follows the parameters and is written only when set.
+    for (stream, hex) in [
+        (false, "0000000d4241434b55502053544154453b0000000000"),
+        (true, "0000000d4241434b55502053544154453b000000000001"),
+    ] {
+        let held = Request {
+            script: "BACKUP STATE;".to_owned(),
+            credentials: None,
+            parameters: Parameters::new(),
+            stream,
+        };
+        let body = held.encode();
+        let written: String = body.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(written, hex, "stream {stream}");
+        assert_eq!(Request::decode(&body).expect("a request"), held);
+    }
+    // A third meaning for the byte is malformed, not read as one of the two.
+    let mut two = Request {
+        script: "BACKUP STATE;".to_owned(),
+        credentials: None,
+        parameters: Parameters::new(),
+        stream: false,
+    }
+    .encode();
+    two.push(2);
+    assert!(Request::decode(&two).is_err());
 }
 
 #[test]
@@ -33,6 +65,7 @@ fn a_request_does_not_print_the_password_it_carries() {
         script: "SELECT * FROM users;".to_owned(),
         credentials: Some(("ada".to_owned(), "a long one".to_owned())),
         parameters: Parameters::new(),
+        stream: false,
     };
     let printed = format!("{held:?}");
     assert!(!printed.contains("a long one"), "{printed}");
@@ -47,6 +80,7 @@ fn a_request_body_that_promises_more_than_it_holds_is_refused() {
         script: "SELECT * FROM users WHERE name = $who;".to_owned(),
         credentials: Some(("ada".to_owned(), "x".to_owned())),
         parameters,
+        stream: false,
     };
     let body = held.encode();
     for cut in 0..body.len() {

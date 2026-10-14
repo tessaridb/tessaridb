@@ -75,6 +75,10 @@ pub enum KeyKind {
     /// One (path, leaf) pair one record's document holds, in a containment
     /// index (ADR-0116 D4).
     Containment,
+    /// What a removed plain index entry said, kept for older snapshots (Q-S3-34).
+    RetiredIndex,
+    /// The version from which this store keeps retired index entries.
+    RetiredSince,
     /// One entry in the ordered log.
     LogEntry,
     /// The store's own on-disk format version.
@@ -193,6 +197,8 @@ impl KeyKind {
         Self::SearchSurface,
         Self::TopicBytes,
         Self::Containment,
+        Self::RetiredIndex,
+        Self::RetiredSince,
         Self::LogEntry,
         Self::FormatVersion,
         Self::AppliedPosition,
@@ -251,6 +257,8 @@ impl KeyKind {
             Self::SearchSurface => 0x42,
             Self::TopicBytes => 0x43,
             Self::Containment => 0x44,
+            Self::RetiredIndex => 0x45,
+            Self::RetiredSince => 0x46,
             Self::LogEntry => 0x20,
             Self::FormatVersion => 0x30,
             Self::AppliedPosition => 0x31,
@@ -302,7 +310,8 @@ impl KeyKind {
             | Self::SearchSuffix
             | Self::SearchSurface
             | Self::TopicBytes
-            | Self::Containment => Keyspace::INDEX,
+            | Self::Containment
+            | Self::RetiredIndex => Keyspace::INDEX,
             Self::LogEntry => Keyspace::LOG,
             Self::FormatVersion
             | Self::AppliedPosition
@@ -325,7 +334,8 @@ impl KeyKind {
             | Self::AcrossPart
             | Self::AcrossUnsettled
             | Self::AcrossBarred
-            | Self::ResolvedOf => Keyspace::META,
+            | Self::ResolvedOf
+            | Self::RetiredSince => Keyspace::META,
         }
     }
 
@@ -358,6 +368,8 @@ impl KeyKind {
             Self::SearchSurface => "search-surface",
             Self::TopicBytes => "topic-bytes",
             Self::Containment => "containment",
+            Self::RetiredIndex => "retired-index",
+            Self::RetiredSince => "retired-since",
             Self::LogEntry => "log-entry",
             Self::FormatVersion => "format-version",
             Self::AppliedPosition => "applied-position",
@@ -462,6 +474,8 @@ mod tests {
             (KeyKind::SearchSurface, 0x42),
             (KeyKind::TopicBytes, 0x43),
             (KeyKind::Containment, 0x44),
+            (KeyKind::RetiredIndex, 0x45),
+            (KeyKind::RetiredSince, 0x46),
             (KeyKind::LogEntry, 0x20),
             (KeyKind::FormatVersion, 0x30),
             (KeyKind::AppliedPosition, 0x31),

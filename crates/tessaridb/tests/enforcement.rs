@@ -1103,7 +1103,17 @@ const TABLES: &[Table] = &[
         // one; it goes only to a subscriber already admitted by `Subscribe`'s
         // checks who named a condition, and carries a sequence and a cursor of
         // that subscriber's own feed — no record, name or value.
-        expected: 8,
+        //
+        // 9 since a snapshot streams (ADR-0125 D2, tag 38). **Not an entry
+        // point**: the node sends `Part` and never reads one — a client frame
+        // that is not a request, a subscription or a vault frame ends the
+        // connection (`conversation.rs`, and the hot path hands it back there).
+        // It goes only to the connection whose own request carried the stream
+        // flag, ahead of that request's answer, and carries the bytes of the
+        // snapshot that request's `BACKUP STATE` was allowed to take: the
+        // session's sink runs after the statement's own check (store-wide
+        // reach), exactly as `GET /backup`'s spool does.
+        expected: 9,
         count: |text| variants(&block(text, "pub(crate) enum Kind")),
     },
     Table {
@@ -1303,7 +1313,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 164 since a narrowed feed (G069 C3): `Store::held_at`, exempt, and the
     // `Progress` frame, not an entry point, classified above.
-    assert_eq!(total, 164, "the counted tables no longer sum to 164");
+    //
+    // 165 since a snapshot streams (ADR-0125): the `Part` frame, not an entry
+    // point, classified above.
+    assert_eq!(total, 165, "the counted tables no longer sum to 165");
 }
 
 /// Every `.rs` file under a directory.
