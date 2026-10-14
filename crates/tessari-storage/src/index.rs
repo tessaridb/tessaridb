@@ -32,9 +32,11 @@
 //! is exact.
 //!
 //! That is a real limitation and it is written here rather than discovered by
-//! the first query that returns the wrong rows. Removing it means versioning the
-//! entries and reclaiming old ones in the background, which is a larger piece of
-//! work than this one and is not started.
+//! the first query that returns the wrong rows. For a PLAIN index it is lifted:
+//! the commit that removes an entry keeps what it said as a retired entry, which
+//! a reader behind the tail takes as a further candidate, and housekeeping
+//! reclaims it once no snapshot can need it (`crate::retired`, Q-S3-34). Unique,
+//! search, spatial, containment and vector entries keep the limitation.
 //!
 //! # An index is built in the commit that defines it
 //!
@@ -81,7 +83,7 @@ use tessari_encoding::{
     StoreKey, StoreValue, decode_payload, encode_payload,
 };
 use tessari_kv::WriteBatch;
-use tessari_types::{Analyzer, DatabaseId, NamespaceId, TableId, Value};
+use tessari_types::{Analyzer, DatabaseId, NamespaceId, Sequence, TableId, Value};
 
 use crate::catalog::{Catalog, IndexDefinition, defined_index};
 use crate::error::Result;
@@ -107,6 +109,9 @@ pub(crate) use settling::{Delta, settle};
 /// also the unit these are true of.
 #[derive(Debug, Default)]
 pub(crate) struct Pending {
+    /// The version this batch retires removed plain entries at, when the store
+    /// keeps them (Q-S3-34, `crate::retired`); `None` keeps none.
+    pub(crate) retiring: Option<Sequence>,
     /// Unique index keys this batch has already written.
     ///
     /// Two records in ONE batch claiming one unique value would each find the
@@ -222,8 +227,14 @@ impl Moved {
 ///
 /// Reads the catalog and the records' current values as of the committed state,
 /// which is the state this record is about to be applied on top of.
-pub(crate) fn maintain(store: &Store, record: &LogRecord, batch: WriteBatch) -> Result<WriteBatch> {
-    maintain_from(store, store.begin_local()?, record, batch)
+pub(crate) fn maintain(
+    store: &Store,
+    record: &LogRecord,
+    batch: WriteBatch,
+    version: Sequence,
+) -> Result<WriteBatch> {
+    let retiring = crate::retired::retiring_at(store, version)?;
+    maintain_from(store, store.begin_local()?, record, batch, retiring)
 }
 
 /// [`maintain`], reading the records' current values through `view`.
@@ -236,6 +247,7 @@ pub(crate) fn maintain_from(
     mut view: crate::transaction::Transaction<'_>,
     record: &LogRecord,
     mut batch: WriteBatch,
+    retiring: Option<Sequence>,
 ) -> Result<WriteBatch> {
     // Keyed by the WHOLE tenancy and not by the table alone, because a `TableId`
     // is not a key on its own. Ids are handed out store-wide from
@@ -262,7 +274,10 @@ pub(crate) fn maintain_from(
     // than declared on a field; read once, and only when a member is written.
     let mut named: Option<BTreeMap<String, Analyzer>> = None;
     let unnamed = BTreeMap::new();
-    let mut pending = Pending::default();
+    let mut pending = Pending {
+        retiring,
+        ..Pending::default()
+    };
     // How many records each value index was rewritten for, for its change
     // counter — what tells a planner statistic it has gone stale.
     let mut changed: BTreeMap<IndexAddress, u64> = BTreeMap::new();

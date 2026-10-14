@@ -111,7 +111,8 @@ impl Fixture {
             shard: None,
             value: StampedValue::new(RecordValue::Present(payload)),
         }]);
-        maintain(&self.store, &update, WriteBatch::new()).unwrap()
+        let version = self.store.committed_version().unwrap();
+        maintain(&self.store, &update, WriteBatch::new(), version).unwrap()
     }
 }
 

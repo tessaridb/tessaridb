@@ -74,13 +74,22 @@ fn a_follower_that_fell_behind_answers_what_its_leader_answers_after_a_copy() {
     // vector node's neighbour list depends on the order its graph was built in
     // (ADR-0091 amendment 4), and recall, refinement and the planner's
     // statistics and change counters are measurements, which no copy carries.
+    // Retired entries are left out for the same reason: they are this node's
+    // history, kept for snapshots older than the removals it applied (Q-S3-34),
+    // and no transaction on a copy can hold a snapshot older than the copy.
     let comparable = |entries: Vec<(Vec<u8>, Vec<u8>)>| -> Vec<(Vec<u8>, Vec<u8>)> {
         entries
             .into_iter()
             .filter(|(key, _)| {
                 !matches!(
                     key.first(),
-                    Some(&(VECTOR_RECALL | SPATIAL_REFINEMENT | INDEX_STATISTICS | INDEX_CHANGES))
+                    Some(
+                        &(VECTOR_RECALL
+                            | SPATIAL_REFINEMENT
+                            | INDEX_STATISTICS
+                            | INDEX_CHANGES
+                            | RETIRED_INDEX)
+                    )
                 )
             })
             .map(|(key, value)| match key.first() {
@@ -102,6 +111,7 @@ const VECTOR_RECALL: u8 = 0x17;
 const SPATIAL_REFINEMENT: u8 = 0x18;
 const INDEX_STATISTICS: u8 = 0x40;
 const INDEX_CHANGES: u8 = 0x41;
+const RETIRED_INDEX: u8 = 0x45;
 
 /// The leader's index keyspace as a fresh copy derives it — what a follower that
 /// received the state must hold, byte for byte.

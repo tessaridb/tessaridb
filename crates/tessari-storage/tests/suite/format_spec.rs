@@ -314,6 +314,7 @@ const PINNED: &[(u32, u64)] = &[
     (5, 0xb7b3_5f45_79e3_c43d),
     (6, 0x0f84_240b_dcf7_1521),
     (7, 0x0f84_240b_dcf7_1521),
+    (8, 0x1f2f_e3f9_42fd_df1c),
 ];
 
 /// FNV-1a over one line per unit — stable across builds and platforms, which

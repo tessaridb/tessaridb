@@ -39,6 +39,7 @@ impl<'a> Transaction<'a> {
             across: None,
             decided: std::cell::RefCell::new(BTreeMap::new()),
             asks_leaders: true,
+            retired_reads: std::cell::Cell::new(false),
         }
     }
 
@@ -236,6 +237,10 @@ impl<'a> Transaction<'a> {
     /// transaction begun at the tail that is still running while somebody else
     /// commits has fallen behind, and its indexes are stale in exactly the same
     /// way as a deliberately historical one's.
+    ///
+    /// A `false` here is not the end of it for a PLAIN index: its retired entries
+    /// let it serve a re-tested read behind the tail — see
+    /// [`Transaction::plain_indexes_serve_behind_the_tail`] (Q-S3-34).
     ///
     /// # Errors
     ///

@@ -172,24 +172,40 @@ pub(super) fn apply_one(
     // entries are deleted and the new record's are written, and the elements the
     // record kept are written back under the keys they already had. A remove that
     // reasoned about *what changed* instead is where the orphan would come from.
+    //
+    // A plain index also keeps what each entry the record LOST said, stamped
+    // with this commit's version, so a transaction whose snapshot predates this
+    // commit can still find the record through the index (Q-S3-34,
+    // `crate::retired`). Only lost entries: one the record keeps is written
+    // back below and was never absent at any snapshot.
+    let arriving = match mutation.value.value() {
+        RecordValue::Present(payload) => project(definition, &decode_payload(payload)?),
+        RecordValue::Tombstone => Vec::new(),
+    };
     if let Some(bytes) = previous {
+        let retiring = pending
+            .retiring
+            .filter(|_| definition.keeps_retired_entries());
         for values in project(definition, &decode_payload(bytes)?) {
             batch = remove(batch, definition, &address, &values, &mutation.id);
+            if let Some(at) = retiring
+                && !arriving.contains(&values)
+            {
+                batch = crate::retired::retire(batch, &address, &values, &mutation.id, at);
+            }
         }
     }
 
-    if let RecordValue::Present(payload) = mutation.value.value() {
-        for values in project(definition, &decode_payload(payload)?) {
-            batch = insert(
-                store,
-                batch,
-                definition,
-                &address,
-                &values,
-                &mutation.id,
-                &mut pending.claimed,
-            )?;
-        }
+    for values in arriving {
+        batch = insert(
+            store,
+            batch,
+            definition,
+            &address,
+            &values,
+            &mutation.id,
+            &mut pending.claimed,
+        )?;
     }
     Ok(batch)
 }

@@ -248,7 +248,7 @@ impl Store {
             self.writing.apply(batch, self.backend.as_ref(), landing)?;
             return Ok(());
         }
-        let batch = crate::index::maintain(self, record, batch)?;
+        let batch = crate::index::maintain(self, record, batch, version)?;
         // Derived here as well as in the commit, because that is the whole
         // reason it is derived from the record: a follower that skipped this
         // would carry the edges and no way to walk them, and its walks would
@@ -273,7 +273,7 @@ impl Store {
         let batch = crate::bounded::maintain(self, record, batch, version)?;
         let batch = crate::topic::maintain(self, record, batch)?;
         // A finalize raises this node's own stamp as it lands (ADR-0118).
-        let batch = crate::format_stamp::maintain(self, record, batch)?;
+        let batch = crate::format_stamp::maintain(self, record, batch, version)?;
         // The map a split carries, taught under the turn this apply holds and
         // before it lands, exactly as the leader's commit teaches it (ADR-0095
         // D8): a follower that wrote under the old map after applying the split

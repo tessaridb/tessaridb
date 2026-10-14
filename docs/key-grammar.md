@@ -112,6 +112,8 @@ because renumbering after data exists is a full rebuild.
 | `0x42` | `SearchSurface` (surface forms of stemmed terms) | `index` | implemented — see §6.2b-6 |
 | `0x43` | `TopicBytes` (payload bytes a size-retained topic holds) | `index` | implemented — see §6.2d |
 | `0x44` | `Containment` (one (path, leaf) pair of one record's document) | `index` | implemented — see §6.2a |
+| `0x45` | `RetiredIndex` (a removed plain index entry, stamped with the version that removed it) | `index` | implemented — see §6.2a |
+| `0x46` | `RetiredSince` (the version from which this store keeps retired entries) | `meta` | implemented — see §6.2a; node-local, never in the log |
 | `0x50` | `TransactionRecord` (one transaction across leaders) | `meta` | implemented — see §6.5 |
 | `0x51` | `IntentOf` (an intent this node holds, by transaction) | `meta` | implemented — see §6.5 |
 | `0x52` | `AcrossPart` (where a transaction's part in one range landed here) | `meta` | implemented — see §6.5 |
@@ -126,7 +128,10 @@ and decide which access path a read takes and never which records it returns.
 `0x42` sits in that family by number only: it is a search index's derived
 entry, written with its postings like `0x1f`, not a planner summary. `0x43`
 is a topic's, beside `0x1e`, likewise by number only. `0x44` is a containment
-index's entry (ADR-0116), by number only as well.
+index's entry (ADR-0116), by number only as well. `0x45` is a plain index's
+retired entry and `0x46` the singleton saying since when they are kept
+(format 8) — by number only too, the second a `meta` key in the `0x4_` range
+because the `0x3_` family is full.
 
 `0x50` opens a sixth family, `0x5_`: what this store keeps about transactions
 whose writes fall in ranges led by different nodes (ADR-0112). The family was
@@ -640,6 +645,28 @@ each element's pairs as if the element were the document, because `CONTAINS`
 with an array on the left is membership. The value is empty. A read walks one
 pair asked for at a time and keeps the records holding all of them — a
 **candidate** set, re-tested against the whole condition.
+
+A **retired** entry is `0x45`: what a removed entry of a plain (non-unique,
+ordered) index said, kept for the transactions whose snapshot predates the
+removal (format 8):
+
+```
+retired      <0x45> <namespace:u32> <database:u32> <table:u32> <index:u32> <values> <0x00> <record-id> <retired-at:u64>
+```
+
+The secondary layout under its own tag, followed by the version of the commit
+that removed the entry. A commit writes one for every entry a record LOSES — an
+entry it keeps is written back and was never absent. A transaction behind the
+committed tail reads the live entries of a value range and the retired entries
+of the same range stamped after its snapshot; the two together are a superset of
+what matched at the snapshot, and every candidate is resolved at the snapshot
+and re-tested. The value is empty. They are complete only from the version
+`0x46` holds (`<0x46>` → `<version:u64>`): a store created at format 8 from
+version zero, an older store from the commit that finalized it or the open that
+raised its stamp. A retired entry stamped at or below the oldest live snapshot
+is removed by housekeeping. Both are this node's own: derived on every node from
+the removals it applied, and carried by no copy, since no transaction on a copy
+can hold a snapshot older than the copy.
 
 ### 6.2b `SearchStatistics` — keyspace `index`
 
@@ -1158,6 +1185,7 @@ and is rewritten at open only where the row below says so.
 | `5` | a log key carries the writer that allocated it (G027 S2.2) | rewritten: an old and a new key differ in length |
 | `6` | a containment index's entries, key kind `0x44` (ADR-0116) | opened as is and keeps its stamp; a containment index is refused until the store is finalized (ADR-0118) |
 | `7` | a table may declare that its records expire — no key or value changes (the `expires` flag is §7.1's), so the surface digest is format 6's; what moves is the **write rule**: a build before it would clear a record's instant on a plain write and stamp no default (ADR-0122 A8) | opened as is and keeps its stamp; `DEFINE`/`ALTER … EXPIRE` is refused until the store is finalized |
+| `8` | a plain index keeps its removed entries as retired entries, key kinds `0x45` and `0x46` (Q-S3-34) | opened as is and keeps its stamp; no retired entry is written and a transaction behind the tail reads as before until the store is finalized |
 
 **The stamp is the format the store holds, and it lags this build** (ADR-0118,
 from `0.31.0-beta`). A build opens an older store and keeps its stamp, so the

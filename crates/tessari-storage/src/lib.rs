@@ -61,6 +61,7 @@ mod pruning;
 mod quarantine;
 mod reclaim;
 mod retention;
+mod retired;
 mod rollup_states;
 mod running;
 mod sampled_shards;

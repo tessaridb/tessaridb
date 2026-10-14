@@ -302,6 +302,34 @@ impl StoreKey for ReclaimFloorKey {
     }
 }
 
+/// Addresses the version from which this store keeps retired index entries
+/// (Q-S3-34, format 8).
+///
+/// A singleton in `META`, node-local like the format stamp it follows. Retired
+/// entries are complete only for removals after this version: a store finalized
+/// to format 8 began keeping them at the finalize, and one raised at open began
+/// there. A transaction whose snapshot is older than this cannot trust them, and
+/// an absent key means the store keeps none at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RetiredSinceKey;
+
+impl StoreKey for RetiredSinceKey {
+    type Value = Sequence;
+
+    const KIND: KeyKind = KeyKind::RetiredSince;
+
+    fn encode(&self) -> Key {
+        Key::from(vec![Self::KIND.tag()])
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        reader.finish()?;
+        Ok(Self)
+    }
+}
+
 /// Addresses this node's own identity.
 ///
 /// A singleton, generated once when absent and read at every open. It is in

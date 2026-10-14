@@ -55,14 +55,15 @@ pub use expiry_key::{ExpiryKey, ExpiryMark};
 pub use index_keys::{
     ContainmentKey, INDEX_PREFIX_LEN, IndexAddress, IndexChanges, IndexChangesKey, IndexStatistics,
     IndexStatisticsKey, IndexTarget, IndexValues, Located, NoPayload, Posting, PostingKey,
-    QuantizedVector, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchSurfaceKey,
-    SearchTermKey, SecondaryIndexKey, SpatialRefinement, SpatialRefinementKey, StoredVector,
-    TermStatistics, UniqueIndexKey, VectorNode, VectorNodeKey, VectorRecall, VectorRecallKey,
+    QuantizedVector, RetiredIndexKey, SearchStatistics, SearchStatisticsKey, SearchSuffixKey,
+    SearchSurfaceKey, SearchTermKey, SecondaryIndexKey, SpatialRefinement, SpatialRefinementKey,
+    StoredVector, TermStatistics, UniqueIndexKey, VectorNode, VectorNodeKey, VectorRecall,
+    VectorRecallKey,
 };
 pub use keys::{
     AppliedPositionKey, FormatVersionKey, LogKey, LogRetentionKey, LogStartKey, NodeIdentityKey,
-    REACH_LEN, ReclaimFloorKey, RecordKey, ServedReach, ServedReachKey, StoreKey, TABLE_PREFIX_LEN,
-    VersionPositionKey,
+    REACH_LEN, ReclaimFloorKey, RecordKey, RetiredSinceKey, ServedReach, ServedReachKey, StoreKey,
+    TABLE_PREFIX_LEN, VersionPositionKey,
 };
 pub use kind::KeyKind;
 pub use log_id::{LogId, Writer};

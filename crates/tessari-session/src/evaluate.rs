@@ -33,6 +33,7 @@ pub(crate) use stages::{
 
 mod asof;
 mod candidates;
+pub(crate) use candidates::declared_for;
 mod delete;
 mod folded;
 mod fused;

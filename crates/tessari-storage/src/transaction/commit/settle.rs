@@ -240,7 +240,8 @@ impl Transaction<'_> {
                     // Index entries are derived here rather than carried in the record,
                     // and they are derived inside the loop because they depend on the
                     // committed state this attempt is building on (see `crate::index`).
-                    let batch = crate::index::maintain(self.store, carried, written)?;
+                    let batch =
+                        crate::index::maintain(self.store, carried, written, commit_version)?;
                     // Adjacency is derived in the same place and for the same reason: a
                     // replica reaches its state by replaying this record, so entries the
                     // leader merely added to its own batch would never exist on a
@@ -265,7 +266,7 @@ impl Transaction<'_> {
                     let batch = crate::topic::maintain(self.store, carried, batch)?;
                     // And this node's format stamp, when the record finalizes it
                     // (ADR-0118) — on the leader as on every follower.
-                    crate::format_stamp::maintain(self.store, carried, batch)?
+                    crate::format_stamp::maintain(self.store, carried, batch, commit_version)?
                 };
                 // Everything above this ran. This is the whole difference between a
                 // rehearsal and a write, and it is one line so that it can only ever

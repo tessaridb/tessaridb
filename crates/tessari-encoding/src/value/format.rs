@@ -61,7 +61,17 @@ impl FormatVersion {
     /// rules — it would clear a record's instant on a plain write and stamp no
     /// default — so the declaration waits for this format, and once a store
     /// holds it no older build opens it at all.
-    pub const CURRENT: Self = Self(7);
+    ///
+    /// Moved to 8 when a plain index began keeping what a removed entry said
+    /// (Q-S3-34): key kinds `0x45` (a retired entry) and `0x46` (the version
+    /// from which they are kept). An older build would neither write them nor
+    /// remove them, so a store holding them is one it must not open.
+    pub const CURRENT: Self = Self(8);
+
+    /// The first format whose stores keep retired entries of a plain index, so
+    /// that a transaction behind the committed tail may still read through one
+    /// (Q-S3-34). Named for the reason [`Self::HOMED_LOG`] is.
+    pub const RETIRED_INDEX: Self = Self(8);
 
     /// The first format whose tables may declare that their records expire
     /// (ADR-0122 A8). Named for the reason [`Self::HOMED_LOG`] is.
@@ -109,6 +119,7 @@ impl FormatVersion {
             1..=5 => (0, 22),
             6 => (0, 28),
             7 => (0, 33),
+            8 => (0, 34),
             _ => return None,
         };
         Some(crate::NodeVersion {

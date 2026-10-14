@@ -20,6 +20,7 @@ pub(crate) fn maintain(
     store: &Store,
     record: &LogRecord,
     mut batch: WriteBatch,
+    version: tessari_types::Sequence,
 ) -> Result<WriteBatch> {
     for mutation in record.mutations() {
         let Some(finalized) = finalized_in(mutation)? else {
@@ -31,6 +32,9 @@ pub(crate) fn maintain(
                 FormatVersionKey.encode(),
                 finalized.encode(),
             );
+            // A store finalized to format 8 keeps retired index entries from
+            // this commit on, in the batch that raises the stamp (Q-S3-34).
+            batch = crate::retired::keep_from(store, batch, finalized, version)?;
         }
     }
     Ok(batch)

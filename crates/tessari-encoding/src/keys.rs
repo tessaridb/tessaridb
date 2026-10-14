@@ -22,7 +22,7 @@ use crate::record_id;
 use crate::value::StoreValue;
 pub use node::{
     AppliedPositionKey, FormatVersionKey, LogRetentionKey, LogStartKey, NodeIdentityKey,
-    ReclaimFloorKey, ServedReach, ServedReachKey, VersionPositionKey,
+    ReclaimFloorKey, RetiredSinceKey, ServedReach, ServedReachKey, VersionPositionKey,
 };
 
 /// Bytes of a record key that identify the table: the kind tag plus the three

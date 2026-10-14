@@ -127,6 +127,11 @@ impl Transaction<'_> {
                 Ok(())
             },
         )?;
+        // Behind the tail, the records that held the value at this snapshot and
+        // lost it since are named by retired entries (Q-S3-34); each candidate
+        // is confirmed at the snapshot like every other.
+        let end = crate::transaction::address::after(prefix.clone());
+        found.extend(self.retired_candidates(index, &prefix, &end)?);
         Ok(found)
     }
 

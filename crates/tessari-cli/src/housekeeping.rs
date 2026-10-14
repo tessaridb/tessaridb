@@ -106,6 +106,17 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
                 )) => tracing::debug!("materialized views are kept where the range is led"),
                 Err(why) => tracing::warn!(error = %why, "this node cannot keep its materialized views"),
             }
+            // Retired index entries no live snapshot can still need (Q-S3-34).
+            // This node's own storage work, leader or not; a pass that lags
+            // costs space and never an answer — a surplus retired entry is one
+            // more candidate a re-test discards.
+            match db.store().reclaim_retired_entries() {
+                Ok(removed) if removed > 0 => {
+                    tracing::debug!(entries = removed, "reclaimed retired index entries");
+                }
+                Ok(_) => {}
+                Err(why) => tracing::warn!(error = %why, "this node cannot reclaim retired index entries"),
+            }
             // A series' records past its floor, removed as one range per table
             // (G044 C11). This node's own storage work: every node runs it over
             // its own copy, leader or not, because the answer already changed
