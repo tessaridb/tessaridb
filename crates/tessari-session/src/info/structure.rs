@@ -217,7 +217,7 @@ impl Session<'_> {
                 span: table.span,
             });
         };
-        let mut fields = catalog.fields_on(id)?;
+        let mut fields = catalog.declared_fields(id)?;
         let mut indexes = catalog.field_indexes_on(id)?;
         fields.sort_by(|left, right| left.name.cmp(&right.name));
         indexes.sort_by(|left, right| left.name.cmp(&right.name));

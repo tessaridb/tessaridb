@@ -86,7 +86,7 @@ pub(super) fn counted_page(
         class: None,
     };
     let index = Catalog::new(transaction)
-        .indexes_on(asked.table)
+        .indexes_on(asked.namespace, asked.database, asked.table)
         .map_err(refused)?
         .into_iter()
         .find(|index| index.id == counting.index && index.search)

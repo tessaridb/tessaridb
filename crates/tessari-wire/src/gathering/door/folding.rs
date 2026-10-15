@@ -89,7 +89,7 @@ fn a_shards_search_figures_are_counted_page_by_page_and_no_record_travels() {
             .unwrap()
             .unwrap();
         let index = Catalog::new(&mut transaction)
-            .indexes_on(table)
+            .indexes_on(NamespaceId::new(1), DatabaseId::new(1), table)
             .unwrap()
             .into_iter()
             .find(|index| index.search)

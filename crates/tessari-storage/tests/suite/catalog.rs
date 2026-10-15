@@ -346,7 +346,11 @@ fn a_reader_at_an_older_snapshot_sees_a_table_altered_after_it_began_as_it_was()
 #[test]
 fn an_index_is_created_on_a_table_and_found_by_it() {
     let (_backend, store) = store();
-    let (_, _, table) = create_tree(&store, ("prod", "orders", "users"));
+    let (namespace, database, table) = create_tree(&store, ("prod", "orders", "users"));
+    let (namespace, database) = (
+        tessari_types::NamespaceId::new(namespace),
+        tessari_types::DatabaseId::new(database),
+    );
     let table = tessari_types::TableId::new(table);
 
     let mut transaction = store.begin().unwrap();
@@ -381,12 +385,12 @@ fn an_index_is_created_on_a_table_and_found_by_it() {
     let catalog = Catalog::new(&mut transaction);
     assert_eq!(catalog.index(by_email.id).unwrap(), Some(by_email.clone()));
 
-    let mut found = catalog.indexes_on(table).unwrap();
+    let mut found = catalog.indexes_on(namespace, database, table).unwrap();
     found.sort_by(|left, right| left.name.cmp(&right.name));
     assert_eq!(found, vec![by_email, by_name]);
     assert!(
         catalog
-            .indexes_on(tessari_types::TableId::new(999))
+            .indexes_on(namespace, database, tessari_types::TableId::new(999))
             .unwrap()
             .is_empty()
     );
@@ -562,7 +566,7 @@ fn an_edge_table_carries_an_index_on_each_endpoint_from_the_moment_it_exists() {
     let mut transaction = store.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
     let mut indexed: Vec<Vec<Path>> = catalog
-        .indexes_on(follows.id)
+        .indexes_on(follows.namespace, follows.database, follows.id)
         .unwrap()
         .into_iter()
         .map(|index| index.fields)
@@ -578,7 +582,7 @@ fn an_edge_table_carries_an_index_on_each_endpoint_from_the_moment_it_exists() {
     // And each endpoint is declared, so an edge table can also be schemafull
     // without the caller declaring fields the store itself fills in.
     let mut declared: Vec<(String, tessari_types::FieldKind)> = catalog
-        .fields_on(follows.id)
+        .fields_on(follows.namespace, follows.database, follows.id)
         .unwrap()
         .into_iter()
         .map(|field| (field.name, field.kind))
@@ -596,28 +600,27 @@ fn an_edge_table_carries_an_index_on_each_endpoint_from_the_moment_it_exists() {
 #[test]
 fn a_plain_table_gets_no_indexes_it_did_not_ask_for() {
     let (_backend, store) = store();
-    let (_, _, table) = create_tree(&store, ("prod", "orders", "users"));
+    let (namespace, database, table) = create_tree(&store, ("prod", "orders", "users"));
+    let (namespace, database, table) = (
+        tessari_types::NamespaceId::new(namespace),
+        tessari_types::DatabaseId::new(database),
+        tessari_types::TableId::new(table),
+    );
     let mut transaction = store.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
     assert!(
         catalog
-            .indexes_on(tessari_types::TableId::new(table))
+            .indexes_on(namespace, database, table)
             .unwrap()
             .is_empty()
     );
     assert!(
         catalog
-            .fields_on(tessari_types::TableId::new(table))
+            .fields_on(namespace, database, table)
             .unwrap()
             .is_empty()
     );
-    assert!(
-        !catalog
-            .table(tessari_types::TableId::new(table))
-            .unwrap()
-            .unwrap()
-            .is_edge()
-    );
+    assert!(!catalog.table(table).unwrap().unwrap().is_edge());
 }
 
 #[test]
@@ -676,13 +679,25 @@ fn a_replica_rebuilds_an_edge_table_with_its_indexes_and_its_declarations() {
     let mut transaction = replica.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
     assert!(catalog.table(follows.id).unwrap().unwrap().is_edge());
-    assert_eq!(catalog.indexes_on(follows.id).unwrap().len(), 2);
-    assert_eq!(catalog.fields_on(follows.id).unwrap().len(), 2);
+    assert_eq!(
+        catalog
+            .indexes_on(follows.namespace, follows.database, follows.id)
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        catalog
+            .fields_on(follows.namespace, follows.database, follows.id)
+            .unwrap()
+            .len(),
+        2
+    );
 
     // And the entry the index holds is the same one, so a traversal on the
     // replica answers what it answers on the leader.
     let index = catalog
-        .indexes_on(follows.id)
+        .indexes_on(follows.namespace, follows.database, follows.id)
         .unwrap()
         .into_iter()
         .find(|index| index.fields == vec![Path::field("out")])

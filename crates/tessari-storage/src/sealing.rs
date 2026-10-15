@@ -113,7 +113,7 @@ fn seal_into_vault(
     // absent — sealing has nothing to do, and inventing a value here would
     // write a secret nobody supplied.
     let secrets: Vec<(String, tessari_types::FieldKind)> = Catalog::new(transaction)
-        .fields_on(definition.id)?
+        .fields_on(definition.namespace, definition.database, definition.id)?
         .into_iter()
         .filter(|field| field.secret && fields.contains_key(&field.name))
         .map(|field| (field.name, field.kind))
@@ -216,7 +216,7 @@ pub fn reseal_named(
     // already an envelope in `fields`, and sealing it again would seal the
     // ciphertext.
     let secrets: Vec<(String, tessari_types::FieldKind)> = Catalog::new(transaction)
-        .fields_on(definition.id)?
+        .fields_on(definition.namespace, definition.database, definition.id)?
         .into_iter()
         .filter(|field| {
             field.secret && named.contains(&field.name) && fields.contains_key(&field.name)

@@ -110,7 +110,7 @@ impl Fixture {
     fn declared(&self, name: &str) -> Option<tessari_storage::FieldDefinition> {
         let mut transaction = self.store.begin().unwrap();
         Catalog::new(&mut transaction)
-            .fields_on(self.table)
+            .fields_on(self.namespace, self.database, self.table)
             .unwrap()
             .into_iter()
             .find(|field| field.name == name)
@@ -140,7 +140,7 @@ impl Fixture {
     fn declares(&self, name: &str) -> bool {
         let mut transaction = self.store.begin().unwrap();
         Catalog::new(&mut transaction)
-            .fields_on(self.table)
+            .fields_on(self.namespace, self.database, self.table)
             .unwrap()
             .iter()
             .any(|declared| declared.name == name)

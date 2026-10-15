@@ -365,7 +365,7 @@ impl Session<'_> {
         }
 
         let secrets: BTreeMap<String, ()> = Catalog::new(transaction)
-            .fields_on(id)?
+            .declared_fields(id)?
             .into_iter()
             .filter(|field| field.secret)
             .map(|field| (field.name, ()))
@@ -434,7 +434,7 @@ impl Session<'_> {
             return Ok(());
         }
         let secrets: Vec<String> = Catalog::new(transaction)
-            .fields_on(id)?
+            .declared_fields(id)?
             .into_iter()
             .filter(|field| field.secret)
             .map(|field| field.name)

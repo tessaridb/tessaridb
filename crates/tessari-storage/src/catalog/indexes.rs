@@ -186,9 +186,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             .transpose()
     }
 
-    /// Every index on one table, read from the whole index catalog — what
-    /// [`Self::indexes_on`] falls back to for a table that has no definition,
-    /// whose children no name of its own reaches any more.
+    /// Every index on one table, read from the whole index catalog — the
+    /// oracle [`Self::indexes_on`] is held to.
+    #[cfg(test)]
     pub(super) fn every_index_on(&self, table: TableId) -> Result<Vec<IndexDefinition>> {
         let mut found = Vec::new();
         for (_, bytes) in self.transaction.scan_table(
@@ -215,9 +215,17 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     ///
     /// # Errors
     ///
+    /// Readers name a declared table, so its tenancy is read from its own
+    /// definition; a table with none has no index a reader may use.
+    ///
+    /// # Errors
+    ///
     /// Returns an error when a stored definition cannot be read.
     pub fn field_indexes_on(&self, table: TableId) -> Result<Vec<IndexDefinition>> {
-        let mut found = self.indexes_on(table)?;
+        let Some(defined) = self.table(table)? else {
+            return Ok(Vec::new());
+        };
+        let mut found = self.indexes_on(defined.namespace, defined.database, table)?;
         found.retain(|definition| definition.engine.is_none());
         Ok(found)
     }

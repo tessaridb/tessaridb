@@ -68,7 +68,7 @@ impl Session<'_> {
         let Value::Object(mut fields) = payload else {
             return Ok(payload);
         };
-        let declared = Catalog::new(transaction).fields_on(table)?;
+        let declared = Catalog::new(transaction).declared_fields(table)?;
         for field in declared {
             let Some(written) = field.default else {
                 continue;
@@ -90,7 +90,7 @@ impl Session<'_> {
         name: &Name,
     ) -> Result<FieldId> {
         Catalog::new(transaction)
-            .fields_on(table)?
+            .declared_fields(table)?
             .into_iter()
             .find(|field| field.name == name.text)
             .map(|field| field.id)

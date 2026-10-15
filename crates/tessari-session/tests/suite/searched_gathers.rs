@@ -160,7 +160,11 @@ fn counting_every_record_agrees_with_the_index_it_stands_in_for() {
         .unwrap()
         .unwrap();
     let index = tessari_storage::Catalog::new(&mut transaction)
-        .indexes_on(table)
+        .indexes_on(
+            tessari_types::NamespaceId::new(1),
+            tessari_types::DatabaseId::new(1),
+            table,
+        )
         .unwrap()
         .into_iter()
         .find(|index| index.search)

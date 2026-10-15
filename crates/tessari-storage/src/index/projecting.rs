@@ -8,14 +8,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use tessari_constants::SPATIAL_INDEX_CELLS_PER_RECORD;
 use tessari_encoding::{IndexValues, Located};
 use tessari_geo::{Bounds, Cell, Shape};
-use tessari_types::{Analyzer, TableId, Value};
+use tessari_types::{Analyzer, DatabaseId, NamespaceId, TableId, Value};
 
 /// The analyzer each analysed field of a table declares, by field name.
 pub(crate) fn analyzers_on(
     view: &mut Transaction<'_>,
+    namespace: NamespaceId,
+    database: DatabaseId,
     table: TableId,
 ) -> Result<BTreeMap<String, Analyzer>> {
-    let declared = Catalog::new(view).fields_on(table)?;
+    let declared = Catalog::new(view).fields_on(namespace, database, table)?;
     let wanted: BTreeMap<String, String> = declared
         .into_iter()
         .filter_map(|field| field.analyzer.map(|named| (field.name, named)))

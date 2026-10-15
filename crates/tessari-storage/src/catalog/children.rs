@@ -52,21 +52,6 @@ impl Catalog<'_, '_> {
         Ok(ids)
     }
 
-    /// The ids `level`'s names claim under one table, or `None` when the table
-    /// has no definition: a dropped table's children are found by the whole
-    /// read, which is the only thing that still reaches them.
-    fn claimed_under(&self, level: Level, table: TableId) -> Result<Option<Vec<u32>>> {
-        let Some(parent) = self.table(table)? else {
-            return Ok(None);
-        };
-        let parents = [
-            parent.namespace.get(),
-            parent.database.get(),
-            parent.id.get(),
-        ];
-        self.claimed(level, &parents).map(Some)
-    }
-
     /// Every database in one namespace.
     ///
     /// # Errors
@@ -106,21 +91,31 @@ impl Catalog<'_, '_> {
         Ok(found)
     }
 
-    /// Every index on one table.
+    /// Every index on one table, named by its whole tenancy.
     ///
     /// This is what a write path consults, once per table a commit touches, so
-    /// it reads that table's own definitions and nothing else (module note).
+    /// it reads that table's own definitions and nothing else (module note). The
+    /// tenancy is part of the question because a table id is not a key on its
+    /// own: the catalog's own tables share numbers with declared ones. With it
+    /// the table's definition is not needed to find the span — so a table that
+    /// has none (the catalog's own, or a dropped one, whose index names stay
+    /// claimed) costs its own span too, and the catalog's answers empty.
     ///
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn indexes_on(&self, table: TableId) -> Result<Vec<IndexDefinition>> {
-        let Some(ids) = self.claimed_under(Level::Index, table)? else {
-            return self.every_index_on(table);
-        };
-        let mut found = Vec::with_capacity(ids.len());
-        for id in ids {
+    pub fn indexes_on(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+    ) -> Result<Vec<IndexDefinition>> {
+        let parents = [namespace.get(), database.get(), table.get()];
+        let mut found = Vec::new();
+        for id in self.claimed(Level::Index, &parents)? {
             if let Some(index) = self.index(IndexId::new(id))?
+                && index.namespace == namespace
+                && index.database == database
                 && index.table == table
             {
                 found.push(index);
@@ -129,21 +124,38 @@ impl Catalog<'_, '_> {
         Ok(found)
     }
 
+    /// Every field declared on a table a reader names, its tenancy read from the
+    /// table's own definition; a table with none declares nothing a reader may
+    /// use (as [`Self::field_indexes_on`] for indexes).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a stored definition cannot be read.
+    pub fn declared_fields(&self, table: TableId) -> Result<Vec<FieldDefinition>> {
+        match self.table(table)? {
+            Some(defined) => self.fields_on(defined.namespace, defined.database, table),
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// Every field declared on one table, found the way [`Self::indexes_on`]
     /// finds its indexes.
     ///
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn fields_on(&self, table: TableId) -> Result<Vec<FieldDefinition>> {
-        let Some(ids) = self.claimed_under(Level::Field, table)? else {
-            let mut found = self.fields()?;
-            found.retain(|definition| definition.table == table);
-            return Ok(found);
-        };
-        let mut found = Vec::with_capacity(ids.len());
-        for id in ids {
+    pub fn fields_on(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+    ) -> Result<Vec<FieldDefinition>> {
+        let parents = [namespace.get(), database.get(), table.get()];
+        let mut found = Vec::new();
+        for id in self.claimed(Level::Field, &parents)? {
             if let Some(field) = self.field(FieldId::new(id))?
+                && field.namespace == namespace
+                && field.database == database
                 && field.table == table
             {
                 found.push(field);

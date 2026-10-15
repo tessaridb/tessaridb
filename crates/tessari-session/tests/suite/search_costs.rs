@@ -214,7 +214,14 @@ fn the_index_stores_the_lists_it_promises() {
             )
             .unwrap()
             .unwrap();
-        let index = catalog.indexes_on(table).unwrap().remove(0);
+        let index = catalog
+            .indexes_on(
+                tessari_types::NamespaceId::new(1),
+                tessari_types::DatabaseId::new(1),
+                table,
+            )
+            .unwrap()
+            .remove(0);
         let found = transaction
             .located(&index, "ada", &tessari_types::RecordId::Int(1))
             .unwrap()
@@ -243,7 +250,14 @@ fn the_index_stores_the_lists_it_promises() {
             )
             .unwrap()
             .unwrap();
-        let index = catalog.indexes_on(table).unwrap().remove(0);
+        let index = catalog
+            .indexes_on(
+                tessari_types::NamespaceId::new(1),
+                tessari_types::DatabaseId::new(1),
+                table,
+            )
+            .unwrap()
+            .remove(0);
         assert_eq!(
             transaction.search_statistics(&index).unwrap().documents,
             documents,

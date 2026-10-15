@@ -269,7 +269,8 @@ pub(crate) fn maintain_from(
     // index's, so it is read from the schema here — once per table rather than
     // once per record. That is what makes a scan and an index answer the same
     // question; see `tessari_types::Analyzer`.
-    let mut analyzers: BTreeMap<TableId, BTreeMap<String, Analyzer>> = BTreeMap::new();
+    let mut analyzers: BTreeMap<(NamespaceId, DatabaseId, TableId), BTreeMap<String, Analyzer>> =
+        BTreeMap::new();
     // A search member reads with the search's analyzer, which is named rather
     // than declared on a field; read once, and only when a member is written.
     let mut named: Option<BTreeMap<String, Analyzer>> = None;
@@ -286,25 +287,12 @@ pub(crate) fn maintain_from(
         let at = (mutation.namespace, mutation.database, mutation.table);
         let definitions = match by_table.get(&at) {
             Some(found) => found.clone(),
-            // The catalog's own tables carry no declared index: an index needs a table
-            // definition to be declared on, and they have none. Asking would read
-            // every index definition the store holds, once per catalog table a
-            // definition writes (DB-18).
-            None if mutation.namespace == crate::catalog::system::SYSTEM_NAMESPACE
-                && mutation.database == crate::catalog::system::SYSTEM_DATABASE =>
-            {
-                by_table.insert(at, Vec::new());
-                Vec::new()
-            }
             None => {
-                let found: Vec<IndexDefinition> = Catalog::new(&mut view)
-                    .indexes_on(mutation.table)?
-                    .into_iter()
-                    .filter(|definition| {
-                        definition.namespace == mutation.namespace
-                            && definition.database == mutation.database
-                    })
-                    .collect();
+                let found: Vec<IndexDefinition> = Catalog::new(&mut view).indexes_on(
+                    mutation.namespace,
+                    mutation.database,
+                    mutation.table,
+                )?;
                 by_table.insert(at, found.clone());
                 found
             }
@@ -312,11 +300,16 @@ pub(crate) fn maintain_from(
         if definitions.is_empty() {
             continue;
         }
-        let declared = match analyzers.get(&mutation.table) {
+        let declared = match analyzers.get(&at) {
             Some(found) => found.clone(),
             None => {
-                let found = analyzers_on(&mut view, mutation.table)?;
-                analyzers.insert(mutation.table, found.clone());
+                let found = analyzers_on(
+                    &mut view,
+                    mutation.namespace,
+                    mutation.database,
+                    mutation.table,
+                )?;
+                analyzers.insert(at, found.clone());
                 found
             }
         };

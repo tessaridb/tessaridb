@@ -24,9 +24,9 @@ pub(super) fn declared(
 ) -> Result<std::result::Result<(String, String), String>> {
     let mut view = reader.store.begin()?;
     let catalog = Catalog::new(&mut view);
-    let fields = catalog.fields_on(table.id)?;
+    let fields = catalog.fields_on(table.namespace, table.database, table.id)?;
     let indexes: Vec<_> = catalog
-        .indexes_on(table.id)?
+        .indexes_on(table.namespace, table.database, table.id)?
         .into_iter()
         .filter(|index| index.namespace == table.namespace && index.database == table.database)
         .collect();

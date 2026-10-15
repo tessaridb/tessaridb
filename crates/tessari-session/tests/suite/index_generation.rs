@@ -57,7 +57,7 @@ fn written_by(store: &Store, index: &str, built: Option<u32>) {
         .unwrap()
         .unwrap();
     let mut definition = catalog
-        .indexes_on(table)
+        .indexes_on(namespace, database, table)
         .unwrap()
         .into_iter()
         .find(|held| held.name == index)
