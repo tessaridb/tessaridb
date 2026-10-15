@@ -1,22 +1,35 @@
-//! Access — who exists, and the four panes that decide what they may reach.
+//! Access — who exists, with what may be done to each beside them.
 //!
-//! The screen as a value. It was inside `page.ts` until the page reached 458
-//! lines, which is a god-file by the project's own rule; what is here is one
-//! screen and nothing else, and `page.ts` now assembles screens rather than
-//! containing them.
+//! One list, and every action on an account in a dialog of its own: create,
+//! look at, change a password, change a role, give or take away, remove. The
+//! forms are the ones the screen always had; what changed is that they stand
+//! behind the row they act on instead of stacked under the list, keyed by a name
+//! typed again by hand.
 //!
-//! The behaviour lives in `users.ts` and `user-forms.ts`. This file draws.
+//! The behaviour lives in `users.ts`, `user-detail.ts`, `user-actions.ts`,
+//! `user-forms.ts` and `grants.ts`. This file draws.
 
 import { el, type Node } from "./html.js";
 import { to } from "./destinations.js";
 import {
-  answer, behindDisclosure, button, choose, field, note, pane, paneHead, panel,
-  preview, ROLES, row, says, secret, split, status, text, warning,
+  answer, behindDisclosure, button, choose, dialog, field, note, pane, paneHead, panel,
+  preview, ROLES, row, says, secret, status, text, warning,
 } from "./ui.js";
 
-const whoThereIs = (): Node =>
+/** The name an action is about, shown and not typed: it came from the row. */
+const who = (id: string): Node => field("Who", text(id, { readonly: true }));
+
+const users = (): Node =>
   pane(
-    paneHead("Who there is", row("tight", status("user-status"), button("list", "Refresh", "quiet"))),
+    paneHead(
+      "Users",
+      row(
+        "tight",
+        status("user-status"),
+        button("list", "Refresh", "quiet"),
+        button("new-user", "New user…", "primary"),
+      ),
+    ),
     note("What you are shown is the tenancy you administer."),
     behindDisclosure(
       "What that means for a short list",
@@ -33,17 +46,29 @@ const whoThereIs = (): Node =>
       status("user-count"),
     ),
     answer("user-list", "small"),
-    row(
-      "default",
-      field("Detail for", text("lookup-name", { placeholder: "ada" })),
-      button("lookup", "Show"),
-    ),
-    answer("user-answer", "small"),
   );
 
-const defineOne = (): Node =>
-  pane(
-    paneHead("Define one", status("define-status")),
+/** One account looked at: what it is, what it holds, and taking any of it away. */
+const userDialog = (): Node =>
+  dialog(
+    "user-dialog",
+    "User",
+    status("user-detail-status"),
+    answer("user-answer", "small"),
+    el("div", { id: "user-holds" }),
+    row(
+      "tight",
+      button("user-grant", "Give…", "default"),
+      button("user-password", "Password…", "quiet"),
+      button("user-role", "Role…", "quiet"),
+      button("user-remove", "Remove…", "quiet"),
+    ),
+  );
+
+const defineDialog = (): Node =>
+  dialog(
+    "define-dialog",
+    "New user",
     note(
       "A password reaches the node and goes no further: what is stored is a hash, " +
         "so no plaintext reaches the log or any replica.",
@@ -70,13 +95,13 @@ const defineOne = (): Node =>
     ),
     el("p", { id: "role-says", class: "note" }),
     says("define-preview"),
-    row("default", button("define", "Run it", "primary")),
+    row("spread", button("define", "Create", "primary"), status("define-status")),
   );
 
-const changeOne = (): Node =>
-  pane(
-    paneHead("Change one", status("change-status")),
-    note("One field per change. A space cannot be changed here at all."),
+const changeDialog = (): Node =>
+  dialog(
+    "change-dialog",
+    "Change",
     behindDisclosure(
       "Why a space is not offered",
       note(
@@ -88,13 +113,14 @@ const changeOne = (): Node =>
     ),
     row(
       "default",
-      field("Who", text("change-name", { placeholder: "ada" })),
+      who("change-name"),
       field(
         "What ",
         choose("change-what", [
           { value: "password", label: "password" },
           { value: "role", label: "role" },
         ]),
+        { id: "change-what-field", hidden: true },
       ),
       field("New password", secret("change-password", "new-password"), {
         id: "change-password-field",
@@ -115,12 +141,13 @@ const changeOne = (): Node =>
       }),
     ),
     says("change-preview"),
-    row("default", button("change", "Run it", "primary")),
+    row("spread", button("change", "Change", "primary"), status("change-status")),
   );
 
-const removeOne = (): Node =>
-  pane(
-    paneHead("Remove one", status("remove-status")),
+const removeDialog = (): Node =>
+  dialog(
+    "remove-dialog",
+    "Remove",
     warning(
       el("strong", {}, "This does not come back."),
       " The user's grants go with them, and a new user of the same name is a " +
@@ -128,14 +155,10 @@ const removeOne = (): Node =>
         "node, nothing can let anybody back in — a closed store has no door from " +
         "outside, and the way back is a restore from backup.",
     ),
-    note(
-      "You may only remove somebody in the tenancy you administer. The node refuses " +
-        "the rest, and what it says is shown here as it said it.",
-    ),
     row(
       "default",
-      field("Who", text("remove-name", { placeholder: "ada" })),
-      field("Type the name again", text("remove-confirm", { placeholder: "ada" })),
+      who("remove-name"),
+      field("Type the name again", text("remove-confirm", { placeholder: "the name above" })),
     ),
     row(
       "default",
@@ -145,54 +168,24 @@ const removeOne = (): Node =>
     ),
     says("remove-radius"),
     behindDisclosure("The statement this will send", preview("remove-preview")),
-    row("default", button("remove", "Remove", "default", { disabled: true })),
-    el("hr", { class: "between" }),
-    paneHead("Your own password", status("mine-status")),
-    note("Yours, and any role may use it."),
-    behindDisclosure(
-      "Why this one is not the pane above",
-      note(
-        "That pane is for somebody else's credential and needs an owner. A viewer " +
-          "whose password may have leaked should not have to ask an owner to choose " +
-          "them a new one.",
-      ),
-    ),
     row(
-      "default",
-      field("Current", secret("mine-current", "current-password")),
-      field("New", secret("mine-new", "new-password")),
-      field("New again", secret("mine-again", "new-password")),
-    ),
-    row("default", button("mine", "Change it", "default", { disabled: true })),
-    // The CONSEQUENCE stays in the flow and the REASON goes behind the
-    // disclosure. Somebody about to press this needs to know they will be signed
-    // out; why the current password is asked for is a thing they can look up.
-    note("Changing it ends every session you hold, this one included."),
-    behindDisclosure(
-      "Why the current one is asked for",
-      note(
-        "Being signed in is not proof of a password — otherwise a token copied off " +
-          "this connection would be a way to take the account rather than borrow it.",
-      ),
+      "spread",
+      button("remove", "Remove", "default", { disabled: true, class: "danger" }),
+      status("remove-status"),
     ),
   );
 
 /**
  * Giving and taking away what one account reaches.
  *
- * Its own pane rather than a drawer over a user detail, which is the shape the
- * brief sketched: there is no separate user-detail SURFACE to put a drawer over
- * — the detail is a pane on this screen — and a drawer over a pane would be a
- * sheet over the thing it belongs to. Recorded as a difference from the brief
- * rather than taken silently.
+ * The account comes from the row or the detail it was opened from, so the
+ * dialog asks only what and where — and says, before the button, which of the
+ * two a grant is this time.
  */
-const giveOrTake = (): Node =>
-  pane(
-    paneHead("Give or take away", status("grant-status")),
-    note(
-      el("strong", {}, "A grant is not only an addition."),
-      " The line under the form says which of the two this one is.",
-    ),
+const grantDialog = (): Node =>
+  dialog(
+    "grant-dialog",
+    "Give or take away",
     behindDisclosure(
       "Why a grant can narrow",
       note(
@@ -204,7 +197,7 @@ const giveOrTake = (): Node =>
     ),
     row(
       "default",
-      field("Who", text("grant-who", { placeholder: "ada" })),
+      who("grant-who"),
       field(
         "Direction ",
         choose("grant-direction", [
@@ -233,14 +226,20 @@ const giveOrTake = (): Node =>
       }),
     ),
     says("grant-says"),
-    row("default", button("grant-apply", "Run it", "primary")),
+    row("spread", button("grant-apply", "Apply", "primary"), status("grant-status")),
   );
 
-export const access = (): Node =>
-  panel(
-    to("access"),
-    false,
-    split(whoThereIs(), defineOne()),
-    split(changeOne(), removeOne()),
-    giveOrTake(),
-  );
+export const access = (): Node => panel(to("access"), false, users());
+
+/**
+ * The screen's dialogs, placed by the page outside every panel: a dialog inside
+ * a hidden panel is not drawn even when it is open, and the owner's dialog is
+ * opened from the open-store banner on whichever screen is showing.
+ */
+export const accessDialogs = (): Node[] => [
+  userDialog(),
+  defineDialog(),
+  changeDialog(),
+  removeDialog(),
+  grantDialog(),
+];

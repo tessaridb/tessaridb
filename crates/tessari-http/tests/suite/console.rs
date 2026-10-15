@@ -110,7 +110,7 @@ fn dechunked(body: &str) -> String {
 
 /// Post a script and answer with the status and the body.
 #[cfg(feature = "console")]
-fn script(address: &str, source: &str) -> (u16, String) {
+pub(crate) fn script(address: &str, source: &str) -> (u16, String) {
     let mut stream = TcpStream::connect(address).unwrap();
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -973,7 +973,7 @@ fn every_sentence_that_denies_a_capability_is_on_the_record() {
 /// directory is the loud one — a wrong path finds nothing — and the assertions
 /// below turn that into a failure instead of a pass.
 #[cfg(feature = "console")]
-fn panel_sources() -> Vec<(String, String)> {
+pub(crate) fn panel_sources() -> Vec<(String, String)> {
     let directory = concat!(env!("CARGO_MANIFEST_DIR"), "/panel/src");
     let mut found = Vec::new();
     for entry in std::fs::read_dir(directory).expect("the panel's source directory") {

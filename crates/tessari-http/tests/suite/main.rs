@@ -9,6 +9,7 @@
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
 mod console;
+mod console_dialogs;
 mod console_tokens;
 mod crossing;
 mod kv;

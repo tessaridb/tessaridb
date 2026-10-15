@@ -19,8 +19,21 @@ import { hereAgain } from "./tabs.js";
  */
 let held: string | null = null;
 
-/** The token, for the two callers that need it as a value. */
+/** The token, for the callers that need it as a value. */
 export const token = (): string | null => held;
+
+/** Who wants to know when the identity changes — the gate, which redraws the page. */
+const listeners: Array<() => void> = [];
+
+export function onIdentityChange(listener: () => void): void {
+  listeners.push(listener);
+}
+
+function changed(): void {
+  for (const listener of listeners) {
+    listener();
+  }
+}
 
 /** A `Basic` value for what is in the two fields, or nothing when both are empty. */
 export function typed(): string | null {
@@ -84,6 +97,7 @@ export function ended(): void {
   // It cannot loop: `ask` only calls this while a token is held, and the line
   // above dropped it.
   hereAgain();
+  changed();
 }
 
 /** The `error` out of a refusal's body, or the body when it is not one. */
@@ -182,41 +196,13 @@ export function wire(): void {
       // reader happens to navigate — W320 measured an operator signing in and
       // being left looking at "this store requires a signed-in user".
       hereAgain();
+      changed();
     } catch (failure) {
       say("identity-status", "the node did not answer: " + told(failure), true);
     }
   });
 
-  // Hand the token back, then forget it here.
-  //
-  // Told to the node rather than only dropped locally: a token this page
-  // forgets without saying so stays live on the node until it expires, which is
-  // the difference between signing out and closing your eyes.
-  at("sign-out").addEventListener("click", async () => {
-    if (held !== null) {
-      try {
-        await fetch("/session", {
-          method: "DELETE",
-          headers: { Authorization: "Bearer " + held },
-          credentials: "omit",
-        });
-      } catch {
-        // The node is unreachable. Forgetting it here is still right — the token
-        // expires on its own, and staying signed in because the network failed
-        // is the wrong way to be wrong.
-      }
-    }
-    held = null;
-    setValue("user", "");
-    setValue("password", "");
-    say("identity-status", "");
-    signedIn();
-    identity.open = false;
-    // Signing out has to reach the screen as well as the node. What is drawn
-    // is the previous identity's answer, and leaving it there is the same
-    // disclosure as never having signed out at all.
-    hereAgain();
-  });
+  at("sign-out").addEventListener("click", () => void signOut(""));
 
   // A sheet that hangs over the page until something else is clicked is the
   // complaint this control earned. Escape and a click outside both close it,
@@ -235,6 +221,40 @@ export function wire(): void {
   });
 
   signedIn();
+}
+
+/**
+ * Hand the token back, then forget it here, and say `words` on the sign-in page.
+ *
+ * Told to the node rather than only dropped locally: a token this page forgets
+ * without saying so stays live on the node until it expires, which is the
+ * difference between signing out and closing your eyes.
+ */
+export async function signOut(words: string): Promise<void> {
+  if (held !== null) {
+    try {
+      await fetch("/session", {
+        method: "DELETE",
+        headers: { Authorization: "Bearer " + held },
+        credentials: "omit",
+      });
+    } catch {
+      // The node is unreachable. Forgetting it here is still right — the token
+      // expires on its own, and staying signed in because the network failed
+      // is the wrong way to be wrong.
+    }
+  }
+  held = null;
+  setValue("user", "");
+  setValue("password", "");
+  say("identity-status", words);
+  signedIn();
+  sheet().open = false;
+  // Signing out has to reach the screen as well as the node. What is drawn
+  // is the previous identity's answer, and leaving it there is the same
+  // disclosure as never having signed out at all.
+  hereAgain();
+  changed();
 }
 
 /** What a thrown thing said, for a status line that has to say something. */

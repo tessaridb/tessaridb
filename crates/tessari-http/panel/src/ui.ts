@@ -191,3 +191,24 @@ export const panel = (destination: Destination, first: boolean, ...children: Chi
     },
     ...children,
   );
+
+/**
+ * One action, in a window of its own over the screen it belongs to.
+ *
+ * A native `<dialog>` opened with `showModal()`: the browser makes the page
+ * behind it inert, traps focus inside it and closes it on Escape, which is the
+ * whole of the modal contract and none of it written here. The header carries
+ * the title the dialog is labelled by and the one control that always closes it.
+ */
+export const dialog = (id: string, title: string, ...children: Child[]): Node =>
+  el(
+    "dialog",
+    { id, class: "dialog", "aria-labelledby": `${id}-title` },
+    el(
+      "div",
+      { class: "dialog-head" },
+      el("h2", { id: `${id}-title` }, title),
+      el("button", { type: "button", class: "quiet", "data-close": true, "aria-label": "Close" }, "Close"),
+    ),
+    el("div", { class: "dialog-body" }, ...children),
+  );

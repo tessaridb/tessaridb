@@ -10,7 +10,25 @@
   </head>
   <body>
     <a id="skip" class="skip" href="#view">Skip to content</a>
-    <div class="shell">
+    <section id="gate" class="gate" hidden aria-labelledby="gate-title">
+      <form id="gate-form" class="gate-card">
+        <div class="gate-brand">
+          <img class="logo" src="/favicon.svg" alt="" width="40" height="40" />
+          <h1 id="gate-title">Sign in to TessariDB</h1>
+          <p id="gate-where" class="faint">this node</p>
+        </div>
+        <label>User <input id="user" type="text" autocomplete="username" /></label>
+        <label>Password <input id="password" type="password" autocomplete="current-password" /></label>
+        <button id="sign-in" type="submit" class="primary">Sign in</button>
+        <span id="identity-status" class="status" role="status"></span>
+        <p id="transport-says" class="note warn">Credentials travel as typed unless this page arrived over https.</p>
+        <details class="tucked">
+          <summary>What signing in keeps</summary>
+          <p class="note">The password is checked once. What this page keeps afterwards is a token, held for as long as the tab is open and no longer.</p>
+        </details>
+      </form>
+    </section>
+    <div class="shell" id="shell" hidden>
       <aside class="side">
         <div class="brand">
           <img class="logo" src="/favicon.svg" alt="" width="28" height="28" />
@@ -35,19 +53,9 @@
           <details class="identity">
             <summary><span id="signed-in">not signed in</span></summary>
             <div class="sheet">
-              <p class="note">Leave both empty against a store that has no users yet. The first <code>DEFINE USER</code> closes it, and everything after that needs a name.</p>
-              <div class="row">
-                <label>User <input id="user" type="text" autocomplete="username" /></label>
-                <label>Password <input id="password" type="password" autocomplete="current-password" /></label>
-              </div>
-              <p class="note">The password is checked once. What this page keeps afterwards is a token, held for as long as the tab is open and no longer — so the password is cleared from the field above, and closing the tab ends the session.</p>
-              <p id="transport-says" class="note warn">Credentials travel as typed unless this page arrived over https.</p>
-              <div class="row spread">
-                <div class="row tight">
-                  <button id="sign-in" type="button" class="primary">Sign in</button>
-                  <button id="sign-out" type="button" class="quiet">Forget</button>
-                </div>
-                <span id="identity-status" class="status" role="status"></span>
+              <div class="row tight">
+                <button id="mine-open" type="button" class="quiet">Your password…</button>
+                <button id="sign-out" type="button" class="quiet">Sign out</button>
               </div>
             </div>
           </details>
@@ -56,6 +64,10 @@
       <div class="main-col">
         <main id="view" tabindex="-1">
           <p id="clear-banner" class="note warn" hidden>This console arrived without TLS from another machine: what you type here, passwords included, crosses the network unencrypted. Give the node <code>--tls-cert</code> and <code>--tls-key</code>, or reach it over an SSH tunnel to localhost.</p>
+          <div id="open-banner" class="banner" hidden>
+            <p class="note warn">This store has no users: anybody who reaches this node may read and write everything. The first user closes it.</p>
+            <button id="define-owner" type="button" class="primary">Define the owner…</button>
+          </div>
           <div class="page-head">
             <h1 id="view-title" tabindex="-1">Run</h1>
             <div class="finding">
@@ -506,191 +518,25 @@
             </div>
           </section>
           <section id="panel-access" role="tabpanel" aria-labelledby="tab-access" tabindex="0" hidden>
-            <div class="split">
-              <div class="pane">
-                <div class="pane-head">
-                  <h2>Who there is</h2>
-                  <div class="row tight">
-                    <span id="user-status" class="status" role="status"></span>
-                    <button id="list" type="button" class="quiet">Refresh</button>
-                  </div>
-                </div>
-                <p class="note">What you are shown is the tenancy you administer.</p>
-                <details class="tucked">
-                  <summary>What that means for a short list</summary>
-                  <p class="note">An owner of a space sees that space; an <strong>admin</strong> — an owner with no space at all — sees the whole node. It refuses rather than narrowing, so a short list is a short tenancy and never a filtered one.</p>
-                </details>
-                <div class="row spread">
-                  <label>Filter <input id="user-filter" type="text" placeholder="part of a name" /></label>
-                  <span id="user-count" class="status" role="status"></span>
-                </div>
-                <div id="user-list" class="answer small" aria-live="polite"></div>
-                <div class="row">
-                  <label>Detail for <input id="lookup-name" type="text" placeholder="ada" /></label>
-                  <button id="lookup" type="button">Show</button>
-                </div>
-                <div id="user-answer" class="answer small" aria-live="polite"></div>
-              </div>
-              <div class="pane">
-                <div class="pane-head">
-                  <h2>Define one</h2>
-                  <span id="define-status" class="status" role="status"></span>
-                </div>
-                <p class="note">A password reaches the node and goes no further: what is stored is a hash, so no plaintext reaches the log or any replica.</p>
-                <div class="row">
-                  <label>Name <input id="new-name" type="text" placeholder="ada" /></label>
-                  <label>
-                    Reach 
-                    <select id="new-reach">
-                      <option value="space">one space</option>
-                      <option value="node">the whole node — an admin</option>
-                    </select>
-                  </label>
-                  <label id="scope-field">Space <input id="new-scope" type="text" placeholder="prod.library" /></label>
-                  <label>
-                    Role 
-                    <select id="new-role">
-                      <option value="viewer">viewer</option>
-                      <option value="editor" selected>editor</option>
-                      <option value="owner">owner</option>
-                      <option value="other">something else…</option>
-                    </select>
-                  </label>
-                  <label id="role-other-field" hidden>Which <input id="new-role-other" type="text" placeholder="a role this build knows" /></label>
-                  <label>Password <input id="new-password" type="password" autocomplete="new-password" /></label>
-                </div>
-                <p id="role-says" class="note"></p>
-                <p id="define-preview" class="note says"></p>
-                <div class="row">
-                  <button id="define" type="button" class="primary">Run it</button>
-                </div>
-              </div>
-            </div>
-            <div class="split">
-              <div class="pane">
-                <div class="pane-head">
-                  <h2>Change one</h2>
-                  <span id="change-status" class="status" role="status"></span>
-                </div>
-                <p class="note">One field per change. A space cannot be changed here at all.</p>
-                <details class="tucked">
-                  <summary>Why a space is not offered</summary>
-                  <p class="note">A password rotation does not touch a role, and a role correction does not invalidate a password. Widening somebody's reach is the one change an owner of a part could use to reach the whole, so it is not offered here at all.</p>
-                </details>
-                <div class="row">
-                  <label>Who <input id="change-name" type="text" placeholder="ada" /></label>
-                  <label>
-                    What 
-                    <select id="change-what">
-                      <option value="password">password</option>
-                      <option value="role">role</option>
-                    </select>
-                  </label>
-                  <label id="change-password-field">New password <input id="change-password" type="password" autocomplete="new-password" /></label>
-                  <label id="change-role-field" hidden>
-                    New role 
-                    <select id="change-role">
-                      <option value="viewer">viewer</option>
-                      <option value="editor">editor</option>
-                      <option value="owner">owner</option>
-                      <option value="other">something else…</option>
-                    </select>
-                  </label>
-                  <label id="change-role-other-field" hidden>Which <input id="change-role-other" type="text" placeholder="a role this build knows" /></label>
-                </div>
-                <div class="row">
-                  <label class="wide">Why <input id="change-why" type="text" placeholder="rotating a credential that leaked" /></label>
-                </div>
-                <p id="change-preview" class="note says"></p>
-                <div class="row">
-                  <button id="change" type="button" class="primary">Run it</button>
-                </div>
-              </div>
-              <div class="pane">
-                <div class="pane-head">
-                  <h2>Remove one</h2>
-                  <span id="remove-status" class="status" role="status"></span>
-                </div>
-                <p class="note warn"><strong>This does not come back.</strong> The user's grants go with them, and a new user of the same name is a different user with none of them. If it is the last owner of the whole node, nothing can let anybody back in — a closed store has no door from outside, and the way back is a restore from backup.</p>
-                <p class="note">You may only remove somebody in the tenancy you administer. The node refuses the rest, and what it says is shown here as it said it.</p>
-                <div class="row">
-                  <label>Who <input id="remove-name" type="text" placeholder="ada" /></label>
-                  <label>Type the name again <input id="remove-confirm" type="text" placeholder="ada" /></label>
-                </div>
-                <div class="row">
-                  <label class="wide">Why <input id="remove-why" type="text" placeholder="left the team on Friday" /></label>
-                </div>
-                <p id="remove-radius" class="note says"></p>
-                <details class="tucked">
-                  <summary>The statement this will send</summary>
-                  <pre id="remove-preview" class="answer small"></pre>
-                </details>
-                <div class="row">
-                  <button id="remove" type="button" disabled>Remove</button>
-                </div>
-                <hr class="between" />
-                <div class="pane-head">
-                  <h2>Your own password</h2>
-                  <span id="mine-status" class="status" role="status"></span>
-                </div>
-                <p class="note">Yours, and any role may use it.</p>
-                <details class="tucked">
-                  <summary>Why this one is not the pane above</summary>
-                  <p class="note">That pane is for somebody else's credential and needs an owner. A viewer whose password may have leaked should not have to ask an owner to choose them a new one.</p>
-                </details>
-                <div class="row">
-                  <label>Current <input id="mine-current" type="password" autocomplete="current-password" /></label>
-                  <label>New <input id="mine-new" type="password" autocomplete="new-password" /></label>
-                  <label>New again <input id="mine-again" type="password" autocomplete="new-password" /></label>
-                </div>
-                <div class="row">
-                  <button id="mine" type="button" disabled>Change it</button>
-                </div>
-                <p class="note">Changing it ends every session you hold, this one included.</p>
-                <details class="tucked">
-                  <summary>Why the current one is asked for</summary>
-                  <p class="note">Being signed in is not proof of a password — otherwise a token copied off this connection would be a way to take the account rather than borrow it.</p>
-                </details>
-              </div>
-            </div>
             <div class="pane">
               <div class="pane-head">
-                <h2>Give or take away</h2>
-                <span id="grant-status" class="status" role="status"></span>
+                <h2>Users</h2>
+                <div class="row tight">
+                  <span id="user-status" class="status" role="status"></span>
+                  <button id="list" type="button" class="quiet">Refresh</button>
+                  <button id="new-user" type="button" class="primary">New user…</button>
+                </div>
               </div>
-              <p class="note"><strong>A grant is not only an addition.</strong> The line under the form says which of the two this one is.</p>
+              <p class="note">What you are shown is the tenancy you administer.</p>
               <details class="tucked">
-                <summary>Why a grant can narrow</summary>
-                <p class="note">A user with no table grants is governed by their role; a user with one reaches exactly what they were granted. So the first grant narrows, and taking the last one away widens them back to the role — which the node refuses.</p>
+                <summary>What that means for a short list</summary>
+                <p class="note">An owner of a space sees that space; an <strong>admin</strong> — an owner with no space at all — sees the whole node. It refuses rather than narrowing, so a short list is a short tenancy and never a filtered one.</p>
               </details>
-              <div class="row">
-                <label>Who <input id="grant-who" type="text" placeholder="ada" /></label>
-                <label>
-                  Direction 
-                  <select id="grant-direction">
-                    <option value="give" selected>give</option>
-                    <option value="take">take away</option>
-                  </select>
-                </label>
-                <label>
-                  On 
-                  <select id="grant-reach">
-                    <option value="table" selected>a table</option>
-                    <option value="namespace">a namespace</option>
-                    <option value="database">a database</option>
-                    <option value="store">the whole store</option>
-                  </select>
-                </label>
-                <label id="grant-name-field">Named <input id="grant-name" type="text" placeholder="app.main.orders" /></label>
-                <label>What <input id="grant-what" type="text" placeholder="read, write" /></label>
+              <div class="row spread">
+                <label>Filter <input id="user-filter" type="text" placeholder="part of a name" /></label>
+                <span id="user-count" class="status" role="status"></span>
               </div>
-              <div class="row">
-                <label class="wide">Why <input id="grant-why" type="text" placeholder="joining the billing rota" /></label>
-              </div>
-              <p id="grant-says" class="note says"></p>
-              <div class="row">
-                <button id="grant-apply" type="button" class="primary">Run it</button>
-              </div>
+              <div id="user-list" class="answer small" aria-live="polite"></div>
             </div>
           </section>
           <section id="panel-this-node" role="tabpanel" aria-labelledby="tab-this-node" tabindex="0" hidden>
@@ -870,6 +716,189 @@
         </footer>
       </div>
     </div>
+    <dialog id="mine-dialog" class="dialog" aria-labelledby="mine-dialog-title">
+      <div class="dialog-head">
+        <h2 id="mine-dialog-title">Your password</h2>
+        <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+      </div>
+      <div class="dialog-body">
+        <div class="row">
+          <label>Current <input id="mine-current" type="password" autocomplete="current-password" /></label>
+          <label>New <input id="mine-new" type="password" autocomplete="new-password" /></label>
+          <label>New again <input id="mine-again" type="password" autocomplete="new-password" /></label>
+        </div>
+        <p class="note">Changing it ends every session you hold, this one included.</p>
+        <details class="tucked">
+          <summary>Why the current one is asked for</summary>
+          <p class="note">Being signed in is not proof of a password — otherwise a token copied off this connection would be a way to take the account rather than borrow it.</p>
+        </details>
+        <div class="row spread">
+          <button id="mine" type="button" class="primary" disabled>Change it</button>
+          <span id="mine-status" class="status" role="status"></span>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="user-dialog" class="dialog" aria-labelledby="user-dialog-title">
+      <div class="dialog-head">
+        <h2 id="user-dialog-title">User</h2>
+        <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+      </div>
+      <div class="dialog-body">
+        <span id="user-detail-status" class="status" role="status"></span>
+        <div id="user-answer" class="answer small" aria-live="polite"></div>
+        <div id="user-holds"></div>
+        <div class="row tight">
+          <button id="user-grant" type="button">Give…</button>
+          <button id="user-password" type="button" class="quiet">Password…</button>
+          <button id="user-role" type="button" class="quiet">Role…</button>
+          <button id="user-remove" type="button" class="quiet">Remove…</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="define-dialog" class="dialog" aria-labelledby="define-dialog-title">
+      <div class="dialog-head">
+        <h2 id="define-dialog-title">New user</h2>
+        <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+      </div>
+      <div class="dialog-body">
+        <p class="note">A password reaches the node and goes no further: what is stored is a hash, so no plaintext reaches the log or any replica.</p>
+        <div class="row">
+          <label>Name <input id="new-name" type="text" placeholder="ada" /></label>
+          <label>
+            Reach 
+            <select id="new-reach">
+              <option value="space">one space</option>
+              <option value="node">the whole node — an admin</option>
+            </select>
+          </label>
+          <label id="scope-field">Space <input id="new-scope" type="text" placeholder="prod.library" /></label>
+          <label>
+            Role 
+            <select id="new-role">
+              <option value="viewer">viewer</option>
+              <option value="editor" selected>editor</option>
+              <option value="owner">owner</option>
+              <option value="other">something else…</option>
+            </select>
+          </label>
+          <label id="role-other-field" hidden>Which <input id="new-role-other" type="text" placeholder="a role this build knows" /></label>
+          <label>Password <input id="new-password" type="password" autocomplete="new-password" /></label>
+        </div>
+        <p id="role-says" class="note"></p>
+        <p id="define-preview" class="note says"></p>
+        <div class="row spread">
+          <button id="define" type="button" class="primary">Create</button>
+          <span id="define-status" class="status" role="status"></span>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="change-dialog" class="dialog" aria-labelledby="change-dialog-title">
+      <div class="dialog-head">
+        <h2 id="change-dialog-title">Change</h2>
+        <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+      </div>
+      <div class="dialog-body">
+        <details class="tucked">
+          <summary>Why a space is not offered</summary>
+          <p class="note">A password rotation does not touch a role, and a role correction does not invalidate a password. Widening somebody's reach is the one change an owner of a part could use to reach the whole, so it is not offered here at all.</p>
+        </details>
+        <div class="row">
+          <label>Who <input id="change-name" type="text" readonly /></label>
+          <label id="change-what-field" hidden>
+            What 
+            <select id="change-what">
+              <option value="password">password</option>
+              <option value="role">role</option>
+            </select>
+          </label>
+          <label id="change-password-field">New password <input id="change-password" type="password" autocomplete="new-password" /></label>
+          <label id="change-role-field" hidden>
+            New role 
+            <select id="change-role">
+              <option value="viewer">viewer</option>
+              <option value="editor">editor</option>
+              <option value="owner">owner</option>
+              <option value="other">something else…</option>
+            </select>
+          </label>
+          <label id="change-role-other-field" hidden>Which <input id="change-role-other" type="text" placeholder="a role this build knows" /></label>
+        </div>
+        <div class="row">
+          <label class="wide">Why <input id="change-why" type="text" placeholder="rotating a credential that leaked" /></label>
+        </div>
+        <p id="change-preview" class="note says"></p>
+        <div class="row spread">
+          <button id="change" type="button" class="primary">Change</button>
+          <span id="change-status" class="status" role="status"></span>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="remove-dialog" class="dialog" aria-labelledby="remove-dialog-title">
+      <div class="dialog-head">
+        <h2 id="remove-dialog-title">Remove</h2>
+        <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+      </div>
+      <div class="dialog-body">
+        <p class="note warn"><strong>This does not come back.</strong> The user's grants go with them, and a new user of the same name is a different user with none of them. If it is the last owner of the whole node, nothing can let anybody back in — a closed store has no door from outside, and the way back is a restore from backup.</p>
+        <div class="row">
+          <label>Who <input id="remove-name" type="text" readonly /></label>
+          <label>Type the name again <input id="remove-confirm" type="text" placeholder="the name above" /></label>
+        </div>
+        <div class="row">
+          <label class="wide">Why <input id="remove-why" type="text" placeholder="left the team on Friday" /></label>
+        </div>
+        <p id="remove-radius" class="note says"></p>
+        <details class="tucked">
+          <summary>The statement this will send</summary>
+          <pre id="remove-preview" class="answer small"></pre>
+        </details>
+        <div class="row spread">
+          <button id="remove" type="button" disabled class="danger">Remove</button>
+          <span id="remove-status" class="status" role="status"></span>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="grant-dialog" class="dialog" aria-labelledby="grant-dialog-title">
+      <div class="dialog-head">
+        <h2 id="grant-dialog-title">Give or take away</h2>
+        <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+      </div>
+      <div class="dialog-body">
+        <details class="tucked">
+          <summary>Why a grant can narrow</summary>
+          <p class="note">A user with no table grants is governed by their role; a user with one reaches exactly what they were granted. So the first grant narrows, and taking the last one away widens them back to the role — which the node refuses.</p>
+        </details>
+        <div class="row">
+          <label>Who <input id="grant-who" type="text" readonly /></label>
+          <label>
+            Direction 
+            <select id="grant-direction">
+              <option value="give" selected>give</option>
+              <option value="take">take away</option>
+            </select>
+          </label>
+          <label>
+            On 
+            <select id="grant-reach">
+              <option value="table" selected>a table</option>
+              <option value="namespace">a namespace</option>
+              <option value="database">a database</option>
+              <option value="store">the whole store</option>
+            </select>
+          </label>
+          <label id="grant-name-field">Named <input id="grant-name" type="text" placeholder="app.main.orders" /></label>
+          <label>What <input id="grant-what" type="text" placeholder="read, write" /></label>
+        </div>
+        <div class="row">
+          <label class="wide">Why <input id="grant-why" type="text" placeholder="joining the billing rota" /></label>
+        </div>
+        <p id="grant-says" class="note says"></p>
+        <div class="row spread">
+          <button id="grant-apply" type="button" class="primary">Apply</button>
+          <span id="grant-status" class="status" role="status"></span>
+        </div>
+      </div>
+    </dialog>
     <div id="log-sheet" class="sheet log" hidden role="region" aria-label="Statements">
       <div class="pane-head">
         <h2>Statements this session</h2>

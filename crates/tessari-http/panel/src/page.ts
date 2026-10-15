@@ -10,7 +10,8 @@
 //! claim into the product that nobody decided.
 
 import { document, el, type Node } from "./html.js";
-import { access } from "./access.js";
+import { access, accessDialogs } from "./access.js";
+import { gate, identity, mineDialog } from "./account.js";
 import { cluster } from "./cluster.js";
 import { spaces } from "./spaces.js";
 import { series } from "./series.js";
@@ -20,7 +21,7 @@ import { vault } from "./vault-pane.js";
 import { DESTINATIONS, to } from "./destinations.js";
 import {
   answer, behindDisclosure, button, field, note, number, pane, paneHead, panel,
-  row, says, secret, split, status, tabs, text, warning,
+  row, split, status, tabs, text, warning,
 } from "./ui.js";
 
 
@@ -34,49 +35,6 @@ const head = (): Node =>
     el("title", {}, "TessariDB console"),
     el("link", { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" }),
     el("link", { rel: "stylesheet", href: "/console.css" }),
-  );
-
-const identity = (): Node =>
-  el(
-    "details",
-    { class: "identity" },
-    el("summary", {}, el("span", { id: "signed-in" }, "not signed in")),
-    el(
-      "div",
-      { class: "sheet" },
-      note(
-        "Leave both empty against a store that has no users yet. The first ",
-        el("code", {}, "DEFINE USER"),
-        " closes it, and everything after that needs a name.",
-      ),
-      row(
-        "default",
-        field("User", el("input", { id: "user", type: "text", autocomplete: "username" })),
-        field("Password", secret("password", "current-password")),
-      ),
-      note(
-        "The password is checked once. What this page keeps afterwards is a token, " +
-          "held for as long as the tab is open and no longer — so the password is " +
-          "cleared from the field above, and closing the tab ends the session.",
-      ),
-      // Rewritten on load from how this page arrived: a node given a client
-      // certificate serves the console over TLS, and one that was not still
-      // sends the password as it was typed.
-      el(
-        "p",
-        { id: "transport-says", class: "note warn" },
-        "Credentials travel as typed unless this page arrived over https.",
-      ),
-      row(
-        "spread",
-        row(
-          "tight",
-          button("sign-in", "Sign in", "primary"),
-          button("sign-out", "Forget", "quiet"),
-        ),
-        status("identity-status"),
-      ),
-    ),
   );
 
 /**
@@ -337,9 +295,10 @@ export const index = (): string =>
         "body",
         {},
         el("a", { id: "skip", class: "skip", href: "#view" }, "Skip to content"),
+        gate(),
         el(
           "div",
-          { class: "shell" },
+          { class: "shell", id: "shell", hidden: true },
           side(),
           el(
             "div",
@@ -359,6 +318,17 @@ export const index = (): string =>
                 el("code", {}, "--tls-key"),
                 ", or reach it over an SSH tunnel to localhost.",
               ),
+              // An open store has nobody to sign in as, so the console is shown —
+              // and says, before anything else, what that means and how to end it.
+              el(
+                "div",
+                { id: "open-banner", class: "banner", hidden: true },
+                warning(
+                  "This store has no users: anybody who reaches this node may read and " +
+                    "write everything. The first user closes it.",
+                ),
+                button("define-owner", "Define the owner…", "primary"),
+              ),
               pageHead(),
               // In the menu's own order, so the reading order of the page and the
               // order of the controls beside it are one thing rather than two.
@@ -369,6 +339,8 @@ export const index = (): string =>
             tray(),
           ),
         ),
+        mineDialog(),
+        ...accessDialogs(),
         logSheet(),
         keysSheet(),
         detailSheet(),
