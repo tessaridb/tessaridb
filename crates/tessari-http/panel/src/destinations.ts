@@ -24,9 +24,15 @@ import { type Destination } from "./ui.js";
  * its own. An eighth is the same trade again, not a place to put the next screen
  * — S3's whole claim is that navigation stays readable at a glance, and a glance
  * does not scale.
+ *
+ * The eighth, Data, is that trade made on the owner's G071 request (2026-10-16)
+ * for a page of the databases and tables a store holds: looking at what is
+ * there is a job of its own, and it sits beside Run because both work on the
+ * data.
  */
 export const DESTINATIONS: readonly Destination[] = [
   { name: "run", label: "Run" },
+  { name: "data", label: "Data" },
   { name: "topics", label: "Topics" },
   { name: "cluster", label: "Cluster" },
   { name: "access", label: "Access" },

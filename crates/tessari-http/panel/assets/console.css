@@ -1705,7 +1705,8 @@ dialog.dialog::backdrop {
   font-weight: 600;
 }
 
-#user-list table {
+#user-list table,
+#data-list table {
   inline-size: 100%;
 }
 

@@ -234,6 +234,19 @@ export function wire(): void {
 
   at("open-form").addEventListener("click", () => openDialog("form-dialog"));
 
+  // The next hidden row, until there are none left to add.
+  at("add-peer").addEventListener("click", () => {
+    for (let index = 1; index < ROWS; index += 1) {
+      const row = at(`peer-row-${index}`);
+      if (row.hidden) {
+        row.hidden = false;
+        at(`peer-${index}-name`).focus();
+        break;
+      }
+    }
+    at("add-peer").hidden = !at(`peer-row-${ROWS - 1}`).hidden;
+  });
+
   at("form-cluster").addEventListener("click", async () => {
     const rows = intended();
     if (rows.length === 0) {
@@ -260,7 +273,9 @@ export function wire(): void {
           for (const bit of BITS) {
             (at(`peer-${index}-${bit}`) as HTMLInputElement).checked = false;
           }
+          at(`peer-row-${index}`).hidden = index > 0;
         }
+        at("add-peer").hidden = false;
         changed();
         closeDialog("form-dialog");
         // The map is two inches above this button and was drawn before the

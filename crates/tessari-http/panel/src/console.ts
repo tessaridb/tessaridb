@@ -18,6 +18,7 @@
 
 import { at, write } from "./dom.js";
 import * as context from "./context.js";
+import * as dataList from "./data-list.js";
 import * as detail from "./detail.js";
 import * as dialog from "./dialog.js";
 import * as drawer from "./drawer.js";
@@ -93,6 +94,7 @@ backup.wire();
 vault.wire();
 seriesList.wire();
 spacesList.wire();
+dataList.wire();
 
 // Last of all: the gate decides which of the two pages is shown, and showing
 // the console reads the screen in front of the reader — whose modules have to

@@ -40,6 +40,7 @@
         <nav class="tabs">
           <div role="tablist" aria-label="Sections" aria-orientation="vertical">
             <button type="button" role="tab" id="tab-run" data-destination="run" aria-controls="panel-run" aria-selected="true">Run</button>
+            <button type="button" role="tab" id="tab-data" data-destination="data" aria-controls="panel-data" aria-selected="false" tabindex="-1">Data</button>
             <button type="button" role="tab" id="tab-topics" data-destination="topics" aria-controls="panel-topics" aria-selected="false" tabindex="-1">Topics</button>
             <button type="button" role="tab" id="tab-cluster" data-destination="cluster" aria-controls="panel-cluster" aria-selected="false" tabindex="-1">Cluster</button>
             <button type="button" role="tab" id="tab-access" data-destination="access" aria-controls="panel-access" aria-selected="false" tabindex="-1">Access</button>
@@ -173,6 +174,40 @@
               <div id="kv-list" class="answer small" aria-live="polite"></div>
               <div id="kv-value" class="answer small" aria-live="polite"></div>
             </div>
+          </section>
+          <section id="panel-data" role="tabpanel" aria-labelledby="tab-data" tabindex="0" hidden>
+            <div class="pane-head">
+              <h2>What the store holds</h2>
+              <div class="row tight">
+                <span id="data-status" class="status" role="status"></span>
+                <button id="data-refresh" type="button" class="quiet">Refresh</button>
+              </div>
+            </div>
+            <div class="row">
+              <label>
+                Namespace 
+                <select id="data-namespace"></select>
+              </label>
+              <label>
+                Database 
+                <select id="data-database"></select>
+              </label>
+            </div>
+            <div id="data-list" class="answer" aria-live="polite"></div>
+            <dialog id="table-dialog" class="dialog" aria-labelledby="table-dialog-title">
+              <div class="dialog-head">
+                <h2 id="table-dialog-title">Table</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+              </div>
+              <div class="dialog-body">
+                <span id="table-status" class="status" role="status"></span>
+                <div id="table-facts" class="answer small" aria-live="polite"></div>
+                <pre id="table-definition" class="answer small"></pre>
+                <div class="row">
+                  <button id="table-browse" type="button" class="primary">Open on Run</button>
+                </div>
+              </div>
+            </dialog>
           </section>
           <section id="panel-topics" role="tabpanel" aria-labelledby="tab-topics" tabindex="0" hidden>
             <div class="pane-head">
@@ -378,7 +413,7 @@
               </div>
               <div class="dialog-body">
                 <p class="note">Every member at once, this node included, in one transaction: the first declaration clusters this node and costs it the authority to accept a second. A row with neither id nor fingerprint waits for a join token.</p>
-                <div class="row">
+                <div id="peer-row-0" class="row">
                   <label>Name <input id="peer-0-name" type="text" placeholder="warsaw" /></label>
                   <label>Peer address <input id="peer-0-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
                   <label>Client address <input id="peer-0-clients" type="text" placeholder="10.0.0.2:9080" /></label>
@@ -389,7 +424,7 @@
                   <label class="tick">writable <input id="peer-0-writable" type="checkbox" /></label>
                   <label class="tick">coordinating <input id="peer-0-coordinating" type="checkbox" /></label>
                 </div>
-                <div class="row">
+                <div id="peer-row-1" class="row" hidden>
                   <label>Name <input id="peer-1-name" type="text" placeholder="warsaw" /></label>
                   <label>Peer address <input id="peer-1-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
                   <label>Client address <input id="peer-1-clients" type="text" placeholder="10.0.0.2:9080" /></label>
@@ -400,7 +435,7 @@
                   <label class="tick">writable <input id="peer-1-writable" type="checkbox" /></label>
                   <label class="tick">coordinating <input id="peer-1-coordinating" type="checkbox" /></label>
                 </div>
-                <div class="row">
+                <div id="peer-row-2" class="row" hidden>
                   <label>Name <input id="peer-2-name" type="text" placeholder="warsaw" /></label>
                   <label>Peer address <input id="peer-2-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
                   <label>Client address <input id="peer-2-clients" type="text" placeholder="10.0.0.2:9080" /></label>
@@ -411,7 +446,7 @@
                   <label class="tick">writable <input id="peer-2-writable" type="checkbox" /></label>
                   <label class="tick">coordinating <input id="peer-2-coordinating" type="checkbox" /></label>
                 </div>
-                <div class="row">
+                <div id="peer-row-3" class="row" hidden>
                   <label>Name <input id="peer-3-name" type="text" placeholder="warsaw" /></label>
                   <label>Peer address <input id="peer-3-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
                   <label>Client address <input id="peer-3-clients" type="text" placeholder="10.0.0.2:9080" /></label>
@@ -422,7 +457,7 @@
                   <label class="tick">writable <input id="peer-3-writable" type="checkbox" /></label>
                   <label class="tick">coordinating <input id="peer-3-coordinating" type="checkbox" /></label>
                 </div>
-                <div class="row">
+                <div id="peer-row-4" class="row" hidden>
                   <label>Name <input id="peer-4-name" type="text" placeholder="warsaw" /></label>
                   <label>Peer address <input id="peer-4-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
                   <label>Client address <input id="peer-4-clients" type="text" placeholder="10.0.0.2:9080" /></label>
@@ -432,6 +467,9 @@
                   <label class="tick">serving <input id="peer-4-serving" type="checkbox" /></label>
                   <label class="tick">writable <input id="peer-4-writable" type="checkbox" /></label>
                   <label class="tick">coordinating <input id="peer-4-coordinating" type="checkbox" /></label>
+                </div>
+                <div class="row">
+                  <button id="add-peer" type="button" class="quiet">Add a member</button>
                 </div>
                 <p id="form-says" class="note says"></p>
                 <details class="tucked">

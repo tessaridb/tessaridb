@@ -116,9 +116,12 @@ export const cluster = (): Node =>
                     "declaration clusters this node and costs it the authority to accept a " +
                     "second. A row with neither id nor fingerprint waits for a join token.",
             ),
+            // One row to start, this node's; the rest arrive one at a time with
+            // Add a member, so the dialog is as long as the cluster being formed.
             ...Array.from({ length: 5 }, (_, at) =>
-                row(
-                    "default",
+                el(
+                    "div",
+                    { id: `peer-row-${at}`, class: "row", hidden: at > 0 },
                     field(
                         "Name",
                         text(`peer-${at}-name`, { placeholder: "warsaw" }),
@@ -159,6 +162,7 @@ export const cluster = (): Node =>
                     ),
                 ),
             ),
+            row("default", button("add-peer", "Add a member", "quiet")),
             says("form-says"),
             behindDisclosure(
                 "The transaction this will send",

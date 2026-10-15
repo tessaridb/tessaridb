@@ -13,6 +13,7 @@ import { document, el, type Node } from "./html.js";
 import { access, accessDialogs } from "./access.js";
 import { gate, identity, mineDialog } from "./account.js";
 import { cluster } from "./cluster.js";
+import { data } from "./data.js";
 import { spaces } from "./spaces.js";
 import { series } from "./series.js";
 import { topics } from "./topics.js";
@@ -332,7 +333,7 @@ export const index = (): string =>
               pageHead(),
               // In the menu's own order, so the reading order of the page and the
               // order of the controls beside it are one thing rather than two.
-              query(), topics(), cluster(), access(), node(), backup(), vault(),
+              query(), data(), topics(), cluster(), access(), node(), backup(), vault(),
             ),
             // In the column and not under the whole page, so it never covers the
             // sidebar's foot while it stays pinned to the bottom of the screen.
