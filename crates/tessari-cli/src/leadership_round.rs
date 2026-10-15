@@ -135,6 +135,7 @@ pub(crate) async fn stand_for_leadership(
             runtime,
             periods,
             leads_the_store: store.leads(tessari_types::Reach::Store).unwrap_or(false),
+            roles: me.roles,
         };
         let (on_a_line, yielded) = (&mut on_a_line, &mut yielded);
         std::thread::scope(|scope| {
@@ -333,6 +334,9 @@ pub(crate) struct Candidate<'a> {
     /// Whether this node leads the store line, which makes it the candidate
     /// for a range being given back to it (ADR-0098 D3).
     leads_the_store: bool,
+    /// The roles this node adopted, which decide whether it stands for a
+    /// placed range at all (DB-16).
+    roles: tessari_storage::Roles,
 }
 
 /// The placed line this node stands on, with its own cursor.
@@ -358,6 +362,10 @@ pub(crate) fn stand_for_a_placed_range(
     (on_a_line, yielded): (&mut Option<OnALine>, &mut Option<Yielded>),
     now: std::time::Instant,
 ) {
+    if !tessari_wire::stands_for_a_placed_line(candidate.roles) {
+        *on_a_line = None;
+        return;
+    }
     let Some(range) =
         tessari_wire::campaign_line(candidate.declared, &candidate.me, candidate.leads_the_store)
     else {
@@ -407,13 +415,24 @@ pub(crate) fn stand_for_a_placed_range(
         }
     };
     if on_a_line.as_ref().is_none_or(|(held, _)| *held != range) {
+        // Above every leadership the range's logs already hold (DB-15): a
+        // range placed after the store line wrote to it keeps those records,
+        // and a follower reads a line numbered below them as deposed.
+        let written = match db.store().newest_leadership_in(range) {
+            Ok(written) => written,
+            Err(why) => {
+                tracing::warn!(range = ?range, error = %why, "this node cannot say which leadership the range's logs reach");
+                return;
+            }
+        };
         *on_a_line = Some((
             range,
             tessari_wire::Renewing::holding(tessari_wire::Leadership {
                 length: tessari_storage::LEASE_TTL,
                 epoch: tessari_types::Epoch::ZERO,
                 from: now.checked_sub(tessari_storage::LEASE_TTL).unwrap_or(now),
-            }),
+            })
+            .above(written),
         ));
     }
     let Some((_, renewing)) = on_a_line.as_mut() else {

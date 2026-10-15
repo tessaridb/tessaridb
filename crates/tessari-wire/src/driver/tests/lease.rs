@@ -278,3 +278,23 @@ fn a_node_that_never_led_stands_for_a_new_epoch() {
     });
     assert_eq!(*stood_for.borrow(), vec![Epoch::new(1)]);
 }
+
+/// DB-15: a range placed after the store line wrote to it stands above the
+/// newest leadership its log already holds, so a follower whose copy reaches
+/// leadership 3 does not read the range's first leader as deposed.
+#[test]
+fn a_line_whose_log_holds_a_leadership_stands_above_it() {
+    let from = Instant::now();
+    let mut renewing = Renewing::holding(Leadership {
+        length: tessari_storage::LEASE_TTL,
+        epoch: Epoch::ZERO,
+        from,
+    })
+    .above(Epoch::new(3));
+    let stood_for = RefCell::new(Vec::new());
+    renewing.once(NODE, from, |_: Lease, next| {
+        stood_for.borrow_mut().push(next);
+        Stood::NotDue
+    });
+    assert_eq!(*stood_for.borrow(), vec![Epoch::new(4)]);
+}

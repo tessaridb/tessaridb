@@ -13,6 +13,20 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.34.1-beta — 2026-10-15
+
+### Fixed
+
+- **Declaring and writing no longer slow down after many tables were created and dropped.** Finding a table's
+  indexes and fields, and a database's tables, read every definition in the store, including those left by dropped
+  tables; it now reads only the parent's own.
+- **An idle node with many namespaces no longer spends its CPU on housekeeping.** The same lookup ran once per
+  database every second.
+- **A placed range is no longer led by a node that cannot write.** Such a node kept its leadership and every write to
+  the range was refused; it now stands down, and a write refused as not writable names the leader to send it to.
+- **A placed range's leader is no longer refused by its followers.** Its leadership counted from one while the
+  range's log already held writes made under the store's leadership, so followers rejected it as deposed.
+
 ## 0.34.0-beta — 2026-10-14
 
 ### Fixed

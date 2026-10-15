@@ -90,7 +90,16 @@ impl Db {
                 holder: Some(holder),
                 ..
             } => Some(holder.node),
-            Error::NotWritable { .. } => self.writable_peer().ok().flatten()?.node,
+            // The store line's leader first: a cluster that can fail over
+            // declares several writable rows, and "the one writable row" then
+            // names nobody (DB-16). The row stays the answer before any
+            // leadership has been recorded.
+            Error::NotWritable { .. } => self
+                .store
+                .leader_of(Reach::Store)
+                .ok()
+                .flatten()
+                .or_else(|| self.writable_peer().ok().flatten()?.node),
             _ => None,
         }
     }
@@ -110,5 +119,48 @@ impl Db {
     /// given when it arrived.
     pub fn unseal_for(&self, period: core::time::Duration) {
         self.store.vault().last_for(period);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use tessari_storage::{Catalog, Roles};
+
+    const OTHER: [u8; tessari_storage::NODE_ID_LEN] = [7; tessari_storage::NODE_ID_LEN];
+
+    /// A write refused because this node may not take one is sent to the node
+    /// leading the store line — not to "the one writable row", which a cluster
+    /// that can fail over never has (DB-16: two writable rows answered the
+    /// refusal with `ManyWritablePeers` and named nobody to go to).
+    #[test]
+    fn a_refused_write_is_sent_to_the_store_lines_leader() {
+        let db = Db::in_memory().unwrap();
+        let mut transaction = db.store.begin().unwrap();
+        let mut catalog = Catalog::new(&mut transaction);
+        let both = Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING);
+        for (name, node) in [("n1", OTHER), ("n2", [8; tessari_storage::NODE_ID_LEN])] {
+            catalog
+                .create_replica(
+                    name,
+                    "127.0.0.1:1",
+                    both,
+                    Some(node),
+                    Some(Reach::Store),
+                    None,
+                )
+                .unwrap();
+        }
+        catalog
+            .record_leadership(Reach::Store, OTHER, tessari_types::Epoch::new(3))
+            .unwrap();
+        transaction.commit().unwrap();
+
+        let refused = Error::NotWritable {
+            span: tessari_ql::Span::new(0, 1),
+        };
+        assert_eq!(db.answers_instead(&refused), Some(OTHER));
     }
 }

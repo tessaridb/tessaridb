@@ -23,6 +23,7 @@ mod analyzer;
 mod authority;
 mod carried;
 mod change;
+mod children;
 mod consumer;
 // `pub(crate)` for the counter helpers: `crate::cardinality` stores a record
 // count with the same `count`/`count_of` pair the record sequence uses, so the
@@ -181,36 +182,6 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// Returns an error when a stored definition cannot be read.
     pub fn namespaces(&self) -> Result<Vec<NamespaceDefinition>> {
         self.all(system::NAMESPACES, NamespaceDefinition::from_value)
-    }
-
-    /// Every database in one namespace.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a stored definition cannot be read.
-    pub fn databases_in(&self, namespace: NamespaceId) -> Result<Vec<DatabaseDefinition>> {
-        Ok(self
-            .all(system::DATABASES, DatabaseDefinition::from_value)?
-            .into_iter()
-            .filter(|found| found.namespace == namespace)
-            .collect())
-    }
-
-    /// Every table in one database.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a stored definition cannot be read.
-    pub fn tables_in(
-        &self,
-        namespace: NamespaceId,
-        database: DatabaseId,
-    ) -> Result<Vec<TableDefinition>> {
-        Ok(self
-            .all(system::TABLES, TableDefinition::from_value)?
-            .into_iter()
-            .filter(|found| found.namespace == namespace && found.database == database)
-            .collect())
     }
 
     /// Every definition in one system table, decoded.

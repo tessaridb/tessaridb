@@ -41,6 +41,14 @@ impl Renewing {
         }
     }
 
+    /// Stand above `written`, a leadership this line's log already holds
+    /// records under — a range placed after the store line wrote to it (DB-15).
+    #[must_use]
+    pub fn above(mut self, written: Epoch) -> Self {
+        self.heard = self.heard.max(written);
+        self
+    }
+
     /// The leadership this node is currently standing on.
     #[must_use]
     pub fn standing(&self) -> Leadership {

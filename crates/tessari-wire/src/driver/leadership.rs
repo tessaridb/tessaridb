@@ -187,6 +187,19 @@ pub fn stands(mine: Roles) -> bool {
     mine.has(Roles::COORDINATING)
 }
 
+/// Whether this node stands for a PLACED range's line (ADR-0082).
+///
+/// [`stands`], and one more word. A placed range has no store line behind it: its
+/// leader is the only node that may write it, so a leader that may not take
+/// writes leaves the range led and unwritable for as long as it keeps renewing —
+/// every write refused on it and redirected back to it. Standing only while
+/// [`Roles::WRITABLE`] is held lets the lease run out and another placed
+/// candidate take the range. The store line keeps ADR-0063's rule unchanged.
+#[must_use]
+pub fn stands_for_a_placed_line(mine: Roles) -> bool {
+    stands(mine) && mine.has(Roles::WRITABLE)
+}
+
 /// ADR-0066's rule on one placed range's line (ADR-0082): whether this node can
 /// still hear a leader of `range`, and so must not stand for it.
 ///

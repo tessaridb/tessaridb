@@ -186,17 +186,10 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             .transpose()
     }
 
-    /// Every index on one table.
-    ///
-    /// This is what a write path consults, so it reads the whole index catalog
-    /// and filters. That is honest at catalog scale and would not be at table
-    /// scale; when the write path is called hot, the answer is a cache keyed by
-    /// the catalog's own version, not a cleverer scan.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a stored definition cannot be read.
-    pub fn indexes_on(&self, table: TableId) -> Result<Vec<IndexDefinition>> {
+    /// Every index on one table, read from the whole index catalog — what
+    /// [`Self::indexes_on`] falls back to for a table that has no definition,
+    /// whose children no name of its own reaches any more.
+    pub(super) fn every_index_on(&self, table: TableId) -> Result<Vec<IndexDefinition>> {
         let mut found = Vec::new();
         for (_, bytes) in self.transaction.scan_table(
             system::SYSTEM_NAMESPACE,

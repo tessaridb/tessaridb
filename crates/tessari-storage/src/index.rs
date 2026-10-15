@@ -286,6 +286,16 @@ pub(crate) fn maintain_from(
         let at = (mutation.namespace, mutation.database, mutation.table);
         let definitions = match by_table.get(&at) {
             Some(found) => found.clone(),
+            // The catalog's own tables carry no declared index: an index needs a table
+            // definition to be declared on, and they have none. Asking would read
+            // every index definition the store holds, once per catalog table a
+            // definition writes (DB-18).
+            None if mutation.namespace == crate::catalog::system::SYSTEM_NAMESPACE
+                && mutation.database == crate::catalog::system::SYSTEM_DATABASE =>
+            {
+                by_table.insert(at, Vec::new());
+                Vec::new()
+            }
             None => {
                 let found: Vec<IndexDefinition> = Catalog::new(&mut view)
                     .indexes_on(mutation.table)?
