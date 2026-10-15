@@ -302,22 +302,6 @@ impl Catalog<'_, '_> {
             .transpose()
     }
 
-    /// Every field declared on one table.
-    ///
-    /// Reads the whole field catalog and filters, for the same reason
-    /// [`Self::indexes_on`] does: honest at catalog scale, and the answer when
-    /// it stops being honest is a cache keyed by the catalog's version rather
-    /// than a cleverer scan.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a stored definition cannot be read.
-    pub fn fields_on(&self, table: TableId) -> Result<Vec<FieldDefinition>> {
-        let mut found = self.fields()?;
-        found.retain(|definition| definition.table == table);
-        Ok(found)
-    }
-
     /// Every field declared anywhere in the store.
     ///
     /// The unfiltered form of [`Self::fields_on`], which is what a question

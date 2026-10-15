@@ -1060,3 +1060,163 @@ fn a_commit_rewriting_a_record_reads_the_same_after_ten_rewrites_as_after_a_thou
          history"
     );
 }
+
+// ------------------------------------------------------------------- DB-18
+
+/// Declares `tables` tables in another namespace, each with an index and a
+/// field, drops half of them, and answers how many index definitions the
+/// catalog now holds in all — the control: what a whole-catalog read would see.
+fn declare_elsewhere(store: &Store, tables: usize) -> usize {
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("elsewhere").unwrap();
+    let database = catalog.create_database(namespace.id, "d").unwrap();
+    let mut declared = Vec::new();
+    for nth in 0..tables {
+        let table = catalog
+            .create_table(
+                namespace.id,
+                database.id,
+                &format!("t{nth}"),
+                TableShape::default(),
+            )
+            .unwrap();
+        catalog
+            .create_index(
+                table.id,
+                "by_a",
+                vec![Path::field("a")],
+                IndexShape::default(),
+            )
+            .unwrap();
+        catalog
+            .create_field(table.id, "a", FieldKind::Any, FieldShape::default())
+            .unwrap();
+        declared.push(table.id);
+    }
+    transaction.commit().unwrap();
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    for table in declared.iter().step_by(2) {
+        catalog.drop_table(*table).unwrap();
+    }
+    transaction.commit().unwrap();
+    let mut transaction = store.begin().unwrap();
+    let catalog = Catalog::new(&mut transaction);
+    declared
+        .iter()
+        .map(|table| catalog.indexes_on(*table).unwrap().len())
+        .sum()
+}
+
+/// Writing a record reads the definitions of ITS table, not every definition
+/// the store ever held.
+///
+/// The number that fails this is the catalog's size: a commit that found its
+/// table's indexes and fields by reading every index and field definition in
+/// the store — live in other namespaces, left behind by dropped tables, and the
+/// deleted versions still retained — paid for namespaces it never touched.
+#[test]
+fn a_record_write_reads_no_more_after_other_tables_were_declared_and_dropped() {
+    let measure = |tables: usize| {
+        let fixture = Fixture::new();
+        let held = declare_elsewhere(&fixture.store, tables);
+        fixture.counting.reset();
+        fixture.write(1);
+        (held, fixture.counting.entries())
+    };
+
+    let (held_few, few) = measure(2);
+    let (held_many, many) = measure(200);
+
+    assert!(
+        held_many >= 200 && held_many > held_few,
+        "the control: the catalog was meant to hold the declared definitions \
+         ({held_few} then {held_many})"
+    );
+    assert_eq!(
+        few, many,
+        "one record write read {many} entries beside 200 tables declared \
+         elsewhere and {few} beside 2 — the commit is reading the whole catalog"
+    );
+}
+
+/// Declaring a table and an index reads no more of the catalog after other
+/// tables were declared and dropped — the shape DB-18 was measured in.
+///
+/// A definition's commit writes the catalog's own tables, which have no
+/// definition of their own; a lookup that fell back to reading every index
+/// definition for them paid the whole catalog once per system table written.
+#[test]
+fn a_definition_reads_no_more_after_other_tables_were_declared_and_dropped() {
+    let measure = |tables: usize| {
+        let fixture = Fixture::new();
+        let held = declare_elsewhere(&fixture.store, tables);
+        fixture.counting.reset();
+        let mut transaction = fixture.store.begin().unwrap();
+        let mut catalog = Catalog::new(&mut transaction);
+        let table = catalog
+            .create_table(
+                fixture.namespace,
+                fixture.database,
+                "orders",
+                TableShape::default(),
+            )
+            .unwrap();
+        catalog
+            .create_index(
+                table.id,
+                "by_a",
+                vec![Path::field("a")],
+                IndexShape::default(),
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+        (held, fixture.counting.entries())
+    };
+
+    let (held_few, few) = measure(2);
+    let (held_many, many) = measure(200);
+
+    assert!(
+        held_many >= 200 && held_many > held_few,
+        "the control ({held_few}, {held_many})"
+    );
+    assert_eq!(
+        few, many,
+        "declaring one table and index read {many} entries beside 200 tables declared \
+         elsewhere and {few} beside 2 — the definition is reading the whole catalog"
+    );
+}
+
+/// Listing one database's tables reads that database's definitions, not every
+/// table the store holds — housekeeping asks this once per database it visits,
+/// so a whole-catalog read made one pass cost the square of the namespaces
+/// (DB-11).
+#[test]
+fn listing_a_databases_tables_reads_no_more_beside_other_databases() {
+    let measure = |tables: usize| {
+        let fixture = Fixture::new();
+        let held = declare_elsewhere(&fixture.store, tables);
+        fixture.counting.reset();
+        let mut transaction = fixture.store.begin().unwrap();
+        let listed = Catalog::new(&mut transaction)
+            .tables_in(fixture.namespace, fixture.database)
+            .unwrap();
+        assert_eq!(listed.len(), 1, "the fixture's one table");
+        (held, fixture.counting.entries())
+    };
+
+    let (held_few, few) = measure(2);
+    let (held_many, many) = measure(200);
+
+    assert!(
+        held_many >= 200 && held_many > held_few,
+        "the control ({held_few}, {held_many})"
+    );
+    assert_eq!(
+        few, many,
+        "listing one database's tables read {many} entries beside 200 tables elsewhere \
+         and {few} beside 2"
+    );
+}
