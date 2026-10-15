@@ -135,4 +135,35 @@ mod tests {
         let judged = refused(db.store(), vec![stating(own, Some(6))]);
         assert!(judged[0].is_ok(), "{judged:?}");
     }
+
+    #[test]
+    fn a_range_placed_after_its_records_were_written_reaches_the_store_lines_leadership() {
+        // DB-15: records written by the store line's leader under leadership 3
+        // stay in the range's own log, so the line that takes the range over
+        // has to stand above 3 or every follower reads its answers as deposed.
+        let db = Db::in_memory().expect("an in-memory store");
+        db.store().hold(Epoch::new(3), Lease::taken(LEASE_TTL));
+        db.session()
+            .run("DEFINE NAMESPACE s3; USE NAMESPACE s3; DEFINE DATABASE us; USE DATABASE us; DEFINE TABLE o SCHEMALESS; CREATE o:1 = { a: 1 };")
+            .expect("the writes commit");
+        let us = tessari_types::Reach::Database(
+            tessari_types::NamespaceId::new(1),
+            tessari_types::DatabaseId::new(1),
+        );
+        assert_eq!(
+            db.store()
+                .newest_leadership_in(us)
+                .expect("the range's logs"),
+            Epoch::new(3)
+        );
+        let elsewhere = tessari_types::Reach::Database(
+            tessari_types::NamespaceId::new(9),
+            tessari_types::DatabaseId::new(9),
+        );
+        assert_eq!(
+            db.store().newest_leadership_in(elsewhere).expect("no logs"),
+            Epoch::ZERO,
+            "the control: a home nobody wrote holds no leadership"
+        );
+    }
 }

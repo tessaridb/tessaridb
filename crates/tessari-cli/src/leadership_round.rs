@@ -415,13 +415,24 @@ pub(crate) fn stand_for_a_placed_range(
         }
     };
     if on_a_line.as_ref().is_none_or(|(held, _)| *held != range) {
+        // Above every leadership the range's logs already hold (DB-15): a
+        // range placed after the store line wrote to it keeps those records,
+        // and a follower reads a line numbered below them as deposed.
+        let written = match db.store().newest_leadership_in(range) {
+            Ok(written) => written,
+            Err(why) => {
+                tracing::warn!(range = ?range, error = %why, "this node cannot say which leadership the range's logs reach");
+                return;
+            }
+        };
         *on_a_line = Some((
             range,
             tessari_wire::Renewing::holding(tessari_wire::Leadership {
                 length: tessari_storage::LEASE_TTL,
                 epoch: tessari_types::Epoch::ZERO,
                 from: now.checked_sub(tessari_storage::LEASE_TTL).unwrap_or(now),
-            }),
+            })
+            .above(written),
         ));
     }
     let Some((_, renewing)) = on_a_line.as_mut() else {

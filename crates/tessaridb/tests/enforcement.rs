@@ -1068,7 +1068,15 @@ const TABLES: &[Table] = &[
         // through `Session::holds_for`, on the record redacted for the
         // subscriber — and never sent. Re-classification trigger: a caller that
         // returns what it read.
-        expected: 78,
+        //
+        // 79 since a placed range stands above its logs' leaderships (DB-15):
+        // `Store::newest_leadership_in`. **Exempt, on `tail_leadership`'s
+        // ground**: it is that read taken over the logs of one home, reads no
+        // record, catalog entry or grant, and answers a number every greeting
+        // already carries. Its one caller is the binary's leadership round.
+        // Re-classification trigger: `tail_leadership`'s, and any caller
+        // reachable from a session or a route.
+        expected: 79,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1316,7 +1324,8 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 165 since a snapshot streams (ADR-0125): the `Part` frame, not an entry
     // point, classified above.
-    assert_eq!(total, 165, "the counted tables no longer sum to 165");
+    // 166 since `Store::newest_leadership_in` (DB-15), classified above.
+    assert_eq!(total, 166, "the counted tables no longer sum to 166");
 }
 
 /// Every `.rs` file under a directory.

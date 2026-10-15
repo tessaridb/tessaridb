@@ -224,6 +224,26 @@ impl Store {
         }
     }
 
+    /// The newest leadership any log of `home` holds a record under — what a
+    /// line taking `home` over must stand above (DB-15).
+    ///
+    /// A range placed after records were written keeps them in its own logs,
+    /// stamped with the store line's leaderships. A follower judges every answer
+    /// against its copy's tail, so a range line that numbered its leaderships
+    /// from one again would be read as a superseded server for as long as its
+    /// epoch stayed below the store's.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::tail_leadership`].
+    pub fn newest_leadership_in(&self, home: Reach) -> Result<Epoch> {
+        let mut newest = Epoch::ZERO;
+        for log in self.logs_of(home)? {
+            newest = newest.max(self.tail_leadership(log)?);
+        }
+        Ok(newest)
+    }
+
     /// The leadership under which the newest record this node holds was written.
     ///
     /// Raft's `lastLogTerm`, and it is a different fact from [`Self::leading`].
