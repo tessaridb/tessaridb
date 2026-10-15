@@ -177,7 +177,7 @@ impl Gather for FromTheLeader {
         if let Some(counting) = asked.counting {
             let mut transaction = self.leader.begin().unwrap();
             let index = tessari_storage::Catalog::new(&mut transaction)
-                .indexes_on(asked.table)
+                .indexes_on(asked.namespace, asked.database, asked.table)
                 .unwrap()
                 .into_iter()
                 .find(|index| index.id == counting.index)

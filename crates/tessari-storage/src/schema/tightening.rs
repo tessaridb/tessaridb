@@ -59,22 +59,27 @@ pub(crate) fn declared_schema(view: &mut Transaction<'_>, table: TableId) -> Res
     let vault = defined.as_ref().is_some_and(|found| found.is_vault());
     let queue = defined.as_ref().is_some_and(|found| found.is_queue());
     let partition = defined.as_ref().and_then(|found| found.partition.clone());
+    let tenancy = defined
+        .as_ref()
+        .map(|found| (found.namespace, found.database));
     let schemafull = defined.is_some_and(|found| found.schemafull);
-    let fields: BTreeMap<String, Declared> = Catalog::new(view)
-        .fields_on(table)?
-        .into_iter()
-        .map(|declared| {
-            (
-                declared.name,
-                Declared {
-                    kind: declared.kind,
-                    required: declared.required,
-                    secret: declared.secret,
-                    assert: declared.assert.clone(),
-                },
-            )
-        })
-        .collect();
+    let fields: BTreeMap<String, Declared> = match tenancy {
+        Some((namespace, database)) => Catalog::new(view).fields_on(namespace, database, table)?,
+        None => Vec::new(),
+    }
+    .into_iter()
+    .map(|declared| {
+        (
+            declared.name,
+            Declared {
+                kind: declared.kind,
+                required: declared.required,
+                secret: declared.secret,
+                assert: declared.assert.clone(),
+            },
+        )
+    })
+    .collect();
     Ok(TableSchema {
         name,
         fields,

@@ -249,7 +249,7 @@ fn held(store: &Store) -> (u64, u64) {
         .unwrap()
         .expect("the table");
     let index = Catalog::new(&mut transaction)
-        .indexes_on(table)
+        .indexes_on(NamespaceId::new(1), DatabaseId::new(1), table)
         .unwrap()
         .into_iter()
         .find(|index| index.name == "by_body")

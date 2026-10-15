@@ -1105,7 +1105,12 @@ fn declare_elsewhere(store: &Store, tables: usize) -> usize {
     let catalog = Catalog::new(&mut transaction);
     declared
         .iter()
-        .map(|table| catalog.indexes_on(*table).unwrap().len())
+        .map(|table| {
+            catalog
+                .indexes_on(namespace.id, database.id, *table)
+                .unwrap()
+                .len()
+        })
         .sum()
 }
 
@@ -1175,7 +1180,11 @@ fn a_definition_reads_no_more_after_other_tables_were_declared_and_dropped() {
         (held, fixture.counting.entries())
     };
 
-    let (held_few, few) = measure(2);
+    // Forty and not two: ids are handed out store-wide and the catalog's own
+    // tables carry the first twenty-nine, so with two tables declared the new
+    // one shares a number with a catalog table and a lookup keyed by the table
+    // alone answered both from one read — cheaper by a collision, not a design.
+    let (held_few, few) = measure(40);
     let (held_many, many) = measure(200);
 
     assert!(
@@ -1185,7 +1194,74 @@ fn a_definition_reads_no_more_after_other_tables_were_declared_and_dropped() {
     assert_eq!(
         few, many,
         "declaring one table and index read {many} entries beside 200 tables declared \
-         elsewhere and {few} beside 2 — the definition is reading the whole catalog"
+         elsewhere and {few} beside 40 — the definition is reading the whole catalog"
+    );
+}
+
+/// The same, on a store that has seen a record expire — which is every store
+/// that ever wrote one with `EXPIRE`, the object store's included.
+///
+/// From then on a commit looks for expired holders of the unique values it
+/// claims, once per record it writes; the catalog's own tables are records, and
+/// looking theirs up by a table id alone found no definition and read every
+/// index definition the store holds (DB-18, measured after an object-store run).
+#[test]
+fn a_definition_reads_no_more_beside_dropped_tables_once_a_record_has_expired() {
+    let measure = |tables: usize| {
+        let fixture = Fixture::new();
+        let held = declare_elsewhere(&fixture.store, tables);
+        let mut transaction = fixture.store.begin().unwrap();
+        let at = RecordAddress::new(
+            fixture.namespace,
+            fixture.database,
+            fixture.table,
+            RecordId::from("expiring"),
+        );
+        let instant = transaction.clock().saturating_add(3_600_000);
+        transaction.put(
+            at.clone(),
+            encode_payload(&Value::Object(BTreeMap::new())).into_bytes(),
+        );
+        transaction.expire_pending(&at, instant);
+        transaction.commit().unwrap();
+        fixture.counting.reset();
+        let mut transaction = fixture.store.begin().unwrap();
+        let mut catalog = Catalog::new(&mut transaction);
+        let table = catalog
+            .create_table(
+                fixture.namespace,
+                fixture.database,
+                "orders",
+                TableShape::default(),
+            )
+            .unwrap();
+        catalog
+            .create_index(
+                table.id,
+                "by_a",
+                vec![Path::field("a")],
+                IndexShape::default(),
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+        (held, fixture.counting.entries())
+    };
+
+    // Forty and not two: ids are handed out store-wide and the catalog's own
+    // tables carry the first twenty-nine, so with two tables declared the new
+    // one shares a number with a catalog table and a lookup keyed by the table
+    // alone answered both from one read — cheaper by a collision, not a design.
+    let (held_few, few) = measure(40);
+    let (held_many, many) = measure(200);
+
+    assert!(
+        held_many >= 200 && held_many > held_few,
+        "the control ({held_few}, {held_many})"
+    );
+    assert_eq!(
+        few, many,
+        "declaring one table and index after an expiry read {many} entries beside 200 tables \
+         declared elsewhere and {few} beside 40 — the commit is reading the whole catalog"
     );
 }
 

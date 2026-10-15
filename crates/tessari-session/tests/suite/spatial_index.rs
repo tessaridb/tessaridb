@@ -59,7 +59,7 @@ fn a_spatial_index_is_defined_and_reads_back_as_one() {
         .table_id(namespace, database, "places")
         .unwrap()
         .unwrap();
-    let defined = catalog.indexes_on(table).unwrap();
+    let defined = catalog.indexes_on(namespace, database, table).unwrap();
     let held = defined
         .iter()
         .find(|index| index.name == "by_where")
@@ -99,7 +99,7 @@ fn the_index_is_built_over_rows_that_are_already_there() {
         .unwrap()
         .unwrap();
     let index = catalog
-        .indexes_on(table)
+        .indexes_on(namespace, database, table)
         .unwrap()
         .into_iter()
         .find(|index| index.name == "by_where")
@@ -226,7 +226,7 @@ fn index_address(store: &Store) -> IndexAddress {
         .unwrap()
         .unwrap();
     let index = catalog
-        .indexes_on(table)
+        .indexes_on(namespace, database, table)
         .unwrap()
         .into_iter()
         .find(|index| index.name == "by_where")

@@ -79,7 +79,11 @@ fn planned(session: &Session<'_>, store: &Store, written: &str) -> (String, Rows
         .expect("a lookup")
         .expect("the table");
     let declared = Catalog::new(&mut transaction)
-        .indexes_on(table)
+        .indexes_on(
+            tessari_types::NamespaceId::new(1),
+            tessari_types::DatabaseId::new(1),
+            table,
+        )
         .expect("the indexes");
     let searched = session
         .searched_for(&mut transaction, table, &[&condition])

@@ -186,9 +186,8 @@ impl Transaction<'_> {
         let mut catalog = Catalog::new(self);
         let records = catalog.record_count(table)?.unwrap_or(0);
         let indexes: Vec<IndexDefinition> = catalog
-            .indexes_on(table)?
+            .indexes_on(namespace, database, table)?
             .into_iter()
-            .filter(|index| index.namespace == namespace && index.database == database)
             .filter(kept)
             .collect();
         let mut taken = Vec::with_capacity(indexes.len());
@@ -249,12 +248,8 @@ impl Store {
                         if records < PLANNER_SCAN_FLOOR_RECORDS {
                             continue;
                         }
-                        for index in catalog.indexes_on(table.id)? {
-                            if index.namespace != namespace.id
-                                || index.database != database.id
-                                || !kept(&index)
-                                || transaction.fresh_statistics(&index)?.is_some()
-                            {
+                        for index in catalog.indexes_on(namespace.id, database.id, table.id)? {
+                            if !kept(&index) || transaction.fresh_statistics(&index)?.is_some() {
                                 continue;
                             }
                             stale.push((index, records));

@@ -970,7 +970,11 @@ fn the_suffixes_are_exactly_those_of_the_dictionary() {
         .unwrap()
         .unwrap();
     let index = catalog
-        .indexes_on(table)
+        .indexes_on(
+            tessari_types::NamespaceId::new(1),
+            tessari_types::DatabaseId::new(1),
+            table,
+        )
         .unwrap()
         .into_iter()
         .find(|index| index.name == "by_body")

@@ -67,13 +67,9 @@ pub(crate) fn release_expired_holders(
             continue;
         };
         let unique: Vec<_> = Catalog::new(&mut view)
-            .indexes_on(mutation.table)?
+            .indexes_on(mutation.namespace, mutation.database, mutation.table)?
             .into_iter()
-            .filter(|definition| {
-                definition.unique
-                    && definition.namespace == mutation.namespace
-                    && definition.database == mutation.database
-            })
+            .filter(|definition| definition.unique)
             .collect();
         if unique.is_empty() {
             continue;

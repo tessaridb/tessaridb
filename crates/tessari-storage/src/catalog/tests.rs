@@ -120,18 +120,18 @@ fn a_tables_definitions_found_by_its_names_are_the_whole_catalogs_answer() {
                         )
                         .unwrap();
                 }
-                tables.push(table.id);
+                tables.push((namespace.id, database.id, table.id));
             }
         }
     }
     transaction.commit().unwrap();
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    for table in &tables {
+    for &(namespace, database, table) in &tables {
         match roll(4) {
-            0 => drop(catalog.drop_table(*table).unwrap()),
+            0 => drop(catalog.drop_table(table).unwrap()),
             1 => {
-                for index in catalog.indexes_on(*table).unwrap() {
+                for index in catalog.indexes_on(namespace, database, table).unwrap() {
                     catalog.drop_index(index.id).unwrap();
                 }
             }
@@ -144,21 +144,21 @@ fn a_tables_definitions_found_by_its_names_are_the_whole_catalogs_answer() {
     let catalog = Catalog::new(&mut transaction);
     let fields = catalog.fields().unwrap();
     let (mut dropped_with_children, mut live_with_indexes) = (0, Vec::new());
-    for table in &tables {
+    for &(namespace, database, table) in &tables {
         let mut whole = fields.clone();
-        whole.retain(|field| field.table == *table);
-        let indexes = catalog.indexes_on(*table).unwrap();
+        whole.retain(|field| field.table == table);
+        let indexes = catalog.indexes_on(namespace, database, table).unwrap();
         assert_eq!(
             indexes,
-            catalog.every_index_on(*table).unwrap(),
+            catalog.every_index_on(table).unwrap(),
             "indexes of {table:?}"
         );
         assert_eq!(
-            catalog.fields_on(*table).unwrap(),
+            catalog.fields_on(namespace, database, table).unwrap(),
             whole,
             "fields of {table:?}"
         );
-        let present = catalog.table(*table).unwrap().is_some();
+        let present = catalog.table(table).unwrap().is_some();
         if !present && !(indexes.is_empty() && whole.is_empty()) {
             dropped_with_children += 1;
         }

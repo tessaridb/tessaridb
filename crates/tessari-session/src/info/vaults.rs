@@ -93,7 +93,7 @@ impl Session<'_> {
             return Err(missing());
         }
         let fields = Catalog::new(transaction)
-            .fields_on(id)?
+            .declared_fields(id)?
             .into_iter()
             .map(|field| {
                 (

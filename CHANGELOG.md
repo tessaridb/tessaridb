@@ -13,6 +13,14 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.34.2-beta — 2026-10-16
+
+### Fixed
+
+- **Declaring and writing no longer slow down on a store that has seen a record expire and had tables dropped.**
+  Each commit looked up the indexes of the catalog records it wrote by a table number alone, found no table, and
+  read every index definition in the store.
+
 ## 0.34.1-beta — 2026-10-15
 
 ### Fixed

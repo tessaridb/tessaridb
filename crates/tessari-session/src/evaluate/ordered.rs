@@ -283,7 +283,7 @@ impl Session<'_> {
             return Ok(false);
         }
         Ok(Catalog::new(transaction)
-            .fields_on(table)?
+            .declared_fields(table)?
             .iter()
             .any(|field| field.name == path.root() && field.required))
     }

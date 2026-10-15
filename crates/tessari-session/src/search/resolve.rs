@@ -159,7 +159,7 @@ impl Session<'_> {
             return Ok(Searched::default());
         }
 
-        let declared = Catalog::new(transaction).fields_on(table)?;
+        let declared = Catalog::new(transaction).declared_fields(table)?;
         let mut named = BTreeMap::new();
         for field in declared {
             let Some(analyzer) = field.analyzer else {

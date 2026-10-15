@@ -670,7 +670,7 @@ fn defining_a_unique_index_over_rows_that_already_violate_it_is_refused() {
     let mut transaction = refused.store.begin().unwrap();
     assert!(
         Catalog::new(&mut transaction)
-            .indexes_on(refused.table)
+            .indexes_on(refused.namespace, refused.database, refused.table)
             .unwrap()
             .is_empty(),
         "and the definition itself does not land either"

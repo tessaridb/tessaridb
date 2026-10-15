@@ -38,7 +38,7 @@ impl Transaction<'_> {
         records: &[(RecordId, Vec<u8>)],
         terms: &[String],
     ) -> Result<SearchCounts> {
-        let analyzers = analyzers_on(self, index.table)?;
+        let analyzers = analyzers_on(self, index.namespace, index.database, index.table)?;
         let analyzer = search_analyzer(index, &analyzers);
         let asked: Vec<IndexValues> = terms
             .iter()

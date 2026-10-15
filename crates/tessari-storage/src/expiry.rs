@@ -100,10 +100,9 @@ impl Store {
         if first.is_empty() {
             return Ok(Expired::default());
         }
-        let indexed = if Catalog::new(&mut view)
-            .indexes_on(table)?
-            .iter()
-            .any(|index| index.namespace == namespace && index.database == database)
+        let indexed = if !Catalog::new(&mut view)
+            .indexes_on(namespace, database, table)?
+            .is_empty()
         {
             self.unindex_below(namespace, database, table, start, &end)?
         } else {
