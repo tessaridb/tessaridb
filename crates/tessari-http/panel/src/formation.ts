@@ -43,6 +43,7 @@
 
 
 import { valueOf } from "./api.js";
+import { closeDialog, openDialog } from "./dialog.js";
 import { at, clear, made, say, setValue, trimmed } from "./dom.js";
 import { told } from "./session.js";
 import { hereAgain } from "./tabs.js";
@@ -231,6 +232,8 @@ export function wire(): void {
     }
   }
 
+  at("open-form").addEventListener("click", () => openDialog("form-dialog"));
+
   at("form-cluster").addEventListener("click", async () => {
     const rows = intended();
     if (rows.length === 0) {
@@ -259,6 +262,7 @@ export function wire(): void {
           }
         }
         changed();
+        closeDialog("form-dialog");
         // The map is two inches above this button and was drawn before the
         // membership that now exists. W319 fixed exactly this for the drawer
         // and did not reach the form; W320 declared a peer here, read

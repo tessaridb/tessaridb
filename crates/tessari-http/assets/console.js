@@ -84,13 +84,20 @@
     return chosen2 === void 0 ? "" : chosen2.id.replace("tab-", "");
   }
   var arrivals = [];
+  var held = true;
+  function hold(holding) {
+    held = holding;
+  }
   function onArrival(names, todo) {
     arrivals.push({ names, todo });
-    if (names.includes(here())) {
+    if (!held && names.includes(here())) {
       todo();
     }
   }
   function hereAgain() {
+    if (held) {
+      return;
+    }
     for (const arrival of arrivals) {
       if (arrival.names.includes(here())) {
         arrival.todo();
@@ -119,6 +126,9 @@
       window.location.hash = wanted2;
     }
     requestAnimationFrame(() => window.scrollTo(0, 0));
+    if (held) {
+      return;
+    }
     for (const arrival of arrivals) {
       if (arrival.names.includes(wanted2)) {
         arrival.todo();
@@ -280,8 +290,8 @@
   //! is ONE bundle: two bundles would each inline a copy of this module, so there
   //! would be two tokens, and signing in on one section would silently not sign
   //! in the other.
-  var held = null;
-  var token = () => held;
+  var held2 = null;
+  var token = () => held2;
   var listeners = [];
   function onIdentityChange(listener) {
     listeners.push(listener);
@@ -304,21 +314,21 @@
     return btoa(String.fromCharCode(...bytes));
   }
   function credential() {
-    if (held !== null) {
-      return "Bearer " + held;
+    if (held2 !== null) {
+      return "Bearer " + held2;
     }
     return typed();
   }
   function signedIn() {
     const user = value("user");
-    if (held !== null && user !== "") {
+    if (held2 !== null && user !== "") {
       write("signed-in", user);
       return;
     }
     write("signed-in", user === "" ? "not signed in" : user + " — not yet");
   }
   function ended() {
-    held = null;
+    held2 = null;
     signedIn();
     say("identity-status", "this session ended — sign in again", true);
     hereAgain();
@@ -328,9 +338,9 @@
     try {
       const body = JSON.parse(text);
       if (typeof body === "object" && body !== null && "error" in body) {
-        const held5 = body.error;
-        if (typeof held5 === "string") {
-          return held5;
+        const held6 = body.error;
+        if (typeof held6 === "string") {
+          return held6;
         }
       }
       return text;
@@ -384,7 +394,7 @@
           say("identity-status", reason(text), true);
           return;
         }
-        held = JSON.parse(text).token;
+        held2 = JSON.parse(text).token;
         setValue("password", "");
         say("identity-status", "");
         signedIn();
@@ -410,17 +420,17 @@
     signedIn();
   }
   async function signOut(words5) {
-    if (held !== null) {
+    if (held2 !== null) {
       try {
         await fetch("/session", {
           method: "DELETE",
-          headers: { Authorization: "Bearer " + held },
+          headers: { Authorization: "Bearer " + held2 },
           credentials: "omit"
         });
       } catch {
       }
     }
-    held = null;
+    held2 = null;
     setValue("user", "");
     setValue("password", "");
     say("identity-status", words5);
@@ -529,7 +539,7 @@
     const answered2 = body.results[body.results.length - 1];
     return answered2 === void 0 ? null : answered2;
   }
-  function held2(answered2) {
+  function held3(answered2) {
     if (answered2 === null || answered2.kind !== "value" || typeof answered2.value !== "object" || answered2.value === null) {
       return null;
     }
@@ -635,11 +645,11 @@
       return "the values are an object of names to TessariQL literals";
     }
     const values = {};
-    for (const [name, held5] of Object.entries(read)) {
-      if (typeof held5 !== "string") {
+    for (const [name, held6] of Object.entries(read)) {
+      if (typeof held6 !== "string") {
         return `each value is a TessariQL literal written as a string, such as "'a'" or "3"`;
       }
-      values[name] = held5;
+      values[name] = held6;
     }
     return values;
   }
@@ -783,7 +793,7 @@
     const control2 = at(id);
     return !(control2 instanceof HTMLInputElement && control2.type === "password");
   }
-  function held3() {
+  function held4() {
     try {
       const found = window.sessionStorage.getItem(KEY);
       return found === null ? {} : JSON.parse(found);
@@ -811,7 +821,7 @@
     }
   }
   function restore() {
-    const kept2 = held3();
+    const kept2 = held4();
     for (const id of REMEMBERED) {
       const value2 = kept2[id];
       if (value2 === void 0 || !mayKeep(id)) {
@@ -889,11 +899,11 @@
     });
     return table;
   }
-  function facts(where3, held5) {
+  function facts(where3, held6) {
     clear(where3);
     const table = made("table");
     const body = table.createTBody();
-    for (const [name, value2] of Object.entries(held5)) {
+    for (const [name, value2] of Object.entries(held6)) {
       const row = body.insertRow();
       const label = made("th");
       label.textContent = name;
@@ -1363,12 +1373,12 @@
     }
     shapeJoin();
   }
-  function drawFailover(held5) {
+  function drawFailover(held6) {
     write(
       "failover-held",
-      held5 === null || held5 === void 0 ? "Nobody has set a policy: every node runs the built-in periods shown as placeholders." : "Set: " + PERIODS.map((clause) => `${clause.toUpperCase()} ${told(held5[clause])}`).join(", ") + (held5["balance_leaderships"] === true ? ", BALANCE LEADERSHIPS" : "") + ` (epoch ${told(held5["epoch"])}, version ${told(held5["version"])}).`
+      held6 === null || held6 === void 0 ? "Nobody has set a policy: every node runs the built-in periods shown as placeholders." : "Set: " + PERIODS.map((clause) => `${clause.toUpperCase()} ${told(held6[clause])}`).join(", ") + (held6["balance_leaderships"] === true ? ", BALANCE LEADERSHIPS" : "") + ` (epoch ${told(held6["epoch"])}, version ${told(held6["version"])}).`
     );
-    at("failover-balance").checked = held5?.["balance_leaderships"] === true;
+    at("failover-balance").checked = held6?.["balance_leaderships"] === true;
     shapeFailover();
   }
   function draw2(seen) {
@@ -1444,6 +1454,13 @@
     }
   }
   function wire9() {
+    at("open-revoke").addEventListener("click", () => openDialog("revoke-dialog"));
+    at("open-join").addEventListener("click", () => {
+      hide("join-token", true);
+      say("join-status", "");
+      openDialog("join-dialog");
+    });
+    at("open-failover").addEventListener("click", () => openDialog("failover-dialog"));
     for (const id of ["revoke-fingerprint", "revoke-confirm"]) {
       at(id).addEventListener("input", shapeRevoke);
     }
@@ -1462,6 +1479,7 @@
       if (await send(composed.statement, "revoke-status", trimmed("revoke-why") || void 0)) {
         setValue("revoke-confirm", "");
         setValue("revoke-fingerprint", "");
+        closeDialog("revoke-dialog");
         hereAgain();
       }
     });
@@ -1493,6 +1511,7 @@ Shown once. The node keeps only its digest.`);
     at("failover-apply").addEventListener("click", async () => {
       const composed = policy();
       if ("statement" in composed && await send(composed.statement, "failover-status")) {
+        closeDialog("failover-dialog");
         hereAgain();
       }
     });
@@ -1870,6 +1889,7 @@ Shown once. The node keeps only its digest.`);
         at(`peer-${index}-${part}`).addEventListener("change", changed2);
       }
     }
+    at("open-form").addEventListener("click", () => openDialog("form-dialog"));
     at("form-cluster").addEventListener("click", async () => {
       const rows2 = intended();
       if (rows2.length === 0) {
@@ -1897,6 +1917,7 @@ Shown once. The node keeps only its digest.`);
             }
           }
           changed2();
+          closeDialog("form-dialog");
           hereAgain();
         }
       } catch (failure) {
@@ -1918,6 +1939,7 @@ Shown once. The node keeps only its digest.`);
   var open2 = false;
   var storeIsOpen = () => open2;
   function showGate(words5, failed2) {
+    hold(true);
     hide("shell", true);
     hide("gate", false);
     if (words5 !== "") {
@@ -1937,6 +1959,7 @@ Shown once. The node keeps only its digest.`);
     } else {
       signedIn();
     }
+    hold(false);
     hereAgain();
   }
   async function decide() {
@@ -2227,12 +2250,12 @@ Shown once. The node keeps only its digest.`);
   function lamps(has, wanted2) {
     const row = made("div", "lamps");
     for (const bit of BITS3) {
-      const held5 = has.includes(bit.name);
+      const held6 = has.includes(bit.name);
       const asked2 = wanted2 !== null && wanted2.includes(bit.name);
       row.appendChild(
         lamp(
           bit.letter,
-          held5 ? "held" : asked2 ? "wanted" : "off",
+          held6 ? "held" : asked2 ? "wanted" : "off",
           bit.means
         )
       );
@@ -2252,13 +2275,13 @@ Shown once. The node keeps only its digest.`);
     return line;
   }
   var told2 = (value2) => value2 === void 0 || value2 === null ? null : String(value2);
-  function lease(held5) {
-    if (held5 === void 0 || held5 === null) {
+  function lease(held6) {
+    if (held6 === void 0 || held6 === null) {
       return null;
     }
     const badge = made("div", "lease");
-    const held_ = held5;
-    const until = told2(held_.until ?? held_.expires ?? held5);
+    const held_ = held6;
+    const until = told2(held_.until ?? held_.expires ?? held6);
     badge.textContent = until === null ? "holds the lease" : `holds the lease until ${until}`;
     return badge;
   }
@@ -2509,10 +2532,10 @@ Shown once. The node keeps only its digest.`);
   async function readNode() {
     say("node-status", "asking…");
     try {
-      const answered2 = held2(await valueOf("INFO FOR NODE;", "Node"));
+      const answered2 = held3(await valueOf("INFO FOR NODE;", "Node"));
       const all2 = answered2 ?? {};
       const { cluster, ...mine2 } = all2;
-      const store = held2(await valueOf("INFO FOR STORE;", "Node")) ?? {};
+      const store = held3(await valueOf("INFO FOR STORE;", "Node")) ?? {};
       facts("node-facts", { ...mine2, format: store["format"], writes: store["writes"] });
       const peers = typeof cluster === "object" && cluster !== null ? cluster.peers : void 0;
       clear("cluster-map");
@@ -2532,7 +2555,7 @@ Shown once. The node keeps only its digest.`);
         state(
           "cluster-status",
           "empty",
-          joining ? "This node holds a peer certificate and names nobody yet. To join through its seed, open This node above and set its roles to serving: a writable node stays its own authority and collects from nobody. To found a cluster here, declare the membership below." : "No peers — this node holds everything itself. Declare the membership below to add them, all at once."
+          joining ? "This node holds a peer certificate and names nobody yet. To join through its seed, open This node above and set its roles to serving: a writable node stays its own authority and collects from nobody. To found a cluster here, use Form the cluster." : "No peers — this node holds everything itself. Form the cluster to add them, all at once."
         );
       } else {
         settled("cluster-status");
@@ -2807,7 +2830,7 @@ Shown once. The node keeps only its digest.`);
     openDialog("user-dialog");
     say("user-detail-status", "asking…");
     try {
-      const one2 = held2(await valueOf("INFO FOR USER " + name + ";", "Users · detail"));
+      const one2 = held3(await valueOf("INFO FOR USER " + name + ";", "Users · detail"));
       if (one2 === null) {
         say("user-detail-status", "the node answered with nothing to show", true);
         return;
@@ -3194,7 +3217,7 @@ Shown once. The node keeps only its digest.`);
   function repeats(topic2) {
     return topic2.repeats === null ? "kept" : `dropped within ${topic2.repeats.window} by ${topic2.repeats.key}`;
   }
-  var held4 = (topic2) => topic2.first === null || topic2.last < topic2.first ? 0 : topic2.last - topic2.first + 1;
+  var held5 = (topic2) => topic2.first === null || topic2.last < topic2.first ? 0 : topic2.last - topic2.first + 1;
   function behind(topic2) {
     const lags = [...topic2.readers.values(), ...topic2.groups.values()].map((each) => each.lag);
     return lags.length === 0 ? 0 : Math.max(...lags);
@@ -3229,7 +3252,7 @@ Shown once. The node keeps only its digest.`);
     return body.results;
   }
   function strings(answered2, field) {
-    const list = held2(answered2)?.[field];
+    const list = held3(answered2)?.[field];
     return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
   }
   function offer2(id, names) {
@@ -3335,7 +3358,7 @@ Shown once. The node keeps only its digest.`);
         pick.setAttribute("aria-pressed", String(each.name === chosenName));
         pick.addEventListener("click", () => choose(each.name));
         row.insertCell().appendChild(pick);
-        numberCell(row, held4(each));
+        numberCell(row, held5(each));
         numberCell(row, each.last);
         row.insertCell().textContent = keeps(each);
         row.insertCell().textContent = repeats(each);
@@ -3365,7 +3388,7 @@ Shown once. The node keeps only its digest.`);
     disable("browse-next", found === null);
     if (found !== null) {
       facts("topic-facts", {
-        held: held4(found),
+        held: held5(found),
         first: found.first ?? "none held",
         last: found.last,
         keeps: keeps(found),
@@ -3527,7 +3550,7 @@ Shown once. The node keeps only its digest.`);
     if (trimmed("drop-topic-confirm") !== topic2.name) return { missing: `type ${topic2.name} to confirm` };
     return {
       statement: `DROP TOPIC ${topic2.name};`,
-      says: `Removes ${topic2.name} with ${counted(held4(topic2), "message", "messages")} it holds, ${counted(topic2.readers.size, "reader position", "reader positions")} and ${counted(topic2.groups.size, "group", "groups")}. Those messages are gone for every reader.`
+      says: `Removes ${topic2.name} with ${counted(held5(topic2), "message", "messages")} it holds, ${counted(topic2.readers.size, "reader position", "reader positions")} and ${counted(topic2.groups.size, "group", "groups")}. Those messages are gone for every reader.`
     };
   }
   function newGroup() {
@@ -3770,7 +3793,7 @@ Shown once. The node keeps only its digest.`);
     say(status, "working…");
     write(answer2, "");
     try {
-      write(answer2, shown3(held2(await valueOf(composed.statement, SCREEN4))));
+      write(answer2, shown3(held3(await valueOf(composed.statement, SCREEN4))));
       say(status, "done");
       return true;
     } catch (failure) {
@@ -3864,7 +3887,7 @@ ${bytes.toLocaleString("en")} bytes`;
     if ("missing" in where3) return say("vault-rec-status", where3.missing, true);
     clear("vault-rec-vaults");
     try {
-      const report = held2(await valueOf(`${where3.tenancy}INFO FOR DATABASE;`, SCREEN5));
+      const report = held3(await valueOf(`${where3.tenancy}INFO FOR DATABASE;`, SCREEN5));
       const names = Array.isArray(report?.vaults) ? report.vaults : [];
       const list = made("ul");
       for (const each of names) {
@@ -3898,7 +3921,7 @@ ${bytes.toLocaleString("en")} bytes`;
     const from = after === null ? "" : ` AFTER ${vault}:$after`;
     const bound = after === null ? void 0 : { after };
     try {
-      const report = held2(
+      const report = held3(
         await valueOf(`${where3.tenancy}INFO FOR VAULT ${vault} RECORDS${from} LIMIT ${PAGE};`, SCREEN5, void 0, bound)
       );
       const ids = Array.isArray(report?.records) ? report.records : [];
@@ -3927,7 +3950,7 @@ ${bytes.toLocaleString("en")} bytes`;
   async function reveal(where3, vault, id) {
     hideRevealed();
     try {
-      const opened = held2(await valueOf(`${where3}REVEAL * FROM ${vault}:$id;`, SCREEN5, void 0, { id }));
+      const opened = held3(await valueOf(`${where3}REVEAL * FROM ${vault}:$id;`, SCREEN5, void 0, { id }));
       at("vault-rec-shown").appendChild(shown(opened ?? {}));
       disable("vault-rec-hide", false);
       say("vault-rec-status", "revealed — the store recorded this read");
@@ -3968,7 +3991,7 @@ ${bytes.toLocaleString("en")} bytes`;
     clear("vault-rec-trail");
     try {
       const by = actor === null ? "" : ` BY ${actor}`;
-      const report = held2(await valueOf(`${where3.tenancy}INFO FOR AUDIT${by};`, SCREEN5));
+      const report = held3(await valueOf(`${where3.tenancy}INFO FOR AUDIT${by};`, SCREEN5));
       at("vault-rec-trail").appendChild(shown(report?.audit ?? []));
       say("vault-rec-status", "the audit trail, oldest first");
     } catch (failure) {
@@ -4043,9 +4066,9 @@ ${bytes.toLocaleString("en")} bytes`;
     }
   }
   function spent(id) {
-    const held5 = value(id);
+    const held6 = value(id);
     setValue(id, "");
-    return held5;
+    return held6;
   }
   var change3 = (current2, next) => JSON.stringify({ current: current2, new: next });
   function onePath() {
@@ -4057,9 +4080,9 @@ ${bytes.toLocaleString("en")} bytes`;
     const checked = [];
     for (const [what, name] of names) {
       if (name === "") return { missing: `name the ${what}` };
-      const held5 = aName(name);
-      if (held5 === null) return { missing: `${name} is not a ${what} name` };
-      checked.push(held5);
+      const held6 = aName(name);
+      if (held6 === null) return { missing: `${name} is not a ${what} name` };
+      checked.push(held6);
     }
     return { path: `/vault/${checked.join("/")}` };
   }
@@ -4134,7 +4157,7 @@ ${bytes.toLocaleString("en")} bytes`;
   var KEYS_SHOWN = 100;
   var words3 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
   function strings2(answered2, field) {
-    const list = held2(answered2)?.[field];
+    const list = held3(answered2)?.[field];
     return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
   }
   function isSpace(result) {
@@ -4272,10 +4295,10 @@ ${bytes.toLocaleString("en")} bytes`;
       if (status === 404) {
         shown3.textContent = `${key}: no such key — it may have expired`;
       } else {
-        const { value: held5, ttl } = body;
+        const { value: held6, ttl } = body;
         const left = typeof ttl === "string" ? `expires in ${ttl}` : "never expires";
         shown3.textContent = `${key} — ${left}
-${JSON.stringify(held5, null, 2)}`;
+${JSON.stringify(held6, null, 2)}`;
       }
       at("kv-value").appendChild(shown3);
     } catch (failure) {
@@ -4319,7 +4342,7 @@ ${JSON.stringify(held5, null, 2)}`;
   }
   var words4 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
   function strings3(answered2, field) {
-    const list = held2(answered2)?.[field];
+    const list = held3(answered2)?.[field];
     return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
   }
   async function readNamespaces3() {
@@ -4453,10 +4476,10 @@ ${JSON.stringify(held5, null, 2)}`;
     return everybody.filter((one2) => (one2.user ?? "").toLowerCase().includes(needle));
   }
   function tally(matched) {
-    const held5 = everybody.length;
+    const held6 = everybody.length;
     const filtered = wanted() !== "";
     if (matched.length <= SHOWN) {
-      return filtered ? `${matched.length} of ${held5}` : `${held5}`;
+      return filtered ? `${matched.length} of ${held6}` : `${held6}`;
     }
     return `showing ${SHOWN} of ${matched.length}${filtered ? "" : ` — type a name to narrow`}`;
   }
@@ -4497,7 +4520,7 @@ ${JSON.stringify(held5, null, 2)}`;
   async function listUsers() {
     state("user-status", "waiting", "asking the node who it knows about…");
     try {
-      const answer2 = held2(await valueOf("INFO FOR USERS;", "Users · list"));
+      const answer2 = held3(await valueOf("INFO FOR USERS;", "Users · list"));
       const listed2 = answer2 === null ? [] : answer2["users"];
       everybody = Array.isArray(listed2) ? listed2 : [];
       forget();

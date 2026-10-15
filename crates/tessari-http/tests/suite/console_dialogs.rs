@@ -92,7 +92,17 @@ fn a_visitor_who_is_not_signed_in_meets_the_sign_in_page_first() {
 #[test]
 fn every_action_on_an_account_is_its_own_dialog() {
     let page = page();
-    for id in ["define", "change", "remove", "grant-apply", "mine"] {
+    for id in [
+        "define",
+        "change",
+        "remove",
+        "grant-apply",
+        "mine",
+        "form-cluster",
+        "revoke-apply",
+        "join-apply",
+        "failover-apply",
+    ] {
         let at = position(&page, id);
         let opened = page[..at].rfind("<dialog").unwrap_or_else(|| {
             panic!("#{id} stands on a screen instead of in a dialog of its own")
@@ -128,8 +138,59 @@ fn every_action_on_an_account_is_its_own_dialog() {
         );
     }
     assert!(
-        dialogs >= 6,
+        dialogs >= 10,
         "only {dialogs} dialog(s) on the page — the account actions are not each \
          their own"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn no_screen_reads_behind_the_sign_in_page() {
+    // Measured in W2's browser pass: a reload on `#cluster` while signed out sent
+    // two statements before the gate answered, both refused. The screens read on
+    // arrival, so arrival has to wait for the gate — and has to stop again
+    // whenever the sign-in page comes back.
+    let sources = panel_sources();
+    let source = |wanted: &str| -> String {
+        sources
+            .iter()
+            .find(|(name, _)| name == wanted)
+            .map(|(_, text)| text.clone())
+            .unwrap_or_else(|| panic!("{wanted} is not among the panel's sources"))
+    };
+    let tabs = source("tabs.ts");
+    assert!(
+        tabs.contains("let held = true;"),
+        "the screens may read before the gate has answered"
+    );
+    assert!(
+        tabs.matches("if (held)").count() >= 2 && tabs.contains("!held &&"),
+        "an arrival path reads without asking whether the screens are held"
+    );
+    let gate = source("gate.ts");
+    let shown = gate
+        .split("function showGate(")
+        .nth(1)
+        .and_then(|body| body.split("\n}").next())
+        .expect("the gate has a showGate");
+    assert!(
+        shown.contains("hold(true)"),
+        "showing the sign-in page does not hold the screens behind it"
+    );
+    let console = gate
+        .split("function showConsole(")
+        .nth(1)
+        .and_then(|body| body.split("\n}").next())
+        .expect("the gate has a showConsole");
+    let released = console
+        .find("hold(false)")
+        .expect("the console never lets go");
+    let read = console
+        .find("hereAgain()")
+        .expect("the console never reads");
+    assert!(
+        released < read,
+        "the console reads the screen before letting go of it, so the read is held"
     );
 }

@@ -1,10 +1,11 @@
-//! The cluster tab's trust panes: what this node presents, what the cluster
-//! refuses, who may join, and the periods every node agrees on (ADR-0108).
+//! The cluster tab's trust surfaces: what this node presents and what the cluster
+//! refuses, as a pane; and the three acts — revoke a certificate, approve a
+//! joining node, set the failover periods (ADR-0108) — each as its own dialog.
 //!
 //! Markup only; `trust.ts` reads the node and composes the statements.
 
 import { el, type Node } from "./html.js";
-import { button, choose, field, note, pane, paneHead, row, says, status, text } from "./ui.js";
+import { button, choose, dialog, field, note, pane, paneHead, row, says, status, text } from "./ui.js";
 
 /** How long a join token may bind, offered rather than typed: a token is a secret with a clock. */
 const LIVES = [
@@ -28,8 +29,9 @@ const certificates = (): Node =>
   );
 
 const revoke = (): Node =>
-  pane(
-    paneHead("Revoke a certificate", status("revoke-status")),
+  dialog(
+    "revoke-dialog",
+    "Revoke a certificate",
     note(
       "Every node refuses it in both directions of the peer link within seconds, and a " +
         "held stream presenting it ends. A revocation is permanent: its holder is given a " +
@@ -45,12 +47,17 @@ const revoke = (): Node =>
       field("Why", text("revoke-why", { placeholder: "laptop lost" })),
     ),
     says("revoke-says"),
-    row("default", button("revoke-apply", "Revoke", "default", { disabled: true })),
+    row(
+      "spread",
+      button("revoke-apply", "Revoke", "default", { disabled: true, class: "danger" }),
+      status("revoke-status"),
+    ),
   );
 
 const join = (): Node =>
-  pane(
-    paneHead("Approve a joining node", status("join-status")),
+  dialog(
+    "join-dialog",
+    "Approve a joining node",
     note(
       "For a row declared without a node id or a fingerprint. The token is shown once and " +
         "the node keeps only its digest; start the newcomer with --join-token beside its --seed.",
@@ -61,7 +68,11 @@ const join = (): Node =>
       field("Binds for", choose("join-life", LIVES)),
     ),
     says("join-says"),
-    row("default", button("join-apply", "Issue a token", "default", { disabled: true })),
+    row(
+      "spread",
+      button("join-apply", "Issue a token", "primary", { disabled: true }),
+      status("join-status"),
+    ),
     el("pre", { id: "join-token", class: "answer small", hidden: true }),
   );
 
@@ -70,8 +81,9 @@ const period = (clause: string, hint: string): Node =>
   field(clause, text(`failover-${clause.toLowerCase()}`, { placeholder: hint, size: 6 }));
 
 const failover = (): Node =>
-  pane(
-    paneHead("Failover policy", status("failover-status")),
+  dialog(
+    "failover-dialog",
+    "Failover policy",
     el("p", { id: "failover-held", class: "note" }),
     row(
       "default",
@@ -89,7 +101,13 @@ const failover = (): Node =>
       ),
     ),
     says("failover-says"),
-    row("default", button("failover-apply", "Set the policy", "default", { disabled: true })),
+    row(
+      "spread",
+      button("failover-apply", "Set the policy", "primary", { disabled: true }),
+      status("failover-status"),
+    ),
   );
 
-export const trustPanes = (): readonly Node[] => [certificates(), revoke(), join(), failover()];
+export const trustPanes = (): readonly Node[] => [certificates()];
+
+export const trustDialogs = (): readonly Node[] => [revoke(), join(), failover()];

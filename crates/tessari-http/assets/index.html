@@ -314,8 +314,14 @@
             <div class="pane">
               <div class="pane-head">
                 <h2>The cluster, as this node sees it</h2>
-                <span id="cluster-status" class="status" role="status"></span>
+                <div class="row tight">
+                  <button id="open-form" type="button" class="primary">Form the cluster…</button>
+                  <button id="open-join" type="button" class="quiet">Approve a join…</button>
+                  <button id="open-revoke" type="button" class="quiet">Revoke a certificate…</button>
+                  <button id="open-failover" type="button" class="quiet">Failover…</button>
+                </div>
               </div>
+              <span id="cluster-status" class="status" role="status"></span>
               <div id="cluster-map" class="map"></div>
               <div id="drawer" class="sheet drawer" hidden>
                 <div class="row spread">
@@ -351,76 +357,79 @@
                 <div id="cluster-facts" class="answer small" aria-live="polite"></div>
               </details>
             </div>
-            <div class="pane">
-              <div class="pane-head">
-                <h2>Declare the membership</h2>
-                <span id="form-status" class="status" role="status"></span>
+            <dialog id="form-dialog" class="dialog" aria-labelledby="form-dialog-title">
+              <div class="dialog-head">
+                <h2 id="form-dialog-title">Form the cluster</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
               </div>
-              <p class="note">Every member at once, this node included, in one transaction: the first declaration clusters this node and costs it the authority to accept a second. A row with neither id nor fingerprint waits for a join token.</p>
-              <div class="row">
-                <label>Name <input id="peer-0-name" type="text" placeholder="warsaw" /></label>
-                <label>Peer address <input id="peer-0-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
-                <label>Client address <input id="peer-0-clients" type="text" placeholder="10.0.0.2:9080" /></label>
-                <label>Node id <input id="peer-0-node" type="text" placeholder="9f2c4e1a-…" /></label>
-                <label>or its fingerprint <input id="peer-0-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
-                <label>Replicates <input id="peer-0-replicates" type="text" value="STORE" size="14" /></label>
-                <label class="tick">serving <input id="peer-0-serving" type="checkbox" /></label>
-                <label class="tick">writable <input id="peer-0-writable" type="checkbox" /></label>
-                <label class="tick">coordinating <input id="peer-0-coordinating" type="checkbox" /></label>
+              <div class="dialog-body">
+                <p class="note">Every member at once, this node included, in one transaction: the first declaration clusters this node and costs it the authority to accept a second. A row with neither id nor fingerprint waits for a join token.</p>
+                <div class="row">
+                  <label>Name <input id="peer-0-name" type="text" placeholder="warsaw" /></label>
+                  <label>Peer address <input id="peer-0-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+                  <label>Client address <input id="peer-0-clients" type="text" placeholder="10.0.0.2:9080" /></label>
+                  <label>Node id <input id="peer-0-node" type="text" placeholder="9f2c4e1a-…" /></label>
+                  <label>or its fingerprint <input id="peer-0-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
+                  <label>Replicates <input id="peer-0-replicates" type="text" value="STORE" size="14" /></label>
+                  <label class="tick">serving <input id="peer-0-serving" type="checkbox" /></label>
+                  <label class="tick">writable <input id="peer-0-writable" type="checkbox" /></label>
+                  <label class="tick">coordinating <input id="peer-0-coordinating" type="checkbox" /></label>
+                </div>
+                <div class="row">
+                  <label>Name <input id="peer-1-name" type="text" placeholder="warsaw" /></label>
+                  <label>Peer address <input id="peer-1-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+                  <label>Client address <input id="peer-1-clients" type="text" placeholder="10.0.0.2:9080" /></label>
+                  <label>Node id <input id="peer-1-node" type="text" placeholder="9f2c4e1a-…" /></label>
+                  <label>or its fingerprint <input id="peer-1-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
+                  <label>Replicates <input id="peer-1-replicates" type="text" value="STORE" size="14" /></label>
+                  <label class="tick">serving <input id="peer-1-serving" type="checkbox" /></label>
+                  <label class="tick">writable <input id="peer-1-writable" type="checkbox" /></label>
+                  <label class="tick">coordinating <input id="peer-1-coordinating" type="checkbox" /></label>
+                </div>
+                <div class="row">
+                  <label>Name <input id="peer-2-name" type="text" placeholder="warsaw" /></label>
+                  <label>Peer address <input id="peer-2-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+                  <label>Client address <input id="peer-2-clients" type="text" placeholder="10.0.0.2:9080" /></label>
+                  <label>Node id <input id="peer-2-node" type="text" placeholder="9f2c4e1a-…" /></label>
+                  <label>or its fingerprint <input id="peer-2-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
+                  <label>Replicates <input id="peer-2-replicates" type="text" value="STORE" size="14" /></label>
+                  <label class="tick">serving <input id="peer-2-serving" type="checkbox" /></label>
+                  <label class="tick">writable <input id="peer-2-writable" type="checkbox" /></label>
+                  <label class="tick">coordinating <input id="peer-2-coordinating" type="checkbox" /></label>
+                </div>
+                <div class="row">
+                  <label>Name <input id="peer-3-name" type="text" placeholder="warsaw" /></label>
+                  <label>Peer address <input id="peer-3-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+                  <label>Client address <input id="peer-3-clients" type="text" placeholder="10.0.0.2:9080" /></label>
+                  <label>Node id <input id="peer-3-node" type="text" placeholder="9f2c4e1a-…" /></label>
+                  <label>or its fingerprint <input id="peer-3-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
+                  <label>Replicates <input id="peer-3-replicates" type="text" value="STORE" size="14" /></label>
+                  <label class="tick">serving <input id="peer-3-serving" type="checkbox" /></label>
+                  <label class="tick">writable <input id="peer-3-writable" type="checkbox" /></label>
+                  <label class="tick">coordinating <input id="peer-3-coordinating" type="checkbox" /></label>
+                </div>
+                <div class="row">
+                  <label>Name <input id="peer-4-name" type="text" placeholder="warsaw" /></label>
+                  <label>Peer address <input id="peer-4-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+                  <label>Client address <input id="peer-4-clients" type="text" placeholder="10.0.0.2:9080" /></label>
+                  <label>Node id <input id="peer-4-node" type="text" placeholder="9f2c4e1a-…" /></label>
+                  <label>or its fingerprint <input id="peer-4-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
+                  <label>Replicates <input id="peer-4-replicates" type="text" value="STORE" size="14" /></label>
+                  <label class="tick">serving <input id="peer-4-serving" type="checkbox" /></label>
+                  <label class="tick">writable <input id="peer-4-writable" type="checkbox" /></label>
+                  <label class="tick">coordinating <input id="peer-4-coordinating" type="checkbox" /></label>
+                </div>
+                <p id="form-says" class="note says"></p>
+                <details class="tucked">
+                  <summary>The transaction this will send</summary>
+                  <div id="form-statement" class="answer small"></div>
+                </details>
+                <div class="row spread">
+                  <button id="form-cluster" type="button" class="primary">Declare it</button>
+                  <span id="form-status" class="status" role="status"></span>
+                </div>
               </div>
-              <div class="row">
-                <label>Name <input id="peer-1-name" type="text" placeholder="warsaw" /></label>
-                <label>Peer address <input id="peer-1-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
-                <label>Client address <input id="peer-1-clients" type="text" placeholder="10.0.0.2:9080" /></label>
-                <label>Node id <input id="peer-1-node" type="text" placeholder="9f2c4e1a-…" /></label>
-                <label>or its fingerprint <input id="peer-1-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
-                <label>Replicates <input id="peer-1-replicates" type="text" value="STORE" size="14" /></label>
-                <label class="tick">serving <input id="peer-1-serving" type="checkbox" /></label>
-                <label class="tick">writable <input id="peer-1-writable" type="checkbox" /></label>
-                <label class="tick">coordinating <input id="peer-1-coordinating" type="checkbox" /></label>
-              </div>
-              <div class="row">
-                <label>Name <input id="peer-2-name" type="text" placeholder="warsaw" /></label>
-                <label>Peer address <input id="peer-2-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
-                <label>Client address <input id="peer-2-clients" type="text" placeholder="10.0.0.2:9080" /></label>
-                <label>Node id <input id="peer-2-node" type="text" placeholder="9f2c4e1a-…" /></label>
-                <label>or its fingerprint <input id="peer-2-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
-                <label>Replicates <input id="peer-2-replicates" type="text" value="STORE" size="14" /></label>
-                <label class="tick">serving <input id="peer-2-serving" type="checkbox" /></label>
-                <label class="tick">writable <input id="peer-2-writable" type="checkbox" /></label>
-                <label class="tick">coordinating <input id="peer-2-coordinating" type="checkbox" /></label>
-              </div>
-              <div class="row">
-                <label>Name <input id="peer-3-name" type="text" placeholder="warsaw" /></label>
-                <label>Peer address <input id="peer-3-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
-                <label>Client address <input id="peer-3-clients" type="text" placeholder="10.0.0.2:9080" /></label>
-                <label>Node id <input id="peer-3-node" type="text" placeholder="9f2c4e1a-…" /></label>
-                <label>or its fingerprint <input id="peer-3-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
-                <label>Replicates <input id="peer-3-replicates" type="text" value="STORE" size="14" /></label>
-                <label class="tick">serving <input id="peer-3-serving" type="checkbox" /></label>
-                <label class="tick">writable <input id="peer-3-writable" type="checkbox" /></label>
-                <label class="tick">coordinating <input id="peer-3-coordinating" type="checkbox" /></label>
-              </div>
-              <div class="row">
-                <label>Name <input id="peer-4-name" type="text" placeholder="warsaw" /></label>
-                <label>Peer address <input id="peer-4-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
-                <label>Client address <input id="peer-4-clients" type="text" placeholder="10.0.0.2:9080" /></label>
-                <label>Node id <input id="peer-4-node" type="text" placeholder="9f2c4e1a-…" /></label>
-                <label>or its fingerprint <input id="peer-4-fingerprint" type="text" placeholder="0f1e2d3c…" /></label>
-                <label>Replicates <input id="peer-4-replicates" type="text" value="STORE" size="14" /></label>
-                <label class="tick">serving <input id="peer-4-serving" type="checkbox" /></label>
-                <label class="tick">writable <input id="peer-4-writable" type="checkbox" /></label>
-                <label class="tick">coordinating <input id="peer-4-coordinating" type="checkbox" /></label>
-              </div>
-              <p id="form-says" class="note says"></p>
-              <details class="tucked">
-                <summary>The transaction this will send</summary>
-                <div id="form-statement" class="answer small"></div>
-              </details>
-              <div class="row">
-                <button id="form-cluster" type="button" class="primary">Declare it</button>
-              </div>
-            </div>
+            </dialog>
             <div class="pane">
               <div class="pane-head">
                 <h2>Certificates and trust</h2>
@@ -433,69 +442,78 @@
               <h3>Removed nodes</h3>
               <div id="trust-removed"></div>
             </div>
-            <div class="pane">
-              <div class="pane-head">
-                <h2>Revoke a certificate</h2>
-                <span id="revoke-status" class="status" role="status"></span>
+            <dialog id="revoke-dialog" class="dialog" aria-labelledby="revoke-dialog-title">
+              <div class="dialog-head">
+                <h2 id="revoke-dialog-title">Revoke a certificate</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
               </div>
-              <p class="note">Every node refuses it in both directions of the peer link within seconds, and a held stream presenting it ends. A revocation is permanent: its holder is given a new certificate.</p>
-              <div class="row">
-                <label>Fingerprint (SHA-256) <input id="revoke-fingerprint" type="text" placeholder="0f1e2d3c…" size="66" /></label>
+              <div class="dialog-body">
+                <p class="note">Every node refuses it in both directions of the peer link within seconds, and a held stream presenting it ends. A revocation is permanent: its holder is given a new certificate.</p>
+                <div class="row">
+                  <label>Fingerprint (SHA-256) <input id="revoke-fingerprint" type="text" placeholder="0f1e2d3c…" size="66" /></label>
+                </div>
+                <div class="row">
+                  <label>Type its first eight digits again <input id="revoke-confirm" type="text" size="10" /></label>
+                  <label>Why <input id="revoke-why" type="text" placeholder="laptop lost" /></label>
+                </div>
+                <p id="revoke-says" class="note says"></p>
+                <div class="row spread">
+                  <button id="revoke-apply" type="button" disabled class="danger">Revoke</button>
+                  <span id="revoke-status" class="status" role="status"></span>
+                </div>
               </div>
-              <div class="row">
-                <label>Type its first eight digits again <input id="revoke-confirm" type="text" size="10" /></label>
-                <label>Why <input id="revoke-why" type="text" placeholder="laptop lost" /></label>
+            </dialog>
+            <dialog id="join-dialog" class="dialog" aria-labelledby="join-dialog-title">
+              <div class="dialog-head">
+                <h2 id="join-dialog-title">Approve a joining node</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
               </div>
-              <p id="revoke-says" class="note says"></p>
-              <div class="row">
-                <button id="revoke-apply" type="button" disabled>Revoke</button>
+              <div class="dialog-body">
+                <p class="note">For a row declared without a node id or a fingerprint. The token is shown once and the node keeps only its digest; start the newcomer with --join-token beside its --seed.</p>
+                <div class="row">
+                  <label>
+                    Row 
+                    <select id="join-row"></select>
+                  </label>
+                  <label>
+                    Binds for 
+                    <select id="join-life">
+                      <option value="10m" selected>10 minutes</option>
+                      <option value="1h">1 hour</option>
+                      <option value="24h">24 hours</option>
+                    </select>
+                  </label>
+                </div>
+                <p id="join-says" class="note says"></p>
+                <div class="row spread">
+                  <button id="join-apply" type="button" class="primary" disabled>Issue a token</button>
+                  <span id="join-status" class="status" role="status"></span>
+                </div>
+                <pre id="join-token" class="answer small" hidden></pre>
               </div>
-            </div>
-            <div class="pane">
-              <div class="pane-head">
-                <h2>Approve a joining node</h2>
-                <span id="join-status" class="status" role="status"></span>
+            </dialog>
+            <dialog id="failover-dialog" class="dialog" aria-labelledby="failover-dialog-title">
+              <div class="dialog-head">
+                <h2 id="failover-dialog-title">Failover policy</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
               </div>
-              <p class="note">For a row declared without a node id or a fingerprint. The token is shown once and the node keeps only its digest; start the newcomer with --join-token beside its --seed.</p>
-              <div class="row">
-                <label>
-                  Row 
-                  <select id="join-row"></select>
-                </label>
-                <label>
-                  Binds for 
-                  <select id="join-life">
-                    <option value="10m" selected>10 minutes</option>
-                    <option value="1h">1 hour</option>
-                    <option value="24h">24 hours</option>
-                  </select>
-                </label>
+              <div class="dialog-body">
+                <p id="failover-held" class="note"></p>
+                <div class="row">
+                  <label>AWARENESS <input id="failover-awareness" type="text" placeholder="1s" size="6" /></label>
+                  <label>COLLECTION <input id="failover-collection" type="text" placeholder="1s" size="6" /></label>
+                  <label>ROUND <input id="failover-round" type="text" placeholder="200ms" size="6" /></label>
+                  <label>CAMPAIGN <input id="failover-campaign" type="text" placeholder="100ms" size="6" /></label>
+                  <label>LEASE <input id="failover-lease" type="text" placeholder="800ms" size="6" /></label>
+                  <label class="tick">balance leaderships <input id="failover-balance" type="checkbox" /></label>
+                </div>
+                <p id="failover-says" class="note says"></p>
+                <div class="row spread">
+                  <button id="failover-apply" type="button" class="primary" disabled>Set the policy</button>
+                  <span id="failover-status" class="status" role="status"></span>
+                </div>
               </div>
-              <p id="join-says" class="note says"></p>
-              <div class="row">
-                <button id="join-apply" type="button" disabled>Issue a token</button>
-              </div>
-              <pre id="join-token" class="answer small" hidden></pre>
-            </div>
-            <div class="pane">
-              <div class="pane-head">
-                <h2>Failover policy</h2>
-                <span id="failover-status" class="status" role="status"></span>
-              </div>
-              <p id="failover-held" class="note"></p>
-              <div class="row">
-                <label>AWARENESS <input id="failover-awareness" type="text" placeholder="1s" size="6" /></label>
-                <label>COLLECTION <input id="failover-collection" type="text" placeholder="1s" size="6" /></label>
-                <label>ROUND <input id="failover-round" type="text" placeholder="200ms" size="6" /></label>
-                <label>CAMPAIGN <input id="failover-campaign" type="text" placeholder="100ms" size="6" /></label>
-                <label>LEASE <input id="failover-lease" type="text" placeholder="800ms" size="6" /></label>
-                <label class="tick">balance leaderships <input id="failover-balance" type="checkbox" /></label>
-              </div>
-              <p id="failover-says" class="note says"></p>
-              <div class="row">
-                <button id="failover-apply" type="button" disabled>Set the policy</button>
-              </div>
-            </div>
+            </dialog>
             <div class="pane">
               <div class="pane-head">
                 <h2>What is here, and what is not</h2>

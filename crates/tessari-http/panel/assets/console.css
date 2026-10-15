@@ -1675,6 +1675,11 @@ dialog.dialog::backdrop {
   background: var(--scrim);
 }
 
+/* Five peers of nine fields each: the one dialog that needs the width. */
+#form-dialog {
+  inline-size: min(72rem, calc(100vw - var(--s-6)));
+}
+
 .dialog-head {
   display: flex;
   align-items: center;

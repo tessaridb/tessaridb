@@ -23,6 +23,20 @@ interface Arrival {
 const arrivals: Arrival[] = [];
 
 /**
+ * Whether the screens may read at all.
+ *
+ * Held from load until the gate has asked the node whether it needs a sign-in,
+ * and again whenever the sign-in page is showing: a screen behind the gate that
+ * reads anyway is refused, and its refusal lands in the statement log as noise.
+ * The gate lets go, and its `hereAgain()` then does the read that was held.
+ */
+let held = true;
+
+export function hold(holding: boolean): void {
+  held = holding;
+}
+
+/**
  * Do this every time any of `names` is reached — however it is reached.
  *
  * The two screens that read on arrival used to listen for a CLICK on their own
@@ -47,7 +61,7 @@ const arrivals: Arrival[] = [];
  */
 export function onArrival(names: readonly string[], todo: () => void): void {
   arrivals.push({ names, todo });
-  if (names.includes(here())) {
+  if (!held && names.includes(here())) {
     todo();
   }
 }
@@ -64,6 +78,9 @@ export function onArrival(names: readonly string[], todo: () => void): void {
  * Only the destination on screen, because the others will read on arrival.
  */
 export function hereAgain(): void {
+  if (held) {
+    return;
+  }
   for (const arrival of arrivals) {
     if (arrival.names.includes(here())) {
       arrival.todo();
@@ -98,6 +115,9 @@ export function show(name: string): void {
   // A destination is a new screen, so it opens at its top rather than at the
   // scroll position of the one the reader just left.
   requestAnimationFrame(() => window.scrollTo(0, 0));
+  if (held) {
+    return;
+  }
   for (const arrival of arrivals) {
     if (arrival.names.includes(wanted)) {
       arrival.todo();

@@ -110,9 +110,9 @@ export async function readNode(): Promise<void> {
           ? "This node holds a peer certificate and names nobody yet. To join through its " +
               "seed, open This node above and set its roles to serving: a writable node " +
               "stays its own authority and collects from nobody. To found a cluster here, " +
-              "declare the membership below."
-          : "No peers — this node holds everything itself. Declare the membership " +
-              "below to add them, all at once.",
+              "use Form the cluster."
+          : "No peers — this node holds everything itself. Form the cluster to add " +
+              "them, all at once.",
       );
     } else {
       settled("cluster-status");

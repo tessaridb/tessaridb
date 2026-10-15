@@ -10,7 +10,7 @@
 import { ask, Unreachable } from "./api.js";
 import { at, hide, say, write } from "./dom.js";
 import { onIdentityChange, signedIn, token, told } from "./session.js";
-import { hereAgain } from "./tabs.js";
+import { hereAgain, hold } from "./tabs.js";
 
 /** Whether the store answered an unsigned script — true only while it has no users. */
 let open = false;
@@ -18,6 +18,7 @@ let open = false;
 export const storeIsOpen = (): boolean => open;
 
 function showGate(words: string, failed: boolean): void {
+  hold(true);
   hide("shell", true);
   hide("gate", false);
   if (words !== "") {
@@ -38,6 +39,7 @@ function showConsole(): void {
   } else {
     signedIn();
   }
+  hold(false);
   hereAgain();
 }
 
