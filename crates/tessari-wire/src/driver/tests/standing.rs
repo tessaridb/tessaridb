@@ -354,3 +354,16 @@ fn a_grant_older_than_the_lease_holds_nobody_back_either() {
              holder still has it, and a node that hears nothing has to stand"
     );
 }
+
+/// A node that may not take writes does not stand for a placed range — DB-16's
+/// trap, measured on three processes: a range leader whose roles lost
+/// `writable` kept renewing, every write to the range was refused on it and
+/// redirected back to it, and the range stayed led and unwritable.
+#[test]
+fn a_node_that_may_not_write_stands_for_no_placed_range() {
+    let deciding = Roles::SERVING.and(Roles::COORDINATING);
+    assert!(stands(deciding), "the store line keeps ADR-0063's rule");
+    assert!(!stands_for_a_placed_line(deciding));
+    assert!(stands_for_a_placed_line(deciding.and(Roles::WRITABLE)));
+    assert!(!stands_for_a_placed_line(Roles::ALONE));
+}

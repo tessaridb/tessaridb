@@ -56,7 +56,7 @@ pub use collecting::{Collecting, bootstrap_from, upstream};
 pub use leadership::{
     Renewing, campaign_line, campaigns_for, election_timeout, heard_a_leader, heard_a_leader_on,
     heard_a_newer_policy, leader_of_range, preferred_to_yield_to, released, stands, stands_for,
-    stands_for_the_store, voters,
+    stands_for_a_placed_line, stands_for_the_store, voters,
 };
 
 /// The directory the routing side reads, and the greeting side replaces.
