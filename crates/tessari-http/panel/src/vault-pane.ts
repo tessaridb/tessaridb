@@ -5,7 +5,7 @@
 
 import { el, type Node } from "./html.js";
 import { to } from "./destinations.js";
-import { answer, button, field, note, pane, paneHead, panel, row, says, secret, status, text } from "./ui.js";
+import { answer, button, dialog, field, note, pane, paneHead, panel, row, says, secret, status, text } from "./ui.js";
 
 export const vault = (): Node =>
   panel(
@@ -19,19 +19,29 @@ export const vault = (): Node =>
         ", ten minutes by default), then closes by itself. Store-wide operators only.",
       ),
       answer("vault-store-answer", "small"),
-      row("default", field("Passphrase", secret("vault-store-passphrase", "current-password"))),
       row(
-        "default",
-        button("vault-store-unseal", "Unseal", "primary", { disabled: true }),
+        "tight",
+        button("open-vault-store-unseal", "Unseal…", "primary"),
         button("vault-store-seal", "Seal", "default"),
-        button("vault-store-refresh", "Refresh", "default"),
+        button("vault-store-refresh", "Refresh", "quiet"),
+        button("open-vault-store-change", "Change passphrase…", "quiet"),
       ),
+    ),
+    dialog(
+      "vault-store-unseal-dialog",
+      "Unseal with the store's key",
+      field("Passphrase", secret("vault-store-passphrase", "current-password")),
+      row("default", button("vault-store-unseal", "Unseal", "primary", { disabled: true })),
+    ),
+    dialog(
+      "vault-store-change-dialog",
+      "Change the store's passphrase",
       row(
         "default",
         field("Current passphrase", secret("vault-store-current", "current-password")),
         field("New passphrase", secret("vault-store-new", "new-password")),
       ),
-      row("default", button("vault-store-change", "Change passphrase", "default", { disabled: true })),
+      row("default", button("vault-store-change", "Change passphrase", "primary", { disabled: true })),
     ),
     pane(
       paneHead("One vault", status("vault-one-status")),
@@ -49,19 +59,29 @@ export const vault = (): Node =>
       ),
       says("vault-one-says"),
       answer("vault-one-answer", "small"),
-      row("default", field("Passphrase", secret("vault-one-passphrase", "current-password"))),
       row(
-        "default",
+        "tight",
         button("vault-one-show", "Status", "default", { disabled: true }),
-        button("vault-one-unseal", "Unseal", "primary", { disabled: true }),
+        button("open-vault-one-unseal", "Unseal…", "primary", { disabled: true }),
         button("vault-one-seal", "Seal", "default", { disabled: true }),
+        button("open-vault-one-change", "Change passphrase…", "quiet", { disabled: true }),
       ),
+    ),
+    dialog(
+      "vault-one-unseal-dialog",
+      "Unseal one vault",
+      field("Passphrase", secret("vault-one-passphrase", "current-password")),
+      row("default", button("vault-one-unseal", "Unseal", "primary", { disabled: true })),
+    ),
+    dialog(
+      "vault-one-change-dialog",
+      "Change one vault's passphrase",
       row(
         "default",
         field("Current passphrase", secret("vault-one-current", "current-password")),
         field("New passphrase", secret("vault-one-new", "new-password")),
       ),
-      row("default", button("vault-one-change", "Change passphrase", "default", { disabled: true })),
+      row("default", button("vault-one-change", "Change passphrase", "primary", { disabled: true })),
     ),
     pane(
       paneHead("Records in a vault", status("vault-rec-status")),
@@ -84,13 +104,10 @@ export const vault = (): Node =>
       ),
       el("div", { id: "vault-rec-ids" }),
       el("div", { id: "vault-rec-shown", "aria-live": "polite" }),
-      row("default", button("vault-rec-hide", "Hide the revealed values", "quiet", { disabled: true })),
       row(
-        "default",
-        field("Record id", text("vault-rec-id", { spellcheck: false, autocomplete: "off" })),
-        field("Field", text("vault-rec-field", { spellcheck: false, autocomplete: "off" })),
-        field("Value", secret("vault-rec-value", "new-password")),
-        button("vault-rec-write", "Write", "default", { disabled: true }),
+        "tight",
+        button("vault-rec-hide", "Hide the revealed values", "quiet", { disabled: true }),
+        button("open-vault-rec-write", "Write a field…", "quiet"),
       ),
       row(
         "default",
@@ -98,5 +115,16 @@ export const vault = (): Node =>
         button("vault-rec-audit", "Audit trail", "default"),
       ),
       el("div", { id: "vault-rec-trail" }),
+    ),
+    dialog(
+      "vault-rec-write-dialog",
+      "Write a field in the vault",
+      row(
+        "default",
+        field("Record id", text("vault-rec-id", { spellcheck: false, autocomplete: "off" })),
+        field("Field", text("vault-rec-field", { spellcheck: false, autocomplete: "off" })),
+        field("Value", secret("vault-rec-value", "new-password")),
+      ),
+      row("default", button("vault-rec-write", "Write", "primary", { disabled: true })),
     ),
   );

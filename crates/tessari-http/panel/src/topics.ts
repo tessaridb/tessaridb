@@ -1,12 +1,14 @@
 //! Topics — what each topic holds, who reads it, and the groups that settle it.
 //!
 //! The markup only. The reading lives in `topic-list.ts` and the forms that
-//! change something in `topic-forms.ts`, so each file has one subject.
+//! change something in `topic-forms.ts`, so each file has one subject. Every
+//! change is a dialog: a new topic from the list, and the chosen topic's groups
+//! and removal from the topic's own pane.
 
 import { el, type Node } from "./html.js";
 import { to } from "./destinations.js";
 import {
-  answer, button, choose, field, note, number, pane, paneHead, panel, row, says,
+  answer, button, choose, dialog, field, note, number, pane, paneHead, panel, row, says,
   split, status, text,
 } from "./ui.js";
 
@@ -19,7 +21,16 @@ const where = (): Node =>
 
 const chosen = (): Node =>
   pane(
-    paneHead("Topic", el("span", { id: "topic-chosen", class: "faint" }, "none chosen")),
+    paneHead(
+      "Topic",
+      el("span", { id: "topic-chosen", class: "faint" }, "none chosen"),
+      row(
+        "tight",
+        button("open-new-group", "New group…", "quiet", { disabled: true }),
+        button("open-group", "Move or remove a group…", "quiet", { disabled: true }),
+        button("open-drop-topic", "Remove…", "quiet", { disabled: true, class: "quiet danger" }),
+      ),
+    ),
     status("topic-status"),
     answer("topic-facts", "small"),
     el("h3", {}, "Readers"),
@@ -60,8 +71,9 @@ const messages = (): Node =>
   );
 
 const newTopic = (): Node =>
-  pane(
-    paneHead("New topic", status("new-topic-status")),
+  dialog(
+    "new-topic-dialog",
+    "New topic",
     row(
       "default",
       field("Name", text("new-topic-name", { placeholder: "events" })),
@@ -70,24 +82,30 @@ const newTopic = (): Node =>
       field("Largest message", text("new-topic-bytes", { placeholder: "bytes, optional" })),
     ),
     says("new-topic-says"),
-    row("default", button("new-topic", "Create", "primary", { disabled: true })),
+    row("spread", button("new-topic", "Create", "primary", { disabled: true }), status("new-topic-status")),
   );
 
 const dropTopic = (): Node =>
-  pane(
-    paneHead("Remove the chosen topic", status("drop-topic-status")),
+  dialog(
+    "drop-topic-dialog",
+    "Remove the chosen topic",
     row(
       "default",
       field("Type its name to confirm", text("drop-topic-confirm")),
       field("Why", text("drop-topic-why", { placeholder: "replaced by events_v2" })),
     ),
     says("drop-topic-says"),
-    row("default", button("drop-topic", "Remove", "default", { disabled: true })),
+    row(
+      "spread",
+      button("drop-topic", "Remove", "default", { disabled: true, class: "danger" }),
+      status("drop-topic-status"),
+    ),
   );
 
 const newGroup = (): Node =>
-  pane(
-    paneHead("New group on the chosen topic", status("new-group-status")),
+  dialog(
+    "new-group-dialog",
+    "New group on the chosen topic",
     row(
       "default",
       field("Group", text("new-group-name", { placeholder: "billing" })),
@@ -100,12 +118,17 @@ const newGroup = (): Node =>
       field("Dead letters to", text("new-group-dead", { placeholder: "a topic, optional" })),
     ),
     says("new-group-says"),
-    row("default", button("new-group", "Create group", "primary", { disabled: true })),
+    row(
+      "spread",
+      button("new-group", "Create group", "primary", { disabled: true }),
+      status("new-group-status"),
+    ),
   );
 
 const changeGroup = (): Node =>
-  pane(
-    paneHead("Move or remove a group", status("group-status")),
+  dialog(
+    "group-dialog",
+    "Move or remove a group",
     row(
       "default",
       field("Group", choose("group-which", [])),
@@ -124,17 +147,27 @@ const changeGroup = (): Node =>
       field("Why", text("group-why", { placeholder: "replay after the fix" })),
     ),
     says("group-says"),
-    row("default", button("group-apply", "Apply", "default", { disabled: true })),
+    row("spread", button("group-apply", "Apply", "default", { disabled: true }), status("group-status")),
   );
 
 export const topics = (): Node =>
   panel(
     to("topics"),
     false,
-    paneHead("Topics", row("tight", status("topics-status"), button("topics-refresh", "Refresh", "quiet"))),
+    paneHead(
+      "Topics",
+      row(
+        "tight",
+        status("topics-status"),
+        button("topics-refresh", "Refresh", "quiet"),
+        button("open-new-topic", "New topic…", "primary"),
+      ),
+    ),
     where(),
     answer("topics-list"),
     split(chosen(), messages()),
-    split(newGroup(), changeGroup()),
-    split(newTopic(), dropTopic()),
+    newGroup(),
+    changeGroup(),
+    newTopic(),
+    dropTopic(),
   );

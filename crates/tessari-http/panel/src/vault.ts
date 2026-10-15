@@ -9,6 +9,7 @@
 //! here, before anything is sent.
 
 import { Unreachable, route } from "./api.js";
+import { closeDialog, openDialog } from "./dialog.js";
 import { at, disable, say, setValue, trimmed, value, write } from "./dom.js";
 import { told } from "./session.js";
 import { aName } from "./topic-names.js";
@@ -98,6 +99,8 @@ function shape(): void {
   write("vault-one-says", "path" in one ? `Acts on ${one.path}.` : one.missing);
   const named = !("path" in one);
   disable("vault-one-show", named);
+  disable("open-vault-one-unseal", named);
+  disable("open-vault-one-change", named);
   disable("vault-one-seal", named);
   disable("vault-one-unseal", named || value("vault-one-passphrase") === "");
   disable("vault-one-change", named || value("vault-one-current") === "" || value("vault-one-new") === "");
@@ -117,27 +120,40 @@ export function wire(): void {
 
   at("vault-store-refresh").addEventListener("click", () => void store("GET", "/vault"));
   at("vault-store-seal").addEventListener("click", () => void store("POST", "/vault/seal"));
-  at("vault-store-unseal").addEventListener(
-    "click",
-    () => void store("POST", "/vault/unseal", spent("vault-store-passphrase")),
-  );
-  at("vault-store-change").addEventListener(
-    "click",
-    () => void store("POST", "/vault/passphrase", change(spent("vault-store-current"), spent("vault-store-new"))),
-  );
+  // Each passphrase act opens its own dialog; pressing it spends the passphrase,
+  // closes the dialog, and the answer lands on the pane behind it.
+  const opens: readonly (readonly [string, string])[] = [
+    ["open-vault-store-unseal", "vault-store-unseal-dialog"],
+    ["open-vault-store-change", "vault-store-change-dialog"],
+    ["open-vault-one-unseal", "vault-one-unseal-dialog"],
+    ["open-vault-one-change", "vault-one-change-dialog"],
+    ["open-vault-rec-write", "vault-rec-write-dialog"],
+  ];
+  for (const [opener, shown] of opens) {
+    at(opener).addEventListener("click", () => openDialog(shown));
+  }
+  at("vault-store-unseal").addEventListener("click", () => {
+    const passphrase = spent("vault-store-passphrase");
+    closeDialog("vault-store-unseal-dialog");
+    void store("POST", "/vault/unseal", passphrase);
+  });
+  at("vault-store-change").addEventListener("click", () => {
+    const body = change(spent("vault-store-current"), spent("vault-store-new"));
+    closeDialog("vault-store-change-dialog");
+    void store("POST", "/vault/passphrase", body);
+  });
   at("vault-one-show").addEventListener("click", () => void onOne((path) => one("GET", path)));
   at("vault-one-seal").addEventListener("click", () => void onOne((path) => one("POST", `${path}/seal`)));
-  at("vault-one-unseal").addEventListener(
-    "click",
-    () => void onOne((path) => one("POST", `${path}/unseal`, spent("vault-one-passphrase"))),
-  );
-  at("vault-one-change").addEventListener(
-    "click",
-    () =>
-      void onOne((path) =>
-        one("POST", `${path}/passphrase`, change(spent("vault-one-current"), spent("vault-one-new"))),
-      ),
-  );
+  at("vault-one-unseal").addEventListener("click", () => {
+    closeDialog("vault-one-unseal-dialog");
+    void onOne((path) => one("POST", `${path}/unseal`, spent("vault-one-passphrase")));
+  });
+  at("vault-one-change").addEventListener("click", () => {
+    closeDialog("vault-one-change-dialog");
+    void onOne((path) =>
+      one("POST", `${path}/passphrase`, change(spent("vault-one-current"), spent("vault-one-new"))),
+    );
+  });
   for (const id of [
     "vault-store-passphrase",
     "vault-store-current",

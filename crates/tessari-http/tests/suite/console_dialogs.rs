@@ -102,6 +102,17 @@ fn every_action_on_an_account_is_its_own_dialog() {
         "revoke-apply",
         "join-apply",
         "failover-apply",
+        "new-topic",
+        "drop-topic",
+        "new-group",
+        "group-apply",
+        "backup-run",
+        "restore-run",
+        "vault-store-unseal",
+        "vault-store-change",
+        "vault-one-unseal",
+        "vault-one-change",
+        "vault-rec-write",
     ] {
         let at = position(&page, id);
         let opened = page[..at].rfind("<dialog").unwrap_or_else(|| {
@@ -138,7 +149,7 @@ fn every_action_on_an_account_is_its_own_dialog() {
         );
     }
     assert!(
-        dialogs >= 10,
+        dialogs >= 20,
         "only {dialogs} dialog(s) on the page — the account actions are not each \
          their own"
     );

@@ -7,6 +7,7 @@
 //! topic, removing a group, moving a group) ask for the name to be typed again.
 
 import { Unreachable, valueOf } from "./api.js";
+import { closeDialog, openDialog } from "./dialog.js";
 import { at, disable, say, setValue, trimmed, value, write } from "./dom.js";
 import { told } from "./session.js";
 import { held } from "./topic-info.js";
@@ -146,23 +147,30 @@ interface Form {
   readonly fields: readonly string[];
   readonly compose: () => Composed;
   readonly why?: string;
+  /** The dialog the form lives in, and the button that opens it. */
+  readonly dialog: string;
+  readonly opener: string;
 }
 
 const FORMS: readonly Form[] = [
   {
     button: "new-topic", says: "new-topic-says", status: "new-topic-status", compose: newTopic,
+    dialog: "new-topic-dialog", opener: "open-new-topic",
     fields: ["new-topic-name", "new-topic-retain", "new-topic-kept", "new-topic-bytes"],
   },
   {
     button: "drop-topic", says: "drop-topic-says", status: "drop-topic-status", compose: dropTopic,
+    dialog: "drop-topic-dialog", opener: "open-drop-topic",
     fields: ["drop-topic-confirm", "drop-topic-why"], why: "drop-topic-why",
   },
   {
     button: "new-group", says: "new-group-says", status: "new-group-status", compose: newGroup,
+    dialog: "new-group-dialog", opener: "open-new-group",
     fields: ["new-group-name", "new-group-deadline", "new-group-width", "new-group-deliveries", "new-group-dead"],
   },
   {
     button: "group-apply", says: "group-says", status: "group-status", compose: changeGroup,
+    dialog: "group-dialog", opener: "open-group",
     fields: ["group-which", "group-action", "group-start", "group-confirm", "group-why"], why: "group-why",
   },
 ];
@@ -184,7 +192,8 @@ async function send(form: Form): Promise<void> {
   try {
     const why = form.why === undefined ? undefined : trimmed(form.why) || undefined;
     await valueOf(tenancy(place.namespace, place.database) + composed.statement, SCREEN, why);
-    say(form.status, "done");
+    say(form.status, "");
+    closeDialog(form.dialog);
     for (const field of form.fields) {
       if (at(field) instanceof HTMLInputElement) {
         setValue(field, field === "group-start" ? "0" : "");
@@ -205,9 +214,18 @@ export function wire(): void {
       at(field).addEventListener("change", () => shape(form));
     }
     at(form.button).addEventListener("click", () => void send(form));
+    at(form.opener).addEventListener("click", () => {
+      say(form.status, "");
+      shape(form);
+      openDialog(form.dialog);
+    });
   }
   whenChosen(() => {
     offer("group-which", [...(chosen()?.groups.keys() ?? [])].filter((name) => aGroup(name) !== null));
+    // What acts on the chosen topic opens only once there is one.
+    for (const opener of ["open-new-group", "open-group", "open-drop-topic"]) {
+      disable(opener, chosen() === null);
+    }
     for (const form of FORMS) {
       shape(form);
     }

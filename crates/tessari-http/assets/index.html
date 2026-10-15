@@ -180,6 +180,7 @@
               <div class="row tight">
                 <span id="topics-status" class="status" role="status"></span>
                 <button id="topics-refresh" type="button" class="quiet">Refresh</button>
+                <button id="open-new-topic" type="button" class="primary">New topic…</button>
               </div>
             </div>
             <div class="row">
@@ -198,6 +199,11 @@
                 <div class="pane-head">
                   <h2>Topic</h2>
                   <span id="topic-chosen" class="faint">none chosen</span>
+                  <div class="row tight">
+                    <button id="open-new-group" type="button" class="quiet" disabled>New group…</button>
+                    <button id="open-group" type="button" class="quiet" disabled>Move or remove a group…</button>
+                    <button id="open-drop-topic" type="button" class="quiet danger" disabled>Remove…</button>
+                  </div>
                 </div>
                 <span id="topic-status" class="status" role="status"></span>
                 <div id="topic-facts" class="answer small" aria-live="polite"></div>
@@ -228,12 +234,12 @@
                 <div id="browse-list" class="answer" aria-live="polite"></div>
               </div>
             </div>
-            <div class="split">
-              <div class="pane">
-                <div class="pane-head">
-                  <h2>New group on the chosen topic</h2>
-                  <span id="new-group-status" class="status" role="status"></span>
-                </div>
+            <dialog id="new-group-dialog" class="dialog" aria-labelledby="new-group-dialog-title">
+              <div class="dialog-head">
+                <h2 id="new-group-dialog-title">New group on the chosen topic</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+              </div>
+              <div class="dialog-body">
                 <div class="row">
                   <label>Group <input id="new-group-name" type="text" placeholder="billing" /></label>
                   <label>Acknowledge within <input id="new-group-deadline" type="text" placeholder="30s" /></label>
@@ -244,15 +250,18 @@
                   <label>Dead letters to <input id="new-group-dead" type="text" placeholder="a topic, optional" /></label>
                 </div>
                 <p id="new-group-says" class="note says"></p>
-                <div class="row">
+                <div class="row spread">
                   <button id="new-group" type="button" class="primary" disabled>Create group</button>
+                  <span id="new-group-status" class="status" role="status"></span>
                 </div>
               </div>
-              <div class="pane">
-                <div class="pane-head">
-                  <h2>Move or remove a group</h2>
-                  <span id="group-status" class="status" role="status"></span>
-                </div>
+            </dialog>
+            <dialog id="group-dialog" class="dialog" aria-labelledby="group-dialog-title">
+              <div class="dialog-head">
+                <h2 id="group-dialog-title">Move or remove a group</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+              </div>
+              <div class="dialog-body">
                 <div class="row">
                   <label>
                     Group 
@@ -272,17 +281,18 @@
                   <label>Why <input id="group-why" type="text" placeholder="replay after the fix" /></label>
                 </div>
                 <p id="group-says" class="note says"></p>
-                <div class="row">
+                <div class="row spread">
                   <button id="group-apply" type="button" disabled>Apply</button>
+                  <span id="group-status" class="status" role="status"></span>
                 </div>
               </div>
-            </div>
-            <div class="split">
-              <div class="pane">
-                <div class="pane-head">
-                  <h2>New topic</h2>
-                  <span id="new-topic-status" class="status" role="status"></span>
-                </div>
+            </dialog>
+            <dialog id="new-topic-dialog" class="dialog" aria-labelledby="new-topic-dialog-title">
+              <div class="dialog-head">
+                <h2 id="new-topic-dialog-title">New topic</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+              </div>
+              <div class="dialog-body">
                 <div class="row">
                   <label>Name <input id="new-topic-name" type="text" placeholder="events" /></label>
                   <label>Keep for <input id="new-topic-retain" type="text" placeholder="7d, or empty to keep all" /></label>
@@ -290,25 +300,29 @@
                   <label>Largest message <input id="new-topic-bytes" type="text" placeholder="bytes, optional" /></label>
                 </div>
                 <p id="new-topic-says" class="note says"></p>
-                <div class="row">
+                <div class="row spread">
                   <button id="new-topic" type="button" class="primary" disabled>Create</button>
+                  <span id="new-topic-status" class="status" role="status"></span>
                 </div>
               </div>
-              <div class="pane">
-                <div class="pane-head">
-                  <h2>Remove the chosen topic</h2>
-                  <span id="drop-topic-status" class="status" role="status"></span>
-                </div>
+            </dialog>
+            <dialog id="drop-topic-dialog" class="dialog" aria-labelledby="drop-topic-dialog-title">
+              <div class="dialog-head">
+                <h2 id="drop-topic-dialog-title">Remove the chosen topic</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+              </div>
+              <div class="dialog-body">
                 <div class="row">
                   <label>Type its name to confirm <input id="drop-topic-confirm" type="text" /></label>
                   <label>Why <input id="drop-topic-why" type="text" placeholder="replaced by events_v2" /></label>
                 </div>
                 <p id="drop-topic-says" class="note says"></p>
-                <div class="row">
-                  <button id="drop-topic" type="button" disabled>Remove</button>
+                <div class="row spread">
+                  <button id="drop-topic" type="button" disabled class="danger">Remove</button>
+                  <span id="drop-topic-status" class="status" role="status"></span>
                 </div>
               </div>
-            </div>
+            </dialog>
           </section>
           <section id="panel-cluster" role="tabpanel" aria-labelledby="tab-cluster" tabindex="0" hidden>
             <div class="pane">
@@ -590,52 +604,68 @@
           <section id="panel-backup" role="tabpanel" aria-labelledby="tab-backup" tabindex="0" hidden>
             <div class="pane-head">
               <h2>Backup</h2>
-              <span id="backup-status" class="status" role="status"></span>
+              <div class="row tight">
+                <button id="open-backup" type="button" class="primary">Back up…</button>
+                <button id="open-restore" type="button" class="quiet">Restore a script…</button>
+              </div>
             </div>
             <div class="pane">
-              <p class="note">The node writes the file into its backup folder (<code>--backup-dir</code>, or <code>TESSARIDB_BACKUP_DIR</code> in the image). The name may include subfolders and never replaces an existing file. Store-wide owners only.</p>
-              <div class="row">
-                <label>
-                  What to write 
-                  <select id="backup-form">
-                    <option value="state" selected>the current state — a snapshot</option>
-                    <option value="log">the log — every commit, in order</option>
-                    <option value="script">the current state as TessariQL</option>
-                  </select>
-                </label>
-                <label>File name <input id="backup-name" type="text" autocomplete="off" /></label>
-              </div>
-              <div class="row">
-                <label>
-                  What to include 
-                  <select id="backup-part">
-                    <option value="store" selected>the whole store</option>
-                    <option value="places">chosen namespaces and databases</option>
-                  </select>
-                </label>
-                <label>Namespaces and databases <input id="backup-places" type="text" placeholder="crm, prod.orders" autocomplete="off" /></label>
-              </div>
-              <p id="backup-says" class="note says"></p>
-              <div class="row">
-                <button id="backup-run" type="button" class="primary" disabled>Back up</button>
-              </div>
-              <div id="backup-answer" class="answer small" aria-live="polite"></div>
+              <p class="note">Each runs in its own dialog, and the node answers there: the file it wrote, or what it ran.</p>
             </div>
-            <div class="pane">
-              <div class="pane-head">
-                <h2>Restore a script</h2>
-                <span id="restore-status" class="status" role="status"></span>
+            <dialog id="backup-dialog" class="dialog" aria-labelledby="backup-dialog-title">
+              <div class="dialog-head">
+                <h2 id="backup-dialog-title">Back up</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
               </div>
-              <p class="note">Runs a script from the same folder beside what the store holds: it creates the databases it carries and is refused, with nothing written, when one of them already exists.</p>
-              <div class="row">
-                <label>File name <input id="restore-name" type="text" autocomplete="off" /></label>
+              <div class="dialog-body">
+                <p class="note">The node writes the file into its backup folder (<code>--backup-dir</code>, or <code>TESSARIDB_BACKUP_DIR</code> in the image). The name may include subfolders and never replaces an existing file. Store-wide owners only.</p>
+                <div class="row">
+                  <label>
+                    What to write 
+                    <select id="backup-form">
+                      <option value="state" selected>the current state — a snapshot</option>
+                      <option value="log">the log — every commit, in order</option>
+                      <option value="script">the current state as TessariQL</option>
+                    </select>
+                  </label>
+                  <label>File name <input id="backup-name" type="text" autocomplete="off" /></label>
+                </div>
+                <div class="row">
+                  <label>
+                    What to include 
+                    <select id="backup-part">
+                      <option value="store" selected>the whole store</option>
+                      <option value="places">chosen namespaces and databases</option>
+                    </select>
+                  </label>
+                  <label>Namespaces and databases <input id="backup-places" type="text" placeholder="crm, prod.orders" autocomplete="off" /></label>
+                </div>
+                <p id="backup-says" class="note says"></p>
+                <div class="row spread">
+                  <button id="backup-run" type="button" class="primary" disabled>Back up</button>
+                  <span id="backup-status" class="status" role="status"></span>
+                </div>
+                <div id="backup-answer" class="answer small" aria-live="polite"></div>
               </div>
-              <p id="restore-says" class="note says"></p>
-              <div class="row">
-                <button id="restore-run" type="button" disabled>Restore</button>
+            </dialog>
+            <dialog id="restore-dialog" class="dialog" aria-labelledby="restore-dialog-title">
+              <div class="dialog-head">
+                <h2 id="restore-dialog-title">Restore a script</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
               </div>
-              <div id="restore-answer" class="answer small" aria-live="polite"></div>
-            </div>
+              <div class="dialog-body">
+                <p class="note">Runs a script from the same folder beside what the store holds: it creates the databases it carries and is refused, with nothing written, when one of them already exists.</p>
+                <div class="row">
+                  <label>File name <input id="restore-name" type="text" autocomplete="off" /></label>
+                </div>
+                <p id="restore-says" class="note says"></p>
+                <div class="row spread">
+                  <button id="restore-run" type="button" disabled>Restore</button>
+                  <span id="restore-status" class="status" role="status"></span>
+                </div>
+                <div id="restore-answer" class="answer small" aria-live="polite"></div>
+              </div>
+            </dialog>
           </section>
           <section id="panel-vault" role="tabpanel" aria-labelledby="tab-vault" tabindex="0" hidden>
             <div class="pane-head">
@@ -645,22 +675,40 @@
             <div class="pane">
               <p class="note">Opens every vault declared without a passphrase of its own for the node's period (<code>--unseal-for</code>, ten minutes by default), then closes by itself. Store-wide operators only.</p>
               <div id="vault-store-answer" class="answer small" aria-live="polite"></div>
-              <div class="row">
-                <label>Passphrase <input id="vault-store-passphrase" type="password" autocomplete="current-password" /></label>
-              </div>
-              <div class="row">
-                <button id="vault-store-unseal" type="button" class="primary" disabled>Unseal</button>
+              <div class="row tight">
+                <button id="open-vault-store-unseal" type="button" class="primary">Unseal…</button>
                 <button id="vault-store-seal" type="button">Seal</button>
-                <button id="vault-store-refresh" type="button">Refresh</button>
-              </div>
-              <div class="row">
-                <label>Current passphrase <input id="vault-store-current" type="password" autocomplete="current-password" /></label>
-                <label>New passphrase <input id="vault-store-new" type="password" autocomplete="new-password" /></label>
-              </div>
-              <div class="row">
-                <button id="vault-store-change" type="button" disabled>Change passphrase</button>
+                <button id="vault-store-refresh" type="button" class="quiet">Refresh</button>
+                <button id="open-vault-store-change" type="button" class="quiet">Change passphrase…</button>
               </div>
             </div>
+            <dialog id="vault-store-unseal-dialog" class="dialog" aria-labelledby="vault-store-unseal-dialog-title">
+              <div class="dialog-head">
+                <h2 id="vault-store-unseal-dialog-title">Unseal with the store's key</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+              </div>
+              <div class="dialog-body">
+                <label>Passphrase <input id="vault-store-passphrase" type="password" autocomplete="current-password" /></label>
+                <div class="row">
+                  <button id="vault-store-unseal" type="button" class="primary" disabled>Unseal</button>
+                </div>
+              </div>
+            </dialog>
+            <dialog id="vault-store-change-dialog" class="dialog" aria-labelledby="vault-store-change-dialog-title">
+              <div class="dialog-head">
+                <h2 id="vault-store-change-dialog-title">Change the store's passphrase</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+              </div>
+              <div class="dialog-body">
+                <div class="row">
+                  <label>Current passphrase <input id="vault-store-current" type="password" autocomplete="current-password" /></label>
+                  <label>New passphrase <input id="vault-store-new" type="password" autocomplete="new-password" /></label>
+                </div>
+                <div class="row">
+                  <button id="vault-store-change" type="button" class="primary" disabled>Change passphrase</button>
+                </div>
+              </div>
+            </dialog>
             <div class="pane">
               <div class="pane-head">
                 <h2>One vault</h2>
@@ -674,22 +722,40 @@
               </div>
               <p id="vault-one-says" class="note says"></p>
               <div id="vault-one-answer" class="answer small" aria-live="polite"></div>
-              <div class="row">
-                <label>Passphrase <input id="vault-one-passphrase" type="password" autocomplete="current-password" /></label>
-              </div>
-              <div class="row">
+              <div class="row tight">
                 <button id="vault-one-show" type="button" disabled>Status</button>
-                <button id="vault-one-unseal" type="button" class="primary" disabled>Unseal</button>
+                <button id="open-vault-one-unseal" type="button" class="primary" disabled>Unseal…</button>
                 <button id="vault-one-seal" type="button" disabled>Seal</button>
-              </div>
-              <div class="row">
-                <label>Current passphrase <input id="vault-one-current" type="password" autocomplete="current-password" /></label>
-                <label>New passphrase <input id="vault-one-new" type="password" autocomplete="new-password" /></label>
-              </div>
-              <div class="row">
-                <button id="vault-one-change" type="button" disabled>Change passphrase</button>
+                <button id="open-vault-one-change" type="button" class="quiet" disabled>Change passphrase…</button>
               </div>
             </div>
+            <dialog id="vault-one-unseal-dialog" class="dialog" aria-labelledby="vault-one-unseal-dialog-title">
+              <div class="dialog-head">
+                <h2 id="vault-one-unseal-dialog-title">Unseal one vault</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+              </div>
+              <div class="dialog-body">
+                <label>Passphrase <input id="vault-one-passphrase" type="password" autocomplete="current-password" /></label>
+                <div class="row">
+                  <button id="vault-one-unseal" type="button" class="primary" disabled>Unseal</button>
+                </div>
+              </div>
+            </dialog>
+            <dialog id="vault-one-change-dialog" class="dialog" aria-labelledby="vault-one-change-dialog-title">
+              <div class="dialog-head">
+                <h2 id="vault-one-change-dialog-title">Change one vault's passphrase</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+              </div>
+              <div class="dialog-body">
+                <div class="row">
+                  <label>Current passphrase <input id="vault-one-current" type="password" autocomplete="current-password" /></label>
+                  <label>New passphrase <input id="vault-one-new" type="password" autocomplete="new-password" /></label>
+                </div>
+                <div class="row">
+                  <button id="vault-one-change" type="button" class="primary" disabled>Change passphrase</button>
+                </div>
+              </div>
+            </dialog>
             <div class="pane">
               <div class="pane-head">
                 <h2>Records in a vault</h2>
@@ -709,14 +775,9 @@
               </div>
               <div id="vault-rec-ids"></div>
               <div id="vault-rec-shown" aria-live="polite"></div>
-              <div class="row">
+              <div class="row tight">
                 <button id="vault-rec-hide" type="button" class="quiet" disabled>Hide the revealed values</button>
-              </div>
-              <div class="row">
-                <label>Record id <input id="vault-rec-id" type="text" autocomplete="off" /></label>
-                <label>Field <input id="vault-rec-field" type="text" autocomplete="off" /></label>
-                <label>Value <input id="vault-rec-value" type="password" autocomplete="new-password" /></label>
-                <button id="vault-rec-write" type="button" disabled>Write</button>
+                <button id="open-vault-rec-write" type="button" class="quiet">Write a field…</button>
               </div>
               <div class="row">
                 <label>Read by (optional) <input id="vault-rec-actor" type="text" autocomplete="off" /></label>
@@ -724,6 +785,22 @@
               </div>
               <div id="vault-rec-trail"></div>
             </div>
+            <dialog id="vault-rec-write-dialog" class="dialog" aria-labelledby="vault-rec-write-dialog-title">
+              <div class="dialog-head">
+                <h2 id="vault-rec-write-dialog-title">Write a field in the vault</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+              </div>
+              <div class="dialog-body">
+                <div class="row">
+                  <label>Record id <input id="vault-rec-id" type="text" autocomplete="off" /></label>
+                  <label>Field <input id="vault-rec-field" type="text" autocomplete="off" /></label>
+                  <label>Value <input id="vault-rec-value" type="password" autocomplete="new-password" /></label>
+                </div>
+                <div class="row">
+                  <button id="vault-rec-write" type="button" class="primary" disabled>Write</button>
+                </div>
+              </div>
+            </dialog>
           </section>
         </main>
         <footer class="tray">

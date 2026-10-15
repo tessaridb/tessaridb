@@ -8,6 +8,7 @@
 //! node's decision, and its refusal is shown in its own words.
 
 import { Unreachable, held, valueOf } from "./api.js";
+import { openDialog } from "./dialog.js";
 import { at, disable, say, setValue, trimmed, value, write } from "./dom.js";
 import { told } from "./session.js";
 import { aName } from "./topic-names.js";
@@ -188,6 +189,8 @@ async function restore(): Promise<void> {
 }
 
 export function wire(): void {
+  at("open-backup").addEventListener("click", () => openDialog("backup-dialog"));
+  at("open-restore").addEventListener("click", () => openDialog("restore-dialog"));
   setValue("backup-name", suggested(chosenForm()));
   for (const id of ["backup-form", "backup-part"]) {
     at(id).addEventListener("change", () => {

@@ -3605,6 +3605,8 @@ Shown once. The node keeps only its digest.`);
       says: "new-topic-says",
       status: "new-topic-status",
       compose: newTopic,
+      dialog: "new-topic-dialog",
+      opener: "open-new-topic",
       fields: ["new-topic-name", "new-topic-retain", "new-topic-kept", "new-topic-bytes"]
     },
     {
@@ -3612,6 +3614,8 @@ Shown once. The node keeps only its digest.`);
       says: "drop-topic-says",
       status: "drop-topic-status",
       compose: dropTopic,
+      dialog: "drop-topic-dialog",
+      opener: "open-drop-topic",
       fields: ["drop-topic-confirm", "drop-topic-why"],
       why: "drop-topic-why"
     },
@@ -3620,6 +3624,8 @@ Shown once. The node keeps only its digest.`);
       says: "new-group-says",
       status: "new-group-status",
       compose: newGroup,
+      dialog: "new-group-dialog",
+      opener: "open-new-group",
       fields: ["new-group-name", "new-group-deadline", "new-group-width", "new-group-deliveries", "new-group-dead"]
     },
     {
@@ -3627,6 +3633,8 @@ Shown once. The node keeps only its digest.`);
       says: "group-says",
       status: "group-status",
       compose: changeGroup,
+      dialog: "group-dialog",
+      opener: "open-group",
       fields: ["group-which", "group-action", "group-start", "group-confirm", "group-why"],
       why: "group-why"
     }
@@ -3647,7 +3655,8 @@ Shown once. The node keeps only its digest.`);
     try {
       const why = form.why === void 0 ? void 0 : trimmed(form.why) || void 0;
       await valueOf(tenancy(place2.namespace, place2.database) + composed.statement, SCREEN3, why);
-      say(form.status, "done");
+      say(form.status, "");
+      closeDialog(form.dialog);
       for (const field of form.fields) {
         if (at(field) instanceof HTMLInputElement) {
           setValue(field, field === "group-start" ? "0" : "");
@@ -3667,9 +3676,17 @@ Shown once. The node keeps only its digest.`);
         at(field).addEventListener("change", () => shape3(form));
       }
       at(form.button).addEventListener("click", () => void send2(form));
+      at(form.opener).addEventListener("click", () => {
+        say(form.status, "");
+        shape3(form);
+        openDialog(form.dialog);
+      });
     }
     whenChosen(() => {
       offer2("group-which", [...chosen()?.groups.keys() ?? []].filter((name) => aGroup(name) !== null));
+      for (const opener of ["open-new-group", "open-group", "open-drop-topic"]) {
+        disable(opener, chosen() === null);
+      }
       for (const form of FORMS) {
         shape3(form);
       }
@@ -3825,6 +3842,8 @@ ${bytes.toLocaleString("en")} bytes`;
     });
   }
   function wire24() {
+    at("open-backup").addEventListener("click", () => openDialog("backup-dialog"));
+    at("open-restore").addEventListener("click", () => openDialog("restore-dialog"));
     setValue("backup-name", suggested(chosenForm()));
     for (const id of ["backup-form", "backup-part"]) {
       at(id).addEventListener("change", () => {
@@ -4009,7 +4028,10 @@ ${bytes.toLocaleString("en")} bytes`;
     at("vault-rec-records").addEventListener("click", () => void listRecords(true));
     at("vault-rec-more").addEventListener("click", () => void listRecords(false));
     at("vault-rec-hide").addEventListener("click", hideRevealed);
-    at("vault-rec-write").addEventListener("click", () => void writeField());
+    at("vault-rec-write").addEventListener("click", () => {
+      void writeField();
+      closeDialog("vault-rec-write-dialog");
+    });
     at("vault-rec-audit").addEventListener("click", () => void auditTrail());
     for (const id of ["vault-rec-id", "vault-rec-field", "vault-rec-value"]) {
       at(id).addEventListener("input", shape5);
@@ -4093,6 +4115,8 @@ ${bytes.toLocaleString("en")} bytes`;
     write("vault-one-says", "path" in one2 ? `Acts on ${one2.path}.` : one2.missing);
     const named = !("path" in one2);
     disable("vault-one-show", named);
+    disable("open-vault-one-unseal", named);
+    disable("open-vault-one-change", named);
     disable("vault-one-seal", named);
     disable("vault-one-unseal", named || value("vault-one-passphrase") === "");
     disable("vault-one-change", named || value("vault-one-current") === "" || value("vault-one-new") === "");
@@ -4107,26 +4131,38 @@ ${bytes.toLocaleString("en")} bytes`;
     const one2 = (method, path, body) => act2(method, path, "vault-one-status", "vault-one-answer", body);
     at("vault-store-refresh").addEventListener("click", () => void store("GET", "/vault"));
     at("vault-store-seal").addEventListener("click", () => void store("POST", "/vault/seal"));
-    at("vault-store-unseal").addEventListener(
-      "click",
-      () => void store("POST", "/vault/unseal", spent("vault-store-passphrase"))
-    );
-    at("vault-store-change").addEventListener(
-      "click",
-      () => void store("POST", "/vault/passphrase", change3(spent("vault-store-current"), spent("vault-store-new")))
-    );
+    const opens = [
+      ["open-vault-store-unseal", "vault-store-unseal-dialog"],
+      ["open-vault-store-change", "vault-store-change-dialog"],
+      ["open-vault-one-unseal", "vault-one-unseal-dialog"],
+      ["open-vault-one-change", "vault-one-change-dialog"],
+      ["open-vault-rec-write", "vault-rec-write-dialog"]
+    ];
+    for (const [opener, shown3] of opens) {
+      at(opener).addEventListener("click", () => openDialog(shown3));
+    }
+    at("vault-store-unseal").addEventListener("click", () => {
+      const passphrase = spent("vault-store-passphrase");
+      closeDialog("vault-store-unseal-dialog");
+      void store("POST", "/vault/unseal", passphrase);
+    });
+    at("vault-store-change").addEventListener("click", () => {
+      const body = change3(spent("vault-store-current"), spent("vault-store-new"));
+      closeDialog("vault-store-change-dialog");
+      void store("POST", "/vault/passphrase", body);
+    });
     at("vault-one-show").addEventListener("click", () => void onOne((path) => one2("GET", path)));
     at("vault-one-seal").addEventListener("click", () => void onOne((path) => one2("POST", `${path}/seal`)));
-    at("vault-one-unseal").addEventListener(
-      "click",
-      () => void onOne((path) => one2("POST", `${path}/unseal`, spent("vault-one-passphrase")))
-    );
-    at("vault-one-change").addEventListener(
-      "click",
-      () => void onOne(
+    at("vault-one-unseal").addEventListener("click", () => {
+      closeDialog("vault-one-unseal-dialog");
+      void onOne((path) => one2("POST", `${path}/unseal`, spent("vault-one-passphrase")));
+    });
+    at("vault-one-change").addEventListener("click", () => {
+      closeDialog("vault-one-change-dialog");
+      void onOne(
         (path) => one2("POST", `${path}/passphrase`, change3(spent("vault-one-current"), spent("vault-one-new")))
-      )
-    );
+      );
+    });
     for (const id of [
       "vault-store-passphrase",
       "vault-store-current",
