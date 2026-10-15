@@ -5,22 +5,26 @@
 
 import { el, type Node } from "./html.js";
 import { to } from "./destinations.js";
-import { answer, button, choose, dialog, field, panel, paneHead, row, status } from "./ui.js";
+import { series } from "./series.js";
+import { spaces } from "./spaces.js";
+import { answer, button, choose, dialog, field, pane, panel, paneHead, row, status } from "./ui.js";
 
 export const data = (): Node =>
   panel(
     to("data"),
     false,
-    paneHead(
-      "What the store holds",
-      row("tight", status("data-status"), button("data-refresh", "Refresh", "quiet")),
-    ),
     row(
       "default",
       field("Namespace", choose("data-namespace", [])),
       field("Database", choose("data-database", [])),
     ),
-    answer("data-list"),
+    pane(
+      paneHead(
+        "Tables",
+        row("tight", status("data-status"), button("data-refresh", "Refresh", "quiet")),
+      ),
+      answer("data-list"),
+    ),
     dialog(
       "table-dialog",
       "Table",
@@ -29,4 +33,6 @@ export const data = (): Node =>
       el("pre", { id: "table-definition", class: "answer small" }),
       row("default", button("table-browse", "Open on Run", "primary")),
     ),
+    series(),
+    spaces(),
   );

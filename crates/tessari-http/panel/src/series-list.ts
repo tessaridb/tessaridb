@@ -8,12 +8,11 @@ import { held as valueHeld, ask, Unreachable, valueOf, type Answer, type Result 
 import { at, clear, made, value } from "./dom.js";
 import { told } from "./session.js";
 import { settled, state } from "./states.js";
-import { onArrival } from "./tabs.js";
+import { onChosen } from "./data-list.js";
 import { fieldsOf } from "./topic-info.js";
-import { offer } from "./topic-list.js";
 import { aName, tenancy } from "./topic-names.js";
 
-const SCREEN = "Run";
+const SCREEN = "Data";
 
 /** The most tables asked about; the rest are counted, not read. */
 const TABLES_ASKED = 200;
@@ -55,38 +54,10 @@ function strings(answered: Result | null, field: string): string[] {
   return Array.isArray(list) ? list.filter((each): each is string => typeof each === "string") : [];
 }
 
-async function readNamespaces(): Promise<void> {
-  state("series-status", "waiting", "asking…");
-  try {
-    offer("series-namespace", strings(await valueOf("INFO FOR STORE;", SCREEN), "namespaces"));
-  } catch (failure) {
-    state("series-status", "wrong", words(failure));
-    return;
-  }
-  await readDatabases();
-}
-
-async function readDatabases(): Promise<void> {
-  const namespace = aName(value("series-namespace"));
-  if (namespace === null) {
-    offer("series-database", []);
-    draw([]);
-    state("series-status", "empty", "No namespace here — declare one with DEFINE NAMESPACE.");
-    return;
-  }
-  try {
-    const answered = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN);
-    offer("series-database", strings(answered, "databases"));
-  } catch (failure) {
-    state("series-status", "wrong", words(failure));
-    return;
-  }
-  await readSeries();
-}
-
+/** The series of the database chosen at the top of the Data page. */
 async function readSeries(): Promise<void> {
-  const namespace = aName(value("series-namespace"));
-  const database = aName(value("series-database"));
+  const namespace = aName(value("data-namespace"));
+  const database = aName(value("data-database"));
   if (namespace === null || database === null) {
     draw([]);
     state("series-status", "empty", "Choose a namespace and a database that exist.");
@@ -146,8 +117,6 @@ function draw(found: readonly Kind[]): void {
 }
 
 export function wire(): void {
-  at("series-namespace").addEventListener("change", () => void readDatabases());
-  at("series-database").addEventListener("change", () => void readSeries());
-  at("series-refresh").addEventListener("click", () => void readNamespaces());
-  onArrival(["run"], () => void readNamespaces());
+  at("series-refresh").addEventListener("click", () => void readSeries());
+  onChosen(() => void readSeries());
 }

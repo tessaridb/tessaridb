@@ -113,6 +113,7 @@ fn every_action_on_an_account_is_its_own_dialog() {
         "vault-one-unseal",
         "vault-one-change",
         "vault-rec-write",
+        "follow",
     ] {
         let at = position(&page, id);
         let opened = page[..at].rfind("<dialog").unwrap_or_else(|| {
@@ -152,6 +153,35 @@ fn every_action_on_an_account_is_its_own_dialog() {
         dialogs >= 20,
         "only {dialogs} dialog(s) on the page — the account actions are not each \
          their own"
+    );
+}
+
+/// Run holds the script and its answer; what the store holds is browsed on Data.
+#[cfg(feature = "console")]
+#[test]
+fn run_is_the_script_and_data_is_where_the_store_is_browsed() {
+    let page = page();
+    let run = position(&page, "panel-run");
+    let data = position(&page, "panel-data");
+    let after_data = page[data..]
+        .find("</section>")
+        .map(|end| data.saturating_add(end))
+        .expect("the Data panel closes");
+    for id in ["series-list", "kv-list"] {
+        let at = position(&page, id);
+        assert!(
+            data < at && at < after_data,
+            "#{id} is not on the Data page, so Run still stacks a browser of the store \
+             under its script"
+        );
+    }
+    let after_run = page[run..]
+        .find("</section>")
+        .map(|end| run.saturating_add(end))
+        .expect("the Run panel closes");
+    assert!(
+        page[run..after_run].contains("id=\"open-follow\""),
+        "Run offers no way to open the follow form"
     );
 }
 

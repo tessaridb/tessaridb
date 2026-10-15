@@ -80,8 +80,8 @@
   //! each other in words.
   var tabs = () => all('[role="tab"]');
   function here() {
-    const chosen2 = tabs().find((tab) => tab.getAttribute("aria-selected") === "true");
-    return chosen2 === void 0 ? "" : chosen2.id.replace("tab-", "");
+    const chosen3 = tabs().find((tab) => tab.getAttribute("aria-selected") === "true");
+    return chosen3 === void 0 ? "" : chosen3.id.replace("tab-", "");
   }
   var arrivals = [];
   var held = true;
@@ -114,11 +114,11 @@
   function show(name) {
     const wanted2 = tabs().some((tab) => tab.id === "tab-" + name) ? name : "run";
     for (const tab of tabs()) {
-      const chosen2 = tab.id === "tab-" + wanted2;
-      tab.setAttribute("aria-selected", String(chosen2));
-      tab.tabIndex = chosen2 ? 0 : -1;
-      pane(tab).hidden = !chosen2;
-      if (chosen2) {
+      const chosen3 = tab.id === "tab-" + wanted2;
+      tab.setAttribute("aria-selected", String(chosen3));
+      tab.tabIndex = chosen3 ? 0 : -1;
+      pane(tab).hidden = !chosen3;
+      if (chosen3) {
         at("view-title").textContent = tab.textContent?.trim() ?? "";
       }
     }
@@ -591,6 +591,66 @@
     }
   }
 
+  // src/dialog.ts
+  //! Opening and closing the console's dialogs.
+  //!
+  //! The markup is `ui.dialog`; this is the behaviour the browser does not supply.
+  //! Escape, the inert page behind and the focus trap are the native `<dialog>`'s
+  //! own. What is added here is the rest of the modal contract: the control that
+  //! opened a dialog gets focus back when it closes, and a click on the backdrop
+  //! closes it as Escape would.
+  var openers = /* @__PURE__ */ new Map();
+  function element(id) {
+    const found = at(id);
+    if (!(found instanceof HTMLDialogElement)) {
+      throw new Error(`#${id} is not a dialog`);
+    }
+    return found;
+  }
+  function openDialog(id) {
+    const shown3 = element(id);
+    const from = document.activeElement;
+    if (from instanceof HTMLElement) {
+      openers.set(id, from);
+    }
+    if (!shown3.open) {
+      shown3.showModal();
+    }
+    const first = Array.from(
+      shown3.querySelectorAll(
+        ".dialog-body input:not([readonly]), .dialog-body select, .dialog-body textarea, .dialog-body button"
+      )
+    ).find((candidate) => candidate.offsetParent !== null);
+    first?.focus();
+  }
+  function closeDialog(id) {
+    const shown3 = element(id);
+    if (shown3.open) {
+      shown3.close();
+    }
+  }
+  function wire4() {
+    for (const shown3 of Array.from(document.querySelectorAll("dialog"))) {
+      shown3.addEventListener("close", () => {
+        const back = openers.get(shown3.id);
+        openers.delete(shown3.id);
+        if (back !== void 0 && back.isConnected && back.offsetParent !== null) {
+          back.focus();
+        } else {
+          at("view-title").focus();
+        }
+      });
+      shown3.addEventListener("click", (event) => {
+        if (event.target === shown3) {
+          shown3.close();
+        }
+      });
+      for (const closer of Array.from(shown3.querySelectorAll("[data-close]"))) {
+        closer.addEventListener("click", () => shown3.close());
+      }
+    }
+  }
+
   // src/watch.ts
   //! Following a table as it changes.
   var following = null;
@@ -690,15 +750,17 @@
     }
     return wanted2;
   }
-  function wire4() {
+  function wire5() {
     at("follow").addEventListener("click", () => {
       stop();
       clear("changes");
       const values = boundValues();
       if (typeof values === "string") {
-        say("watch-status", values, true);
+        say("follow-dialog-status", values, true);
         return;
       }
+      say("follow-dialog-status", "");
+      closeDialog("follow-dialog");
       const socket = new WebSocket(where());
       following = socket;
       toldWhy = false;
@@ -741,6 +803,7 @@
       });
     });
     at("stop").addEventListener("click", () => stop("stopped"));
+    at("open-follow").addEventListener("click", () => openDialog("follow-dialog"));
   }
 
   // src/context.ts
@@ -833,72 +896,12 @@
       at("watch-status").textContent = "the follow stopped at the reload — sign in and press Follow to resume it";
     }
   }
-  function wire5() {
+  function wire6() {
     restore();
     for (const id of REMEMBERED) {
       at(id).addEventListener("input", keep);
     }
     window.addEventListener("beforeunload", keep);
-  }
-
-  // src/dialog.ts
-  //! Opening and closing the console's dialogs.
-  //!
-  //! The markup is `ui.dialog`; this is the behaviour the browser does not supply.
-  //! Escape, the inert page behind and the focus trap are the native `<dialog>`'s
-  //! own. What is added here is the rest of the modal contract: the control that
-  //! opened a dialog gets focus back when it closes, and a click on the backdrop
-  //! closes it as Escape would.
-  var openers = /* @__PURE__ */ new Map();
-  function element(id) {
-    const found = at(id);
-    if (!(found instanceof HTMLDialogElement)) {
-      throw new Error(`#${id} is not a dialog`);
-    }
-    return found;
-  }
-  function openDialog(id) {
-    const shown3 = element(id);
-    const from = document.activeElement;
-    if (from instanceof HTMLElement) {
-      openers.set(id, from);
-    }
-    if (!shown3.open) {
-      shown3.showModal();
-    }
-    const first = Array.from(
-      shown3.querySelectorAll(
-        ".dialog-body input:not([readonly]), .dialog-body select, .dialog-body textarea, .dialog-body button"
-      )
-    ).find((candidate) => candidate.offsetParent !== null);
-    first?.focus();
-  }
-  function closeDialog(id) {
-    const shown3 = element(id);
-    if (shown3.open) {
-      shown3.close();
-    }
-  }
-  function wire6() {
-    for (const shown3 of Array.from(document.querySelectorAll("dialog"))) {
-      shown3.addEventListener("close", () => {
-        const back = openers.get(shown3.id);
-        openers.delete(shown3.id);
-        if (back !== void 0 && back.isConnected && back.offsetParent !== null) {
-          back.focus();
-        } else {
-          at("view-title").focus();
-        }
-      });
-      shown3.addEventListener("click", (event) => {
-        if (event.target === shown3) {
-          shown3.close();
-        }
-      });
-      for (const closer of Array.from(shown3.querySelectorAll("[data-close]"))) {
-        closer.addEventListener("click", () => shown3.close());
-      }
-    }
   }
 
   // src/draw.ts
@@ -1439,6 +1442,12 @@
     for (const flag of ["collection", "vault", "bucket", "edge"]) {
       if (about[flag] === true) return flag;
     }
+    const definition2 = about["definition"];
+    for (const declared of ["series", "space", "queue"]) {
+      if (typeof definition2 === "string" && definition2.startsWith(`DEFINE ${declared.toUpperCase()} `)) {
+        return declared;
+      }
+    }
     return about["schemafull"] === true ? "table" : "table, schemaless";
   }
   var count = (about, field) => {
@@ -1450,6 +1459,13 @@
     const database = aName(value("data-database"));
     return namespace === null || database === null ? null : `USE NAMESPACE ${namespace}; USE DATABASE ${database}; `;
   }
+  var listeners3 = [];
+  function onChosen(listener) {
+    listeners3.push(listener);
+  }
+  var chosen2 = () => {
+    for (const listener of listeners3) listener();
+  };
   async function readNamespaces2() {
     state("data-status", "waiting", "asking…");
     try {
@@ -1465,6 +1481,7 @@
     if (namespace === null) {
       offer("data-database", []);
       draw3([]);
+      chosen2();
       state("data-status", "empty", "No namespace here — declare one on Run with DEFINE NAMESPACE.");
       return;
     }
@@ -1478,6 +1495,7 @@
     await readTables();
   }
   async function readTables() {
+    chosen2();
     const selecting = selection();
     if (selecting === null) {
       draw3([]);
@@ -2198,8 +2216,8 @@ Shown once. The node keeps only its digest.`);
     return space === "" ? null : space;
   }
   function role() {
-    const chosen2 = value("new-role");
-    return chosen2 === "other" ? trimmed("new-role-other") : chosen2;
+    const chosen3 = value("new-role");
+    return chosen3 === "other" ? trimmed("new-role-other") : chosen3;
   }
   function definition() {
     const name = trimmed("new-name");
@@ -2234,8 +2252,8 @@ Shown once. The node keeps only its digest.`);
     preview2();
   }
   function changedRole() {
-    const chosen2 = value("change-role");
-    return chosen2 === "other" ? trimmed("change-role-other") : chosen2;
+    const chosen3 = value("change-role");
+    return chosen3 === "other" ? trimmed("change-role-other") : chosen3;
   }
   function alteration() {
     const name = trimmed("change-name");
@@ -4358,7 +4376,7 @@ ${bytes.toLocaleString("en")} bytes`;
   //! writes back the statement that made it. The keys and the value come from the
   //! `/kv` routes, so what the pane shows is what any HTTP caller of those routes
   //! would be answered.
-  var SCREEN8 = "Run";
+  var SCREEN8 = "Data";
   var TABLES_ASKED = 200;
   var KEYS_SHOWN = 100;
   var words4 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
@@ -4372,36 +4390,9 @@ ${bytes.toLocaleString("en")} bytes`;
     const definition2 = fields?.["definition"];
     return typeof name === "string" && typeof definition2 === "string" && definition2.startsWith("DEFINE SPACE ") ? name : null;
   }
-  async function readNamespaces3() {
-    state("kv-status", "waiting", "asking…");
-    try {
-      offer("kv-namespace", strings2(await valueOf("INFO FOR STORE;", SCREEN8), "namespaces"));
-    } catch (failure) {
-      state("kv-status", "wrong", words4(failure));
-      return;
-    }
-    await readDatabases3();
-  }
-  async function readDatabases3() {
-    const namespace = aName(value("kv-namespace"));
-    if (namespace === null) {
-      offer("kv-database", []);
-      offer("kv-space", []);
-      state("kv-status", "empty", "No namespace here — declare one with DEFINE NAMESPACE.");
-      return;
-    }
-    try {
-      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN8);
-      offer("kv-database", strings2(answered2, "databases"));
-    } catch (failure) {
-      state("kv-status", "wrong", words4(failure));
-      return;
-    }
-    await readSpaces();
-  }
   async function readSpaces() {
-    const namespace = aName(value("kv-namespace"));
-    const database = aName(value("kv-database"));
+    const namespace = aName(value("data-namespace"));
+    const database = aName(value("data-database"));
     clear("kv-list");
     clear("kv-value");
     if (namespace === null || database === null) {
@@ -4435,8 +4426,8 @@ ${bytes.toLocaleString("en")} bytes`;
     await listKeys();
   }
   function base() {
-    const namespace = aName(value("kv-namespace"));
-    const database = aName(value("kv-database"));
+    const namespace = aName(value("data-namespace"));
+    const database = aName(value("data-database"));
     const space = aName(value("kv-space"));
     return namespace === null || database === null || space === null ? null : `/kv/${namespace}/${database}/${space}`;
   }
@@ -4512,12 +4503,10 @@ ${JSON.stringify(held6, null, 2)}`;
     }
   }
   function wire27() {
-    at("kv-namespace").addEventListener("change", () => void readDatabases3());
-    at("kv-database").addEventListener("change", () => void readSpaces());
     at("kv-space").addEventListener("change", () => void listKeys());
     at("kv-list-them").addEventListener("click", () => void listKeys());
-    at("kv-refresh").addEventListener("click", () => void readNamespaces3());
-    onArrival(["run"], () => void readNamespaces3());
+    at("kv-refresh").addEventListener("click", () => void readSpaces());
+    onChosen(() => void readSpaces());
   }
 
   // src/series-list.ts
@@ -4526,7 +4515,7 @@ ${JSON.stringify(held6, null, 2)}`;
   //! Everything here reads. A table's kind is not a field of `INFO FOR DATABASE`,
   //! so each table is asked for `INFO FOR TABLE`: a series writes back the
   //! `DEFINE SERIES` statement that made it, and a rollup says it is one.
-  var SCREEN9 = "Run";
+  var SCREEN9 = "Data";
   var TABLES_ASKED2 = 200;
   var DECLARED = /^DEFINE SERIES \S+ RETAIN (\S+?)(?: TIME (\S+?))?;/;
   function kind2(value2) {
@@ -4551,36 +4540,9 @@ ${JSON.stringify(held6, null, 2)}`;
     const list = held3(answered2)?.[field];
     return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
   }
-  async function readNamespaces4() {
-    state("series-status", "waiting", "asking…");
-    try {
-      offer("series-namespace", strings3(await valueOf("INFO FOR STORE;", SCREEN9), "namespaces"));
-    } catch (failure) {
-      state("series-status", "wrong", words5(failure));
-      return;
-    }
-    await readDatabases4();
-  }
-  async function readDatabases4() {
-    const namespace = aName(value("series-namespace"));
-    if (namespace === null) {
-      offer("series-database", []);
-      draw7([]);
-      state("series-status", "empty", "No namespace here — declare one with DEFINE NAMESPACE.");
-      return;
-    }
-    try {
-      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN9);
-      offer("series-database", strings3(answered2, "databases"));
-    } catch (failure) {
-      state("series-status", "wrong", words5(failure));
-      return;
-    }
-    await readSeries();
-  }
   async function readSeries() {
-    const namespace = aName(value("series-namespace"));
-    const database = aName(value("series-database"));
+    const namespace = aName(value("data-namespace"));
+    const database = aName(value("data-database"));
     if (namespace === null || database === null) {
       draw7([]);
       state("series-status", "empty", "Choose a namespace and a database that exist.");
@@ -4637,10 +4599,8 @@ ${JSON.stringify(held6, null, 2)}`;
     at("series-list").appendChild(table);
   }
   function wire28() {
-    at("series-namespace").addEventListener("change", () => void readDatabases4());
-    at("series-database").addEventListener("change", () => void readSeries());
-    at("series-refresh").addEventListener("click", () => void readNamespaces4());
-    onArrival(["run"], () => void readNamespaces4());
+    at("series-refresh").addEventListener("click", () => void readSeries());
+    onChosen(() => void readSeries());
   }
 
   // src/users.ts
@@ -4897,7 +4857,7 @@ ${JSON.stringify(held6, null, 2)}`;
     at("view").focus();
   });
   wire2();
-  wire6();
+  wire4();
   wire();
   wire3();
   wire19();
@@ -4908,8 +4868,8 @@ ${JSON.stringify(held6, null, 2)}`;
   wire15();
   wire10();
   wire9();
+  wire6();
   wire5();
-  wire4();
   wire12();
   wire29();
   wire30();

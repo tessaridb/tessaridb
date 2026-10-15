@@ -102,87 +102,43 @@
             </div>
             <div class="pane">
               <div class="pane-head">
-                <h2>Follow a table</h2>
-                <span id="watch-status" class="status" role="status"></span>
-              </div>
-              <p class="note"><code>from</code> is a position in the log rather than a moment in time, so <code>0</code> replays everything the log still holds. Leave the table empty to follow every table you may read. A split table resumes from its <code>cursor</code>.</p>
-              <div class="row">
-                <label>Namespace <input id="namespace" type="text" value="prod" /></label>
-                <label>Database <input id="database" type="text" value="library" /></label>
-                <label>Table <input id="table" type="text" placeholder="every table" /></label>
-                <label>From <input id="from" type="number" value="0" min="0" /></label>
-                <label>Cursor <input id="cursor" type="text" placeholder="split tables only" /></label>
-              </div>
-              <div class="row">
-                <label>Condition <input id="condition" type="text" placeholder="chat = $chat" /></label>
-                <label>Values <input id="condition-values" type="text" placeholder="{&quot;chat&quot;: &quot;'a'&quot;}" /></label>
-              </div>
-              <div class="row">
-                <button id="follow" type="button">Follow</button>
-                <button id="stop" type="button" class="quiet" disabled>Stop</button>
+                <h2>Changes</h2>
+                <div class="row tight">
+                  <span id="watch-status" class="status" role="status"></span>
+                  <button id="open-follow" type="button" class="quiet">Follow a table…</button>
+                  <button id="stop" type="button" class="quiet" disabled>Stop</button>
+                </div>
               </div>
               <ol id="changes" class="changes" reversed></ol>
             </div>
-            <div class="pane">
-              <div class="pane-head">
-                <h2>Series</h2>
-                <div class="row tight">
-                  <span id="series-status" class="status" role="status"></span>
-                  <button id="series-refresh" type="button" class="quiet">Refresh</button>
+            <dialog id="follow-dialog" class="dialog" aria-labelledby="follow-dialog-title">
+              <div class="dialog-head">
+                <h2 id="follow-dialog-title">Follow a table</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+              </div>
+              <div class="dialog-body">
+                <p class="note"><code>from</code> is a position in the log rather than a moment in time, so <code>0</code> replays everything the log still holds. Leave the table empty to follow every table you may read. A split table resumes from its <code>cursor</code>.</p>
+                <div class="row">
+                  <label>Namespace <input id="namespace" type="text" value="prod" /></label>
+                  <label>Database <input id="database" type="text" value="library" /></label>
+                  <label>Table <input id="table" type="text" placeholder="every table" /></label>
+                </div>
+                <div class="row">
+                  <label>From <input id="from" type="number" value="0" min="0" /></label>
+                  <label>Cursor <input id="cursor" type="text" placeholder="split tables only" /></label>
+                </div>
+                <div class="row">
+                  <label>Condition <input id="condition" type="text" placeholder="chat = $chat" /></label>
+                  <label>Values <input id="condition-values" type="text" placeholder="{&quot;chat&quot;: &quot;'a'&quot;}" /></label>
+                </div>
+                <div class="row spread">
+                  <button id="follow" type="button" class="primary">Follow</button>
+                  <span id="follow-dialog-status" class="status" role="status"></span>
                 </div>
               </div>
-              <p class="note">A series ordered by its time field keeps each event where it happened; one ordered by arrival keeps it where it was written. A rollup is kept by the writes to its series.</p>
-              <div class="row">
-                <label>
-                  Namespace 
-                  <select id="series-namespace"></select>
-                </label>
-                <label>
-                  Database 
-                  <select id="series-database"></select>
-                </label>
-              </div>
-              <div id="series-list" class="answer small" aria-live="polite"></div>
-            </div>
-            <div class="pane">
-              <div class="pane-head">
-                <h2>Spaces</h2>
-                <div class="row tight">
-                  <span id="kv-status" class="status" role="status"></span>
-                  <button id="kv-refresh" type="button" class="quiet">Refresh</button>
-                </div>
-              </div>
-              <p class="note">A space keeps one value per key. A plain write clears the key's expiry; a lock's value names its holder until its lease runs out.</p>
-              <div class="row">
-                <label>
-                  Namespace 
-                  <select id="kv-namespace"></select>
-                </label>
-                <label>
-                  Database 
-                  <select id="kv-database"></select>
-                </label>
-                <label>
-                  Space 
-                  <select id="kv-space"></select>
-                </label>
-              </div>
-              <div class="row">
-                <label>Prefix <input id="kv-prefix" type="text" placeholder="every key" /></label>
-                <button id="kv-list-them" type="button" class="quiet">List</button>
-              </div>
-              <div id="kv-list" class="answer small" aria-live="polite"></div>
-              <div id="kv-value" class="answer small" aria-live="polite"></div>
-            </div>
+            </dialog>
           </section>
           <section id="panel-data" role="tabpanel" aria-labelledby="tab-data" tabindex="0" hidden>
-            <div class="pane-head">
-              <h2>What the store holds</h2>
-              <div class="row tight">
-                <span id="data-status" class="status" role="status"></span>
-                <button id="data-refresh" type="button" class="quiet">Refresh</button>
-              </div>
-            </div>
             <div class="row">
               <label>
                 Namespace 
@@ -193,7 +149,16 @@
                 <select id="data-database"></select>
               </label>
             </div>
-            <div id="data-list" class="answer" aria-live="polite"></div>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Tables</h2>
+                <div class="row tight">
+                  <span id="data-status" class="status" role="status"></span>
+                  <button id="data-refresh" type="button" class="quiet">Refresh</button>
+                </div>
+              </div>
+              <div id="data-list" class="answer" aria-live="polite"></div>
+            </div>
             <dialog id="table-dialog" class="dialog" aria-labelledby="table-dialog-title">
               <div class="dialog-head">
                 <h2 id="table-dialog-title">Table</h2>
@@ -208,6 +173,39 @@
                 </div>
               </div>
             </dialog>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Series</h2>
+                <div class="row tight">
+                  <span id="series-status" class="status" role="status"></span>
+                  <button id="series-refresh" type="button" class="quiet">Refresh</button>
+                </div>
+              </div>
+              <p class="note">A series ordered by its time field keeps each event where it happened; one ordered by arrival keeps it where it was written. A rollup is kept by the writes to its series.</p>
+              <div id="series-list" class="answer small" aria-live="polite"></div>
+            </div>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Spaces</h2>
+                <div class="row tight">
+                  <span id="kv-status" class="status" role="status"></span>
+                  <button id="kv-refresh" type="button" class="quiet">Refresh</button>
+                </div>
+              </div>
+              <p class="note">A space keeps one value per key. A plain write clears the key's expiry; a lock's value names its holder until its lease runs out.</p>
+              <div class="row">
+                <label>
+                  Space 
+                  <select id="kv-space"></select>
+                </label>
+              </div>
+              <div class="row">
+                <label>Prefix <input id="kv-prefix" type="text" placeholder="every key" /></label>
+                <button id="kv-list-them" type="button" class="quiet">List</button>
+              </div>
+              <div id="kv-list" class="answer small" aria-live="polite"></div>
+              <div id="kv-value" class="answer small" aria-live="polite"></div>
+            </div>
           </section>
           <section id="panel-topics" role="tabpanel" aria-labelledby="tab-topics" tabindex="0" hidden>
             <div class="pane-head">

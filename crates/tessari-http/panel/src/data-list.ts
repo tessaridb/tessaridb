@@ -38,6 +38,14 @@ function kind(about: Record<string, unknown>): string {
   for (const flag of ["collection", "vault", "bucket", "edge"]) {
     if (about[flag] === true) return flag;
   }
+  // A series, a space and a queue carry no flag of their own; the statement that
+  // declared them says which, as the Series and Spaces panes already read it.
+  const definition = about["definition"];
+  for (const declared of ["series", "space", "queue"]) {
+    if (typeof definition === "string" && definition.startsWith(`DEFINE ${declared.toUpperCase()} `)) {
+      return declared;
+    }
+  }
   return about["schemafull"] === true ? "table" : "table, schemaless";
 }
 
@@ -55,6 +63,18 @@ function selection(): string | null {
     : `USE NAMESPACE ${namespace}; USE DATABASE ${database}; `;
 }
 
+/** Who reads again when the chosen namespace or database changes. */
+const listeners: (() => void)[] = [];
+
+/** Read again whenever this page's namespace and database are chosen. */
+export function onChosen(listener: () => void): void {
+  listeners.push(listener);
+}
+
+const chosen = (): void => {
+  for (const listener of listeners) listener();
+};
+
 async function readNamespaces(): Promise<void> {
   state("data-status", "waiting", "asking…");
   try {
@@ -71,6 +91,7 @@ async function readDatabases(): Promise<void> {
   if (namespace === null) {
     offer("data-database", []);
     draw([]);
+    chosen();
     state("data-status", "empty", "No namespace here — declare one on Run with DEFINE NAMESPACE.");
     return;
   }
@@ -85,6 +106,7 @@ async function readDatabases(): Promise<void> {
 }
 
 async function readTables(): Promise<void> {
+  chosen();
   const selecting = selection();
   if (selecting === null) {
     draw([]);

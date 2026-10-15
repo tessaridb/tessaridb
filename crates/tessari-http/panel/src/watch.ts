@@ -1,6 +1,7 @@
 //! Following a table as it changes.
 
 import { WATCH_ROUTE } from "./api.js";
+import { closeDialog, openDialog } from "./dialog.js";
 import { at, clear, disable, made, say, value } from "./dom.js";
 import { token } from "./session.js";
 
@@ -195,9 +196,11 @@ export function wire(): void {
     clear("changes");
     const values = boundValues();
     if (typeof values === "string") {
-      say("watch-status", values, true);
+      say("follow-dialog-status", values, true);
       return;
     }
+    say("follow-dialog-status", "");
+    closeDialog("follow-dialog");
 
     const socket = new WebSocket(where());
     following = socket;
@@ -256,4 +259,5 @@ export function wire(): void {
   });
 
   at("stop").addEventListener("click", () => stop("stopped"));
+  at("open-follow").addEventListener("click", () => openDialog("follow-dialog"));
 }

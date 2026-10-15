@@ -14,14 +14,12 @@ import { access, accessDialogs } from "./access.js";
 import { gate, identity, mineDialog } from "./account.js";
 import { cluster } from "./cluster.js";
 import { data } from "./data.js";
-import { spaces } from "./spaces.js";
-import { series } from "./series.js";
 import { topics } from "./topics.js";
 import { backup } from "./backup-pane.js";
 import { vault } from "./vault-pane.js";
 import { DESTINATIONS, to } from "./destinations.js";
 import {
-  answer, behindDisclosure, button, field, note, number, pane, paneHead, panel,
+  answer, behindDisclosure, button, dialog, field, note, number, pane, paneHead, panel,
   row, split, status, tabs, text, warning,
 } from "./ui.js";
 
@@ -120,7 +118,20 @@ const query = (): Node =>
       ),
     ),
     pane(
-      paneHead("Follow a table", status("watch-status")),
+      paneHead(
+        "Changes",
+        row(
+          "tight",
+          status("watch-status"),
+          button("open-follow", "Follow a table…", "quiet"),
+          button("stop", "Stop", "quiet", { disabled: true }),
+        ),
+      ),
+      el("ol", { id: "changes", class: "changes", reversed: true }),
+    ),
+    dialog(
+      "follow-dialog",
+      "Follow a table",
       note(
         el("code", {}, "from"),
         " is a position in the log rather than a moment in time, so ",
@@ -135,6 +146,9 @@ const query = (): Node =>
         field("Namespace", text("namespace", { value: "prod" })),
         field("Database", text("database", { value: "library" })),
         field("Table", text("table", { placeholder: "every table" })),
+      ),
+      row(
+        "default",
         field("From", number("from", { value: 0, min: 0 })),
         field("Cursor", text("cursor", { placeholder: "split tables only" })),
       ),
@@ -143,15 +157,8 @@ const query = (): Node =>
         field("Condition", text("condition", { placeholder: "chat = $chat" })),
         field("Values", text("condition-values", { placeholder: "{\"chat\": \"'a'\"}" })),
       ),
-      row(
-        "default",
-        button("follow", "Follow"),
-        button("stop", "Stop", "quiet", { disabled: true }),
-      ),
-      el("ol", { id: "changes", class: "changes", reversed: true }),
+      row("spread", button("follow", "Follow", "primary"), status("follow-dialog-status")),
     ),
-    series(),
-    spaces(),
   );
 
 
