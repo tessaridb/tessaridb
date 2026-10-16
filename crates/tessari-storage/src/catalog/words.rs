@@ -131,7 +131,8 @@ impl Catalog<'_, '_> {
     pub fn create_word_set(&mut self, set: &WordSet) -> Result<()> {
         if self.word_set(set.kind, &set.name)?.is_some() {
             return Err(Error::NameTaken {
-                qualified: format!("{}:{}", set.kind.word(), set.name),
+                holder: format!("a set of {}", set.kind.word()),
+                name: set.name.clone(),
             });
         }
         self.transaction.put(

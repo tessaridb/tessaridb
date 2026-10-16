@@ -191,7 +191,10 @@ fn the_status_says_what_kind_of_failure_it_was() {
         "USE NAMESPACE prod DATABASE orders; DEFINE COLLECTION users;",
     );
     assert_eq!(status, 409, "{body}");
-    assert!(body.contains("already in use"), "{body}");
+    assert!(
+        body.contains("a collection named users already exists"),
+        "{body}"
+    );
 }
 
 #[test]

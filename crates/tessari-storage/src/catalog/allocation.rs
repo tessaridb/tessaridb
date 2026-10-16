@@ -1,7 +1,7 @@
 //! Allocating ids and record numbers, and claiming names.
 
 use super::system::Level;
-use super::{Catalog, definition, id_key, system};
+use super::{Catalog, definition, id_key, name_of, parse_qualified, system, with_article};
 use crate::error::{Error, Result};
 use tessari_encoding::{decode_payload, encode_payload};
 use tessari_types::{RecordId, TableId};
@@ -102,12 +102,23 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
 
     /// Refuse early if the name is already resolvable.
     pub(crate) fn reserve_name(&self, qualified: &str) -> Result<()> {
-        if self.resolve(qualified)?.is_some() {
-            return Err(Error::NameTaken {
-                qualified: qualified.to_owned(),
-            });
-        }
-        Ok(())
+        let Some(id) = self.resolve(qualified)? else {
+            return Ok(());
+        };
+        // Said in the caller's words: what holds the name and the name itself,
+        // never the key the catalog keeps it under (Q-G042-1).
+        let noun = match parse_qualified(qualified) {
+            Some((Level::Table, _)) => match self.table(TableId::new(id))? {
+                Some(table) => table.kind.noun(),
+                None => Level::Table.noun(),
+            },
+            Some((level, _)) => level.noun(),
+            None => "catalog object",
+        };
+        Err(Error::NameTaken {
+            holder: with_article(noun),
+            name: name_of(qualified).to_owned(),
+        })
     }
 
     pub(crate) fn claim_name(&mut self, qualified: &str, id: u32) {

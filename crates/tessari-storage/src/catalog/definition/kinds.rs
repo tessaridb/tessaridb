@@ -234,6 +234,25 @@ pub struct StoredKind {
 }
 
 impl TableKind {
+    /// What a person calls this kind, for a sentence that names one.
+    #[must_use]
+    pub const fn noun(&self) -> &'static str {
+        match self {
+            Self::Table => "table",
+            Self::Collection => "collection",
+            Self::Bucket(_) => "bucket",
+            Self::Edge(_) => "edge table",
+            Self::Vector(_) => "vector store",
+            Self::Geo => "geo store",
+            Self::Vault(_) => "vault",
+            Self::Queue(_) => "queue",
+            Self::View(_) => "view",
+            Self::Series(_) => "series",
+            Self::Space(_) => "space",
+            Self::Topic(_) => "topic",
+        }
+    }
+
     /// The kind a stored definition's three flags describe.
     ///
     /// A catalog entry written before the kind existed carries the flags, and a
