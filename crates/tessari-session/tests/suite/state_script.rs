@@ -7,6 +7,7 @@
 //! silence.
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -199,7 +200,7 @@ fn a_part_with_no_faithful_spelling_is_refused_by_name_and_not_written() {
              RELATE a:1->likes->b:1;",
         )
         .unwrap();
-    let taken = tessari_session::write_script(&source).unwrap();
+    let taken = tessari_session::write_script(&source).now().unwrap();
     assert!(
         taken
             .refused

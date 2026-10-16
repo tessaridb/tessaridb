@@ -141,9 +141,9 @@ pub(crate) async fn converse<C: Carried>(
             let db = Arc::clone(&talk.db);
             let bridged = talk
                 .bridge
-                .call(session, move |held: Detached| {
+                .call_async(session, move |held: Detached| async move {
                     let mut attached = held.attach(db.store());
-                    let answer = respond_vault(&mut attached, &asked, theirs);
+                    let answer = respond_vault(&mut attached, &asked, theirs).await;
                     (attached.detach(), answer)
                 })
                 .await;

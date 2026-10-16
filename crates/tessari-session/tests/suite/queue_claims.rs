@@ -21,6 +21,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -1575,10 +1576,11 @@ fn worker(store: &Store) -> Session<'_> {
 }
 
 /// The identities a claim run inside an open transaction answered with.
-fn claimed_in(open: &mut tessari_session::Atomic<'_, '_>, script: &str) -> Vec<String> {
+async fn claimed_in(open: &mut tessari_session::Atomic<'_, '_>, script: &str) -> Vec<String> {
     claimed(
         &open
             .run_with(script, &tessari_session::Parameters::new())
+            .await
             .unwrap()
             .pop()
             .unwrap(),
@@ -1594,15 +1596,16 @@ fn a_claim_passes_over_a_record_another_claim_is_taking() {
     let mut first = ready(&store, "TIMEOUT 1m");
     let mut second = worker(&store);
     first
-        .atomically(|open| -> Result<(), tessari_session::Error> {
-            assert_eq!(claimed_in(open, "CLAIM FROM jobs;"), vec!["1"]);
+        .atomically(async |open| -> Result<(), tessari_session::Error> {
+            assert_eq!(claimed_in(open, "CLAIM FROM jobs;").await, vec!["1"]);
             assert_eq!(
-                claimed(&run(&mut second, "CLAIM FROM jobs;")),
+                claimed(&second.run("CLAIM FROM jobs;").await.unwrap().pop().unwrap()),
                 vec!["2"],
                 "the record the open transaction is taking was handed out again"
             );
             Ok(())
         })
+        .now()
         .unwrap();
     // Once the first transaction has ended, nothing it took is held back.
     assert_eq!(claimed(&run(&mut second, "CLAIM FROM jobs;")), vec!["3"]);
@@ -1614,12 +1617,14 @@ fn a_cancelled_claim_gives_its_records_back() {
     let store = store();
     let mut first = ready(&store, "TIMEOUT 1m");
     let mut second = worker(&store);
-    let cancelled = first.atomically(|open| -> Result<(), tessari_session::Error> {
-        claimed_in(open, "CLAIM FROM jobs;");
-        Err(tessari_session::Error::UnclosedTransaction {
-            span: tessari_ql::Span::new(0, 0),
+    let cancelled = first
+        .atomically(async |open| -> Result<(), tessari_session::Error> {
+            claimed_in(open, "CLAIM FROM jobs;").await;
+            Err(tessari_session::Error::UnclosedTransaction {
+                span: tessari_ql::Span::new(0, 0),
+            })
         })
-    });
+        .now();
     assert!(cancelled.is_err());
     assert_eq!(claimed(&run(&mut second, "CLAIM FROM jobs;")), vec!["1"]);
 }
@@ -1631,10 +1636,21 @@ fn a_priority_claim_passes_over_a_record_another_claim_is_taking() {
     let mut first = mixed(&store, "TIMEOUT 1m PRIORITY BY weight");
     let mut second = worker(&store);
     first
-        .atomically(|open| -> Result<(), tessari_session::Error> {
-            assert_eq!(claimed_in(open, "CLAIM FROM media;"), vec!["3"]);
-            assert_eq!(claimed(&run(&mut second, "CLAIM FROM media;")), vec!["4"]);
+        .atomically(async |open| -> Result<(), tessari_session::Error> {
+            assert_eq!(claimed_in(open, "CLAIM FROM media;").await, vec!["3"]);
+            assert_eq!(
+                claimed(
+                    &second
+                        .run("CLAIM FROM media;")
+                        .await
+                        .unwrap()
+                        .pop()
+                        .unwrap()
+                ),
+                vec!["4"]
+            );
             Ok(())
         })
+        .now()
         .unwrap();
 }

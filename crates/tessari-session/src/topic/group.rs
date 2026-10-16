@@ -196,7 +196,7 @@ impl Session<'_> {
     /// flight. A due message already delivered as often as the group allows is
     /// dead-lettered instead, and one that retention removed is dropped from
     /// flight and counted as passed over.
-    pub(crate) fn read_group(
+    pub(crate) async fn read_group(
         &self,
         transaction: &mut Transaction<'_>,
         (context, table): (&Context, TableId),
@@ -241,7 +241,8 @@ impl Session<'_> {
                             held,
                             value,
                             span,
-                        )?;
+                        )
+                        .await?;
                     }
                 }
                 Some((id, value)) => {
@@ -439,7 +440,7 @@ impl Session<'_> {
     }
 
     /// Append a message given up on to the group's dead letter.
-    fn dead_letter(
+    async fn dead_letter(
         &self,
         transaction: &mut Transaction<'_>,
         (context, letters): (&Context, TableId),
@@ -462,5 +463,6 @@ impl Session<'_> {
             letter,
             span,
         )
+        .await
     }
 }

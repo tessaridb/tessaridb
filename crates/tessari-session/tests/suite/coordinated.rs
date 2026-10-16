@@ -3,6 +3,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -41,6 +42,7 @@ fn a_carried_script_runs_in_the_selection_its_caller_had() {
             "SELECT * FROM t; CREATE t:2 = { n: 2 };",
             &Parameters::new(),
         )
+        .now()
         .unwrap();
     // One answer per statement the caller sent: the built `USE` answers nobody.
     assert_eq!(ran.len(), 2, "{ran:?}");
@@ -70,6 +72,7 @@ fn a_carried_script_that_changes_authority_or_membership_is_refused_whole() {
                 &format!("CREATE t:9 = {{ n: 9 }}; {statement};"),
                 &Parameters::new(),
             )
+            .now()
             .unwrap_err();
         assert!(
             matches!(refused, Error::MayNotTravel { .. }),
@@ -94,14 +97,16 @@ fn the_selection_a_peer_sends_is_a_name_and_never_syntax() {
     // assertion sees an injection rather than a refusal of one.
     let store = store();
     let mut root = acting(&store, "root");
-    let _ = root.run_coordinated(
-        (
-            Some("prod; USE DATABASE work; CREATE t:66 = { n: 66 }"),
-            None,
-        ),
-        "SELECT * FROM t;",
-        &Parameters::new(),
-    );
+    let _ = root
+        .run_coordinated(
+            (
+                Some("prod; USE DATABASE work; CREATE t:66 = { n: 66 }"),
+                None,
+            ),
+            "SELECT * FROM t;",
+            &Parameters::new(),
+        )
+        .now();
     let held = format!(
         "{:?}",
         root.run_now("USE NAMESPACE prod; USE DATABASE work; SELECT * FROM t;")
@@ -132,6 +137,7 @@ fn a_user_confined_elsewhere_is_stopped_at_the_selection() {
             "SELECT * FROM t;",
             &Parameters::new(),
         )
+        .now()
         .unwrap_err();
     assert!(
         matches!(refused, Error::OutsideTenancy { .. }),

@@ -18,6 +18,7 @@
 //! supply), and the record that ARRIVED after it must not be.
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_encoding::KeyKind;
@@ -87,18 +88,24 @@ fn an_equality_answers_as_of_the_snapshot_through_the_index() {
     Session::new(&store).run_now(SCHEMA).unwrap();
     let mut held = session(&store);
     let mut writer = session(&store);
-    let read: tessari_session::Result<(Vec<String>, Vec<String>)> = held.atomically(|work| {
-        writer.run_now(MOVES)?;
-        let a = work.run_with(
-            "SELECT * FROM t WHERE k = 'a' USING INDEX by_k;",
-            &Parameters::new(),
-        )?;
-        let b = work.run_with(
-            "SELECT * FROM t WHERE k = 'b' USING INDEX by_k;",
-            &Parameters::new(),
-        )?;
-        Ok((ids(&a), ids(&b)))
-    });
+    let read: tessari_session::Result<(Vec<String>, Vec<String>)> = held
+        .atomically(async |work| {
+            writer.run(MOVES).await?;
+            let a = work
+                .run_with(
+                    "SELECT * FROM t WHERE k = 'a' USING INDEX by_k;",
+                    &Parameters::new(),
+                )
+                .await?;
+            let b = work
+                .run_with(
+                    "SELECT * FROM t WHERE k = 'b' USING INDEX by_k;",
+                    &Parameters::new(),
+                )
+                .await?;
+            Ok((ids(&a), ids(&b)))
+        })
+        .now();
     let (a, b) = read.unwrap();
     // `t:1` left `a` after the snapshot and is still found; `t:3` arrived after
     // it and is not.
@@ -113,14 +120,17 @@ fn a_range_answers_as_of_the_snapshot_through_the_index() {
     Session::new(&store).run_now(SCHEMA).unwrap();
     let mut held = session(&store);
     let mut writer = session(&store);
-    let read = held.atomically(|work| {
-        writer.run_now(MOVES)?;
-        work.run_with(
-            "SELECT * FROM t WHERE k >= 'a' AND k <= 'c' USING INDEX by_k;",
-            &Parameters::new(),
-        )
-        .map(|outcomes| ids(&outcomes))
-    });
+    let read = held
+        .atomically(async |work| {
+            writer.run(MOVES).await?;
+            work.run_with(
+                "SELECT * FROM t WHERE k >= 'a' AND k <= 'c' USING INDEX by_k;",
+                &Parameters::new(),
+            )
+            .await
+            .map(|outcomes| ids(&outcomes))
+        })
+        .now();
     // All three as they stood: `t:4` left the range after the snapshot.
     assert_eq!(
         read.unwrap(),
@@ -149,13 +159,16 @@ fn a_unique_index_is_still_withheld_behind_the_tail() {
     Session::new(&store).run_now(SCHEMA).unwrap();
     let mut held = session(&store);
     let mut writer = session(&store);
-    let read = held.atomically(|work| {
-        writer.run_now(MOVES)?;
-        work.run_with(
-            "SELECT * FROM t WHERE code = 'x1' USING INDEX by_code;",
-            &Parameters::new(),
-        )
-    });
+    let read = held
+        .atomically(async |work| {
+            writer.run(MOVES).await?;
+            work.run_with(
+                "SELECT * FROM t WHERE code = 'x1' USING INDEX by_code;",
+                &Parameters::new(),
+            )
+            .await
+        })
+        .now();
     match read {
         Err(Error::IndexNotUsed { expected, took, .. }) => {
             assert_eq!(expected, "by_code");
@@ -183,8 +196,8 @@ fn retired_entries_are_kept_while_a_reader_needs_them_and_reclaimed_after() {
 
     let mut held = session(&store);
     let mut writer = session(&store);
-    held.atomically(|_| -> tessari_session::Result<()> {
-        writer.run_now(MOVES)?;
+    held.atomically(async |_| -> tessari_session::Result<()> {
+        writer.run(MOVES).await?;
         // `t:1` lost `a` and `t:4` lost `c`: two retired entries, and a reader
         // older than both is still open, so neither may go.
         assert_eq!(retired(&backend), 2);
@@ -192,6 +205,7 @@ fn retired_entries_are_kept_while_a_reader_needs_them_and_reclaimed_after() {
         assert_eq!(retired(&backend), 2);
         Ok(())
     })
+    .now()
     .unwrap();
 
     // The reader is gone; no snapshot predates the removals any more.

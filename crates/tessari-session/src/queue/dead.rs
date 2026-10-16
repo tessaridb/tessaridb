@@ -56,7 +56,7 @@ impl Session<'_> {
     /// # Errors
     ///
     /// Whatever writing the letter or deleting the record refuses.
-    pub(super) fn bury(
+    pub(super) async fn bury(
         &self,
         transaction: &mut Transaction<'_>,
         (context, queue, named): (Context, TableId, &TableRef),
@@ -95,12 +95,14 @@ impl Session<'_> {
                 RecordAddress::new(context.namespace, context.database, letters, at),
                 letter,
                 span,
-            )?;
+            )
+            .await?;
             self.delete_record(
                 transaction,
                 RecordAddress::new(context.namespace, context.database, queue, id),
                 span,
-            )?;
+            )
+            .await?;
         }
         Ok(())
     }

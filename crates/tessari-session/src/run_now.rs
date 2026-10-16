@@ -17,20 +17,21 @@ thread_local! {
     static RUNTIME: OnceCell<tokio::runtime::Runtime> = const { OnceCell::new() };
 }
 
-/// Drives `future` to its end on this thread's test runtime.
+/// Drives `future` to its end on this thread's test runtime: any of the session's asynchronous
+/// entry points, for a synchronous test ([`RunNow`] is this for `run` and `run_with`).
 ///
 /// # Panics
 ///
-/// Inside an asynchronous test, which must await the script instead, and when the runtime
+/// Inside an asynchronous test, which must await the future instead, and when the runtime
 /// cannot be built.
 #[expect(
     clippy::expect_used,
     reason = "test support: a runtime that cannot be built ends the test"
 )]
-fn block_on<F: Future>(future: F) -> F::Output {
+pub fn now<F: Future>(future: F) -> F::Output {
     assert!(
         tokio::runtime::Handle::try_current().is_err(),
-        "an asynchronous test awaits `run` instead of calling `run_now`"
+        "an asynchronous test awaits the future instead of calling `run_now` or `now`"
     );
     RUNTIME.with(|cell| {
         cell.get_or_init(|| {
@@ -42,6 +43,20 @@ fn block_on<F: Future>(future: F) -> F::Output {
         .block_on(future)
     })
 }
+
+/// [`now`] as a method, for a synchronous test: `session.vault(target, act).now()`.
+pub trait Now: Future + Sized {
+    /// This future, driven to its end on this thread's test runtime.
+    ///
+    /// # Panics
+    ///
+    /// As [`now`].
+    fn now(self) -> Self::Output {
+        now(self)
+    }
+}
+
+impl<F: Future> Now for F {}
 
 /// [`Session::run`] and [`Session::run_with`] for a synchronous test.
 pub trait RunNow {
@@ -62,10 +77,10 @@ pub trait RunNow {
 
 impl RunNow for Session<'_> {
     fn run_now(&mut self, source: &str) -> Result<Vec<Outcome>> {
-        block_on(self.run(source))
+        now(self.run(source))
     }
 
     fn run_with_now(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
-        block_on(self.run_with(source, parameters))
+        now(self.run_with(source, parameters))
     }
 }

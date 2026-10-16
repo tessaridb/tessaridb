@@ -31,7 +31,7 @@ impl Session<'_> {
     /// `FROM` is what bounds it — an incremental backup carries the records since
     /// a sequence — and a streaming answer is named in `docs/tessariql.md` §8 rather
     /// than left to be discovered by whoever backs up a large store first.
-    pub(crate) fn backup(
+    pub(crate) async fn backup(
         &self,
         from: Option<u64>,
         form: tessari_ql::BackupForm,
@@ -39,7 +39,7 @@ impl Session<'_> {
     ) -> Result<Outcome> {
         let mut held = Vec::new();
         if form == tessari_ql::BackupForm::Script {
-            let taken = self.state_script(of)?;
+            let taken = self.state_script(of).await?;
             // Sealed, a script is bytes like the other forms; plain, it stays
             // the text it is.
             return Ok(Outcome::Value(match &self.at_rest {

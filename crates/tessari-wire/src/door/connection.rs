@@ -199,7 +199,9 @@ impl<H: Holding> Connection<H> {
                         let holding = Arc::clone(&self.holding);
                         let from = said.node;
                         let answered = self
-                            .store(move || Ok(holding.coordinated(from, &assertion, &asked)))
+                            .store_async(move || async move {
+                                Ok(holding.coordinated(from, &assertion, &asked).await)
+                            })
                             .await?;
                         match answered {
                             Ok(answer) => (PeerFrame::Coordinated.tag(), encode_answer(&answer)),
@@ -452,7 +454,16 @@ impl<H: Holding> Connection<H> {
         &self,
         work: impl FnOnce() -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        match self.bridge.call((), move |()| work()).await {
+        self.store_async(move || std::future::ready(work())).await
+    }
+
+    /// [`Self::store`] for work that is a future, driven to its end on the
+    /// blocking pool ([`tessari_serve::Bridge::call_async`]).
+    async fn store_async<T: Send + 'static, W: Future<Output = Result<T>>>(
+        &self,
+        work: impl FnOnce() -> W + Send + 'static,
+    ) -> Result<T> {
+        match self.bridge.call_async((), move |()| work()).await {
             Bridged::Answered(answer) => answer,
             Bridged::Busy(()) => Err(Error::Transport(
                 "the peer door is serving as many store calls as it will".to_owned(),

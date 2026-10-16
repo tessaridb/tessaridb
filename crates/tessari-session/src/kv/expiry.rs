@@ -45,7 +45,7 @@ impl Session<'_> {
     ///
     /// Answers whether it wrote when it carries a condition, and nothing
     /// otherwise — the plain form's answer is unchanged.
-    pub(crate) fn set_key(
+    pub(crate) async fn set_key(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
@@ -74,7 +74,8 @@ impl Session<'_> {
             return Ok(Outcome::Value(Value::Bool(false)));
         }
         let payload = self.evaluate(transaction, value)?;
-        self.put_record(transaction, address.clone(), payload, span)?;
+        self.put_record(transaction, address.clone(), payload, span)
+            .await?;
         if let Some(at) = at {
             transaction.expire_pending(&address, at);
         }

@@ -54,7 +54,7 @@ struct Handed {
 
 /// Read up to `limit`, apply what can be applied, acknowledge it, and hand back
 /// what the policy quarantines — or change nothing.
-pub(crate) fn run_batch(
+pub(crate) async fn run_batch(
     store: &Store,
     definition: &ConsumerDefinition,
     names: &Names,
@@ -68,57 +68,61 @@ pub(crate) fn run_batch(
             .acting_as(declarer)
             .map_err(|refused| format!("it cannot act as the user that declared it: {refused}"))?;
     }
-    let answered = session.atomically(|work| {
-        let read = work.run_with(
-            &format!(
-                "{}READ FROM {} FOR CONSUMER '{}' LIMIT {limit};",
-                names.tenancy, names.topic, names.group
-            ),
-            &Parameters::new(),
-        )?;
-        let handed = handed_out(&read)?;
-        if handed.is_empty() {
-            return Ok(Batch::Empty);
-        }
-        let mut script = names.tenancy.clone();
-        let mut parameters = Parameters::new();
-        let mut acknowledged = Vec::with_capacity(handed.len());
-        let mut returned = Vec::new();
-        for message in &handed {
-            match shape_value(&message.payload, definition) {
-                Ok(shaped) => {
-                    let at = acknowledged.len();
-                    script.push_str(&format!(" SET {}:$id{at} = $rec{at};", names.table));
-                    parameters.insert(format!("id{at}"), identity_value(&shaped.id));
-                    parameters.insert(format!("rec{at}"), shaped.record);
-                    acknowledged.push(message.position);
-                }
-                Err(why) => match definition.on_failure {
-                    OnFailure::Stop => {
-                        return Err(Stopped::Halt(format!(
-                            "message at position {} could not be applied: {why}",
-                            message.position
-                        )));
-                    }
-                    OnFailure::Quarantine => returned.push(message.position),
-                },
+    let answered = session
+        .atomically(async |work| {
+            let read = work
+                .run_with(
+                    &format!(
+                        "{}READ FROM {} FOR CONSUMER '{}' LIMIT {limit};",
+                        names.tenancy, names.topic, names.group
+                    ),
+                    &Parameters::new(),
+                )
+                .await?;
+            let handed = handed_out(&read)?;
+            if handed.is_empty() {
+                return Ok(Batch::Empty);
             }
-        }
-        settle_list(
-            &mut script,
-            &mut parameters,
-            "ACK",
-            "a",
-            &acknowledged,
-            names,
-        );
-        settle_list(&mut script, &mut parameters, "NACK", "q", &returned, names);
-        work.run_with(&script, &parameters)?;
-        Ok(Batch::Applied {
-            applied: u64::try_from(acknowledged.len()).unwrap_or(u64::MAX),
-            quarantined: u64::try_from(returned.len()).unwrap_or(u64::MAX),
+            let mut script = names.tenancy.clone();
+            let mut parameters = Parameters::new();
+            let mut acknowledged = Vec::with_capacity(handed.len());
+            let mut returned = Vec::new();
+            for message in &handed {
+                match shape_value(&message.payload, definition) {
+                    Ok(shaped) => {
+                        let at = acknowledged.len();
+                        script.push_str(&format!(" SET {}:$id{at} = $rec{at};", names.table));
+                        parameters.insert(format!("id{at}"), identity_value(&shaped.id));
+                        parameters.insert(format!("rec{at}"), shaped.record);
+                        acknowledged.push(message.position);
+                    }
+                    Err(why) => match definition.on_failure {
+                        OnFailure::Stop => {
+                            return Err(Stopped::Halt(format!(
+                                "message at position {} could not be applied: {why}",
+                                message.position
+                            )));
+                        }
+                        OnFailure::Quarantine => returned.push(message.position),
+                    },
+                }
+            }
+            settle_list(
+                &mut script,
+                &mut parameters,
+                "ACK",
+                "a",
+                &acknowledged,
+                names,
+            );
+            settle_list(&mut script, &mut parameters, "NACK", "q", &returned, names);
+            work.run_with(&script, &parameters).await?;
+            Ok(Batch::Applied {
+                applied: u64::try_from(acknowledged.len()).unwrap_or(u64::MAX),
+                quarantined: u64::try_from(returned.len()).unwrap_or(u64::MAX),
+            })
         })
-    });
+        .await;
     match answered {
         Ok(batch) => Ok(batch),
         Err(Stopped::Halt(reason)) => Err(reason),
@@ -128,7 +132,7 @@ pub(crate) fn run_batch(
 
 /// Hand back the one message a group would hand out next, as a `quarantine`
 /// consumer does with a message whose write is refused — or halt, for `stop`.
-pub(crate) fn hand_back_one(
+pub(crate) async fn hand_back_one(
     store: &Store,
     definition: &ConsumerDefinition,
     names: &Names,
@@ -143,28 +147,32 @@ pub(crate) fn hand_back_one(
             .acting_as(declarer)
             .map_err(|refused| format!("it cannot act as the user that declared it: {refused}"))?;
     }
-    let answered = session.atomically(|work| {
-        let read = work.run_with(
-            &format!(
-                "{}READ FROM {} FOR CONSUMER '{}' LIMIT 1;",
-                names.tenancy, names.topic, names.group
-            ),
-            &Parameters::new(),
-        )?;
-        let handed = handed_out(&read)?;
-        let positions: Vec<i64> = handed.iter().map(|message| message.position).collect();
-        if positions.is_empty() {
-            return Ok(Batch::Empty);
-        }
-        let mut script = names.tenancy.clone();
-        let mut parameters = Parameters::new();
-        settle_list(&mut script, &mut parameters, "NACK", "q", &positions, names);
-        work.run_with(&script, &parameters)?;
-        Ok(Batch::Applied {
-            applied: 0,
-            quarantined: 1,
+    let answered = session
+        .atomically(async |work| {
+            let read = work
+                .run_with(
+                    &format!(
+                        "{}READ FROM {} FOR CONSUMER '{}' LIMIT 1;",
+                        names.tenancy, names.topic, names.group
+                    ),
+                    &Parameters::new(),
+                )
+                .await?;
+            let handed = handed_out(&read)?;
+            let positions: Vec<i64> = handed.iter().map(|message| message.position).collect();
+            if positions.is_empty() {
+                return Ok(Batch::Empty);
+            }
+            let mut script = names.tenancy.clone();
+            let mut parameters = Parameters::new();
+            settle_list(&mut script, &mut parameters, "NACK", "q", &positions, names);
+            work.run_with(&script, &parameters).await?;
+            Ok(Batch::Applied {
+                applied: 0,
+                quarantined: 1,
+            })
         })
-    });
+        .await;
     match answered {
         Ok(batch) => Ok(batch),
         Err(Stopped::Halt(reason)) => Err(reason),
@@ -262,7 +270,7 @@ mod tests {
     use std::sync::Arc;
 
     use tessari_kv::{KvBackend, MemoryBackend};
-    use tessari_session::{Outcome, RunNow, Session};
+    use tessari_session::{Outcome, RunNow, Session, now};
     use tessari_storage::Store;
     use tessari_types::Value;
 
@@ -346,7 +354,7 @@ mod tests {
         );
         let (definition, names) = the_consumer(&store);
         assert_eq!(
-            run_batch(&store, &definition, &names, 500),
+            now(run_batch(&store, &definition, &names, 500)),
             Ok(Batch::Applied {
                 applied: 3,
                 quarantined: 0
@@ -364,7 +372,7 @@ mod tests {
         assert_eq!(group_field(&store, "committed"), "3");
         // Read again: the group hands out nothing, so nothing lands twice.
         assert_eq!(
-            run_batch(&store, &definition, &names, 500),
+            now(run_batch(&store, &definition, &names, 500)),
             Ok(Batch::Empty)
         );
         assert_eq!(rows(&store).len(), 3);
@@ -380,7 +388,7 @@ mod tests {
              CREATE orders:'c' = { order_id: 3, amount: 30 };",
         );
         let (definition, names) = the_consumer(&store);
-        let refused = run_batch(&store, &definition, &names, 500);
+        let refused = now(run_batch(&store, &definition, &names, 500));
         assert!(matches!(refused, Ok(Batch::Refused(_))), "{refused:?}");
         assert!(rows(&store).is_empty(), "a refused batch wrote something");
         assert_eq!(group_field(&store, "position"), "0", "the read was kept");
@@ -388,18 +396,18 @@ mod tests {
 
         // One at a time: the first lands, the second is the one refused.
         assert_eq!(
-            run_batch(&store, &definition, &names, 1),
+            now(run_batch(&store, &definition, &names, 1)),
             Ok(Batch::Applied {
                 applied: 1,
                 quarantined: 0
             })
         );
-        let alone = run_batch(&store, &definition, &names, 1);
+        let alone = now(run_batch(&store, &definition, &names, 1));
         let Ok(Batch::Refused(why)) = alone else {
             panic!("the bad message was not refused alone: {alone:?}");
         };
         assert_eq!(
-            hand_back_one(&store, &definition, &names, &why),
+            now(hand_back_one(&store, &definition, &names, &why)),
             Ok(Batch::Applied {
                 applied: 0,
                 quarantined: 1
@@ -419,7 +427,7 @@ mod tests {
         );
         let (definition, names) = the_consumer(&store);
         for _ in 0..6 {
-            if run_batch(&store, &definition, &names, 500) == Ok(Batch::Empty) {
+            if now(run_batch(&store, &definition, &names, 500)) == Ok(Batch::Empty) {
                 break;
             }
         }
@@ -437,14 +445,14 @@ mod tests {
              CREATE orders:'b' = { amount: 20 };",
         );
         let (definition, names) = the_consumer(&store);
-        let halted = run_batch(&store, &definition, &names, 500);
+        let halted = now(run_batch(&store, &definition, &names, 500));
         let Err(reason) = halted else {
             panic!("stop did not halt: {halted:?}");
         };
         assert!(reason.contains("position 2"), "{reason}");
         assert!(rows(&store).is_empty(), "the batch was partly written");
         assert_eq!(group_field(&store, "in_flight"), "0");
-        assert!(hand_back_one(&store, &definition, &names, "why").is_err());
+        assert!(now(hand_back_one(&store, &definition, &names, "why")).is_err());
     }
 
     #[test]
@@ -457,7 +465,7 @@ mod tests {
             .run_now("DEFINE NODE ROLES serving;")
             .unwrap();
         assert_eq!(
-            run_batch(&store, &definition, &names, 500),
+            now(run_batch(&store, &definition, &names, 500)),
             Ok(Batch::NotHere)
         );
         assert!(rows(&store).is_empty());
@@ -466,7 +474,7 @@ mod tests {
             .unwrap();
 
         definition.declarer = Some(9_999);
-        let halted = run_batch(&store, &definition, &names, 500);
+        let halted = now(run_batch(&store, &definition, &names, 500));
         assert!(
             matches!(&halted, Err(reason) if reason.contains("declared it")),
             "{halted:?}"

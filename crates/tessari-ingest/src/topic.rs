@@ -271,10 +271,18 @@ async fn member(
     while !*stop.borrow() {
         let (held, declared, named) = (store.clone(), Arc::clone(&definition), Arc::clone(&names));
         let narrowed = refused.clone();
-        let outcome = tokio::task::spawn_blocking(move || match narrowed {
-            // One message's write was refused on its own: the policy decides it.
-            Some(why) => hand_back_one(&held, &declared, &named, &why),
-            None => run_batch(&held, &declared, &named, limit),
+        // The batch blocks the thread that polls it, so it is driven on the
+        // blocking pool (transitional, while the store's entry points are
+        // asynchronous over a synchronous body).
+        let runtime = tokio::runtime::Handle::current();
+        let outcome = tokio::task::spawn_blocking(move || {
+            runtime.block_on(async {
+                match narrowed {
+                    // One message's write was refused on its own: the policy decides it.
+                    Some(why) => hand_back_one(&held, &declared, &named, &why).await,
+                    None => run_batch(&held, &declared, &named, limit).await,
+                }
+            })
         })
         .await
         .unwrap_or_else(|failure| Err(format!("a batch ended abnormally: {failure}")));

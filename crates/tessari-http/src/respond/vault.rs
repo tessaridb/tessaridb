@@ -24,7 +24,7 @@ use axum::http::Method;
 
 /// Carry out `act` on `target` as the caller and answer with the seal status
 /// as JSON.
-pub(crate) fn answer(
+pub(crate) async fn answer(
     db: &Db,
     target: VaultTarget<'_>,
     act: VaultAct<'_>,
@@ -35,7 +35,7 @@ pub(crate) fn answer(
         Ok(session) => session,
         Err(refused) => return refused,
     };
-    match session.vault(target, act) {
+    match session.vault(target, act).await {
         Ok(status) => {
             let mut body = String::new();
             json::write(&mut body, &status, &json::Names::new());
@@ -46,7 +46,7 @@ pub(crate) fn answer(
 }
 
 /// `/vault/{namespace}/{database}/{vault}[/unseal|/seal|/passphrase]`.
-pub(crate) fn one_vault(
+pub(crate) async fn one_vault(
     db: &Db,
     method: Method,
     url: &str,
@@ -76,32 +76,38 @@ pub(crate) fn one_vault(
         vault,
     };
     match (method, act) {
-        (Method::GET, None) => answer(db, target, VaultAct::Status, tokens, presented),
-        (Method::POST, Some("seal")) => answer(db, target, VaultAct::Seal, tokens, presented),
+        (Method::GET, None) => answer(db, target, VaultAct::Status, tokens, presented).await,
+        (Method::POST, Some("seal")) => answer(db, target, VaultAct::Seal, tokens, presented).await,
         (Method::POST, Some("unseal")) => match body::text(request) {
-            Ok(body) => answer(
-                db,
-                target,
-                VaultAct::Unseal {
-                    passphrase: body.trim_end_matches('\n'),
-                },
-                tokens,
-                presented,
-            ),
+            Ok(body) => {
+                answer(
+                    db,
+                    target,
+                    VaultAct::Unseal {
+                        passphrase: body.trim_end_matches('\n'),
+                    },
+                    tokens,
+                    presented,
+                )
+                .await
+            }
             Err(refused) => refused,
         },
         (Method::POST, Some("passphrase")) => match body::text(request) {
             Ok(body) => match request::passphrases(&body) {
-                Ok((current, new)) => answer(
-                    db,
-                    target,
-                    VaultAct::Change {
-                        current: &current,
-                        new: &new,
-                    },
-                    tokens,
-                    presented,
-                ),
+                Ok((current, new)) => {
+                    answer(
+                        db,
+                        target,
+                        VaultAct::Change {
+                            current: &current,
+                            new: &new,
+                        },
+                        tokens,
+                        presented,
+                    )
+                    .await
+                }
                 Err(shape) => Answer::bad_request(shape),
             },
             Err(refused) => refused,

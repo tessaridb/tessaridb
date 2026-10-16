@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -145,14 +146,17 @@ fn a_write_open_across_a_declaration_retries_and_is_then_folded() {
         .run_now("USE NAMESPACE t; USE DATABASE d;")
         .unwrap();
     // The raw write's transaction is open while the declaration commits.
-    let straddled: tessari_session::Result<()> = writer.atomically(|work| {
-        work.run_with(
-            "CREATE readings = { sensor: 's0', v: 5, at: datetime '2026-09-29T10:00:00Z' };",
-            &tessari_session::Parameters::new(),
-        )?;
-        declarer.run_now(ROLLUP)?;
-        Ok(())
-    });
+    let straddled: tessari_session::Result<()> = writer
+        .atomically(async |work| {
+            work.run_with(
+                "CREATE readings = { sensor: 's0', v: 5, at: datetime '2026-09-29T10:00:00Z' };",
+                &tessari_session::Parameters::new(),
+            )
+            .await?;
+            declarer.run(ROLLUP).await?;
+            Ok(())
+        })
+        .now();
     let refused = straddled.unwrap_err();
     assert!(
         matches!(

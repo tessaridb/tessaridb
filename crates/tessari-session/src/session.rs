@@ -291,7 +291,7 @@ impl<'a> Session<'a> {
     /// Returns the first failure. Work buffered in an uncommitted transaction is
     /// discarded — nothing reaches the store until `commit`.
     pub async fn run(&mut self, source: &str) -> Result<Vec<Outcome>> {
-        self.run_blocking(source)
+        self.run_with(source, &Parameters::new()).await
     }
 
     /// Read a script, give its parameters the values `parameters` binds, and run
@@ -316,23 +316,18 @@ impl<'a> Session<'a> {
         source: &str,
         parameters: &Parameters,
     ) -> Result<Vec<Outcome>> {
-        self.run_with_blocking(source, parameters)
-    }
-
-    /// [`Session::run`] on the calling thread, which the store blocks until the script ends;
-    /// for the statements that run a script of their own on a second session.
-    pub(crate) fn run_blocking(&mut self, source: &str) -> Result<Vec<Outcome>> {
-        self.run_with_blocking(source, &Parameters::new())
-    }
-
-    /// [`Session::run_with`] on the calling thread, as [`Session::run_blocking`].
-    pub(crate) fn run_with_blocking(
-        &mut self,
-        source: &str,
-        parameters: &Parameters,
-    ) -> Result<Vec<Outcome>> {
         let script = self.bind_script(parse(source)?, parameters)?;
-        self.run_script(script)
+        self.run_script(script).await
+    }
+
+    /// [`Session::run`], boxed: a statement that runs a script of its own on a
+    /// second session reaches `run` from inside it, and a future that contains
+    /// itself needs the indirection.
+    pub(crate) fn run_boxed<'s>(
+        &'s mut self,
+        source: &'s str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Outcome>>> + 's>> {
+        Box::pin(self.run(source))
     }
 
     /// The user this session is signed in as, if any.

@@ -25,6 +25,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -245,7 +246,7 @@ fn a_stemmer_for_a_language_makes_its_inflections_meet() {
 #[test]
 fn a_stemmers_language_is_declared_and_an_unknown_one_is_refused() {
     let held = in_language("russian", true, &["Важные новости"]);
-    let script = tessari_session::write_script(&held).unwrap().text;
+    let script = tessari_session::write_script(&held).now().unwrap().text;
     assert!(
         script.contains("FILTERS lowercase, stemmer(russian);"),
         "{script}"

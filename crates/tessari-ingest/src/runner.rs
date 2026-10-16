@@ -156,9 +156,14 @@ impl Runner {
     /// # Errors
     ///
     /// Returns the store's failure when the catalog cannot be read at all.
+    ///
+    /// Each consumer runs on a thread of its own, outside `runtime`'s workers;
+    /// it writes each batch through the store's asynchronous entry points,
+    /// driven to their end on that thread by `runtime`.
     pub fn start(
         store: &Store,
         broker: Arc<dyn Broker>,
+        runtime: &tokio::runtime::Handle,
     ) -> Result<Started, tessari_storage::Error> {
         let declared = declarations(store)?;
         let stopping = Arc::new(AtomicBool::new(false));
@@ -185,6 +190,7 @@ impl Runner {
                     definition: definition.clone(),
                     table: table.clone(),
                     stopping: Arc::clone(&stopping),
+                    runtime: runtime.clone(),
                 };
                 let named = format!("consumer:{}#{index}", definition.name);
                 match std::thread::Builder::new()
@@ -244,6 +250,10 @@ struct Consuming {
     definition: ConsumerDefinition,
     table: Destination,
     stopping: Arc<AtomicBool>,
+    /// Drives the batch writes on this thread, which is outside the runtime's
+    /// workers (transitional, while the store's entry points are asynchronous
+    /// over a synchronous body).
+    runtime: tokio::runtime::Handle,
 }
 
 impl Consuming {
@@ -417,15 +427,15 @@ impl Consuming {
                     self.definition.name
                 ));
             }
-            let written = session.atomically(|work| {
+            let written = self.runtime.block_on(session.atomically(async |work| {
                 if !records.is_empty() {
-                    work.run_with(&script, &parameters)?;
+                    work.run_with(&script, &parameters).await?;
                 }
                 for (at, record) in parked_at.iter().zip(parked) {
                     work.keep_quarantined(self.definition.id, *at, record)?;
                 }
                 Ok::<(), tessari_session::Error>(())
-            });
+            }));
             match written {
                 Ok(()) => return Ok(()),
                 Err(failure) => {

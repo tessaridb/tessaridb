@@ -197,7 +197,7 @@ impl Session<'_> {
     /// # Errors
     ///
     /// Whatever finding the head or writing a hold refuses.
-    pub(super) fn claim_by_priority(
+    pub(super) async fn claim_by_priority(
         &self,
         transaction: &mut Transaction<'_>,
         (context, table, named): (Context, tessari_types::TableId, &tessari_ql::TableRef),
@@ -228,7 +228,8 @@ impl Session<'_> {
             self.put_engine_record(transaction, address, payload.clone(), span)?;
             taken.push((id, payload));
         }
-        self.bury(transaction, (context, table, named), declared, buried, span)?;
+        self.bury(transaction, (context, table, named), declared, buried, span)
+            .await?;
         let plan = match index {
             Some(index) => crate::plan::Plan {
                 index: Some(index),

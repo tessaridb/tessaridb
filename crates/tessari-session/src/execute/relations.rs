@@ -110,7 +110,7 @@ impl Session<'_> {
     /// that re-states what it knows, and it is why two edges between the same
     /// pair in the same table are one edge with properties rather than two
     /// records (Q-41).
-    pub(super) fn relate(
+    pub(super) async fn relate(
         &self,
         transaction: &mut Transaction<'_>,
         from: &RecordTarget,
@@ -127,7 +127,9 @@ impl Session<'_> {
             context.database,
             &edges.name.text,
         )? {
-            return self.relate_in_graph(transaction, kind, from, edges, to, value);
+            return self
+                .relate_in_graph(transaction, kind, from, edges, to, value)
+                .await;
         }
 
         let (context, edge_table) = self.resolve_table(transaction, edges)?;
@@ -193,7 +195,8 @@ impl Session<'_> {
         // An edge is an ordinary record, so an edge table's declarations apply
         // to it — including their defaults.
         let payload = self.with_defaults(transaction, edge_table, Value::Object(fields))?;
-        self.put_record(transaction, address, payload, edges.span)?;
+        self.put_record(transaction, address, payload, edges.span)
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -203,7 +206,7 @@ impl Session<'_> {
     /// edge is an ordinary mutation, which is what carries it and the adjacency
     /// derived from it through the log to every replica; the neighbours and their
     /// properties are read from the adjacency entries instead.
-    pub(super) fn relate_in_graph(
+    pub(super) async fn relate_in_graph(
         &self,
         transaction: &mut Transaction<'_>,
         kind: tessari_types::EdgeKindId,
@@ -263,7 +266,8 @@ impl Session<'_> {
             declared.edges,
             edge_identity(&out, &into),
         );
-        self.put_record(transaction, address, Value::Object(fields), edges.span)?;
+        self.put_record(transaction, address, Value::Object(fields), edges.span)
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -281,7 +285,7 @@ impl Session<'_> {
     /// record's own mutation in `adjacency::maintain`, so the tombstone written
     /// below removes both of them in the batch that carries it — the same reason
     /// `DROP EDGE` needed no sweep.
-    pub(super) fn delete_edge(
+    pub(super) async fn delete_edge(
         &self,
         transaction: &mut Transaction<'_>,
         from: &RecordTarget,
@@ -361,7 +365,7 @@ impl Session<'_> {
         };
         // Through the delete funnel, so an edge table's events see the edge go
         // as they saw it come (ADR-0110 D8).
-        self.delete_record(transaction, address, edges.span)?;
+        self.delete_record(transaction, address, edges.span).await?;
         Ok(answered(answer, before, Value::None))
     }
 }

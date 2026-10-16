@@ -117,9 +117,16 @@ pub(crate) fn snapshot_from(
 ///
 /// The parts it does not carry are named in the file's own header, and here.
 pub(crate) fn dump(db: &Db, path: &std::path::Path) -> Result<(), String> {
+    // bgv-allow(current-thread): one command writing one script, and nothing
+    // else running beside it.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|why| format!("the runtime would not start: {why}"))?;
     let taken = aside(path, db.at_rest(), |out| {
-        let taken =
-            tessari_session::write_script(db.store()).map_err(|failure| failure.to_string())?;
+        let taken = runtime
+            .block_on(tessari_session::write_script(db.store()))
+            .map_err(|failure| failure.to_string())?;
         std::io::Write::write_all(out, taken.text.as_bytes())
             .map_err(|failure| failure.to_string())?;
         Ok(taken)

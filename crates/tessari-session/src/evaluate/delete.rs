@@ -43,7 +43,7 @@ impl Session<'_> {
     /// the walk after `n` records had been *examined*, so the same statement
     /// against the same data would remove a different set depending on which
     /// index answered it and in what order that index happened to be walked.
-    pub(crate) fn delete_where(
+    pub(crate) async fn delete_where(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
@@ -136,7 +136,8 @@ impl Session<'_> {
                 transaction,
                 RecordAddress::new(context.namespace, context.database, id, record_id),
                 condition.span,
-            )?;
+            )
+            .await?;
         }
         Ok(removed.outcome(plan))
     }
@@ -163,7 +164,7 @@ impl Session<'_> {
     ///
     /// Returns an error when a bound is an unbound parameter, the table cannot
     /// be resolved, or the store cannot be read.
-    pub(crate) fn delete_span(
+    pub(crate) async fn delete_span(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
@@ -217,7 +218,8 @@ impl Session<'_> {
                 transaction,
                 RecordAddress::new(context.namespace, context.database, id, record_id),
                 span.at,
-            )?;
+            )
+            .await?;
         }
         Ok(removed.outcome(Plan::new(AccessPath::Span).on(&table.name.text)))
     }

@@ -247,7 +247,7 @@ pub fn render_coordinated(
 /// Signs in as a request does, then asks the session's own vault surface, so
 /// who may unseal, the throttle and the answer are the statement's. A refusal is
 /// the session's own words, which never quote the passphrase.
-pub(crate) fn respond_vault(
+pub(crate) async fn respond_vault(
     session: &mut tessaridb::Session<'_>,
     asked: &crate::VaultAsk,
     theirs: u8,
@@ -274,7 +274,7 @@ pub(crate) fn respond_vault(
                 vault: &place.vault,
             }
         });
-    match session.vault(target, act) {
+    match session.vault(target, act).await {
         Ok(status) => {
             let mut body = Vec::new();
             frame::put_u32(&mut body, 1);

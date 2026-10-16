@@ -71,9 +71,9 @@ impl Session<'_> {
     ///
     /// Whatever the matching statement is refused with — the authority it
     /// needs, a wrong passphrase, the throttle, a vault in the store's custody.
-    pub fn vault(&mut self, target: VaultTarget<'_>, act: VaultAct<'_>) -> Result<Value> {
+    pub async fn vault(&mut self, target: VaultTarget<'_>, act: VaultAct<'_>) -> Result<Value> {
         match target {
-            VaultTarget::Store => self.vault_act(None, act),
+            VaultTarget::Store => self.vault_act(None, act).await,
             VaultTarget::Vault {
                 namespace,
                 database,
@@ -83,14 +83,14 @@ impl Session<'_> {
                     self.namespace.replace(namespace.to_owned()),
                     self.database.replace(database.to_owned()),
                 );
-                let answered = self.vault_act(Some(vault), act);
+                let answered = self.vault_act(Some(vault), act).await;
                 (self.namespace, self.database) = held;
                 answered
             }
         }
     }
 
-    fn vault_act(&mut self, vault: Option<&str>, act: VaultAct<'_>) -> Result<Value> {
+    async fn vault_act(&mut self, vault: Option<&str>, act: VaultAct<'_>) -> Result<Value> {
         let span = Span::new(0, 0);
         let vault = vault.map(|vault| Name {
             text: vault.to_owned(),
@@ -116,7 +116,7 @@ impl Session<'_> {
         };
         let initialised = match kind {
             Some(kind) => matches!(
-                self.built(kind)?.as_slice(),
+                self.built(kind).await?.as_slice(),
                 [Outcome::Value(Value::String(said))] if said == "initialised"
             ),
             None => false,
@@ -124,7 +124,8 @@ impl Session<'_> {
         let mut report = match self
             .built(StatementKind::Info {
                 subject: InfoSubject::Seal(vault),
-            })?
+            })
+            .await?
             .pop()
         {
             Some(Outcome::Value(Value::Object(report))) => report,
@@ -137,7 +138,7 @@ impl Session<'_> {
     }
 
     /// Run one statement that was built rather than read.
-    fn built(&mut self, kind: StatementKind) -> Result<Vec<Outcome>> {
+    async fn built(&mut self, kind: StatementKind) -> Result<Vec<Outcome>> {
         let span = Span::new(0, 0);
         self.run_script(Script {
             statements: vec![Statement {
@@ -148,5 +149,6 @@ impl Session<'_> {
             }],
             span,
         })
+        .await
     }
 }

@@ -34,7 +34,7 @@ impl Session<'_> {
     /// transformation and the payload is downstream of it. It also returns early
     /// for a table whose schema constrains nothing, which is exactly the table
     /// most geometry will be written to.
-    pub(crate) fn put_record(
+    pub(crate) async fn put_record(
         &self,
         transaction: &mut Transaction<'_>,
         address: RecordAddress,
@@ -42,6 +42,7 @@ impl Session<'_> {
         span: Span,
     ) -> Result<()> {
         self.put_record_sealing(transaction, address, payload, None, span)
+            .await
     }
 
     /// The same write, made by the engine rather than by a caller.
@@ -69,7 +70,7 @@ impl Session<'_> {
     /// envelopes and only the named fields are plaintext, so the record's own
     /// data key and key set are reused — which is what keeps a recipient's wrap
     /// valid across an edit.
-    pub(super) fn put_record_sealing(
+    pub(super) async fn put_record_sealing(
         &self,
         transaction: &mut Transaction<'_>,
         address: RecordAddress,
@@ -116,7 +117,8 @@ impl Session<'_> {
                 ),
                 None => None,
             };
-            self.events_after(transaction, &at, pending, stored.as_ref())?;
+            self.events_after(transaction, &at, pending, stored.as_ref())
+                .await?;
         }
         Ok(())
     }
@@ -189,7 +191,7 @@ impl Session<'_> {
     /// with for the same reason. One shape for one idea, so the surface that
     /// renders it has one arm to add rather than two to keep in step — this
     /// project's own scar on that is `plan/reported.rs`.
-    pub(super) fn create_named_by_the_store(
+    pub(super) async fn create_named_by_the_store(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
@@ -232,7 +234,8 @@ impl Session<'_> {
         // it, so nothing here writes over a record that was already there.
         let identity = self.free_identity(transaction, &context, id, &payload, table.span)?;
         let address = RecordAddress::new(context.namespace, context.database, id, identity.clone());
-        self.put_record(transaction, address.clone(), payload.clone(), span)?;
+        self.put_record(transaction, address.clone(), payload.clone(), span)
+            .await?;
         super::expiry::settle_write_expiry(transaction, &address, settled);
         if let Some(marker) = marker {
             marker.leave(transaction);
@@ -398,7 +401,7 @@ impl Session<'_> {
     /// choose the identity and cannot choose the next one, so this is not the
     /// existence oracle that keeps `CREATE` at `read` + `write`. `INSERT` needs
     /// `write` alone — see `identity::Needs::of`.
-    pub(super) fn insert(
+    pub(super) async fn insert(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
@@ -441,7 +444,8 @@ impl Session<'_> {
             let identity = self.free_identity(transaction, &context, id, &payload, table.span)?;
             let address =
                 RecordAddress::new(context.namespace, context.database, id, identity.clone());
-            self.put_record(transaction, address.clone(), payload, span)?;
+            self.put_record(transaction, address.clone(), payload, span)
+                .await?;
             super::expiry::settle_write_expiry(transaction, &address, settled);
             if let Some(marker) = marker {
                 marker.leave(transaction);

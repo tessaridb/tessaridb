@@ -51,7 +51,7 @@ impl Session<'_> {
     /// and the read moves that position to the last message it answers — in
     /// this transaction, so the move commits with whatever else the reader
     /// writes, and is undone with it.
-    pub(crate) fn read_topic(
+    pub(crate) async fn read_topic(
         &self,
         transaction: &mut Transaction<'_>,
         topic: &TableRef,
@@ -90,14 +90,16 @@ impl Session<'_> {
                 )?,
                 None => DEFAULT_LIMIT,
             };
-            return self.read_group(
-                transaction,
-                (&context, table),
-                (topic, consumer),
-                state,
-                limit,
-                span,
-            );
+            return self
+                .read_group(
+                    transaction,
+                    (&context, table),
+                    (topic, consumer),
+                    state,
+                    limit,
+                    span,
+                )
+                .await;
         }
         let named = match reading.after {
             Some(after) => Some(self.whole(

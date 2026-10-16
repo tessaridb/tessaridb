@@ -87,7 +87,7 @@ impl Session<'_> {
     /// Recorded only once the statement succeeded, and in the same
     /// transaction, so a refusal records nothing and a cancel takes the record
     /// with the change.
-    pub(crate) fn execute(
+    pub(crate) async fn execute(
         &self,
         transaction: &mut Transaction<'_>,
         kind: &StatementKind,
@@ -96,12 +96,13 @@ impl Session<'_> {
         // Every drop looks its object up before it writes, so "no such object"
         // leaves nothing behind to undo (ADR-0124 D1).
         if let StatementKind::DropIfExists(dropped) = kind {
-            return match self.execute(transaction, dropped, span) {
+            // Boxed: a statement may run another statement, so `execute` reaches itself.
+            return match Box::pin(self.execute(transaction, dropped, span)).await {
                 Err(Error::Unknown { .. } | Error::NoSuchGroup { .. }) => Ok(Outcome::Done),
                 answered => answered,
             };
         }
-        let outcome = self.carry_out(transaction, kind, span)?;
+        let outcome = self.carry_out(transaction, kind, span).await?;
         if let Some((statement, subject)) = crate::administration::administered(kind) {
             tessari_storage::administered(
                 transaction,
@@ -118,7 +119,7 @@ impl Session<'_> {
         Ok(outcome)
     }
 
-    fn carry_out(
+    async fn carry_out(
         &self,
         transaction: &mut Transaction<'_>,
         kind: &StatementKind,
@@ -237,16 +238,19 @@ impl Session<'_> {
                 consumer_parameter: _,
                 after,
                 limit,
-            } => self.read_topic(
-                transaction,
-                topic,
-                crate::topic::Reading {
-                    consumer: consumer.as_deref(),
-                    after: after.as_ref(),
-                    limit: limit.as_ref(),
-                },
-                span,
-            ),
+            } => {
+                self.read_topic(
+                    transaction,
+                    topic,
+                    crate::topic::Reading {
+                        consumer: consumer.as_deref(),
+                        after: after.as_ref(),
+                        limit: limit.as_ref(),
+                    },
+                    span,
+                )
+                .await
+            }
             StatementKind::DefineGroup {
                 name,
                 name_parameter: _,
@@ -490,7 +494,9 @@ impl Session<'_> {
             StatementKind::RevokeAuthority { kinds, reach, user } => {
                 self.revoke_authority(transaction, kinds, reach, user, span)
             }
-            StatementKind::DropIfExists(dropped) => self.carry_out(transaction, dropped, span),
+            StatementKind::DropIfExists(dropped) => {
+                Box::pin(self.carry_out(transaction, dropped, span)).await
+            }
             StatementKind::DefineParam {
                 name,
                 value,
@@ -561,13 +567,19 @@ impl Session<'_> {
                 edges,
                 to,
                 value,
-            } => self.relate(transaction, from, edges, to, value.as_deref()),
+            } => {
+                self.relate(transaction, from, edges, to, value.as_deref())
+                    .await
+            }
             StatementKind::DeleteEdge {
                 from,
                 edges,
                 to,
                 answer,
-            } => self.delete_edge(transaction, from, edges, to, *answer),
+            } => {
+                self.delete_edge(transaction, from, edges, to, *answer)
+                    .await
+            }
             StatementKind::DropTable { table } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 // A bucket's bytes live in a companion table `DEFINE BUCKET`
@@ -813,7 +825,8 @@ impl Session<'_> {
                         span: target.span,
                     });
                 }
-                self.put_record(transaction, address.clone(), payload.clone(), span)?;
+                self.put_record(transaction, address.clone(), payload.clone(), span)
+                    .await?;
                 expiry::settle_write_expiry(transaction, &address, settled);
                 if let Some(marker) = marker {
                     marker.leave(transaction);
@@ -825,20 +838,26 @@ impl Session<'_> {
                 value,
                 answer,
                 expire,
-            } => self.create_named_by_the_store(
-                transaction,
-                table,
-                value,
-                *answer,
-                expire.as_ref(),
-                span,
-            ),
+            } => {
+                self.create_named_by_the_store(
+                    transaction,
+                    table,
+                    value,
+                    *answer,
+                    expire.as_ref(),
+                    span,
+                )
+                .await
+            }
             StatementKind::Insert {
                 table,
                 columns,
                 rows,
                 expire,
-            } => self.insert(transaction, table, columns, rows, expire.as_ref(), span),
+            } => {
+                self.insert(transaction, table, columns, rows, expire.as_ref(), span)
+                    .await
+            }
             StatementKind::Update {
                 target,
                 edit,
@@ -897,7 +916,8 @@ impl Session<'_> {
                     payload.clone(),
                     partial.as_ref(),
                     span,
-                )?;
+                )
+                .await?;
                 expiry::settle_write_expiry(transaction, &address, settled);
                 Ok(answered(*answer, before, payload))
             }
@@ -949,7 +969,8 @@ impl Session<'_> {
                     payload.clone(),
                     partial.as_ref(),
                     span,
-                )?;
+                )
+                .await?;
                 expiry::settle_write_expiry(transaction, &address, settled);
                 Ok(answered(*answer, before, payload))
             }
@@ -960,16 +981,19 @@ impl Session<'_> {
                 value,
                 expire,
                 condition,
-            } => self.set_key(
-                transaction,
-                target,
-                value,
-                expire.as_ref(),
-                condition.as_ref(),
-                span,
-            ),
+            } => {
+                self.set_key(
+                    transaction,
+                    target,
+                    value,
+                    expire.as_ref(),
+                    condition.as_ref(),
+                    span,
+                )
+                .await
+            }
             StatementKind::Incr { target, by } => {
-                self.increment(transaction, target, by.as_ref(), span)
+                self.increment(transaction, target, by.as_ref(), span).await
             }
             StatementKind::Expire { target, at } => self.expire_key(transaction, target, at),
             StatementKind::Persist { target } => self.persist_key(transaction, target),
@@ -990,13 +1014,13 @@ impl Session<'_> {
                     Some(held) => decode_payload(&held)?,
                     None => Value::None,
                 };
-                self.delete_record(transaction, address, span)?;
+                self.delete_record(transaction, address, span).await?;
                 Ok(answered(*answer, before, Value::None))
             }
             StatementKind::Del { target } => {
                 self.clear_file(transaction, target)?;
                 let (_, address) = self.address(transaction, target)?;
-                self.delete_record(transaction, address, span)?;
+                self.delete_record(transaction, address, span).await?;
                 Ok(Outcome::Done)
             }
             StatementKind::DeleteWhere {
@@ -1004,7 +1028,10 @@ impl Session<'_> {
                 condition,
                 limit,
                 answer,
-            } => self.delete_where(transaction, table, condition, (*limit, *answer)),
+            } => {
+                self.delete_where(transaction, table, condition, (*limit, *answer))
+                    .await
+            }
             StatementKind::DeleteSpan {
                 table,
                 lower,
@@ -1013,17 +1040,20 @@ impl Session<'_> {
                 span: at,
                 limit,
                 answer,
-            } => self.delete_span(
-                transaction,
-                table,
-                crate::evaluate::IdentitySpan {
-                    lower,
-                    upper,
-                    inclusive: *inclusive,
-                    at: *at,
-                },
-                (*limit, *answer),
-            ),
+            } => {
+                self.delete_span(
+                    transaction,
+                    table,
+                    crate::evaluate::IdentitySpan {
+                        lower,
+                        upper,
+                        inclusive: *inclusive,
+                        at: *at,
+                    },
+                    (*limit, *answer),
+                )
+                .await
+            }
             StatementKind::DefineBucket {
                 name,
                 max,
@@ -1312,7 +1342,10 @@ impl Session<'_> {
                 condition,
                 span,
                 ..
-            } => self.claim(transaction, table, *count, condition.as_deref(), *span),
+            } => {
+                self.claim(transaction, table, *count, condition.as_deref(), *span)
+                    .await
+            }
             StatementKind::ClaimRecord { target, span } => {
                 self.claim_record(transaction, target, *span)
             }
@@ -1422,10 +1455,10 @@ impl Session<'_> {
                 start,
                 limit,
             } => self.read_file(transaction, target, *start, *limit),
-            StatementKind::Restore { from } => self.restore(from),
+            StatementKind::Restore { from } => self.restore(from).await,
             StatementKind::Backup { from, form, to, of } => match to {
-                None => self.backup(*from, *form, of),
-                Some(name) => self.backup_to(*from, *form, of, name),
+                None => self.backup(*from, *form, of).await,
+                Some(name) => self.backup_to(*from, *form, of, name).await,
             },
             StatementKind::Get { target } => {
                 Ok(Outcome::Value(self.read_key(transaction, target)?))

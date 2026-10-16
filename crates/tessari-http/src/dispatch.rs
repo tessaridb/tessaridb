@@ -182,46 +182,58 @@ pub(super) async fn answer(id: u64, node: &Shared, mut request: Incoming) -> Ans
         // The vault's own surface. The passphrase is the body and nothing else,
         // so it is never script text; the body is trimmed of one trailing line
         // end exactly as `/password`'s is, so `curl -d @file` works.
-        (Method::GET, "/vault") => respond::vault::answer(
-            db,
-            tessaridb::VaultTarget::Store,
-            tessaridb::VaultAct::Status,
-            tokens,
-            &presented,
-        ),
-        (Method::POST, "/vault/seal") => respond::vault::answer(
-            db,
-            tessaridb::VaultTarget::Store,
-            tessaridb::VaultAct::Seal,
-            tokens,
-            &presented,
-        ),
+        (Method::GET, "/vault") => {
+            respond::vault::answer(
+                db,
+                tessaridb::VaultTarget::Store,
+                tessaridb::VaultAct::Status,
+                tokens,
+                &presented,
+            )
+            .await
+        }
+        (Method::POST, "/vault/seal") => {
+            respond::vault::answer(
+                db,
+                tessaridb::VaultTarget::Store,
+                tessaridb::VaultAct::Seal,
+                tokens,
+                &presented,
+            )
+            .await
+        }
         (Method::POST, "/vault/passphrase") => match body::text(&mut request) {
             Ok(body) => match request::passphrases(&body) {
-                Ok((current, new)) => respond::vault::answer(
-                    db,
-                    tessaridb::VaultTarget::Store,
-                    tessaridb::VaultAct::Change {
-                        current: &current,
-                        new: &new,
-                    },
-                    tokens,
-                    &presented,
-                ),
+                Ok((current, new)) => {
+                    respond::vault::answer(
+                        db,
+                        tessaridb::VaultTarget::Store,
+                        tessaridb::VaultAct::Change {
+                            current: &current,
+                            new: &new,
+                        },
+                        tokens,
+                        &presented,
+                    )
+                    .await
+                }
                 Err(shape) => Answer::bad_request(shape),
             },
             Err(refused) => refused,
         },
         (Method::POST, "/vault/unseal") => match body::text(&mut request) {
-            Ok(body) => respond::vault::answer(
-                db,
-                tessaridb::VaultTarget::Store,
-                tessaridb::VaultAct::Unseal {
-                    passphrase: body.trim_end_matches('\n'),
-                },
-                tokens,
-                &presented,
-            ),
+            Ok(body) => {
+                respond::vault::answer(
+                    db,
+                    tessaridb::VaultTarget::Store,
+                    tessaridb::VaultAct::Unseal {
+                        passphrase: body.trim_end_matches('\n'),
+                    },
+                    tokens,
+                    &presented,
+                )
+                .await
+            }
             Err(refused) => refused,
         },
         (Method::POST, "/script") => {
@@ -251,7 +263,7 @@ pub(super) async fn answer(id: u64, node: &Shared, mut request: Incoming) -> Ans
             if url.starts_with("/vault/")
                 && !matches!(url, "/vault/seal" | "/vault/unseal" | "/vault/passphrase") =>
         {
-            respond::vault::one_vault(db, method, url, &mut request, tokens, &presented)
+            respond::vault::one_vault(db, method, url, &mut request, tokens, &presented).await
         }
         // A batch of events for one series, in one transaction (G044 C12).
         (Method::POST, url) if url.starts_with("/series/") => match respond::series::target(url) {

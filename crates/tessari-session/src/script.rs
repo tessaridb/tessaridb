@@ -62,7 +62,7 @@ pub struct ScriptTaken {
 /// # Errors
 ///
 /// Returns an error when the store cannot be read.
-pub fn write_script(store: &Store) -> Result<ScriptTaken> {
+pub async fn write_script(store: &Store) -> Result<ScriptTaken> {
     let owner = {
         let mut view = store.begin()?;
         Catalog::new(&mut view)
@@ -80,14 +80,14 @@ pub fn write_script(store: &Store) -> Result<ScriptTaken> {
     if let Some(id) = owner {
         reader.acting_as(id)?;
     }
-    written(&mut reader, &[])
+    written(&mut reader, &[]).await
 }
 
 impl Session<'_> {
     /// This session's store as a script — or the part `of` names — read with
     /// this session's identity on a session of its own, so the caller's `USE`
     /// is left where it was.
-    pub(crate) fn state_script(&self, of: &[tessari_ql::ReachRef]) -> Result<ScriptTaken> {
+    pub(crate) async fn state_script(&self, of: &[tessari_ql::ReachRef]) -> Result<ScriptTaken> {
         let part = {
             let mut view = self.store.begin()?;
             of.iter()
@@ -96,7 +96,7 @@ impl Session<'_> {
         };
         let mut reader = Session::new(self.store);
         reader.identity = self.identity.clone();
-        written(&mut reader, &part)
+        written(&mut reader, &part).await
     }
 }
 
@@ -114,7 +114,7 @@ fn carried(part: &[Reach], namespace: NamespaceId, database: DatabaseId) -> bool
         || part.contains(&Reach::Database(namespace, database))
 }
 
-fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken> {
+async fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken> {
     let mut body = String::new();
     let mut refused = Vec::new();
     let mut records = 0_u64;
@@ -177,9 +177,9 @@ fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken> {
                 namespace.namespace
             );
             let _ = writeln!(body, "DEFINE DATABASE {database}; USE DATABASE {database};");
-            reader.run_blocking(&selection)?;
+            reader.run_boxed(&selection).await?;
             // Before every definition that may read one (ADR-0124 D2).
-            for (name, value) in params_of(reader)? {
+            for (name, value) in params_of(reader).await? {
                 let _ = writeln!(
                     body,
                     "DEFINE PARAM ${name} VALUE {};",
@@ -204,7 +204,7 @@ fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken> {
                     refused.push(format!("{place}.{}: {note}", table.name));
                 }
                 if holds_records(&table.kind) {
-                    let written = data::records(reader, table, &names, &mut body)?;
+                    let written = data::records(reader, table, &names, &mut body).await?;
                     records = records.saturating_add(written);
                 }
             }
@@ -289,8 +289,8 @@ const fn holds_records(kind: &TableKind) -> bool {
 }
 
 /// The params of the database `reader` has selected, in name order.
-fn params_of(reader: &mut Session<'_>) -> Result<Vec<(String, tessari_types::Value)>> {
-    let answered = reader.run_blocking("INFO FOR DATABASE;")?;
+async fn params_of(reader: &mut Session<'_>) -> Result<Vec<(String, tessari_types::Value)>> {
+    let answered = reader.run_boxed("INFO FOR DATABASE;").await?;
     let Some(crate::outcome::Outcome::Value(tessari_types::Value::Object(info))) = answered.last()
     else {
         return Ok(Vec::new());

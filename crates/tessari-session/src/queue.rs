@@ -103,7 +103,7 @@ impl Session<'_> {
     /// [`Error::NotAQueue`] when the table is not one, [`Error::ClaimAboveCeiling`]
     /// when more records were asked for than one statement may take, and the
     /// mapped storage failure otherwise.
-    pub(crate) fn claim(
+    pub(crate) async fn claim(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
@@ -141,14 +141,16 @@ impl Session<'_> {
         // A count wider than `usize` can never be reached by a vector, so it saturates.
         let limit = usize::try_from(count).unwrap_or(usize::MAX);
         if let Some(field) = declared.priority.clone() {
-            return self.claim_by_priority(
-                transaction,
-                (context, id, table),
-                (&declared, &field),
-                (limit, now, until),
-                matching.as_ref(),
-                span,
-            );
+            return self
+                .claim_by_priority(
+                    transaction,
+                    (context, id, table),
+                    (&declared, &field),
+                    (limit, now, until),
+                    matching.as_ref(),
+                    span,
+                )
+                .await;
         }
 
         let mut taking = Taking {
@@ -209,7 +211,8 @@ impl Session<'_> {
             let address = RecordAddress::new(context.namespace, context.database, id, record);
             self.put_engine_record(transaction, address, payload, span)?;
         }
-        self.bury(transaction, (context, id, table), &declared, buried, span)?;
+        self.bury(transaction, (context, id, table), &declared, buried, span)
+            .await?;
 
         Ok(Outcome::Records {
             records: taken,

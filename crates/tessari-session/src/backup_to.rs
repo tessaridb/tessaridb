@@ -23,7 +23,7 @@ use crate::session::Session;
 impl Session<'_> {
     /// Take the backup `BACKUP` would answer with and write it to `name`
     /// inside the backup folder, answering where it landed and its size.
-    pub(crate) fn backup_to(
+    pub(crate) async fn backup_to(
         &self,
         from: Option<u64>,
         form: BackupForm,
@@ -65,7 +65,7 @@ impl Session<'_> {
                 }
             })?
         } else {
-            let bytes = match self.backup(from, form, of)? {
+            let bytes = match self.backup(from, form, of).await? {
                 Outcome::Value(Value::Bytes(bytes)) => bytes,
                 Outcome::Value(Value::String(text)) => text.into_bytes(),
                 other => {

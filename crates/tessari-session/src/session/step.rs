@@ -9,7 +9,7 @@ use tessari_types::Sequence;
 
 impl<'a> Session<'a> {
     /// One statement, inside the open transaction or in one of its own.
-    pub(crate) fn step(
+    pub(crate) async fn step(
         &mut self,
         store: &'a Store,
         open: &mut Option<(Transaction<'a>, tessari_ql::Span)>,
@@ -125,7 +125,7 @@ impl<'a> Session<'a> {
                     // another node's present (G033): withheld, so the read
                     // refuses as it always has.
                     let gather = self.gather.take();
-                    let outcome = self.execute(&mut transaction, other, span);
+                    let outcome = self.execute(&mut transaction, other, span).await;
                     self.gather = gather;
                     let outcome = outcome?;
                     // Rolled back, not committed. A read of the past has nothing
@@ -140,7 +140,7 @@ impl<'a> Session<'a> {
                     self.acknowledge_open = self.acknowledge_open.max(statement.acknowledge);
                     self.across_open |= statement.across;
                     let gather = self.gather.take();
-                    let outcome = self.execute(transaction, other, span);
+                    let outcome = self.execute(transaction, other, span).await;
                     self.gather = gather;
                     outcome
                 }
@@ -152,7 +152,7 @@ impl<'a> Session<'a> {
                     let started = std::time::Instant::now();
                     loop {
                         let mut transaction = store.begin()?;
-                        let outcome = self.execute(&mut transaction, other, span)?;
+                        let outcome = self.execute(&mut transaction, other, span).await?;
                         if statement.across
                             && let Some(parts) = Self::across_parts(&transaction)?
                         {

@@ -49,7 +49,7 @@ impl<'a> Session<'a> {
     ///
     /// [`Error::EventFailed`] carrying the body's refusal, and
     /// [`Error::EventDepth`] past the limit.
-    pub(crate) fn events_after(
+    pub(crate) async fn events_after(
         &self,
         transaction: &mut Transaction<'_>,
         address: &RecordAddress,
@@ -79,6 +79,7 @@ impl<'a> Session<'a> {
             };
             session
                 .run_event(transaction, event, bindings)
+                .await
                 .map_err(|cause| Error::EventFailed {
                     event: event.name.clone(),
                     table: pending.table.clone(),
@@ -170,7 +171,7 @@ impl<'a> Session<'a> {
     }
 
     /// One event's condition and body, in `transaction`, as this session.
-    fn run_event(
+    async fn run_event(
         &mut self,
         transaction: &mut Transaction<'_>,
         event: &EventDeclaration,
@@ -211,7 +212,8 @@ impl<'a> Session<'a> {
             let expanded = self.expand_views(self.store, &statement.kind)?;
             let kind = expanded.as_ref().unwrap_or(&statement.kind);
             self.authorize_as_refreshed(self.store, kind, open, span)?;
-            let outcome = self.execute(transaction, kind, span)?;
+            // Boxed: an event runs statements, and a statement may fire an event.
+            let outcome = Box::pin(self.execute(transaction, kind, span)).await?;
             if let StatementKind::Let { name, .. } = &body.statements[at].kind {
                 let Outcome::Value(bound) = outcome else {
                     return Err(Error::BindingIsNotAValue { span });

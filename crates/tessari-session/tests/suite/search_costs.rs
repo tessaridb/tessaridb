@@ -11,6 +11,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -132,7 +133,7 @@ fn an_unscored_index_refuses_a_score_as_no_index_does() {
 #[test]
 fn the_options_are_said_back_and_survive_a_script() {
     let held = noted(Some(" OFFSETS NO SCORE POSITIONS"));
-    let script = tessari_session::write_script(&held).unwrap().text;
+    let script = tessari_session::write_script(&held).now().unwrap().text;
     let declared = "DEFINE INDEX by_body ON notes FIELDS body SEARCH POSITIONS OFFSETS NO SCORE;";
     assert!(script.contains(declared), "{script}");
     let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
@@ -140,12 +141,14 @@ fn the_options_are_said_back_and_survive_a_script() {
     session.run_now(&script).unwrap();
     assert!(
         tessari_session::write_script(&restored)
+            .now()
             .unwrap()
             .text
             .contains(declared)
     );
     // A plain index is still written as it always was.
     let plain = tessari_session::write_script(&noted(Some("")))
+        .now()
         .unwrap()
         .text;
     assert!(

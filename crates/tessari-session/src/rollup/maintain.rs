@@ -420,7 +420,7 @@ impl Session<'_> {
     ///
     /// [`Error::RollupIsDerived`] on a rollup's own table, and whatever
     /// recomputing a row refuses.
-    pub(crate) fn delete_record(
+    pub(crate) async fn delete_record(
         &self,
         transaction: &mut Transaction<'_>,
         address: RecordAddress,
@@ -438,7 +438,7 @@ impl Session<'_> {
             }
         }
         if let (Some(pending), Some(at)) = (events, evented) {
-            self.events_after(transaction, &at, pending, None)?;
+            self.events_after(transaction, &at, pending, None).await?;
         }
         Ok(())
     }

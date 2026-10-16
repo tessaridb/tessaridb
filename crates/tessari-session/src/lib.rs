@@ -106,6 +106,6 @@ pub use tessari_ql::Parameters;
 #[cfg(feature = "test-support")]
 mod run_now;
 #[cfg(feature = "test-support")]
-pub use run_now::RunNow;
+pub use run_now::{Now, RunNow, now};
 pub use ticket::Ticket;
 pub use vault_surface::{VaultAct, VaultTarget};

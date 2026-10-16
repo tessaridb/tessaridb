@@ -8,6 +8,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -161,12 +162,18 @@ fn the_surface_unseals_seals_and_reports_without_a_statement() {
                     passphrase: PASSPHRASE,
                 },
             )
+            .now()
             .unwrap(),
     );
     assert_eq!(first.get("state"), Some(&Value::from("unsealed")));
     assert_eq!(first.get("initialised"), Some(&Value::Bool(true)));
 
-    let sealed = answered(session.vault(VaultTarget::Store, VaultAct::Seal).unwrap());
+    let sealed = answered(
+        session
+            .vault(VaultTarget::Store, VaultAct::Seal)
+            .now()
+            .unwrap(),
+    );
     assert_eq!(sealed.get("state"), Some(&Value::from("sealed")));
 
     let again = answered(
@@ -177,6 +184,7 @@ fn the_surface_unseals_seals_and_reports_without_a_statement() {
                     passphrase: PASSPHRASE,
                 },
             )
+            .now()
             .unwrap(),
     );
     assert_eq!(again.get("state"), Some(&Value::from("unsealed")));
@@ -186,7 +194,12 @@ fn the_surface_unseals_seals_and_reports_without_a_statement() {
         "a second unseal said it initialised"
     );
 
-    let status = answered(session.vault(VaultTarget::Store, VaultAct::Status).unwrap());
+    let status = answered(
+        session
+            .vault(VaultTarget::Store, VaultAct::Status)
+            .now()
+            .unwrap(),
+    );
     assert_eq!(status.get("state"), Some(&Value::from("unsealed")));
 }
 
@@ -216,15 +229,25 @@ fn the_surface_asks_the_authority_the_statement_asks() {
                     passphrase: PASSPHRASE
                 }
             )
+            .now()
             .is_err(),
         "a viewer unsealed the store"
     );
     assert!(
-        viewer.vault(VaultTarget::Store, VaultAct::Seal).is_err(),
+        viewer
+            .vault(VaultTarget::Store, VaultAct::Seal)
+            .now()
+            .is_err(),
         "a viewer sealed the store"
     );
     assert_eq!(
-        answered(viewer.vault(VaultTarget::Store, VaultAct::Status).unwrap()).get("state"),
+        answered(
+            viewer
+                .vault(VaultTarget::Store, VaultAct::Status)
+                .now()
+                .unwrap()
+        )
+        .get("state"),
         Some(&Value::from("uninitialised"))
     );
     root.vault(
@@ -233,6 +256,7 @@ fn the_surface_asks_the_authority_the_statement_asks() {
             passphrase: PASSPHRASE,
         },
     )
+    .now()
     .unwrap();
 }
 
@@ -342,10 +366,14 @@ fn the_surface_changes_the_passphrase_too() {
                     new: "the new passphrase",
                 },
             )
+            .now()
             .unwrap(),
     );
     assert_eq!(answer.get("state"), Some(&Value::from("unsealed")));
-    session.vault(VaultTarget::Store, VaultAct::Seal).unwrap();
+    session
+        .vault(VaultTarget::Store, VaultAct::Seal)
+        .now()
+        .unwrap();
     session
         .vault(
             VaultTarget::Store,
@@ -353,6 +381,7 @@ fn the_surface_changes_the_passphrase_too() {
                 passphrase: "the new passphrase",
             },
         )
+        .now()
         .unwrap();
     assert_eq!(revealed(&mut session), Value::from(PLANTED));
 }

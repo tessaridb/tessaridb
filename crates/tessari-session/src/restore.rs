@@ -32,7 +32,7 @@ use crate::session::Session;
 impl Session<'_> {
     /// Read `name` from the backup folder, vet it, and run it: its new
     /// namespaces, then its new databases, then what fills them.
-    pub(crate) fn restore(&self, name: &str) -> Result<Outcome> {
+    pub(crate) async fn restore(&self, name: &str) -> Result<Outcome> {
         let folder = self.backups.as_deref().ok_or(Error::NoBackupFolder)?;
         let path = crate::backup_to::readable(folder, name)?;
         // A sealed script opens with this node's key and is read whole before
@@ -83,21 +83,27 @@ impl Session<'_> {
 
         let mut restorer = Session::new(self.store);
         restorer.identity = self.identity.clone();
-        restorer.atomically(|held| held.run_with(&namespaces, &Parameters::new()))?;
-        if let Err(failure) =
-            restorer.atomically(|held| held.run_with(&databases, &Parameters::new()))
+        restorer
+            .atomically(async |held| held.run_with(&namespaces, &Parameters::new()).await)
+            .await?;
+        if let Err(failure) = restorer
+            .atomically(async |held| held.run_with(&databases, &Parameters::new()).await)
+            .await
         {
-            undone(&mut restorer, &[], &defined);
+            undone(&mut restorer, &[], &defined).await;
             return Err(failure);
         }
-        let filled = restorer.atomically(|held| {
-            held.run_parsed(Script {
-                statements: body,
-                span: script.span,
+        let filled = restorer
+            .atomically(async |held| {
+                held.run_parsed(Script {
+                    statements: body,
+                    span: script.span,
+                })
+                .await
             })
-        });
+            .await;
         if let Err(failure) = filled {
-            undone(&mut restorer, &created, &defined);
+            undone(&mut restorer, &created, &defined).await;
             return Err(failure);
         }
 
@@ -138,8 +144,8 @@ fn undo(created: &[String], defined: &BTreeSet<String>) -> String {
 /// Take away what a failed restore created, and say so on the node's log when
 /// that is refused too — the caller is answered with the refusal that stopped
 /// the restore, and the operator is the one who can remove what is left.
-fn undone(restorer: &mut Session<'_>, created: &[String], defined: &BTreeSet<String>) {
-    if let Err(failure) = restorer.run_blocking(&undo(created, defined)) {
+async fn undone(restorer: &mut Session<'_>, created: &[String], defined: &BTreeSet<String>) {
+    if let Err(failure) = restorer.run_boxed(&undo(created, defined)).await {
         tracing::warn!(
             created = %created.join(", "),
             defined = %defined.iter().cloned().collect::<Vec<_>>().join(", "),

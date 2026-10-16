@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_constants::{BM25_B, BM25_K1};
@@ -403,7 +404,7 @@ fn the_definition_is_said_back_and_survives_a_script_and_a_reopen() {
     let definition = "DEFINE SEARCH knowledge ON articles FIELDS headline WEIGHT 2.5 SNIPPET, \
                       text NO FUZZY ON notes FIELDS title WEIGHT 3, body NO PHRASE ANALYZER plain;";
     let held = store(definition);
-    let script = tessari_session::write_script(&held).unwrap().text;
+    let script = tessari_session::write_script(&held).now().unwrap().text;
     assert!(script.contains(definition), "{script}");
     assert!(!script.contains("DEFINE INDEX knowledge"), "{script}");
 
@@ -672,7 +673,7 @@ fn synonyms_answer_per_field_and_stop_words_leave_the_query() {
         assert!(writer.run_now(refused).is_err(), "{refused} was accepted");
     }
     // The script carries both sets, and a fresh store answers the same.
-    let script = tessari_session::write_script(&held).unwrap().text;
+    let script = tessari_session::write_script(&held).now().unwrap().text;
     assert!(
         script.contains("DEFINE SYNONYMS machines { 'engine': ['loom', 'machine'] };"),
         "{script}"

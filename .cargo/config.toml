@@ -53,3 +53,10 @@ lint = "clippy --workspace --all-targets --all-features -- -D warnings"
 [env]
 CXXFLAGS_aarch64_apple_darwin = "-DHAVE_FULLFSYNC"
 CXXFLAGS_x86_64_apple_darwin = "-DHAVE_FULLFSYNC"
+# The executor recurses by design (an event's statements fire events, up to 16
+# deep), and an unoptimized build's async frames make each level several times
+# larger than a release build's: the deepest event chain needs about 4 MiB of
+# stack here and under 512 KiB in release. So threads started under cargo (test
+# threads, and a node run with `cargo run`) get 8 MiB. A release binary run
+# directly keeps the platform default, which is ample.
+RUST_MIN_STACK = "8388608"

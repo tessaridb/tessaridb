@@ -59,7 +59,7 @@ pub(crate) const fn retried_on_conflict(kind: &StatementKind) -> bool {
 
 impl Session<'_> {
     /// `INCR key [BY amount]` — answers the number the key now holds.
-    pub(crate) fn increment(
+    pub(crate) async fn increment(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
@@ -80,7 +80,8 @@ impl Session<'_> {
             other => other,
         };
         let next = arithmetic(ArithmeticOp::Add, &current, &amount, span)?;
-        self.put_record(transaction, address.clone(), next.clone(), span)?;
+        self.put_record(transaction, address.clone(), next.clone(), span)
+            .await?;
         if let Some(at) = expires {
             transaction.expire_pending(&address, at);
         }

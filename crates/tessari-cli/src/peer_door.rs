@@ -115,18 +115,20 @@ impl tessari_wire::Holding for PeerDoor {
     // door believed the signature; this node judges the account and the reach,
     // runs the script as that user — its own grants decide — and answers in
     // the shape the caller's surface reads.
-    fn coordinated(
+    async fn coordinated(
         &self,
         from: [u8; tessari_storage::NODE_ID_LEN],
         assertion: &tessari_wire::Assertion,
         asked: &tessari_wire::Coordinate,
     ) -> Result<tessaridb::Coordinated, String> {
         let mut session = tessari_wire::admit_asserted(&self.db, from, assertion)?;
-        let ran = session.run_coordinated(
-            (asked.namespace.as_deref(), asked.database.as_deref()),
-            &asked.script,
-            &asked.parameters,
-        );
+        let ran = session
+            .run_coordinated(
+                (asked.namespace.as_deref(), asked.database.as_deref()),
+                &asked.script,
+                &asked.parameters,
+            )
+            .await;
         Ok(match asked.surface {
             tessaridb::Surface::Wire { minor } => {
                 tessari_wire::render_coordinated(&self.db, &ran, minor)

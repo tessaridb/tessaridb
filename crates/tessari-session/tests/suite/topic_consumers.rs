@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -207,13 +208,16 @@ fn atomically_commits_several_scripts_together_or_none_of_them() {
     let store = shaped();
     let mut session = inside(&store);
     session
-        .atomically(|work| -> tessari_session::Result<()> {
-            work.run_with("SET order_rows:1 = { a: 1 };", &Parameters::new())?;
+        .atomically(async |work| -> tessari_session::Result<()> {
+            work.run_with("SET order_rows:1 = { a: 1 };", &Parameters::new())
+                .await?;
             let mut bound = Parameters::new();
             bound.insert("value".to_owned(), Value::from("two"));
-            work.run_with("SET order_rows:2 = { a: $value };", &bound)?;
+            work.run_with("SET order_rows:2 = { a: $value };", &bound)
+                .await?;
             Ok(())
         })
+        .now()
         .unwrap();
     let count = |session: &mut Session<'_>| match session
         .run_now("SELECT * FROM order_rows;")
@@ -225,11 +229,15 @@ fn atomically_commits_several_scripts_together_or_none_of_them() {
     };
     assert_eq!(count(&mut session), 2);
 
-    let failed: tessari_session::Result<()> = session.atomically(|work| {
-        work.run_with("SET order_rows:3 = { a: 3 };", &Parameters::new())?;
-        work.run_with("SET order_rows:4 = ;", &Parameters::new())?;
-        Ok(())
-    });
+    let failed: tessari_session::Result<()> = session
+        .atomically(async |work| {
+            work.run_with("SET order_rows:3 = { a: 3 };", &Parameters::new())
+                .await?;
+            work.run_with("SET order_rows:4 = ;", &Parameters::new())
+                .await?;
+            Ok(())
+        })
+        .now();
     assert!(failed.is_err());
     assert_eq!(
         count(&mut session),
@@ -237,7 +245,9 @@ fn atomically_commits_several_scripts_together_or_none_of_them() {
         "the first script's write must not be kept"
     );
 
-    let verb = session.atomically(|work| work.run_with("COMMIT;", &Parameters::new()));
+    let verb = session
+        .atomically(async |work| work.run_with("COMMIT;", &Parameters::new()).await)
+        .now();
     assert!(
         matches!(verb, Err(Error::TransactionVerbInAtomic { .. })),
         "{verb:?}"

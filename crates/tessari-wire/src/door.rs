@@ -91,7 +91,7 @@ pub trait Holding: Origin + Send + Sync + 'static {
         from: [u8; NODE_ID_LEN],
         assertion: &Assertion,
         asked: &Coordinate,
-    ) -> std::result::Result<tessaridb::Coordinated, String>;
+    ) -> impl Future<Output = std::result::Result<tessaridb::Coordinated, String>>;
 
     /// Write one record of a transaction across leaders `from` carried here
     /// for a caller it verified, under an assertion the door has already

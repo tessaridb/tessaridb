@@ -84,7 +84,7 @@ pub(super) fn note(table: &TableDefinition) -> Option<&'static str> {
 
 /// Write every record of `table` as the statement its kind is written with, and
 /// answer how many.
-pub(super) fn records(
+pub(super) async fn records(
     reader: &mut Session<'_>,
     table: &TableDefinition,
     names: &tessari_ql::literal::Names,
@@ -92,7 +92,8 @@ pub(super) fn records(
 ) -> Result<u64> {
     let name = &table.name;
     let rows = match reader
-        .run_blocking(&format!("SELECT * FROM {name};"))?
+        .run_boxed(&format!("SELECT * FROM {name};"))
+        .await?
         .pop()
     {
         Some(Outcome::Records { records, .. }) => records,
@@ -110,7 +111,7 @@ pub(super) fn records(
         let held = tessari_ql::literal::value(value, names);
         match table.kind {
             TableKind::Bucket(_) => {
-                let bytes = match reader.run_blocking(&format!("READ {target};"))?.pop() {
+                let bytes = match reader.run_boxed(&format!("READ {target};")).await?.pop() {
                     Some(Outcome::Value(bytes @ Value::Bytes(_))) => bytes,
                     _ => Value::Bytes(Vec::new()),
                 };
@@ -122,7 +123,7 @@ pub(super) fn records(
             }
             TableKind::Space(_) => {
                 let _ = writeln!(body, "SET {target} = {held};");
-                write_instant(reader, &target, names, body)?;
+                write_instant(reader, &target, names, body).await?;
             }
             _ => {
                 // A table that declares expiry stamps its default on a create, so
@@ -133,7 +134,7 @@ pub(super) fn records(
                     ""
                 };
                 let _ = writeln!(body, "CREATE {target} = {held}{never};");
-                write_instant(reader, &target, names, body)?;
+                write_instant(reader, &target, names, body).await?;
             }
         }
         written = written.saturating_add(1);
@@ -149,18 +150,22 @@ pub(super) fn records(
 /// extend every lifetime by the delay (ADR-0122 A9, Q-952). An instant that has
 /// passed by then removes the record, which is the verb's own rule, so a script
 /// never writes back a record a snapshot of the same moment would hide.
-fn write_instant(
+async fn write_instant(
     reader: &mut Session<'_>,
     target: &str,
     names: &tessari_ql::literal::Names,
     body: &mut String,
 ) -> Result<()> {
-    let left = match reader.run_blocking(&format!("RETURN TTL {target};"))?.pop() {
+    let left = match reader
+        .run_boxed(&format!("RETURN TTL {target};"))
+        .await?
+        .pop()
+    {
         Some(Outcome::Value(left @ Value::Duration(_))) => left,
         _ => return Ok(()),
     };
     let (Value::Duration(left), Some(Outcome::Value(Value::Datetime(now)))) =
-        (left, reader.run_blocking("RETURN time::now();")?.pop())
+        (left, reader.run_boxed("RETURN time::now();").await?.pop())
     else {
         return Ok(());
     };

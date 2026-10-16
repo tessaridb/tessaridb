@@ -70,7 +70,7 @@ impl Holding for Holder {
         self.commits.1.clone()
     }
 
-    fn coordinated(
+    async fn coordinated(
         &self,
         _: [u8; NODE_ID_LEN],
         _: &crate::assertion::Assertion,
