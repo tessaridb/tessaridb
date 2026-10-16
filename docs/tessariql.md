@@ -9843,8 +9843,8 @@ level admits any request at or above it, and one below only with `OR WEAKER`.
 **`MAJORITY` is the default for a namespace kept on more than one node**; a
 namespace with `REPLICATION NONE`, or a store standing alone, is its own
 majority and waits for nobody. A write or a `COMMIT` may name its own level, and
-asking for **less** than the namespace's is refused (`AcknowledgeBelowNamespace`)
-unless the namespace says `OR WEAKER` — a default any caller could lower is not
+asking for **less** than the namespace's — stated or the default — is refused
+(`AcknowledgeBelowNamespace`) unless the namespace says `OR WEAKER` — a default any caller could lower is not
 one anybody can rely on.
 
 **Two refusals, and they mean opposite things.** `MajorityUnreachable` comes

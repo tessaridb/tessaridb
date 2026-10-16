@@ -15,6 +15,12 @@ compares carries no pre-release suffix.
 
 ## 0.35.3 — unreleased
 
+### Changed
+
+- **A request below a namespace's default acknowledgement is refused** (`AcknowledgeBelowNamespace`) as one below a
+  stated level is: a namespace kept on more than one node defaults to `MAJORITY`, so `ACKNOWLEDGE LEADER` or
+  `LOCAL MAJORITY` there needs `ALTER NAMESPACE … ACKNOWLEDGE MAJORITY OR WEAKER`.
+
 ### Fixed
 
 - **A member row's `AT` may name a host.** The cluster rounds dialled only a literal address and left a peer declared

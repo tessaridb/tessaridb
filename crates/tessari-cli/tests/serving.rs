@@ -6042,6 +6042,13 @@ fn acknowledged_writes_measured(clause: &str, band: &Band) -> (usize, usize) {
     // The next node in the band, wrapping: a follower whatever won.
     let follower = [1, 2, 0][leader];
     let on = band[leader].0;
+    // A request below the namespace's level needs the namespace to allow it.
+    asked(
+        on,
+        "ALTER NAMESPACE prod ACKNOWLEDGE MAJORITY OR WEAKER;",
+        None,
+    )
+    .expect("the leader lets a request ask for less");
 
     // One writer.
     let mut client = Client::connect(on).unwrap();

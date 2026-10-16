@@ -171,9 +171,12 @@ fn a_replicated_namespace_that_said_nothing_waits_for_a_majority() {
         session.run("CREATE t:1 = { a: 1 };"),
         Err(Error::NotAcknowledgedInTime { .. })
     ));
-    session
-        .run("CREATE t:2 = { a: 2 } ACKNOWLEDGE LEADER;")
-        .unwrap_or_else(|why| panic!("an unstated namespace lets a request choose: {why}"));
+    // The default is the namespace's level: a request below it is refused as one
+    // below a stated level is (ADR-0106 D2, G075 C2a).
+    assert!(matches!(
+        session.run("CREATE t:2 = { a: 2 } ACKNOWLEDGE LEADER;"),
+        Err(Error::AcknowledgeBelowNamespace { .. })
+    ));
 }
 
 #[test]
@@ -197,6 +200,39 @@ fn a_request_below_its_namespace_is_refused_unless_the_namespace_allows_it() {
         .run("BEGIN; CREATE t:2 = { a: 2 }; COMMIT ACKNOWLEDGE LEADER;")
         .unwrap();
     assert_eq!(held(&mut session), 2);
+}
+
+/// G075 C2a (DB-17): a namespace that stated no level waits for its default —
+/// `MAJORITY` when kept on more than one node — and a request below the default
+/// is refused just as one below a stated level is.
+///
+/// Red on 0.35.2: only a STATED level was compared, so `LOCAL MAJORITY` and
+/// `LEADER` were accepted below an unstated `MAJORITY`.
+#[test]
+fn a_request_below_an_unstated_default_is_refused() {
+    let store = clustered("", "prod");
+    let mut session = writing(&store);
+    for asked in ["LOCAL MAJORITY", "LEADER"] {
+        let refused = session.run(&format!("CREATE t:1 = {{ a: 1 }} ACKNOWLEDGE {asked};"));
+        assert!(
+            matches!(
+                &refused,
+                Err(Error::AcknowledgeBelowNamespace { stated, .. })
+                    if stated.level == tessari_types::Acknowledge::Majority && !stated.or_weaker
+            ),
+            "{asked}: {refused:?}"
+        );
+    }
+    assert_eq!(held(&mut session), 0);
+
+    // A namespace kept on one node defaults to `LEADER`, which admits `LEADER`.
+    session
+        .run(
+            "DEFINE NAMESPACE solo REPLICATION NONE; USE NAMESPACE solo; \
+             DEFINE DATABASE app; USE DATABASE app; DEFINE COLLECTION t; \
+             CREATE t:1 = { a: 1 } ACKNOWLEDGE LEADER;",
+        )
+        .unwrap();
 }
 
 #[test]
@@ -247,14 +283,14 @@ fn regional(acknowledge: &str, mine: &str) -> Store {
 /// and `second`, in another region, does not count.
 #[test]
 fn a_local_majority_is_a_majority_of_the_leaders_region() {
-    let store = regional("", "REGION 'eu'");
+    let store = regional("ACKNOWLEDGE LOCAL MAJORITY", "REGION 'eu'");
     acknowledged_by(&store, FIRST);
     let mut session = writing(&store);
     session
         .run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;")
         .unwrap_or_else(|why| panic!("first is eu's majority with this node: {why}"));
 
-    let store = regional("", "REGION 'eu'");
+    let store = regional("ACKNOWLEDGE LOCAL MAJORITY", "REGION 'eu'");
     acknowledged_by(&store, SECOND);
     let mut session = writing(&store);
     let refused = session.run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;");
@@ -280,7 +316,7 @@ fn a_local_majority_is_a_majority_of_the_leaders_region() {
 /// cluster" or "nobody".
 #[test]
 fn a_local_majority_on_a_node_with_no_region_is_refused_before_writing() {
-    let store = regional("", "");
+    let store = regional("ACKNOWLEDGE LOCAL MAJORITY", "");
     let mut session = writing(&store);
     let refused = session.run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;");
     assert!(
