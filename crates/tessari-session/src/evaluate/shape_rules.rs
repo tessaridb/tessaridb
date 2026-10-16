@@ -201,7 +201,7 @@ pub(crate) fn table_named(source: &Source) -> Option<&str> {
 /// id sits everywhere else in this store — so a caller reads it the same way it
 /// reads any other answer, and no projection has to learn a special field.
 pub(crate) async fn node_row(store: &Store) -> Result<(RecordId, Value)> {
-    let identity = store.node_identity()?;
+    let identity = store.node_identity().await?;
     let mut fields = BTreeMap::new();
     // The effective role, matching `INFO FOR NODE` — both are reports of the
     // same fact, and a reader comparing them is entitled to one answer.

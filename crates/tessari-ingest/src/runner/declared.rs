@@ -11,7 +11,7 @@ use tessari_storage::{Catalog, ConsumerDefinition, Feed, Store};
 pub(crate) async fn declarations(
     store: &Store,
 ) -> Result<Vec<(ConsumerDefinition, Destination)>, tessari_storage::Error> {
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().await?;
     let declared = Catalog::new(&mut transaction).consumers().await?;
     let mut found = Vec::new();
     // Kafka declarations only: a topic consumer is run by the topic runner, and

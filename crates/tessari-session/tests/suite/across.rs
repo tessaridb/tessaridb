@@ -41,7 +41,7 @@ fn store() -> Store {
 }
 
 fn ids(store: &Store, table: &str) -> (NamespaceId, DatabaseId, TableId) {
-    let mut reading = store.begin().unwrap();
+    let mut reading = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut reading);
     let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
     let database = catalog
@@ -78,8 +78,12 @@ fn prepare(store: &Store, table: &str) -> AcrossAsk {
         coordinator: Reach::Database(namespace, database),
         seen: tessari_storage::Store::committed_tail(
             store,
-            store.own_log(Reach::Database(namespace, database)).unwrap(),
+            store
+                .own_log(Reach::Database(namespace, database))
+                .now()
+                .unwrap(),
         )
+        .now()
         .unwrap(),
         writes: vec![write(store, table, "new")],
     }
@@ -95,6 +99,7 @@ fn note(store: &Store) -> Value {
     let (namespace, database, table) = ids(store, "notes");
     let held = store
         .begin()
+        .now()
         .unwrap()
         .get(&RecordAddress::new(
             namespace,
@@ -326,11 +331,14 @@ fn settling_a_decided_record_writes_it_again_so_a_majority_holds_it() {
             .unwrap();
     }
     let (namespace, database, _) = ids(&store, "notes");
-    let log = store.own_log(Reach::Database(namespace, database)).unwrap();
-    let before = store.committed_tail(log).unwrap();
+    let log = store
+        .own_log(Reach::Database(namespace, database))
+        .now()
+        .unwrap();
+    let before = store.committed_tail(log).now().unwrap();
     assert_eq!(settle(&mut owner, &store), Decision::Aborted);
     assert!(
-        store.committed_tail(log).unwrap() > before,
+        store.committed_tail(log).now().unwrap() > before,
         "the decision was answered without being written again"
     );
 }

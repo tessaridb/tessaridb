@@ -145,7 +145,7 @@ fn the_change_feed_reaches_the_surface() {
 
     let answer = db
         .changes_since(
-            db.store().own_log(FIXTURE_HOME).unwrap(),
+            db.store().own_log(FIXTURE_HOME).now().unwrap(),
             Sequence::ZERO,
             1024,
         )
@@ -164,7 +164,7 @@ fn a_subscription_is_a_value_the_caller_keeps() {
     session.run_now(READY).unwrap();
 
     let mut watching = Db::subscribe(
-        db.store().own_log(FIXTURE_HOME).unwrap(),
+        db.store().own_log(FIXTURE_HOME).now().unwrap(),
         Sequence::ZERO,
         Watch::default(),
     );
@@ -187,7 +187,8 @@ fn a_subscription_is_a_value_the_caller_keeps() {
         .run_now("CREATE users:2 = { name: 'grace' };")
         .unwrap();
     let tail = db
-        .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+        .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+        .now()
         .unwrap();
     let skipped = db
         .skip(&mut watching, Sequence::new(tail.get() + 1))

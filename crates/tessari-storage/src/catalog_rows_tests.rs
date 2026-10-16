@@ -86,7 +86,7 @@ fn fixture() -> Fixture {
     let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
         .now()
         .unwrap();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("ns").now().unwrap().id;
     let database = catalog.create_database(namespace, "db").now().unwrap().id;
@@ -107,7 +107,7 @@ fn fixture() -> Fixture {
 
 /// What a statement naming `ns.db.t` asks the catalog.
 fn resolve(fixture: &Fixture) -> Option<TableId> {
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     let namespace = catalog.namespace_id("ns").now().unwrap()?;
     let database = catalog.database_id(namespace, "db").now().unwrap()?;
@@ -127,7 +127,7 @@ fn a_name_resolved_once_is_not_read_again() {
     assert_eq!(resolve(&fixture), Some(fixture.table));
     let catalog_reads = fixture.backend.reads() - before;
     // Beginning a transaction reads the committed version; nothing else may.
-    let _transaction = fixture.store.begin().unwrap();
+    let _transaction = fixture.store.begin().now().unwrap();
     let begin_reads = fixture.backend.reads() - before - catalog_reads;
     assert!(
         catalog_reads <= begin_reads,
@@ -139,9 +139,9 @@ fn a_name_resolved_once_is_not_read_again() {
 fn a_dropped_table_is_gone_for_new_readers_and_kept_for_old_ones() {
     let fixture = fixture();
     assert_eq!(resolve(&fixture), Some(fixture.table), "warm");
-    let mut before_the_drop = fixture.store.begin().unwrap();
+    let mut before_the_drop = fixture.store.begin().now().unwrap();
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     assert!(
         Catalog::new(&mut transaction)
             .drop_table(fixture.table)

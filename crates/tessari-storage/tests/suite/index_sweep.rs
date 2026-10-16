@@ -92,7 +92,7 @@ impl Fixture {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(Arc::clone(&backend)).now().unwrap();
 
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("prod").now().unwrap();
         let database = catalog
@@ -243,7 +243,7 @@ impl Fixture {
     /// Derived here rather than by calling the store's projection, so the two
     /// sides of the comparison are genuinely independent.
     fn expected_entries(&self) -> BTreeSet<Vec<u8>> {
-        let transaction = self.store.begin().unwrap();
+        let transaction = self.store.begin().now().unwrap();
         let records = transaction
             .scan_table(self.namespace, self.database, self.table)
             .now()
@@ -520,7 +520,7 @@ fn tags(rolls: &mut Rolls) -> Value {
 fn step(fixture: &Fixture, rolls: &mut Rolls) {
     let n = rolls.below(RECORDS);
     let address = fixture.at(n);
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
 
     match rolls.below(10) {
         0..=1 => transaction.delete(address),

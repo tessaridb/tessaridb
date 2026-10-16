@@ -46,13 +46,13 @@ fn at(id: &str) -> RecordAddress {
 }
 
 fn write(store: &Store, id: &str, payload: &[u8]) -> Sequence {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(at(id), payload.to_vec());
     transaction.commit().now().unwrap()
 }
 
 fn delete(store: &Store, id: &str) -> Sequence {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.delete(at(id));
     transaction.commit().now().unwrap()
 }
@@ -134,7 +134,7 @@ fn an_empty_transaction_never_reaches_the_log() {
         .unwrap()
         .len();
 
-    let empty = store.begin().unwrap();
+    let empty = store.begin().now().unwrap();
     empty.commit().now().unwrap();
 
     assert_eq!(
@@ -182,13 +182,13 @@ fn replay_into_an_empty_store_reproduces_it_byte_for_byte() {
         );
     }
     assert_ne!(
-        source.node_identity().unwrap().id,
-        replica.node_identity().unwrap().id,
+        source.node_identity().now().unwrap().id,
+        replica.node_identity().now().unwrap().id,
         "the replica came up holding the source's identity"
     );
     assert_eq!(
-        replica.committed_tail(mine(&source)).unwrap(),
-        source.committed_tail(mine(&source)).unwrap()
+        replica.committed_tail(mine(&source)).now().unwrap(),
+        source.committed_tail(mine(&source)).now().unwrap()
     );
 }
 
@@ -197,7 +197,7 @@ fn a_replica_reads_what_the_source_reads_including_the_history_behind_it() {
     let source_backend = backend();
     let source = store_on(&source_backend);
     write(&source, "r", b"first");
-    let source_held_first = source.begin().unwrap().snapshot();
+    let source_held_first = source.begin().now().unwrap().snapshot();
     write(&source, "r", b"second");
 
     let replica_backend = backend();
@@ -215,13 +215,13 @@ fn a_replica_reads_what_the_source_reads_including_the_history_behind_it() {
             .now()
             .unwrap();
         if index == 0 {
-            replica_held_first = Some(replica.begin().unwrap().snapshot());
+            replica_held_first = Some(replica.begin().now().unwrap().snapshot());
         }
     }
     let replica_held_first = replica_held_first.unwrap();
 
     assert_eq!(
-        replica.begin().unwrap().get(&at("r")).now().unwrap(),
+        replica.begin().now().unwrap().get(&at("r")).now().unwrap(),
         Some(b"second".to_vec())
     );
     // The older version survived the replay too — asserted as the STATE each
@@ -259,7 +259,7 @@ fn a_replica_reads_what_the_source_reads_including_the_history_behind_it() {
             .unwrap(),
         Some(b"first".to_vec())
     );
-    assert!(replica_held_first < replica.begin().unwrap().snapshot());
+    assert!(replica_held_first < replica.begin().now().unwrap().snapshot());
 }
 
 #[test]
@@ -336,7 +336,7 @@ fn a_gap_in_the_log_is_refused_rather_than_skipped() {
     }
     assert!(!error.is_retryable(), "the same record will still be wrong");
     assert_eq!(
-        replica.committed_tail(mine(&source)).unwrap(),
+        replica.committed_tail(mine(&source)).now().unwrap(),
         Sequence::new(1)
     );
 }
@@ -413,7 +413,7 @@ fn two_leaderships_writing_one_sequence_are_refused_rather_than_silently_dropped
 /// for the wrong reason the day allocation changes.
 fn declared(class: Option<ReplicationClass>) -> (Store, LogId, NamespaceId, DatabaseId) {
     let store = store_on(&backend());
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog
@@ -429,6 +429,7 @@ fn declared(class: Option<ReplicationClass>) -> (Store, LogId, NamespaceId, Data
     transaction.commit().now().unwrap();
     let log = store
         .own_log(Reach::Database(namespace.id, database.id))
+        .now()
         .unwrap();
     (store, log, namespace.id, database.id)
 }
@@ -439,7 +440,7 @@ fn declared(class: Option<ReplicationClass>) -> (Store, LogId, NamespaceId, Data
 /// has one per writer — so a test reading back what a store wrote has to say
 /// which writer it means, and every store here writes as itself.
 fn mine(store: &Store) -> LogId {
-    store.own_log(crate::FIXTURE_HOME).unwrap()
+    store.own_log(crate::FIXTURE_HOME).now().unwrap()
 }
 
 /// The writer `store` allocates as.
@@ -449,7 +450,7 @@ fn mine(store: &Store) -> LogId {
 /// and filing a source's records under the replica's name would put them in a
 /// log the source never wrote and leave the source's empty.
 fn wrote(store: &Store) -> Writer {
-    store.writer().unwrap()
+    store.writer().now().unwrap()
 }
 
 /// One put into `declared`'s database, under `epoch`.
@@ -483,14 +484,15 @@ fn a_commit_files_under_this_nodes_own_writer_and_nobody_elses() {
 
     let own = mine(&store);
     assert_eq!(
-        store.logs().unwrap(),
+        store.logs().now().unwrap(),
         vec![own],
         "one node wrote, so the store holds exactly its own log"
     );
-    assert_eq!(store.committed_tail(own).unwrap(), Sequence::new(1));
+    assert_eq!(store.committed_tail(own).now().unwrap(), Sequence::new(1));
     assert_eq!(
         store
             .committed_tail(LogId::unattributed(crate::FIXTURE_HOME))
+            .now()
             .unwrap(),
         Sequence::ZERO,
         "and nothing landed in the log a migrated store would have"
@@ -503,11 +505,14 @@ fn a_placed_commit_names_the_log_its_position_counts_in() {
     // ONE log through ONE position, so the commit must say which log — alone,
     // this node's own; under a leadership, the line's.
     let store = store_on(&backend());
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(at("alone"), b"one".to_vec());
     let alone = transaction.commit_placed().now().unwrap();
     assert_eq!(alone.log, mine(&store));
-    assert_eq!(alone.sequence, store.committed_tail(mine(&store)).unwrap());
+    assert_eq!(
+        alone.sequence,
+        store.committed_tail(mine(&store)).now().unwrap()
+    );
 
     store
         .hold(
@@ -515,7 +520,7 @@ fn a_placed_commit_names_the_log_its_position_counts_in() {
             tessari_storage::Lease::taken(tessari_storage::LEASE_TTL),
         )
         .now();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(at("led"), b"two".to_vec());
     let led = transaction.commit_placed().now().unwrap();
     let line = store.line_log(crate::FIXTURE_HOME).now().unwrap();
@@ -523,7 +528,7 @@ fn a_placed_commit_names_the_log_its_position_counts_in() {
         led.log, line,
         "a led commit counted in a log it was not filed in"
     );
-    assert_eq!(led.sequence, store.committed_tail(line).unwrap());
+    assert_eq!(led.sequence, store.committed_tail(line).now().unwrap());
 }
 
 #[test]
@@ -544,7 +549,7 @@ fn a_commit_carries_the_leadership_it_was_made_under() {
     let line = store.line_log(crate::FIXTURE_HOME).now().unwrap();
     assert_eq!(line, LogId::new(crate::FIXTURE_HOME, Writer::LINE));
     assert_eq!(
-        store.tail_leadership(line).unwrap(),
+        store.tail_leadership(line).now().unwrap(),
         Epoch::new(7),
         "the record names the leadership it was committed under, in the line's log"
     );
@@ -560,7 +565,7 @@ fn a_first_leader_adopts_its_own_history_as_the_start_of_the_lines_log() {
     write(&store, "a", b"before");
     write(&store, "b", b"before");
     assert_eq!(
-        store.committed_tail(mine(&store)).unwrap(),
+        store.committed_tail(mine(&store)).now().unwrap(),
         Sequence::new(2)
     );
 
@@ -572,20 +577,20 @@ fn a_first_leader_adopts_its_own_history_as_the_start_of_the_lines_log() {
         .now();
     let line = store.line_log(crate::FIXTURE_HOME).now().unwrap();
     assert_eq!(
-        store.committed_tail(line).unwrap(),
+        store.committed_tail(line).now().unwrap(),
         Sequence::new(2),
         "adopted"
     );
     assert_eq!(
-        store.committed_tail(mine(&store)).unwrap(),
+        store.committed_tail(mine(&store)).now().unwrap(),
         Sequence::ZERO,
         "moved, not copied — one history, in one place"
     );
 
     write(&store, "c", b"led");
-    assert_eq!(store.committed_tail(line).unwrap(), Sequence::new(3));
-    assert_eq!(store.tail_leadership(line).unwrap(), Epoch::new(1));
-    assert_eq!(store.logs().unwrap(), vec![line]);
+    assert_eq!(store.committed_tail(line).now().unwrap(), Sequence::new(3));
+    assert_eq!(store.tail_leadership(line).now().unwrap(), Epoch::new(1));
+    assert_eq!(store.logs().now().unwrap(), vec![line]);
 }
 
 #[test]
@@ -625,8 +630,11 @@ fn a_follower_that_becomes_the_leader_continues_the_one_log() {
         .now();
     write(&follower, "c", b"3");
 
-    assert_eq!(follower.committed_tail(line).unwrap(), Sequence::new(3));
-    assert_eq!(follower.tail_leadership(line).unwrap(), Epoch::new(2));
+    assert_eq!(
+        follower.committed_tail(line).now().unwrap(),
+        Sequence::new(3)
+    );
+    assert_eq!(follower.tail_leadership(line).now().unwrap(), Epoch::new(2));
 }
 
 #[test]
@@ -677,8 +685,14 @@ fn a_follower_renames_its_copy_of_the_leaders_log_the_way_the_leader_did() {
             .now()
             .unwrap();
     }
-    assert_eq!(follower.committed_tail(line).unwrap(), Sequence::new(3));
-    assert_eq!(follower.committed_tail(theirs).unwrap(), Sequence::ZERO);
+    assert_eq!(
+        follower.committed_tail(line).now().unwrap(),
+        Sequence::new(3)
+    );
+    assert_eq!(
+        follower.committed_tail(theirs).now().unwrap(),
+        Sequence::ZERO
+    );
 }
 
 #[test]
@@ -746,9 +760,9 @@ fn two_writers_on_one_home_each_keep_their_own_positions() {
         .now()
         .expect("a second writer's log starts at its own first position");
 
-    assert_eq!(store.committed_tail(one).unwrap(), Sequence::new(3));
-    assert_eq!(store.committed_tail(other).unwrap(), Sequence::new(1));
-    let mut logs = store.logs_of(crate::FIXTURE_HOME).unwrap();
+    assert_eq!(store.committed_tail(one).now().unwrap(), Sequence::new(3));
+    assert_eq!(store.committed_tail(other).now().unwrap(), Sequence::new(1));
+    let mut logs = store.logs_of(crate::FIXTURE_HOME).now().unwrap();
     logs.sort_unstable();
     assert_eq!(
         logs,
@@ -783,7 +797,14 @@ fn two_leaderships_on_a_declared_range_are_both_admitted() {
     // the only difference between the two, which is what makes this a scoping
     // of the fence rather than a hole in it.
     let (store, home, namespace, database) = declared(Some(ReplicationClass::MultiMaster));
-    let first = Sequence::new(store.committed_tail(home).unwrap().get().saturating_add(1));
+    let first = Sequence::new(
+        store
+            .committed_tail(home)
+            .now()
+            .unwrap()
+            .get()
+            .saturating_add(1),
+    );
 
     store
         .apply_record(
@@ -817,7 +838,14 @@ fn a_range_that_declared_single_leader_refuses_exactly_as_silence_does() {
     // different one, and `INFO FOR` can still tell the two apart.
     for class in [None, Some(ReplicationClass::SingleLeader)] {
         let (store, home, namespace, database) = declared(class);
-        let first = Sequence::new(store.committed_tail(home).unwrap().get().saturating_add(1));
+        let first = Sequence::new(
+            store
+                .committed_tail(home)
+                .now()
+                .unwrap()
+                .get()
+                .saturating_add(1),
+        );
 
         store
             .apply_record(
@@ -873,7 +901,10 @@ fn re_sending_a_record_the_store_already_holds_stays_a_free_no_op() {
     held.apply_record(wrote(&held), Sequence::new(1), &record)
         .now()
         .unwrap();
-    assert_eq!(held.committed_tail(mine(&held)).unwrap(), Sequence::new(1));
+    assert_eq!(
+        held.committed_tail(mine(&held)).now().unwrap(),
+        Sequence::new(1)
+    );
     assert_eq!(held.health().now().unwrap().log_divergences, 0);
 }
 
@@ -943,7 +974,7 @@ fn a_replica_that_applied_a_record_can_still_commit_of_its_own_accord() {
     let committed = write(&replica, "local", b"from-a-commit");
     assert_eq!(committed, Sequence::new(2));
 
-    let transaction = replica.begin().unwrap();
+    let transaction = replica.begin().now().unwrap();
     assert_eq!(
         transaction.get(&at("applied")).now().unwrap(),
         Some(b"from-the-log".to_vec())
@@ -981,7 +1012,7 @@ fn a_replay_derives_the_adjacency_the_commit_derived() {
     let source_backend = backend();
     let source = store_on(&source_backend);
 
-    let mut transaction = source.begin().unwrap();
+    let mut transaction = source.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog
@@ -1016,7 +1047,7 @@ fn a_replay_derives_the_adjacency_the_commit_derived() {
         FieldValue::Record(RecordRef::new(people.id, RecordId::from("ben"))),
     );
     let before = dump(&source_backend, Keyspace::INDEX).len();
-    let mut transaction = source.begin().unwrap();
+    let mut transaction = source.begin().now().unwrap();
     transaction.put(
         RecordAddress::new(namespace.id, database.id, edges.id, RecordId::from("e1")),
         encode_payload(&FieldValue::Object(fields)).into_bytes(),
@@ -1103,6 +1134,7 @@ fn a_follower_catches_a_leader_that_is_still_writing() {
         let from = Sequence::new(
             replica
                 .committed_tail(mine(&leader))
+                .now()
                 .unwrap()
                 .get()
                 .saturating_add(1),
@@ -1113,8 +1145,8 @@ fn a_follower_catches_a_leader_that_is_still_writing() {
             .unwrap();
         if batch.is_empty() {
             if writer.is_finished()
-                && replica.committed_tail(mine(&leader)).unwrap()
-                    == leader.committed_tail(mine(&leader)).unwrap()
+                && replica.committed_tail(mine(&leader)).now().unwrap()
+                    == leader.committed_tail(mine(&leader)).now().unwrap()
             {
                 break;
             }
@@ -1151,6 +1183,7 @@ fn a_follower_catches_a_leader_that_is_still_writing() {
             Sequence::new(
                 replica
                     .committed_tail(mine(&leader))
+                    .now()
                     .unwrap()
                     .get()
                     .saturating_add(1),
@@ -1178,12 +1211,12 @@ fn a_follower_catches_a_leader_that_is_still_writing() {
     );
     assert_eq!(
         u64::try_from(applied).unwrap(),
-        leader.committed_tail(mine(&leader)).unwrap().get(),
+        leader.committed_tail(mine(&leader)).now().unwrap().get(),
         "the follower applied a different number of records than the leader wrote"
     );
     assert_eq!(
-        replica.committed_tail(mine(&leader)).unwrap(),
-        leader.committed_tail(mine(&leader)).unwrap(),
+        replica.committed_tail(mine(&leader)).now().unwrap(),
+        leader.committed_tail(mine(&leader)).now().unwrap(),
         "the follower did not converge on the leader's tail"
     );
     assert_eq!(
@@ -1235,7 +1268,7 @@ fn a_record_whose_predecessor_the_follower_never_wrote_is_refused_at_once() {
             .unwrap();
     }
     assert_eq!(
-        follower.committed_tail(mine(&follower)).unwrap(),
+        follower.committed_tail(mine(&follower)).now().unwrap(),
         Sequence::new(5)
     );
 
@@ -1268,7 +1301,7 @@ fn a_record_whose_predecessor_the_follower_never_wrote_is_refused_at_once() {
     }
 
     assert_eq!(
-        follower.committed_tail(mine(&follower)).unwrap(),
+        follower.committed_tail(mine(&follower)).now().unwrap(),
         Sequence::new(5),
         "the refused record was applied anyway"
     );
@@ -1293,7 +1326,7 @@ fn a_stream_whose_predecessor_matches_is_applied_like_any_other_record() {
         .now()
         .unwrap();
     assert_eq!(
-        store.committed_tail(mine(&store)).unwrap(),
+        store.committed_tail(mine(&store)).now().unwrap(),
         Sequence::new(4)
     );
     assert_eq!(store.health().now().unwrap().log_divergences, 0);
@@ -1313,7 +1346,7 @@ fn the_first_record_of_a_log_claims_the_epoch_of_a_store_that_elected_nobody() {
         .now()
         .unwrap();
     assert_eq!(
-        empty.committed_tail(mine(&empty)).unwrap(),
+        empty.committed_tail(mine(&empty)).now().unwrap(),
         Sequence::new(1)
     );
 
@@ -1360,7 +1393,7 @@ fn lead(store: &Store, range: Reach, epoch: u64) -> Sequence {
 /// `a_replica_answers_who_leads_from_the_log_it_applied_and_from_nothing_else`
 /// does. A test that needs two rows in one catalog is a test about this node.
 fn lead_here(store: &Store, range: Reach, epoch: u64) -> Sequence {
-    let me = store.node_identity().unwrap().id;
+    let me = store.node_identity().now().unwrap().id;
     lead_as(store, range, me, epoch)
 }
 
@@ -1370,7 +1403,7 @@ fn lead_as(
     node: [u8; tessari_storage::NODE_ID_LEN],
     epoch: u64,
 ) -> Sequence {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .record_leadership(range, node, Epoch::new(epoch))
         .unwrap();
@@ -1379,7 +1412,7 @@ fn lead_as(
 
 /// What `store` says leads `range`.
 fn leads(store: &Store, range: Reach) -> Option<tessari_storage::LeadershipDefinition> {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .leader_of(range)
         .now()
@@ -1430,7 +1463,7 @@ fn a_new_leadership_replaces_the_previous_answer_rather_than_joining_it() {
     // One row per range, not a history: two answers to *who leads the store*
     // would be two answers to one question, and nothing here chooses between
     // them.
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     assert_eq!(
         Catalog::new(&mut transaction)
             .leaderships()
@@ -1513,7 +1546,7 @@ fn put_in(
     id: &str,
     payload: &[u8],
 ) -> Sequence {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(address_in(namespace, database, id), payload.to_vec());
     transaction.commit().now().unwrap()
 }
@@ -1525,7 +1558,7 @@ fn put_in(
 /// target would leave the source's logs empty on a store holding all of their
 /// records.
 fn replay_range(source: &Store, target: &Store, home: Reach) {
-    for log in source.logs_of(home).unwrap() {
+    for log in source.logs_of(home).now().unwrap() {
         for (at, record) in source
             .log_records(log, Sequence::ZERO, PLENTY)
             .now()
@@ -1564,7 +1597,10 @@ fn a_commit_stamps_the_version_with_what_this_node_had_seen() {
     // Two writes from one node leave one entry at two, because a stamp counts
     // writes per node and not nodes per record.
     let (store, _, namespace, database) = declared(Some(ReplicationClass::MultiMaster));
-    let log = store.own_log(Reach::Database(namespace, database)).unwrap();
+    let log = store
+        .own_log(Reach::Database(namespace, database))
+        .now()
+        .unwrap();
 
     put_in(&store, namespace, database, "r", b"first");
     let after_one = stamp_in(&store, log, "r");
@@ -1612,11 +1648,11 @@ fn two_nodes_writing_one_range_replay_into_a_third_that_names_the_conflict() {
     put_in(&second, namespace, database, "shared", b"second-writes-it");
 
     // Each allocates in its OWN log: one log apiece, and not the same one.
-    assert_eq!(first.logs_of(home).unwrap().len(), 1);
-    assert_eq!(second.logs_of(home).unwrap().len(), 1);
+    assert_eq!(first.logs_of(home).now().unwrap().len(), 1);
+    assert_eq!(second.logs_of(home).now().unwrap().len(), 1);
     assert_ne!(
-        first.own_log(home).unwrap(),
-        second.own_log(home).unwrap(),
+        first.own_log(home).now().unwrap(),
+        second.own_log(home).now().unwrap(),
         "two writers on one range are two logs, or the positions collide"
     );
 
@@ -1624,7 +1660,7 @@ fn two_nodes_writing_one_range_replay_into_a_third_that_names_the_conflict() {
     replay_range(&second, &third, home);
 
     assert_eq!(
-        third.logs_of(home).unwrap().len(),
+        third.logs_of(home).now().unwrap().len(),
         2,
         "the follower holds a log per writer, not a merged one"
     );
@@ -1636,7 +1672,7 @@ fn two_nodes_writing_one_range_replay_into_a_third_that_names_the_conflict() {
 
     // By content. The private records are each their writer's, and the
     // contested one holds what the later-applied writer wrote.
-    let transaction = third.begin().unwrap();
+    let transaction = third.begin().now().unwrap();
     assert_eq!(
         transaction
             .get(&address_in(namespace, database, "only-first"))
@@ -1665,8 +1701,8 @@ fn two_nodes_writing_one_range_replay_into_a_third_that_names_the_conflict() {
     // Q-636's line: S1.1 proved the third answer is REPRESENTABLE, and this is
     // the first place two real writes exist to try it on. Both stamps are read
     // out of the THIRD store, so what is compared is what the replay carried.
-    let ours = stamp_in(&third, first.own_log(home).unwrap(), "shared");
-    let theirs = stamp_in(&third, second.own_log(home).unwrap(), "shared");
+    let ours = stamp_in(&third, first.own_log(home).now().unwrap(), "shared");
+    let theirs = stamp_in(&third, second.own_log(home).now().unwrap(), "shared");
     assert_eq!(
         ours.compare(&theirs),
         CausalOrder::Concurrent,
@@ -1705,7 +1741,7 @@ fn a_write_onto_a_record_two_nodes_contested_is_refused_and_names_both() {
     replay_range(&first, &third, home);
     replay_range(&second, &third, home);
 
-    let mut transaction = third.begin().unwrap();
+    let mut transaction = third.begin().now().unwrap();
     transaction.put(
         address_in(namespace, database, "shared"),
         b"the third node decides".to_vec(),
@@ -1743,7 +1779,7 @@ fn a_write_onto_a_record_two_nodes_contested_is_refused_and_names_both() {
         "settled",
         b"and this one lands",
     );
-    let transaction = third.begin().unwrap();
+    let transaction = third.begin().now().unwrap();
     assert_eq!(
         transaction
             .get(&address_in(namespace, database, "settled"))
@@ -1793,8 +1829,15 @@ fn a_writer_that_has_seen_both_versions_supersedes_them_and_is_not_refused() {
         shard: None,
         value: StampedValue::stamped(seen, RecordValue::Present(b"reconciled".to_vec())),
     }]);
-    let own = third.own_log(home).unwrap();
-    let at = Sequence::new(third.committed_tail(own).unwrap().get().saturating_add(1));
+    let own = third.own_log(home).now().unwrap();
+    let at = Sequence::new(
+        third
+            .committed_tail(own)
+            .now()
+            .unwrap()
+            .get()
+            .saturating_add(1),
+    );
     third
         .apply_record(wrote(&third), at, &reconciled)
         .now()
@@ -1802,7 +1845,7 @@ fn a_writer_that_has_seen_both_versions_supersedes_them_and_is_not_refused() {
 
     // One surviving version now, so the next write is taken rather than refused.
     put_in(&third, namespace, database, "shared", b"and on we go");
-    let transaction = third.begin().unwrap();
+    let transaction = third.begin().now().unwrap();
     assert_eq!(
         transaction
             .get(&address_in(namespace, database, "shared"))
@@ -1825,7 +1868,7 @@ fn a_writer_that_has_seen_both_versions_supersedes_them_and_is_not_refused() {
 /// is read from the catalog, so a test for one needs a catalog entry to read.
 fn declaring(policy: Option<ConflictPolicy>) -> (Store, NamespaceId, DatabaseId, TableId) {
     let store = store_on(&backend());
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog
@@ -1880,7 +1923,7 @@ fn put_at(
     id: &str,
     payload: &[u8],
 ) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(address_at(namespace, database, table, id), payload.to_vec());
     transaction.commit().now().unwrap();
 }
@@ -1937,7 +1980,7 @@ fn a_table_declaring_last_writer_wins_takes_a_contested_write_and_counts_it() {
          below is a change and not a coincidence"
     );
 
-    let mut transaction = third.begin().unwrap();
+    let mut transaction = third.begin().now().unwrap();
     transaction.put(
         address_at(namespace, database, table, "shared"),
         b"the third node decides".to_vec(),
@@ -1953,7 +1996,7 @@ fn a_table_declaring_last_writer_wins_takes_a_contested_write_and_counts_it() {
         "the version this write did not descend was discarded, and the counter \
          is what says so"
     );
-    let transaction = third.begin().unwrap();
+    let transaction = third.begin().now().unwrap();
     assert_eq!(
         transaction
             .get(&address_at(namespace, database, table, "shared"))
@@ -1975,7 +2018,7 @@ fn a_rehearsed_commit_discards_nothing_and_counts_nothing() {
     let (third, namespace, database, table) =
         contested_on_a_third(Some(ConflictPolicy::LastWriterWins));
 
-    let mut transaction = third.begin().unwrap();
+    let mut transaction = third.begin().now().unwrap();
     transaction.put(
         address_at(namespace, database, table, "shared"),
         b"rehearsed only".to_vec(),
@@ -2001,7 +2044,7 @@ fn a_table_that_declares_nothing_still_refuses_a_contested_write() {
     // with the gate removed and teaches nothing.
     let (third, namespace, database, table) = contested_on_a_third(None);
 
-    let mut transaction = third.begin().unwrap();
+    let mut transaction = third.begin().now().unwrap();
     transaction.put(
         address_at(namespace, database, table, "shared"),
         b"nobody said i could".to_vec(),
@@ -2063,8 +2106,8 @@ fn two_writers_on_one_range_produce_no_epoch_the_campaign_did_not_grant() {
     replay_range(&second, &third, home);
 
     for (log, held) in [
-        (first.own_log(home).unwrap(), led_by_first),
-        (second.own_log(home).unwrap(), led_by_second),
+        (first.own_log(home).now().unwrap(), led_by_first),
+        (second.own_log(home).now().unwrap(), led_by_second),
     ] {
         let records = third
             .log_records(log, Sequence::ZERO, PLENTY)
@@ -2088,7 +2131,7 @@ fn two_writers_on_one_range_produce_no_epoch_the_campaign_did_not_grant() {
 
 /// What `store` says the cluster's failover policy is.
 fn policy_on(store: &Store) -> Option<tessari_storage::FailoverDefinition> {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction).failover().now().unwrap()
 }
 
@@ -2106,7 +2149,7 @@ fn set_policy(store: &Store, epoch: u64, version: u64, round: u64) -> Sequence {
         std::time::Duration::from_secs(30),
     )
     .unwrap();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .set_failover(policy, Epoch::new(epoch), version, false)
         .unwrap();
@@ -2183,7 +2226,7 @@ fn a_later_policy_replaces_the_row_and_the_replica_ends_on_the_later_one() {
 
 /// Every user on the source, by name, as the replica holds them.
 fn users_on(store: &Store) -> Vec<String> {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut found: Vec<String> = Catalog::new(&mut transaction)
         .users()
         .now()
@@ -2198,7 +2241,7 @@ fn users_on(store: &Store) -> Vec<String> {
 
 /// Declare `name` as an owner of the whole store, and commit.
 fn make_user(store: &Store, name: &str) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .create_user(
             name,
@@ -2248,7 +2291,7 @@ fn a_user_and_its_removal_both_reach_a_replica_along_the_log() {
     // The removal half, which is the one a subscription can quietly not carry:
     // a delete leaves nothing behind to compare, so a replica that applies
     // writes and drops deletes looks correct on every test that only adds.
-    let mut transaction = source.begin().unwrap();
+    let mut transaction = source.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let doomed = catalog
         .users()
@@ -2270,7 +2313,7 @@ fn a_user_and_its_removal_both_reach_a_replica_along_the_log() {
 
 /// Every table `user` may reach on `store`, with the verbs, as a sorted list.
 fn grants_on(store: &Store, user: u32) -> Vec<(u32, usize)> {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut found: Vec<(u32, usize)> = Catalog::new(&mut transaction)
         .grants_for(user)
         .now()
@@ -2299,7 +2342,7 @@ fn a_grant_and_its_revocation_travel_with_the_user_they_are_about() {
     let source = store_on(&source_backend);
     make_user(&source, "reader");
 
-    let mut transaction = source.begin().unwrap();
+    let mut transaction = source.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let user = catalog
         .users()
@@ -2330,7 +2373,7 @@ fn a_grant_and_its_revocation_travel_with_the_user_they_are_about() {
     // The revocation, for the reason the user test gives about a drop: a
     // replica that applies writes and loses deletes keeps an authority the
     // operator has taken away, and no add-only assertion can see it.
-    let mut transaction = source.begin().unwrap();
+    let mut transaction = source.begin().now().unwrap();
     Catalog::new(&mut transaction).revoke(user.id, TableId::new(7));
     transaction.commit().now().unwrap();
 
@@ -2343,7 +2386,7 @@ fn a_grant_and_its_revocation_travel_with_the_user_they_are_about() {
 
 /// Every membership row on `store`, by the name that identifies it.
 fn replicas_on(store: &Store) -> Vec<String> {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut found: Vec<String> = Catalog::new(&mut transaction)
         .replicas()
         .now()
@@ -2358,7 +2401,7 @@ fn replicas_on(store: &Store) -> Vec<String> {
 
 /// Declare one peer on `store`, the way `DEFINE REPLICA` does.
 fn declare_peer(store: &Store, name: &str, node: [u8; tessari_encoding::NODE_ID_LEN]) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .create_replica(
             name,
@@ -2482,7 +2525,7 @@ fn a_peer_name_is_free_again_once_the_row_it_identifies_is_dropped() {
     );
 
     // While the row is there the name is taken, which is the ordinary refusal.
-    let mut transaction = theirs.begin().unwrap();
+    let mut transaction = theirs.begin().now().unwrap();
     let refused = Catalog::new(&mut transaction)
         .create_replica(
             "beta",
@@ -2501,7 +2544,7 @@ fn a_peer_name_is_free_again_once_the_row_it_identifies_is_dropped() {
 
     // And once the row goes, so does the name — the half the second keyspace
     // used to get wrong.
-    let mut transaction = theirs.begin().unwrap();
+    let mut transaction = theirs.begin().now().unwrap();
     assert!(
         Catalog::new(&mut transaction)
             .drop_replica("beta")
@@ -2514,7 +2557,7 @@ fn a_peer_name_is_free_again_once_the_row_it_identifies_is_dropped() {
     // The node the row named is removed with it (ADR-0108 D9): the name is
     // free, the identity is not, and a machine coming back joins wiped, under a
     // new one.
-    let mut transaction = theirs.begin().unwrap();
+    let mut transaction = theirs.begin().now().unwrap();
     let removed = Catalog::new(&mut transaction)
         .create_replica(
             "beta",
@@ -2577,7 +2620,7 @@ fn a_joining_node_keeps_its_records_and_loses_the_tenancy_they_were_filed_under(
     // The leader, with a tenancy of its own.
     let leader = backend();
     let leader = store_on(&leader);
-    let mut transaction = leader.begin().unwrap();
+    let mut transaction = leader.begin().now().unwrap();
     let theirs = Catalog::new(&mut transaction)
         .create_namespace("payments")
         .now()
@@ -2587,7 +2630,7 @@ fn a_joining_node_keeps_its_records_and_loses_the_tenancy_they_were_filed_under(
     // The joiner, with a tenancy of its own and a database inside it.
     let joiner = backend();
     let joiner = store_on(&joiner);
-    let mut transaction = joiner.begin().unwrap();
+    let mut transaction = joiner.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let mine = catalog.create_namespace("research").now().unwrap();
     catalog.create_database(mine.id, "notebooks").now().unwrap();
@@ -2603,7 +2646,7 @@ fn a_joining_node_keeps_its_records_and_loses_the_tenancy_they_were_filed_under(
     crate::replay(&leader, &joiner);
 
     // The joiner's database is exactly where it was — nothing was deleted.
-    let mut transaction = joiner.begin().unwrap();
+    let mut transaction = joiner.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     let still_here: Vec<String> = catalog
         .databases_in(mine.id)
@@ -2641,7 +2684,7 @@ fn a_joining_node_keeps_its_records_and_loses_the_tenancy_they_were_filed_under(
 
 /// Every namespace `store` can name.
 fn catalog_names(store: &Store) -> Vec<String> {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut found: Vec<String> = Catalog::new(&mut transaction)
         .namespaces()
         .now()

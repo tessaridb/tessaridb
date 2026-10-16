@@ -40,7 +40,7 @@ impl<'a> Session<'a> {
             tracing::warn!(user = %name, "sign-in refused: too many recent failures");
             return Err(Error::SignInThrottled);
         }
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let found = Catalog::new(&mut transaction)
             .users()
             .await?
@@ -127,7 +127,7 @@ impl<'a> Session<'a> {
     /// what a deleted declarer looks like, and is therefore how deleting one
     /// stops the consumer they declared.
     pub async fn acting_as(&mut self, id: u32) -> Result<()> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let found = tessari_storage::Catalog::new(&mut transaction)
             .users()
             .await?
@@ -247,7 +247,7 @@ impl<'a> Session<'a> {
         // Re-read rather than trust the session's copy, for the reason a ticket
         // is re-read: a session open across a `DROP USER` would otherwise write
         // a hash back over an id the catalog no longer holds.
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let found = Catalog::new(&mut transaction)
             .users()
             .await?
@@ -276,7 +276,7 @@ impl<'a> Session<'a> {
         }
 
         user.secret = secret;
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         Catalog::new(&mut transaction).update_user(&user);
         transaction.commit().await?;
         tracing::info!(user = %user.name, "a user changed their own password");

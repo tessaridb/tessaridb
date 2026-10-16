@@ -34,7 +34,7 @@ impl Session<'_> {
         let mut namespace = self.namespace.clone();
         let mut database = self.database.clone();
         let mut held: BTreeMap<(String, String), Parameters> = BTreeMap::new();
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let mut defaults = Vec::with_capacity(script.statements.len());
         for statement in &script.statements {
             if let StatementKind::Use {

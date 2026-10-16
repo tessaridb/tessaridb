@@ -38,7 +38,7 @@ impl Source {
     ///
     /// Names a cursor this feed cannot read, and a home holding another node's
     /// writes — one writer's order is the only one there is to merge by.
-    pub(super) fn open(
+    pub(super) async fn open(
         db: &Db,
         (namespace, database): (NamespaceId, DatabaseId),
         split: &[Split],
@@ -47,7 +47,7 @@ impl Source {
         watch: Watch,
     ) -> Result<Self, FeedRefused> {
         let store = db.store();
-        let own = store.writer()?;
+        let own = store.writer().await?;
         let whole = Reach::Database(namespace, database);
         if split.is_empty() {
             // One log, whose sequence is its position: a cursor here was carried
@@ -71,7 +71,7 @@ impl Source {
             }
         }
         for (home, named) in &homes {
-            let logs = store.logs_of(*home)?;
+            let logs = store.logs_of(*home).await?;
             if logs.iter().any(|log| log.writer != own) {
                 let what = named.map_or_else(
                     || "this database's log".to_owned(),

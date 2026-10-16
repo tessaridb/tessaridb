@@ -228,9 +228,9 @@ impl Session<'_> {
         let Some(known) = self.elsewhere.as_ref() else {
             return Ok(None);
         };
-        let me = self.store.node_identity()?.id;
+        let me = self.store.node_identity().await?.id;
         let whole = tessari_storage::Reach::Database(missing.namespace, missing.database);
-        let mut now = self.store.begin()?;
+        let mut now = self.store.begin().await?;
         let holder = Catalog::new(&mut now)
             .replicas()
             .await?

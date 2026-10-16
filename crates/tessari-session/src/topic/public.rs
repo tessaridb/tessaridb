@@ -75,7 +75,7 @@ impl<'a> Session<'a> {
         store: &'a Store,
         table: &TableRef,
     ) -> Result<Option<(tessari_types::TableId, tessari_storage::PublicAppend)>> {
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().await?;
         // A table that does not resolve is not a door, and saying which is not
         // this caller's to learn: the answer is the same refusal either way.
         let Ok((_, id)) = self.resolve_table(&mut transaction, table).await else {

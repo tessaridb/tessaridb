@@ -148,3 +148,75 @@ impl<T: KvBackend + ?Sized> AsyncKvBackend for T {
         Box::pin(async move { KvBackend::delete_range(self, keyspace, range) })
     }
 }
+
+/// A shared synchronous backend answering the asynchronous trait, for a holder of
+/// `Arc<dyn KvBackend>` that must hand it on as `Arc<dyn AsyncKvBackend>` (an `Arc` of one
+/// trait object cannot be turned into an `Arc` of the other). Transitional with the impl
+/// above, and removed with it.
+#[derive(Debug)]
+pub struct Synchronous(pub std::sync::Arc<dyn KvBackend>);
+
+impl AsyncKvBackend for Synchronous {
+    fn name(&self) -> &'static str {
+        AsyncKvBackend::name(&*self.0)
+    }
+
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<Value>> {
+        AsyncKvBackend::get(&*self.0, keyspace, key)
+    }
+
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
+        AsyncKvBackend::scan(&*self.0, request)
+    }
+
+    fn sweep<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
+        AsyncKvBackend::sweep(&*self.0, request)
+    }
+
+    fn first_of_each<'a>(
+        &'a self,
+        keyspace: Keyspace,
+        ranges: &'a [KeyRange],
+    ) -> KvFuture<'a, Vec<Option<(Key, Value)>>> {
+        AsyncKvBackend::first_of_each(&*self.0, keyspace, ranges)
+    }
+
+    fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
+        AsyncKvBackend::count(&*self.0, keyspace, range)
+    }
+
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        AsyncKvBackend::apply(&*self.0, batch)
+    }
+
+    fn apply_unsynced(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        AsyncKvBackend::apply_unsynced(&*self.0, batch)
+    }
+
+    fn sync_applied(&self) -> KvFuture<'_, ()> {
+        AsyncKvBackend::sync_applied(&*self.0)
+    }
+
+    fn apply_group(
+        &self,
+        batches: Vec<WriteBatch>,
+    ) -> Pin<Box<dyn Future<Output = (usize, Result<()>)> + Send + '_>> {
+        AsyncKvBackend::apply_group(&*self.0, batches)
+    }
+
+    fn groups_writes(&self) -> bool {
+        AsyncKvBackend::groups_writes(&*self.0)
+    }
+
+    fn background_errors(&self) -> KvFuture<'_, u64> {
+        AsyncKvBackend::background_errors(&*self.0)
+    }
+
+    fn contains<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, bool> {
+        AsyncKvBackend::contains(&*self.0, keyspace, key)
+    }
+
+    fn delete_range<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, ()> {
+        AsyncKvBackend::delete_range(&*self.0, keyspace, range)
+    }
+}

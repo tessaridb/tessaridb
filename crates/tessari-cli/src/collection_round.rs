@@ -113,7 +113,7 @@ pub(crate) async fn collect_from_upstream(
                 ));
             }
         };
-        let me = match store.node_identity() {
+        let me = match store.node_identity().await {
             Ok(identity) => identity.id,
             Err(why) => {
                 return Err(tessari_wire::PassFailed::new(
@@ -222,7 +222,7 @@ pub(crate) async fn collect_from_upstream(
                     continue;
                 }
             };
-            let seed = match store.committed_tail(log) {
+            let seed = match store.committed_tail(log).await {
                 Ok(tail) => tessari_types::Sequence::new(tail.get().saturating_add(1)),
                 Err(why) => {
                     tracing::warn!(range = ?home, error = %why, "this node cannot say how far a range reaches");
@@ -374,7 +374,7 @@ async fn catch_up_from(
         else {
             continue;
         };
-        let Ok(tail) = store.committed_tail(log) else {
+        let Ok(tail) = store.committed_tail(log).await else {
             continue;
         };
         asks.push((

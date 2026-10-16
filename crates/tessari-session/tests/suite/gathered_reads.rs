@@ -74,7 +74,7 @@ pub(crate) fn leader() -> Arc<Store> {
 }
 
 fn table(store: &Store, name: &str) -> TableId {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     tessari_storage::Catalog::new(&mut transaction)
         .table_id(NamespaceId::new(1), DatabaseId::new(1), name)
         .now()
@@ -108,7 +108,7 @@ pub(crate) fn follower_of_the_middle_of(leader: &Store, name: &str) -> Store {
 fn follower_of(leader: &Store, over: Reach) -> Store {
     let follower = store();
     let mut node = signed_in(leader, "node");
-    for log in leader.logs().unwrap() {
+    for log in leader.logs().now().unwrap() {
         let carried = node
             .replicate_from(leader, A_FOLLOWER, over, log, Sequence::new(1), 256)
             .now()
@@ -153,7 +153,7 @@ impl Gather for FromTheLeader {
                     .map(|(id, inclusive)| (id.clone(), inclusive)),
             ));
             self.pushed.lock().unwrap().push(asked.pushed.cloned());
-            let transaction = self.leader.begin().unwrap();
+            let transaction = self.leader.begin().await.unwrap();
             let records = transaction
                 .records_between(
                     asked.namespace,
@@ -187,7 +187,7 @@ impl Gather for FromTheLeader {
             // Counted as the peer door counts, through the analysis the leader's
             // own index writer uses (ADR-0103).
             if let Some(counting) = asked.counting {
-                let mut transaction = self.leader.begin().unwrap();
+                let mut transaction = self.leader.begin().await.unwrap();
                 let index = tessari_storage::Catalog::new(&mut transaction)
                     .indexes_on(asked.namespace, asked.database, asked.table)
                     .await
@@ -1024,7 +1024,7 @@ fn follower_of_the_database(leader: &Store) -> Store {
     let over = Reach::Database(NamespaceId::new(1), DatabaseId::new(1));
     let follower = store();
     let mut node = signed_in(leader, "node");
-    for log in leader.logs().unwrap() {
+    for log in leader.logs().now().unwrap() {
         let carried = node
             .replicate_from(leader, A_FOLLOWER, over, log, Sequence::new(1), 256)
             .now()
@@ -1082,6 +1082,7 @@ fn a_node_holding_every_shard_backs_the_database_up_complete() {
     let taken = tessari_backup::verify_state(&mut file.as_slice()).unwrap();
     let shards = leader
         .logs()
+        .now()
         .unwrap()
         .into_iter()
         .filter(|log| matches!(log.home, Reach::Shard(..)))

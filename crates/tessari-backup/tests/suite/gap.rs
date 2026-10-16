@@ -112,7 +112,7 @@ fn leader() -> (Arc<dyn KvBackend>, Store) {
         crate::tails(&store),
         vec![
             (
-                store.own_log(Reach::Store).unwrap(),
+                store.own_log(Reach::Store).now().unwrap(),
                 Sequence::new(STORE_RECORDS)
             ),
             (data_log(&store), Sequence::new(DATA_RECORDS)),
@@ -124,7 +124,7 @@ fn leader() -> (Arc<dyn KvBackend>, Store) {
 
 /// The log the fixture's records land in — the database's, not the store's.
 fn data_log(store: &Store) -> LogId {
-    let mut logs = store.logs().unwrap();
+    let mut logs = store.logs().now().unwrap();
     logs.retain(|log| log.home != Reach::Store);
     match logs.as_slice() {
         [one] => *one,
@@ -145,7 +145,7 @@ fn follower_at(leader: &Store, upto: u64) -> Store {
     tessari_backup::write_from(
         leader,
         &mut definitions,
-        leader.own_log(Reach::Store).unwrap(),
+        leader.own_log(Reach::Store).now().unwrap(),
         Sequence::new(1),
     )
     .now()
@@ -162,7 +162,7 @@ fn follower_at(leader: &Store, upto: u64) -> Store {
         .now()
         .unwrap();
     assert_eq!(
-        store.committed_tail(home).unwrap(),
+        store.committed_tail(home).now().unwrap(),
         Sequence::new(upto),
         "the follower did not stop where this test needs it to"
     );
@@ -230,7 +230,7 @@ fn a_log_that_no_longer_reaches_the_follower_is_refused_and_names_the_missing_se
     // It stopped *at* the gap, having applied what came before it. The position
     // reflects what was actually applied, not what the header promised.
     assert_eq!(
-        follower.committed_tail(home).unwrap(),
+        follower.committed_tail(home).now().unwrap(),
         Sequence::new(MISSING.saturating_sub(1)),
         "the follower's position does not match what it applied"
     );
@@ -274,7 +274,7 @@ fn the_same_truncated_log_is_refused_again_rather_than_accepted_on_retry() {
     tessari_backup::bootstrap(&follower, &mut truncated.as_slice())
         .now()
         .unwrap_err();
-    let stopped_at = follower.committed_tail(home).unwrap();
+    let stopped_at = follower.committed_tail(home).now().unwrap();
 
     // Offering the same stream again must not become an acceptance. A refusal
     // that heals itself on retry is worse than one that never fired, because a
@@ -301,7 +301,7 @@ fn the_same_truncated_log_is_refused_again_rather_than_accepted_on_retry() {
         "the retry was refused, but by neither gap guard: {refused_again}"
     );
     assert_eq!(
-        follower.committed_tail(home).unwrap(),
+        follower.committed_tail(home).now().unwrap(),
         stopped_at,
         "the retry moved the follower"
     );
@@ -314,7 +314,7 @@ fn the_same_truncated_log_is_refused_again_rather_than_accepted_on_retry() {
 /// writer of the day put them, while today each one derives a database home.
 fn file_the_data_in_the_store_log(backend: &Arc<dyn KvBackend>, store: &Store) {
     let data = data_log(store);
-    let own = store.own_log(Reach::Store).unwrap();
+    let own = store.own_log(Reach::Store).now().unwrap();
     let mut batch = WriteBatch::new();
     for (at, _) in store.log_records(data, Sequence::new(1), 64).now().unwrap() {
         let body = backend
@@ -344,7 +344,7 @@ fn file_the_data_in_the_store_log(backend: &Arc<dyn KvBackend>, store: &Store) {
 fn a_record_is_restored_into_the_log_it_was_backed_up_from() {
     let (backend, held) = leader();
     file_the_data_in_the_store_log(&backend, &held);
-    let own = held.own_log(Reach::Store).unwrap();
+    let own = held.own_log(Reach::Store).now().unwrap();
     // Vacuity guard: the store log must now carry records that derive a
     // database home, or this restores nothing the old path refused.
     assert_eq!(

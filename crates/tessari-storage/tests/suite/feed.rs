@@ -32,7 +32,7 @@ impl Fixture {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(backend).now().unwrap();
 
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("prod").now().unwrap();
         let database = catalog
@@ -63,13 +63,13 @@ impl Fixture {
     }
 
     fn begin(&self) -> Transaction<'_> {
-        self.store.begin().unwrap()
+        self.store.begin().now().unwrap()
     }
 
     fn changes(&self) -> Vec<Change> {
         self.store
             .changes_since(
-                self.store.own_log(crate::FIXTURE_HOME).unwrap(),
+                self.store.own_log(crate::FIXTURE_HOME).now().unwrap(),
                 Sequence::ZERO,
                 1024,
             )
@@ -175,7 +175,11 @@ fn the_catalog_is_not_in_the_feed_and_the_records_beside_it_are() {
     let changes = fixture
         .store
         .changes_since(
-            fixture.store.own_log(tessari_types::Reach::Store).unwrap(),
+            fixture
+                .store
+                .own_log(tessari_types::Reach::Store)
+                .now()
+                .unwrap(),
             Sequence::ZERO,
             1024,
         )
@@ -200,7 +204,7 @@ fn reading_from_a_sequence_returns_what_follows_it() {
     let later = fixture
         .store
         .changes_since(
-            fixture.store.own_log(crate::FIXTURE_HOME).unwrap(),
+            fixture.store.own_log(crate::FIXTURE_HOME).now().unwrap(),
             after(first),
             1024,
         )
@@ -213,12 +217,13 @@ fn reading_from_a_sequence_returns_what_follows_it() {
     // again.
     let tail = fixture
         .store
-        .committed_tail(fixture.store.own_log(crate::FIXTURE_HOME).unwrap())
+        .committed_tail(fixture.store.own_log(crate::FIXTURE_HOME).now().unwrap())
+        .now()
         .unwrap();
     let caught_up = fixture
         .store
         .changes_since(
-            fixture.store.own_log(crate::FIXTURE_HOME).unwrap(),
+            fixture.store.own_log(crate::FIXTURE_HOME).now().unwrap(),
             after(tail),
             1024,
         )
@@ -285,7 +290,11 @@ fn a_commit_that_changes_no_records_still_moves_the_reader_forward() {
     let answer = fixture
         .store
         .changes_since(
-            fixture.store.own_log(tessari_types::Reach::Store).unwrap(),
+            fixture
+                .store
+                .own_log(tessari_types::Reach::Store)
+                .now()
+                .unwrap(),
             Sequence::ZERO,
             1024,
         )
@@ -306,7 +315,7 @@ fn a_commit_that_changes_no_records_still_moves_the_reader_forward() {
     let next = fixture
         .store
         .changes_since(
-            fixture.store.own_log(crate::FIXTURE_HOME).unwrap(),
+            fixture.store.own_log(crate::FIXTURE_HOME).now().unwrap(),
             Sequence::ZERO,
             1024,
         )
@@ -334,7 +343,7 @@ fn a_limit_bounds_commits_and_never_splits_one() {
     let first = fixture
         .store
         .changes_since(
-            fixture.store.own_log(crate::FIXTURE_HOME).unwrap(),
+            fixture.store.own_log(crate::FIXTURE_HOME).now().unwrap(),
             Sequence::ZERO,
             2,
         )
@@ -346,7 +355,7 @@ fn a_limit_bounds_commits_and_never_splits_one() {
     let second = fixture
         .store
         .changes_since(
-            fixture.store.own_log(crate::FIXTURE_HOME).unwrap(),
+            fixture.store.own_log(crate::FIXTURE_HOME).now().unwrap(),
             first.next,
             2,
         )
@@ -423,7 +432,8 @@ fn a_subscription_receives_every_change_across_several_polls() {
         if subscription.position()
             > fixture
                 .store
-                .committed_tail(fixture.store.own_log(crate::FIXTURE_HOME).unwrap())
+                .committed_tail(fixture.store.own_log(crate::FIXTURE_HOME).now().unwrap())
+                .now()
                 .unwrap()
         {
             break;
@@ -478,7 +488,8 @@ fn what_was_delivered_plus_what_was_dropped_is_what_was_emitted() {
     let first = subscription.poll(&fixture.store, 3).now().unwrap();
     let tail = fixture
         .store
-        .committed_tail(fixture.store.own_log(crate::FIXTURE_HOME).unwrap())
+        .committed_tail(fixture.store.own_log(crate::FIXTURE_HOME).now().unwrap())
+        .now()
         .unwrap();
     let skipped = subscription
         .skip_to(&fixture.store, after(tail))
@@ -518,7 +529,8 @@ fn a_skip_counts_only_what_the_subscription_watches() {
     );
     let tail = fixture
         .store
-        .committed_tail(fixture.store.own_log(crate::FIXTURE_HOME).unwrap())
+        .committed_tail(fixture.store.own_log(crate::FIXTURE_HOME).now().unwrap())
+        .now()
         .unwrap();
     let skipped = subscription
         .skip_to(&fixture.store, after(tail))
@@ -629,7 +641,7 @@ impl Fixture {
     fn history(&self, id: &str, limit: usize) -> tessari_storage::History {
         self.store
             .history_of(
-                self.store.own_log(crate::FIXTURE_HOME).unwrap(),
+                self.store.own_log(crate::FIXTURE_HOME).now().unwrap(),
                 &Subject::new(
                     self.namespace,
                     self.database,
@@ -765,12 +777,17 @@ fn the_walk_is_bounded_and_reports_what_it_read() {
     // The reverse reader underneath is what bounds it, and its bound is exact.
     let newest = fixture
         .store
-        .log_records_newest_first(fixture.store.own_log(crate::FIXTURE_HOME).unwrap(), 1)
+        .log_records_newest_first(fixture.store.own_log(crate::FIXTURE_HOME).now().unwrap(), 1)
+        .now()
         .unwrap();
     assert_eq!(newest.len(), 1, "the reverse read ignored its limit");
     let all = fixture
         .store
-        .log_records_newest_first(fixture.store.own_log(crate::FIXTURE_HOME).unwrap(), 1024)
+        .log_records_newest_first(
+            fixture.store.own_log(crate::FIXTURE_HOME).now().unwrap(),
+            1024,
+        )
+        .now()
         .unwrap();
     assert_eq!(
         newest[0].0, all[0].0,

@@ -2,7 +2,6 @@
 //! resolve — each one log record, each checked where it lands.
 
 use std::sync::Arc;
-use tessari_kv::AsyncKvBackend as _;
 
 use std::collections::BTreeMap;
 use tessari_encoding::{
@@ -42,7 +41,7 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Result<Self> {
         let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).await?;
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().await?;
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("ns").await?.id;
         let database = catalog.create_database(namespace, "db").await?.id;
@@ -59,7 +58,7 @@ impl Fixture {
             )
             .await?;
         transaction.commit().await?;
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().await?;
         transaction.put(
             RecordAddress::new(namespace, database, table, RecordId::from("r")),
             doc("old"),
@@ -132,7 +131,8 @@ impl Fixture {
 
     async fn read(&self) -> Result<Option<Vec<u8>>> {
         self.store
-            .begin()?
+            .begin()
+            .await?
             .get(&RecordAddress::new(
                 self.namespace,
                 self.database,

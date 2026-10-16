@@ -122,7 +122,7 @@ mod tests {
         let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
             .now()
             .unwrap();
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let held = i64::try_from(KAFKA_QUARANTINE_HELD).unwrap();
         for offset in 0..=held {
             transaction
@@ -136,7 +136,7 @@ mod tests {
             .now()
             .unwrap();
         transaction.commit().now().unwrap();
-        let transaction = store.begin().unwrap();
+        let transaction = store.begin().now().unwrap();
         let kept = transaction.quarantined(7).now().unwrap();
         assert_eq!(kept.len(), KAFKA_QUARANTINE_HELD);
         assert_eq!(kept.first(), Some(&parked(1)));
@@ -149,7 +149,7 @@ mod tests {
         let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
             .now()
             .unwrap();
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let held = i64::try_from(KAFKA_QUARANTINE_HELD).unwrap();
         for offset in 0..held {
             transaction

@@ -22,11 +22,12 @@
 use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
+use tessari_kv::AsyncKvBackend;
 
 use tessari_encoding::{
     NODE_ID_LEN, NodeIdentity, NodeIdentityKey, NodeVersion, Roles, StoreKey, StoreValue,
 };
-use tessari_kv::{KvBackend, WriteBatch};
+use tessari_kv::WriteBatch;
 
 use crate::error::{Error, Result};
 
@@ -44,8 +45,8 @@ const ENTROPY_SOURCE: &str = "/dev/urandom";
 /// Returns [`Error::NoEntropy`] when the randomness source cannot be read, the
 /// substrate's failure when the write is refused, and a decoding failure when
 /// the stored identity was written by a build this one cannot read.
-pub(crate) fn ensure(backend: Arc<dyn KvBackend>) -> Result<NodeIdentity> {
-    if let Some(mut found) = read(Arc::clone(&backend))? {
+pub(crate) async fn ensure(backend: Arc<dyn AsyncKvBackend>) -> Result<NodeIdentity> {
+    if let Some(mut found) = read(Arc::clone(&backend)).await? {
         let running = NodeVersion::current();
         if found.version != running {
             // **This is the upgrade, and this is where it is visible.** The id
@@ -56,7 +57,7 @@ pub(crate) fn ensure(backend: Arc<dyn KvBackend>) -> Result<NodeIdentity> {
             // gone, because the only record of the old version is the one being
             // overwritten on the next line.
             found.version = running;
-            write(backend, &found)?;
+            write(backend, &found).await?;
         }
         return Ok(found);
     }
@@ -72,7 +73,7 @@ pub(crate) fn ensure(backend: Arc<dyn KvBackend>) -> Result<NodeIdentity> {
             NodeIdentityKey.encode(),
             fresh.encode(),
         );
-    backend.apply(batch)?;
+    backend.apply(batch).await?;
     Ok(fresh)
 }
 
@@ -94,12 +95,12 @@ pub(crate) fn ensure(backend: Arc<dyn KvBackend>) -> Result<NodeIdentity> {
 ///
 /// Returns [`Error::NoIdentity`] when the store has none, and the substrate's
 /// failure when the read or the write is refused.
-pub(crate) fn configure(
-    backend: Arc<dyn KvBackend>,
+pub(crate) async fn configure(
+    backend: Arc<dyn AsyncKvBackend>,
     roles: Option<Roles>,
     endpoints: Option<Vec<String>>,
 ) -> Result<NodeIdentity> {
-    let Some(mut identity) = read(Arc::clone(&backend))? else {
+    let Some(mut identity) = read(Arc::clone(&backend)).await? else {
         // Unreachable through an open store, which resolves the identity before
         // it hands one out. Said rather than unwrapped, because "the open path
         // guarantees it" is a claim about another function that a later edit can
@@ -112,7 +113,7 @@ pub(crate) fn configure(
     if let Some(endpoints) = endpoints {
         identity.endpoints = endpoints;
     }
-    write(backend, &identity)?;
+    write(backend, &identity).await?;
     Ok(identity)
 }
 
@@ -120,13 +121,13 @@ pub(crate) fn configure(
 ///
 /// No `Absent` precondition here, because this one is an overwrite by
 /// definition: the identity exists and one of its fields has moved.
-fn write(backend: Arc<dyn KvBackend>, identity: &NodeIdentity) -> Result<()> {
+async fn write(backend: Arc<dyn AsyncKvBackend>, identity: &NodeIdentity) -> Result<()> {
     let batch = WriteBatch::new().put(
         NodeIdentityKey::keyspace(),
         NodeIdentityKey.encode(),
         identity.encode(),
     );
-    backend.apply(batch)?;
+    backend.apply(batch).await?;
     Ok(())
 }
 
@@ -136,9 +137,9 @@ fn write(backend: Arc<dyn KvBackend>, identity: &NodeIdentity) -> Result<()> {
 ///
 /// Returns the substrate's failure, or a decoding failure when the stored bytes
 /// carry a revision, role or membership this build does not know.
-pub(crate) fn read(backend: Arc<dyn KvBackend>) -> Result<Option<NodeIdentity>> {
+pub(crate) async fn read(backend: Arc<dyn AsyncKvBackend>) -> Result<Option<NodeIdentity>> {
     let key = NodeIdentityKey.encode();
-    match backend.get(NodeIdentityKey::keyspace(), &key)? {
+    match backend.get(NodeIdentityKey::keyspace(), &key).await? {
         Some(value) => Ok(Some(NodeIdentity::decode(value.as_slice())?)),
         None => Ok(None),
     }
@@ -167,27 +168,28 @@ fn generate() -> Result<[u8; NODE_ID_LEN]> {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use crate::now::Now;
     use tessari_kv::MemoryBackend;
 
     use super::*;
 
-    fn backend() -> Arc<dyn KvBackend> {
+    fn backend() -> Arc<dyn AsyncKvBackend> {
         Arc::new(MemoryBackend::new())
     }
 
     #[test]
     fn a_store_with_no_identity_is_given_one() {
         let held = backend();
-        assert!(read(Arc::clone(&held)).unwrap().is_none());
-        let made = ensure(Arc::clone(&held)).unwrap();
-        assert_eq!(read(Arc::clone(&held)).unwrap(), Some(made));
+        assert!(read(Arc::clone(&held)).now().unwrap().is_none());
+        let made = ensure(Arc::clone(&held)).now().unwrap();
+        assert_eq!(read(Arc::clone(&held)).now().unwrap(), Some(made));
     }
 
     #[test]
     fn a_second_ensure_returns_the_first_identity_rather_than_a_new_one() {
         let held = backend();
-        let first = ensure(Arc::clone(&held)).unwrap();
-        let second = ensure(Arc::clone(&held)).unwrap();
+        let first = ensure(Arc::clone(&held)).now().unwrap();
+        let second = ensure(Arc::clone(&held)).now().unwrap();
         assert_eq!(first.id, second.id);
     }
 
@@ -206,7 +208,7 @@ mod tests {
         // a hand-written "older" version would silently equal the current one and
         // the test would pass without the branch ever being taken.
         let held = backend();
-        let first = ensure(Arc::clone(&held)).unwrap();
+        let first = ensure(Arc::clone(&held)).now().unwrap();
         let running = NodeVersion::current();
         let other = NodeVersion {
             major: running.major.saturating_add(1),
@@ -220,9 +222,10 @@ mod tests {
                 ..first.clone()
             },
         )
+        .now()
         .unwrap();
 
-        let after = ensure(Arc::clone(&held)).unwrap();
+        let after = ensure(Arc::clone(&held)).now().unwrap();
         assert_eq!(after.version, running);
         assert_eq!(after.id, first.id, "an upgrade is not a new identity");
     }
@@ -230,12 +233,13 @@ mod tests {
     #[test]
     fn configuring_a_node_moves_what_it_names_and_nothing_else() {
         let held = backend();
-        let before = ensure(Arc::clone(&held)).unwrap();
+        let before = ensure(Arc::clone(&held)).now().unwrap();
         let after = configure(
             Arc::clone(&held),
             Some(Roles::COORDINATING),
             Some(vec!["here:9000".to_owned()]),
         )
+        .now()
         .unwrap();
 
         assert_eq!(after.roles, Roles::COORDINATING);
@@ -246,15 +250,19 @@ mod tests {
         // `ensure` fire for reasons unrelated to an upgrade.
         assert_eq!(after.id, before.id);
         assert_eq!(after.version, before.version);
-        assert_eq!(read(Arc::clone(&held)).unwrap(), Some(after));
+        assert_eq!(read(Arc::clone(&held)).now().unwrap(), Some(after));
     }
 
     #[test]
     fn an_absent_clause_leaves_its_field_where_it_was() {
         let held = backend();
-        ensure(Arc::clone(&held)).unwrap();
-        configure(Arc::clone(&held), Some(Roles::COORDINATING), None).unwrap();
-        let after = configure(Arc::clone(&held), None, Some(vec!["here:9000".to_owned()])).unwrap();
+        ensure(Arc::clone(&held)).now().unwrap();
+        configure(Arc::clone(&held), Some(Roles::COORDINATING), None)
+            .now()
+            .unwrap();
+        let after = configure(Arc::clone(&held), None, Some(vec!["here:9000".to_owned()]))
+            .now()
+            .unwrap();
 
         assert_eq!(
             after.roles,
@@ -268,7 +276,7 @@ mod tests {
         // Unreachable through an open store. Asserted anyway, because the arm
         // that says so is a claim about a guarantee living in another function.
         assert!(matches!(
-            configure(backend(), Some(Roles::SERVING), None),
+            configure(backend(), Some(Roles::SERVING), None).now(),
             Err(Error::NoIdentity)
         ));
     }

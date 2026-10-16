@@ -129,7 +129,7 @@ impl Session<'_> {
         (from, direction, hop, depth): (&RecordTarget, Direction, &Hop, u64),
         path: &PathTo,
     ) -> Result<Answered> {
-        if !transaction.indexes_are_current()? {
+        if !transaction.indexes_are_current().await? {
             return Err(Error::NoHistoricalTraversal {
                 table: hop.edges.name.text.clone(),
                 span: from.span,

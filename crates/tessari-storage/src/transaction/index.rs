@@ -8,7 +8,6 @@ mod equality;
 mod vectors;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{

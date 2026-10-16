@@ -32,7 +32,7 @@ impl Fixture {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(backend).now().unwrap();
 
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("prod").now().unwrap();
         let database = catalog
@@ -71,7 +71,7 @@ impl Fixture {
     }
 
     fn declare(&self, name: &str, kind: FieldKind) -> Result<Sequence, Error> {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         Catalog::new(&mut transaction)
             .create_field(self.table, name, kind, FieldShape::default())
             .now()?;
@@ -79,7 +79,7 @@ impl Fixture {
     }
 
     fn require(&self, name: &str, kind: FieldKind) -> Result<Sequence, Error> {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         Catalog::new(&mut transaction)
             .create_field(
                 self.table,
@@ -98,7 +98,7 @@ impl Fixture {
     }
 
     fn constrain(&self, name: &str, kind: FieldKind, assert: Assertion) -> Result<Sequence, Error> {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         Catalog::new(&mut transaction)
             .create_field(
                 self.table,
@@ -114,7 +114,7 @@ impl Fixture {
     }
 
     fn declared(&self, name: &str) -> Option<tessari_storage::FieldDefinition> {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         Catalog::new(&mut transaction)
             .fields_on(self.namespace, self.database, self.table)
             .now()
@@ -124,13 +124,13 @@ impl Fixture {
     }
 
     fn remove(&self, id: &str) {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         transaction.delete(self.at(id));
         transaction.commit().now().unwrap();
     }
 
     fn write(&self, id: &str, fields: &[(&str, Value)]) -> Result<Sequence, Error> {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         transaction.put(self.at(id), encode_payload(&record(fields)).into_bytes());
         transaction.commit().now()
     }
@@ -138,6 +138,7 @@ impl Fixture {
     fn holds(&self, id: &str) -> bool {
         self.store
             .begin()
+            .now()
             .unwrap()
             .get(&self.at(id))
             .now()
@@ -146,7 +147,7 @@ impl Fixture {
     }
 
     fn declares(&self, name: &str) -> bool {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         Catalog::new(&mut transaction)
             .fields_on(self.namespace, self.database, self.table)
             .now()
@@ -298,7 +299,7 @@ fn a_declaration_constrains_the_rows_that_predate_it() {
 fn a_row_written_in_the_transaction_that_declares_the_field_is_checked_against_it() {
     let fixture = Fixture::new(false);
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .create_field(
             fixture.table,
@@ -324,7 +325,7 @@ fn a_row_written_in_the_transaction_that_declares_the_field_is_checked_against_i
 fn a_row_and_its_declaration_may_arrive_in_either_order_within_one_transaction() {
     let fixture = Fixture::new(false);
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     transaction.put(
         fixture.at("u1"),
         encode_payload(&record(&[("email", Value::from("ada@example.com"))])).into_bytes(),
@@ -367,7 +368,7 @@ fn a_schemafull_table_declared_and_written_in_one_transaction_checks_those_rows(
     let fixture = Fixture::new(true);
     fixture.declare("email", FieldKind::String).unwrap();
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     transaction.put(
         fixture.at("u1"),
         encode_payload(&record(&[("stauts", Value::from("open"))])).into_bytes(),
@@ -380,7 +381,7 @@ fn a_schemafull_table_declared_and_written_in_one_transaction_checks_those_rows(
 #[test]
 fn dropping_a_declaration_loosens_what_the_table_accepts() {
     let fixture = Fixture::new(false);
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     let declared = Catalog::new(&mut transaction)
         .create_field(
             fixture.table,
@@ -397,7 +398,7 @@ fn dropping_a_declaration_loosens_what_the_table_accepts() {
             .is_err()
     );
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .drop_field(declared.id)
         .now()
@@ -413,7 +414,7 @@ fn dropping_a_declaration_loosens_what_the_table_accepts() {
 #[test]
 fn a_declaration_dropped_in_the_same_transaction_no_longer_constrains_the_write() {
     let fixture = Fixture::new(false);
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     let declared = Catalog::new(&mut transaction)
         .create_field(
             fixture.table,
@@ -425,7 +426,7 @@ fn a_declaration_dropped_in_the_same_transaction_no_longer_constrains_the_write(
         .unwrap();
     transaction.commit().now().unwrap();
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .drop_field(declared.id)
         .now()
@@ -548,7 +549,7 @@ fn a_replica_reaches_the_same_verdict_about_a_required_field() {
         fixture
             .store
             .log_records(
-                fixture.store.own_log(crate::FIXTURE_HOME).unwrap(),
+                fixture.store.own_log(crate::FIXTURE_HOME).now().unwrap(),
                 Sequence::ZERO,
                 1024
             )
@@ -747,7 +748,7 @@ fn a_replica_reaches_the_same_verdict_because_the_constraint_is_in_the_log() {
     let replica = Store::open(Arc::clone(&replica_backend)).now().unwrap();
     crate::replay(&fixture.store, &replica);
 
-    let mut transaction = replica.begin().unwrap();
+    let mut transaction = replica.begin().now().unwrap();
     transaction.put(
         fixture.at("b"),
         encode_payload(&record(&[("balance", Value::Number(Number::Integer(-1)))])).into_bytes(),
@@ -775,7 +776,7 @@ fn a_check_answers_nothing_while_every_record_satisfies_the_declarations() {
         .write("2", &[("name", Value::String("grace".to_owned()))])
         .unwrap();
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     let found = tessari_storage::violations(
         &mut transaction,
         fixture.namespace,
@@ -795,7 +796,7 @@ fn a_check_over_a_table_that_constrains_nothing_answers_nothing() {
         .write("1", &[("anything", Value::Bool(true))])
         .unwrap();
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     let found = tessari_storage::violations(
         &mut transaction,
         fixture.namespace,
@@ -852,7 +853,7 @@ fn a_check_names_every_offending_record_and_the_rule_it_broke() {
         )
         .unwrap();
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     catalog
         .create_field(

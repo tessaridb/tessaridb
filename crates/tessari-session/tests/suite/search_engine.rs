@@ -977,7 +977,7 @@ fn the_suffixes_are_exactly_those_of_the_dictionary() {
              DELETE notes:3;",
         )
         .unwrap();
-    let mut reading = held.begin().unwrap();
+    let mut reading = held.begin().now().unwrap();
     let catalog = tessari_storage::Catalog::new(&mut reading);
     let table = catalog
         .table_id(

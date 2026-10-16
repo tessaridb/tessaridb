@@ -9,7 +9,6 @@
 //! so it is written as a tombstone through the same validate-and-derive path.
 
 use std::ops::Bound;
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     LogRecord, Mutation, RecordKey, RecordValue, StampedValue, StoreKey, StoreValue,
@@ -79,7 +78,7 @@ impl Store {
                 ) {
                     continue;
                 }
-                let shard = crate::catalog::Catalog::new(&mut self.begin()?)
+                let shard = crate::catalog::Catalog::new(&mut self.begin().await?)
                     .table(stored.table)
                     .await?
                     .and_then(|definition| definition.shards)

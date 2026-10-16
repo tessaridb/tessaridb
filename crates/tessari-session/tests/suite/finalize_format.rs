@@ -92,7 +92,10 @@ fn a_node_whose_older_build_applied_the_finalize_raises_its_stamp_when_it_opens(
     stamped(&backend, 5);
     let reopened = Store::open(Arc::clone(&backend)).now().unwrap();
     assert_eq!(stamp(&backend), FormatVersion::CURRENT.get());
-    assert_eq!(reopened.held_format().unwrap(), FormatVersion::CURRENT);
+    assert_eq!(
+        reopened.held_format().now().unwrap(),
+        FormatVersion::CURRENT
+    );
 }
 
 #[test]
@@ -141,7 +144,7 @@ fn a_follower_raises_its_stamp_when_it_applies_the_finalize() {
     Session::new(&leader)
         .run_now("ALTER STORE FINALIZE FORMAT;")
         .unwrap();
-    for log in leader.logs().unwrap() {
+    for log in leader.logs().now().unwrap() {
         for (sequence, record) in leader
             .log_records(log, tessari_types::Sequence::ZERO, 4096)
             .now()

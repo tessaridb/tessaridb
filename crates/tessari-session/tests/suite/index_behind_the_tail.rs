@@ -237,7 +237,7 @@ fn a_historical_read_below_what_reclamation_removed_takes_the_scan_and_stays_exa
     let store = store();
     let mut session = Session::new(&store);
     session.run_now(SCHEMA).unwrap();
-    let before = store.committed_version().unwrap().get();
+    let before = store.committed_version().now().unwrap().get();
     session.run_now(MOVES).unwrap();
     assert!(store.reclaim_retired_entries().now().unwrap() > 0);
 
@@ -256,7 +256,7 @@ fn a_historical_read_above_it_is_served_by_the_index_and_exact() {
     let store = store();
     let mut session = Session::new(&store);
     session.run_now(SCHEMA).unwrap();
-    let before = store.committed_version().unwrap().get();
+    let before = store.committed_version().now().unwrap().get();
     session.run_now(MOVES).unwrap();
     let outcomes = session
         .run_now(&format!(

@@ -18,7 +18,7 @@ pub(crate) async fn serve(
         message: why.to_string(),
         class: None,
     };
-    let mut transaction = store.begin().map_err(refused)?;
+    let mut transaction = store.begin().await.map_err(refused)?;
     let definition = Catalog::new(&mut transaction)
         .table(asked.table)
         .await

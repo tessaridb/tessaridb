@@ -179,7 +179,8 @@ impl Session<'_> {
                 // Before anything is created, so a refused expiry writes nothing
                 // (ADR-0122 A1, A8).
                 if expire.is_some() {
-                    self.refuse_an_expiry_it_cannot_carry(&name.text, &kind, name.span)?;
+                    self.refuse_an_expiry_it_cannot_carry(&name.text, &kind, name.span)
+                        .await?;
                 }
                 let existed = expire.is_some() && self.names_a_table(transaction, name).await;
                 let defined = self
@@ -1197,7 +1198,8 @@ impl Session<'_> {
                         &name.text,
                         &TableKind::Collection,
                         name.span,
-                    )?;
+                    )
+                    .await?;
                 }
                 let existed = expire.is_some() && self.names_a_table(transaction, name).await;
                 let defined = self
@@ -1383,7 +1385,8 @@ impl Session<'_> {
                     self.refuse_a_format_the_store_does_not_hold(
                         "a rollup that keeps a sketch",
                         tessari_encoding::FormatVersion::SKETCH_ROLLUP,
-                    )?;
+                    )
+                    .await?;
                 }
                 self.define_rollup(
                     transaction,

@@ -22,8 +22,8 @@ impl Store {
     /// The substrate's failure, and a decoding failure when a stored definition
     /// cannot be read.
     pub async fn line_leaders(&self) -> Result<Vec<(Reach, Option<[u8; NODE_ID_LEN]>)>> {
-        let me = self.node_identity()?.id;
-        let mut transaction = self.begin()?;
+        let me = self.node_identity().await?.id;
+        let mut transaction = self.begin().await?;
         let catalog = crate::catalog::Catalog::new(&mut transaction);
         let held = catalog.leaderships().await?;
         let placed: BTreeSet<Reach> = catalog

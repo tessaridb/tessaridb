@@ -244,7 +244,7 @@ impl<'a> Session<'a> {
     ///
     /// Returns an error when the catalog cannot be read.
     pub async fn readable(&self, store: &'a Store) -> Result<Option<Vec<TableId>>> {
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().await?;
         let readable = self.readable_in(&mut transaction).await;
         transaction.rollback();
         readable
@@ -360,7 +360,7 @@ impl<'a> Session<'a> {
     /// has committed yet.
     pub(crate) async fn refresh(&mut self, store: &Store) -> Result<bool> {
         let signed = self.identity.user().map(|user| user.id);
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().await?;
         let catalog = Catalog::new(&mut transaction);
         let open = catalog.is_open().await?;
         let found = match signed {

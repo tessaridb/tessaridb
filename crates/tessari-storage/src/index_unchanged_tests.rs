@@ -34,7 +34,7 @@ impl Fixture {
         let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
             .now()
             .unwrap();
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("ns").now().unwrap().id;
         let database = catalog.create_database(namespace, "db").now().unwrap().id;
@@ -80,7 +80,7 @@ impl Fixture {
             database,
             table,
         };
-        let mut transaction = fixture.store.begin().unwrap();
+        let mut transaction = fixture.store.begin().now().unwrap();
         transaction.put(fixture.address(), fixture.record("a", Value::from(1_i64)));
         transaction.commit().now().unwrap();
         fixture
@@ -118,7 +118,7 @@ impl Fixture {
             shard: None,
             value: StampedValue::new(RecordValue::Present(payload)),
         }]);
-        let version = self.store.committed_version().unwrap();
+        let version = self.store.committed_version().now().unwrap();
         maintain(&self.store, &update, WriteBatch::new(), version)
             .now()
             .unwrap()

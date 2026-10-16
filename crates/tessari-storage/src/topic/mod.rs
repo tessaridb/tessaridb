@@ -25,7 +25,6 @@ mod size;
 pub(crate) use rate::PublicRates;
 
 use std::collections::{BTreeMap, BTreeSet};
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     ExpiryMark, LogRecord, RecordValue, StoreKey, StoreValue, TopicEntryKey, TopicHeadKey,
@@ -141,7 +140,7 @@ pub(crate) async fn admit(
     now: u64,
     node: [u8; tessari_encoding::NODE_ID_LEN],
 ) -> Result<Option<LogRecord>> {
-    let mut view = store.begin_local()?;
+    let mut view = store.begin_local().await?;
     let topics = topics_in(&mut view, record).await?;
     if topics.is_empty() {
         return Ok(None);
@@ -230,7 +229,7 @@ pub(crate) async fn maintain(
     record: &LogRecord,
     mut batch: WriteBatch,
 ) -> Result<WriteBatch> {
-    let mut view = store.begin_local()?;
+    let mut view = store.begin_local().await?;
     let topics = topics_in(&mut view, record).await?;
     if topics.is_empty() {
         return Ok(batch);

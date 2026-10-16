@@ -190,7 +190,7 @@ impl Session<'_> {
         of: &[tessari_ql::ReachRef],
     ) -> Result<tessari_types::Reach> {
         match of.first() {
-            Some(named) => self.reach_of(&mut self.store.begin()?, named).await,
+            Some(named) => self.reach_of(&mut self.store.begin().await?, named).await,
             None => Ok(tessari_types::Reach::Store),
         }
     }

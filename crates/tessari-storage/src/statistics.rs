@@ -28,7 +28,6 @@
 //! did before statistics existed.
 
 use std::collections::BTreeMap;
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_constants::{
     PLANNER_SCAN_FLOOR_RECORDS, RANGE_SCAN_BATCH_ENTRIES, STATISTICS_BUCKETS,
@@ -258,10 +257,10 @@ impl Store {
     ///
     /// Returns an error when the backend fails or the catalog cannot be read.
     pub async fn refresh_statistics(&self) -> Result<usize> {
-        let transaction = self.begin()?;
+        let transaction = self.begin().await?;
         let mut stale = Vec::new();
         {
-            let mut reading = self.begin()?;
+            let mut reading = self.begin().await?;
             let mut catalog = Catalog::new(&mut reading);
             'tables: for namespace in catalog.namespaces().await? {
                 for database in catalog.databases_in(namespace.id).await? {

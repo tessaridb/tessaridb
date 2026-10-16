@@ -17,14 +17,15 @@ impl Fixture {
     /// One transaction across leaders, prepared, committed and resolved here.
     fn settled(&self, round: u8) -> Result<TransactionId> {
         let transaction = TransactionId::new([round; TRANSACTION_ID_LEN]);
-        let mut writing = self.store.begin()?;
+        let mut writing = self.store.begin().now()?;
         writing.put(self.address(), vec![round]);
         writing
             .prepare_across(transaction, self.coordinator(), self.seen()?)
             .now()?;
         for decision in [Decision::Pending, Decision::Committed] {
             self.store
-                .begin()?
+                .begin()
+                .now()?
                 .decide_across(
                     transaction,
                     TransactionRecord {
@@ -35,7 +36,8 @@ impl Fixture {
                 .now()?;
         }
         self.store
-            .begin()?
+            .begin()
+            .now()?
             .resolve_across(transaction, true, &[self.address()], &self.prepared())
             .now()?;
         Ok(transaction)
@@ -51,23 +53,28 @@ impl Fixture {
                 range: KeyRange::prefix(&[kind.tag()]),
                 direction: ScanDirection::Forward,
                 limit: None,
-            })?
+            })
+            .now()?
             .len())
     }
 
     /// Whether any stored version of the table still names a transaction
     /// across leaders.
     fn names_a_transaction(&self) -> Result<bool> {
-        let stored = self.store.engine().scan(&ScanRequest {
-            keyspace: RecordKey::keyspace(),
-            range: KeyRange::prefix(&RecordKey::table_prefix(
-                self.namespace,
-                self.database,
-                self.table,
-            )),
-            direction: ScanDirection::Forward,
-            limit: None,
-        })?;
+        let stored = self
+            .store
+            .engine()
+            .scan(&ScanRequest {
+                keyspace: RecordKey::keyspace(),
+                range: KeyRange::prefix(&RecordKey::table_prefix(
+                    self.namespace,
+                    self.database,
+                    self.table,
+                )),
+                direction: ScanDirection::Forward,
+                limit: None,
+            })
+            .now()?;
         for (_, value) in stored {
             if StampedValue::decode(value.as_slice())?
                 .provenance()
@@ -123,7 +130,7 @@ fn a_reader_still_below_a_marker_keeps_it() -> Result<()> {
         fixture.settled(round)?;
     }
     // A reader that began here holds the floor below the last two.
-    let reading = fixture.store.begin()?;
+    let reading = fixture.store.begin().now()?;
     let seen = reading.get(&fixture.address()).now()?;
     for round in 4..=5 {
         fixture.settled(round)?;

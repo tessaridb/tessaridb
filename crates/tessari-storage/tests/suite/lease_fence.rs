@@ -48,14 +48,14 @@ fn at(id: &str) -> RecordAddress {
 
 /// One write, returning whatever the commit said.
 fn write(store: &Store, id: &str) -> Result<(), Error> {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(at(id), b"{}".to_vec());
     transaction.commit().now().map(|_| ())
 }
 
 /// The same write, rehearsed rather than applied.
 fn rehearse(store: &Store, id: &str) -> Result<(), Error> {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(at(id), b"{}".to_vec());
     transaction.dry_run().now()
 }
@@ -176,7 +176,7 @@ fn a_transaction_that_writes_nothing_is_not_fenced() {
     let store = store();
     store.hold_lease(Duration::ZERO);
 
-    let transaction = store.begin().unwrap();
+    let transaction = store.begin().now().unwrap();
     transaction
         .commit()
         .now()
@@ -273,7 +273,7 @@ fn a_node_whose_lease_lapsed_stops_reporting_that_it_may_write() {
     // had lapsed refused every write and went on reporting `writable` — the
     // behaviour was already the lease and only the report disagreed.
     let store = store();
-    let adopted = store.node_identity().unwrap().roles;
+    let adopted = store.node_identity().now().unwrap().roles;
     assert!(
         adopted.has(Roles::WRITABLE),
         "a fresh store adopts a writable role, which is what makes this test mean anything"
@@ -283,7 +283,7 @@ fn a_node_whose_lease_lapsed_stops_reporting_that_it_may_write() {
     assert!(!store.effective_roles().now().unwrap().has(Roles::WRITABLE));
     // The adopted set is untouched: what the lease takes away is what this node
     // is *serving under*, not what it was configured to be.
-    assert_eq!(store.node_identity().unwrap().roles, adopted);
+    assert_eq!(store.node_identity().now().unwrap().roles, adopted);
 }
 
 #[test]
@@ -293,7 +293,7 @@ fn a_node_nobody_granted_a_lease_reports_every_role_it_adopted() {
     let store = store();
     assert_eq!(
         store.effective_roles().now().unwrap(),
-        store.node_identity().unwrap().roles
+        store.node_identity().now().unwrap().roles
     );
 }
 
@@ -521,7 +521,7 @@ fn a_lease_installed_whole_keeps_the_instant_it_was_taken_at() {
 /// old predicate required deliberately ABSENT.
 fn joined() -> Store {
     let store = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .create_replica(
             "other",
@@ -565,7 +565,7 @@ fn a_node_whose_catalog_names_a_peer_does_not_write_before_it_has_won_anything()
     // node carries no `COORDINATING` bit at all: the refusal below comes from a
     // membership row and from nothing else.
     let store = joined();
-    let adopted = store.node_identity().unwrap().roles;
+    let adopted = store.node_identity().now().unwrap().roles;
     assert!(
         adopted.has(Roles::WRITABLE) && !adopted.has(Roles::COORDINATING),
         "the operator declared a writable node that does not vote — the exact          combination the role predicate could not see"
@@ -590,7 +590,7 @@ fn a_node_whose_catalog_names_a_peer_does_not_write_before_it_has_won_anything()
 /// a node that IS the cluster, and a second told one address.
 fn following() -> Store {
     let store = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .create_replica(
             "reader",
@@ -649,6 +649,7 @@ fn a_deciding_set_of_one_is_not_a_cluster_and_goes_on_writing() {
     assert!(
         store
             .node_identity()
+            .now()
             .unwrap()
             .roles
             .has(Roles::COORDINATING)
@@ -669,7 +670,7 @@ fn a_store_standing_alone_is_untouched_by_the_leadership_rule() {
     // one are separated by one fact — whether the catalog names somebody else —
     // which is what the criterion means by *by the same predicate*.
     let store = store();
-    let adopted = store.node_identity().unwrap().roles;
+    let adopted = store.node_identity().now().unwrap().roles;
     assert!(adopted.has(Roles::WRITABLE) && !adopted.has(Roles::COORDINATING));
     assert_eq!(store.effective_roles().now().unwrap(), adopted);
     write(&store, "alone").expect("a store on its own goes on writing");
@@ -715,7 +716,7 @@ fn a_cluster_is_declared_in_one_transaction_because_the_gate_shuts_on_the_first_
     // the statement that declares it — is unchanged, and now it is asserted with
     // a peer that shuts it.
     let one_at_a_time = store();
-    let mut first = one_at_a_time.begin().unwrap();
+    let mut first = one_at_a_time.begin().now().unwrap();
     Catalog::new(&mut first)
         .create_replica(
             "a",
@@ -731,7 +732,7 @@ fn a_cluster_is_declared_in_one_transaction_because_the_gate_shuts_on_the_first_
         .commit()
         .now()
         .expect("the first peer is declared from a store still alone");
-    let mut second = one_at_a_time.begin().unwrap();
+    let mut second = one_at_a_time.begin().now().unwrap();
     Catalog::new(&mut second)
         .create_replica(
             "b",
@@ -750,7 +751,7 @@ fn a_cluster_is_declared_in_one_transaction_because_the_gate_shuts_on_the_first_
 
     // One commit is judged once, so a whole cluster goes in at once.
     let together = store();
-    let mut both = together.begin().unwrap();
+    let mut both = together.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut both);
     catalog
         .create_replica(

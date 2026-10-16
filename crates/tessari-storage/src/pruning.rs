@@ -44,7 +44,6 @@
 //! be guessed.
 
 use tessari_encoding::{AcrossBarredKey, Barred, LogId, LogKey, LogStartKey, StoreKey, StoreValue};
-use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::Sequence;
 
@@ -104,7 +103,7 @@ impl Store {
     /// Returns an error when the backend fails or a stored value cannot be
     /// decoded.
     pub async fn prune_log(&self, log: LogId, upto: Sequence) -> Result<Pruned> {
-        let tail = self.committed_tail(log)?;
+        let tail = self.committed_tail(log).await?;
         let held = self.log_start(log).await?;
         // One below the tail, and never below zero.
         let ceiling = Sequence::new(tail.get().saturating_sub(1));
@@ -234,9 +233,9 @@ impl Store {
             return Ok(None);
         };
         let mut trimmed = Trimmed::default();
-        for log in self.logs()? {
+        for log in self.logs().await? {
             trimmed.logs = trimmed.logs.saturating_add(1);
-            let tail = self.committed_tail(log)?;
+            let tail = self.committed_tail(log).await?;
             // Everything at or below this is older than the window. A tail that
             // has not yet reached the window subtracts to zero, and `prune_log`
             // treats zero as *nothing to do*.

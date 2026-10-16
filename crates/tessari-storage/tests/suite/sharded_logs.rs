@@ -44,7 +44,7 @@ impl Split {
         let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
             .now()
             .unwrap();
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("prod").now().unwrap().id;
         let database = catalog.create_database(namespace, "shop").now().unwrap().id;
@@ -110,7 +110,7 @@ impl Split {
     }
 
     fn write(&self, addresses: &[RecordAddress]) -> Result<(), Error> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().now()?;
         for address in addresses {
             transaction.put(address.clone(), b"{}".to_vec());
         }
@@ -120,15 +120,16 @@ impl Split {
     /// How far this node's own log for `home` has reached.
     fn tail(&self, home: Reach) -> Sequence {
         self.store
-            .committed_tail(self.store.own_log(home).unwrap())
+            .committed_tail(self.store.own_log(home).now().unwrap())
+            .now()
             .unwrap()
     }
 
     /// Make this store one of a cluster where each range in `led` is led by the
     /// node beside it, all in one transaction (ADR-0069).
     fn led(&self, led: &[(Reach, [u8; NODE_ID_LEN])]) {
-        let me = self.store.node_identity().unwrap().id;
-        let mut transaction = self.store.begin().unwrap();
+        let me = self.store.node_identity().now().unwrap().id;
+        let mut transaction = self.store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         for (name, node, endpoint) in [
             ("them", THEM, "10.0.0.2:9081"),
@@ -168,9 +169,9 @@ impl Split {
         placed: &[(Reach, [u8; NODE_ID_LEN])],
         rows: &[(Reach, [u8; NODE_ID_LEN], u64)],
     ) {
-        let me = self.store.node_identity().unwrap().id;
+        let me = self.store.node_identity().now().unwrap().id;
         let own = |node: [u8; NODE_ID_LEN]| if node == ME { me } else { node };
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let writer = Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING);
         for (name, node, endpoint) in [
@@ -250,7 +251,7 @@ fn the_log_record_says_which_shard_each_mutation_is_in() {
     split
         .write(&[split.order("a"), split.order("q"), split.note("n")])
         .unwrap();
-    let log = split.store.own_log(split.database()).unwrap();
+    let log = split.store.own_log(split.database()).now().unwrap();
     let (_, record) = split
         .store
         .log_records(log, split.tail(split.database()), 1)
@@ -324,7 +325,7 @@ fn a_shards_own_leadership_beats_its_databases() {
 fn a_transaction_across_shards_led_by_two_nodes_is_refused_naming_both() {
     let split = Split::new();
     split.led(&[(split.shard(1), ME), (split.shard(2), THEM)]);
-    let me = split.store.node_identity().unwrap().id;
+    let me = split.store.node_identity().now().unwrap().id;
     let refused = split
         .write(&[split.order("a"), split.order("h")])
         .unwrap_err();
@@ -354,7 +355,7 @@ fn two_namespaces_led_by_two_nodes_are_refused_the_same_way() {
     // Q-789 at the grain it was found at: the redirect this replaced sent the
     // client to a node that would have refused the same transaction back.
     let split = Split::new();
-    let mut transaction = split.store.begin().unwrap();
+    let mut transaction = split.store.begin().now().unwrap();
     let other = Catalog::new(&mut transaction)
         .create_namespace("staging")
         .now()
@@ -523,7 +524,7 @@ fn the_store_leaders_row_does_not_govern_a_range_placed_on_its_own_line() {
 impl Split {
     /// Split `orders` at `point` and commit it.
     fn split_at(&self, point: &str) -> Result<(), Error> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().now()?;
         Catalog::new(&mut transaction)
             .split_table(self.orders, &RecordId::from(point))
             .now()?;
@@ -560,9 +561,9 @@ fn a_follower_that_applies_a_split_files_its_next_write_in_the_new_shard() {
         .unwrap();
     // The namespace and database are declared in the store's log; a table's
     // definition, and so its split, travels in its database's.
-    let writer = leader.store.writer().unwrap();
+    let writer = leader.store.writer().now().unwrap();
     let replay = |home: Reach, from: Sequence| {
-        let log = leader.store.own_log(home).unwrap();
+        let log = leader.store.own_log(home).now().unwrap();
         for (at, record) in leader.store.log_records(log, from, 1024).now().unwrap() {
             follower.apply_record(writer, at, &record).now().unwrap();
         }
@@ -572,11 +573,12 @@ fn a_follower_that_applies_a_split_files_its_next_write_in_the_new_shard() {
     let applied = leader.tail(leader.database());
     let on_the_follower = |shard: u32| {
         follower
-            .committed_tail(follower.own_log(leader.shard(shard)).unwrap())
+            .committed_tail(follower.own_log(leader.shard(shard)).now().unwrap())
+            .now()
             .unwrap()
     };
     let write = || {
-        let mut transaction = follower.begin().unwrap();
+        let mut transaction = follower.begin().now().unwrap();
         transaction.put(leader.order("n"), b"{}".to_vec());
         transaction.commit().now().unwrap();
     };
@@ -606,7 +608,7 @@ fn a_follower_that_applies_a_split_files_its_next_write_in_the_new_shard() {
 fn a_merge_files_the_next_write_in_the_shard_it_minted() {
     let split = Split::new();
     split.split_at("m").unwrap();
-    let mut transaction = split.store.begin().unwrap();
+    let mut transaction = split.store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .merge_shards(split.orders, ShardId::new(5), ShardId::new(4))
         .now()
@@ -629,7 +631,7 @@ fn a_merge_files_the_next_write_in_the_shard_it_minted() {
 fn a_split_or_merge_that_cannot_describe_a_map_is_refused_by_name() {
     let split = Split::new();
     let attempt = |change: &dyn Fn(&mut Catalog<'_, '_>) -> Result<(), Error>| {
-        let mut transaction = split.store.begin().unwrap();
+        let mut transaction = split.store.begin().now().unwrap();
         change(&mut Catalog::new(&mut transaction))
     };
     let refused = attempt(&|catalog| {
@@ -683,7 +685,7 @@ fn a_split_or_merge_that_cannot_describe_a_map_is_refused_by_name() {
 #[test]
 fn a_shard_a_replica_row_names_is_not_split_out_from_under_it() {
     let split = Split::new();
-    let mut transaction = split.store.begin().unwrap();
+    let mut transaction = split.store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .create_replica(
             "east",

@@ -74,13 +74,13 @@ const RECORDS: usize = RANGE_SCAN_BATCH_ENTRIES * 2 + 500;
 /// deleted — so the walk meets old versions and tombstones, not only rows.
 fn populated() -> Store {
     let store = store();
-    let mut writing = store.begin().unwrap();
+    let mut writing = store.begin().now().unwrap();
     for n in 0..RECORDS {
         writing.put(at(&format!("r{n:06}")), payload("first"));
     }
     writing.commit().now().unwrap();
 
-    let mut rewriting = store.begin().unwrap();
+    let mut rewriting = store.begin().now().unwrap();
     // One on each side of a batch boundary and one far from any, because a
     // record's versions straddling a boundary is the case `resolved` carries
     // across batches for.
@@ -102,7 +102,7 @@ fn populated() -> Store {
 #[test]
 fn the_walk_answers_exactly_what_the_scan_answers() {
     let store = populated();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let whole = scanned(&transaction);
     assert_eq!(whole.len(), RECORDS - 2, "two records were deleted");
     assert_eq!(walked(&mut transaction), whole);
@@ -111,7 +111,7 @@ fn the_walk_answers_exactly_what_the_scan_answers() {
 #[test]
 fn a_record_rewritten_across_a_batch_boundary_is_read_once_at_its_newest_version() {
     let store = populated();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let found = walked(&mut transaction);
 
     for n in [RANGE_SCAN_BATCH_ENTRIES - 1, RANGE_SCAN_BATCH_ENTRIES] {
@@ -129,7 +129,7 @@ fn a_record_rewritten_across_a_batch_boundary_is_read_once_at_its_newest_version
 #[test]
 fn the_walk_stops_where_the_caller_says_stop() {
     let store = populated();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let whole = scanned(&transaction);
 
     let mut found = Vec::new();
@@ -153,7 +153,7 @@ fn the_walk_stops_where_the_caller_says_stop() {
 #[test]
 fn a_record_written_in_this_transaction_arrives_in_key_order() {
     let store = populated();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     // An identity that sorts into the middle of the committed records rather
     // than after all of them, which is the only arrangement that can tell a
     // merge from an append.
@@ -174,7 +174,7 @@ fn a_record_written_in_this_transaction_arrives_in_key_order() {
 #[test]
 fn a_record_deleted_in_this_transaction_is_not_handed_over() {
     let store = populated();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let before = walked(&mut transaction).len();
 
     let removed = RecordId::from("r000100");
@@ -189,7 +189,7 @@ fn a_record_deleted_in_this_transaction_is_not_handed_over() {
 #[test]
 fn a_record_rewritten_in_this_transaction_is_handed_over_at_its_new_value() {
     let store = populated();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(at("r000100"), payload("pending"));
 
     let found = walked(&mut transaction);
@@ -238,7 +238,7 @@ fn paged(
 #[test]
 fn a_window_read_in_pages_is_the_scan_narrowed_to_the_window() {
     let store = populated();
-    let transaction = store.begin().unwrap();
+    let transaction = store.begin().now().unwrap();
     let everything = scanned(&transaction);
     let low = RecordId::from("r000700");
     let high = RecordId::from("r001900");

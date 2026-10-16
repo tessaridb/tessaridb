@@ -50,7 +50,7 @@ impl Session<'_> {
             |version: FormatVersion| Value::Number(Number::Integer(i64::from(version.get())));
         Ok(BTreeMap::from([
             ("namespaces".to_owned(), by_name(names)),
-            ("format".to_owned(), format(self.store.held_format()?)),
+            ("format".to_owned(), format(self.store.held_format().await?)),
             ("writes".to_owned(), format(FormatVersion::CURRENT)),
         ]))
     }

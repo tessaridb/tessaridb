@@ -81,7 +81,7 @@ fn plain_group(name: &str) -> bool {
 async fn declared(
     store: &Store,
 ) -> Result<Vec<(ConsumerDefinition, Names)>, tessari_storage::Error> {
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().await?;
     let catalog = Catalog::new(&mut transaction);
     let mut found = Vec::new();
     for definition in catalog.consumers().await? {

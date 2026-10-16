@@ -14,7 +14,7 @@ use crate::restore::store;
 
 /// Two databases with a table each, and the address of `r` in each.
 fn homes(source: &Store) -> [(Reach, tessari_storage::RecordAddress); 2] {
-    let mut defining = source.begin().unwrap();
+    let mut defining = source.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut defining);
     let namespace = catalog.create_namespace("ns").now().unwrap().id;
     let mut homes = Vec::new();
@@ -132,7 +132,7 @@ fn a_restore_settles_what_its_cut_decided_and_nothing_else() {
             .map(|record| record.decision),
         Some(Decision::Committed)
     );
-    let reading = restored.begin().unwrap();
+    let reading = restored.begin().now().unwrap();
     for (_, address) in &homes {
         assert_eq!(
             reading.get(address).now().unwrap().as_deref(),

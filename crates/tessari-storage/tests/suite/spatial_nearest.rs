@@ -51,7 +51,7 @@ impl Fixture {
     fn new() -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(backend).now().unwrap();
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("atlas").now().unwrap();
         let database = catalog
@@ -99,7 +99,7 @@ impl Fixture {
     }
 
     fn begin(&self) -> Transaction<'_> {
-        self.store.begin().unwrap()
+        self.store.begin().now().unwrap()
     }
 
     /// Write one record holding one geometry.
@@ -109,7 +109,7 @@ impl Fixture {
                 .into_iter()
                 .collect(),
         );
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         transaction.put(
             self.at(name),
             tessari_encoding::encode_payload(&record).into_bytes(),

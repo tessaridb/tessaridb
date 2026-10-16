@@ -35,28 +35,36 @@ use tessari_storage::Store;
 /// because one round can carry the logs of several lines and each line counts
 /// its own leaderships. A copy whose tail cannot be read refuses the answer
 /// rather than applying what could not be judged.
-pub(super) fn refused(into: &Store, fetched: Vec<Result<Collected>>) -> Vec<Result<Collected>> {
-    fetched
-        .into_iter()
-        .map(|answer| {
-            let collected = answer?;
-            let Some(stated) = collected.epoch else {
-                return Ok(collected);
-            };
-            let newest = into
-                .tail_leadership(collected.log)
-                .map_err(|why| Error::Refused {
-                    message: format!(
-                        "this node cannot say which leadership its copy reaches: {why}"
-                    ),
-                    class: None,
-                })?;
-            if stated < newest {
-                return Err(Error::Deposed { stated, newest });
+pub(super) async fn refused(
+    into: &Store,
+    fetched: Vec<Result<Collected>>,
+) -> Vec<Result<Collected>> {
+    let mut judged = Vec::with_capacity(fetched.len());
+    for answer in fetched {
+        judged.push(
+            async {
+                let collected = answer?;
+                let Some(stated) = collected.epoch else {
+                    return Ok(collected);
+                };
+                let newest =
+                    into.tail_leadership(collected.log)
+                        .await
+                        .map_err(|why| Error::Refused {
+                            message: format!(
+                                "this node cannot say which leadership its copy reaches: {why}"
+                            ),
+                            class: None,
+                        })?;
+                if stated < newest {
+                    return Err(Error::Deposed { stated, newest });
+                }
+                Ok(collected)
             }
-            Ok(collected)
-        })
-        .collect()
+            .await,
+        );
+    }
+    judged
 }
 
 #[cfg(test)]
@@ -85,6 +93,7 @@ mod tests {
         db.session().run_now(statement).expect("the write commits");
         *db.store()
             .logs()
+            .now()
             .expect("the logs")
             .first()
             .expect("the write filed a log")
@@ -103,7 +112,7 @@ mod tests {
             .now();
         let line = written(&db, "DEFINE NAMESPACE led");
         assert_eq!(
-            db.store().tail_leadership(line).expect("its tail"),
+            db.store().tail_leadership(line).now().expect("its tail"),
             Epoch::new(5)
         );
 
@@ -115,7 +124,8 @@ mod tests {
                 stating(line, Some(6)),
                 stating(line, None),
             ],
-        );
+        )
+        .now();
         assert!(
             matches!(
                 judged[0],
@@ -136,7 +146,7 @@ mod tests {
         // and nothing says leadership 6 is over.
         let db = Db::in_memory().now().expect("an in-memory store");
         let own = written(&db, "DEFINE NAMESPACE own");
-        let judged = refused(db.store(), vec![stating(own, Some(6))]);
+        let judged = refused(db.store(), vec![stating(own, Some(6))]).now();
         assert!(judged[0].is_ok(), "{judged:?}");
     }
 
@@ -159,6 +169,7 @@ mod tests {
         assert_eq!(
             db.store()
                 .newest_leadership_in(us)
+                .now()
                 .expect("the range's logs"),
             Epoch::new(3)
         );
@@ -167,7 +178,10 @@ mod tests {
             tessari_types::DatabaseId::new(9),
         );
         assert_eq!(
-            db.store().newest_leadership_in(elsewhere).expect("no logs"),
+            db.store()
+                .newest_leadership_in(elsewhere)
+                .now()
+                .expect("no logs"),
             Epoch::ZERO,
             "the control: a home nobody wrote holds no leadership"
         );

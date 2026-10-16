@@ -20,7 +20,6 @@
 //! alone adds more keys than the limit is refused rather than trimmed.
 
 use std::collections::{BTreeMap, BTreeSet};
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     CausalStamp, ExpiryMark, LogRecord, ModifiedKey, Mutation, NODE_ID_LEN, RecordValue,
@@ -75,7 +74,7 @@ pub(crate) async fn enforce(
     record: &LogRecord,
     node: [u8; NODE_ID_LEN],
 ) -> Result<Option<LogRecord>> {
-    let mut view = store.begin_local()?;
+    let mut view = store.begin_local().await?;
     let limits = limits_in(&mut view, record).await?;
     if limits.is_empty() {
         return Ok(None);
@@ -195,7 +194,7 @@ pub(crate) async fn maintain(
     mut batch: WriteBatch,
     version: Sequence,
 ) -> Result<WriteBatch> {
-    let mut view = store.begin_local()?;
+    let mut view = store.begin_local().await?;
     let limits = limits_in(&mut view, record).await?;
     if limits.is_empty() {
         return Ok(batch);

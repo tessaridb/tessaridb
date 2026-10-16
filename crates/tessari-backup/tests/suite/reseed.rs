@@ -17,7 +17,7 @@ use crate::restore::{INTERROGATION, dump, original, signed_in, store};
 
 /// Copy `source`'s state at `within` onto `onto`, the way a follower re-seeds.
 fn copied(source: &Store, onto: &Store, within: Reach) -> u64 {
-    let before = onto.committed_version().unwrap();
+    let before = onto.committed_version().now().unwrap();
     let mut reader = source.read_state_within(within).now().unwrap();
     let positions = reader.positions().to_vec();
     while let Some(chunk) = reader.next_chunk(500).now().unwrap() {

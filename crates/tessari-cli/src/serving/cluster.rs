@@ -3,10 +3,14 @@ use super::*;
 /// Hand the store everything a node with peers reaches them through: the
 /// gathering of split tables, the routing, the shared sign-in budget and the
 /// carriage of requests and transactions to their leaders.
-pub(super) fn join_the_cluster(db: std::sync::Arc<Db>, surface: &Peering) -> Result<(), String> {
+pub(super) async fn join_the_cluster(
+    db: std::sync::Arc<Db>,
+    surface: &Peering,
+) -> Result<(), String> {
     let me = db
         .store()
         .node_identity()
+        .await
         .map_err(|why| format!("this node cannot say who it is: {why}"))?
         .id;
     let speaking = std::sync::Arc::downgrade(&db);

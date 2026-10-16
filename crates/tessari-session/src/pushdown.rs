@@ -50,7 +50,7 @@ pub async fn keeping(
 ) -> Result<Vec<(RecordId, Vec<u8>)>> {
     let condition = tessari_ql::bound_condition(&pushed.condition, &pushed.parameters)?;
     let session = Session::new(store);
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().await?;
     let mut kept = Vec::with_capacity(found.len());
     for (id, payload) in found {
         let answered = match decode_payload(&payload) {
@@ -135,7 +135,7 @@ pub async fn leading(
         .collect::<Result<Vec<_>>>()?;
     let most = usize::try_from(ordered.most).unwrap_or(usize::MAX);
     let session = Session::new(store);
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().await?;
     let mut topmost = crate::shape::Topmost::keeping(&order, Some(most));
     let mut unranked = Vec::new();
     while let Some(page) = pages().await? {

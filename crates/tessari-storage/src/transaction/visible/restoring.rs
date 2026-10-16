@@ -37,7 +37,7 @@ async fn restore_onto(fixture: &Fixture, onto: &Store) -> Result<[String; 2]> {
 }
 
 async fn reads(fixture: &Fixture, store: &Store) -> Result<[String; 2]> {
-    let reading = store.begin()?;
+    let reading = store.begin().await?;
     Ok([
         read(&reading, &fixture.address(0)).await?,
         read(&reading, &fixture.address(1)).await?,
@@ -116,7 +116,7 @@ async fn a_state_copied_again_onto_a_store_holding_it_changes_nothing() -> Resul
     fixture.decide(Decision::Pending).await?;
     fixture.decide(Decision::Committed).await?;
     let (restored, _) = restore(&fixture).await?;
-    let reading = restored.begin()?;
+    let reading = restored.begin().await?;
     // Copied again over itself, as a follower re-seeding from its leader is:
     // the decided record is not decided twice, each intent stands once, and a
     // reader that began before still sees the transaction.
@@ -128,7 +128,7 @@ async fn a_state_copied_again_onto_a_store_holding_it_changes_nothing() -> Resul
     fixture.resolve_on(&restored, 1).await?;
     assert!(restored.standing_across().await?.is_empty());
     // Nothing of the transaction is left to refuse a later write.
-    let mut writing = restored.begin()?;
+    let mut writing = restored.begin().await?;
     for home in 0..2 {
         writing.put(fixture.address(home), b"later".to_vec());
     }
@@ -166,7 +166,7 @@ async fn an_aborted_intent_copied_again_leaves_nothing_to_refuse_a_write() -> Re
         )
         .await?;
     assert_eq!(reads(&fixture, &restored).await?, ["old", "old"]);
-    let mut writing = restored.begin()?;
+    let mut writing = restored.begin().await?;
     writing.put(fixture.address(0), b"later".to_vec());
     writing.commit().await?;
     assert_eq!(reads(&fixture, &restored).await?, ["later", "old"]);

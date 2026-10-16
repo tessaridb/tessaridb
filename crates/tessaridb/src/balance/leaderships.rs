@@ -73,7 +73,7 @@ impl Db {
         if !store.leads(Reach::Store).await? {
             return Ok(None);
         }
-        let mut reading = store.begin()?;
+        let mut reading = store.begin().await?;
         let catalog = Catalog::new(&mut reading);
         let policy = catalog.failover().await?;
         let rows = catalog.replicas().await?;
@@ -88,7 +88,7 @@ impl Db {
         let Some(planned) = plan(&rows, &store.line_leaders().await?) else {
             return Ok(None);
         };
-        let mut writing = store.begin()?;
+        let mut writing = store.begin().await?;
         let mut catalog = Catalog::new(&mut writing);
         let placed = catalog
             .alter_replica_leads(&planned.to, Some(planned.range), false)

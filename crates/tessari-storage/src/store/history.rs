@@ -106,7 +106,9 @@ impl Store {
     /// decoded. A record that cannot be decoded is corruption rather than an
     /// event to skip, for the reason [`crate::feed::changes_in`] gives.
     pub async fn history_of(&self, log: LogId, subject: &Subject, limit: usize) -> Result<History> {
-        let records = self.log_records_newest_first(log, HISTORY_SCAN_RECORDS)?;
+        let records = self
+            .log_records_newest_first(log, HISTORY_SCAN_RECORDS)
+            .await?;
         let walked = records.len();
         let mut events = Vec::new();
         for (sequence, record) in records {
@@ -144,7 +146,7 @@ impl Store {
     ///
     /// Returns an error when the backend fails or a stored record cannot be
     /// decoded.
-    pub fn log_records_newest_first(
+    pub async fn log_records_newest_first(
         &self,
         log: LogId,
         limit: usize,
@@ -157,7 +159,8 @@ impl Store {
             limit: Some(limit),
         };
         self.backend
-            .scan(&request)?
+            .scan(&request)
+            .await?
             .into_iter()
             .map(|(key, value)| {
                 let sequence = LogKey::decode(key.as_slice())?.sequence;
@@ -214,7 +217,8 @@ impl Store {
             limit: Some(limit),
         };
         self.backend
-            .scan(&request)?
+            .scan(&request)
+            .await?
             .into_iter()
             .map(|(key, value)| {
                 let sequence = LogKey::decode(key.as_slice())?.sequence;

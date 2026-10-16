@@ -59,7 +59,7 @@ fn every_read_path_answers_the_record_before_its_instant_and_none_after_it() {
     let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = opened(&store);
     run(&mut session, SCHEMA);
-    let before_version = store.committed_version().unwrap();
+    let before_version = store.committed_version().now().unwrap();
     for read in READS {
         let held = answered(&mut session, read);
         assert!(
@@ -129,7 +129,7 @@ fn a_follower_holds_the_leaders_instant_and_hides_the_record_after_it() {
     let follower = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = opened(&leader);
     run(&mut session, SCHEMA);
-    for log in leader.logs().unwrap() {
+    for log in leader.logs().now().unwrap() {
         for (sequence, record) in leader.log_records(log, Sequence::ZERO, 4096).now().unwrap() {
             follower
                 .apply_record(log.writer, sequence, &record)

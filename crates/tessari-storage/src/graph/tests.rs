@@ -1,5 +1,6 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
+use crate::now::Now;
 use tessari_types::{Number, RecordId, Value};
 
 use super::{Graph, VectorDistance, separation, vector_of};
@@ -20,7 +21,10 @@ fn vector(components: &[f64]) -> Value {
 fn built(points: &[(i64, [f64; 2])]) -> Graph {
     let mut graph = Graph::empty(VectorDistance::Euclidean, false);
     for (id, point) in points {
-        graph.insert(&RecordId::Int(*id), point.to_vec()).unwrap();
+        graph
+            .insert(&RecordId::Int(*id), point.to_vec())
+            .now()
+            .unwrap();
     }
     graph
 }

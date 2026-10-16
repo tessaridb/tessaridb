@@ -21,7 +21,6 @@
 //! shortcut for as long as the transaction takes to arrive, and nothing else.
 
 use std::collections::BTreeSet;
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     Across, AcrossPartKey, AcrossUnsettledKey, Decision, IntentOfKey, LogRecord, Part, Participant,

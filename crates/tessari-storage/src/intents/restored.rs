@@ -21,7 +21,6 @@ use tessari_encoding::{
     Across, Decision, IntentOfKey, LogRecord, Mutation, Part, Participant, Provenance, RecordKey,
     ResolvedOfKey, StampedValue, StoreKey, StoreValue, TransactionId, TransactionRecord,
 };
-use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::Sequence;
 
@@ -249,7 +248,7 @@ impl Store {
     /// The shard of a split table `address` falls in, as the restored catalog
     /// says.
     async fn shard_of(&self, address: &RecordAddress) -> Result<Option<tessari_types::ShardId>> {
-        let mut reading = self.begin()?;
+        let mut reading = self.begin().await?;
         Ok(crate::catalog::Catalog::new(&mut reading)
             .table(address.table)
             .await?

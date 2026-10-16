@@ -68,8 +68,9 @@ impl Session<'_> {
         match from.filter(|from| *from > 1) {
             None => tessari_backup::write(self.store, &mut held).await,
             Some(from) => {
-                let home =
-                    tessari_backup::only_log(self.store).map_err(|error| Error::BackupFailed {
+                let home = tessari_backup::only_log(self.store)
+                    .await
+                    .map_err(|error| Error::BackupFailed {
                         reason: error.to_string(),
                     })?;
                 tessari_backup::write_from(

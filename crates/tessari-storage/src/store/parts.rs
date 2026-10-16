@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use tessari_kv::AsyncKvBackend;
 
 use tessari_encoding::{NodeIdentity, Roles};
-use tessari_kv::KvBackend;
 use tessari_types::{ConflictPolicy, Sequence, TableId};
 
 use crate::catalog::Reach;
@@ -39,8 +39,10 @@ impl Store {
     /// Returns the substrate's failure, [`Error::NoIdentity`] when the key has
     /// gone, or a decoding failure when the stored bytes carry a revision, role
     /// or membership this build does not know.
-    pub fn node_identity(&self) -> Result<NodeIdentity> {
-        crate::node::read(Arc::clone(&self.backend))?.ok_or(Error::NoIdentity)
+    pub async fn node_identity(&self) -> Result<NodeIdentity> {
+        crate::node::read(Arc::clone(&self.backend))
+            .await?
+            .ok_or(Error::NoIdentity)
     }
 
     /// What this process is doing with the consumers the catalog declares.
@@ -159,7 +161,7 @@ impl Store {
         if let Some(keep) = retain {
             self.set_log_retention(keep).await?;
         }
-        crate::node::configure(Arc::clone(&self.backend), roles, endpoints)
+        crate::node::configure(Arc::clone(&self.backend), roles, endpoints).await
     }
 
     /// Begin a transaction at the newest version this store has written.
@@ -171,14 +173,14 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the version position cannot be read or decoded.
-    pub fn begin(&self) -> Result<Transaction<'_>> {
-        Ok(Transaction::new(self, self.committed_version()?))
+    pub async fn begin(&self) -> Result<Transaction<'_>> {
+        Ok(Transaction::new(self, self.committed_version().await?))
     }
 
     /// [`Self::begin`], deciding every intent from this node's own copy —
     /// the view a commit or an apply derives from (see `Transaction::local`).
-    pub(crate) fn begin_local(&self) -> Result<Transaction<'_>> {
-        Ok(self.begin()?.local())
+    pub(crate) async fn begin_local(&self) -> Result<Transaction<'_>> {
+        Ok(self.begin().await?.local())
     }
 
     /// Begin a transaction reading the store as it stood at `at`.
@@ -212,7 +214,7 @@ impl Store {
                 floor: floor.get(),
             });
         }
-        let tail = self.committed_version()?;
+        let tail = self.committed_version().await?;
         if at > tail {
             return Err(Error::VersionInTheFuture {
                 asked: at.get(),
@@ -233,10 +235,10 @@ impl Store {
     ///
     /// Returns an error when the version position cannot be read, which is only
     /// consulted when no snapshot is live.
-    pub fn retention_floor(&self) -> Result<Sequence> {
+    pub async fn retention_floor(&self) -> Result<Sequence> {
         match self.snapshots.oldest() {
             Some(oldest) => Ok(oldest),
-            None => self.committed_version(),
+            None => self.committed_version().await,
         }
     }
 
@@ -289,7 +291,7 @@ impl Store {
     /// on a missing namespace: an absent declaration is not a declaration, and
     /// of the two readings it is the one that loses nothing.
     pub(crate) async fn conflict_policy(&self, table: TableId) -> Result<ConflictPolicy> {
-        let mut transaction = self.begin()?;
+        let mut transaction = self.begin().await?;
         let Some(definition) = crate::catalog::Catalog::new(&mut transaction)
             .table(table)
             .await?
@@ -317,7 +319,7 @@ impl Store {
         let (Some(namespace), _) = home.parts() else {
             return Ok(false);
         };
-        let mut transaction = self.begin()?;
+        let mut transaction = self.begin().await?;
         let Some(definition) = crate::catalog::Catalog::new(&mut transaction)
             .namespace(namespace)
             .await?
@@ -334,12 +336,12 @@ impl Store {
 
     /// The backend, for the transaction's read and commit paths: its reads and
     /// writes are futures, so no store call blocks the thread that drives it.
-    pub(crate) fn backend(&self) -> &(impl tessari_kv::AsyncKvBackend + ?Sized) {
+    pub(crate) fn backend(&self) -> &dyn tessari_kv::AsyncKvBackend {
         &*self.backend
     }
 
     /// The backend as shared, for what holds it beyond one call.
-    pub(crate) fn engine(&self) -> &Arc<dyn KvBackend> {
+    pub(crate) fn engine(&self) -> &Arc<dyn AsyncKvBackend> {
         &self.backend
     }
 

@@ -112,7 +112,7 @@ fn listed(session: &mut Session<'_>) -> BTreeMap<String, Value> {
 /// about byte-identity has to compare is the current one, and a transaction is
 /// the thing that knows which that is.
 fn stored_record(store: &Store) -> BTreeMap<String, Value> {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let namespace = Catalog::new(&mut transaction)
         .namespaces()
         .now()
@@ -469,7 +469,7 @@ fn the_material_may_arrive_as_a_parameter() {
 
 /// The vault record's address, resolved from the catalog.
 fn address_of(store: &Store) -> RecordAddress {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let namespace = Catalog::new(&mut transaction)
         .namespaces()
         .now()
@@ -517,8 +517,8 @@ fn a_concurrent_add_and_remove_leave_a_consistent_set() {
     // overlapping edits, and the interleaving F2 asks about is a property of the
     // transaction underneath. This applies exactly the change the statements
     // apply, through the same two functions, and lets the store decide.
-    let mut adding = store.begin().unwrap();
-    let mut removing = store.begin().unwrap();
+    let mut adding = store.begin().now().unwrap();
+    let mut removing = store.begin().now().unwrap();
 
     for (transaction, change) in [(&mut adding, true), (&mut removing, false)] {
         let stored = transaction.get(&address).now().unwrap().expect("no record");

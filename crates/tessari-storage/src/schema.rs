@@ -173,7 +173,7 @@ pub(crate) async fn validate(store: &Store, record: &LogRecord) -> Result<()> {
         return Ok(());
     }
 
-    let mut view = store.begin()?;
+    let mut view = store.begin().await?;
     let tightened = tightened_tables(&mut view, record).await?;
     if tightened.is_empty() && touched.is_empty() {
         return Ok(());

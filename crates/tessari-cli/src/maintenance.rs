@@ -23,7 +23,9 @@ pub(crate) async fn backup(
         match from {
             None | Some(0 | 1) => tessari_backup::write(db.store(), &mut out).await,
             Some(from) => {
-                let home = tessari_backup::only_log(db.store()).map_err(|why| why.to_string())?;
+                let home = tessari_backup::only_log(db.store())
+                    .await
+                    .map_err(|why| why.to_string())?;
                 tessari_backup::write_from(
                     db.store(),
                     &mut out,

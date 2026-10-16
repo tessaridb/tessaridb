@@ -18,7 +18,12 @@ use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
 /// An instant an hour from now, on the transaction's own clock.
 fn later(store: &Store) -> u64 {
-    store.begin().unwrap().clock().saturating_add(3_600_000)
+    store
+        .begin()
+        .now()
+        .unwrap()
+        .clock()
+        .saturating_add(3_600_000)
 }
 
 fn at(id: &str) -> RecordAddress {
@@ -50,7 +55,7 @@ fn a_replica_holds_the_same_expiry_entries_as_the_node_that_wrote_them() {
     let source = Store::open(Arc::clone(&source_backend)).now().unwrap();
     let first = later(&source);
     for (id, instant) in [("a", first), ("b", first.saturating_add(1)), ("c", 0)] {
-        let mut transaction = source.begin().unwrap();
+        let mut transaction = source.begin().now().unwrap();
         transaction.put(at(id), b"v".to_vec());
         if instant > 0 {
             transaction.expire_pending(&at(id), instant);
@@ -58,7 +63,7 @@ fn a_replica_holds_the_same_expiry_entries_as_the_node_that_wrote_them() {
         transaction.commit().now().unwrap();
     }
     // Moved, so the source holds one entry for `a` and not two.
-    let mut transaction = source.begin().unwrap();
+    let mut transaction = source.begin().now().unwrap();
     transaction.put(at("a"), b"v".to_vec());
     transaction.expire_pending(&at("a"), first.saturating_add(7));
     transaction.commit().now().unwrap();
@@ -92,7 +97,7 @@ fn a_replica_of_a_limited_space_holds_what_the_writer_kept() {
 
     let source_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let source = Store::open(Arc::clone(&source_backend)).now().unwrap();
-    let mut transaction = source.begin().unwrap();
+    let mut transaction = source.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog.create_database(namespace.id, "app").now().unwrap();
@@ -116,7 +121,7 @@ fn a_replica_of_a_limited_space_holds_what_the_writer_kept() {
     transaction.commit().now().unwrap();
     let at = |id: &str| RecordAddress::new(namespace.id, database.id, space.id, RecordId::from(id));
     for id in ["a", "b", "c", "d", "e", "b"] {
-        let mut transaction = source.begin().unwrap();
+        let mut transaction = source.begin().now().unwrap();
         transaction.put(at(id), b"v".to_vec());
         transaction.commit().now().unwrap();
     }
@@ -128,6 +133,7 @@ fn a_replica_of_a_limited_space_holds_what_the_writer_kept() {
     let held = |store: &Store| {
         store
             .begin()
+            .now()
             .unwrap()
             .scan_table(namespace.id, database.id, space.id)
             .now()

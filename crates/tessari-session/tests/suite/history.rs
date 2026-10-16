@@ -59,7 +59,7 @@ fn ready(store: &Store) -> Session<'_> {
 /// each one spends, which is a fact about the write path and not about this
 /// feature.
 fn now(store: &Store) -> u64 {
-    store.committed_version().unwrap().get()
+    store.committed_version().now().unwrap().get()
 }
 
 fn ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
@@ -404,7 +404,7 @@ fn docs_ids(
     tessari_types::DatabaseId,
     tessari_types::TableId,
 ) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = tessari_storage::Catalog::new(&mut transaction);
     let namespace = catalog
         .namespaces()

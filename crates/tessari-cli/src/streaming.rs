@@ -204,7 +204,10 @@ async fn follow(
                 .followed_log(home, Writer::new(leader))
                 .await
                 .map_err(|why| why.to_string())?;
-            let tail = store.committed_tail(log).map_err(|why| why.to_string())?;
+            let tail = store
+                .committed_tail(log)
+                .await
+                .map_err(|why| why.to_string())?;
             asks.push((home, Sequence::new(tail.get().saturating_add(1))));
         }
         let asked = tessari_wire::StreamAsk {
@@ -271,7 +274,10 @@ async fn holding(
             .followed_log(home, Writer::new(leader))
             .await
             .map_err(|why| why.to_string())?;
-        let tail = store.committed_tail(log).map_err(|why| why.to_string())?;
+        let tail = store
+            .committed_tail(log)
+            .await
+            .map_err(|why| why.to_string())?;
         held.push((home, Sequence::new(tail.get().saturating_add(1))));
     }
     Ok(held)

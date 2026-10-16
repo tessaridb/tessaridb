@@ -65,7 +65,7 @@ impl Merged {
     pub async fn poll(&mut self, store: &Store, limit: usize) -> Result<Vec<(LogId, Change)>> {
         // Read before the pages: a commit that lands after this is ordered past
         // it and waits for the next round.
-        let committed = store.committed_version()?;
+        let committed = store.committed_version().await?;
         self.poll_through(store, limit, committed).await
     }
 
@@ -84,7 +84,7 @@ impl Merged {
         limit: usize,
         bound: Sequence,
     ) -> Result<Vec<(LogId, Change)>> {
-        let committed = store.committed_version()?.min(bound);
+        let committed = store.committed_version().await?.min(bound);
         self.poll_through(store, limit, committed).await
     }
 

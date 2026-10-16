@@ -21,7 +21,7 @@ fn store() -> Store {
 
 /// A namespace, database and table, committed, and the address to write at.
 fn tree(store: &Store) -> RecordAddress {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog
@@ -43,7 +43,7 @@ fn tree(store: &Store) -> RecordAddress {
 
 /// Write one version of a record into [`FIXTURE_HOME`].
 fn write(store: &Store, at: &RecordAddress, name: &str) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut object = std::collections::BTreeMap::new();
     object.insert("name".to_owned(), Value::String(name.to_owned()));
     transaction.put(
@@ -86,7 +86,7 @@ fn a_log_nobody_has_pruned_begins_at_zero_and_reads_from_anywhere() {
 #[test]
 fn a_prune_removes_the_records_below_it_and_records_where_the_log_now_begins() {
     let (store, _, log) = logged(5);
-    let tail = store.committed_tail(log).unwrap();
+    let tail = store.committed_tail(log).now().unwrap();
     assert_eq!(tail, Sequence::new(5));
 
     let pruned = store.prune_log(log, Sequence::new(2)).now().unwrap();
@@ -228,7 +228,7 @@ fn a_history_read_over_a_pruned_log_no_longer_claims_to_be_complete() {
 #[test]
 fn a_prune_is_bounded_to_the_log_it_names() {
     let (store, _, log) = logged(4);
-    let store_log = store.own_log(tessari_types::Reach::Store).unwrap();
+    let store_log = store.own_log(tessari_types::Reach::Store).now().unwrap();
     let beside = store
         .log_records(store_log, Sequence::ZERO, 64)
         .now()

@@ -151,7 +151,7 @@ impl Session<'_> {
     ) -> Result<()> {
         self.recompute_all(transaction, kept).await?;
         let snapshot = transaction.snapshot();
-        let positions = self.positions_after(kept, snapshot, &[])?;
+        let positions = self.positions_after(kept, snapshot, &[]).await?;
         transaction.put_view_state(
             kept.view,
             &ViewState {
@@ -179,7 +179,9 @@ impl Session<'_> {
             self.build_view(transaction, kept).await?;
             return Ok(Some(0));
         };
-        let positions = self.positions_after(kept, state.version, &state.positions)?;
+        let positions = self
+            .positions_after(kept, state.version, &state.positions)
+            .await?;
         let mut feed = Merged::new(positions, Watch::table(kept.source));
         let mut changed: BTreeSet<RecordId> = BTreeSet::new();
         let mut applied = 0_usize;
@@ -238,7 +240,7 @@ impl Session<'_> {
 
     /// Where to read each log from: a log the state names keeps its position,
     /// and one it does not — new since — starts after the stated version.
-    fn positions_after(
+    async fn positions_after(
         &self,
         kept: &Kept,
         version: Sequence,
@@ -246,12 +248,13 @@ impl Session<'_> {
     ) -> Result<Vec<(tessari_encoding::LogId, Sequence)>> {
         let store = self.store;
         let mut positions = Vec::new();
-        for log in
-            store.logs_carrying(kept.context.namespace, kept.context.database, kept.source)?
+        for log in store
+            .logs_carrying(kept.context.namespace, kept.context.database, kept.source)
+            .await?
         {
             let at = match held.iter().find(|(known, _)| *known == log) {
                 Some((_, at)) => *at,
-                None => store.first_after(log, version)?,
+                None => store.first_after(log, version).await?,
             };
             positions.push((log, at));
         }
@@ -400,7 +403,7 @@ impl Session<'_> {
 /// fails for a reason other than not being this node's to write.
 pub async fn maintain_views(store: &Store) -> Result<Maintained> {
     let views = {
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().await?;
         let found = materialized_views(&mut transaction).await?;
         transaction.rollback();
         found
@@ -412,7 +415,7 @@ pub async fn maintain_views(store: &Store) -> Result<Maintained> {
         let mut session = Session::new(store);
         session.namespace = Some(namespace);
         session.database = Some(database);
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().await?;
         let Some(kept) = session.materialized_view(&mut transaction, view).await? else {
             transaction.rollback();
             continue;
@@ -468,6 +471,6 @@ pub(crate) async fn freshness(
     let Some(state) = transaction.view_state(view).await? else {
         return Ok(None);
     };
-    let head = store.committed_version()?;
+    let head = store.committed_version().await?;
     Ok(Some((state, head)))
 }

@@ -50,7 +50,7 @@ async fn leader() -> (Arc<Db>, TableId) {
         .await
         .unwrap();
     let table = {
-        let mut transaction = db.store().begin().unwrap();
+        let mut transaction = db.store().begin().await.unwrap();
         Catalog::new(&mut transaction)
             .table_id(NamespaceId::new(1), DatabaseId::new(1), "ledger")
             .await

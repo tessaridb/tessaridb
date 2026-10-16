@@ -208,7 +208,7 @@ async fn vetted(
     script: Script,
     text: &str,
 ) -> Result<(Script, Vec<String>)> {
-    let mut view = session.store.begin()?;
+    let mut view = session.store.begin().await?;
     let catalog = Catalog::new(&mut view);
     let mut namespaces = BTreeSet::new();
     let mut created: Vec<(String, String)> = Vec::new();

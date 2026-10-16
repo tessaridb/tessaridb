@@ -36,7 +36,7 @@ fn entries(backend: &Arc<dyn KvBackend>, kind: KeyKind) -> Entries {
 fn a_replica_holds_the_same_messages_positions_and_readers() {
     let source_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let source = Store::open(Arc::clone(&source_backend)).now().unwrap();
-    let mut transaction = source.begin().unwrap();
+    let mut transaction = source.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog.create_database(namespace.id, "app").now().unwrap();
@@ -57,14 +57,14 @@ fn a_replica_holds_the_same_messages_positions_and_readers() {
     // One message per commit, then two in one commit, so a replica that
     // numbered a commit's messages in another order would disagree.
     for batch in [&["m1"][..], &["m2"], &["m4", "m3"], &["m5"]] {
-        let mut transaction = source.begin().unwrap();
+        let mut transaction = source.begin().now().unwrap();
         for id in batch {
             transaction.put(at(id), encode_payload(&Value::from(*id)).into_bytes());
         }
         transaction.commit().now().unwrap();
     }
     for (consumer, position) in [("audit", 2), ("mail", 5)] {
-        let mut transaction = source.begin().unwrap();
+        let mut transaction = source.begin().now().unwrap();
         Catalog::new(&mut transaction).set_topic_position(
             namespace.id,
             database.id,
@@ -82,6 +82,7 @@ fn a_replica_holds_the_same_messages_positions_and_readers() {
     let messages = |store: &Store| {
         store
             .begin()
+            .now()
             .unwrap()
             .topic_after(namespace.id, database.id, topic.id, 0, 100)
             .now()
@@ -108,7 +109,7 @@ fn a_replica_holds_the_same_messages_positions_and_readers() {
         assert_eq!(entries(&replica_backend, kind), held, "{kind:?}");
     }
     let readers = |store: &Store| {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         Catalog::new(&mut transaction)
             .topic_positions(namespace.id, database.id, topic.id)
             .now()
@@ -128,7 +129,7 @@ fn a_replica_holds_the_same_messages_positions_and_readers() {
 fn a_replica_holds_what_a_size_retention_kept() {
     let source_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let source = Store::open(Arc::clone(&source_backend)).now().unwrap();
-    let mut transaction = source.begin().unwrap();
+    let mut transaction = source.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog.create_database(namespace.id, "app").now().unwrap();
@@ -149,7 +150,7 @@ fn a_replica_holds_what_a_size_retention_kept() {
         .unwrap();
     transaction.commit().now().unwrap();
     for n in 1..=12 {
-        let mut transaction = source.begin().unwrap();
+        let mut transaction = source.begin().now().unwrap();
         transaction.put(
             RecordAddress::new(namespace.id, database.id, topic.id, RecordId::Int(n)),
             encode_payload(&Value::from("a message of some length")).into_bytes(),
@@ -163,6 +164,7 @@ fn a_replica_holds_what_a_size_retention_kept() {
     let messages = |store: &Store| {
         store
             .begin()
+            .now()
             .unwrap()
             .topic_after(namespace.id, database.id, topic.id, 0, 100)
             .now()
@@ -189,6 +191,7 @@ fn a_replica_holds_what_a_size_retention_kept() {
     let bytes = |store: &Store| {
         store
             .begin()
+            .now()
             .unwrap()
             .topic_bytes(namespace.id, database.id, topic.id)
             .now()

@@ -66,11 +66,11 @@ pub fn filtered_ceiling(wanted: usize, effort: Option<usize>) -> usize {
 /// later, minus the expansions in between, which are the whole cost of a
 /// condition too rare for the graph (G055 W3: at one record in a hundred the
 /// walk plus its fallback cost more than the exact read alone).
-fn falls_short(
+async fn falls_short(
     expanded: usize,
     admitted: usize,
     (effort, ceiling): (usize, usize),
-    larger: impl FnOnce() -> bool,
+    larger: impl AsyncFnOnce() -> bool,
 ) -> bool {
     expanded >= effort
         && admitted < effort
@@ -80,7 +80,7 @@ fn falls_short(
             .is_some_and(|projected| projected > ceiling)
         // Asked last, because it is the one that reads the store: whether the
         // graph is larger than the ceiling, counted up to one past it.
-        && larger()
+        && larger().await
 }
 
 /// What a filtered walk found.
@@ -114,7 +114,7 @@ impl Graph {
     ) -> Result<Matched, E> {
         let ceiling = filtered_ceiling(wanted, effort);
         let effort = effort.unwrap_or(EXPLORATION).max(wanted);
-        let Some(entry) = self.entry()? else {
+        let Some(entry) = self.entry().await? else {
             return Ok(Matched {
                 ids: Vec::new(),
                 cut: false,
@@ -125,7 +125,7 @@ impl Graph {
         // only an admitted one is held. Both sorted by distance, ties on id.
         let mut frontier: Vec<(f64, RecordId)> = Vec::new();
         let mut best: Vec<(f64, RecordId)> = Vec::new();
-        let start = self.at(entry.clone(), query)?;
+        let start = self.at(entry.clone(), query).await?;
         seen.insert(entry.clone());
         if admit(&entry).await? {
             best.push((start, entry.clone()));
@@ -148,15 +148,22 @@ impl Graph {
                 break;
             }
             if expanded >= ceiling
-                || falls_short(expanded, best.len(), (effort, ceiling), || {
-                    *larger.get_or_insert_with(|| self.nodes.more_than(ceiling).unwrap_or(true))
+                || falls_short(expanded, best.len(), (effort, ceiling), async || {
+                    if let Some(known) = larger {
+                        known
+                    } else {
+                        let known = self.nodes.more_than(ceiling).await.unwrap_or(true);
+                        larger = Some(known);
+                        known
+                    }
                 })
+                .await
             {
                 cut = true;
                 break;
             }
             expanded = expanded.saturating_add(1);
-            let Some(node) = self.nodes.get(&current)? else {
+            let Some(node) = self.nodes.get(&current).await? else {
                 continue;
             };
             for neighbour in &node.neighbours {
@@ -164,10 +171,10 @@ impl Graph {
                     continue;
                 }
                 // A dangling edge (a removed record) neither routes nor answers.
-                if !self.nodes.contains(neighbour)? {
+                if !self.nodes.contains(neighbour).await? {
                     continue;
                 }
-                let separation = self.at(neighbour.clone(), query)?;
+                let separation = self.at(neighbour.clone(), query).await?;
                 frontier.push((separation, neighbour.clone()));
                 // Asked only when the record would enter the answer as it stands.
                 let could_enter = best.len() < effort
@@ -237,6 +244,7 @@ mod tests {
         for n in 0..records {
             graph
                 .insert(&RecordId::Int(n), point(n, dimensions))
+                .now()
                 .unwrap();
         }
         graph

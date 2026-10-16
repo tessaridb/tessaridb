@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn a_refused_write_is_sent_to_the_store_lines_leader() {
         let db = Db::in_memory().now().unwrap();
-        let mut transaction = db.store.begin().unwrap();
+        let mut transaction = db.store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let both = Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING);
         for (name, node) in [("n1", OTHER), ("n2", [8; tessari_storage::NODE_ID_LEN])] {

@@ -24,9 +24,10 @@
 mod pass;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use tessari_kv::AsyncKvBackend;
 
 use tessari_encoding::{ExpiryKey, ExpiryMark, KeyKind, LogRecord, StoreKey, StoreValue};
-use tessari_kv::{KeyRange, KvBackend, ScanDirection, ScanRequest, WriteBatch};
+use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 
 use crate::error::Result;
 use crate::store::Store;
@@ -44,13 +45,15 @@ pub(crate) struct Expiring(AtomicBool);
 
 impl Expiring {
     /// Read the flag off the store: set when the expiry index holds any entry.
-    pub(crate) fn load(backend: &dyn KvBackend) -> Result<Self> {
-        let first = backend.scan(&ScanRequest {
-            keyspace: KeyKind::ExpiryIndex.keyspace(),
-            range: KeyRange::prefix(&[KeyKind::ExpiryIndex.tag()]),
-            direction: ScanDirection::Forward,
-            limit: Some(1),
-        })?;
+    pub(crate) async fn load(backend: &dyn AsyncKvBackend) -> Result<Self> {
+        let first = backend
+            .scan(&ScanRequest {
+                keyspace: KeyKind::ExpiryIndex.keyspace(),
+                range: KeyRange::prefix(&[KeyKind::ExpiryIndex.tag()]),
+                direction: ScanDirection::Forward,
+                limit: Some(1),
+            })
+            .await?;
         Ok(Self(AtomicBool::new(!first.is_empty())))
     }
 
@@ -69,7 +72,7 @@ pub(crate) async fn maintain(
     record: &LogRecord,
     mut batch: WriteBatch,
 ) -> Result<WriteBatch> {
-    let view = store.begin_local()?;
+    let view = store.begin_local().await?;
     for mutation in record.mutations() {
         let next = mutation.value.expires();
         if next.is_some() {

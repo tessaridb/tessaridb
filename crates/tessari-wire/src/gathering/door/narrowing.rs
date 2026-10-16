@@ -81,7 +81,7 @@ async fn a_page_that_keeps_nothing_it_read_says_where_it_got_to() {
     }
     db.session().run(&script).await.unwrap();
     let table = {
-        let mut transaction = db.store().begin().unwrap();
+        let mut transaction = db.store().begin().await.unwrap();
         Catalog::new(&mut transaction)
             .table_id(NamespaceId::new(1), DatabaseId::new(1), "ledger")
             .await

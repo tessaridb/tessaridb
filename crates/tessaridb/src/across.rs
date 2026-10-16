@@ -364,7 +364,7 @@ impl Db {
         let Some(elsewhere) = self.elsewhere.get() else {
             return Ok(None);
         };
-        let mut reading = self.store().begin()?;
+        let mut reading = self.store().begin().await?;
         let placed: BTreeSet<tessari_types::Reach> = tessari_storage::Catalog::new(&mut reading)
             .replicas()
             .await?

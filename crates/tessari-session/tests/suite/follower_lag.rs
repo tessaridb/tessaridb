@@ -99,7 +99,7 @@ fn collects(store: &Store, node: [u8; 16], from: Sequence, limit: usize) -> usiz
             store,
             node,
             Reach::Store,
-            store.own_log(DATA_LOG).unwrap(),
+            store.own_log(DATA_LOG).now().unwrap(),
             from,
             limit,
         )

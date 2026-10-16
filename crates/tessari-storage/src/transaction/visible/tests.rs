@@ -19,7 +19,7 @@ fn a_transaction_is_seen_only_once_this_node_holds_every_part_of_it() -> Result<
     fixture.decide(Decision::Pending).now()?;
     fixture.decide(Decision::Committed).now()?;
     fixture.resolve(0).now()?;
-    let early = fixture.store.begin()?;
+    let early = fixture.store.begin().now()?;
     for home in 0..2 {
         assert_eq!(
             read(&early, &fixture.address(home)).now()?,
@@ -34,7 +34,7 @@ fn a_transaction_is_seen_only_once_this_node_holds_every_part_of_it() -> Result<
     for home in 0..2 {
         assert_eq!(read(&early, &fixture.address(home)).now()?, "old");
     }
-    let late = fixture.store.begin()?;
+    let late = fixture.store.begin().now()?;
     for home in 0..2 {
         assert_eq!(read(&late, &fixture.address(home)).now()?, "new");
     }
@@ -48,7 +48,7 @@ fn a_scan_shows_neither_part_while_one_is_missing() -> Result<()> {
     fixture.decide(Decision::Pending).now()?;
     fixture.decide(Decision::Committed).now()?;
     fixture.resolve(0).now()?;
-    let reading = fixture.store.begin()?;
+    let reading = fixture.store.begin().now()?;
     let scanned = reading
         .first_records_of(
             fixture.namespace,
@@ -76,7 +76,7 @@ fn a_writer_may_not_build_on_a_version_it_could_not_see() -> Result<()> {
     fixture.resolve(0).now()?;
     // It read "old" where the transaction wrote "new"; writing over that would
     // lose the transaction's write.
-    let mut writer = fixture.store.begin()?;
+    let mut writer = fixture.store.begin().now()?;
     assert_eq!(read(&writer, &fixture.address(0)).now()?, "old");
     writer.put(fixture.address(0), b"old+1".to_vec());
     let refused = writer.commit().now();
@@ -97,7 +97,7 @@ fn a_writer_may_not_build_on_a_version_it_could_not_see() -> Result<()> {
     assert!(said.contains("has not all arrived"), "{said}");
     // Once the node holds the whole transaction, the same write goes through.
     fixture.prepare(1).now()?;
-    let mut writer = fixture.store.begin()?;
+    let mut writer = fixture.store.begin().now()?;
     assert_eq!(read(&writer, &fixture.address(0)).now()?, "new");
     writer.put(fixture.address(0), b"new+1".to_vec());
     writer.commit().now()?;
@@ -114,12 +114,12 @@ fn a_reader_keeps_its_answer_when_the_record_commits_under_it() -> Result<()> {
     fixture.prepare(0).now()?;
     fixture.prepare(1).now()?;
     fixture.decide(Decision::Pending).now()?;
-    let reading = fixture.store.begin()?;
+    let reading = fixture.store.begin().now()?;
     assert_eq!(read(&reading, &fixture.address(0)).now()?, "old");
     fixture.decide(Decision::Committed).now()?;
     assert_eq!(read(&reading, &fixture.address(1)).now()?, "old");
     assert_eq!(
-        read(&fixture.store.begin()?, &fixture.address(1)).now()?,
+        read(&fixture.store.begin().now()?, &fixture.address(1)).now()?,
         "new"
     );
     Ok(())
@@ -134,7 +134,7 @@ fn reclaiming_keeps_the_version_under_one_a_reader_may_pass_over() -> Result<()>
     fixture.resolve(0).now()?;
     // Move the floor past the resolved version, so reclamation reaches the
     // one under it, which every reader here still needs (ADR-0112 D9).
-    let mut writer = fixture.store.begin()?;
+    let mut writer = fixture.store.begin().now()?;
     writer.put(
         RecordAddress::new(
             fixture.namespace,
@@ -154,7 +154,7 @@ fn reclaiming_keeps_the_version_under_one_a_reader_may_pass_over() -> Result<()>
         )
         .now()?;
     assert_eq!(
-        read(&fixture.store.begin()?, &fixture.address(0)).now()?,
+        read(&fixture.store.begin().now()?, &fixture.address(0)).now()?,
         "old"
     );
     Ok(())
@@ -203,7 +203,7 @@ fn a_reader_asks_the_records_leader_when_its_copy_is_undecided() -> Result<()> {
                 .store
                 .answer_decisions_with(std::sync::Arc::new(Answering(Some(record))));
         }
-        let reading = fixture.store.begin()?;
+        let reading = fixture.store.begin().now()?;
         for home in 0..2 {
             assert_eq!(
                 read(&reading, &fixture.address(home)).now()?,

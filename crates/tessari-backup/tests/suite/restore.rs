@@ -153,8 +153,8 @@ pub(crate) fn one_log() -> (Arc<dyn KvBackend>, Store, Vec<u8>) {
             .unwrap();
     }
     assert_eq!(
-        store.logs().unwrap(),
-        vec![store.own_log(Reach::Store).unwrap()],
+        store.logs().now().unwrap(),
+        vec![store.own_log(Reach::Store).now().unwrap()],
         "the fixture was supposed to hold one log"
     );
     let mut taken = Vec::new();
@@ -170,7 +170,7 @@ fn moved_since(base: &[u8], store: &Store) -> (LogId, Sequence) {
     let held = tessari_backup::verify(&mut &base[..]).unwrap();
     let mut moved: Vec<(LogId, Sequence)> = Vec::new();
     for log in &held.logs {
-        let now = store.committed_tail(log.span.log).unwrap();
+        let now = store.committed_tail(log.span.log).now().unwrap();
         if now.get() > log.span.tail.get() {
             moved.push((log.span.log, log.span.tail));
         }
@@ -342,7 +342,7 @@ fn a_stamped_record_survives_a_backup_and_a_restore() {
         }],
     );
     source
-        .apply_record(source.writer().unwrap(), Sequence::new(1), &record)
+        .apply_record(source.writer().now().unwrap(), Sequence::new(1), &record)
         .now()
         .unwrap();
 
@@ -532,9 +532,9 @@ fn a_restore_carries_the_peer_list_and_not_the_identity() {
     drop(asking);
     drop(restored);
     let reopened = Store::open(Arc::clone(&target)).now().unwrap();
-    let inherited = reopened.node_identity().unwrap();
+    let inherited = reopened.node_identity().now().unwrap();
     assert_ne!(
-        source.node_identity().unwrap().id,
+        source.node_identity().now().unwrap().id,
         inherited.id,
         "the restored store inherited the original's identity"
     );
@@ -914,7 +914,8 @@ fn a_restore_can_stop_at_a_chosen_point() {
     // one; the multi-log case is the refusal below.
     let (_, held, taken) = one_log();
     let whole = held
-        .committed_tail(held.own_log(tessari_types::Reach::Store).unwrap())
+        .committed_tail(held.own_log(tessari_types::Reach::Store).now().unwrap())
+        .now()
         .unwrap();
     let midpoint = tessari_types::Sequence::new(whole.get() / 2);
     assert!(
@@ -931,7 +932,8 @@ fn a_restore_can_stop_at_a_chosen_point() {
         // record is filed under the writer that wrote it, never under the one
         // reading the file.
         rebuilt
-            .committed_tail(held.own_log(tessari_types::Reach::Store).unwrap())
+            .committed_tail(held.own_log(tessari_types::Reach::Store).now().unwrap())
+            .now()
             .unwrap(),
         midpoint
     );
@@ -977,8 +979,11 @@ fn an_incremental_backup_of_a_store_holding_several_logs_is_refused() {
     // refusal belongs to the surface that has only a sequence to go on — the
     // `FROM n` of a statement or a command line (Q-625).
     let (_, held, _) = original();
-    assert!(held.logs().unwrap().len() > 1, "the fixture holds one log");
-    let refused = tessari_backup::only_log(&held).unwrap_err();
+    assert!(
+        held.logs().now().unwrap().len() > 1,
+        "the fixture holds one log"
+    );
+    let refused = tessari_backup::only_log(&held).now().unwrap_err();
     assert!(
         matches!(refused, tessari_backup::Error::ManyLogs { .. }),
         "{refused}"

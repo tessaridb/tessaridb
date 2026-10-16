@@ -682,7 +682,7 @@ fn a_row_bound_to_another_node_moves_nothing_here() {
     let held = backend();
     let store = closed(&held);
     let before = effective(&reported(&store));
-    let adopted = store.node_identity().unwrap().roles;
+    let adopted = store.node_identity().now().unwrap().roles;
     owner(&store)
         .run_now(&format!(
             "DEFINE REPLICA elsewhere AT 'there:9001' NODE '{}' ROLES coordinating;",
@@ -699,7 +699,7 @@ fn a_row_bound_to_another_node_moves_nothing_here() {
         "somebody else's row was read as ours: {report:?}"
     );
     assert_eq!(
-        reopened.node_identity().unwrap().roles,
+        reopened.node_identity().now().unwrap().roles,
         adopted,
         "the row moved what this node ADOPTED, which is the subject here: \
          {report:?}"
@@ -1599,9 +1599,9 @@ fn a_node_reports_who_the_log_says_leads_each_range() {
     owner(&store)
         .run_now("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders;")
         .unwrap();
-    let me = store.node_identity().unwrap().id;
+    let me = store.node_identity().now().unwrap().id;
     let other = [7_u8; 16];
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = tessari_storage::Catalog::new(&mut transaction);
     let prod = catalog.namespace_id("prod").now().unwrap().expect("prod");
     catalog

@@ -59,7 +59,7 @@ impl Store {
     /// Returns the substrate's failure, and a decoding failure when the node
     /// identity cannot be read.
     pub async fn awaiting_leadership(&self) -> Result<bool> {
-        self.awaiting(&self.node_identity()?.id).await
+        self.awaiting(&self.node_identity().await?.id).await
     }
 
     /// Whether this node holds no leadership and is not alone in holding none.
@@ -106,7 +106,7 @@ impl Store {
     /// Returns the substrate's failure, and a decoding failure when a stored
     /// membership row cannot be read.
     pub(crate) async fn in_a_cluster(&self, me: &[u8; NODE_ID_LEN]) -> Result<bool> {
-        let mut transaction = self.begin()?;
+        let mut transaction = self.begin().await?;
         let declared = crate::catalog::Catalog::new(&mut transaction)
             .replicas()
             .await?;
@@ -199,7 +199,7 @@ impl Store {
         ranges: &BTreeSet<Reach>,
         me: &[u8; NODE_ID_LEN],
     ) -> Result<BTreeSet<Reach>> {
-        let mut transaction = self.begin()?;
+        let mut transaction = self.begin().await?;
         let catalog = crate::catalog::Catalog::new(&mut transaction);
         let held = catalog.leaderships().await?;
         // The placement, read in the same transaction as the rows it carves:
@@ -242,7 +242,7 @@ impl Store {
         let Some(elsewhere) = elsewhere.pop() else {
             return Ok(placed);
         };
-        let mut transaction = self.begin()?;
+        let mut transaction = self.begin().await?;
         let declared = crate::catalog::Catalog::new(&mut transaction)
             .replicas()
             .await?;
@@ -374,8 +374,8 @@ impl Store {
     /// Returns the substrate's failure, and a decoding failure when a stored
     /// membership row or the node identity cannot be read.
     pub(super) async fn reconcile_roles(&self) -> Result<Option<Roles>> {
-        let identity = self.node_identity()?;
-        let mut transaction = self.begin()?;
+        let identity = self.node_identity().await?;
+        let mut transaction = self.begin().await?;
         let desired = crate::catalog::Catalog::new(&mut transaction)
             .desired_roles(&identity.id)
             .await?;
@@ -413,8 +413,8 @@ impl Store {
     /// The substrate's failure, and a decoding failure when a stored definition
     /// cannot be read.
     pub async fn leader_of(&self, range: Reach) -> Result<Option<[u8; NODE_ID_LEN]>> {
-        let me = self.node_identity()?.id;
-        let mut transaction = self.begin()?;
+        let me = self.node_identity().await?.id;
+        let mut transaction = self.begin().await?;
         let catalog = crate::catalog::Catalog::new(&mut transaction);
         let held = catalog.leaderships().await?;
         let placed: BTreeSet<Reach> = catalog
@@ -439,8 +439,8 @@ impl Store {
     /// The substrate's failure, and a decoding failure when a stored definition
     /// cannot be read.
     pub async fn leads(&self, range: Reach) -> Result<bool> {
-        let me = self.node_identity()?.id;
-        let mut transaction = self.begin()?;
+        let me = self.node_identity().await?.id;
+        let mut transaction = self.begin().await?;
         let catalog = crate::catalog::Catalog::new(&mut transaction);
         let held = catalog.leaderships().await?;
         let peers = catalog.replicas().await?;

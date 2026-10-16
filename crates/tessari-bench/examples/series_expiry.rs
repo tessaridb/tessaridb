@@ -107,7 +107,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let before = answer(&mut session)?;
     let store = db.store();
     let (namespace, database, table) = {
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().now()?;
         let catalog = Catalog::new(&mut transaction);
         let namespace = catalog.namespace_id("bench").now()?.ok_or("no namespace")?;
         let database = catalog

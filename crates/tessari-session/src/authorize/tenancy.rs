@@ -89,7 +89,7 @@ impl<'a> Session<'a> {
             // is nothing here to hold an authority over.
             return Ok(());
         };
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let catalog = Catalog::new(&mut transaction);
         let found = catalog.namespace_id(&within).await.ok().flatten();
         let reach = match (found, database) {
@@ -137,7 +137,7 @@ impl<'a> Session<'a> {
         user: &tessari_storage::UserDefinition,
         named: &str,
     ) -> bool {
-        let Ok(mut transaction) = self.store.begin() else {
+        let Ok(mut transaction) = self.store.begin().await else {
             return false;
         };
         let catalog = Catalog::new(&mut transaction);

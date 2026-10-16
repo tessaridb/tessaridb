@@ -247,7 +247,7 @@ fn defining_an_index_on_a_populated_table_counts_what_was_already_there() {
 
 /// The `documents` and `terms` the store has maintained for `by_body`.
 fn held(store: &Store) -> (u64, u64) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let table = Catalog::new(&mut transaction)
         .table_id(NamespaceId::new(1), DatabaseId::new(1), "notes")
         .now()

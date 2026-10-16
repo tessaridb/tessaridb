@@ -64,7 +64,7 @@ impl Session<'_> {
         // language produces — a set of records reached through edges nobody
         // sees — so an answer assembled from today's edges over yesterday's
         // records would be believed.
-        if !transaction.indexes_are_current()? {
+        if !transaction.indexes_are_current().await? {
             return Err(Error::NoHistoricalTraversal {
                 table: hops
                     .first()
@@ -404,7 +404,7 @@ pub(super) async fn edges_settled(
     }
     let table = named.name.text.clone();
     let span = named.span;
-    Err(if transaction.indexes_are_current()? {
+    Err(if transaction.indexes_are_current().await? {
         Error::AcrossSettling { table, span }
     } else {
         Error::NoHistoricalTraversal { table, span }

@@ -201,15 +201,16 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the backend fails or this store has no identity.
-    pub fn logs_carrying(
+    pub async fn logs_carrying(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
         table: TableId,
     ) -> Result<Vec<LogId>> {
-        let own = self.writer()?;
+        let own = self.writer().await?;
         Ok(self
-            .logs()?
+            .logs()
+            .await?
             .into_iter()
             .filter(|log| log.writer == own)
             .filter(|log| match log.home {
@@ -233,11 +234,11 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a record cannot be decoded.
-    pub fn first_after(&self, log: LogId, version: Sequence) -> Result<Sequence> {
-        let mut next = self.committed_tail(log)?.get().saturating_add(1);
+    pub async fn first_after(&self, log: LogId, version: Sequence) -> Result<Sequence> {
+        let mut next = self.committed_tail(log).await?.get().saturating_add(1);
         let mut window = 8_usize;
         loop {
-            let newest = self.log_records_newest_first(log, window)?;
+            let newest = self.log_records_newest_first(log, window).await?;
             let read = newest.len();
             for (at, record) in &newest {
                 if record.order().is_none_or(|order| order <= version) {

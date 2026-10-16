@@ -71,7 +71,7 @@ fn held(session: &mut Session<'_>) -> usize {
 
 /// Record that `peer` was sent, and holds, everything of `prod.app`'s log.
 fn acknowledged_by(store: &Store, peer: &str) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
     let database = catalog
@@ -293,6 +293,7 @@ fn regional(acknowledge: &str, mine: &str) -> Store {
     let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let me: String = store
         .node_identity()
+        .now()
         .unwrap()
         .id
         .iter()
@@ -413,7 +414,7 @@ fn a_new_leader_says_intents_are_gone_only_once_its_own_entry_is_held() {
     acknowledged_by(&store, SECOND);
     session.run_now("CREATE t:1 = { n: 1 };").unwrap();
     let range = {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let catalog = Catalog::new(&mut transaction);
         let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
         let database = catalog

@@ -635,7 +635,7 @@ fn a_quarantined_message_is_found_through_the_language_after_a_restart() {
         handed: Arc::new(AtomicBool::new(false)),
     });
     until(&store, broker, |store| {
-        let transaction = store.begin().unwrap();
+        let transaction = store.begin().now().unwrap();
         !landed(store).is_empty()
             && !transaction
                 .quarantined(1)
@@ -760,7 +760,7 @@ mod broker {
             .now()
             .unwrap();
         let parked = |store: &Store| {
-            let transaction = store.begin().unwrap();
+            let transaction = store.begin().now().unwrap();
             transaction.quarantined(1).now().unwrap_or_default().len()
         };
         assert!(

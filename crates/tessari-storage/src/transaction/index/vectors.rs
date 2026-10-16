@@ -8,7 +8,6 @@ use tessari_encoding::{
     IndexAddress, IndexValues, SpatialRefinement, SpatialRefinementKey, StoreKey, StoreValue,
     VectorRecall, VectorRecallKey,
 };
-use tessari_kv::AsyncKvBackend as _;
 use tessari_types::{RecordId, Value};
 
 impl Transaction<'_> {
@@ -28,7 +27,7 @@ impl Transaction<'_> {
     /// Returns an error when the backend fails or a node cannot be decoded.
     /// `effort` is the walk's budget: `None` for the engine's own, `Some` for a
     /// budget the read named with `APPROXIMATE EFFORT n`.
-    pub fn records_by_vector(
+    pub async fn records_by_vector(
         &self,
         index: &IndexDefinition,
         query: &[f64],
@@ -40,7 +39,7 @@ impl Transaction<'_> {
         };
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let graph = crate::graph::Graph::read(self.store, &address, distance, index.quantized)?;
-        graph.nearest(query, wanted, effort)
+        graph.nearest(query, wanted, effort).await
     }
 
     /// The graph a vector index is, read whole, for a walk the caller drives.

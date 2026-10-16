@@ -2,7 +2,6 @@
 
 use std::ops::Bound;
 use tessari_encoding::{StoreKey, TopicOffsetKey, decode_payload};
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};

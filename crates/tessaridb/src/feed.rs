@@ -256,7 +256,8 @@ impl Feed {
             }
             _ => None,
         };
-        let source = source::Source::open(db, tenancy, &split, asked.from, asked.cursor, watch)?;
+        let source =
+            source::Source::open(db, tenancy, &split, asked.from, asked.cursor, watch).await?;
         Ok(Self {
             table,
             tenancy,
@@ -315,7 +316,7 @@ impl Feed {
         // One snapshot per round for judging conditions; nothing in a
         // condition reads the store, so it is never asked for more.
         let mut judging = match self.narrowed {
-            Some(_) => Some(db.store().begin()?),
+            Some(_) => Some(db.store().begin().await?),
             None => None,
         };
         for (change, resume) in &changes {

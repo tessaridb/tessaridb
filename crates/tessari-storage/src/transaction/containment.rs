@@ -1,7 +1,6 @@
 //! The records a containment index offers for a document asked for (ADR-0116).
 
 use std::collections::{BTreeMap, BTreeSet};
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{ContainmentKey, IndexAddress, IndexValues, RecordValue, StoreKey};

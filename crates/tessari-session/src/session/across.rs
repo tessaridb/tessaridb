@@ -315,7 +315,7 @@ impl Session<'_> {
         if !prevent {
             return Ok(AcrossAnswer::Landed(None));
         }
-        let mut barring = store.begin()?;
+        let mut barring = store.begin().await?;
         let waiting = self
             .acknowledgement_in(&mut barring, Some(range), Some(Acknowledge::Majority), span)
             .await?;
@@ -337,7 +337,7 @@ impl Session<'_> {
     /// leadership, or the wait proves nothing a later election keeps.
     async fn hold_tail(&mut self, range: Reach, span: Span) -> Result<()> {
         let store = self.store;
-        let mut reading = store.begin()?;
+        let mut reading = store.begin().await?;
         let waiting = self
             .acknowledgement_in(&mut reading, Some(range), Some(Acknowledge::Majority), span)
             .await?;
@@ -350,14 +350,14 @@ impl Session<'_> {
         // entry of this node's own leadership is part of it (Q-921) — an
         // earlier leader's entries a majority holds may still be overruled.
         let leading = store.writing_epoch(range).await?;
-        if store.tail_leadership(log)? < leading {
+        if store.tail_leadership(log).await? < leading {
             return Err(Error::Store(
                 tessari_storage::Error::LeadershipUnconfirmed { range },
             ));
         }
         let tail = tessari_storage::Committed {
             log,
-            sequence: store.committed_tail(log)?,
+            sequence: store.committed_tail(log).await?,
         };
         Self::await_acknowledged(store, tail, waiting, span)
     }
@@ -375,7 +375,7 @@ impl Session<'_> {
             .iter()
             .map(|mutation| (mutation.namespace, mutation.database, mutation.table))
             .collect();
-        let mut reading = store.begin()?;
+        let mut reading = store.begin().await?;
         let catalog = Catalog::new(&mut reading);
         let user = self.identity.user();
         let grants = match user {

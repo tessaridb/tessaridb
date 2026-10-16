@@ -88,7 +88,7 @@ const DECLARATIONS: [&str; 12] = [
 
 /// The kind the catalog now holds for `prod.shop.t`.
 fn stored_kind(store: &Store) -> TableKind {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
     let database = catalog

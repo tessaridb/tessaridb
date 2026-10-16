@@ -85,7 +85,7 @@ mod tests {
         let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
             .now()
             .unwrap();
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("ns").now().unwrap().id;
         let database = catalog.create_database(namespace, "db").now().unwrap().id;

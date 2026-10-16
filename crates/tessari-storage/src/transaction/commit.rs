@@ -288,7 +288,7 @@ impl Transaction<'_> {
     ///
     /// A substrate failure reading what the records were before.
     pub async fn home(&self) -> Result<Reach> {
-        let identity = self.store.node_identity()?;
+        let identity = self.store.node_identity().await?;
         let placement = self.placement().await?;
         let record = self.log_record(identity.id, &placement).await?;
         crate::catalog::home_of(&record)

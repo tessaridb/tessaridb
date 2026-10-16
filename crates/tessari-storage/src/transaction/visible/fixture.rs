@@ -38,7 +38,7 @@ impl Fixture {
     /// Two databases, each with a table holding `r = "old"`.
     pub(super) async fn new() -> Result<Self> {
         let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).await?;
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().await?;
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("ns").await?.id;
         let mut homes = Vec::new();
@@ -65,7 +65,7 @@ impl Fixture {
             namespace,
             homes: [first, second],
         };
-        let mut writing = fixture.store.begin()?;
+        let mut writing = fixture.store.begin().await?;
         for home in 0..2 {
             writing.put(fixture.address(home), b"old".to_vec());
         }

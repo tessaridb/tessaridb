@@ -105,7 +105,7 @@ impl Fixture {
     fn analysed(analyzer: Analyzer) -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(Arc::clone(&backend)).now().unwrap();
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("prod").now().unwrap();
         let database = catalog.create_database(namespace.id, "shop").now().unwrap();
@@ -180,7 +180,7 @@ impl Fixture {
     }
 
     fn write(&self, n: u64, body: &str) {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         let mut fields = BTreeMap::new();
         fields.insert("body".to_owned(), Value::from(body));
         transaction.put(
@@ -191,7 +191,7 @@ impl Fixture {
     }
 
     fn delete(&self, n: u64) {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         transaction.delete(self.at(n));
         transaction.commit().now().unwrap();
     }
@@ -434,7 +434,7 @@ fn a_term_held_by_several_records_counts_them_and_not_its_occurrences() {
     fixture.write(1, "lock lock lock");
     fixture.write(2, "lock contention");
     fixture.write(3, "lock index");
-    let transaction = fixture.store.begin().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
     assert_eq!(
         transaction
             .document_frequency(&fixture.index, "lock")
@@ -472,7 +472,7 @@ fn a_rebuild_makes_the_dictionary_what_the_rows_imply_rather_than_adding_to_it()
     // rebuild that added to the stored figure would double every count — and
     // nothing would raise, because a document frequency has no reader who would
     // notice it drifting.
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     Catalog::new(&mut transaction).rebuild_index(&fixture.index);
     transaction.commit().now().unwrap();
 
@@ -501,7 +501,7 @@ fn an_index_with_no_dictionary_still_answers_the_frequency_it_always_did() {
     fixture.backend.apply(batch).unwrap();
     assert!(fixture.dictionary().is_empty());
 
-    let transaction = fixture.store.begin().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
     assert_eq!(
         transaction
             .document_frequency(&fixture.index, "lock")
@@ -529,7 +529,7 @@ fn dropping_the_index_leaves_no_dictionary_behind() {
     // reconcile, in a keyspace nothing scans on its own.
     let terms: BTreeSet<Vec<u8>> = fixture.keys(KeyKind::SearchTerm).into_iter().collect();
     assert!(!terms.is_empty());
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .drop_index(fixture.index.id)
         .now()
@@ -622,7 +622,7 @@ fn a_rebuild_recomputes_a_bound_that_maintenance_left_loose() {
         "the loose bound this test exists to repair was not there to begin with"
     );
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     Catalog::new(&mut transaction).rebuild_index(&fixture.index);
     transaction.commit().now().unwrap();
 

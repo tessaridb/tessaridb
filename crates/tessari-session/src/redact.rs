@@ -87,7 +87,7 @@ impl Session<'_> {
     ///
     /// Returns an error when the catalog cannot be read.
     pub async fn visible(&self, store: &tessari_storage::Store, table: TableId) -> Result<Visible> {
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().await?;
         let held = self.visible_in(&mut transaction, table).await?;
         transaction.rollback();
         Ok(held)

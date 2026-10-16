@@ -1882,6 +1882,7 @@ name = "tessari-storage"
 version = "0.35.3"
 dependencies = [
  "dashmap",
+ "futures-util",
  "getrandom 0.4.3",
  "scc",
  "tessari-constants",

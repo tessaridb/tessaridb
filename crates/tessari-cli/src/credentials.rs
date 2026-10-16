@@ -206,7 +206,12 @@ impl Revoking {
     ///
     /// The store's, when the list cannot be read; the keys are left as they were.
     pub(crate) async fn refresh(&self) -> Result<(), String> {
-        let mut transaction = self.db.store().begin().map_err(|why| why.to_string())?;
+        let mut transaction = self
+            .db
+            .store()
+            .begin()
+            .await
+            .map_err(|why| why.to_string())?;
         let catalog = tessari_storage::Catalog::new(&mut transaction);
         let read = match catalog.revoked_certificates().await {
             Ok(listed) => catalog

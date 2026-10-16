@@ -10,7 +10,7 @@ fn a_door_places_a_candidate_only_where_its_own_row_leads() {
     let db = granting(" LEADS NAMESPACE prod");
     use super::super::Origin;
     let serving = Serving::declared(db.store());
-    let mut transaction = db.store().begin().expect("a transaction");
+    let mut transaction = db.store().begin().now().expect("a transaction");
     let declared = Catalog::new(&mut transaction)
         .replicas()
         .now()

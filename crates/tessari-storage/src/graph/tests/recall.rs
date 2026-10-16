@@ -1,4 +1,5 @@
 use super::*;
+use crate::now::Now;
 
 #[test]
 fn the_walk_finds_nearly_all_of_the_true_nearest() {
@@ -17,6 +18,7 @@ fn the_walk_finds_nearly_all_of_the_true_nearest() {
     for n in 0..RECORDS {
         graph
             .insert(&RecordId::Int(n), clustered(n, DIMENSIONS))
+            .now()
             .unwrap();
     }
 
@@ -38,7 +40,7 @@ fn the_walk_finds_nearly_all_of_the_true_nearest() {
             .take(10)
             .map(|(_, n)| RecordId::Int(*n))
             .collect();
-        let found = graph.nearest(&query, 10, None).unwrap();
+        let found = graph.nearest(&query, 10, None).now().unwrap();
         hit = hit.saturating_add(found.iter().filter(|id| truth.contains(id)).count());
         asked = asked.saturating_add(truth.len());
     }
@@ -57,6 +59,7 @@ fn a_quantized_graph_rescored_on_full_vectors_finds_nearly_all_of_the_true_neare
     for n in 0..RECORDS {
         graph
             .insert(&RecordId::Int(n), clustered(n, DIMENSIONS))
+            .now()
             .unwrap();
     }
     let exact_distance = |n: i64, query: &[f64]| {
@@ -76,6 +79,7 @@ fn a_quantized_graph_rescored_on_full_vectors_finds_nearly_all_of_the_true_neare
             .collect();
         let mut rescored: Vec<(f64, RecordId)> = graph
             .nearest(&query, 40, None)
+            .now()
             .unwrap()
             .into_iter()
             .map(|id| {

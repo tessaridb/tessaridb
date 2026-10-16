@@ -8,7 +8,6 @@ use tessari_encoding::{
     IndexAddress, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchSurfaceKey,
     SearchTermKey, StoreKey, StoreValue, TermStatistics,
 };
-use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::WriteBatch;
 
 /// How one log record moves an index's collection statistics.

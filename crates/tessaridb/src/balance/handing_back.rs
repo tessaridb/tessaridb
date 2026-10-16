@@ -28,7 +28,7 @@ impl Db {
         if !store.leads(Reach::Store).await? {
             return Ok(Vec::new());
         }
-        let mut reading = store.begin()?;
+        let mut reading = store.begin().await?;
         let rows = Catalog::new(&mut reading).replicas().await?;
         reading.rollback();
         let mut folded = Vec::new();
@@ -42,7 +42,7 @@ impl Db {
             if !placed_again && !store.leads(range).await? {
                 continue;
             }
-            let mut writing = store.begin()?;
+            let mut writing = store.begin().await?;
             if Catalog::new(&mut writing).finish_release(&row.name).await? {
                 writing.commit().await?;
                 folded.push(row.name.clone());

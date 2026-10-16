@@ -27,7 +27,6 @@ use tessari_encoding::{
     CausalStamp, LogRecord, Mutation, NODE_ID_LEN, RecordValue, StampedValue, StoreKey, StoreValue,
     TopicBytesKey, TopicOffsetKey,
 };
-use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{RecordId, Sequence};
 

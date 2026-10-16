@@ -50,7 +50,7 @@ fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
 fn per_shard(store: &Store, session: &mut Session<'_>) -> BTreeMap<u32, usize> {
     let named = ids(session, "SELECT * FROM orders;");
     assert_eq!(named.len(), RECORDS);
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
     let database = catalog

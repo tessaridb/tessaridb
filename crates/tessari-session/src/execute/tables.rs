@@ -73,7 +73,8 @@ impl Session<'_> {
             self.refuse_a_format_the_store_does_not_hold(
                 "a containment index",
                 FormatVersion::CONTAINMENT_INDEX,
-            )?;
+            )
+            .await?;
         }
         let fields = fields.iter().map(|field| field.path.clone()).collect();
         Catalog::new(transaction)

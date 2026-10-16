@@ -262,8 +262,8 @@ impl Session<'_> {
     /// Whether every peer that may collect the log is known to read a begun
     /// and a concluded record — heard greeting at [`MERGED_FROM`] or later.
     async fn merges_records(&self, store: &Store) -> Result<bool> {
-        let me = store.node_identity()?.id;
-        let mut reading = store.begin()?;
+        let me = store.node_identity().await?.id;
+        let mut reading = store.begin().await?;
         let rows = Catalog::new(&mut reading).replicas().await?;
         reading.rollback();
         Ok(every_peer_reads_merged(&rows, me, |endpoint| {
@@ -476,7 +476,7 @@ fn records_of(part: &AcrossPart) -> Vec<RecordAddress> {
 ///
 /// Whatever the store returns reading the failover policy.
 pub async fn across_lapse_millis(store: &Store) -> Result<u64> {
-    let mut reading = store.begin()?;
+    let mut reading = store.begin().await?;
     let round = Catalog::new(&mut reading)
         .failover()
         .await?

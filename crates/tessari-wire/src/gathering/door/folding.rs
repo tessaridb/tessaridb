@@ -84,7 +84,7 @@ async fn a_shards_search_figures_are_counted_page_by_page_and_no_record_travels(
         .await
         .unwrap();
     let (table, index) = {
-        let mut transaction = db.store().begin().unwrap();
+        let mut transaction = db.store().begin().await.unwrap();
         let table = Catalog::new(&mut transaction)
             .table_id(NamespaceId::new(1), DatabaseId::new(1), "docs")
             .await
@@ -178,7 +178,7 @@ async fn a_bounded_or_narrowed_gather_moves_fewer_bytes() {
     }
     db.session().run(&script).await.unwrap();
     let table = {
-        let mut transaction = db.store().begin().unwrap();
+        let mut transaction = db.store().begin().await.unwrap();
         Catalog::new(&mut transaction)
             .table_id(NamespaceId::new(1), DatabaseId::new(1), "ledger")
             .await

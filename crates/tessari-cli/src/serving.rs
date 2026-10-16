@@ -75,9 +75,8 @@ pub(crate) fn serve(
     if let Some(joining) = &cluster
         && joining.seeds.is_empty()
     {
-        let me = db
-            .store()
-            .node_identity()
+        let me = runtime
+            .block_on(db.store().node_identity())
             .map_err(|why| format!("this node cannot say who it is: {why}"))?
             .id;
         let declared = runtime
@@ -139,7 +138,7 @@ pub(crate) fn serve(
     // alike, which is why it is set on the store's handle and not on a surface.
     // A node with no peers has nobody to ask and refuses as it always has.
     if let Some(surface) = &peers {
-        join_the_cluster(std::sync::Arc::clone(&db), surface)?;
+        runtime.block_on(join_the_cluster(std::sync::Arc::clone(&db), surface))?;
     }
     if let Some(folder) = &serving.backups {
         db.back_up_into(std::sync::Arc::from(folder.as_path()));

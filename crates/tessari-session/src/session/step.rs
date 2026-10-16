@@ -58,7 +58,7 @@ impl<'a> Session<'a> {
                 if open.is_some() {
                     return Err(Error::NestedTransaction { span });
                 }
-                *open = Some((store.begin()?, span));
+                *open = Some((store.begin().await?, span));
                 self.acknowledge_open = None;
                 self.across_open = false;
                 Ok(Outcome::Done)
@@ -153,7 +153,7 @@ impl<'a> Session<'a> {
                     let retried = crate::kv::retried_on_conflict(other);
                     let started = std::time::Instant::now();
                     loop {
-                        let mut transaction = store.begin()?;
+                        let mut transaction = store.begin().await?;
                         let outcome = self.execute(&mut transaction, other, span).await?;
                         if statement.across
                             && let Some(parts) = Self::across_parts(&transaction).await?
@@ -197,7 +197,7 @@ impl<'a> Session<'a> {
     ) -> Result<()> {
         let started = std::time::Instant::now();
         loop {
-            let mut transaction = store.begin()?;
+            let mut transaction = store.begin().await?;
             self.backfill_rollup(&mut transaction, source, name).await?;
             match settle(transaction).await {
                 Ok(()) => return Ok(()),

@@ -7,7 +7,6 @@
 mod records;
 mod spans;
 use std::ops::{Bound, ControlFlow};
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{RecordKey, RecordValue};

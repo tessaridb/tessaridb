@@ -77,7 +77,7 @@ pub(crate) async fn stand_for_leadership(
         // catalog declares costs a transaction and a scan, and a node the
         // operator never made writable would otherwise pay for that scan
         // once a tick, for the life of the process, to reach a `return`.
-        let me = match store.node_identity() {
+        let me = match store.node_identity().await {
             Ok(identity) => identity,
             Err(why) => {
                 tracing::warn!(error = %why, "this node cannot say who it is");
@@ -417,7 +417,10 @@ pub(crate) fn stand_for_a_placed_range(
         // Above every leadership the range's logs already hold (DB-15): a
         // range placed after the store line wrote to it keeps those records,
         // and a follower reads a line numbered below them as deposed.
-        let written = match db.store().newest_leadership_in(range) {
+        let written = match candidate
+            .runtime
+            .block_on(db.store().newest_leadership_in(range))
+        {
             Ok(written) => written,
             Err(why) => {
                 tracing::warn!(range = ?range, error = %why, "this node cannot say which leadership the range's logs reach");

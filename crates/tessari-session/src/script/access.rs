@@ -106,7 +106,7 @@ pub(super) async fn users(
     reader: &Session<'_>,
     placed: &[(TableId, String, String, String)],
 ) -> Result<String> {
-    let mut view = reader.store.begin()?;
+    let mut view = reader.store.begin().await?;
     let catalog = Catalog::new(&mut view);
     let users = catalog.users().await?;
     if users.is_empty() {

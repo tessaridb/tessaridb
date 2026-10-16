@@ -190,10 +190,10 @@ pub async fn read_state<R: Read>(
     store: &Store,
     mut open: impl FnMut() -> std::io::Result<R>,
 ) -> Result<StateTaken> {
-    if !store.holds_nothing()? {
+    if !store.holds_nothing().await? {
         return Err(Error::WrongBase {
             needs: 0,
-            found: store.committed_version()?.get(),
+            found: store.committed_version().await?.get(),
         });
     }
     verify_state(&mut open()?)?;

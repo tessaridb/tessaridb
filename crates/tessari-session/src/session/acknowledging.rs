@@ -80,7 +80,7 @@ impl Session<'_> {
         asked: Option<Acknowledge>,
         span: Span,
     ) -> Result<Option<Waiting>> {
-        let me = self.store.node_identity()?.id;
+        let me = self.store.node_identity().await?.id;
         let voting: Vec<_> = Catalog::new(transaction)
             .replicas()
             .await?

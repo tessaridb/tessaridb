@@ -18,12 +18,12 @@ impl Session<'_> {
     /// Asked where the statement runs, and never where a replicated record is
     /// applied: the leader decides whether the newer value is written at all,
     /// and a replica applying it has already been told it was.
-    pub(super) fn refuse_a_format_the_store_does_not_hold(
+    pub(super) async fn refuse_a_format_the_store_does_not_hold(
         &self,
         what: &'static str,
         needs: FormatVersion,
     ) -> Result<()> {
-        let holds = self.store.held_format()?;
+        let holds = self.store.held_format().await?;
         if holds < needs {
             return Err(Error::FormatNotFinalized {
                 what,
@@ -47,7 +47,7 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
     ) -> Result<Outcome> {
         let target = FormatVersion::CURRENT;
-        let holds = self.store.held_format()?;
+        let holds = self.store.held_format().await?;
         if holds < target {
             self.refuse_a_peer_that_cannot_read(transaction, target)
                 .await?;
@@ -66,11 +66,11 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         target: FormatVersion,
     ) -> Result<()> {
-        let me = self.store.node_identity()?.id;
+        let me = self.store.node_identity().await?.id;
         let needs = target.first_written_by().ok_or(Error::FormatNotFinalized {
             what: "a finalize",
             needs: target.get(),
-            holds: self.store.held_format()?.get(),
+            holds: self.store.held_format().await?.get(),
         })?;
         for replica in Catalog::new(transaction).replicas().await? {
             if replica.node == Some(me) {

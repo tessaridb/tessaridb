@@ -35,7 +35,7 @@ fn store(script: &str) -> Store {
 /// committed and not yet resolved.
 fn committed_not_resolved(store: &Store, table: &str, id: RecordId, value: Value) {
     let mut session = Session::new(store);
-    let mut reading = store.begin().unwrap();
+    let mut reading = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut reading);
     let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
     let database = catalog
@@ -54,7 +54,10 @@ fn committed_not_resolved(store: &Store, table: &str, id: RecordId, value: Value
         .answer_across(&AcrossAsk::Prepare {
             transaction: TRANSACTION,
             coordinator: range,
-            seen: store.committed_tail(store.own_log(range).unwrap()).unwrap(),
+            seen: store
+                .committed_tail(store.own_log(range).now().unwrap())
+                .now()
+                .unwrap(),
             writes: vec![Mutation {
                 namespace,
                 database,
@@ -148,7 +151,7 @@ fn a_traversal_over_edges_part_way_here_is_refused_as_retriable() {
          CREATE users:1 = { handle: 'ada' }; CREATE users:2 = { handle: 'grace' };",
     );
     let users = {
-        let mut reading = store.begin().unwrap();
+        let mut reading = store.begin().now().unwrap();
         let catalog = Catalog::new(&mut reading);
         let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
         let database = catalog

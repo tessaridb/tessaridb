@@ -92,14 +92,8 @@ pub(crate) fn host(
             // Settled once: an identity is fixed when the store is
             // initialised, and a node that cannot say who it is cannot
             // admit anybody either.
-            let asking = std::sync::Arc::clone(&db);
-            let me = match tokio::task::spawn_blocking(move || asking.store().node_identity()).await
-            {
-                Ok(Ok(identity)) => identity.id,
-                Ok(Err(why)) => {
-                    tracing::warn!(error = %why, "the peer door cannot say who this node is");
-                    return;
-                }
+            let me = match db.store().node_identity().await {
+                Ok(identity) => identity.id,
                 Err(why) => {
                     tracing::warn!(error = %why, "the peer door cannot say who this node is");
                     return;
@@ -229,7 +223,7 @@ pub(crate) fn host(
 pub(crate) async fn declared(
     store: &tessari_storage::Store,
 ) -> tessari_storage::Result<Vec<tessari_storage::ReplicaDefinition>> {
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().await?;
     let read = tessari_storage::Catalog::new(&mut transaction)
         .replicas()
         .await;
@@ -249,7 +243,7 @@ pub(crate) async fn declared_with_policy(
     Vec<tessari_storage::ReplicaDefinition>,
     Option<tessari_storage::FailoverDefinition>,
 )> {
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().await?;
     let catalog = tessari_storage::Catalog::new(&mut transaction);
     let read = match catalog.replicas().await {
         Ok(declared) => catalog.failover().await.map(|policy| (declared, policy)),

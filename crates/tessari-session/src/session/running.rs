@@ -84,7 +84,7 @@ impl<'a> Session<'a> {
         // pure, so asking it first keeps that cost on the writes it belongs to
         // (ADR-0018's `Alone`, and G008 kill criterion 3).
         if matches!(Effect::of_script(&script), Effect::Write) {
-            admits(store.node_identity()?.roles, &script)?;
+            admits(store.node_identity().await?.roles, &script)?;
         }
 
         let mut open: Option<(Transaction<'a>, tessari_ql::Span)> = None;

@@ -10,10 +10,11 @@ impl Transaction<'_> {
             // being one when the version was separated from it (Q-614).
             let log = self
                 .store
-                .own_log(crate::store::UNPARTITIONED_REPORT_HOME)?;
+                .own_log(crate::store::UNPARTITIONED_REPORT_HOME)
+                .await?;
             return Ok(Committed {
                 log,
-                sequence: self.store.committed_tail(log)?,
+                sequence: self.store.committed_tail(log).await?,
             });
         }
         // First, and after the empty check rather than before it. First because
@@ -41,7 +42,7 @@ impl Transaction<'_> {
         // what this catches (G025 S6.1). *May this node write* and *may this
         // node write HERE* stopped being one question the moment two nodes could
         // lead two namespaces.
-        let identity = self.store.node_identity()?;
+        let identity = self.store.node_identity().await?;
         // Counted across both loops: a restart for a moved map spends the same
         // budget a lost race does, so a map that keeps moving cannot hold a
         // commit for ever.
@@ -109,7 +110,7 @@ impl Transaction<'_> {
             let log = if epoch > Epoch::ZERO && !self.admits_two_writers_here(home).await? {
                 tessari_encoding::LogId::line(home)
             } else {
-                self.store.own_log(home)?
+                self.store.own_log(home).await?
             };
 
             loop {
@@ -125,7 +126,7 @@ impl Transaction<'_> {
                 // writer in this process can move what this attempt builds on
                 // (`crate::gate`). Dropped at the end of the attempt, the wait
                 // before a retry included.
-                let turn = self.store.write_gate().hold();
+                let turn = self.store.write_gate().hold().await;
                 // ADR-0095 D8: the map this attempt was admitted and stamped
                 // under is asked for again under the gate, because the statement
                 // that moves a map teaches the registry under this same gate. A
@@ -142,7 +143,7 @@ impl Transaction<'_> {
                     continue 'placed;
                 }
                 self.refuse_if_fenced_since(store_line, &placed, &ranges)?;
-                let tail = self.store.committed_tail(log)?;
+                let tail = self.store.committed_tail(log).await?;
                 // A prepare's half of the conflict check that its own node
                 // could not make (ADR-0112 D3a), under the same turn.
                 self.written_since_seen(log).await?;
@@ -222,8 +223,13 @@ impl Transaction<'_> {
                 // is where this store's own history puts these records. Read inside
                 // the loop for the same reason the tail is — a lost attempt built on
                 // a state that has since moved (Q-614).
-                let commit_version =
-                    Sequence::new(self.store.committed_version()?.get().saturating_add(1));
+                let commit_version = Sequence::new(
+                    self.store
+                        .committed_version()
+                        .await?
+                        .get()
+                        .saturating_add(1),
+                );
                 // And the version is the writer's ORDER, written into the record:
                 // this node files its commits in one log per home, and a follower
                 // applying those logs needs to know where each commit stood among
@@ -318,12 +324,13 @@ impl Transaction<'_> {
                 let landed = if backend.groups_writes() {
                     let ticket = self.store.write_gate().stage(batch);
                     drop(turn);
-                    self.store.write_gate().land(ticket, backend)
+                    self.store.write_gate().land(ticket, backend).await
                 } else {
-                    let applied =
-                        self.store
-                            .write_gate()
-                            .apply(batch, backend, crate::gate::Landing::Synced);
+                    let applied = self
+                        .store
+                        .write_gate()
+                        .apply(batch, backend, crate::gate::Landing::Synced)
+                        .await;
                     drop(turn);
                     applied
                 };

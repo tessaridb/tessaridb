@@ -31,7 +31,7 @@ fn band(row: &Value) -> Option<&Value> {
 /// How many times the logs say a view row was written or removed — read from
 /// the store, because the language answers history for tables, not views.
 fn writes_of(store: &Store, view: &str, id: &RecordId) -> usize {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
     let database = catalog
@@ -53,6 +53,7 @@ fn writes_of(store: &Store, view: &str, id: &RecordId) -> usize {
     };
     store
         .logs()
+        .now()
         .unwrap()
         .into_iter()
         .map(|log| {
@@ -205,7 +206,7 @@ fn dropping_a_grouped_view_takes_its_membership_map() {
         .run_now(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
         .unwrap();
     let view = {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let catalog = Catalog::new(&mut transaction);
         let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
         let database = catalog
@@ -230,7 +231,7 @@ fn dropping_a_grouped_view_takes_its_membership_map() {
         view
     };
     session.run_now("DROP VIEW bands;").unwrap();
-    let transaction = store.begin().unwrap();
+    let transaction = store.begin().now().unwrap();
     for n in 0..40 {
         assert_eq!(
             transaction
@@ -252,7 +253,7 @@ fn a_grouped_view_kept_by_position_before_is_rebuilt_by_group_once() {
     // Put the view back the way a build before group keys left it: rows under
     // their positions, no membership map, a state that does not say by group.
     {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let catalog = Catalog::new(&mut transaction);
         let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
         let database = catalog

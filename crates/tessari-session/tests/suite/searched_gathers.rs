@@ -152,7 +152,7 @@ fn a_partial_holder_offers_no_suggestion_its_own_dictionary_cannot_stand_behind(
 fn counting_every_record_agrees_with_the_index_it_stands_in_for() {
     let pair = searched();
     let leader = pair.leader();
-    let mut transaction = leader.begin().unwrap();
+    let mut transaction = leader.begin().now().unwrap();
     let table = tessari_storage::Catalog::new(&mut transaction)
         .table_id(
             tessari_types::NamespaceId::new(1),

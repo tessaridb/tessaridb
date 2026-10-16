@@ -5,7 +5,6 @@ use tessari_encoding::{
     IntentOfKey, RecordKey, StampedValue, StoreKey, StoreValue, TransactionRecord,
     TransactionRecordKey,
 };
-use tessari_kv::AsyncKvBackend as _;
 use tessari_types::Sequence;
 
 use crate::error::Result;

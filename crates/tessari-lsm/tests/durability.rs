@@ -110,7 +110,7 @@ fn commit_until_killed() {
     let store = open_store(std::path::Path::new(&path));
 
     for n in 1..=CHILD_GIVES_UP_AFTER {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         transaction.put(address(n), payload(n));
         let committed = transaction.commit().now().unwrap();
         // Printed only after the commit returned, so every line the parent reads
@@ -167,7 +167,7 @@ fn an_acknowledged_commit_survives_the_writer_being_killed() {
     );
 
     let reopened = open_store(&path);
-    let transaction = reopened.begin().unwrap();
+    let transaction = reopened.begin().now().unwrap();
     for (n, sequence) in &acknowledged {
         assert_eq!(
             transaction.get(&address(*n)).now().unwrap(),
@@ -182,7 +182,8 @@ fn an_acknowledged_commit_survives_the_writer_being_killed() {
     let (_, last) = acknowledged.last().unwrap();
     assert!(
         reopened
-            .committed_tail(reopened.own_log(HOME).unwrap())
+            .committed_tail(reopened.own_log(HOME).now().unwrap())
+            .now()
             .unwrap()
             >= *last,
         "the committed position was recovered behind the records it accounts for"
@@ -261,7 +262,7 @@ fn commit_large_until_killed() {
     let store = open_small_store(std::path::Path::new(&path), encrypted);
 
     for n in 1..=CHILD_GIVES_UP_AFTER {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         transaction.put(address(n), large_payload(n));
         let committed = transaction.commit().now().unwrap();
         println!("committed {n} {committed}");
@@ -355,7 +356,7 @@ fn killed_after_a_flush(encrypted: bool) {
     }
 
     let reopened = open_small_store(&path, encrypted);
-    let transaction = reopened.begin().unwrap();
+    let transaction = reopened.begin().now().unwrap();
     for (n, sequence) in &acknowledged {
         assert_eq!(
             transaction.get(&address(*n)).now().unwrap(),
@@ -367,7 +368,8 @@ fn killed_after_a_flush(encrypted: bool) {
     let (_, last) = acknowledged.last().unwrap();
     assert!(
         reopened
-            .committed_tail(reopened.own_log(HOME).unwrap())
+            .committed_tail(reopened.own_log(HOME).now().unwrap())
+            .now()
             .unwrap()
             >= *last,
         "the committed position was recovered behind the records it accounts for"
@@ -398,7 +400,7 @@ fn commit_from_several_writers_until_killed() {
             scope.spawn(move || {
                 for i in 1..=CHILD_GIVES_UP_AFTER {
                     let n = writer * CHILD_GIVES_UP_AFTER + i;
-                    let mut transaction = store.begin().unwrap();
+                    let mut transaction = store.begin().now().unwrap();
                     transaction.put(address(n), payload(n));
                     let committed = transaction.commit().now().unwrap();
                     use std::io::Write;
@@ -458,7 +460,7 @@ fn an_acknowledged_commit_survives_a_kill_among_concurrent_writers() {
     );
 
     let reopened = open_store(&path);
-    let transaction = reopened.begin().unwrap();
+    let transaction = reopened.begin().now().unwrap();
     for (n, sequence) in &acknowledged {
         assert_eq!(
             transaction.get(&address(*n)).now().unwrap(),
@@ -474,7 +476,8 @@ fn an_acknowledged_commit_survives_a_kill_among_concurrent_writers() {
         .unwrap();
     assert!(
         reopened
-            .committed_tail(reopened.own_log(HOME).unwrap())
+            .committed_tail(reopened.own_log(HOME).now().unwrap())
+            .now()
             .unwrap()
             >= highest,
         "the committed position was recovered behind the records it accounts for"
@@ -531,7 +534,7 @@ fn commit_transactions_until_killed() {
             scope.spawn(move || {
                 for i in 1..PER_WRITER {
                     let n = identity(offset, writer, i);
-                    let mut transaction = store.begin().unwrap();
+                    let mut transaction = store.begin().now().unwrap();
                     for of in 0..PARTS {
                         transaction.put(part(n, of), payload(n));
                     }
@@ -624,7 +627,7 @@ fn a_hundred_kills_lose_nothing_acknowledged_and_tear_no_transaction() {
         }
 
         let reopened = open_store(&path);
-        let transaction = reopened.begin().unwrap();
+        let transaction = reopened.begin().now().unwrap();
         for n in &acknowledged {
             for of in 0..PARTS {
                 assert_eq!(

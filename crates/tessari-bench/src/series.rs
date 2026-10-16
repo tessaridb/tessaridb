@@ -167,7 +167,7 @@ fn remaining(session: &mut tessaridb::Session, table: &str) -> Failable<Vec<Stri
 fn expire(db: &Db, table: &str) -> Failable<usize> {
     let store = db.store();
     let (namespace, database, id) = {
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().now()?;
         let catalog = Catalog::new(&mut transaction);
         let namespace = catalog
             .namespace_id("bench")

@@ -10,7 +10,6 @@
 use tessari_encoding::{
     IndexAddress, IndexTarget, KeyKind, SecondaryIndexKey, StoreKey, StoreValue,
 };
-use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 
 use super::address::after;

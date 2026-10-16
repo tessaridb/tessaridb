@@ -258,13 +258,13 @@ impl Graph {
     /// # Errors
     ///
     /// Returns an error when a stored node cannot be read.
-    pub(crate) fn is_empty(&self) -> Result<bool> {
-        Ok(self.entry()?.is_none())
+    pub(crate) async fn is_empty(&self) -> Result<bool> {
+        Ok(self.entry().await?.is_none())
     }
 
     /// How far this record is from the query, or infinitely far if it is gone.
-    fn at(&self, id: RecordId, query: &[f64]) -> Result<f64> {
-        Ok(self.nodes.get(&id)?.map_or(f64::INFINITY, |node| {
+    async fn at(&self, id: RecordId, query: &[f64]) -> Result<f64> {
+        Ok(self.nodes.get(&id).await?.map_or(f64::INFINITY, |node| {
             separation_from(self.distance, &node.vector, query)
         }))
     }
@@ -274,8 +274,8 @@ impl Graph {
     /// The smallest record id, so the entry point is a property of the data
     /// rather than of insertion order — which means it needs no key of its own
     /// and cannot drift out of step with the nodes.
-    fn entry(&self) -> Result<Option<RecordId>> {
-        self.nodes.first()
+    async fn entry(&self) -> Result<Option<RecordId>> {
+        self.nodes.first().await
     }
 
     /// The form a vector placed in this graph is kept in.
@@ -304,7 +304,8 @@ impl Graph {
     /// dangling edges are gone and the recall came back.
     #[cfg(test)]
     pub(crate) fn dangling(&self) -> usize {
-        if self.nodes.load_all().is_err() {
+        use crate::now::Now as _;
+        if self.nodes.load_all().now().is_err() {
             return usize::MAX;
         }
         let present = self.nodes.present();
@@ -366,12 +367,12 @@ pub(crate) fn write(
 /// index's keyspace first, so a graph with nothing to measure leaves **no** key
 /// rather than a stale one — and absence is what `INFO FOR VECTOR` reports as
 /// never measured.
-pub(crate) fn measure(
+pub(crate) async fn measure(
     batch: WriteBatch,
     address: &IndexAddress,
     graph: &Graph,
 ) -> Result<WriteBatch> {
-    let Some(measured) = graph.recall()? else {
+    let Some(measured) = graph.recall().await? else {
         return Ok(batch);
     };
     Ok(batch.put(

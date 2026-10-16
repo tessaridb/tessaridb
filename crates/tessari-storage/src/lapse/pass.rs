@@ -18,7 +18,6 @@
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{ExpiryKey, StoreKey};
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
@@ -62,7 +61,7 @@ impl Store {
     /// led elsewhere.
     pub async fn remove_expired(&self) -> Result<Lapsed> {
         let mut lapsed = Lapsed::default();
-        let now = self.begin()?.clock();
+        let now = self.begin().await?.clock();
         let whole = ExpiryKey::passed_by(now);
         let mut from: Option<Vec<u8>> = None;
         loop {
@@ -135,7 +134,7 @@ impl Store {
     /// Delete the records these entries name whose version still carries the
     /// instant, in one commit.
     async fn remove_these(&self, entries: &[ExpiryKey]) -> Result<Lapsed> {
-        let mut transaction = self.begin()?;
+        let mut transaction = self.begin().await?;
         let mut done = Lapsed::default();
         for entry in entries {
             let address = RecordAddress::new(

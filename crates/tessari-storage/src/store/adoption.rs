@@ -35,9 +35,9 @@ impl Store {
     /// Returns the substrate's failure, and a decoding failure for a log key
     /// that does not hold a position.
     pub(crate) async fn adopt_own_history(&self) -> Result<usize> {
-        let own = self.writer()?;
+        let own = self.writer().await?;
         let mut moved = 0_usize;
-        for log in self.logs()? {
+        for log in self.logs().await? {
             if log.writer == own && self.adopt_into_line(log).await? {
                 moved = moved.saturating_add(1);
             }
@@ -61,10 +61,10 @@ impl Store {
         if log == line {
             return Ok(false);
         }
-        let _turn = self.writing.hold();
-        self.writing.land_all(self.backend.as_ref());
-        let tail = self.committed_tail(log)?;
-        if tail == Sequence::ZERO || self.committed_tail(line)? != Sequence::ZERO {
+        let _turn = self.writing.hold().await;
+        self.writing.land_all(self.backend.as_ref()).await;
+        let tail = self.committed_tail(log).await?;
+        if tail == Sequence::ZERO || self.committed_tail(line).await? != Sequence::ZERO {
             return Ok(false);
         }
         // Last, because it is the one question that costs a catalog read: a
@@ -72,12 +72,14 @@ impl Store {
         if self.admits_two_writers(log.home).await? {
             return Ok(false);
         }
-        self.backend.apply(self.renamed(log, line, tail)?)?;
+        self.backend
+            .apply(self.renamed(log, line, tail).await?)
+            .await?;
         Ok(true)
     }
 
     /// The batch that files every key of `log` under `line` instead.
-    fn renamed(&self, log: LogId, line: LogId, tail: Sequence) -> Result<WriteBatch> {
+    async fn renamed(&self, log: LogId, line: LogId, tail: Sequence) -> Result<WriteBatch> {
         let mut batch = WriteBatch::new();
         let entries = ScanRequest {
             keyspace: LogKey::keyspace(),
@@ -85,7 +87,7 @@ impl Store {
             direction: ScanDirection::Forward,
             limit: None,
         };
-        for (key, value) in self.backend.scan(&entries)? {
+        for (key, value) in self.backend.scan(&entries).await? {
             let at = LogKey::decode(key.as_slice())?.sequence;
             batch = batch.delete(LogKey::keyspace(), key).put(
                 LogKey::keyspace(),
@@ -107,7 +109,7 @@ impl Store {
         // there too (ADR-0079): leaving it behind would make a follower asking
         // below it read records that are gone as records that were never there.
         let start = LogStartKey::new(log).encode();
-        if let Some(begins) = self.backend.get(LogStartKey::keyspace(), &start)? {
+        if let Some(begins) = self.backend.get(LogStartKey::keyspace(), &start).await? {
             batch = batch.delete(LogStartKey::keyspace(), start).put(
                 LogStartKey::keyspace(),
                 LogStartKey::new(line).encode(),

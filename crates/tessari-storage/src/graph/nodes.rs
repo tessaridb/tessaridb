@@ -30,9 +30,10 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use tessari_kv::AsyncKvBackend;
 
 use tessari_encoding::{IndexAddress, StoreKey, StoreValue, VectorNode, VectorNodeKey};
-use tessari_kv::{KeyRange, KvBackend, ScanDirection, ScanRequest};
+use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::RecordId;
 
 use super::GROUND;
@@ -40,7 +41,7 @@ use crate::error::Result;
 
 /// Where the nodes this operation has not read yet are.
 struct Stored {
-    backend: Arc<dyn KvBackend>,
+    backend: Arc<dyn AsyncKvBackend>,
     address: IndexAddress,
 }
 
@@ -78,7 +79,7 @@ impl Nodes {
     }
 
     /// The nodes of an index, read as they are asked for.
-    pub(super) fn stored(backend: Arc<dyn KvBackend>, address: IndexAddress) -> Self {
+    pub(super) fn stored(backend: Arc<dyn AsyncKvBackend>, address: IndexAddress) -> Self {
         Self {
             held: RefCell::new(BTreeMap::new()),
             written: RefCell::new(BTreeSet::new()),
@@ -92,7 +93,7 @@ impl Nodes {
     /// # Errors
     ///
     /// Returns an error when the backend fails or the node cannot be decoded.
-    pub(super) fn get(&self, id: &RecordId) -> Result<Option<Arc<VectorNode>>> {
+    pub(super) async fn get(&self, id: &RecordId) -> Result<Option<Arc<VectorNode>>> {
         if let Some(held) = self.held.borrow().get(id) {
             return Ok(held.clone());
         }
@@ -102,7 +103,8 @@ impl Nodes {
         let key = VectorNodeKey::new(stored.address, GROUND, id.clone()).encode();
         let found = stored
             .backend
-            .get(VectorNodeKey::keyspace(), &key)?
+            .get(VectorNodeKey::keyspace(), &key)
+            .await?
             .map(|bytes| VectorNode::decode(bytes.as_slice()).map(Arc::new))
             .transpose()?;
         self.held.borrow_mut().insert(id.clone(), found.clone());
@@ -114,8 +116,8 @@ impl Nodes {
     /// # Errors
     ///
     /// As [`Self::get`].
-    pub(super) fn contains(&self, id: &RecordId) -> Result<bool> {
-        Ok(self.get(id)?.is_some())
+    pub(super) async fn contains(&self, id: &RecordId) -> Result<bool> {
+        Ok(self.get(id).await?.is_some())
     }
 
     /// Put `node` at `id`, the newest version for the rest of the operation.
@@ -134,7 +136,7 @@ impl Nodes {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub(super) fn first(&self) -> Result<Option<RecordId>> {
+    pub(super) async fn first(&self) -> Result<Option<RecordId>> {
         let added = self
             .held
             .borrow()
@@ -142,7 +144,7 @@ impl Nodes {
             .find(|(_, node)| node.is_some())
             .map(|(id, _)| id.clone());
         let stored = match self.stored.as_ref().filter(|_| !*self.complete.borrow()) {
-            Some(stored) => self.first_stored(stored)?,
+            Some(stored) => self.first_stored(stored).await?,
             None => None,
         };
         Ok(match (added, stored) {
@@ -152,7 +154,7 @@ impl Nodes {
     }
 
     /// The first stored node this operation has not removed.
-    fn first_stored(&self, stored: &Stored) -> Result<Option<RecordId>> {
+    async fn first_stored(&self, stored: &Stored) -> Result<Option<RecordId>> {
         // The removed ones are few — what one batch deleted — so asking for one
         // more than there are always reaches a survivor if one exists.
         let removed = self
@@ -167,7 +169,7 @@ impl Nodes {
             direction: ScanDirection::Forward,
             limit: Some(removed.saturating_add(1)),
         };
-        for (key, _) in stored.backend.scan(&request)? {
+        for (key, _) in stored.backend.scan(&request).await? {
             let id = VectorNodeKey::decode(key.as_slice())?.id;
             if !matches!(self.held.borrow().get(&id), Some(None)) {
                 return Ok(Some(id));
@@ -182,7 +184,7 @@ impl Nodes {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub(super) fn more_than(&self, count: usize) -> Result<bool> {
+    pub(super) async fn more_than(&self, count: usize) -> Result<bool> {
         if *self.complete.borrow() {
             let held = self
                 .held
@@ -202,7 +204,7 @@ impl Nodes {
             limit: Some(count.saturating_add(1)),
         };
         let mut scanned = BTreeSet::new();
-        for (key, _) in stored.backend.scan(&request)? {
+        for (key, _) in stored.backend.scan(&request).await? {
             scanned.insert(VectorNodeKey::decode(key.as_slice())?.id);
         }
         let held = self.held.borrow();
@@ -226,7 +228,7 @@ impl Nodes {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a node cannot be decoded.
-    pub(super) fn load_all(&self) -> Result<()> {
+    pub(super) async fn load_all(&self) -> Result<()> {
         if *self.complete.borrow() {
             return Ok(());
         }
@@ -237,7 +239,7 @@ impl Nodes {
                 direction: ScanDirection::Forward,
                 limit: None,
             };
-            for (key, value) in stored.backend.scan(&request)? {
+            for (key, value) in stored.backend.scan(&request).await? {
                 let id = VectorNodeKey::decode(key.as_slice())?.id;
                 if self.held.borrow().contains_key(&id) {
                     continue;

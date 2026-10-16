@@ -15,7 +15,6 @@ use tessari_encoding::{
     FormatVersion, FormatVersionKey, IndexAddress, IndexValues, KeyKind, LogRecord, PostingKey,
     RecordValue, SearchSuffixKey, SearchSurfaceKey, StoreKey, StoreValue, decode_payload,
 };
-use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::RecordId;
 
@@ -92,13 +91,13 @@ pub(crate) async fn build(
             let Some(held) = projected_vector(definition, &decode_payload(payload)?) else {
                 continue;
             };
-            written.extend(graph.insert(id, held)?);
+            written.extend(graph.insert(id, held).await?);
         }
         // Measured here and nowhere else: this is the one place the whole graph
         // and every stored vector are in hand at once, and it is reached by
         // applying a log record, so every replica computes the same figure.
         let batch = graph::write(batch, &address, &written);
-        return graph::measure(batch, &address, &graph);
+        return graph::measure(batch, &address, &graph).await;
     }
 
     if definition.spatial {

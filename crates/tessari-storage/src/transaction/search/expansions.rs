@@ -9,7 +9,6 @@ use tessari_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, PostingKey, SearchSuffixKey, SearchSurfaceKey,
     SearchTermKey, SecondaryIndexKey, StoreKey, StoreValue, decode_payload,
 };
-use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{RecordId, Value, within_edits};
 

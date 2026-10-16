@@ -153,7 +153,7 @@ pub async fn reducing(
         ));
     }
     let session = Session::new(store);
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().await?;
     let noticed = Noticed::default();
     let mut groups: BTreeMap<Vec<Value>, (RecordId, Vec<Accumulator>)> = BTreeMap::new();
     // Every doubt answers `None` rather than an error: the asker then gathers

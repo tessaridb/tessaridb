@@ -29,9 +29,9 @@ impl Store {
     ///
     /// Returns the substrate's failure, and a decoding failure when a key in
     /// that keyspace is not an applied position.
-    pub fn logs(&self) -> Result<Vec<LogId>> {
+    pub async fn logs(&self) -> Result<Vec<LogId>> {
         let prefix = vec![KeyKind::AppliedPosition.tag()];
-        self.logs_under(&prefix)
+        self.logs_under(&prefix).await
     }
 
     /// Every log of one home, in key order.
@@ -39,12 +39,13 @@ impl Store {
     /// # Errors
     ///
     /// The same as [`Self::logs`].
-    pub fn logs_of(&self, home: Reach) -> Result<Vec<LogId>> {
+    pub async fn logs_of(&self, home: Reach) -> Result<Vec<LogId>> {
         self.logs_under(&AppliedPositionKey::prefix_for_home(home))
+            .await
     }
 
     /// The logs whose position keys carry `prefix`.
-    pub(super) fn logs_under(&self, prefix: &[u8]) -> Result<Vec<LogId>> {
+    pub(super) async fn logs_under(&self, prefix: &[u8]) -> Result<Vec<LogId>> {
         let request = ScanRequest {
             keyspace: AppliedPositionKey::keyspace(),
             range: KeyRange::prefix(prefix),
@@ -52,7 +53,8 @@ impl Store {
             limit: None,
         };
         self.backend
-            .scan(&request)?
+            .scan(&request)
+            .await?
             .into_iter()
             .map(|(key, _)| Ok(AppliedPositionKey::decode(key.as_slice())?.log))
             .collect()
@@ -64,8 +66,8 @@ impl Store {
     ///
     /// Returns [`Error::NoIdentity`] when the store holds no identity, which is
     /// a store that was never opened rather than a node without a name.
-    pub fn writer(&self) -> Result<Writer> {
-        Ok(Writer::new(self.node_identity()?.id))
+    pub async fn writer(&self) -> Result<Writer> {
+        Ok(Writer::new(self.node_identity().await?.id))
     }
 
     /// This node's own log for `home`.
@@ -79,8 +81,8 @@ impl Store {
     /// # Errors
     ///
     /// The same as [`Self::writer`].
-    pub fn own_log(&self, home: Reach) -> Result<LogId> {
-        Ok(LogId::new(home, self.writer()?))
+    pub async fn own_log(&self, home: Reach) -> Result<LogId> {
+        Ok(LogId::new(home, self.writer().await?))
     }
 
     /// The log a commit under a leadership allocates into for `home`, and the
@@ -92,7 +94,7 @@ impl Store {
     ///
     /// The same as [`Self::log_led_by`].
     pub async fn line_log(&self, home: Reach) -> Result<LogId> {
-        self.log_led_by(home, self.writer()?).await
+        self.log_led_by(home, self.writer().await?).await
     }
 
     /// The log this node's position on `home`'s line is read from — what it
@@ -107,10 +109,10 @@ impl Store {
     /// The same as [`Self::line_log`], and a tail that cannot be read.
     pub async fn history_log(&self, home: Reach) -> Result<LogId> {
         let line = self.line_log(home).await?;
-        if self.committed_tail(line)? > Sequence::ZERO {
+        if self.committed_tail(line).await? > Sequence::ZERO {
             return Ok(line);
         }
-        self.own_log(home)
+        self.own_log(home).await
     }
 
     /// The log a follower of `leader` measures `home` in and files its answers
@@ -124,7 +126,7 @@ impl Store {
     /// The same as [`Self::log_led_by`], and a tail that cannot be read.
     pub async fn followed_log(&self, home: Reach, leader: Writer) -> Result<LogId> {
         let line = self.log_led_by(home, leader).await?;
-        if line.writer != Writer::LINE || self.committed_tail(line)? > Sequence::ZERO {
+        if line.writer != Writer::LINE || self.committed_tail(line).await? > Sequence::ZERO {
             return Ok(line);
         }
         Ok(LogId::new(home, leader))
@@ -158,9 +160,12 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the value cannot be read or decoded.
-    pub fn committed_tail(&self, log: LogId) -> Result<Sequence> {
+    pub async fn committed_tail(&self, log: LogId) -> Result<Sequence> {
         let key = AppliedPositionKey::new(log).encode();
-        let stored = self.backend.get(AppliedPositionKey::keyspace(), &key)?;
+        let stored = self
+            .backend
+            .get(AppliedPositionKey::keyspace(), &key)
+            .await?;
         match stored {
             Some(value) => Ok(Sequence::decode(value.as_slice())?),
             None => Ok(Sequence::ZERO),
@@ -185,13 +190,17 @@ impl Store {
     ///
     /// Returns the backend's failure when the logs or their tails cannot be
     /// read.
-    pub(super) fn furthest_other_log(&self, home: Reach, own: LogId) -> Result<Option<Sequence>> {
+    pub(super) async fn furthest_other_log(
+        &self,
+        home: Reach,
+        own: LogId,
+    ) -> Result<Option<Sequence>> {
         let mut furthest: Option<Sequence> = None;
-        for log in self.logs_of(home)? {
+        for log in self.logs_of(home).await? {
             if log == own {
                 continue;
             }
-            let tail = self.committed_tail(log)?;
+            let tail = self.committed_tail(log).await?;
             furthest = Some(furthest.map_or(tail, |held| held.max(tail)));
         }
         Ok(furthest)
@@ -215,9 +224,12 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the value cannot be read or decoded.
-    pub fn committed_version(&self) -> Result<Sequence> {
+    pub async fn committed_version(&self) -> Result<Sequence> {
         let key = VersionPositionKey.encode();
-        let stored = self.backend.get(VersionPositionKey::keyspace(), &key)?;
+        let stored = self
+            .backend
+            .get(VersionPositionKey::keyspace(), &key)
+            .await?;
         match stored {
             Some(value) => Ok(Sequence::decode(value.as_slice())?),
             None => Ok(Sequence::ZERO),
@@ -236,10 +248,10 @@ impl Store {
     /// # Errors
     ///
     /// The same as [`Self::tail_leadership`].
-    pub fn newest_leadership_in(&self, home: Reach) -> Result<Epoch> {
+    pub async fn newest_leadership_in(&self, home: Reach) -> Result<Epoch> {
         let mut newest = Epoch::ZERO;
-        for log in self.logs_of(home)? {
-            newest = newest.max(self.tail_leadership(log)?);
+        for log in self.logs_of(home).await? {
+            newest = newest.max(self.tail_leadership(log).await?);
         }
         Ok(newest)
     }
@@ -267,14 +279,15 @@ impl Store {
     ///
     /// Returns an error when the tail cannot be read, or when the record stored
     /// at it cannot be inspected — which is corruption rather than an absence.
-    pub fn tail_leadership(&self, log: LogId) -> Result<Epoch> {
-        let tail = self.committed_tail(log)?;
+    pub async fn tail_leadership(&self, log: LogId) -> Result<Epoch> {
+        let tail = self.committed_tail(log).await?;
         if tail == Sequence::ZERO {
             return Ok(Epoch::ZERO);
         }
         let stored = self
             .backend
-            .get(LogKey::keyspace(), &LogKey::new(log, tail).encode())?;
+            .get(LogKey::keyspace(), &LogKey::new(log, tail).encode())
+            .await?;
         // A tail naming a record the log does not hold is the retention case
         // Q-529 owns, and the honest answer here is the same one
         // `refuse_a_parted_history` gives: nothing to compare against. A node

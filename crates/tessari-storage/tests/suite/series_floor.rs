@@ -86,7 +86,7 @@ impl Fixture {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(Arc::clone(&backend)).now().unwrap();
 
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("prod").now().unwrap();
         let database = catalog
@@ -134,7 +134,7 @@ impl Fixture {
     }
 
     pub(super) fn write(&self, id: RecordId, label: &str) {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         let fields = BTreeMap::from([("label".to_owned(), Value::from(label))]);
         transaction.put(
             self.address(id),
@@ -145,7 +145,7 @@ impl Fixture {
 
     /// The labels a plain read of the table answers with, in key order.
     pub(super) fn labels(&self) -> Vec<String> {
-        let transaction = self.store.begin().unwrap();
+        let transaction = self.store.begin().now().unwrap();
         transaction
             .scan_table(self.namespace, self.database, self.table)
             .now()
@@ -219,7 +219,7 @@ fn a_point_read_below_the_floor_answers_nothing() {
         }),
         IdentityKind::Uuid,
     );
-    let transaction = fixture.store.begin().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
 
     // Naming the record directly must not step around the floor. This is the
     // path a gate applied per read shape would have missed.
@@ -250,7 +250,7 @@ fn a_batched_read_below_the_floor_answers_nothing() {
         }),
         IdentityKind::Uuid,
     );
-    let transaction = fixture.store.begin().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
 
     // `get_each` is what an index-served read resolves through, so it carries
     // the floor separately and is asserted separately.
@@ -276,7 +276,7 @@ fn a_record_written_below_the_floor_in_this_transaction_is_not_answered_either()
         }),
         IdentityKind::Uuid,
     );
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     let fields = BTreeMap::from([("label".to_owned(), Value::from("backfilled"))]);
     transaction.put(
         fixture.address(identity(fixture.base, OLD.saturating_add(1), 0xc3)),

@@ -212,7 +212,7 @@ pub async fn admit_asserted<'a>(
         // with a user refuses whatever the script does.
         return Ok(session);
     };
-    let mut transaction = db.store().begin().map_err(|why| why.to_string())?;
+    let mut transaction = db.store().begin().await.map_err(|why| why.to_string())?;
     let catalog = Catalog::new(&mut transaction);
     let users = catalog.users().await.map_err(|why| why.to_string())?;
     let replicas = catalog.replicas().await.map_err(|why| why.to_string())?;

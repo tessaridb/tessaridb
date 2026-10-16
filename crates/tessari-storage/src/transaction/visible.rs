@@ -22,7 +22,6 @@
 use tessari_encoding::{
     AcrossPartKey, Decision, Participant, Provenance, StampedValue, StoreKey, StoreValue,
 };
-use tessari_kv::AsyncKvBackend as _;
 use tessari_types::Sequence;
 
 use super::Transaction;

@@ -1,7 +1,6 @@
 //! A search member's postings read with their per-field counts (Q-870).
 
 use std::collections::BTreeMap;
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{IndexAddress, IndexValues, KeyKind, Posting, PostingKey, StoreKey};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};

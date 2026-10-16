@@ -9,7 +9,6 @@ mod versions;
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::ops::Bound;
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     CausalStamp, CausalVersions, NODE_ID_LEN, RecordKey, RecordValue, StampedValue, StoreKey,
@@ -303,7 +302,7 @@ impl<'a> Transaction<'a> {
     /// # Errors
     ///
     /// Returns an error when the committed version cannot be read or decoded.
-    pub fn indexes_are_current(&self) -> Result<bool> {
+    pub async fn indexes_are_current(&self) -> Result<bool> {
         // The **version**, not the log position. A snapshot is a record version
         // — this store's own number — and comparing it against a log position
         // was one comparison between two scales that happened to hold the same
@@ -311,7 +310,7 @@ impl<'a> Transaction<'a> {
         // holding the moment positions go per-home, and the answer it would give
         // is `false` for every transaction, which silently takes the scan on
         // every index-served read.
-        Ok(self.snapshot == self.store.committed_version()?)
+        Ok(self.snapshot == self.store.committed_version().await?)
     }
 
     /// Whether an index of one table may answer a read taken through this
@@ -327,7 +326,7 @@ impl<'a> Transaction<'a> {
     ///
     /// Returns an error when the committed version or the mark cannot be read.
     pub async fn indexes_are_current_for(&self, table: TableId) -> Result<bool> {
-        Ok(self.indexes_are_current()? && !self.store.across_unsettled(table).await?)
+        Ok(self.indexes_are_current().await? && !self.store.across_unsettled(table).await?)
     }
 
     /// Whether this transaction has written to one table without committing.

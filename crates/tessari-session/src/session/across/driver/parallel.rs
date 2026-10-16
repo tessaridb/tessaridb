@@ -253,7 +253,7 @@ async fn here(store: &Store, asked: &AcrossAsk) -> std::result::Result<(), Strin
             transaction,
             record,
             records,
-        } => match store.begin() {
+        } => match store.begin().await {
             Ok(writing) => writing
                 .conclude_across(*transaction, record.clone(), records)
                 .await
@@ -265,7 +265,7 @@ async fn here(store: &Store, asked: &AcrossAsk) -> std::result::Result<(), Strin
             committed,
             records,
             participants,
-        } => match store.begin() {
+        } => match store.begin().await {
             Ok(writing) => writing
                 .resolve_across(*transaction, *committed, records, participants)
                 .await

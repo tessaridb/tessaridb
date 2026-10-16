@@ -33,7 +33,6 @@
 //! entries naming records that no longer exist.
 
 use std::time::{SystemTime, UNIX_EPOCH};
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     LogRecord, Mutation, RecordKey, RecordValue, StampedValue, StoreKey, StoreValue,
@@ -84,7 +83,7 @@ impl Store {
         let held_back = self.oldest_snapshot_age().map_or(0, |age| {
             u64::try_from(age.as_millis()).map_or(u64::MAX, |millis| millis.saturating_add(1))
         });
-        let mut view = self.begin()?;
+        let mut view = self.begin().await?;
         let Some(floor) = view
             .series_floor_at(namespace, table, now.saturating_sub(held_back))
             .await?
@@ -131,7 +130,7 @@ impl Store {
     pub async fn expire_every_series(&self) -> Result<Expired> {
         let mut series = Vec::new();
         {
-            let mut transaction = self.begin()?;
+            let mut transaction = self.begin().await?;
             let catalog = Catalog::new(&mut transaction);
             for namespace in catalog.namespaces().await? {
                 for database in catalog.databases_in(namespace.id).await? {
@@ -216,7 +215,7 @@ impl Store {
                 continue;
             }
             unindexed = unindexed.saturating_add(mutations.len());
-            let view = self.begin_local()?;
+            let view = self.begin_local().await?;
             view.lift_floor(table);
             let batch = crate::index::maintain_from(
                 self,

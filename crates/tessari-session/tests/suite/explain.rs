@@ -198,12 +198,12 @@ fn explaining_a_read_does_not_run_it() {
         tessari_types::NamespaceId::new(1),
         tessari_types::DatabaseId::new(1),
     );
-    let home = store.own_log(home).unwrap();
-    let before = store.committed_tail(home).unwrap();
+    let home = store.own_log(home).now().unwrap();
+    let before = store.committed_tail(home).now().unwrap();
     session
         .run_now("EXPLAIN SELECT * FROM users WHERE city = 'Paris';")
         .unwrap();
-    assert_eq!(store.committed_tail(home).unwrap(), before);
+    assert_eq!(store.committed_tail(home).now().unwrap(), before);
     assert_eq!(ids(&mut session, "SELECT * FROM users;").len(), 3);
 }
 

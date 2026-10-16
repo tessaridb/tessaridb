@@ -1,7 +1,6 @@
 //! Applying records that arrive from another node.
 
 use std::sync::atomic::Ordering;
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{LogId, LogKey, LogRecord, StoreKey, StoreValue, Writer};
 use tessari_types::{Epoch, Sequence};
@@ -75,7 +74,7 @@ impl Store {
         record: &LogRecord,
         landing: Landing,
     ) -> Result<()> {
-        self.refuse_a_parted_history(log, at, previous)?;
+        self.refuse_a_parted_history(log, at, previous).await?;
         self.apply_at(log, at, record, landing).await
     }
 
@@ -210,12 +209,12 @@ impl Store {
     ) -> Result<()> {
         // From the tail read to the apply, because the version this allocates is
         // the one a local commit allocates too (`crate::gate`).
-        let _turn = self.writing.hold();
+        let _turn = self.writing.hold().await;
         // And with nothing staged behind a local commit's turn still to land:
         // this apply allocates the next version too, and writes its batch
         // itself rather than staging it.
-        self.writing.land_all(self.backend.as_ref());
-        let applied = self.committed_tail(log)?;
+        self.writing.land_all(self.backend.as_ref()).await;
+        let applied = self.committed_tail(log).await?;
         if at.get() <= applied.get() {
             self.refuse_a_divergence(log, at, record).await?;
             return Ok(());
@@ -236,7 +235,7 @@ impl Store {
         // replica numbers its own records: the log position it is replaying was
         // decided elsewhere, the version it writes them at is its own history
         // (Q-614). The two agree today because one flat log admits one writer.
-        let version = Sequence::new(self.committed_version()?.get().saturating_add(1));
+        let version = Sequence::new(self.committed_version().await?.get().saturating_add(1));
         self.derive_and_land(
             record,
             crate::log::apply_batch(log, at, version, record),
@@ -264,7 +263,9 @@ impl Store {
         // and an intent derives nothing until its resolution does (ADR-0112).
         let batch = crate::intents::settle(self, record, batch, version, written).await?;
         if crate::intents::derives_nothing(record) {
-            self.writing.apply(batch, self.backend.as_ref(), landing)?;
+            self.writing
+                .apply(batch, self.backend.as_ref(), landing)
+                .await?;
             return Ok(());
         }
         let batch = crate::index::maintain(self, record, batch, version).await?;
@@ -302,7 +303,11 @@ impl Store {
             self.catalog_rows.changed(version);
             taught = self.shards.teach(&self.decoded_tables, record)?;
         }
-        if let Err(failed) = self.writing.apply(batch, self.backend.as_ref(), landing) {
+        if let Err(failed) = self
+            .writing
+            .apply(batch, self.backend.as_ref(), landing)
+            .await
+        {
             self.shards.forget(&taught);
             return Err(failed.into());
         }
@@ -330,7 +335,7 @@ impl Store {
     ///
     /// Costs the same as its sibling: one point read and a fixed eight-byte
     /// inspection, no decode of the mutations.
-    pub(crate) fn refuse_a_parted_history(
+    pub(crate) async fn refuse_a_parted_history(
         &self,
         log: LogId,
         at: Sequence,
@@ -356,7 +361,8 @@ impl Store {
         }
         let stored = self
             .backend
-            .get(LogKey::keyspace(), &LogKey::new(log, before).encode())?;
+            .get(LogKey::keyspace(), &LogKey::new(log, before).encode())
+            .await?;
         // Nothing to compare against — this store is behind the sender by more
         // than one record, and `apply_record` refuses that with `LogGap`, which
         // is the more accurate answer. The truncation case is Q-529's, the same
@@ -386,7 +392,8 @@ impl Store {
         let offered = record.epoch();
         let stored = self
             .backend
-            .get(LogKey::keyspace(), &LogKey::new(log, at).encode())?;
+            .get(LogKey::keyspace(), &LogKey::new(log, at).encode())
+            .await?;
         // Nothing to compare against. Unreachable today because the log keyspace
         // is never truncated, and it becomes reachable the day retention reaches
         // it — at which point a node that was away long enough is exactly the

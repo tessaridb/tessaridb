@@ -61,7 +61,7 @@ impl Fixture {
     fn new() -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(backend).now().unwrap();
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("atlas").now().unwrap();
         let database = catalog
@@ -101,7 +101,7 @@ impl Fixture {
 
     /// Write one rectangle under the given name.
     fn write(&self, name: &str, corners: Bounds) {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         transaction.put(self.at(name), payload(corners));
         transaction.commit().now().unwrap();
     }
@@ -131,7 +131,7 @@ impl Fixture {
     }
 
     fn begin(&self) -> Transaction<'_> {
-        self.store.begin().unwrap()
+        self.store.begin().now().unwrap()
     }
 
     /// Every record whose stored box the relation admits, found by looking at

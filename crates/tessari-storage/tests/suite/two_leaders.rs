@@ -78,8 +78,8 @@ fn declared_between(
     followed: Reach,
     their_node: [u8; NODE_ID_LEN],
 ) -> Store {
-    let me = store.node_identity().unwrap().id;
-    let mut transaction = store.begin().unwrap();
+    let me = store.node_identity().now().unwrap().id;
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     catalog
         .create_replica(
@@ -127,7 +127,7 @@ fn at(namespace: u32, id: &str) -> RecordAddress {
 }
 
 fn write(store: &Store, namespace: u32, id: &str) -> Result<(), Error> {
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().now()?;
     transaction.put(at(namespace, id), b"{}".to_vec());
     transaction.commit().now().map(|_| ())
 }
@@ -203,8 +203,8 @@ fn a_leadership_over_the_whole_store_still_lets_its_holder_write_everywhere() {
     // must keep answering yes for every namespace under it, or this wave breaks
     // every single-leader cluster in the field.
     let store = store();
-    let me = store.node_identity().unwrap().id;
-    let mut transaction = store.begin().unwrap();
+    let me = store.node_identity().now().unwrap().id;
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     catalog
         .create_replica(
@@ -245,7 +245,7 @@ fn a_clustered_node_with_no_leadership_anywhere_still_meets_the_older_refusal() 
     // is in a cluster, holds no lease and no range is led by anyone: the honest
     // answer is *wait*, not *go there*, because there is nowhere to send it.
     let store = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .create_replica(
             "other",
@@ -272,7 +272,7 @@ fn a_rehearsal_meets_the_redirect_the_commit_would() {
     // rehearsal cannot see is one an operator meets for the first time in
     // production, which is the argument the lease fence already makes.
     let store = one_of_two();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(at(THEIRS, "theirs"), b"{}".to_vec());
     let refused = transaction.dry_run().now().unwrap_err();
     assert!(
@@ -293,7 +293,7 @@ fn a_clustered_node_with_no_lease_is_redirected_rather_than_told_to_wait() {
     // simply go last: `Store::awaiting` returns early on a live lease, so a
     // question asked after it never reaches a leader at all.
     let store = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     catalog
         .create_replica(
@@ -345,13 +345,13 @@ fn a_node_under_somebody_elses_store_wide_leadership_can_record_its_own() {
         Reach::Store,
         THEIR_NODE,
     );
-    let me = store.node_identity().unwrap().id;
+    let me = store.node_identity().now().unwrap().id;
 
     // A SECOND transaction, and that is the whole test. The fixture wrote both
     // rows in one commit, before the first membership row had fenced anything;
     // this is the write a node takes after a majority has granted it a round,
     // which is the one that has to pass the gate.
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .record_leadership(
             Reach::Namespace(NamespaceId::new(MINE)),
@@ -364,7 +364,7 @@ fn a_node_under_somebody_elses_store_wide_leadership_can_record_its_own() {
         .now()
         .expect("a node cannot be refused permission to record a leadership it holds");
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let held = Catalog::new(&mut transaction).leaderships().now().unwrap();
     let mine = held
         .iter()
@@ -383,9 +383,9 @@ fn a_node_under_somebody_elses_store_wide_leadership_can_record_its_own() {
 #[test]
 fn a_node_cannot_record_a_leadership_over_a_range_another_node_leads() {
     let store = one_of_two();
-    let me = store.node_identity().unwrap().id;
+    let me = store.node_identity().now().unwrap().id;
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .record_leadership(
             Reach::Namespace(NamespaceId::new(THEIRS)),
@@ -413,10 +413,10 @@ fn a_node_cannot_record_a_leadership_over_a_range_another_node_leads() {
 #[test]
 fn two_ranges_advance_their_epochs_independently() {
     let store = one_of_two();
-    let me = store.node_identity().unwrap().id;
+    let me = store.node_identity().now().unwrap().id;
 
     let epochs = |store: &Store| {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let held = Catalog::new(&mut transaction).leaderships().now().unwrap();
         let of = |range: Reach| {
             held.iter()
@@ -431,7 +431,7 @@ fn two_ranges_advance_their_epochs_independently() {
 
     assert_eq!(epochs(&store), (Some(MY_EPOCH), Some(THEIR_EPOCH)));
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .record_leadership(
             Reach::Namespace(NamespaceId::new(MINE)),
@@ -464,7 +464,7 @@ fn clustered_with(
     led_by: Option<[u8; NODE_ID_LEN]>,
 ) -> (Store, NamespaceId, DatabaseId) {
     let store = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     catalog
         .create_replica(
@@ -508,7 +508,7 @@ fn write_into(
     database: DatabaseId,
     id: &str,
 ) -> Result<(), Error> {
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().now()?;
     transaction.put(
         RecordAddress::new(namespace, database, TableId::new(1), RecordId::from(id)),
         b"{}".to_vec(),
@@ -565,7 +565,7 @@ fn a_declared_range_does_not_exempt_an_undeclared_one_written_beside_it() {
     // in one transaction; one is declared and the other is not, and the
     // undeclared one still has a single leader that this node is not.
     let store = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     catalog
         .create_replica(
@@ -595,7 +595,7 @@ fn a_declared_range_does_not_exempt_an_undeclared_one_written_beside_it() {
         .unwrap();
     transaction.commit().now().unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(
         RecordAddress::new(open.id, open_db.id, TableId::new(1), RecordId::from("a")),
         b"{}".to_vec(),
@@ -624,7 +624,7 @@ fn a_declared_range_does_not_exempt_an_undeclared_one_written_beside_it() {
 fn the_expiry_pass_removes_what_this_node_leads_beside_a_range_led_elsewhere() {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let store = Store::open(Arc::clone(&backend)).now().unwrap();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let soon = transaction.clock().saturating_add(50);
     for (namespace, id) in [(THEIRS, "theirs"), (MINE, "ours")] {
         transaction.put(at(namespace, id), b"{}".to_vec());

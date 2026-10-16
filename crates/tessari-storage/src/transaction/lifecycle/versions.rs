@@ -1,5 +1,4 @@
 use super::*;
-use tessari_kv::AsyncKvBackend as _;
 
 impl<'a> Transaction<'a> {
     /// The same version, with the causal context its writer had seen.

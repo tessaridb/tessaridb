@@ -56,8 +56,8 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the version or the log list cannot be read.
-    pub fn holds_nothing(&self) -> Result<bool> {
-        Ok(self.committed_version()? == Sequence::ZERO && self.logs()?.is_empty())
+    pub async fn holds_nothing(&self) -> Result<bool> {
+        Ok(self.committed_version().await? == Sequence::ZERO && self.logs().await?.is_empty())
     }
 
     /// Write one chunk of a restored state.
@@ -67,10 +67,10 @@ impl Store {
     /// Returns the store's refusal when a record does not satisfy the catalog
     /// already restored, and a backend error when the batch cannot land.
     pub async fn restore_state_chunk(&self, record: &LogRecord) -> Result<()> {
-        let _turn = self.writing.hold();
-        self.writing.land_all(self.backend.as_ref());
+        let _turn = self.writing.hold().await;
+        self.writing.land_all(self.backend.as_ref()).await;
         crate::schema::validate(self, record).await?;
-        let version = Sequence::new(self.committed_version()?.get().saturating_add(1));
+        let version = Sequence::new(self.committed_version().await?.get().saturating_add(1));
         let landed = self
             .derive_and_land(
                 record,
@@ -116,8 +116,8 @@ impl Store {
         positions: &[(LogId, Sequence)],
         topics: &[TopicHead],
     ) -> Result<()> {
-        let _turn = self.writing.hold();
-        self.writing.land_all(self.backend.as_ref());
+        let _turn = self.writing.hold().await;
+        self.writing.land_all(self.backend.as_ref()).await;
         let mut batch = WriteBatch::new();
         for (log, at) in positions {
             batch = batch
@@ -151,10 +151,11 @@ impl Store {
         batch = batch.put(
             ReclaimFloorKey::keyspace(),
             ReclaimFloorKey.encode(),
-            self.committed_version()?.encode(),
+            self.committed_version().await?.encode(),
         );
         self.writing
-            .apply(batch, self.backend.as_ref(), crate::gate::Landing::Synced)?;
+            .apply(batch, self.backend.as_ref(), crate::gate::Landing::Synced)
+            .await?;
         Ok(())
     }
 }

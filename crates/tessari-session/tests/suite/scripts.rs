@@ -3038,7 +3038,7 @@ fn what_is_stored_is_a_hash_and_no_plaintext_reaches_the_log() {
     // The log is what a replica and a backup receive, so a plaintext there is a
     // plaintext everywhere.
     // Every log, because a plaintext hiding in one of several is a plaintext.
-    for log in store.logs().unwrap() {
+    for log in store.logs().now().unwrap() {
         for (_, record) in store.log_records(log, Sequence::ZERO, 4096).now().unwrap() {
             let bytes = format!("{record:?}");
             assert!(
@@ -3103,7 +3103,7 @@ fn the_system_namespace_has_no_name_and_so_no_statement_can_reach_it() {
         );
     }
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = tessari_storage::Catalog::new(&mut transaction);
     let first = catalog.create_namespace("the very first").now().unwrap();
     assert_ne!(

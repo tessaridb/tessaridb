@@ -743,7 +743,7 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
     // node: an identity is generated once and is stable across restarts, which
     // is exactly the property this relies on.
     let db = tessaridb::Db::open(&store).now().unwrap();
-    let identity = db.store().node_identity().unwrap();
+    let identity = db.store().node_identity().now().unwrap();
     let node = identity.id;
     let build = identity.version;
     // One write, so the log this node will greet with is not empty. A fresh
@@ -942,7 +942,7 @@ fn a_cluster_node_told_nothing_about_its_clients_serves_them_in_the_clear_and_it
     let minted = Minted::new();
     // The build a caller greets with, read from a store this binary will open.
     let db = tessaridb::Db::open(&store).now().unwrap();
-    let identity = db.store().node_identity().unwrap();
+    let identity = db.store().node_identity().now().unwrap();
     let (node, build) = (identity.id, identity.version);
     drop(db);
     let (leaf, key, authority) = credentials(&minted, node, directory.path());
@@ -1342,7 +1342,7 @@ fn a_joiner_restarted_without_its_seed_still_finds_the_leader() {
         std::fs::create_dir_all(&home).unwrap();
         let store = home.join("store");
         let db = tessaridb::Db::open(&store).now().unwrap();
-        let id = db.store().node_identity().unwrap().id;
+        let id = db.store().node_identity().now().unwrap().id;
         drop(db);
         papers.push(credentials(&minted, id, &home));
         ids.push(id);
@@ -1574,7 +1574,7 @@ fn a_row_waiting_on_a_join_token_is_bound_by_the_node_that_offers_it() {
         std::fs::create_dir_all(&home).unwrap();
         let store = home.join("store");
         let db = tessaridb::Db::open(&store).now().unwrap();
-        let id = db.store().node_identity().unwrap().id;
+        let id = db.store().node_identity().now().unwrap().id;
         drop(db);
         papers.push(credentials(&minted, id, &home));
         ids.push(id);
@@ -1756,7 +1756,7 @@ fn a_node_dials_the_peer_its_catalog_declares() {
     let store = directory.path().join("store");
     let minted = Minted::new();
     let db = tessaridb::Db::open(&store).now().unwrap();
-    let node = db.store().node_identity().unwrap().id;
+    let node = db.store().node_identity().now().unwrap().id;
     // A peer that is emphatically NOT this node: `greet_round` skips its own row
     // on purpose, so declaring this node's own id here would make the test pass
     // for the wrong reason — or rather, fail for the right one.
@@ -2127,7 +2127,7 @@ fn a_cluster_of_rows_by(
             assert!(created.status.success(), "{created:?}");
         }
         let db = tessaridb::Db::open(&store).now().unwrap();
-        let id = db.store().node_identity().unwrap().id;
+        let id = db.store().node_identity().now().unwrap().id;
         drop(db);
         let (paper, fingerprint) = credentials_fingerprinted(&minted, id, &home);
         papers.push(paper);
@@ -2871,7 +2871,7 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
         std::fs::create_dir_all(&home).unwrap();
         let store = home.join("store");
         let db = tessaridb::Db::open(&store).now().unwrap();
-        let id = db.store().node_identity().unwrap().id;
+        let id = db.store().node_identity().now().unwrap().id;
         drop(db);
         papers.push(credentials(&minted, id, &home));
         ids.push(id);
@@ -2910,7 +2910,7 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
         db.session()
             .run_now("DEFINE NODE ROLES serving;")
             .expect("a node that knows it is not the cluster");
-        let peers = tessari_storage::Catalog::new(&mut db.store().begin().unwrap())
+        let peers = tessari_storage::Catalog::new(&mut db.store().begin().now().unwrap())
             .replicas()
             .now()
             .unwrap();
@@ -3045,7 +3045,7 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
     let db = tessaridb::Db::open(&stores[1])
         .now()
         .expect("the joiner's store, once it has stopped");
-    let peers = tessari_storage::Catalog::new(&mut db.store().begin().unwrap())
+    let peers = tessari_storage::Catalog::new(&mut db.store().begin().now().unwrap())
         .replicas()
         .now()
         .unwrap();
@@ -3254,7 +3254,7 @@ const ITS_OWN: &str = "DEFINE NAMESPACE research REPLICATION NONE; USE NAMESPACE
 /// Every namespace a store on disk can name, opened offline.
 fn namespaces_on(store: &std::path::Path) -> Vec<String> {
     let db = tessaridb::Db::open(store).now().expect("the store opens");
-    let mut transaction = db.store().begin().expect("a read");
+    let mut transaction = db.store().begin().now().expect("a read");
     let names = tessari_storage::Catalog::new(&mut transaction)
         .namespaces()
         .now()
@@ -3307,7 +3307,7 @@ fn a_join_that_would_reinterpret_a_tenancy_is_refused_until_the_operator_removes
         std::fs::create_dir_all(&home).unwrap();
         let store = home.join("store");
         let db = tessaridb::Db::open(&store).now().unwrap();
-        let id = db.store().node_identity().unwrap().id;
+        let id = db.store().node_identity().now().unwrap().id;
         drop(db);
         papers.push(credentials(&minted, id, &home));
         ids.push(id);

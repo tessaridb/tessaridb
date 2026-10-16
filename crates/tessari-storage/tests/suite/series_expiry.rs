@@ -91,7 +91,7 @@ fn a_reader_begun_earlier_keeps_what_it_could_see() {
         edge.clone(),
     );
 
-    let reader = fixture.store.begin().unwrap();
+    let reader = fixture.store.begin().now().unwrap();
     assert!(
         reader.get(&address).now().unwrap().is_some(),
         "above its floor"
@@ -105,6 +105,7 @@ fn a_reader_begun_earlier_keeps_what_it_could_see() {
         fixture
             .store
             .begin()
+            .now()
             .unwrap()
             .get(&address)
             .now()

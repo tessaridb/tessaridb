@@ -11,7 +11,7 @@ use crate::transaction::Committed;
 
 impl Fixture {
     fn begin(&self, seen: Sequence) -> Result<Committed> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().now()?;
         transaction.put(self.address(), b"new".to_vec());
         transaction
             .begin_across(TRANSACTION, self.record(Decision::Staging), seen)
@@ -20,7 +20,8 @@ impl Fixture {
 
     fn conclude(&self, decided: TransactionRecord) -> Result<Committed> {
         self.store
-            .begin()?
+            .begin()
+            .now()?
             .conclude_across(TRANSACTION, decided, &[self.address()])
             .now()
     }
@@ -60,7 +61,7 @@ fn a_begin_writes_the_record_and_the_intents_in_one_log_record() -> Result<()> {
 fn a_begin_is_refused_for_a_record_written_after_what_its_node_had_seen() -> Result<()> {
     let fixture = Fixture::new()?;
     let seen = fixture.seen()?;
-    let mut other = fixture.store.begin()?;
+    let mut other = fixture.store.begin().now()?;
     other.put(fixture.address(), b"meanwhile".to_vec());
     other.commit().now()?;
     let refused = fixture.begin(seen);
@@ -119,7 +120,7 @@ fn a_conclude_that_aborts_frees_the_record() -> Result<()> {
     fixture.begin(fixture.seen()?)?;
     fixture.conclude(fixture.record(Decision::Aborted))?;
     assert_eq!(fixture.read()?, Some(b"old".to_vec()));
-    let mut next = fixture.store.begin()?;
+    let mut next = fixture.store.begin().now()?;
     next.put(fixture.address(), b"later".to_vec());
     next.commit().now()?;
     assert_eq!(fixture.read()?, Some(b"later".to_vec()));
@@ -225,7 +226,8 @@ fn a_bar_lands_in_the_range_and_refuses_the_prepare_after_it() -> Result<()> {
     let seen = fixture.seen()?;
     let barred = fixture
         .store
-        .begin()?
+        .begin()
+        .now()?
         .prevent_across(TRANSACTION, fixture.coordinator())
         .now()?;
     let logged = fixture.logged(barred.sequence)?;

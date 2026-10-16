@@ -206,7 +206,7 @@ impl Transaction<'_> {
             }
         }
         if !unread.is_empty() {
-            let mut view = self.store.begin()?;
+            let mut view = self.store.begin().await?;
             let catalog = crate::catalog::Catalog::new(&mut view);
             for table in unread {
                 // A record naming a table the catalog does not hold is not split

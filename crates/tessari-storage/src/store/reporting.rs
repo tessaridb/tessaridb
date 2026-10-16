@@ -52,9 +52,11 @@ impl Store {
         let (across_committed, across_aborted, across_in_doubt) = self.tally.outcomes();
         let (across_pending, across_with_intents) = self.tally.standing();
         Ok(Health {
-            background_errors: self.backend.background_errors()?,
-            committed: self.committed_tail(own)?,
-            elsewhere: self.furthest_other_log(UNPARTITIONED_REPORT_HOME, own)?,
+            background_errors: self.backend.background_errors().await?,
+            committed: self.committed_tail(own).await?,
+            elsewhere: self
+                .furthest_other_log(UNPARTITIONED_REPORT_HOME, own)
+                .await?,
             log_divergences: self.divergences.load(Ordering::Relaxed),
             discarded_writes: self.discarded.load(Ordering::Relaxed),
             campaigns: self.campaigns.load(Ordering::Relaxed),
@@ -240,7 +242,9 @@ impl Store {
             // counters are unrelated and the subtraction is meaningless (Q-622).
             // The log this leader serves, which is the one the position was
             // taken in (ADR-0107).
-            let tail = self.committed_tail(self.history_log(held.home).await?)?;
+            let tail = self
+                .committed_tail(self.history_log(held.home).await?)
+                .await?;
             rows.push(FollowerLag {
                 node,
                 home: held.home,
@@ -279,7 +283,7 @@ impl Store {
         // writers has a second tail this mark does not carry, and reporting it
         // is Q-622's, not this diagnostic's.
         let log = self.history_log(home).await?;
-        self.tailmarks.mark(home, self.committed_tail(log)?);
+        self.tailmarks.mark(home, self.committed_tail(log).await?);
         Ok(())
     }
 }

@@ -53,7 +53,7 @@ pub(crate) async fn maintain(
     mut batch: WriteBatch,
     version: Sequence,
 ) -> Result<WriteBatch> {
-    let view = store.begin_local()?;
+    let view = store.begin_local().await?;
     let mut deltas: BTreeMap<TableId, i64> = BTreeMap::new();
 
     for mutation in record.mutations() {

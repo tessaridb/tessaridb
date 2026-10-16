@@ -24,7 +24,7 @@ fn store() -> (Arc<dyn KvBackend>, Store) {
 
 /// Create `namespace / database / table` and commit.
 fn create_tree(store: &Store, names: (&str, &str, &str)) -> (u32, u32, u32) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace(names.0).now().unwrap();
     let database = catalog
@@ -45,7 +45,7 @@ fn a_created_tree_is_readable_by_id_and_by_name() {
     let (_backend, store) = store();
     let (namespace, database, table) = create_tree(&store, ("prod", "orders", "line_items"));
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
 
     let found = catalog
@@ -94,7 +94,7 @@ fn the_catalog_survives_a_reopen() {
     drop(store);
 
     let reopened = Store::open(backend).now().unwrap();
-    let mut transaction = reopened.begin().unwrap();
+    let mut transaction = reopened.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     assert_eq!(
         catalog
@@ -111,7 +111,7 @@ fn a_name_cannot_be_taken_twice_at_the_same_level() {
     let (_backend, store) = store();
     create_tree(&store, ("prod", "orders", "line_items"));
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let error = catalog.create_namespace("prod").now().unwrap_err();
     assert!(matches!(error, Error::NameTaken { .. }), "{error}");
@@ -126,7 +126,7 @@ fn the_same_name_in_two_namespaces_is_two_different_databases() {
     // not one of them, and this pins that rather than leaving it to the reading
     // of `qualify`.
     let (_backend, store) = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let first = catalog.create_namespace("alpha").now().unwrap();
     let second = catalog.create_namespace("beta").now().unwrap();
@@ -149,7 +149,7 @@ fn the_same_name_in_two_namespaces_is_two_different_databases() {
 #[test]
 fn the_same_name_in_two_databases_is_two_different_tables() {
     let (_backend, store) = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let first = catalog.create_database(namespace.id, "a").now().unwrap();
@@ -173,8 +173,8 @@ fn two_transactions_racing_for_one_name_leave_exactly_one_winner() {
     // different definition and both would commit.
     let (_backend, store) = store();
 
-    let mut first = store.begin().unwrap();
-    let mut second = store.begin().unwrap();
+    let mut first = store.begin().now().unwrap();
+    let mut second = store.begin().now().unwrap();
 
     Catalog::new(&mut first)
         .create_namespace("prod")
@@ -189,7 +189,7 @@ fn two_transactions_racing_for_one_name_leave_exactly_one_winner() {
     let error = second.commit().now().unwrap_err();
     assert!(matches!(error, Error::Conflict { .. }), "{error}");
 
-    let mut check = store.begin().unwrap();
+    let mut check = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut check);
     assert!(catalog.namespace_id("prod").now().unwrap().is_some());
 }
@@ -199,7 +199,7 @@ fn an_id_is_never_handed_out_again_after_a_drop() {
     let (_backend, store) = store();
     let (namespace, database, dropped) = create_tree(&store, ("prod", "orders", "gone"));
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     assert!(
         catalog
@@ -209,7 +209,7 @@ fn an_id_is_never_handed_out_again_after_a_drop() {
     );
     transaction.commit().now().unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     // The name is free again...
     let recreated = catalog
@@ -230,7 +230,7 @@ fn an_id_is_never_handed_out_again_after_a_drop() {
 #[test]
 fn a_child_cannot_be_created_under_a_parent_that_does_not_exist() {
     let (_backend, store) = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
 
     let error = catalog
@@ -243,7 +243,7 @@ fn a_child_cannot_be_created_under_a_parent_that_does_not_exist() {
 #[test]
 fn a_table_cannot_be_created_under_a_database_from_another_namespace() {
     let (_backend, store) = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let first = catalog.create_namespace("one").now().unwrap();
     let second = catalog.create_namespace("two").now().unwrap();
@@ -259,7 +259,7 @@ fn a_table_cannot_be_created_under_a_database_from_another_namespace() {
 #[test]
 fn defining_a_table_and_writing_to_it_is_one_transaction() {
     let (_backend, store) = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog
@@ -277,7 +277,7 @@ fn defining_a_table_and_writing_to_it_is_one_transaction() {
     );
     transaction.commit().now().unwrap();
 
-    let reader = store.begin().unwrap();
+    let reader = store.begin().now().unwrap();
     let stored = reader
         .get(&address)
         .now()
@@ -297,7 +297,7 @@ fn the_catalog_replays_onto_a_replica_through_the_ordinary_log() {
     let (_replica_backend, replica) = store();
     crate::replay(&source, &replica);
 
-    let mut transaction = replica.begin().unwrap();
+    let mut transaction = replica.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     assert_eq!(
         catalog
@@ -315,7 +315,7 @@ fn a_reader_at_an_older_snapshot_does_not_see_a_table_defined_after_it_began() {
     // The schema is versioned because it is data. A transaction that began
     // before a table existed must not decode records against its definition.
     let (_backend, store) = store();
-    let before = store.begin().unwrap();
+    let before = store.begin().now().unwrap();
     let (_, _, table) = create_tree(&store, ("prod", "orders", "late"));
 
     let mut older = before;
@@ -341,7 +341,7 @@ fn a_reader_at_an_older_snapshot_sees_a_table_altered_after_it_began_as_it_was()
     let (_, _, table) = create_tree(&store, ("prod", "orders", "invoices"));
     let table = tessari_types::TableId::new(table);
 
-    let mut older = store.begin().unwrap();
+    let mut older = store.begin().now().unwrap();
     // Read once before the alteration, so this reader has already answered for
     // the definition it is entitled to.
     let as_it_began = Catalog::new(&mut older)
@@ -351,7 +351,7 @@ fn a_reader_at_an_older_snapshot_sees_a_table_altered_after_it_began_as_it_was()
         .expect("the table was committed before this snapshot")
         .schemafull;
 
-    let mut altering = store.begin().unwrap();
+    let mut altering = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut altering);
     assert!(
         catalog.set_schemafull(table, !as_it_began).now().unwrap(),
@@ -361,7 +361,7 @@ fn a_reader_at_an_older_snapshot_sees_a_table_altered_after_it_began_as_it_was()
 
     // A second transaction sees the new definition, which is what makes the
     // assertion below a statement about snapshots rather than about caching.
-    let mut newer = store.begin().unwrap();
+    let mut newer = store.begin().now().unwrap();
     assert_eq!(
         Catalog::new(&mut newer)
             .table(table)
@@ -395,7 +395,7 @@ fn an_index_is_created_on_a_table_and_found_by_it() {
     );
     let table = tessari_types::TableId::new(table);
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let by_email = catalog
         .create_index(
@@ -425,7 +425,7 @@ fn an_index_is_created_on_a_table_and_found_by_it() {
         .unwrap();
     transaction.commit().now().unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     assert_eq!(
         catalog.index(by_email.id).now().unwrap(),
@@ -454,7 +454,7 @@ fn an_index_over_no_fields_is_refused() {
     let (_backend, store) = store();
     let (_, _, table) = create_tree(&store, ("prod", "orders", "users"));
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let error = catalog
         .create_index(
@@ -471,7 +471,7 @@ fn an_index_over_no_fields_is_refused() {
 #[test]
 fn two_indexes_on_one_table_cannot_share_a_name_but_two_tables_can() {
     let (_backend, store) = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog
@@ -545,12 +545,12 @@ fn a_scan_returns_live_records_including_this_transactions_own_writes() {
     let table = tessari_types::TableId::new(table);
     let at = |id: &str| RecordAddress::new(namespace, database, table, RecordId::from(id));
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(at("a"), encode_payload(&Value::from(1_i64)).into_bytes());
     transaction.put(at("b"), encode_payload(&Value::from(2_i64)).into_bytes());
     transaction.commit().now().unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     // A newer version replaces the older one, a delete removes the record from
     // the answer, and an uncommitted write is visible to its own transaction.
     transaction.put(at("a"), encode_payload(&Value::from(11_i64)).into_bytes());
@@ -583,13 +583,13 @@ fn a_scan_at_an_older_snapshot_does_not_see_later_writes() {
     let table = tessari_types::TableId::new(table);
     let at = |id: &str| RecordAddress::new(namespace, database, table, RecordId::from(id));
 
-    let mut first = store.begin().unwrap();
+    let mut first = store.begin().now().unwrap();
     first.put(at("a"), encode_payload(&Value::from(1_i64)).into_bytes());
     first.commit().now().unwrap();
 
-    let reader = store.begin().unwrap();
+    let reader = store.begin().now().unwrap();
 
-    let mut later = store.begin().unwrap();
+    let mut later = store.begin().now().unwrap();
     later.put(at("a"), encode_payload(&Value::from(2_i64)).into_bytes());
     later.put(at("b"), encode_payload(&Value::from(9_i64)).into_bytes());
     later.commit().now().unwrap();
@@ -609,7 +609,7 @@ fn an_edge_table_carries_an_index_on_each_endpoint_from_the_moment_it_exists() {
     // to remember to declare would traverse for some callers and scan for
     // others. The declaration creates them, in the same commit.
     let (_backend, store) = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog
@@ -630,7 +630,7 @@ fn an_edge_table_carries_an_index_on_each_endpoint_from_the_moment_it_exists() {
         .unwrap();
     transaction.commit().now().unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     let mut indexed: Vec<Vec<Path>> = catalog
         .indexes_on(follows.namespace, follows.database, follows.id)
@@ -675,7 +675,7 @@ fn a_plain_table_gets_no_indexes_it_did_not_ask_for() {
         tessari_types::DatabaseId::new(database),
         tessari_types::TableId::new(table),
     );
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     assert!(
         catalog
@@ -701,7 +701,7 @@ fn a_replica_rebuilds_an_edge_table_with_its_indexes_and_its_declarations() {
     // record, so this is where the shape could be built on the leader and not on
     // the replica.
     let (_backend, store) = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog
@@ -727,7 +727,7 @@ fn a_replica_rebuilds_an_edge_table_with_its_indexes_and_its_declarations() {
     transaction.commit().now().unwrap();
 
     // An edge, so the endpoint indexes have an entry to disagree about.
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let edge = Value::Object(
         [
             (
@@ -752,7 +752,7 @@ fn a_replica_rebuilds_an_edge_table_with_its_indexes_and_its_declarations() {
     let replica = Store::open(Arc::clone(&replica_backend)).now().unwrap();
     crate::replay(&store, &replica);
 
-    let mut transaction = replica.begin().unwrap();
+    let mut transaction = replica.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     assert!(catalog.table(follows.id).now().unwrap().unwrap().is_edge());
     assert_eq!(
@@ -794,7 +794,7 @@ fn a_replica_rebuilds_an_edge_table_with_its_indexes_and_its_declarations() {
 
 /// A table's own next record number, in one transaction.
 fn next(store: &Store, table: u32) -> u64 {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let number = Catalog::new(&mut transaction)
         .next_record_number(tessari_types::TableId::new(table))
         .now()
@@ -821,7 +821,7 @@ fn two_tables_count_their_records_independently() {
     // shared counter would work and would also leave both tables full of gaps
     // that nothing in either of them explains.
     let (_backend, store) = store();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog
@@ -871,7 +871,7 @@ fn a_record_number_that_was_never_committed_is_never_spent() {
     let (_backend, store) = store();
     let (_, _, table) = create_tree(&store, ("prod", "orders", "line_items"));
 
-    let mut abandoned = store.begin().unwrap();
+    let mut abandoned = store.begin().now().unwrap();
     assert_eq!(
         Catalog::new(&mut abandoned)
             .next_record_number(tessari_types::TableId::new(table))
@@ -893,8 +893,8 @@ fn two_transactions_racing_for_one_table_never_receive_the_same_number() {
     let (_, _, table) = create_tree(&store, ("prod", "orders", "line_items"));
     let id = tessari_types::TableId::new(table);
 
-    let mut first = store.begin().unwrap();
-    let mut second = store.begin().unwrap();
+    let mut first = store.begin().now().unwrap();
+    let mut second = store.begin().now().unwrap();
     let mine = Catalog::new(&mut first)
         .next_record_number(id)
         .now()

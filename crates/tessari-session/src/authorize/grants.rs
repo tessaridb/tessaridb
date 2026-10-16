@@ -84,7 +84,7 @@ impl<'a> Session<'a> {
         }
         let mut reaches = Vec::new();
         for table in crate::reach::tables_named(kind) {
-            let mut transaction = store.begin()?;
+            let mut transaction = store.begin().await?;
             let resolved = self.resolve_readable_table(&mut transaction, table).await;
             transaction.rollback();
             if let Ok((context, _)) = resolved {
@@ -102,7 +102,7 @@ impl<'a> Session<'a> {
             // and that is correct rather than a hole: it has resolved no name,
             // so there is nothing for an authority to be held over, and every
             // statement that goes on to name one is asked again at the naming.
-            let mut transaction = store.begin()?;
+            let mut transaction = store.begin().await?;
             let selected = self.context(&mut transaction, None, span).await.ok();
             transaction.rollback();
             if let Some(context) = selected {
@@ -134,7 +134,7 @@ impl<'a> Session<'a> {
         let Some(user) = self.identity.user() else {
             return Ok(());
         };
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().await?;
         let grants = Catalog::new(&mut transaction).grants_for(user.id).await?;
         transaction.rollback();
         if grants.is_empty() {
@@ -187,7 +187,7 @@ impl<'a> Session<'a> {
         // so this mapping is about the reach rather than about them.
         let verbs: Vec<Verb> = Needs::of(kind).grant_verbs().collect();
         for table in crate::reach::tables_named(kind) {
-            let mut transaction = store.begin()?;
+            let mut transaction = store.begin().await?;
             // A materialized view is named, not expanded, and a grant on a view
             // is never written — so its grant is its source's (ADR-0109 D7).
             let resolved = match self.resolve_readable_table(&mut transaction, table).await {

@@ -26,7 +26,6 @@
 //! so it does not bound the round.
 
 use std::collections::BTreeMap;
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{LogId, LogRecord, Writer};
 use tessari_types::{Epoch, Sequence};
@@ -174,7 +173,8 @@ impl Store {
         // histories (Q-879 H2). A page that carries records repeats the check
         // its first record makes below; one point read buys the empty page's.
         for page in pages {
-            self.refuse_a_parted_history(page.log, page.from, page.previous)?;
+            self.refuse_a_parted_history(page.log, page.from, page.previous)
+                .await?;
         }
         let mut previous: Vec<Epoch> = pages.iter().map(|page| page.previous).collect();
         let mut reached: Vec<Option<Sequence>> = vec![None; pages.len()];
@@ -234,7 +234,9 @@ impl Store {
         let mut complete = true;
         let mut walked = 0_usize;
         for log in logs {
-            let records = self.log_records_newest_first(*log, HISTORY_SCAN_RECORDS)?;
+            let records = self
+                .log_records_newest_first(*log, HISTORY_SCAN_RECORDS)
+                .await?;
             walked = walked.saturating_add(records.len());
             if records.len() >= HISTORY_SCAN_RECORDS || self.log_start(*log).await?.get() > 1 {
                 complete = false;

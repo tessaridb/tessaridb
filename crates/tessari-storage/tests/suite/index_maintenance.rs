@@ -38,7 +38,7 @@ impl Fixture {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(Arc::clone(&backend)).now().unwrap();
 
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("prod").now().unwrap();
         let database = catalog
@@ -96,7 +96,7 @@ impl Fixture {
     }
 
     fn write(&self, id: &str, email: Option<Value>) -> Result<Sequence, Error> {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         transaction.put(
             self.at(id),
             encode_payload(&Self::record(email)).into_bytes(),
@@ -105,7 +105,7 @@ impl Fixture {
     }
 
     fn delete(&self, id: &str) {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         transaction.delete(self.at(id));
         transaction.commit().now().unwrap();
     }
@@ -245,7 +245,7 @@ fn two_records_claiming_one_unique_value_in_one_transaction_are_refused() {
     // A precondition cannot catch this: both find the key absent, both are
     // satisfied, and the second would silently overwrite the first.
     let fixture = Fixture::new(true);
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     let payload =
         encode_payload(&Fixture::record(Some(Value::from("one@example.com")))).into_bytes();
     transaction.put(fixture.at("u1"), payload.clone());
@@ -338,7 +338,7 @@ fn a_unique_lookup_returns_the_record_that_holds_the_value() {
         .write("u2", Some(Value::from("grace@example.com")))
         .unwrap();
 
-    let transaction = fixture.store.begin().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
     let found = transaction
         .records_by_index(&fixture.index, &[Value::from("ada@example.com")])
         .now()
@@ -368,7 +368,7 @@ fn a_non_unique_lookup_returns_every_record_holding_the_value() {
         .write("u3", Some(Value::from("other@example.com")))
         .unwrap();
 
-    let transaction = fixture.store.begin().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
     let found = transaction
         .records_by_index(&fixture.index, &[Value::from("shared@example.com")])
         .now()
@@ -387,7 +387,7 @@ fn a_lookup_never_returns_a_record_that_no_longer_holds_the_value() {
         .write("u1", Some(Value::from("old@example.com")))
         .unwrap();
 
-    let reader = fixture.store.begin().unwrap();
+    let reader = fixture.store.begin().now().unwrap();
     fixture
         .write("u1", Some(Value::from("new@example.com")))
         .unwrap();
@@ -410,7 +410,7 @@ fn a_lookup_never_returns_a_record_that_no_longer_holds_the_value() {
     assert!(missed.is_empty(), "the entry for the old value was removed");
 
     // A reader at the latest committed state is exact.
-    let current = fixture.store.begin().unwrap();
+    let current = fixture.store.begin().now().unwrap();
     let found = current
         .records_by_index(&fixture.index, &[Value::from("new@example.com")])
         .now()
@@ -428,7 +428,7 @@ fn a_reader_behind_the_tail_finds_the_value_through_retired_entries() {
         .write("u1", Some(Value::from("old@example.com")))
         .unwrap();
 
-    let reader = fixture.store.begin().unwrap();
+    let reader = fixture.store.begin().now().unwrap();
     fixture
         .write("u1", Some(Value::from("new@example.com")))
         .unwrap();
@@ -468,7 +468,7 @@ fn a_lookup_sees_this_transactions_own_uncommitted_writes() {
         .write("u1", Some(Value::from("shared@example.com")))
         .unwrap();
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     transaction.put(
         fixture.at("u2"),
         encode_payload(&Fixture::record(Some(Value::from("shared@example.com")))).into_bytes(),
@@ -494,7 +494,7 @@ fn a_deleted_record_is_not_returned_by_a_lookup() {
         .write("u1", Some(Value::from("ada@example.com")))
         .unwrap();
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     transaction.delete(fixture.at("u1"));
     assert!(
         transaction
@@ -513,7 +513,7 @@ fn table_with_rows(unique: bool) -> Fixture {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let store = Store::open(Arc::clone(&backend)).now().unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog
@@ -563,7 +563,7 @@ fn table_with_rows(unique: bool) -> Fixture {
 fn indexed_after_the_fact(unique: bool) -> Fixture {
     let populated = table_with_rows(unique);
 
-    let mut transaction = populated.store.begin().unwrap();
+    let mut transaction = populated.store.begin().now().unwrap();
     let index = Catalog::new(&mut transaction)
         .create_index(
             populated.table,
@@ -599,7 +599,7 @@ fn an_index_declared_after_the_rows_indexes_them_in_the_same_commit() {
         "the record with no email is not in the index"
     );
 
-    let transaction = fixture.store.begin().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
     let found = transaction
         .records_by_index(&fixture.index, &[Value::from("ada@example.com")])
         .now()
@@ -628,7 +628,7 @@ fn rows_written_in_the_transaction_that_defines_the_index_are_indexed_too() {
     // catalog as of the state below this commit, where the index does not exist.
     let fixture = table_with_rows(false);
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     let index = Catalog::new(&mut transaction)
         .create_index(
             fixture.table,
@@ -666,7 +666,7 @@ fn defining_a_unique_index_over_rows_that_already_violate_it_is_refused() {
         .write("u4", Some(Value::from("ada@example.com")))
         .unwrap();
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     let index = Catalog::new(&mut transaction)
         .create_index(
             fixture.table,
@@ -692,7 +692,7 @@ fn defining_a_unique_index_over_rows_that_already_violate_it_is_refused() {
         refused.entries().is_empty(),
         "a refused definition writes nothing at all"
     );
-    let mut transaction = refused.store.begin().unwrap();
+    let mut transaction = refused.store.begin().now().unwrap();
     assert!(
         Catalog::new(&mut transaction)
             .indexes_on(refused.namespace, refused.database, refused.table)
@@ -725,7 +725,7 @@ fn a_replica_builds_the_same_entries_for_an_index_on_a_nested_value() {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let store = Store::open(Arc::clone(&backend)).now().unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog
@@ -749,7 +749,7 @@ fn a_replica_builds_the_same_entries_for_an_index_on_a_nested_value() {
 
     // One row the path reaches, one it does not, written before the index
     // exists — so the define-time build has to walk both.
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(address("p1"), encode_payload(&nested("Paris")).into_bytes());
     transaction.put(
         address("p2"),
@@ -761,7 +761,7 @@ fn a_replica_builds_the_same_entries_for_an_index_on_a_nested_value() {
     );
     transaction.commit().now().unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let index = Catalog::new(&mut transaction)
         .create_index(
             table.id,

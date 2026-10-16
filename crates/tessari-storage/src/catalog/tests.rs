@@ -87,7 +87,7 @@ fn a_tables_definitions_found_by_its_names_are_the_whole_catalogs_answer() {
         seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
         (seed >> 33) % below
     };
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let mut tables = Vec::new();
     for space in ["a", "b"] {
@@ -131,7 +131,7 @@ fn a_tables_definitions_found_by_its_names_are_the_whole_catalogs_answer() {
         }
     }
     transaction.commit().now().unwrap();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     for &(namespace, database, table) in &tables {
         match roll(4) {
@@ -150,7 +150,7 @@ fn a_tables_definitions_found_by_its_names_are_the_whole_catalogs_answer() {
     }
     transaction.commit().now().unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     let fields = catalog.fields().now().unwrap();
     let (mut dropped_with_children, mut live_with_indexes) = (0, Vec::new());
@@ -232,7 +232,7 @@ fn a_held_definition_is_the_one_each_snapshot_holds() {
     let store = Store::open(Arc::new(tessari_kv::MemoryBackend::new()))
         .now()
         .unwrap();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap().id;
     let database = catalog.create_database(namespace, "shop").now().unwrap().id;
@@ -276,7 +276,7 @@ fn a_held_definition_is_the_one_each_snapshot_holds() {
         (indexes, fields)
     };
     let read = || {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         answer(&Catalog::new(&mut transaction))
     };
     let named = |names: &[&str], prefix: &str| -> Vec<String> {
@@ -286,9 +286,9 @@ fn a_held_definition_is_the_one_each_snapshot_holds() {
     assert_eq!(read(), (named(&["a"], "by_"), named(&["a"], "")));
     // Read twice: the second is answered from what the first held.
     assert_eq!(read(), (named(&["a"], "by_"), named(&["a"], "")));
-    let mut before = store.begin().unwrap();
+    let mut before = store.begin().now().unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     declare(&mut Catalog::new(&mut transaction), "b");
     transaction.commit().now().unwrap();
     assert_eq!(
@@ -302,7 +302,7 @@ fn a_held_definition_is_the_one_each_snapshot_holds() {
         "a reader begun before the change is answered with what came after it"
     );
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     declare(&mut catalog, "c");
     assert_eq!(
@@ -317,7 +317,7 @@ fn a_held_definition_is_the_one_each_snapshot_holds() {
         "a cancelled definition is seen"
     );
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let first = catalog
         .indexes_on(namespace, database, table)
@@ -335,7 +335,7 @@ fn a_held_definition_is_the_one_each_snapshot_holds() {
     // A definition rewritten in place — `REBUILD INDEX` writes the index row
     // and claims no name — is seen by the next reader too.
     let unique_now = |store: &Store| {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         Catalog::new(&mut transaction)
             .indexes_on(namespace, database, table)
             .now()
@@ -343,7 +343,7 @@ fn a_held_definition_is_the_one_each_snapshot_holds() {
             .unique
     };
     let held = unique_now(&store);
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let mut rewritten = catalog
         .indexes_on(namespace, database, table)

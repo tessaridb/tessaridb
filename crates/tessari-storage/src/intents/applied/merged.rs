@@ -4,7 +4,6 @@
 //! follower applies it.
 
 use tessari_encoding::{AcrossPartKey, Decision, Part, Participant, StoreKey, TransactionRecord};
-use tessari_kv::AsyncKvBackend as _;
 use tessari_types::{Reach, Sequence};
 
 use super::{Fixture, TRANSACTION, doc, record_of};

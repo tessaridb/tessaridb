@@ -13,7 +13,7 @@ use super::*;
 ///
 /// Returns an error when the store or the stream fails.
 pub async fn write(store: &Store, out: &mut impl Write) -> Result<Written> {
-    let homes = store.logs()?;
+    let homes = store.logs().await?;
     let sections = u32::try_from(homes.len()).unwrap_or(u32::MAX);
     let writer = write_head(out, sections)?;
     let mut records = 0_u64;
@@ -75,8 +75,8 @@ pub async fn write_from(
 ///
 /// Returns [`Error::ManyLogs`] when the store holds more than one log, and the
 /// store's own failure when they cannot be listed.
-pub fn only_log(store: &Store) -> Result<LogId> {
-    match store.logs()?.as_slice() {
+pub async fn only_log(store: &Store) -> Result<LogId> {
+    match store.logs().await?.as_slice() {
         [] => Ok(LogId::unattributed(Reach::Store)),
         [log] => Ok(*log),
         many => Err(Error::ManyLogs {
@@ -113,7 +113,7 @@ async fn write_section(
     from: Sequence,
 ) -> Result<(u64, LogSpan)> {
     let start = Sequence::new(from.get().max(1));
-    let tail = store.committed_tail(log)?;
+    let tail = store.committed_tail(log).await?;
     // The home before the bounds, because the bounds mean nothing without it:
     // a position counts in one log, and a section that named a range without
     // naming which log it counted in would restore onto the wrong base with no

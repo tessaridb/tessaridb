@@ -20,7 +20,7 @@ impl Session<'_> {
                 writes,
             } => {
                 self.may_write_records(store, writes, span).await?;
-                let mut buffered = store.begin()?;
+                let mut buffered = store.begin().await?;
                 buffer(&mut buffered, writes);
                 let waiting = self
                     .acknowledgement_in(&mut buffered, None, Some(Acknowledge::Majority), span)
@@ -44,7 +44,7 @@ impl Session<'_> {
                         part: "decide",
                         problem: "a record that names no participant",
                     }))?;
-                let mut deciding = store.begin()?;
+                let mut deciding = store.begin().await?;
                 let waiting = self
                     .acknowledgement_in(
                         &mut deciding,
@@ -67,7 +67,7 @@ impl Session<'_> {
                 writes,
             } => {
                 self.may_write_records(store, writes, span).await?;
-                let mut buffered = store.begin()?;
+                let mut buffered = store.begin().await?;
                 buffer(&mut buffered, writes);
                 let waiting = self
                     .acknowledgement_in(&mut buffered, None, Some(Acknowledge::Majority), span)
@@ -92,7 +92,7 @@ impl Session<'_> {
                         part: "conclude",
                         problem: "a record that names no participant",
                     }))?;
-                let mut concluding = store.begin()?;
+                let mut concluding = store.begin().await?;
                 let waiting = self
                     .acknowledgement_in(
                         &mut concluding,
@@ -128,7 +128,7 @@ impl Session<'_> {
                 transaction,
                 coordinator,
             } => {
-                let mut forgetting = store.begin()?;
+                let mut forgetting = store.begin().await?;
                 let waiting = self
                     .acknowledgement_in(
                         &mut forgetting,
@@ -151,7 +151,8 @@ impl Session<'_> {
                 participants,
             } => {
                 let resolved = store
-                    .begin()?
+                    .begin()
+                    .await?
                     .resolve_across(*transaction, *committed, records, participants)
                     .await
                     .map_err(advised)?;

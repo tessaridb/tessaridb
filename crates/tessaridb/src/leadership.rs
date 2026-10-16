@@ -78,8 +78,8 @@ impl Db {
     /// this node's own lease fence, which is the correct refusal: a node past
     /// its fence may not write.
     pub async fn record_leadership(&self, range: Reach, epoch: tessari_types::Epoch) -> Result<()> {
-        let me = self.store.node_identity()?.id;
-        let mut transaction = self.store.begin()?;
+        let me = self.store.node_identity().await?.id;
+        let mut transaction = self.store.begin().await?;
         Catalog::new(&mut transaction).record_leadership(range, me, epoch)?;
         transaction.commit().await?;
         Ok(())
@@ -103,7 +103,7 @@ impl Db {
     /// Returns an error when the transaction cannot be opened or a stored
     /// definition cannot be read.
     pub async fn leader_of(&self, range: Reach) -> Result<Option<LeadershipDefinition>> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         Ok(Catalog::new(&mut transaction).leader_of(range).await?)
     }
 
@@ -148,7 +148,7 @@ impl Db {
     /// peer may write*, and the two would disagree the day somebody declared
     /// two writable peers and only one of them checked.
     pub async fn writable_peer(&self) -> Result<Option<ReplicaDefinition>> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let mut writable = Catalog::new(&mut transaction)
             .replicas()
             .await?
@@ -177,7 +177,7 @@ impl Db {
     ///
     /// Returns an error when the catalog cannot be read.
     pub async fn member(&self, node: &[u8; NODE_ID_LEN]) -> Result<Option<ReplicaDefinition>> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         Ok(Catalog::new(&mut transaction)
             .replicas()
             .await?

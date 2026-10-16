@@ -82,7 +82,7 @@ pub(crate) async fn collect_placed_ranges(
                     continue;
                 }
             };
-            let seed = match store.committed_tail(log) {
+            let seed = match store.committed_tail(log).await {
                 Ok(tail) => tessari_types::Sequence::new(tail.get().saturating_add(1)),
                 Err(why) => {
                     tracing::warn!(range = ?home, error = %why, "this node cannot say how far a range reaches");

@@ -17,7 +17,7 @@ async fn a_forgotten_record_is_gone_and_readers_still_see_the_transaction() -> R
     fixture.resolve(1).await?;
     fixture.forget().await?;
     assert_eq!(fixture.store.transaction_record(TRANSACTION).await?, None);
-    let reading = fixture.store.begin()?;
+    let reading = fixture.store.begin().await?;
     for home in 0..2 {
         assert_eq!(read(&reading, &fixture.address(home)).await?, "new");
     }

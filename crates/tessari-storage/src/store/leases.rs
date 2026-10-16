@@ -121,7 +121,7 @@ impl Store {
     ///
     /// Returns an error when the membership cannot be read.
     pub async fn writing_epoch(&self, home: Reach) -> crate::error::Result<Epoch> {
-        let mut transaction = self.begin()?;
+        let mut transaction = self.begin().await?;
         let placed: std::collections::BTreeSet<Reach> =
             crate::catalog::Catalog::new(&mut transaction)
                 .replicas()

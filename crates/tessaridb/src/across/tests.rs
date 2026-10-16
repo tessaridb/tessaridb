@@ -26,7 +26,7 @@ fn left_behind(decisions: &[Decision]) -> (Db, RecordAddress) {
         )
         .unwrap();
     let store = db.store();
-    let mut reading = store.begin().unwrap();
+    let mut reading = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut reading);
     let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
     let database = catalog
@@ -46,7 +46,10 @@ fn left_behind(decisions: &[Decision]) -> (Db, RecordAddress) {
         .answer_across(&AcrossAsk::Prepare {
             transaction: TRANSACTION,
             coordinator: home,
-            seen: store.committed_tail(store.own_log(home).unwrap()).unwrap(),
+            seen: store
+                .committed_tail(store.own_log(home).now().unwrap())
+                .now()
+                .unwrap(),
             writes: vec![Mutation {
                 namespace,
                 database,
@@ -87,6 +90,7 @@ fn note(db: &Db, address: &RecordAddress) -> Value {
     decode_payload(
         &db.store()
             .begin()
+            .now()
             .unwrap()
             .get(address)
             .now()
@@ -282,7 +286,7 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
         )
         .unwrap();
     let store = db.store();
-    let mut reading = store.begin().unwrap();
+    let mut reading = store.begin().now().unwrap();
     let catalog = tessari_storage::Catalog::new(&mut reading);
     let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
     let database = catalog
@@ -318,7 +322,8 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
                 transaction: TRANSACTION,
                 coordinator: shard(1),
                 seen: store
-                    .committed_tail(store.own_log(shard(at)).unwrap())
+                    .committed_tail(store.own_log(shard(at)).now().unwrap())
+                    .now()
                     .unwrap(),
                 writes: vec![write(id)],
             })
@@ -348,7 +353,7 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
             .now()
             .unwrap();
     }
-    let me = store.node_identity().unwrap().id;
+    let me = store.node_identity().now().unwrap().id;
     let other = [0x9f; tessari_storage::NODE_ID_LEN];
     session
         .run_now(&format!(
@@ -360,7 +365,7 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
                 .collect::<String>()
         ))
         .unwrap();
-    let mut leading = store.begin().unwrap();
+    let mut leading = store.begin().now().unwrap();
     let mut catalog = tessari_storage::Catalog::new(&mut leading);
     catalog
         .record_leadership(shard(1), me, tessari_types::Epoch::new(1))
@@ -373,6 +378,7 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
 
     let resolved = store
         .begin()
+        .now()
         .unwrap()
         .resolve_across(TRANSACTION, true, &[], &committed.participants)
         .now();
@@ -386,6 +392,7 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
     // value already, D6a.)
     let again = store
         .begin()
+        .now()
         .unwrap()
         .resolve_across(TRANSACTION, true, &[], &committed.participants)
         .now();

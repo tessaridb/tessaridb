@@ -41,7 +41,7 @@ pub(super) async fn apply_one(
         if let RecordValue::Present(payload) = mutation.value.value()
             && let Some(held) = projected_vector(definition, &decode_payload(payload)?)
         {
-            let touched = graph.insert(&mutation.id, held)?;
+            let touched = graph.insert(&mutation.id, held).await?;
             batch = graph::write(batch, &address, &touched);
         }
         return Ok(batch);

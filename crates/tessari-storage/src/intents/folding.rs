@@ -17,7 +17,6 @@
 //! nothing reads its markers any more.
 
 use std::collections::{BTreeMap, BTreeSet};
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     AcrossPartKey, RecordKey, ResolvedOfKey, StampedValue, StoreKey, StoreValue, TransactionId,

@@ -1667,7 +1667,7 @@ fn multi_master() -> (Store, Store, Store) {
 /// Read back from the catalog, because a test that hard-coded `1` here would
 /// pass for the wrong reason the day allocation changes.
 fn shared_range(store: &Store) -> Reach {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     let namespace = catalog.namespace_id("shared").now().unwrap().unwrap();
     let database = catalog
@@ -1706,7 +1706,7 @@ fn rewrite_note(store: &Store, id: &str, body: &str) {
 /// the target would leave the source's logs empty on a store holding all of
 /// their records.
 fn replay(source: &Store, target: &Store, home: Reach) {
-    for log in source.logs_of(home).unwrap() {
+    for log in source.logs_of(home).now().unwrap() {
         for (at, record) in source.log_records(log, Sequence::ZERO, 1024).now().unwrap() {
             target
                 .apply_record(log.writer, at, &record)
@@ -1847,8 +1847,8 @@ fn the_node_that_wrote_a_version_is_not_the_one_it_has_seen_most_of() {
 
     // The node the SECOND store writes under, taken from the log it owns rather
     // than from the report being tested.
-    let mine = second.own_log(home).unwrap().writer;
-    let theirs = first.own_log(home).unwrap().writer;
+    let mine = second.own_log(home).now().unwrap().writer;
+    let theirs = first.own_log(home).now().unwrap().writer;
     assert_ne!(mine, theirs, "the two stores share a writer id");
     assert_eq!(
         node_of(answered),

@@ -4,7 +4,6 @@
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::IndexAddress;
 use tessari_kv::{KvBackend, MemoryBackend, WriteBatch};
@@ -60,7 +59,7 @@ async fn both(count: usize, width: usize) -> (Graph, Store) {
     let mut whole = Graph::empty(VectorDistance::Cosine, false);
     let mut written = std::collections::BTreeMap::new();
     for (at, vector) in vectors(count, width).into_iter().enumerate() {
-        written.extend(whole.insert(&id(at), vector).unwrap());
+        written.extend(whole.insert(&id(at), vector).await.unwrap());
     }
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
         .await
@@ -75,14 +74,14 @@ async fn a_graph_read_node_by_node_answers_as_the_whole_graph_does() {
     let (whole, store) = both(600, 8).await;
     let stored = Graph::read(&store, &address(), VectorDistance::Cosine, false).unwrap();
     assert_eq!(
-        stored.entry().unwrap(),
-        whole.entry().unwrap(),
+        stored.entry().await.unwrap(),
+        whole.entry().await.unwrap(),
         "the entry point"
     );
     for query in vectors(40, 8) {
         assert_eq!(
-            stored.nearest(&query, 10, None).unwrap(),
-            whole.nearest(&query, 10, None).unwrap()
+            stored.nearest(&query, 10, None).await.unwrap(),
+            whole.nearest(&query, 10, None).await.unwrap()
         );
     }
 }
@@ -91,7 +90,7 @@ async fn a_graph_read_node_by_node_answers_as_the_whole_graph_does() {
 async fn a_walk_holds_only_the_nodes_it_reaches() {
     let (_, store) = both(2_000, 8).await;
     let stored = Graph::read(&store, &address(), VectorDistance::Cosine, false).unwrap();
-    let found = stored.nearest(&vectors(1, 8)[0], 10, None).unwrap();
+    let found = stored.nearest(&vectors(1, 8)[0], 10, None).await.unwrap();
     assert_eq!(found.len(), 10);
     let held = stored.nodes.held();
     assert!(
@@ -106,15 +105,15 @@ async fn edits_in_one_operation_are_seen_by_its_later_walks_and_the_entry() {
     // moves exactly as it would in the graph held whole.
     let (mut whole, store) = both(300, 8).await;
     let mut stored = Graph::read(&store, &address(), VectorDistance::Cosine, false).unwrap();
-    let first = whole.entry().unwrap().unwrap();
+    let first = whole.entry().await.unwrap().unwrap();
     whole.remove(&first);
     stored.remove(&first);
-    assert_eq!(stored.entry().unwrap(), whole.entry().unwrap());
+    assert_eq!(stored.entry().await.unwrap(), whole.entry().await.unwrap());
     let smaller = RecordId::Int(-10_000);
     let vector = vectors(1, 8)[0].clone();
     assert_eq!(
-        stored.insert(&smaller, vector.clone()).unwrap(),
-        whole.insert(&smaller, vector).unwrap()
+        stored.insert(&smaller, vector.clone()).await.unwrap(),
+        whole.insert(&smaller, vector).await.unwrap()
     );
-    assert_eq!(stored.entry().unwrap(), Some(smaller));
+    assert_eq!(stored.entry().await.unwrap(), Some(smaller));
 }

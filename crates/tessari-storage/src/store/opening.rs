@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use tessari_kv::AsyncKvBackend;
 
 use tessari_encoding::Roles;
-use tessari_kv::KvBackend;
 
 use crate::error::Result;
 use crate::followers::Followers;
@@ -26,25 +26,34 @@ impl Store {
     ///
     /// Returns an error when the backend fails, when the stored metadata cannot
     /// be decoded, or when the on-disk format is newer than this build.
-    pub async fn open(backend: Arc<dyn KvBackend>) -> Result<Self> {
+    pub async fn open(backend: Arc<dyn tessari_kv::KvBackend>) -> Result<Self> {
+        Self::open_async(Arc::new(tessari_kv::Synchronous(backend))).await
+    }
+
+    /// [`Self::open`] on a backend that answers through futures.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    pub async fn open_async(backend: Arc<dyn AsyncKvBackend>) -> Result<Self> {
         // The format is settled before anything else is written, the node
         // identity included: a store this build is about to refuse must not be
         // modified on the way to refusing it.
-        match read_format_version(Arc::clone(&backend))? {
+        match read_format_version(Arc::clone(&backend)).await? {
             Some(found) => {
                 found.check_supported()?;
-                give_an_older_log_its_home(Arc::clone(&backend), found)?;
-                give_an_older_log_its_writer(Arc::clone(&backend), found)?;
+                give_an_older_log_its_home(Arc::clone(&backend), found).await?;
+                give_an_older_log_its_writer(Arc::clone(&backend), found).await?;
             }
             None => {
-                refuse_data_without_a_stamp(backend.as_ref())?;
-                write_initial_metadata(Arc::clone(&backend))?;
+                refuse_data_without_a_stamp(backend.as_ref()).await?;
+                write_initial_metadata(Arc::clone(&backend)).await?;
             }
         }
-        seed_version_position(Arc::clone(&backend))?;
-        crate::node::ensure(Arc::clone(&backend))?;
-        let served = Arc::new(crate::served::Served::load(backend.as_ref())?);
-        let expiring = Arc::new(crate::lapse::Expiring::load(backend.as_ref())?);
+        seed_version_position(Arc::clone(&backend)).await?;
+        crate::node::ensure(Arc::clone(&backend)).await?;
+        let served = Arc::new(crate::served::Served::load(backend.as_ref()).await?);
+        let expiring = Arc::new(crate::lapse::Expiring::load(backend.as_ref()).await?);
         let writing = Arc::new(crate::gate::WriteGate::default());
         let store = Self {
             // Every read the turn's holder makes sees what is staged behind it;
@@ -99,7 +108,7 @@ impl Store {
         store.begin_keeping_retired_entries().await?;
         // Rows are held only for readers at or above this: history before the
         // open is not known to have left them unchanged.
-        store.catalog_rows.changed(store.committed_version()?);
+        store.catalog_rows.changed(store.committed_version().await?);
         Ok(store)
     }
 
@@ -139,7 +148,7 @@ impl Store {
     /// Returns the substrate's failure, and a decoding failure when the node
     /// identity cannot be read.
     pub async fn effective_roles(&self) -> Result<Roles> {
-        let identity = self.node_identity()?;
+        let identity = self.node_identity().await?;
         let adopted = identity.roles;
         if self.lease.spent().is_none() && !self.awaiting(&identity.id).await? {
             return Ok(adopted);

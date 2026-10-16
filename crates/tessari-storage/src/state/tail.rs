@@ -21,7 +21,6 @@
 //! versions keep their order and each lands above the version a reader sees.
 
 use std::collections::{BTreeMap, VecDeque};
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     Across, AcrossPartKey, Decision, LogRecord, Mutation, Part, StoreKey, StoreValue,

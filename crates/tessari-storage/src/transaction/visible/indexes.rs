@@ -15,7 +15,8 @@ use crate::error::Result;
 async fn current(fixture: &Fixture, home: usize) -> Result<bool> {
     fixture
         .store
-        .begin()?
+        .begin()
+        .await?
         .indexes_are_current_for(fixture.homes[home].table)
         .await
 }
@@ -89,7 +90,7 @@ async fn an_aborted_transaction_never_unsettles_anything() -> Result<()> {
 #[tokio::test]
 async fn a_snapshot_behind_the_tail_is_not_current_for_any_table() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let behind = fixture.store.begin()?;
+    let behind = fixture.store.begin().await?;
     fixture.prepare(0).await?;
     assert!(
         !behind

@@ -78,7 +78,7 @@ async fn replay(
                 // zero: a whole backup continues from an empty log and an
                 // incremental one continues from where its predecessor stopped,
                 // and both are the same question.
-                let at = store.committed_tail(span.log)?;
+                let at = store.committed_tail(span.log).await?;
                 let needs = span.from.get().saturating_sub(1);
                 if at.get() != needs {
                     return Err(Error::WrongBase {
@@ -94,14 +94,14 @@ async fn replay(
                 // it never had one — and merges two stores that were never a
                 // cluster, silently. What a restore may continue from is what
                 // this file has itself put there.
-                for held in store.logs_of(span.log.home)? {
+                for held in store.logs_of(span.log.home).await? {
                     if held == span.log || opened.contains(&held) {
                         continue;
                     }
-                    if store.committed_tail(held)?.get() > 0 {
+                    if store.committed_tail(held).await?.get() > 0 {
                         return Err(Error::WrongBase {
                             needs: 0,
-                            found: store.committed_tail(held)?.get(),
+                            found: store.committed_tail(held).await?.get(),
                         });
                     }
                 }
@@ -192,8 +192,8 @@ async fn replay(
 pub async fn bootstrap(store: &Store, input: &mut impl Read) -> Result<Bootstrapped> {
     let restored = read(store, input).await?;
     let mut follow_from = Vec::with_capacity(restored.logs.len());
-    for log in store.logs()? {
-        let reached = store.committed_tail(log)?;
+    for log in store.logs().await? {
+        let reached = store.committed_tail(log).await?;
         follow_from.push((log, Sequence::new(reached.get().saturating_add(1))));
     }
     Ok(Bootstrapped {

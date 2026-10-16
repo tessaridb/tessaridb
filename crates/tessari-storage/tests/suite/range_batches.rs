@@ -31,7 +31,7 @@ impl Fixture {
     fn new() -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(backend).now().unwrap();
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("prod").now().unwrap();
         let database = catalog.create_database(namespace.id, "shop").now().unwrap();
@@ -76,7 +76,7 @@ impl Fixture {
     /// same entries — and one is what keeps a four-hundred-record fixture from
     /// being four hundred log records.
     fn write(&self, records: impl IntoIterator<Item = (RecordId, i64)>) {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         for (id, taken) in records {
             let record = Value::Object(BTreeMap::from([("taken".to_owned(), Value::from(taken))]));
             transaction.put(self.at(id), encode_payload(&record).into_bytes());
@@ -86,7 +86,7 @@ impl Fixture {
 
     /// The identities a range read produces.
     fn range(&self, lower: Option<i64>, upper: Option<i64>) -> Vec<RecordId> {
-        let transaction = self.store.begin().unwrap();
+        let transaction = self.store.begin().now().unwrap();
         let found = transaction
             .records_in_range(
                 &self.index,
@@ -215,7 +215,7 @@ fn an_equality_lookup_wider_than_a_batch_answers_every_record_holding_the_value(
     let wanted = RANGE_SCAN_BATCH_ENTRIES + 1;
     fixture.write((0..wanted).map(|n| (RecordId::from(format!("u{n:05}").as_str()), 7)));
 
-    let transaction = fixture.store.begin().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
     let found = transaction
         .records_by_index(&fixture.index, &[Value::from(7_i64)])
         .now()
@@ -243,7 +243,7 @@ fn an_uncommitted_write_is_folded_into_a_range_of_any_width() {
     let count = RANGE_SCAN_BATCH_ENTRIES * 2 + 3;
     fixture.write(spread(count));
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     let fresh = i64::try_from(count).unwrap();
     let record = Value::Object(BTreeMap::from([("taken".to_owned(), Value::from(fresh))]));
     transaction.put(

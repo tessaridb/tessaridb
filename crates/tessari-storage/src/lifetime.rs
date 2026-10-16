@@ -51,7 +51,7 @@ pub(crate) async fn admit(
     now: u64,
     lifetimes: &BTreeMap<RecordAddress, Lifetime>,
 ) -> Result<Option<LogRecord>> {
-    let mut view = store.begin_local()?;
+    let mut view = store.begin_local().await?;
     let declared = declared_in(&mut view, record).await?;
     if declared.is_empty() {
         return Ok(None);

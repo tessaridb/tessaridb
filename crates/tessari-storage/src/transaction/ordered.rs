@@ -9,7 +9,6 @@ use tessari_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, SecondaryIndexKey, StoreKey, StoreValue,
     UniqueIndexKey,
 };
-use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 use tessari_types::RecordId;
 

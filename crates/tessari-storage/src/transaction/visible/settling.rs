@@ -26,7 +26,7 @@ async fn restored(fixture: &Fixture) -> Result<Store> {
 }
 
 async fn reads(fixture: &Fixture, store: &Store) -> Result<[String; 2]> {
-    let reading = store.begin()?;
+    let reading = store.begin().await?;
     Ok([
         read(&reading, &fixture.address(0)).await?,
         read(&reading, &fixture.address(1)).await?,
@@ -121,7 +121,7 @@ async fn an_aborted_record_drops_its_intents() -> Result<()> {
     let restored = restored(&fixture).await?;
     assert!(restored.standing_across().await?.is_empty());
     assert_eq!(reads(&fixture, &restored).await?, ["old", "old"]);
-    let mut writing = restored.begin()?;
+    let mut writing = restored.begin().await?;
     for home in 0..2 {
         writing.put(fixture.address(home), b"later".to_vec());
     }
@@ -201,9 +201,9 @@ async fn a_pending_or_absent_record_stays_for_the_log_above() -> Result<()> {
 async fn settling_again_changes_nothing() -> Result<()> {
     let fixture = both_prepared(Decision::Staging).await?;
     let restored = restored(&fixture).await?;
-    let version = restored.committed_version()?;
+    let version = restored.committed_version().await?;
     assert_eq!(restored.settle_restored().await?, 0);
-    assert_eq!(restored.committed_version()?, version);
+    assert_eq!(restored.committed_version().await?, version);
     assert_eq!(reads(&fixture, &restored).await?, ["new", "new"]);
     Ok(())
 }

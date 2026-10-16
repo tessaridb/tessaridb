@@ -69,7 +69,7 @@ impl Elsewhere for Heard {
 
 /// Declare a peer at `WHOLE_AT` that is `node` and collects `reach`.
 fn declare(store: &Store, node: [u8; NODE_ID_LEN], reach: Reach) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .create_replica_with(ReplicaDefinition {
             name: "whole".to_owned(),
@@ -156,7 +156,7 @@ fn a_partial_holder_names_a_node_holding_the_whole_database() {
 fn a_node_holding_one_shard_is_not_named() {
     let leader = leader();
     let follower = follower_of_the_middle(&leader);
-    let mut transaction = leader.begin().unwrap();
+    let mut transaction = leader.begin().now().unwrap();
     let ledger = Catalog::new(&mut transaction)
         .table_id(NamespaceId::new(1), DatabaseId::new(1), "ledger")
         .now()
@@ -195,7 +195,7 @@ fn a_node_is_never_named_as_the_holder_it_is_not() {
     // served reach is one shard: naming it would send the client back here.
     let leader = leader();
     let follower = follower_of_the_middle(&leader);
-    let me = follower.node_identity().unwrap().id;
+    let me = follower.node_identity().now().unwrap().id;
     declare(&follower, me, the_database());
     for read in REFUSED {
         assert_eq!(named(&follower, me, read), None, "{read}");
@@ -245,7 +245,7 @@ fn a_moved_map_names_a_node_holding_the_whole_database() {
 #[test]
 fn a_session_reads_its_node_and_its_own_tenancy() {
     let leader = leader();
-    let me = leader.node_identity().unwrap().id;
+    let me = leader.node_identity().now().unwrap().id;
     let mut session = signed_in(&leader, "reader");
     let context = |session: &mut tessari_session::Session<'_>| match session
         .run_now("RETURN session::context();")

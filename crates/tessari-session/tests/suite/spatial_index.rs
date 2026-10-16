@@ -53,7 +53,7 @@ fn a_spatial_index_is_defined_and_reads_back_as_one() {
         .run_now("DEFINE INDEX by_where ON places FIELDS location SPATIAL;")
         .unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     let namespace = catalog.namespace_id("atlas").now().unwrap().unwrap();
     let database = catalog
@@ -100,7 +100,7 @@ fn the_index_is_built_over_rows_that_are_already_there() {
         .run_now("DEFINE INDEX by_where ON places FIELDS location SPATIAL;")
         .unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     let namespace = catalog.namespace_id("atlas").now().unwrap().unwrap();
     let database = catalog
@@ -235,7 +235,7 @@ fn a_rebuild_removes_an_entry_the_rows_do_not_imply() {
 
 /// The address of the `by_where` index, once it exists.
 fn index_address(store: &Store) -> IndexAddress {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
     let namespace = catalog.namespace_id("atlas").now().unwrap().unwrap();
     let database = catalog

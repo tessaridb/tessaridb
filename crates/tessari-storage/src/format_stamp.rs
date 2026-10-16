@@ -26,7 +26,7 @@ pub(crate) async fn maintain(
         let Some(finalized) = finalized_in(mutation)? else {
             continue;
         };
-        if store.held_format()? < finalized {
+        if store.held_format().await? < finalized {
             batch = batch.put(
                 FormatVersionKey::keyspace(),
                 FormatVersionKey.encode(),

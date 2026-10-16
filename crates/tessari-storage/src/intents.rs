@@ -12,7 +12,6 @@ use tessari_encoding::{
     Provenance, RecordKey, StampedValue, StoreKey, StoreValue, TransactionRecord,
     TransactionRecordKey,
 };
-use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::WriteBatch;
 use tessari_types::Sequence;
 

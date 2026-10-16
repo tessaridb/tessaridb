@@ -7,7 +7,6 @@ use crate::error::Result;
 use std::collections::BTreeMap;
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{RecordKey, RecordValue, StampedValue, StoreKey, StoreValue};
-use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 

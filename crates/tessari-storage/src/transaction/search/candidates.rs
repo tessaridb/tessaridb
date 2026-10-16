@@ -1,5 +1,4 @@
 use super::*;
-use tessari_kv::AsyncKvBackend as _;
 
 impl Transaction<'_> {
     /// The records one term is posted against.

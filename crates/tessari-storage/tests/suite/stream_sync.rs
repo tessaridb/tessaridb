@@ -114,7 +114,7 @@ fn opened() -> (Arc<Counted>, Store) {
 
 fn page<'a>(store: &Store, records: &'a [(Sequence, LogRecord)]) -> Page<'a> {
     Page {
-        log: store.own_log(crate::FIXTURE_HOME).unwrap(),
+        log: store.own_log(crate::FIXTURE_HOME).now().unwrap(),
         from: Sequence::new(1),
         previous: Epoch::ZERO,
         records,
@@ -162,8 +162,8 @@ fn a_round_refused_part_way_still_syncs_what_it_applied() {
     let refused = store.apply_in_writer_order(&[page(&store, &sent)]).now();
 
     assert!(matches!(refused, Err(Error::LogGap { .. })), "{refused:?}");
-    let log = store.own_log(crate::FIXTURE_HOME).unwrap();
-    assert_eq!(store.committed_tail(log).unwrap(), Sequence::new(2));
+    let log = store.own_log(crate::FIXTURE_HOME).now().unwrap();
+    assert_eq!(store.committed_tail(log).now().unwrap(), Sequence::new(2));
     assert_eq!(
         backend.landed().2,
         syncs + 1,

@@ -88,7 +88,8 @@ fn a_change_written_after_a_subscribe_arrives() {
         selected(&address),
         &Follow {
             from: db
-                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+                .now()
                 .unwrap()
                 .get()
                 + 1,
@@ -135,7 +136,8 @@ fn a_connection_that_subscribes_close_behind_its_statements_is_fed() {
         busy,
         &Follow {
             from: db
-                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+                .now()
                 .unwrap()
                 .get()
                 + 1,
@@ -165,7 +167,8 @@ fn a_change_committed_past_the_node_reaches_its_feeds() {
         selected(&address),
         &Follow {
             from: db
-                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+                .now()
                 .unwrap()
                 .get()
                 + 1,
@@ -213,7 +216,8 @@ fn dropping_the_subscriber_ends_its_running_feed_with_nothing_else_written() {
     let mut feed = ada
         .follow(&Follow {
             from: db
-                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+                .now()
                 .unwrap()
                 .get()
                 + 1,
@@ -243,7 +247,8 @@ fn a_subscription_from_an_earlier_position_replays_what_it_missed() {
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
     let before = db
-        .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+        .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+        .now()
         .unwrap()
         .get();
     writer
@@ -280,7 +285,8 @@ fn watching_one_table_is_not_told_about_another() {
         selected(&address),
         &Follow {
             from: db
-                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+                .now()
                 .unwrap()
                 .get()
                 + 1,
@@ -316,7 +322,8 @@ fn a_removal_is_told_apart_from_a_write() {
         selected(&address),
         &Follow {
             from: db
-                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+                .now()
                 .unwrap()
                 .get()
                 + 1,
@@ -345,7 +352,8 @@ fn a_pushed_value_is_the_value_it_was_and_not_a_projection() {
         selected(&address),
         &Follow {
             from: db
-                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+                .now()
                 .unwrap()
                 .get()
                 + 1,
@@ -521,7 +529,8 @@ fn a_subscription_is_confined_to_the_database_the_session_selected() {
         selected(&address),
         &Follow {
             from: db
-                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+                .now()
                 .unwrap()
                 .get()
                 + 1,
@@ -786,7 +795,8 @@ fn a_grant_governed_subscriber_is_told_only_about_tables_it_was_granted() {
         ada,
         &Follow {
             from: db
-                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+                .now()
                 .unwrap()
                 .get()
                 + 1,
@@ -858,7 +868,8 @@ fn a_field_grant_reaches_the_feed_too() {
         ada,
         &Follow {
             from: db
-                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+                .now()
                 .unwrap()
                 .get()
                 + 1,
@@ -903,7 +914,8 @@ fn a_narrowed_subscription_sends_what_matches_and_says_how_far_it_read() {
         )
         .unwrap();
     let skipped_to = db
-        .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+        .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+        .now()
         .unwrap()
         .get();
     let mut feed = selected(&address)
@@ -980,7 +992,8 @@ fn a_skip_after_a_delivery_is_said_while_the_feed_is_quiet() {
     writer.run("CREATE users:1 = { chat: 'a' };", None).unwrap();
     writer.run("CREATE users:2 = { chat: 'b' };", None).unwrap();
     let skipped_to = db
-        .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+        .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+        .now()
         .unwrap()
         .get();
     let delivered = loop {

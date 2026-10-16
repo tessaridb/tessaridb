@@ -319,7 +319,7 @@ impl Session<'_> {
         table: &TableRef,
         chain: &mut Vec<String>,
     ) -> Result<Option<Select>> {
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().await?;
         let found = self.stored_view(&mut transaction, table).await;
         transaction.rollback();
         let Some((declared, params)) = found? else {

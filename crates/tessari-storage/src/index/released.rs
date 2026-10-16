@@ -17,7 +17,6 @@
 //! the very same pair rather than judging an instant against its own clock.
 
 use std::collections::BTreeSet;
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     IndexAddress, IndexTarget, LogRecord, Mutation, RecordValue, StampedValue, StoreKey,
@@ -49,7 +48,7 @@ pub(crate) async fn release_expired_holders(
     if !store.expiring().seen() {
         return Ok(None);
     }
-    let mut view = store.begin_local()?;
+    let mut view = store.begin_local().await?;
     let mut written: BTreeSet<RecordAddress> = record
         .mutations()
         .iter()

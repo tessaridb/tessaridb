@@ -211,8 +211,8 @@ fn the_index_stores_the_lists_it_promises() {
         (" POSITIONS OFFSETS NO SCORE", vec![0], vec![(0, 3)]),
     ] {
         let held = noted(Some(options));
-        let transaction = held.begin().unwrap();
-        let mut reading = held.begin().unwrap();
+        let transaction = held.begin().now().unwrap();
+        let mut reading = held.begin().now().unwrap();
         let catalog = tessari_storage::Catalog::new(&mut reading);
         let table = catalog
             .table_id(
@@ -250,8 +250,8 @@ fn the_index_stores_the_lists_it_promises() {
         writer
             .run_now("CREATE notes:7 = { body: 'written after the index' };")
             .unwrap();
-        let transaction = held.begin().unwrap();
-        let mut reading = held.begin().unwrap();
+        let transaction = held.begin().now().unwrap();
+        let mut reading = held.begin().now().unwrap();
         let catalog = tessari_storage::Catalog::new(&mut reading);
         let table = catalog
             .table_id(

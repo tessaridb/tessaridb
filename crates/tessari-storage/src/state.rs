@@ -44,7 +44,6 @@ mod tail;
 use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::sync::Arc;
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     LogId, LogRecord, Mutation, RecordKey, RecordValue, StampedValue, StoreKey, StoreValue,
@@ -101,17 +100,17 @@ impl<'a> StateReader<'a> {
     /// given it; [`Reach::Store`] is all of it. See [`Store::read_state`].
     pub(crate) async fn open(store: &'a Store, within: Reach) -> Result<Self> {
         loop {
-            let before = store.committed_version()?;
+            let before = store.committed_version().await?;
             let mut positions = Vec::new();
-            for log in store.logs()? {
+            for log in store.logs().await? {
                 // The logs a collect at this reach may read: inside it, or
                 // above it carrying the definitions it needs.
                 if within.contains(log.home) || log.home.contains(within) {
-                    positions.push((log, store.committed_tail(log)?));
+                    positions.push((log, store.committed_tail(log).await?));
                 }
             }
             let view = store.begin_at(before).await?;
-            if store.committed_version()? == before {
+            if store.committed_version().await? == before {
                 return Ok(Self {
                     store,
                     within,

@@ -26,7 +26,7 @@ fn found() -> (Store, Vec<(RecordId, Vec<u8>)>) {
         )
         .unwrap();
     let (namespace, database) = (NamespaceId::new(1), DatabaseId::new(1));
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let table = Catalog::new(&mut transaction)
         .table_id(namespace, database, "r")
         .now()

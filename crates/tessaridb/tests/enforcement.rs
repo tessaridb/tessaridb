@@ -1076,7 +1076,15 @@ const TABLES: &[Table] = &[
         // already carries. Its one caller is the binary's leadership round.
         // Re-classification trigger: `tail_leadership`'s, and any caller
         // reachable from a session or a route.
-        expected: 79,
+        //
+        // 80 since the store opens over a natively async engine (G077 W5a):
+        // `Store::open_async`. **Exempt, as a constructor**: it takes the
+        // engine already in its async form, runs the same startup readers
+        // `Store::open` runs and returns the `Store`; no session exists until it
+        // returns, so nothing it reads or writes was asked for by a caller.
+        // Re-classification trigger: any caller reachable from a session or a
+        // route.
+        expected: 80,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1325,7 +1333,9 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 165 since a snapshot streams (ADR-0125): the `Part` frame, not an entry
     // point, classified above.
     // 166 since `Store::newest_leadership_in` (DB-15), classified above.
-    assert_eq!(total, 166, "the counted tables no longer sum to 166");
+    //
+    // 167 since `Store::open_async` (G077 W5a), classified above.
+    assert_eq!(total, 167, "the counted tables no longer sum to 167");
 }
 
 /// Every `.rs` file under a directory.
@@ -1502,31 +1512,33 @@ const CLASSIFIED: &[(&str, &str)] = &[
     // above (Q-621, Q-641).
     (
         "tessari-cli/src/greeting_round.rs",
-        "let tail = store.committed_tail(own)?;",
+        "let tail = store.committed_tail(own).await?;",
     ),
     (
         "tessari-cli/src/collection_round.rs",
-        "let seed = match store.committed_tail(log) {",
+        "let seed = match store.committed_tail(log).await {",
     ),
     (
         "tessari-cli/src/collection_round/placed.rs",
-        "let seed = match store.committed_tail(log) {",
+        "let seed = match store.committed_tail(log).await {",
     ),
     (
         "tessari-cli/src/greeting_round.rs",
-        "tail: store.committed_tail(log)?,",
+        "tail: store.committed_tail(log).await?,",
     ),
     (
         "tessari-cli/src/collection_round.rs",
-        "let Ok(tail) = store.committed_tail(log) else {",
+        "let Ok(tail) = store.committed_tail(log).await else {",
     ),
     (
         "tessari-cli/src/streaming.rs",
-        "let tail = store.committed_tail(log).map_err(|why| why.to_string())?;",
+        // rustfmt splits the awaited read over four lines; the call is the
+        // one that names the read.
+        ".committed_tail(log)",
     ),
     (
         "tessari-wire/src/collection/serving.rs",
-        "tail: self.log.committed_tail(log).map_err(refused)?,",
+        "tail: self.log.committed_tail(log).await.map_err(refused)?,",
     ),
     (
         "tessari-wire/src/collection/serving.rs",

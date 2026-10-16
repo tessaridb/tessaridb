@@ -150,7 +150,7 @@ impl Db {
                 published.push((table.id, sampled));
                 continue;
             };
-            let mut writing = store.begin()?;
+            let mut writing = store.begin().await?;
             let done = match &act {
                 Act::Split(point) => Catalog::new(&mut writing)
                     .split_table(table.id, point)
@@ -184,7 +184,7 @@ impl Db {
     /// Every table that asked to be balanced and is split, with the name an
     /// operator writes it by.
     async fn tables_balancing(&self) -> Result<Vec<(String, TableDefinition)>> {
-        let mut reading = self.store().begin()?;
+        let mut reading = self.store().begin().await?;
         let catalog = Catalog::new(&mut reading);
         let mut found = Vec::new();
         for namespace in catalog.namespaces().await? {
@@ -219,7 +219,7 @@ impl Db {
         let store = self.store();
         let now = Instant::now();
         let mut counted: BTreeMap<(TableId, ShardId), u64> = BTreeMap::new();
-        for log in store.logs()? {
+        for log in store.logs().await? {
             let holds = |table: &TableDefinition| {
                 log.home
                     .contains(Reach::Database(table.namespace, table.database))
@@ -228,7 +228,7 @@ impl Db {
             if !tables.iter().any(holds) {
                 continue;
             }
-            let tail = store.committed_tail(log)?;
+            let tail = store.committed_tail(log).await?;
             // A log first met after the first pass — a shard's own log is
             // opened by the first write into it — holds only writes since.
             let next = match samples.read_to.insert(log, tail) {
@@ -279,7 +279,7 @@ impl Db {
         above: usize,
         rates: &Rates,
     ) -> Result<Vec<Measured>> {
-        let reading = self.store().begin()?;
+        let reading = self.store().begin().await?;
         let mut measured = Vec::new();
         for span in map.spans() {
             let (records, complete) =
@@ -308,7 +308,7 @@ impl Db {
         let Some(span) = map.spans().find(|span| span.id == id) else {
             return Ok(None);
         };
-        let reading = self.store().begin()?;
+        let reading = self.store().begin().await?;
         let mut seen = 0_usize;
         let mut after: Option<RecordId> = None;
         let found = loop {

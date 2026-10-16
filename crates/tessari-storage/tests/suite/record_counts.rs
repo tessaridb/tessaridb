@@ -81,7 +81,7 @@ impl Fixture {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(backend).now().unwrap();
 
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("prod").now().unwrap();
         let database = catalog
@@ -118,7 +118,7 @@ impl Fixture {
 
     /// What the counter says, or `None` when nothing has been written.
     fn counted(&self, table: TableId) -> Option<u64> {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         Catalog::new(&mut transaction)
             .record_count(table)
             .now()
@@ -127,7 +127,7 @@ impl Fixture {
 
     /// What is actually there, established independently of the counter.
     fn present(&self, table: TableId) -> u64 {
-        let transaction = self.store.begin().unwrap();
+        let transaction = self.store.begin().now().unwrap();
         let found = transaction
             .scan_table(self.namespace, self.database, table)
             .now()
@@ -160,7 +160,7 @@ fn an_arrival_a_replacement_and_a_departure_count_once_each() {
     let fixture = Fixture::new();
     let address = fixture.at(fixture.table, 1);
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     transaction.put(
         address.clone(),
         encode_payload(&Value::from("first")).into_bytes(),
@@ -170,7 +170,7 @@ fn an_arrival_a_replacement_and_a_departure_count_once_each() {
 
     // A replacement, which is the case a counter that only ever adds gets
     // wrong — and gets wrong in a way no read would ever report.
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     transaction.put(
         address.clone(),
         encode_payload(&Value::from("second")).into_bytes(),
@@ -178,7 +178,7 @@ fn an_arrival_a_replacement_and_a_departure_count_once_each() {
     transaction.commit().now().unwrap();
     assert_eq!(fixture.counted(fixture.table), Some(1));
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     transaction.delete(address.clone());
     transaction.commit().now().unwrap();
     assert_eq!(
@@ -190,7 +190,7 @@ fn an_arrival_a_replacement_and_a_departure_count_once_each() {
 
     // A delete of something already gone is not a departure. A counter that
     // subtracted here would sink below the truth and stay there.
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     transaction.delete(address);
     transaction.commit().now().unwrap();
     assert_eq!(fixture.counted(fixture.table), Some(0));
@@ -202,7 +202,7 @@ fn one_commit_carrying_many_mutations_counts_all_of_them() {
     // three and removes one has to move the count by two — not by one, and not
     // by four.
     let fixture = Fixture::new();
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     for n in 0..4 {
         transaction.put(
             fixture.at(fixture.table, n),
@@ -212,7 +212,7 @@ fn one_commit_carrying_many_mutations_counts_all_of_them() {
     transaction.commit().now().unwrap();
     assert_eq!(fixture.counted(fixture.table), Some(4));
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     for n in 4..7 {
         transaction.put(
             fixture.at(fixture.table, n),
@@ -228,7 +228,7 @@ fn one_commit_carrying_many_mutations_counts_all_of_them() {
 #[test]
 fn two_tables_keep_two_counts() {
     let fixture = Fixture::new();
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     transaction.put(
         fixture.at(fixture.table, 1),
         encode_payload(&Value::from(1)).into_bytes(),
@@ -255,7 +255,7 @@ fn the_count_and_the_records_agree_after_an_arbitrary_workload() {
     for step in 0..STEPS {
         let n = rolls.below(RECORDS);
         let address = fixture.at(fixture.table, n);
-        let mut transaction = fixture.store.begin().unwrap();
+        let mut transaction = fixture.store.begin().now().unwrap();
         // Weighted towards writing, so the table grows before it churns and
         // both directions of the counter are exercised over a non-empty table.
         if rolls.below(3) == 0 {
@@ -286,14 +286,14 @@ fn a_replica_replaying_the_log_reaches_the_same_count() {
     // query, with nothing anywhere in an error state.
     let fixture = Fixture::new();
     for n in 0..5 {
-        let mut transaction = fixture.store.begin().unwrap();
+        let mut transaction = fixture.store.begin().now().unwrap();
         transaction.put(
             fixture.at(fixture.table, n),
             encode_payload(&Value::from(format!("v{n}"))).into_bytes(),
         );
         transaction.commit().now().unwrap();
     }
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     transaction.delete(fixture.at(fixture.table, 0));
     transaction.commit().now().unwrap();
 
@@ -302,7 +302,7 @@ fn a_replica_replaying_the_log_reaches_the_same_count() {
         .unwrap();
     crate::replay(&fixture.store, &follower);
 
-    let mut transaction = follower.begin().unwrap();
+    let mut transaction = follower.begin().now().unwrap();
     assert_eq!(
         Catalog::new(&mut transaction)
             .record_count(fixture.table)

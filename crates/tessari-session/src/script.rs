@@ -64,7 +64,7 @@ pub struct ScriptTaken {
 /// Returns an error when the store cannot be read.
 pub async fn write_script(store: &Store) -> Result<ScriptTaken> {
     let owner = {
-        let mut view = store.begin()?;
+        let mut view = store.begin().await?;
         Catalog::new(&mut view)
             .users()
             .await?
@@ -90,7 +90,7 @@ impl Session<'_> {
     /// is left where it was.
     pub(crate) async fn state_script(&self, of: &[tessari_ql::ReachRef]) -> Result<ScriptTaken> {
         let part = {
-            let mut view = self.store.begin()?;
+            let mut view = self.store.begin().await?;
             let mut part = Vec::with_capacity(of.len());
             for named in of {
                 part.push(self.reach_of(&mut view, named).await?);
@@ -123,7 +123,7 @@ async fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken
     let mut records = 0_u64;
 
     let (placed, names, analyzers, catalog_refusals) = {
-        let mut view = reader.store.begin()?;
+        let mut view = reader.store.begin().await?;
         let catalog = Catalog::new(&mut view);
         let mut placed = Vec::new();
         let mut names = tessari_ql::literal::Names::new();
@@ -270,7 +270,7 @@ async fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken
 
 /// Where each table lives, for the grants that name tables by id.
 async fn placed_ids(store: &Store) -> Result<Vec<(TableId, String, String, String)>> {
-    let mut view = store.begin()?;
+    let mut view = store.begin().await?;
     let catalog = Catalog::new(&mut view);
     let mut placed = Vec::new();
     for namespace in catalog.namespaces().await? {

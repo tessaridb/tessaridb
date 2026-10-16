@@ -17,7 +17,7 @@ fn store() -> Store {
 
 /// A namespace, database and table, committed.
 fn tree(store: &Store) -> (u32, u32, u32) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("prod").now().unwrap();
     let database = catalog
@@ -42,7 +42,7 @@ fn tree(store: &Store) -> (u32, u32, u32) {
 /// the position would keep passing and would stop meaning what its callers
 /// read it as (Q-614).
 fn write(store: &Store, at: &RecordAddress, name: &str) -> Sequence {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut object = std::collections::BTreeMap::new();
     object.insert("name".to_owned(), Value::String(name.to_owned()));
     transaction.put(
@@ -50,7 +50,7 @@ fn write(store: &Store, at: &RecordAddress, name: &str) -> Sequence {
         encode_payload(&Value::Object(object)).into_bytes(),
     );
     transaction.commit().now().unwrap();
-    store.committed_version().unwrap()
+    store.committed_version().now().unwrap()
 }
 
 #[test]
@@ -59,8 +59,8 @@ fn the_floor_is_the_committed_version_when_nothing_is_being_read() {
     let _ = tree(&store);
     assert_eq!(store.live_snapshots(), 0);
     assert_eq!(
-        store.retention_floor().unwrap(),
-        store.committed_version().unwrap()
+        store.retention_floor().now().unwrap(),
+        store.committed_version().now().unwrap()
     );
     assert_eq!(store.oldest_snapshot_age(), None);
 }
@@ -77,16 +77,16 @@ fn a_live_reader_holds_the_floor_where_it_began() {
     );
 
     write(&store, &at, "ada");
-    let reader = store.begin().unwrap();
+    let reader = store.begin().now().unwrap();
     let held = reader.snapshot();
 
     // The store moves on while the reader is still working.
     write(&store, &at, "grace");
     write(&store, &at, "hopper");
 
-    assert!(store.committed_version().unwrap() > held);
+    assert!(store.committed_version().now().unwrap() > held);
     assert_eq!(
-        store.retention_floor().unwrap(),
+        store.retention_floor().now().unwrap(),
         held,
         "the floor may not pass a reader that is still reading"
     );
@@ -95,8 +95,8 @@ fn a_live_reader_holds_the_floor_where_it_began() {
 
     drop(reader);
     assert_eq!(
-        store.retention_floor().unwrap(),
-        store.committed_version().unwrap()
+        store.retention_floor().now().unwrap(),
+        store.committed_version().now().unwrap()
     );
 }
 
@@ -107,10 +107,10 @@ fn a_transaction_dropped_without_commit_or_rollback_releases_its_snapshot() {
     // with an error, but as space that never comes back.
     let store = store();
     let _ = tree(&store);
-    let version = store.committed_version().unwrap();
+    let version = store.committed_version().now().unwrap();
 
     {
-        let transaction = store.begin().unwrap();
+        let transaction = store.begin().now().unwrap();
         assert_eq!(store.live_snapshots(), 1);
         // No commit. No rollback. Just let go.
         let _ = transaction.snapshot();
@@ -121,7 +121,7 @@ fn a_transaction_dropped_without_commit_or_rollback_releases_its_snapshot() {
         0,
         "the snapshot outlived its reader"
     );
-    assert_eq!(store.retention_floor().unwrap(), version);
+    assert_eq!(store.retention_floor().now().unwrap(), version);
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn a_committed_transaction_releases_its_snapshot_too() {
     write(&store, &at, "ada");
     assert_eq!(store.live_snapshots(), 0);
 
-    let transaction = store.begin().unwrap();
+    let transaction = store.begin().now().unwrap();
     transaction.rollback();
     assert_eq!(store.live_snapshots(), 0);
 }
@@ -147,15 +147,15 @@ fn a_committed_transaction_releases_its_snapshot_too() {
 fn two_readers_at_one_sequence_both_have_to_finish_before_the_floor_moves() {
     let store = store();
     let _ = tree(&store);
-    let first = store.begin().unwrap();
-    let second = store.begin().unwrap();
+    let first = store.begin().now().unwrap();
+    let second = store.begin().now().unwrap();
     let held = first.snapshot();
     assert_eq!(second.snapshot(), held, "both began at the same tail");
     assert_eq!(store.live_snapshots(), 1, "one sequence, two holders");
 
     drop(first);
     assert_eq!(
-        store.retention_floor().unwrap(),
+        store.retention_floor().now().unwrap(),
         held,
         "one reader is still working at it"
     );
@@ -172,10 +172,10 @@ fn a_cloned_store_shares_one_registry_because_it_is_one_store() {
     let _ = tree(&store);
     let clone = store.clone();
 
-    let reader = clone.begin().unwrap();
+    let reader = clone.begin().now().unwrap();
     let held = reader.snapshot();
     assert_eq!(store.live_snapshots(), 1);
-    assert_eq!(store.retention_floor().unwrap(), held);
+    assert_eq!(store.retention_floor().now().unwrap(), held);
 
     drop(reader);
     assert_eq!(store.live_snapshots(), 0);
@@ -222,7 +222,7 @@ fn reclaiming_removes_older_versions_and_keeps_what_a_reader_at_the_floor_sees()
 
     // Asserted by reading rather than by counting keys, because over-reclaiming
     // does not raise anything — it just answers with an older value.
-    let reader = store.begin().unwrap();
+    let reader = store.begin().now().unwrap();
     assert_eq!(name_seen_by(&reader, &at).as_deref(), Some("hopper"));
 }
 
@@ -235,7 +235,7 @@ fn a_held_snapshot_keeps_every_version_it_can_still_reach() {
     let at = record(&store, ns, db, tb, 1);
 
     write(&store, &at, "ada");
-    let reader = store.begin().unwrap();
+    let reader = store.begin().now().unwrap();
     write(&store, &at, "grace");
     write(&store, &at, "hopper");
 
@@ -257,7 +257,7 @@ fn a_held_snapshot_keeps_every_version_it_can_still_reach() {
         .unwrap();
     assert_eq!(removed.versions, 2);
 
-    let after = store.begin().unwrap();
+    let after = store.begin().now().unwrap();
     assert_eq!(name_seen_by(&after, &at).as_deref(), Some("hopper"));
 }
 
@@ -269,7 +269,7 @@ fn a_deleted_record_stops_costing_space() {
 
     write(&store, &at, "ada");
     write(&store, &at, "grace");
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.delete(at.clone());
     transaction.commit().now().unwrap();
 
@@ -282,7 +282,7 @@ fn a_deleted_record_stops_costing_space() {
 
     // A reader that finds a tombstone and one that finds nothing reach the same
     // conclusion, which is what makes removing it safe.
-    let reader = store.begin().unwrap();
+    let reader = store.begin().now().unwrap();
     assert!(reader.get(&at).now().unwrap().is_none());
 }
 
@@ -323,7 +323,7 @@ fn reclaiming_does_not_disturb_a_neighbouring_record() {
         .unwrap();
     assert_eq!(removed.versions, 1, "only the superseded one");
 
-    let reader = store.begin().unwrap();
+    let reader = store.begin().now().unwrap();
     assert_eq!(name_seen_by(&reader, &first).as_deref(), Some("grace"));
     assert_eq!(name_seen_by(&reader, &second).as_deref(), Some("hopper"));
 }
@@ -387,7 +387,7 @@ fn a_read_above_the_committed_tail_is_refused_rather_than_answered_with_the_pres
     // The VERSION, not a log position: `begin_at` names an MVCC moment, and the
     // two stopped being one number when B1 separated them and one log per range
     // made the difference observable (Q-614, Q-623).
-    let tail = store.committed_version().unwrap();
+    let tail = store.committed_version().now().unwrap();
     let ahead = Sequence::new(tail.get() + 1);
 
     // Answering with the present would make this succeed now and return a
@@ -449,7 +449,7 @@ fn a_store_that_has_never_reclaimed_answers_a_read_at_any_past_sequence() {
     assert_eq!(removed.versions, 0, "one version each, nothing superseded");
     assert_eq!(store.reclaim_floor().now().unwrap(), Sequence::ZERO);
     assert!(
-        store.retention_floor().unwrap() > earlier,
+        store.retention_floor().now().unwrap() > earlier,
         "the live bound has moved past the sequence being read, which is the point"
     );
 
@@ -472,7 +472,7 @@ fn a_live_reader_bounds_how_far_the_floor_rises_and_that_bound_outlives_the_read
     let second = write(&store, &at, "grace");
 
     // Held at `second`, so the live bound stops there while the tail runs ahead.
-    let held = store.begin().unwrap();
+    let held = store.begin().now().unwrap();
     write(&store, &at, "hopper");
 
     let removed = store
@@ -492,7 +492,7 @@ fn a_live_reader_bounds_how_far_the_floor_rises_and_that_bound_outlives_the_read
     // the live bound would start refusing this read the instant the reader
     // finished, having removed nothing in between.
     drop(held);
-    assert!(store.retention_floor().unwrap() > second);
+    assert!(store.retention_floor().now().unwrap() > second);
     assert_eq!(store.reclaim_floor().now().unwrap(), second);
 
     let reader = store.begin_at(second).now().unwrap();

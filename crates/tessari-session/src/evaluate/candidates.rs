@@ -317,8 +317,9 @@ impl Session<'_> {
         };
         let mut rows = Vec::new();
         let window = plan::walked_for(wanted.wanted, gated.index.quantized);
-        for id in
-            transaction.records_by_vector(&gated.index, &gated.query, window, wanted.effort)?
+        for id in transaction
+            .records_by_vector(&gated.index, &gated.query, window, wanted.effort)
+            .await?
         {
             // Resolved at this reader's own snapshot, like every index read, so
             // a node left behind by a deleted record produces nothing.

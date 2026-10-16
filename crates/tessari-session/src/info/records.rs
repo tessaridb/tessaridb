@@ -153,13 +153,15 @@ impl Session<'_> {
         if let Some(shards) = split {
             let shard = shards.shard_of(&address.id);
             let logs = [
-                self.store.own_log(Reach::Shard(
-                    address.namespace,
-                    address.database,
-                    address.table,
-                    shard,
-                ))?,
-                self.store.own_log(home)?,
+                self.store
+                    .own_log(Reach::Shard(
+                        address.namespace,
+                        address.database,
+                        address.table,
+                        shard,
+                    ))
+                    .await?,
+                self.store.own_log(home).await?,
             ];
             let history = self
                 .store
@@ -184,7 +186,7 @@ impl Session<'_> {
                 ("walked".to_owned(), Value::from(history.walked.to_string())),
             ]));
         }
-        let log = self.store.own_log(home)?;
+        let log = self.store.own_log(home).await?;
         let history = self.store.history_of(log, &subject, HISTORY_EVENTS).await?;
         let events: Vec<Value> = history
             .events

@@ -131,7 +131,7 @@ fn a_bar_ends_with_its_log_and_a_late_prepare_is_refused_as_too_old() {
         .unwrap();
     let store = db.store();
     let (elsewhere, late) = {
-        let mut reading = store.begin().unwrap();
+        let mut reading = store.begin().now().unwrap();
         let catalog = tessari_storage::Catalog::new(&mut reading);
         let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
         let other = catalog
@@ -160,7 +160,7 @@ fn a_bar_ends_with_its_log_and_a_late_prepare_is_refused_as_too_old() {
     };
     // What the late prepare read: the barred range's log before the bar.
     let log = store.history_log(elsewhere).now().unwrap();
-    let seen = store.committed_tail(log).unwrap();
+    let seen = store.committed_tail(log).now().unwrap();
     stage(&db, &[home, elsewhere], 0);
     db.settle_across().now().unwrap();
     assert_eq!(decision(&db), Some(Decision::Aborted));
@@ -173,7 +173,7 @@ fn a_bar_ends_with_its_log_and_a_late_prepare_is_refused_as_too_old() {
             "USE NAMESPACE prod; USE DATABASE other; CREATE more:1 = 'a'; CREATE more:2 = 'b';",
         )
         .unwrap();
-    let tail = store.committed_tail(log).unwrap();
+    let tail = store.committed_tail(log).now().unwrap();
     store.prune_log(log, tail).now().unwrap();
     assert_eq!(bars(), 0, "the bar went with the record that wrote it");
     let refused = db

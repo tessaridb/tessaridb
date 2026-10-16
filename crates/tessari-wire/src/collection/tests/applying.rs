@@ -193,6 +193,7 @@ fn a_record_read_out_of_one_log_is_applied_into_that_same_log() {
     let inside = leader
         .store()
         .logs()
+        .now()
         .expect("the leader's own logs")
         .into_iter()
         .find(|log| matches!(log.home, Reach::Database(namespace, _) if namespace.get() == 1))
@@ -232,6 +233,7 @@ fn a_record_read_out_of_one_log_is_applied_into_that_same_log() {
         follower
             .store()
             .logs()
+            .now()
             .expect("the follower's logs")
             .contains(&inside),
         "and the log must exist on the follower rather than its records \

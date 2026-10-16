@@ -101,13 +101,13 @@ fn follow(leader: &Store, over: Reach, as_user: &str) -> Store {
 /// the order the leader had committed before it was read.
 fn follow_in_pages(node: &mut Session<'_>, leader: &Store, over: Reach, page: usize) -> Store {
     let follower = store();
-    let logs = leader.logs().unwrap();
+    let logs = leader.logs().now().unwrap();
     let mut from = vec![Sequence::new(1); logs.len()];
     let mut previous = vec![tessari_types::Epoch::ZERO; logs.len()];
     loop {
         let mut fetched = Vec::new();
         for (index, log) in logs.iter().enumerate() {
-            let order = leader.committed_version().unwrap();
+            let order = leader.committed_version().now().unwrap();
             let records = node
                 .replicate_from(leader, A_FOLLOWER, over, *log, from[index], page)
                 .now()
@@ -216,7 +216,7 @@ fn a_selective_followers_reader_cannot_name_another_tenants_table() {
 
     // And the reason nothing could have answered even without that check: the
     // follower's own catalog holds one tenant.
-    let mut transaction = follower.begin().unwrap();
+    let mut transaction = follower.begin().now().unwrap();
     let catalog = tessari_storage::Catalog::new(&mut transaction);
     assert!(
         catalog.namespace_id("prod").now().unwrap().is_some(),
@@ -265,7 +265,7 @@ fn a_selective_follower_receives_every_tenancys_users() {
             // The STORE's log, because that is where what a namespace grant may
             // and may not see sits together: both tenants' definitions and every
             // user (Q-620). The grant narrows; the log only says where to read.
-            leader.own_log(Reach::Store).unwrap(),
+            leader.own_log(Reach::Store).now().unwrap(),
             Sequence::new(1),
             256,
         )
@@ -342,7 +342,7 @@ fn a_commit_entirely_outside_the_reach_arrives_empty_and_the_tail_advances() {
             &leader,
             A_FOLLOWER,
             Reach::Store,
-            leader.own_log(Reach::Store).unwrap(),
+            leader.own_log(Reach::Store).now().unwrap(),
             Sequence::new(1),
             256,
         )
@@ -358,7 +358,7 @@ fn a_commit_entirely_outside_the_reach_arrives_empty_and_the_tail_advances() {
             // The STORE's log, because that is where what a namespace grant may
             // and may not see sits together: both tenants' definitions and every
             // user (Q-620). The grant narrows; the log only says where to read.
-            leader.own_log(Reach::Store).unwrap(),
+            leader.own_log(Reach::Store).now().unwrap(),
             Sequence::new(1),
             256,
         )
@@ -392,7 +392,8 @@ fn a_commit_entirely_outside_the_reach_arrives_empty_and_the_tail_advances() {
         // files what it was given where it was read from, so the position it
         // holds counts in the writer's log and not in one of its own.
         follower
-            .committed_tail(leader.own_log(Reach::Store).unwrap())
+            .committed_tail(leader.own_log(Reach::Store).now().unwrap())
+            .now()
             .unwrap()
             .get(),
         u64::try_from(whole.len()).unwrap(),
@@ -516,7 +517,7 @@ fn a_namespace_owner_on_a_selective_follower_cannot_read_another_tenancys_creden
     // The record is here. That is what makes the refusal below a refusal rather
     // than an absence.
     {
-        let mut transaction = follower.begin().unwrap();
+        let mut transaction = follower.begin().now().unwrap();
         let catalog = tessari_storage::Catalog::new(&mut transaction);
         assert!(
             catalog
@@ -596,7 +597,7 @@ fn sharded_tenant() -> (Store, tessari_storage::Reach, tessari_types::TableId) {
     .unwrap();
     drop(root);
     let table = {
-        let mut transaction = leader.begin().unwrap();
+        let mut transaction = leader.begin().now().unwrap();
         tessari_storage::Catalog::new(&mut transaction)
             .table_id(
                 NamespaceId::new(1),
@@ -625,7 +626,7 @@ fn a_shard_subscriber_holds_its_shards_records_and_not_its_siblings() {
     let (leader, second, table) = sharded_tenant();
     let follower = follow(&leader, second, "node");
     let held = |id: &str| {
-        let transaction = follower.begin().unwrap();
+        let transaction = follower.begin().now().unwrap();
         transaction
             .get(&tessari_storage::RecordAddress::new(
                 NamespaceId::new(1),
@@ -857,7 +858,7 @@ fn every_interleaving_of_homes_ends_level_on_a_follower_at_every_page_size() {
          USE DATABASE other; UPDATE notes:1 MERGE { n: @ }; COMMIT;",
     ];
     let addresses = {
-        let mut transaction = leader.begin().unwrap();
+        let mut transaction = leader.begin().now().unwrap();
         let catalog = tessari_storage::Catalog::new(&mut transaction);
         let prod = NamespaceId::new(1);
         let shop = catalog.database_id(prod, "shop").now().unwrap().unwrap();
@@ -885,7 +886,7 @@ fn every_interleaving_of_homes_ends_level_on_a_follower_at_every_page_size() {
         ]
     };
     let held = |store: &Store| -> Vec<Option<Vec<u8>>> {
-        let transaction = store.begin().unwrap();
+        let transaction = store.begin().now().unwrap();
         addresses
             .iter()
             .map(|address| transaction.get(address).now().unwrap())

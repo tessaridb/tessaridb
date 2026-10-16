@@ -33,12 +33,12 @@ impl Session<'_> {
     /// Open to every session. The node id is what every redirect frame already
     /// discloses, and the names are the caller's own `USE`; `$node`, which
     /// carries roles and endpoints, stays behind its authority.
-    pub(crate) fn session_context(&self) -> Result<Value> {
+    pub(crate) async fn session_context(&self) -> Result<Value> {
         let named = |name: Option<&str>| name.map_or(Value::Null, Value::from);
         Ok(Value::Object(BTreeMap::from([
             (
                 "node".to_owned(),
-                Value::Uuid(self.store.node_identity()?.id),
+                Value::Uuid(self.store.node_identity().await?.id),
             ),
             ("namespace".to_owned(), named(self.namespace())),
             ("database".to_owned(), named(self.database())),

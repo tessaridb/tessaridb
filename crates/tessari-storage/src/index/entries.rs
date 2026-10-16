@@ -10,7 +10,6 @@ use tessari_encoding::{
     SpatialExtent, SpatialIndexKey, StoreKey, StoreValue, UniqueIndexKey,
 };
 use tessari_geo::{Bounds, Cell};
-use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{Key, Keyspace, WriteBatch, WriteOp};
 use tessari_types::{RecordId, Value};
 

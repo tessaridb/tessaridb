@@ -1,5 +1,4 @@
 use super::*;
-use tessari_kv::AsyncKvBackend as _;
 
 impl Transaction<'_> {
     /// Resolve `transaction`'s intents on `records` as the record decided:
@@ -151,7 +150,7 @@ impl Transaction<'_> {
     /// [`Error::AcrossNotHeldHere`] for a home this node holds no copy of, a
     /// conflict on this copy, and the substrate's failures.
     pub async fn across_plan(&self) -> Result<Vec<AcrossPart>> {
-        let me = self.store.node_identity()?.id;
+        let me = self.store.node_identity().await?.id;
         let placement = self.placement().await?;
         let record = self.log_record(me, &placement).await?;
         let mut homes: std::collections::BTreeMap<Reach, Vec<tessari_encoding::Mutation>> =
@@ -160,7 +159,7 @@ impl Transaction<'_> {
             let home = crate::catalog::home_of(&LogRecord::new(vec![mutation.clone()]))?;
             homes.entry(home).or_default().push(mutation.clone());
         }
-        let mut reading = self.store.begin()?;
+        let mut reading = self.store.begin().await?;
         let catalog = crate::catalog::Catalog::new(&mut reading);
         let held = catalog.leaderships().await?;
         let placed: std::collections::BTreeSet<Reach> = catalog
@@ -189,9 +188,9 @@ impl Transaction<'_> {
             {
                 LogId::line(home)
             } else {
-                self.store.own_log(home)?
+                self.store.own_log(home).await?
             };
-            let seen = self.store.committed_tail(log)?;
+            let seen = self.store.committed_tail(log).await?;
             parts.push(AcrossPart {
                 home,
                 leader,

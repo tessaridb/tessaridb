@@ -7,7 +7,6 @@
 //! follower.
 
 use std::sync::{Arc, OnceLock};
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{LogRetentionKey, StoreKey, StoreValue};
 use tessari_kv::WriteBatch;

@@ -51,7 +51,7 @@ fn after_a_failover(granted: Option<u64>) -> Store {
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
         .now()
         .unwrap();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     catalog
         .create_replica(
@@ -80,7 +80,7 @@ fn after_a_failover(granted: Option<u64>) -> Store {
 }
 
 fn write(store: &Store, id: &str) -> Result<(), Error> {
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().now()?;
     transaction.put(
         RecordAddress::new(
             NamespaceId::new(1),
@@ -103,14 +103,14 @@ fn a_node_holding_a_greater_epoch_can_record_the_leadership_it_won() {
     // The exact call the instrumented run watched fail, once every six seconds,
     // for twenty-one consecutive epochs.
     let store = after_a_failover(Some(NEW_EPOCH));
-    let me = store.node_identity().unwrap().id;
-    let mut transaction = store.begin().unwrap();
+    let me = store.node_identity().now().unwrap().id;
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .record_leadership(Reach::Store, me, Epoch::new(NEW_EPOCH))
         .unwrap();
     transaction.commit().now().unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let recorded = Catalog::new(&mut transaction)
         .leader_of(Reach::Store)
         .now()

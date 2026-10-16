@@ -22,7 +22,7 @@ pub(super) async fn declared(
     reader: &Session<'_>,
     table: &TableDefinition,
 ) -> Result<std::result::Result<(String, String), String>> {
-    let mut view = reader.store.begin()?;
+    let mut view = reader.store.begin().await?;
     let catalog = Catalog::new(&mut view);
     let fields = catalog
         .fields_on(table.namespace, table.database, table.id)

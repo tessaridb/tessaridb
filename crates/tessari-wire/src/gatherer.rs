@@ -122,7 +122,7 @@ impl Gathering {
     /// The leader of `shard`'s governing line and where to dial it.
     async fn leader_of(&self, shard: Reach) -> Result<([u8; NODE_ID_LEN], String), String> {
         let db = self.db.upgrade().ok_or("this node is stopping")?;
-        let mut transaction = db.store().begin().map_err(|why| why.to_string())?;
+        let mut transaction = db.store().begin().await.map_err(|why| why.to_string())?;
         let declared = Catalog::new(&mut transaction)
             .replicas()
             .await

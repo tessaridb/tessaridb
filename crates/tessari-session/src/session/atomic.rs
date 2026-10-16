@@ -49,7 +49,7 @@ impl Atomic<'_, '_> {
             return Err(Error::TransactionVerbInAtomic { span: verb.span });
         }
         if matches!(Effect::of_script(&script), Effect::Write) {
-            admits(store.node_identity()?.roles, &script)?;
+            admits(store.node_identity().await?.roles, &script)?;
         }
         // Boxed: a `RESTORE` statement runs its script through here.
         Box::pin(
@@ -92,7 +92,7 @@ impl Atomic<'_, '_> {
     ) -> Result<Vec<Outcome>> {
         let store = self.session.store;
         if matches!(Effect::of_script(&script), Effect::Write) {
-            admits(store.node_identity()?.roles, &script)?;
+            admits(store.node_identity().await?.roles, &script)?;
         }
         // Boxed: a `RESTORE` statement runs its script through here.
         Box::pin(
@@ -118,7 +118,7 @@ impl<'a> Session<'a> {
         &mut self,
         work: impl AsyncFnOnce(&mut Atomic<'_, 'a>) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, E> {
-        let transaction = self.store.begin().map_err(Error::from)?;
+        let transaction = self.store.begin().await.map_err(Error::from)?;
         let mut held = Atomic {
             session: self,
             open: Some((transaction, Span::new(0, 0))),

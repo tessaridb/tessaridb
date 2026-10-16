@@ -193,7 +193,7 @@ mod write_shapes;
 /// store and then be compared against the whole of it (S6.2, Q-620).
 pub(crate) fn replay(source: &tessari_storage::Store, target: &tessari_storage::Store) -> usize {
     let mut applied = 0_usize;
-    for log in source.logs().unwrap() {
+    for log in source.logs().now().unwrap() {
         for (sequence, record) in source
             .log_records(log, tessari_types::Sequence::ZERO, 4096)
             .now()

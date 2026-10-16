@@ -3,7 +3,7 @@
 
 use crate::now::Now;
 use tessari_encoding::LogRecord;
-use tessari_kv::MemoryBackend;
+use tessari_kv::{KvBackend, MemoryBackend};
 
 use super::*;
 use crate::error::Error;
@@ -17,13 +17,19 @@ fn a_fresh_store_writes_its_format_and_starts_at_sequence_zero() {
     let store = Store::open(backend()).now().unwrap();
     assert_eq!(
         store
-            .committed_tail(store.own_log(Reach::Store).unwrap())
+            .committed_tail(store.own_log(Reach::Store).now().unwrap())
+            .now()
             .unwrap(),
         Sequence::ZERO
     );
-    assert!(store.logs().unwrap().is_empty(), "nothing written yet");
+    assert!(
+        store.logs().now().unwrap().is_empty(),
+        "nothing written yet"
+    );
     assert_eq!(
-        read_format_version(Arc::clone(store.engine())).unwrap(),
+        read_format_version(Arc::clone(store.engine()))
+            .now()
+            .unwrap(),
         Some(FormatVersion::CURRENT)
     );
 }
@@ -31,7 +37,7 @@ fn a_fresh_store_writes_its_format_and_starts_at_sequence_zero() {
 #[test]
 fn a_fresh_store_starts_its_version_counter_at_zero_as_well() {
     let store = Store::open(backend()).now().unwrap();
-    assert_eq!(store.committed_version().unwrap(), Sequence::ZERO);
+    assert_eq!(store.committed_version().now().unwrap(), Sequence::ZERO);
 }
 
 #[test]
@@ -57,7 +63,7 @@ fn a_store_opened_without_a_version_counter_resumes_it_from_the_applied_position
 
     let reopened = Store::open(backend).now().unwrap();
     assert_eq!(
-        reopened.committed_version().unwrap(),
+        reopened.committed_version().now().unwrap(),
         Sequence::new(7),
         "a counter restarted at zero would reissue versions records already hold"
     );
@@ -70,7 +76,9 @@ fn reopening_a_store_does_not_rewrite_its_metadata() {
     drop(first);
     let second = Store::open(shared).now().unwrap();
     assert_eq!(
-        read_format_version(Arc::clone(second.engine())).unwrap(),
+        read_format_version(Arc::clone(second.engine()))
+            .now()
+            .unwrap(),
         Some(FormatVersion::CURRENT)
     );
 }
@@ -94,7 +102,9 @@ fn a_store_written_before_the_epoch_opens_and_reads_as_the_first_leadership() {
 
     let store = Store::open(Arc::clone(&shared)).now().unwrap();
     assert_eq!(
-        read_format_version(Arc::clone(store.engine())).unwrap(),
+        read_format_version(Arc::clone(store.engine()))
+            .now()
+            .unwrap(),
         Some(FormatVersion::CURRENT),
         "an older log is given its home at open, and the version says so"
     );
@@ -163,18 +173,21 @@ fn a_log_written_before_it_had_writers_is_rewritten_and_attributed_to_nobody() {
     let store = Store::open(Arc::clone(&shared)).now().unwrap();
     let migrated = LogId::unattributed(home);
     assert_eq!(
-        store.logs().unwrap(),
+        store.logs().now().unwrap(),
         vec![migrated],
         "the log kept its home and was attributed to nobody, because \
              nothing recorded who wrote it"
     );
     assert_ne!(
         migrated,
-        store.own_log(home).unwrap(),
+        store.own_log(home).now().unwrap(),
         "and NOT to the node that happened to open the file — a follower's \
              log holds the records its leader wrote"
     );
-    assert_eq!(store.committed_tail(migrated).unwrap(), Sequence::new(3));
+    assert_eq!(
+        store.committed_tail(migrated).now().unwrap(),
+        Sequence::new(3)
+    );
     let positions: Vec<Sequence> = store
         .log_records(migrated, Sequence::new(1), 16)
         .now()
@@ -193,10 +206,12 @@ fn a_log_written_before_it_had_writers_is_rewritten_and_attributed_to_nobody() {
     drop(store);
     let reopened = Store::open(shared).now().unwrap();
     assert_eq!(
-        read_format_version(Arc::clone(reopened.engine())).unwrap(),
+        read_format_version(Arc::clone(reopened.engine()))
+            .now()
+            .unwrap(),
         Some(FormatVersion::CURRENT)
     );
-    assert_eq!(reopened.logs().unwrap(), vec![migrated]);
+    assert_eq!(reopened.logs().now().unwrap(), vec![migrated]);
     assert_eq!(
         reopened
             .log_records(migrated, Sequence::new(1), 16)
@@ -325,7 +340,7 @@ fn a_log_written_before_it_had_homes_is_rewritten_into_the_store_home() {
 
     let store = Store::open(Arc::clone(&shared)).now().unwrap();
     assert_eq!(
-        store.logs().unwrap(),
+        store.logs().now().unwrap(),
         vec![LogId::unattributed(Reach::Store)],
         "one leader wrote all of it, so the store's own log is its home — \
              and nobody recorded which node that leader was"
@@ -333,6 +348,7 @@ fn a_log_written_before_it_had_homes_is_rewritten_into_the_store_home() {
     assert_eq!(
         store
             .committed_tail(LogId::unattributed(Reach::Store))
+            .now()
             .unwrap(),
         Sequence::new(3)
     );
@@ -407,7 +423,9 @@ fn a_store_holding_data_without_a_format_stamp_is_refused_and_left_alone() {
         other => panic!("unexpected error: {other}"),
     }
     assert_eq!(
-        read_format_version(Arc::clone(&shared)).unwrap(),
+        read_format_version(Arc::new(tessari_kv::Synchronous(Arc::clone(&shared))))
+            .now()
+            .unwrap(),
         None,
         "not stamped on the way to refusing"
     );
@@ -424,7 +442,9 @@ fn an_empty_store_is_a_new_one_and_is_stamped() {
     let shared = backend();
     Store::open(Arc::clone(&shared)).now().unwrap();
     assert_eq!(
-        read_format_version(shared).unwrap(),
+        read_format_version(Arc::new(tessari_kv::Synchronous(shared)))
+            .now()
+            .unwrap(),
         Some(FormatVersion::CURRENT)
     );
 }

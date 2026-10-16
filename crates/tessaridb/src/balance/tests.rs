@@ -14,7 +14,7 @@ const DECLARED: &str =
 const TENANCY: &str = "USE NAMESPACE prod; USE DATABASE shop;";
 
 fn table(db: &Db) -> TableDefinition {
-    let mut reading = db.store().begin().unwrap();
+    let mut reading = db.store().begin().now().unwrap();
     let catalog = Catalog::new(&mut reading);
     let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
     let database = catalog

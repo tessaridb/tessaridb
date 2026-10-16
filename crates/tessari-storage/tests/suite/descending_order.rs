@@ -27,7 +27,7 @@ impl Fixture {
     fn new() -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(backend).now().unwrap();
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("prod").now().unwrap();
         let database = catalog.create_database(namespace.id, "shop").now().unwrap();
@@ -68,7 +68,7 @@ impl Fixture {
 
     /// One record, committed on its own.
     fn write(&self, id: i64, joined: i64) {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         let record = Value::Object(BTreeMap::from([("joined".to_owned(), Value::from(joined))]));
         transaction.put(self.at(id), encode_payload(&record).into_bytes());
         transaction.commit().now().unwrap();
@@ -77,7 +77,7 @@ impl Fixture {
     /// The identities a bounded descending read produces, in the order it
     /// produced them.
     fn descending(&self, wanted: usize) -> Option<Vec<RecordId>> {
-        let transaction = self.store.begin().unwrap();
+        let transaction = self.store.begin().now().unwrap();
         let found = transaction
             .records_in_descending_order(&self.index, 1, wanted)
             .now()
@@ -146,7 +146,7 @@ fn at_an_older_snapshot_the_entries_no_longer_describe_the_records() {
     fixture.write(1, 1990);
     fixture.write(2, 1970);
 
-    let held = fixture.store.begin().unwrap();
+    let held = fixture.store.begin().now().unwrap();
     // At this snapshot record 1 still holds 1990, and it is the greatest.
     assert_eq!(
         held.records_in_descending_order(&fixture.index, 1, 2)

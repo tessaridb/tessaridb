@@ -67,7 +67,7 @@ pub(crate) async fn dial_peers(
                 tracing::warn!(error = %why, "this node cannot date its own log position");
             }
             let declared = crate::peers::declared_with_policy(store).await;
-            let (me, declared) = match (store.node_identity(), declared) {
+            let (me, declared) = match (store.node_identity().await, declared) {
                 (Ok(identity), Ok((declared, policy))) => {
                     periods = policy.map_or(tessari_storage::Failover::DEFAULT, |definition| {
                         definition.policy
@@ -246,7 +246,7 @@ pub(crate) async fn bind_the_greeter(
     token: Option<&[u8; 32]>,
 ) -> bool {
     let bind = async || -> Result<(bool, Option<String>), String> {
-        let mut transaction = db.store().begin().map_err(|why| why.to_string())?;
+        let mut transaction = db.store().begin().await.map_err(|why| why.to_string())?;
         let mut catalog = tessari_storage::Catalog::new(&mut transaction);
         let declared = catalog.replicas().await.map_err(|why| why.to_string())?;
         if declared.iter().any(|row| row.node == Some(node)) {
@@ -323,11 +323,11 @@ pub(crate) async fn bind_the_greeter(
 /// with what its own store holds.
 pub(crate) async fn greeting(db: &Db) -> Result<tessari_wire::Hello, tessari_storage::Error> {
     let store = db.store();
-    let identity = store.node_identity()?;
+    let identity = store.node_identity().await?;
     // Where this node stands on the store's line: the history the line shares,
     // not the few records it once wrote alone (ADR-0107, Q-879).
     let own = store.history_log(tessari_types::Reach::Store).await?;
-    let tail = store.committed_tail(own)?;
+    let tail = store.committed_tail(own).await?;
     let current_as_of = store.current_as_of().await?;
     // The leadership this node is actually writing under — and the trigger the
     // previous version of this line named has now fired.
@@ -352,7 +352,7 @@ pub(crate) async fn greeting(db: &Db) -> Result<tessari_wire::Hello, tessari_sto
     // what this node holds, rather than the one it holds a lease under. A voter
     // ranks candidates on this pair, and ranking on `leading` instead would put
     // a follower carrying the newest records below an ex-leader carrying fewer.
-    let tail_leadership = store.tail_leadership(own)?;
+    let tail_leadership = store.tail_leadership(own).await?;
     // Which failover policy this node is running under, read from its own
     // catalog rather than assembled from the constants it currently times by.
     // The two are not the same claim: the constants are what this build compiled
@@ -362,7 +362,7 @@ pub(crate) async fn greeting(db: &Db) -> Result<tessari_wire::Hello, tessari_sto
     // make visible.
     //
     // `None` is the ordinary state today, because nothing sets the row yet.
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().await?;
     let catalog = tessari_storage::Catalog::new(&mut transaction);
     let read = match catalog.failover().await {
         Ok(policy) => catalog.replicas().await.map(|declared| (policy, declared)),
@@ -402,8 +402,8 @@ pub(crate) async fn line_of(
         leading: store
             .leading_of(range)
             .unwrap_or(tessari_types::Epoch::ZERO),
-        tail: store.committed_tail(log)?,
-        tail_leadership: store.tail_leadership(log)?,
+        tail: store.committed_tail(log).await?,
+        tail_leadership: store.tail_leadership(log).await?,
     })
 }
 

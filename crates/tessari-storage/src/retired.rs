@@ -46,7 +46,6 @@
 //! retires and reclaims over its own copy.
 
 use std::collections::BTreeSet;
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{
@@ -86,12 +85,12 @@ impl Store {
     /// Asked at the end of every open, so whichever path raised the stamp, the
     /// first commit after it already retires.
     pub(crate) async fn begin_keeping_retired_entries(&self) -> Result<()> {
-        if self.held_format()? < FormatVersion::RETIRED_INDEX
+        if self.held_format().await? < FormatVersion::RETIRED_INDEX
             || self.retired_since().await?.is_some()
         {
             return Ok(());
         }
-        let since = self.committed_version()?;
+        let since = self.committed_version().await?;
         self.backend()
             .apply(WriteBatch::new().put(
                 RetiredSinceKey::keyspace(),
@@ -116,7 +115,7 @@ impl Store {
         let Some(since) = self.retired_since().await? else {
             return Ok(0);
         };
-        let floor = self.retention_floor()?;
+        let floor = self.retention_floor().await?;
         // First, and before anything is removed: the entries about to go are
         // the ones a snapshot below the floor would need, so from here on a
         // read below the floor — a `VERSION` read, which may open one — is not
@@ -206,8 +205,8 @@ pub(crate) async fn keep_from(
 
 impl Transaction<'_> {
     /// Whether this transaction's snapshot is behind the committed tail.
-    pub(crate) fn behind_the_tail(&self) -> Result<bool> {
-        Ok(self.snapshot() < self.store().committed_version()?)
+    pub(crate) async fn behind_the_tail(&self) -> Result<bool> {
+        Ok(self.snapshot() < self.store().committed_version().await?)
     }
 
     /// Whether this transaction's index reads merge retired entries — set when
@@ -231,7 +230,7 @@ impl Transaction<'_> {
         let Some(since) = self.store().retired_since().await? else {
             return Ok(false);
         };
-        let serves = self.behind_the_tail()?
+        let serves = self.behind_the_tail().await?
             && self.snapshot() >= since
             && !self.store().across_unsettled(table).await?;
         if serves {

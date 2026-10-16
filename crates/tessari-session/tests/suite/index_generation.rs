@@ -52,7 +52,7 @@ fn store() -> Store {
 /// Write `index` on `notes` back with the generation `built`, as a store written
 /// by an earlier build holds it.
 fn written_by(store: &Store, index: &str, built: Option<u32>) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
     let database = catalog

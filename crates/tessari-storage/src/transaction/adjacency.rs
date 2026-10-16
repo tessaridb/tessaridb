@@ -12,7 +12,6 @@
 //! traversal already keeps.
 
 use tessari_encoding::{AdjacencyKey, Direction, EdgeProperties, StoreKey, StoreValue};
-use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{RecordId, TableId, Value};
 

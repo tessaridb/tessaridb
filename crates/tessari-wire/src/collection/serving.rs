@@ -103,8 +103,8 @@ impl Origin for Serving<'_> {
             };
             let log = self.log.history_log(range).await.map_err(refused)?;
             Ok(Some(crate::grant::Reached {
-                leadership: self.log.tail_leadership(log).map_err(refused)?,
-                tail: self.log.committed_tail(log).map_err(refused)?,
+                leadership: self.log.tail_leadership(log).await.map_err(refused)?,
+                tail: self.log.committed_tail(log).await.map_err(refused)?,
             }))
         })
     }
@@ -115,7 +115,7 @@ impl Origin for Serving<'_> {
     // that cannot be read vouches for nothing.
     fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> Answering<'_, bool> {
         Box::pin(async move {
-            let Ok(mut transaction) = self.log.begin() else {
+            let Ok(mut transaction) = self.log.begin().await else {
                 return false;
             };
             let catalog = Catalog::new(&mut transaction);
@@ -277,7 +277,7 @@ impl Serving<'_> {
         let limit = usize::try_from(asked.limit).unwrap_or(usize::MAX);
         // Before the records, so a commit landing while they are read is above
         // it rather than missing below it (ADR-0084).
-        let order = self.log.committed_version().map_err(refused)?;
+        let order = self.log.committed_version().await.map_err(refused)?;
         // And the leadership that order counts under, read with it (ADR-0107) —
         // stated only by a node that leads the line, since only a leader's next
         // commit is ordered by its own counter; one that leads nothing commits

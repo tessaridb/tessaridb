@@ -7,12 +7,13 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use tessari_kv::AsyncKvBackend;
 
 use tessari_encoding::{
     AppliedPositionKey, FormatVersion, FormatVersionKey, KeyKind, LogId, LogKey, NODE_ID_LEN,
     REACH_LEN, StoreKey, StoreValue, VersionPositionKey, Writer,
 };
-use tessari_kv::{Key, KeyRange, Keyspace, KvBackend, ScanDirection, ScanRequest, WriteBatch};
+use tessari_kv::{Key, KeyRange, Keyspace, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{Epoch, Sequence};
 
 use crate::catalog::Reach;
@@ -192,7 +193,7 @@ impl Health {
 /// readers would reclaim versions the other half is still reading.
 #[derive(Debug, Clone)]
 pub struct Store {
-    backend: Arc<dyn KvBackend>,
+    backend: Arc<dyn AsyncKvBackend>,
     snapshots: Arc<Registry>,
     /// What this process is doing with the declared consumers.
     ///

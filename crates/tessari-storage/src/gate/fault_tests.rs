@@ -88,13 +88,19 @@ fn address(id: u32) -> RecordAddress {
 }
 
 fn write(store: &Store, id: u32) -> crate::Result<()> {
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().now()?;
     transaction.put(address(id), format!("{{\"n\":{id}}}").into_bytes());
     transaction.commit().now().map(|_| ())
 }
 
 fn read(store: &Store, id: u32) -> Option<Vec<u8>> {
-    store.begin().unwrap().get(&address(id)).now().unwrap()
+    store
+        .begin()
+        .now()
+        .unwrap()
+        .get(&address(id))
+        .now()
+        .unwrap()
 }
 
 fn a_failed_sync_stops_writes_until_the_store_is_reopened(grouped: bool) {

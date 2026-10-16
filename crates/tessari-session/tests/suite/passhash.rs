@@ -22,7 +22,7 @@ fn store() -> Store {
 
 /// The stored hash of the user named `name`.
 fn stored(store: &Store, name: &str) -> String {
-    let mut view = store.begin().unwrap();
+    let mut view = store.begin().now().unwrap();
     Catalog::new(&mut view)
         .users()
         .now()

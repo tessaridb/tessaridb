@@ -220,8 +220,8 @@ fn a_snapshot_and_the_log_after_it_answer_what_the_source_answers_now() {
 #[test]
 fn a_pruned_store_takes_a_snapshot_where_it_can_take_no_log_backup() {
     let (_, source, _) = original();
-    for log in source.logs().unwrap() {
-        let tail = source.committed_tail(log).unwrap();
+    for log in source.logs().now().unwrap() {
+        let tail = source.committed_tail(log).now().unwrap();
         source.prune_log(log, tail).now().unwrap();
     }
     let mut refused = Vec::new();
@@ -262,7 +262,7 @@ fn a_snapshot_that_is_not_whole_is_refused_and_nothing_is_written() {
                 .is_err()
         );
         assert!(
-            target.holds_nothing().unwrap(),
+            target.holds_nothing().now().unwrap(),
             "a refused snapshot wrote something"
         );
         assert!(dump(&target_backend, Keyspace::DATA).is_empty());

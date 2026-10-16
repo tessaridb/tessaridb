@@ -107,7 +107,7 @@ fn address(id: usize) -> RecordAddress {
 }
 
 fn write(store: &Store, id: usize) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(address(id), format!("{{\"n\":{id}}}").into_bytes());
     transaction.commit().now().unwrap();
 }
@@ -166,7 +166,7 @@ fn commits_arriving_while_one_lands_land_together() {
         BEHIND + 1,
         "a commit that landed in a group was not announced"
     );
-    let transaction = store.begin().unwrap();
+    let transaction = store.begin().now().unwrap();
     for id in 0..=BEHIND {
         assert_eq!(
             transaction.get(&address(id)).now().unwrap(),
@@ -244,7 +244,7 @@ fn a_landing_that_panicked_does_not_stop_every_later_commit() {
         std::thread::yield_now();
     }
     second.join().unwrap();
-    let transaction = store.begin().unwrap();
+    let transaction = store.begin().now().unwrap();
     assert_eq!(
         transaction.get(&address(1)).now().unwrap(),
         Some(b"{\"n\":1}".to_vec())

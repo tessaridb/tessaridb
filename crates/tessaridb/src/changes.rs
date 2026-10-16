@@ -32,8 +32,8 @@ impl Db {
     /// # Errors
     ///
     /// Returns an error when the position cannot be read.
-    pub fn committed_tail(&self, log: LogId) -> Result<Sequence> {
-        Ok(self.store.committed_tail(log)?)
+    pub async fn committed_tail(&self, log: LogId) -> Result<Sequence> {
+        Ok(self.store.committed_tail(log).await?)
     }
 
     /// Follow the changes to one table, or to all of them, from `from` onward.

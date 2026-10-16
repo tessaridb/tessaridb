@@ -44,7 +44,7 @@ impl Db {
         if wanted.is_empty() {
             return Ok(named);
         }
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let catalog = Catalog::new(&mut transaction);
         for table in wanted {
             // A reference to a table that has been dropped keeps its id and
@@ -68,7 +68,7 @@ impl Db {
     ///
     /// Returns an error when the catalog cannot be read.
     pub async fn table_name(&self, table: TableId) -> Result<Option<String>> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         Ok(Catalog::new(&mut transaction)
             .table(table)
             .await?
@@ -83,7 +83,7 @@ impl Db {
     ///
     /// Returns an error when the catalog cannot be read.
     pub async fn is_series(&self, namespace: &str, database: &str, table: &str) -> Result<bool> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let catalog = Catalog::new(&mut transaction);
         let Some(namespace) = catalog.namespace_id(namespace).await? else {
             return Ok(false);
@@ -108,7 +108,7 @@ impl Db {
     ///
     /// Returns an error when the catalog cannot be read.
     pub async fn is_space(&self, namespace: &str, database: &str, table: &str) -> Result<bool> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let catalog = Catalog::new(&mut transaction);
         let Some(namespace) = catalog.namespace_id(namespace).await? else {
             return Ok(false);
@@ -139,7 +139,7 @@ impl Db {
         namespace: &str,
         database: &str,
     ) -> Result<Option<(NamespaceId, DatabaseId)>> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let catalog = Catalog::new(&mut transaction);
         let Some(namespace) = catalog.namespace_id(namespace).await? else {
             return Ok(None);
@@ -166,7 +166,7 @@ impl Db {
         database: &str,
         table: &str,
     ) -> Result<Option<TableId>> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let catalog = Catalog::new(&mut transaction);
         let Some(namespace) = catalog.namespace_id(namespace).await? else {
             return Ok(None);
@@ -190,7 +190,7 @@ impl Db {
         namespace: NamespaceId,
         database: DatabaseId,
     ) -> Result<Vec<(String, TableId, Vec<ShardId>)>> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         Ok(Catalog::new(&mut transaction)
             .tables_in(namespace, database)
             .await?

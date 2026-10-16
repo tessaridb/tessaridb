@@ -252,7 +252,7 @@ pub fn administered(transaction: &mut Transaction<'_>, event: &Administered<'_>)
 ///
 /// Returns an error when the trail cannot be read.
 pub async fn entries(store: &Store) -> Result<Vec<Value>> {
-    let transaction = store.begin()?;
+    let transaction = store.begin().await?;
     let mut found = Vec::new();
     for (_, payload) in transaction
         .scan_table(
@@ -290,7 +290,7 @@ pub async fn reads_by(store: &Store, actor: &str) -> Result<Vec<Value>> {
 /// back plaintext and roll the record of it away, leaving exactly the gap the
 /// ordering rule exists to close.
 async fn write_entry(store: &Store, event: &VaultRead<'_>) -> Result<()> {
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().await?;
     let address = system::address(system::VAULT_AUDIT, RecordId::Uuid(entry_id()?));
     transaction.put(
         address,

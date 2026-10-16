@@ -657,7 +657,7 @@ fn a_parked_payload_is_shown_only_to_who_may_read_its_destination_whole() {
     .unwrap();
     root.run_now(DECLARE).unwrap();
     {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let consumer = tessari_storage::Catalog::new(&mut transaction)
             .consumers()
             .now()

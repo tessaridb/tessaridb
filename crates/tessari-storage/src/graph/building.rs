@@ -7,13 +7,13 @@ impl Graph {
     /// reverse edge — pruned back to [`NEIGHBOURS`] by distance, ties on record
     /// id. Without the reverse edge a new record is reachable from nowhere and
     /// the graph is a collection of one-way streets.
-    pub(crate) fn insert(
+    pub(crate) async fn insert(
         &mut self,
         id: &RecordId,
         vector: Vec<f64>,
     ) -> Result<BTreeMap<RecordId, VectorNode>> {
         let mut touched = BTreeMap::new();
-        let chosen = if self.is_empty()? {
+        let chosen = if self.is_empty().await? {
             Vec::new()
         } else {
             // `None`, and never a caller's budget. The build walks the graph to
@@ -22,14 +22,14 @@ impl Graph {
             // beside the writes — and two replicas replaying one log would build
             // different graphs. That is the determinism this index gave up its
             // hierarchical layer to keep.
-            self.nearest(&vector, NEIGHBOURS, None)?
+            self.nearest(&vector, NEIGHBOURS, None).await?
         };
         let node = VectorNode::new(self.stored(vector), chosen.clone());
         self.nodes.put(id.clone(), node.clone());
         touched.insert(id.clone(), node);
 
         for neighbour in chosen {
-            let Some(held) = self.nodes.get(&neighbour)? else {
+            let Some(held) = self.nodes.get(&neighbour).await? else {
                 continue;
             };
             if held.neighbours.contains(id) {
@@ -37,7 +37,7 @@ impl Graph {
             }
             let mut linked = held.neighbours.clone();
             linked.push(id.clone());
-            let pruned = self.prune(&held.vector.to_vec(), linked)?;
+            let pruned = self.prune(&held.vector.to_vec(), linked).await?;
             let updated = VectorNode::new(held.vector.clone(), pruned);
             self.nodes.put(neighbour.clone(), updated.clone());
             touched.insert(neighbour, updated);
@@ -68,10 +68,10 @@ impl Graph {
     ///
     /// Ties break on record id, so the choice is a function of the vectors and
     /// nothing else — which is what lets two replicas build one graph.
-    fn prune(&self, from: &[f64], candidates: Vec<RecordId>) -> Result<Vec<RecordId>> {
+    async fn prune(&self, from: &[f64], candidates: Vec<RecordId>) -> Result<Vec<RecordId>> {
         let mut ranked: Vec<(f64, RecordId)> = Vec::with_capacity(candidates.len());
         for id in candidates {
-            ranked.push((self.at(id.clone(), from)?, id));
+            ranked.push((self.at(id.clone(), from).await?, id));
         }
         ranked.sort_by(|left, right| {
             left.0
@@ -85,7 +85,7 @@ impl Graph {
             if kept.len() >= NEIGHBOURS {
                 break;
             }
-            let Some(held) = self.nodes.get(&id)? else {
+            let Some(held) = self.nodes.get(&id).await? else {
                 continue;
             };
             let covered = kept

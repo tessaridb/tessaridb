@@ -56,10 +56,10 @@ fn one_of_two(addressed: bool) -> Arc<Db> {
     let (mine, _) = db.tenancy_in("mine", "d").now().unwrap().unwrap();
     let (theirs, _) = db.tenancy_in("theirs", "d").now().unwrap().unwrap();
     let store = db.store();
-    let me = store.node_identity().unwrap().id;
+    let me = store.node_identity().now().unwrap().id;
     // One transaction, as a cluster is declared: the first committed member row
     // makes this node clustered, and a second commit would be judged as one.
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     catalog
         .create_replica_with(ReplicaDefinition {

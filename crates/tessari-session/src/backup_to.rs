@@ -118,7 +118,7 @@ impl Session<'_> {
         if self.store.served().is_none() {
             return Ok(());
         }
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let mut tables = Vec::new();
         {
             let catalog = tessari_storage::Catalog::new(&mut transaction);

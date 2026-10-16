@@ -272,7 +272,7 @@ fn dropping_a_rollup_takes_its_exact_sums() {
         .run_now("CREATE readings = { sensor: 's0', v: 1.5, at: datetime '2026-09-29T10:00:00Z' };")
         .unwrap();
     let rollup = {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let catalog = tessari_storage::Catalog::new(&mut transaction);
         let namespace = catalog.namespace_id("t").now().unwrap().unwrap();
         let database = catalog.database_id(namespace, "d").now().unwrap().unwrap();
@@ -287,7 +287,7 @@ fn dropping_a_rollup_takes_its_exact_sums() {
     // The key's state is kept under a digest of the key.
     let key = Sha256::digest(tessari_encoding::encode_payload(&Value::from("s0")).into_bytes());
     let kept = |store: &Store| {
-        let transaction = store.begin().unwrap();
+        let transaction = store.begin().now().unwrap();
         transaction.rollup_state(rollup, &key[..16]).now().unwrap()
     };
     // Pinned before the drop, so the absence after it is not vacuous.

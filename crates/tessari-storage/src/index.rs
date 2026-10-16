@@ -234,7 +234,7 @@ pub(crate) async fn maintain(
     version: Sequence,
 ) -> Result<WriteBatch> {
     let retiring = crate::retired::retiring_at(store, version).await?;
-    maintain_from(store, store.begin_local()?, record, batch, retiring).await
+    maintain_from(store, store.begin_local().await?, record, batch, retiring).await
 }
 
 /// [`maintain`], reading the records' current values through `view`.

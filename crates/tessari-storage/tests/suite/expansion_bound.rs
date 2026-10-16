@@ -136,7 +136,7 @@ impl Vocabulary {
         let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
             .now()
             .unwrap();
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let namespace = catalog.create_namespace("prod").now().unwrap();
         let database = catalog.create_database(namespace.id, "shop").now().unwrap();
@@ -195,7 +195,7 @@ impl Vocabulary {
         // One transaction. The dictionary is the subject; how many commits built
         // it is not, and a commit per record would spend the test's whole budget
         // on the write path.
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         for (n, word) in words.iter().enumerate() {
             let mut fields = BTreeMap::new();
             fields.insert("body".to_owned(), Value::from(word.as_str()));
@@ -221,7 +221,7 @@ impl Vocabulary {
     /// The probe, run once, with the backend counted from zero.
     fn probe(&self) -> (Vec<String>, usize, usize) {
         self.counting.reset();
-        let transaction = self.store.begin().unwrap();
+        let transaction = self.store.begin().now().unwrap();
         let found = transaction
             .terms_with_prefix(&self.index, "zzq", CAP)
             .now()
@@ -237,7 +237,7 @@ impl Vocabulary {
     /// two different numbers.
     fn fuzzy_probe(&self, word: &str) -> (Vec<String>, usize, bool, usize) {
         self.counting.reset();
-        let transaction = self.store.begin().unwrap();
+        let transaction = self.store.begin().now().unwrap();
         let found = transaction
             .terms_within_distance(&self.index, word, 2, 3, CAP)
             .now()
@@ -252,7 +252,7 @@ impl Vocabulary {
 
     /// The probe repeated, timed.
     fn timed(&self) -> Duration {
-        let transaction = self.store.begin().unwrap();
+        let transaction = self.store.begin().now().unwrap();
         let start = Instant::now();
         for _ in 0..REPEATS {
             let found = transaction
@@ -324,7 +324,7 @@ fn an_expansion_that_runs_out_of_room_says_so_rather_than_reporting_a_subset() {
     // and "the first n words beginning with this". A caller that got exactly the
     // cap and no signal would report the second as the first.
     let vocabulary = Vocabulary::of(1_000);
-    let transaction = vocabulary.store.begin().unwrap();
+    let transaction = vocabulary.store.begin().now().unwrap();
 
     let room = transaction
         .terms_with_prefix(&vocabulary.index, "zzq", 5)

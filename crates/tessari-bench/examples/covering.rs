@@ -121,7 +121,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let shapes = corpus();
     let loading = Instant::now();
     for (chunk, slice) in shapes.chunks(2_000).enumerate() {
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().now()?;
         for (at, geometry) in slice.iter().enumerate() {
             let record = Value::Object(
                 [("at".to_owned(), Value::Geometry(geometry.clone()))]
@@ -175,7 +175,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let probe = Shape::of(&query_polygon(*query))?;
                 for repeat in 0..=REPEATS {
                     let began = Instant::now();
-                    let transaction = store.begin()?;
+                    let transaction = store.begin().now()?;
                     let region = transaction
                         .records_in_region(&index, &cells, *query, Relation::Meets)
                         .now()?;
@@ -222,7 +222,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 type Home = Box<dyn Fn(RecordId) -> RecordAddress>;
 
 fn defined(store: &Store) -> Result<(IndexDefinition, Home), Box<dyn Error>> {
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().now()?;
     let mut catalog = Catalog::new(&mut transaction);
     let namespace = catalog.create_namespace("atlas").now()?.id;
     let database = catalog.create_database(namespace, "world").now()?.id;

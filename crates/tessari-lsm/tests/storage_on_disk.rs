@@ -39,7 +39,7 @@ fn at(id: &str) -> RecordAddress {
 }
 
 fn write(store: &Store, id: &str, payload: &[u8]) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(at(id), payload.to_vec());
     transaction.commit().now().unwrap();
 }
@@ -50,12 +50,12 @@ fn a_held_snapshot_still_reads_the_old_version_from_disk() {
     let store = open(&root.path().join("store"));
     write(&store, "r", b"first");
 
-    let reader = store.begin().unwrap();
+    let reader = store.begin().now().unwrap();
     write(&store, "r", b"second");
 
     assert_eq!(reader.get(&at("r")).now().unwrap(), Some(b"first".to_vec()));
     assert_eq!(
-        store.begin().unwrap().get(&at("r")).now().unwrap(),
+        store.begin().now().unwrap().get(&at("r")).now().unwrap(),
         Some(b"second".to_vec())
     );
 }
@@ -66,13 +66,16 @@ fn a_deletion_hides_the_record_from_later_snapshots_and_not_from_earlier_ones() 
     let store = open(&root.path().join("store"));
     write(&store, "r", b"alive");
 
-    let reader = store.begin().unwrap();
-    let mut deleter = store.begin().unwrap();
+    let reader = store.begin().now().unwrap();
+    let mut deleter = store.begin().now().unwrap();
     deleter.delete(at("r"));
     deleter.commit().now().unwrap();
 
     assert_eq!(reader.get(&at("r")).now().unwrap(), Some(b"alive".to_vec()));
-    assert_eq!(store.begin().unwrap().get(&at("r")).now().unwrap(), None);
+    assert_eq!(
+        store.begin().now().unwrap().get(&at("r")).now().unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -81,8 +84,8 @@ fn the_first_committer_still_wins_when_the_versions_are_on_disk() {
     let store = open(&root.path().join("store"));
     write(&store, "r", b"base");
 
-    let mut first = store.begin().unwrap();
-    let mut second = store.begin().unwrap();
+    let mut first = store.begin().now().unwrap();
+    let mut second = store.begin().now().unwrap();
     first.put(at("r"), b"first".to_vec());
     second.put(at("r"), b"second".to_vec());
 
@@ -91,7 +94,7 @@ fn the_first_committer_still_wins_when_the_versions_are_on_disk() {
     assert!(matches!(error, Error::Conflict { .. }), "{error}");
 
     assert_eq!(
-        store.begin().unwrap().get(&at("r")).now().unwrap(),
+        store.begin().now().unwrap().get(&at("r")).now().unwrap(),
         Some(b"first".to_vec())
     );
 }
@@ -109,19 +112,21 @@ fn versions_and_the_committed_position_come_back_together_after_a_reopen() {
         // These writes carry no namespace, so they home at the store — the one
         // log this fixture has (S6.2).
         store
-            .committed_tail(store.own_log(tessari_types::Reach::Store).unwrap())
+            .committed_tail(store.own_log(tessari_types::Reach::Store).now().unwrap())
+            .now()
             .unwrap()
     };
 
     let reopened = open(&path);
     assert_eq!(
         reopened
-            .committed_tail(reopened.own_log(tessari_types::Reach::Store).unwrap())
+            .committed_tail(reopened.own_log(tessari_types::Reach::Store).now().unwrap())
+            .now()
             .unwrap(),
         tail
     );
 
-    let transaction = reopened.begin().unwrap();
+    let transaction = reopened.begin().now().unwrap();
     assert_eq!(
         transaction.get(&at("r")).now().unwrap(),
         Some(b"second".to_vec()),
@@ -152,7 +157,7 @@ fn a_log_replayed_between_two_stores_on_disk_reproduces_them_byte_for_byte() {
     write(&source, "alpha", b"one");
     write(&source, "beta", b"two");
     write(&source, "alpha", b"one-again");
-    let mut remover = source.begin().unwrap();
+    let mut remover = source.begin().now().unwrap();
     remover.delete(at("beta"));
     remover.commit().now().unwrap();
 
@@ -166,7 +171,7 @@ fn a_log_replayed_between_two_stores_on_disk_reproduces_them_byte_for_byte() {
 
     // Every log, not the store's alone: a replay that read one would reproduce
     // part of a store and compare it against the whole (S6.2).
-    for log in source.logs().unwrap() {
+    for log in source.logs().now().unwrap() {
         for (sequence, record) in source.log_records(log, Sequence::ZERO, 1024).now().unwrap() {
             replica
                 .apply_record(log.writer, sequence, &record)
@@ -199,8 +204,8 @@ fn a_log_replayed_between_two_stores_on_disk_reproduces_them_byte_for_byte() {
         );
     }
     assert_ne!(
-        source.node_identity().unwrap().id,
-        replica.node_identity().unwrap().id,
+        source.node_identity().now().unwrap().id,
+        replica.node_identity().now().unwrap().id,
         "the replica came up holding the source's identity"
     );
 }
@@ -214,12 +219,13 @@ fn a_commit_after_a_reopen_continues_the_sequence_instead_of_restarting_it() {
         let store = open(&path);
         write(&store, "r", b"value");
         store
-            .committed_tail(store.own_log(tessari_types::Reach::Store).unwrap())
+            .committed_tail(store.own_log(tessari_types::Reach::Store).now().unwrap())
+            .now()
             .unwrap()
     };
 
     let reopened = open(&path);
-    let mut transaction = reopened.begin().unwrap();
+    let mut transaction = reopened.begin().now().unwrap();
     transaction.put(at("r"), b"after".to_vec());
     let after = transaction.commit().now().unwrap();
 

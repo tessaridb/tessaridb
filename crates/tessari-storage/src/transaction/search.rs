@@ -12,7 +12,6 @@ mod statistics;
 pub use counts::SearchCounts;
 pub use fielded::FieldedPostings;
 use std::collections::BTreeSet;
-use tessari_kv::AsyncKvBackend as _;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{

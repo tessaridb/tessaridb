@@ -519,7 +519,7 @@ pub trait Subscriptions: core::fmt::Debug {
 impl Subscriptions for Store {
     fn granted(&self, follower: [u8; NODE_ID_LEN]) -> Answering<'_, Result<Option<Reach>>> {
         Box::pin(async move {
-            let mut transaction = self.begin().map_err(refused)?;
+            let mut transaction = self.begin().await.map_err(refused)?;
             let declared = Catalog::new(&mut transaction).replicas().await;
             transaction.rollback();
             Ok(declared

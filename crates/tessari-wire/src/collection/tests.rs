@@ -107,7 +107,7 @@ fn one_record() -> usize {
 
 /// Every namespace a store can name, in catalog order.
 fn declared(db: &Db) -> Vec<String> {
-    let mut transaction = db.store().begin().expect("a read");
+    let mut transaction = db.store().begin().now().expect("a read");
     let names = Catalog::new(&mut transaction)
         .namespaces()
         .now()

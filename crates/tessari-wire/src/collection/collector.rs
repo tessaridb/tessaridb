@@ -123,7 +123,7 @@ impl Collector<'_> {
         asks: &[(Reach, Sequence)],
         fetched: Vec<Result<Collected>>,
     ) -> Vec<Result<Sequence>> {
-        let fetched = super::deposed::refused(into, fetched);
+        let fetched = super::deposed::refused(into, fetched).await;
         // A leader that has just adopted its own log as the line's answers from
         // the line: this node's copy of that same log is renamed the same way
         // first, so the positions go on with no gap (ADR-0107 D3). A no-op for
@@ -313,7 +313,7 @@ impl Collector<'_> {
 /// Returns [`Error::Refused`] carrying the store's own words when the catalog
 /// cannot be read.
 pub async fn logs_to_collect(store: &Store) -> Result<Vec<Reach>> {
-    let mut transaction = store.begin().map_err(refused)?;
+    let mut transaction = store.begin().await.map_err(refused)?;
     let catalog = Catalog::new(&mut transaction);
     let mut logs = vec![Reach::Store];
     let namespaces = catalog.namespaces().await.map_err(refused)?;
@@ -388,7 +388,7 @@ pub async fn logs_to_collect(store: &Store) -> Result<Vec<Reach>> {
 /// nothing yet will allocate namespace 1 later, and a check that waited for the
 /// colliding record to arrive would pass the collect that precedes it.
 pub(crate) async fn refuse_to_reinterpret(into: &Store) -> Result<()> {
-    let mut transaction = into.begin().map_err(refused)?;
+    let mut transaction = into.begin().await.map_err(refused)?;
     let held = Catalog::new(&mut transaction)
         .namespaces()
         .await

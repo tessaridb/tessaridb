@@ -29,7 +29,7 @@ const STILL_EXPIRE: &str = "still expire at their instants";
 impl Session<'_> {
     /// Refuse an expiry declaration the table's kind or the store's format
     /// cannot carry, before anything is written.
-    pub(super) fn refuse_an_expiry_it_cannot_carry(
+    pub(super) async fn refuse_an_expiry_it_cannot_carry(
         &self,
         table: &str,
         kind: &TableKind,
@@ -46,6 +46,7 @@ impl Session<'_> {
             "a table whose records expire",
             FormatVersion::TABLE_EXPIRY,
         )
+        .await
     }
 
     /// Whether the session's database already holds a table by this name — the
@@ -92,7 +93,10 @@ impl Session<'_> {
             return Ok(Outcome::Done);
         };
         match change {
-            Some(_) => self.refuse_an_expiry_it_cannot_carry(name, &definition.kind, span)?,
+            Some(_) => {
+                self.refuse_an_expiry_it_cannot_carry(name, &definition.kind, span)
+                    .await?
+            }
             // Nothing to retire on a table that never declared it.
             None if definition.expire.is_none() => {
                 return Err(Error::TableDoesNotExpire {

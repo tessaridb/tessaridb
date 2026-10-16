@@ -246,7 +246,7 @@ impl Session<'_> {
                     ));
                 }
                 if *function == Function::SessionContext {
-                    return self.session_context();
+                    return self.session_context().await;
                 }
                 // A record reference is written by its table's name, and the
                 // name is the catalog's — not a value the call is given.

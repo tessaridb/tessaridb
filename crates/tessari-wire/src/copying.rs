@@ -140,7 +140,7 @@ async fn receive(link: &mut impl std::io::Read, into: &Store) -> Result<Copied> 
         (tag, _) if tag == PeerFrame::Unsubscribed.tag() => return Err(Error::Unsubscribed),
         (tag, _) => return Err(Error::OutOfTurn { tag }),
     };
-    let before = into.committed_version().map_err(refused)?;
+    let before = into.committed_version().await.map_err(refused)?;
     let mut records = 0_u64;
     loop {
         let (tag, body) = next(link)?;

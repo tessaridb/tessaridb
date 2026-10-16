@@ -5,7 +5,6 @@
 use tessari_encoding::{
     AcrossBarredKey, LogId, LogRecord, Part, RecordValue, StampedValue, StoreKey,
 };
-use tessari_kv::AsyncKvBackend as _;
 use tessari_types::{NamespaceId, Reach, Sequence};
 
 use super::{Fixture, TRANSACTION, doc};

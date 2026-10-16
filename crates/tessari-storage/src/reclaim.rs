@@ -27,7 +27,6 @@
 use tessari_encoding::{
     ReclaimFloorKey, RecordKey, RecordValue, StampedValue, StoreKey, StoreValue,
 };
-use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
@@ -66,7 +65,7 @@ impl Store {
         database: DatabaseId,
         table: TableId,
     ) -> Result<Reclaimed> {
-        let floor = self.retention_floor()?;
+        let floor = self.retention_floor().await?;
         // First, so the versions they settle can be reclaimed below: settled
         // transactions whose markers the floor has passed lose their provenance
         // (Q-922), the reclaim floor rising with each.

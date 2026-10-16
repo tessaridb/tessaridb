@@ -1,5 +1,4 @@
 use super::*;
-use tessari_kv::AsyncKvBackend as _;
 
 impl Transaction<'_> {
     /// What a search index knows about its collection as a whole.

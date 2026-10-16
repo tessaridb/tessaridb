@@ -71,7 +71,7 @@ fn condition_of(written: &str) -> Expr {
 /// Which index the planner picks for this condition, and on what ceiling.
 fn planned(session: &Session<'_>, store: &Store, written: &str) -> (String, Rows) {
     let condition = condition_of(written);
-    let mut transaction = store.begin().expect("a transaction");
+    let mut transaction = store.begin().now().expect("a transaction");
     let table = Catalog::new(&mut transaction)
         .table_id(
             tessari_types::NamespaceId::new(1),
@@ -158,7 +158,7 @@ fn a_condition_no_index_can_serve_offers_nothing() {
     let store = store();
     let session = ready(&store);
     let condition = condition_of("nickname = 'ada'");
-    let mut transaction = store.begin().expect("a transaction");
+    let mut transaction = store.begin().now().expect("a transaction");
     let declared = Vec::new();
     let offered = session
         .enumerate(
