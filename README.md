@@ -326,6 +326,9 @@ back without needing anywhere to put it.
 
 ## Opening one
 
+Running a script is asynchronous: call it from an `async` function on a Tokio
+runtime.
+
 ```rust
 use tessaridb::Db;
 
@@ -341,15 +344,15 @@ session.run(
      DEFINE FIELD email ON users TYPE string REQUIRED;
      DEFINE FIELD joined ON users TYPE datetime DEFAULT time::now();
      DEFINE INDEX by_email ON users FIELDS email UNIQUE;",
-)?;
+).await?;
 
-session.run("CREATE users = { email: 'ada@example.com', city: 'Paris' };")?;
+session.run("CREATE users = { email: 'ada@example.com', city: 'Paris' };").await?;
 
 let found = session.run(
     "SELECT email, string::upper(city) AS city
        FROM users
       WHERE email LIKE 'ada%' AND city = 'Paris';",
-)?;
+).await?;
 ```
 
 The two ways of opening differ in where the bytes live and in nothing else.
@@ -363,7 +366,7 @@ use tessaridb::{Parameters, Value};
 let mut given = Parameters::new();
 given.insert("city".to_owned(), Value::String("Paris".to_owned()));
 
-let found = session.run_with("SELECT * FROM users WHERE city = $city;", &given)?;
+let found = session.run_with("SELECT * FROM users WHERE city = $city;", &given).await?;
 ```
 
 A parameter is legal exactly where a literal is and nowhere a name is, and it is

@@ -5,9 +5,12 @@
 //! store is built rather than how it is used, and is deliberately not reachable
 //! from here.
 //!
+//! Running a script is asynchronous, so it is awaited on a Tokio runtime:
+//!
 //! ```
 //! use tessaridb::{Db, Value};
 //!
+//! # tokio::runtime::Builder::new_current_thread().build().expect("a runtime").block_on(async {
 //! let db = Db::in_memory()?;
 //! let mut session = db.session();
 //! session.run(
@@ -17,11 +20,13 @@
 //!      USE DATABASE orders;
 //!      DEFINE COLLECTION users;
 //!      CREATE users:1 = { name: 'ada' };",
-//! )?;
+//! ).await?;
 //!
-//! let found = session.run("SELECT name FROM users:1;")?;
+//! let found = session.run("SELECT name FROM users:1;").await?;
 //! let records = found[0].records().expect("a read answers with records");
 //! assert_eq!(records.len(), 1);
+//! # Ok::<(), tessaridb::Error>(())
+//! # })?;
 //! # Ok::<(), tessaridb::Error>(())
 //! ```
 //!
