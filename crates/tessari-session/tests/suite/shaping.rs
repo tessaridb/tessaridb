@@ -21,6 +21,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -39,7 +40,9 @@ CREATE notes:1 = { title: 'first', embedding: [0.1, 0.2, 0.3] };
 ";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {

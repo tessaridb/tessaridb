@@ -19,17 +19,17 @@ fn current(fixture: &Fixture, home: usize) -> Result<bool> {
         .indexes_are_current_for(fixture.homes[home].table)
 }
 
-#[test]
-fn a_resolution_readers_cannot_see_yet_unsettles_its_table_alone() -> Result<()> {
-    let fixture = Fixture::new()?;
-    fixture.prepare(0)?;
-    fixture.decide(Decision::Pending)?;
-    fixture.decide(Decision::Committed)?;
+#[tokio::test]
+async fn a_resolution_readers_cannot_see_yet_unsettles_its_table_alone() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.prepare(0).await?;
+    fixture.decide(Decision::Pending).await?;
+    fixture.decide(Decision::Committed).await?;
     assert!(
         current(&fixture, 1)?,
         "nothing of it is in the second table"
     );
-    fixture.resolve(0)?;
+    fixture.resolve(0).await?;
     // The first table's index holds "new" while the second part is missing,
     // so its readers still see "old".
     assert!(!current(&fixture, 0)?, "an index ahead of its readers");
@@ -39,51 +39,51 @@ fn a_resolution_readers_cannot_see_yet_unsettles_its_table_alone() -> Result<()>
     );
     // The second part lands: readers see the whole transaction, the first
     // table's index agrees, and the second's intent is not in its index yet.
-    fixture.prepare(1)?;
+    fixture.prepare(1).await?;
     assert!(current(&fixture, 0)?, "settled once every part is here");
     assert!(
         !current(&fixture, 1)?,
         "an intent readers see and no index holds"
     );
-    fixture.resolve(1)?;
+    fixture.resolve(1).await?;
     assert!(current(&fixture, 0)? && current(&fixture, 1)?);
     Ok(())
 }
 
-#[test]
-fn intents_a_committed_record_makes_values_unsettle_their_tables() -> Result<()> {
-    let fixture = Fixture::new()?;
-    fixture.prepare(0)?;
-    fixture.prepare(1)?;
-    fixture.decide(Decision::Pending)?;
+#[tokio::test]
+async fn intents_a_committed_record_makes_values_unsettle_their_tables() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.prepare(0).await?;
+    fixture.prepare(1).await?;
+    fixture.decide(Decision::Pending).await?;
     // Undecided, nobody sees the intents and no index holds them: they agree.
     assert!(current(&fixture, 0)? && current(&fixture, 1)?);
-    fixture.decide(Decision::Committed)?;
+    fixture.decide(Decision::Committed).await?;
     assert!(!current(&fixture, 0)? && !current(&fixture, 1)?);
-    fixture.resolve(0)?;
+    fixture.resolve(0).await?;
     assert!(current(&fixture, 0)?);
     assert!(!current(&fixture, 1)?);
-    fixture.resolve(1)?;
+    fixture.resolve(1).await?;
     assert!(current(&fixture, 1)?);
     Ok(())
 }
 
-#[test]
-fn an_aborted_transaction_never_unsettles_anything() -> Result<()> {
-    let fixture = Fixture::new()?;
-    fixture.prepare(0)?;
-    fixture.prepare(1)?;
-    fixture.decide(Decision::Pending)?;
-    fixture.decide(Decision::Aborted)?;
+#[tokio::test]
+async fn an_aborted_transaction_never_unsettles_anything() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture.prepare(0).await?;
+    fixture.prepare(1).await?;
+    fixture.decide(Decision::Pending).await?;
+    fixture.decide(Decision::Aborted).await?;
     assert!(current(&fixture, 0)? && current(&fixture, 1)?);
     Ok(())
 }
 
-#[test]
-fn a_snapshot_behind_the_tail_is_not_current_for_any_table() -> Result<()> {
-    let fixture = Fixture::new()?;
+#[tokio::test]
+async fn a_snapshot_behind_the_tail_is_not_current_for_any_table() -> Result<()> {
+    let fixture = Fixture::new().await?;
     let behind = fixture.store.begin()?;
-    fixture.prepare(0)?;
+    fixture.prepare(0).await?;
     assert!(!behind.indexes_are_current_for(fixture.homes[1].table)?);
     Ok(())
 }

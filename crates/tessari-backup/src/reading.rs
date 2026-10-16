@@ -24,7 +24,7 @@ use tessari_types::Sequence;
 /// [`Error::WrongBase`] when the store is not where this file continues from,
 /// [`Error::Damaged`] at the first record whose bytes are not the bytes that
 /// were written, and the store's own error when a record cannot be applied.
-pub fn read_until(
+pub async fn read_until(
     store: &Store,
     input: &mut impl Read,
     upto: Option<Sequence>,
@@ -39,7 +39,7 @@ pub fn read_until(
             logs: usize::try_from(head.sections).unwrap_or(usize::MAX),
         });
     }
-    let replayed = replay(store, input, upto, head);
+    let replayed = replay(store, input, upto, head).await;
     // Nothing above acknowledged a record, so the sync it owes is here, and
     // after a refusal too: what was applied before it stays applied, durably.
     // A failed sync is answered first, because a record it could not make
@@ -51,7 +51,7 @@ pub fn read_until(
 
 /// The frames of a backup applied into `store` without a sync each, with one
 /// sync per [`crate::RESTORE_CHUNK`] records; [`read_until`] syncs the rest.
-fn replay(
+async fn replay(
     store: &Store,
     input: &mut impl Read,
     upto: Option<Sequence>,
@@ -132,7 +132,9 @@ fn replay(
                 // the record instead refused every store whose records were
                 // filed before each database had a log of its own — they sit in
                 // the store log and derive a database home today.
-                store.restore_record_in(section.log, sequence, &record)?;
+                store
+                    .restore_record_in(section.log, sequence, &record)
+                    .await?;
                 applied = applied.saturating_add(1);
                 if applied.is_multiple_of(crate::RESTORE_CHUNK) {
                     store.sync_landed()?;
@@ -187,8 +189,8 @@ fn replay(
 /// anything is applied, [`Error::WrongBase`] when the node is not standing where
 /// this prefix continues from — which for a bootstrap means *not empty* — and
 /// [`Error::Damaged`] at the first record whose bytes are not the bytes written.
-pub fn bootstrap(store: &Store, input: &mut impl Read) -> Result<Bootstrapped> {
-    let restored = read(store, input)?;
+pub async fn bootstrap(store: &Store, input: &mut impl Read) -> Result<Bootstrapped> {
+    let restored = read(store, input).await?;
     let mut follow_from = Vec::with_capacity(restored.logs.len());
     for log in store.logs()? {
         let reached = store.committed_tail(log)?;
@@ -270,8 +272,8 @@ pub fn verify(input: &mut impl Read) -> Result<Verified> {
 /// Returns [`Error::NotABackup`] or [`Error::Unsupported`] before applying
 /// anything, [`Error::NotEmpty`] when the store is not empty, and the store's
 /// own error when a record cannot be applied.
-pub fn read(store: &Store, input: &mut impl Read) -> Result<Restored> {
-    read_until(store, input, None)
+pub async fn read(store: &Store, input: &mut impl Read) -> Result<Restored> {
+    read_until(store, input, None).await
 }
 
 /// How much of a buffer a read managed to fill.

@@ -178,7 +178,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn records_by_index(
+    pub async fn records_by_index(
         &self,
         index: &IndexDefinition,
         values: &[Value],
@@ -197,9 +197,12 @@ impl Transaction<'_> {
         let complete = values.len() == index.fields.len();
 
         let mut found: BTreeMap<RecordId, Vec<u8>> = BTreeMap::new();
-        for id in self.candidates(index, &address, values, &wanted, complete)? {
+        for id in self
+            .candidates(index, &address, values, &wanted, complete)
+            .await?
+        {
             let record = RecordAddress::new(index.namespace, index.database, index.table, id);
-            if let Some(payload) = self.confirm(index, &record, &wanted)? {
+            if let Some(payload) = self.confirm(index, &record, &wanted).await? {
                 found.insert(record.id, payload);
             }
         }
@@ -214,7 +217,7 @@ impl Transaction<'_> {
             {
                 continue;
             }
-            match self.confirm(index, pending, &wanted)? {
+            match self.confirm(index, pending, &wanted).await? {
                 Some(payload) => {
                     found.insert(pending.id.clone(), payload);
                 }

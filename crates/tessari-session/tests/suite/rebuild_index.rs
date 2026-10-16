@@ -17,6 +17,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_encoding::{KeyKind, StoreKey, StoreValue, VectorNode, VectorNodeKey};
@@ -32,7 +33,7 @@ use tessari_storage::Store;
 /// answer here.
 fn store() -> (Store, Arc<dyn KvBackend>) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     (store, backend)
 }
 

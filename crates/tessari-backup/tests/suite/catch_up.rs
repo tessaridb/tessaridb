@@ -19,6 +19,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_encoding::LogId;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -61,12 +62,16 @@ const INTERROGATION: &[&str] = &[
 /// test in this file back into `bootstrap.rs`.
 fn durable(path: &Path) -> Store {
     let backend = LsmBackend::open(path, StoreConfig::new(Durability::ProcessCrashSafe)).unwrap();
-    Store::open(Arc::new(backend) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// The leader is not the subject here, so it stays in memory.
 fn in_memory() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn session(store: &Store) -> Session<'_> {
@@ -119,7 +124,9 @@ fn a_follower_that_was_stopped_recovers_its_position_from_its_own_store() {
 
     let reported = {
         let follower = durable(&path);
-        let brought_up = tessari_backup::bootstrap(&follower, &mut prefix.as_slice()).unwrap();
+        let brought_up = tessari_backup::bootstrap(&follower, &mut prefix.as_slice())
+            .now()
+            .unwrap();
         assert!(brought_up.records > 0, "a bootstrap that applied nothing");
         brought_up.follow_from
         // `follower` drops here: last `Arc` gone, backend closed, directory
@@ -144,7 +151,9 @@ fn a_follower_that_was_down_catches_up_on_what_it_missed_without_replaying() {
 
     {
         let follower = durable(&path);
-        tessari_backup::bootstrap(&follower, &mut prefix.as_slice()).unwrap();
+        tessari_backup::bootstrap(&follower, &mut prefix.as_slice())
+            .now()
+            .unwrap();
     }
     // The follower is down from here. Note that no position was carried out of
     // that block — deliberately, because carrying one is what would make this
@@ -171,7 +180,9 @@ fn a_follower_that_was_down_catches_up_on_what_it_missed_without_replaying() {
     for (home, from) in resume_from(&reopened) {
         let mut missed = Vec::new();
         let sent = tessari_backup::write_from(&held, &mut missed, home, from).unwrap();
-        let caught = tessari_backup::bootstrap(&reopened, &mut missed.as_slice()).unwrap();
+        let caught = tessari_backup::bootstrap(&reopened, &mut missed.as_slice())
+            .now()
+            .unwrap();
         // Nothing replayed: what arrived is exactly what was written during the
         // outage, not that plus the history again.
         assert_eq!(caught.records, sent.records);

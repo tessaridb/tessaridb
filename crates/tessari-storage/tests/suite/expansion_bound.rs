@@ -38,6 +38,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+use tessari_storage::Now;
 
 use tessari_constants::SEARCH_FUZZY_EXAMINATION_CAP;
 use tessari_encoding::encode_payload;
@@ -132,16 +133,20 @@ impl Vocabulary {
     /// one and their own shape is not what is being measured.
     fn of(size: usize) -> Self {
         let counting = Counting::new();
-        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let mut transaction = store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("prod").unwrap();
-        let database = catalog.create_database(namespace.id, "shop").unwrap();
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog.create_database(namespace.id, "shop").now().unwrap();
         let table = catalog
             .create_table(namespace.id, database.id, "notes", TableShape::default())
+            .now()
             .unwrap();
         catalog
             .create_analyzer("plain", Analyzer::new(vec![Filter::Lowercase]))
+            .now()
             .unwrap();
         catalog
             .create_field(
@@ -156,6 +161,7 @@ impl Vocabulary {
                     assert: None,
                 },
             )
+            .now()
             .unwrap();
         let index = catalog
             .create_index(
@@ -172,8 +178,9 @@ impl Vocabulary {
                     costs: tessari_storage::SearchCosts::default(),
                 },
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
 
         // The probe's three terms, and then filler up to `size`. The filler is
         // spelled so that none of it can begin with `zzq` — the answer must be
@@ -202,7 +209,7 @@ impl Vocabulary {
                 encode_payload(&Value::Object(fields)).into_bytes(),
             );
         }
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
 
         Self {
             counting,

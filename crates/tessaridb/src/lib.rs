@@ -71,7 +71,7 @@ mod wiring;
 
 pub use across::SettledAcross;
 pub use balance::{Balanced, LeadershipMoves, Moved, ShardSamples};
-pub use coordinate::{Coordinate, Coordinated, Coordination, Surface};
+pub use coordinate::{Coordinate, Coordinated, Coordinating, Coordination, Surface};
 pub use db::Db;
 pub use tessari_lsm::{AtRestKey, Durability, StoreConfig};
 pub use tessari_session::redact::{Visible, seen};

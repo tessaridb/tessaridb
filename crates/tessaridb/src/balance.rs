@@ -93,15 +93,15 @@ impl Db {
     ///
     /// The store's failure to read the catalog, a shard or a log; a refused
     /// act is recorded in [`Balanced::last_refusal`] and the pass goes on.
-    pub fn balance_shards(&self, samples: &mut ShardSamples) -> Result<Balanced> {
+    pub async fn balance_shards(&self, samples: &mut ShardSamples) -> Result<Balanced> {
         let store = self.store();
         let mut balanced = Balanced::default();
-        if !store.leads(Reach::Store)? {
+        if !store.leads(Reach::Store).await? {
             // What this node measured while it led is not a measurement now.
             store.shards_measured(Vec::new());
             return Ok(balanced);
         }
-        let named = self.tables_balancing()?;
+        let named = self.tables_balancing().await?;
         let tables: Vec<TableDefinition> = named.iter().map(|(_, table)| table.clone()).collect();
         let rates = self.writes_since(&tables, samples)?;
         let mut published = Vec::with_capacity(named.len());
@@ -110,7 +110,7 @@ impl Db {
                 continue;
             };
             let above = usize::try_from(policy.above).unwrap_or(usize::MAX);
-            let measured = self.measure(&table, map, above, &rates)?;
+            let measured = self.measure(&table, map, above, &rates).await?;
             let mut sampled = SampledTable {
                 name,
                 shards: measured.iter().map(Measured::sampled).collect(),
@@ -133,7 +133,8 @@ impl Db {
                 } else {
                     shard.records / 2
                 };
-                self.nth_record(&table, map, shard.id, into.max(1))?
+                self.nth_record(&table, map, shard.id, into.max(1))
+                    .await?
                     .map(Act::Split)
             } else {
                 let below = usize::try_from(policy.merge_below).unwrap_or(usize::MAX);
@@ -153,12 +154,18 @@ impl Db {
             let done = match &act {
                 Act::Split(point) => Catalog::new(&mut writing)
                     .split_table(table.id, point)
+                    .await
                     .map(|_| ()),
                 Act::Merge(first, second) => Catalog::new(&mut writing)
                     .merge_shards(table.id, *first, *second)
+                    .await
                     .map(|_| ()),
             };
-            match done.and_then(|()| writing.commit().map(|_| ())) {
+            let landed = match done {
+                Ok(()) => writing.commit().await.map(|_| ()),
+                Err(failure) => Err(failure),
+            };
+            match landed {
                 Ok(()) => {
                     sampled.last_act = Some(act.described());
                     match act {
@@ -176,15 +183,16 @@ impl Db {
 
     /// Every table that asked to be balanced and is split, with the name an
     /// operator writes it by.
-    fn tables_balancing(&self) -> Result<Vec<(String, TableDefinition)>> {
+    async fn tables_balancing(&self) -> Result<Vec<(String, TableDefinition)>> {
         let mut reading = self.store().begin()?;
         let catalog = Catalog::new(&mut reading);
         let mut found = Vec::new();
-        for namespace in catalog.namespaces()? {
-            for database in catalog.databases_in(namespace.id)? {
+        for namespace in catalog.namespaces().await? {
+            for database in catalog.databases_in(namespace.id).await? {
                 found.extend(
                     catalog
-                        .tables_in(namespace.id, database.id)?
+                        .tables_in(namespace.id, database.id)
+                        .await?
                         .into_iter()
                         .filter(|table| table.auto_split.is_some() && table.shards.is_some())
                         .map(|table| {
@@ -264,7 +272,7 @@ impl Db {
     }
 
     /// Each live shard of `table`, counted to one past `above`, with its load.
-    fn measure(
+    async fn measure(
         &self,
         table: &TableDefinition,
         map: &ShardMap,
@@ -274,7 +282,8 @@ impl Db {
         let reading = self.store().begin()?;
         let mut measured = Vec::new();
         for span in map.spans() {
-            let (records, complete) = count(&reading, table, &span, above.saturating_add(1))?;
+            let (records, complete) =
+                count(&reading, table, &span, above.saturating_add(1)).await?;
             measured.push(Measured {
                 id: span.id,
                 records,
@@ -289,7 +298,7 @@ impl Db {
     }
 
     /// The `n`th live record of shard `id` (from zero), if it has that many.
-    fn nth_record(
+    async fn nth_record(
         &self,
         table: &TableDefinition,
         map: &ShardMap,
@@ -303,7 +312,7 @@ impl Db {
         let mut seen = 0_usize;
         let mut after: Option<RecordId> = None;
         let found = loop {
-            let page = page(&reading, table, &span, after.as_ref())?;
+            let page = page(&reading, table, &span, after.as_ref()).await?;
             let Some((last, _)) = page.last() else {
                 break None;
             };
@@ -349,7 +358,7 @@ impl Measured {
 
 /// The live records of a shard, counted to `limit`, and whether the count
 /// reached its end.
-fn count(
+async fn count(
     reading: &Transaction<'_>,
     table: &TableDefinition,
     span: &ShardSpan<'_>,
@@ -358,7 +367,7 @@ fn count(
     let mut counted = 0_usize;
     let mut after: Option<RecordId> = None;
     loop {
-        let found = page(reading, table, span, after.as_ref())?;
+        let found = page(reading, table, span, after.as_ref()).await?;
         counted = counted.saturating_add(found.len());
         let Some((last, _)) = found.last() else {
             return Ok((counted, true));
@@ -374,23 +383,25 @@ fn count(
 }
 
 /// One page of a shard's live records, after `after`.
-fn page(
+async fn page(
     reading: &Transaction<'_>,
     table: &TableDefinition,
     span: &ShardSpan<'_>,
     after: Option<&RecordId>,
 ) -> Result<Vec<(RecordId, Vec<u8>)>> {
-    Ok(reading.records_between(
-        table.namespace,
-        table.database,
-        table.id,
-        Window {
-            from: span.from,
-            to: span.to.map(|to| (to, false)),
-        },
-        after,
-        PAGE,
-    )?)
+    Ok(reading
+        .records_between(
+            table.namespace,
+            table.database,
+            table.id,
+            Window {
+                from: span.from,
+                to: span.to.map(|to| (to, false)),
+            },
+            after,
+            PAGE,
+        )
+        .await?)
 }
 
 #[cfg(test)]

@@ -105,12 +105,12 @@ impl Graph {
     ///
     /// Returns the first error `admit` returns, and a storage error when a node
     /// cannot be read.
-    pub fn nearest_matching<E: From<crate::error::Error>>(
+    pub async fn nearest_matching<E: From<crate::error::Error>>(
         &self,
         query: &[f64],
         wanted: usize,
         effort: Option<usize>,
-        mut admit: impl FnMut(&RecordId) -> Result<bool, E>,
+        mut admit: impl AsyncFnMut(&RecordId) -> Result<bool, E>,
     ) -> Result<Matched, E> {
         let ceiling = filtered_ceiling(wanted, effort);
         let effort = effort.unwrap_or(EXPLORATION).max(wanted);
@@ -127,7 +127,7 @@ impl Graph {
         let mut best: Vec<(f64, RecordId)> = Vec::new();
         let start = self.at(entry.clone(), query)?;
         seen.insert(entry.clone());
-        if admit(&entry)? {
+        if admit(&entry).await? {
             best.push((start, entry.clone()));
         }
         frontier.push((start, entry));
@@ -174,7 +174,7 @@ impl Graph {
                     || best
                         .last()
                         .is_some_and(|(furthest, _)| separation < *furthest);
-                if could_enter && admit(neighbour)? {
+                if could_enter && admit(neighbour).await? {
                     insert_sorted(&mut best, separation, neighbour.clone(), effort);
                 }
             }
@@ -205,6 +205,8 @@ mod tests {
     }
 
     use tessari_types::RecordId;
+
+    use crate::now::Now;
 
     use super::super::{Graph, VectorDistance, separation};
     use super::{FILTERED_REACH, Matched};
@@ -265,8 +267,8 @@ mod tests {
             .collect()
     }
 
-    fn admitting(modulus: i64) -> impl FnMut(&RecordId) -> Result<bool, Refused> {
-        move |id| Ok(matches!(id, RecordId::Int(n) if n.rem_euclid(modulus) == 0))
+    fn admitting(modulus: i64) -> impl AsyncFnMut(&RecordId) -> Result<bool, Refused> {
+        async move |id: &RecordId| Ok(matches!(id, RecordId::Int(n) if n.rem_euclid(modulus) == 0))
     }
 
     #[test]
@@ -275,6 +277,7 @@ mod tests {
         let query = point(1_000, 8);
         let found = graph
             .nearest_matching(&query, 10, None, admitting(3))
+            .now()
             .unwrap();
         assert_eq!(found.ids.len(), 10, "a third admitted still fills ten");
         for id in &found.ids {
@@ -295,6 +298,7 @@ mod tests {
             let query = point(5_000_i64.saturating_add(q), 6);
             let found = graph
                 .nearest_matching(&query, 10, Some(300), admitting(4))
+                .now()
                 .unwrap();
             assert_eq!(
                 found.ids,
@@ -310,11 +314,12 @@ mod tests {
         let asked = Cell::new(0_usize);
         let seen = std::cell::RefCell::new(std::collections::BTreeSet::new());
         let found = graph
-            .nearest_matching(&query, 10, None, |id: &RecordId| {
+            .nearest_matching(&query, 10, None, async |id: &RecordId| {
                 asked.set(asked.get().saturating_add(1));
                 assert!(seen.borrow_mut().insert(id.clone()), "{id:?} asked twice");
                 Ok::<bool, Refused>(true)
             })
+            .now()
             .unwrap();
         assert_eq!(found.ids.len(), 10);
         assert!(asked.get() < 2_000, "asked {} times", asked.get());
@@ -328,6 +333,7 @@ mod tests {
         let query = point(7_000, 8);
         let found = graph
             .nearest_matching(&query, 10, Some(10), admitting(500))
+            .now()
             .unwrap();
         assert!(found.cut, "{found:?}");
         assert!(found.ids.len() < 10);
@@ -344,10 +350,11 @@ mod tests {
         let query = point(7_000, 8);
         let asked = Cell::new(0_usize);
         let found = graph
-            .nearest_matching(&query, 10, None, |id: &RecordId| {
+            .nearest_matching(&query, 10, None, async |id: &RecordId| {
                 asked.set(asked.get().saturating_add(1));
-                admitting(500)(id)
+                admitting(500)(id).await
             })
+            .now()
             .unwrap();
         assert!(found.cut, "{found:?}");
         assert!(
@@ -360,8 +367,11 @@ mod tests {
     #[test]
     fn a_failing_condition_ends_the_walk_with_its_error() {
         let graph = graph_of(200, 4);
-        let answer: Result<Matched, Refused> =
-            graph.nearest_matching(&point(3_000, 4), 5, None, |_| Err(Refused::Condition));
+        let answer: Result<Matched, Refused> = graph
+            .nearest_matching(&point(3_000, 4), 5, None, async |_: &RecordId| {
+                Err(Refused::Condition)
+            })
+            .now();
         assert_eq!(answer, Err(Refused::Condition));
     }
 
@@ -377,6 +387,7 @@ mod tests {
                 let truth = exact(2_000, 32, &query, 10, |n| n.rem_euclid(modulus) == 0);
                 let found = graph
                     .nearest_matching(&query, 10, None, admitting(modulus))
+                    .now()
                     .unwrap();
                 hit = hit.saturating_add(found.ids.iter().filter(|id| truth.contains(id)).count());
                 asked = asked.saturating_add(truth.len());
@@ -392,9 +403,11 @@ mod tests {
         let query = point(4_000, 8);
         let first = graph
             .nearest_matching(&query, 10, None, admitting(7))
+            .now()
             .unwrap();
         let second = graph
             .nearest_matching(&query, 10, None, admitting(7))
+            .now()
             .unwrap();
         assert_eq!(first, second);
     }

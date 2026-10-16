@@ -14,6 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_encoding::{decode_payload, encode_payload};
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -21,7 +22,9 @@ use tessari_storage::{RecordAddress, Store};
 use tessari_types::{DatabaseId, NamespaceId, Number, RecordId, Sequence, TableId, Value};
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn at(id: &str) -> RecordAddress {
@@ -36,13 +39,14 @@ fn at(id: &str) -> RecordAddress {
 fn put(store: &Store, id: &str, value: &Value) -> Sequence {
     let mut transaction = store.begin().unwrap();
     transaction.put(at(id), encode_payload(value).into_bytes());
-    transaction.commit().unwrap()
+    transaction.commit().now().unwrap()
 }
 
 fn get(store: &Store, id: &str) -> Option<Value> {
     let transaction = store.begin().unwrap();
     transaction
         .get(&at(id))
+        .now()
         .unwrap()
         .map(|bytes| decode_payload(&bytes).unwrap())
 }
@@ -91,6 +95,7 @@ fn an_older_snapshot_reads_the_older_value() {
 
     let seen = reader
         .get(&at("r"))
+        .now()
         .unwrap()
         .map(|bytes| decode_payload(&bytes).unwrap());
     assert_eq!(seen, Some(Value::from("first")));
@@ -108,7 +113,7 @@ fn a_deleted_record_reads_as_absent_and_not_as_a_none_value() {
 
     let mut transaction = store.begin().unwrap();
     transaction.delete(at("gone"));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     assert_eq!(get(&store, "gone"), None, "a deleted record has no payload");
     assert_eq!(

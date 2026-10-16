@@ -69,6 +69,9 @@ pub(crate) fn serve(
     // serving whatever it last collected — silently, because nothing is in an
     // error state while it happens. So it fails to start, here, beside the
     // credential read and for the same reason.
+    // The one runtime this process owns, built before the first store call: the
+    // store's entry points are asynchronous and are driven on it.
+    let runtime = runtime::build().map_err(|why| format!("the runtime would not start: {why}"))?;
     if let Some(joining) = &cluster
         && joining.seeds.is_empty()
     {
@@ -77,10 +80,8 @@ pub(crate) fn serve(
             .node_identity()
             .map_err(|why| format!("this node cannot say who it is: {why}"))?
             .id;
-        let declared = db
-            .store()
-            .begin()
-            .and_then(|mut transaction| tessari_storage::Catalog::new(&mut transaction).replicas())
+        let declared = runtime
+            .block_on(crate::peers::declared(db.store()))
             .map_err(|why| format!("this node cannot say who its peers are: {why}"))?;
         if !tessari_wire::names_a_peer(&declared, &me) {
             return Err(
@@ -123,9 +124,6 @@ pub(crate) fn serve(
     // credentials were misconfigured should never have reached the point of
     // answering on a network, so this is a failure to start rather than a
     // warning behind a listening socket.
-    // The one runtime this process owns, built before the first store call: the
-    // store's entry points are asynchronous and are driven on it.
-    let runtime = runtime::build().map_err(|why| format!("the runtime would not start: {why}"))?;
     runtime.block_on(bootstrap::first_user(&db))?;
     // What each surface presents, for `INFO FOR NODE` — the fingerprint an
     // operator pins a newcomer's row with is read off the newcomer (D9) — and
@@ -322,7 +320,7 @@ pub(crate) fn serve(
                 db: std::sync::Arc::clone(&db),
                 keys: surface.keys.clone(),
             };
-            revoking.refresh()?;
+            runtime.block_on(revoking.refresh())?;
             Some(revoking)
         }
         None => None,

@@ -32,6 +32,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{
@@ -119,7 +120,7 @@ impl KvBackend for Counting {
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// `RECORDS` events, with three conditions of very different selectivity over
@@ -262,7 +263,9 @@ fn a_condition_too_thin_for_the_order_gives_it_up_and_scans() {
     // the served reads answer — `the_answers_are_the_ones_a_scan_gives` covers
     // that — so this is a statement about cost.
     let counting = Counting::new();
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut with = ready(&store);
     with.run_now(INDEX).unwrap();
     assert_eq!(path(&mut with, READS[3]), AccessPath::Scan);
@@ -300,7 +303,9 @@ fn a_served_order_does_not_read_the_whole_table() {
     // The saving, counted at the backend rather than timed. The number that
     // would fail this is `RECORDS`: a read that scanned everything and sorted it.
     let counting = Counting::new();
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store);
     session.run_now(INDEX).unwrap();
 
@@ -470,7 +475,9 @@ fn the_ascending_answers_are_the_ones_a_scan_gives() {
 #[test]
 fn an_ascending_served_order_does_not_read_the_whole_table() {
     let counting = Counting::new();
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready_required(&store);
     session.run_now(INDEX).unwrap();
 

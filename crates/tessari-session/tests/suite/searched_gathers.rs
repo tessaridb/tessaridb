@@ -8,6 +8,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use crate::gathered_reads::{Pair, answer, follower_of_the_middle_of, leader, pair_of};
@@ -158,6 +159,7 @@ fn counting_every_record_agrees_with_the_index_it_stands_in_for() {
             tessari_types::DatabaseId::new(1),
             "docs",
         )
+        .now()
         .unwrap()
         .unwrap();
     let index = tessari_storage::Catalog::new(&mut transaction)
@@ -166,6 +168,7 @@ fn counting_every_record_agrees_with_the_index_it_stands_in_for() {
             tessari_types::DatabaseId::new(1),
             table,
         )
+        .now()
         .unwrap()
         .into_iter()
         .find(|index| index.search)
@@ -179,9 +182,13 @@ fn counting_every_record_agrees_with_the_index_it_stands_in_for() {
             None,
             usize::MAX,
         )
+        .now()
         .unwrap();
     let terms = ["fox", "dog", "quick", "absent"].map(str::to_owned);
-    let counted = transaction.search_counts(&index, &every, &terms).unwrap();
+    let counted = transaction
+        .search_counts(&index, &every, &terms)
+        .now()
+        .unwrap();
     let statistics = transaction.search_statistics(&index).unwrap();
     assert_eq!(
         (counted.documents, counted.tokens),

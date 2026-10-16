@@ -35,7 +35,9 @@ const CORPUS: &str = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE
      CREATE articles:2 = { headline: 'Looms', text: 'jacquard cards and patterns' };";
 
 fn store(definition: &str) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session.run_now(CORPUS).unwrap();
     session.run_now(definition).unwrap();
@@ -270,7 +272,7 @@ fn tables_rank_together_and_each_answers_under_its_own_grants() {
          DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
     );
     let mut root = Session::new(&held);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now(
         "DEFINE USER notes_only ON prod.shop ROLE viewer PASSWORD 'correct horse battery';\n\
          DEFINE USER half ON prod.shop ROLE viewer PASSWORD 'correct horse battery';\n\
@@ -286,7 +288,7 @@ fn tables_rank_together_and_each_answers_under_its_own_grants() {
     // A search is listed to a caller who reads one of its tables, and to nobody else.
     let searches = |name: &str| {
         let mut session = Session::new(&held);
-        session.sign_in(name, PASSWORD).unwrap();
+        session.sign_in(name, PASSWORD).now().unwrap();
         let outcomes = session
             .run_now(&format!("{USE} INFO FOR DATABASE;"))
             .unwrap();
@@ -318,7 +320,7 @@ fn tables_rank_together_and_each_answers_under_its_own_grants() {
 
     let signed = |name: &str| {
         let mut session = Session::new(&held);
-        session.sign_in(name, PASSWORD).unwrap();
+        session.sign_in(name, PASSWORD).now().unwrap();
         session.run_now(USE).unwrap();
         session
     };
@@ -408,7 +410,9 @@ fn the_definition_is_said_back_and_survives_a_script_and_a_reopen() {
     assert!(script.contains(definition), "{script}");
     assert!(!script.contains("DEFINE INDEX knowledge"), "{script}");
 
-    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     Session::new(&restored).run_now(&script).unwrap();
     let before = ranked(&mut session(&held), READ);
     assert!(before.len() >= 2, "{before:?}");
@@ -446,7 +450,9 @@ fn the_definition_is_said_back_and_survives_a_script_and_a_reopen() {
             tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
         )
         .unwrap();
-        Store::open(Arc::new(backend) as Arc<dyn KvBackend>).unwrap()
+        Store::open(Arc::new(backend) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap()
     };
     {
         let disk = open();
@@ -682,7 +688,9 @@ fn synonyms_answer_per_field_and_stop_words_leave_the_query() {
         script.contains("DEFINE STOPWORDS common ['for', 'on', 'the'];"),
         "{script}"
     );
-    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     Session::new(&restored).run_now(&script).unwrap();
     assert_eq!(
         ids(&mut session(&restored), "s", "MATCHES 'the engine'"),
@@ -765,7 +773,7 @@ fn completions_are_ranked_by_how_many_records_hold_them() {
          DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
     );
     let mut reader = Session::new(&held);
-    reader.sign_in("root", PASSWORD).unwrap();
+    reader.sign_in("root", PASSWORD).now().unwrap();
     reader.run_now(USE).unwrap();
     let completed = |reader: &mut Session<'_>, typed: &str| -> Vec<(String, i64)> {
         let outcomes = reader
@@ -806,7 +814,7 @@ fn completions_are_ranked_by_how_many_records_hold_them() {
         )
         .unwrap();
     let mut narrow = Session::new(&held);
-    narrow.sign_in("narrow", PASSWORD).unwrap();
+    narrow.sign_in("narrow", PASSWORD).now().unwrap();
     narrow.run_now(USE).unwrap();
     assert_eq!(
         completed(&mut narrow, "not"),
@@ -955,7 +963,9 @@ fn the_suffixes_are_exactly_those_of_the_dictionary() {
     use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 
     let backend = Arc::new(MemoryBackend::new());
-    let held = Store::open(backend.clone() as Arc<dyn KvBackend>).unwrap();
+    let held = Store::open(backend.clone() as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut writer = Session::new(&held);
     writer.run_now(CORPUS).unwrap();
     writer
@@ -975,6 +985,7 @@ fn the_suffixes_are_exactly_those_of_the_dictionary() {
             tessari_types::DatabaseId::new(1),
             "notes",
         )
+        .now()
         .unwrap()
         .unwrap();
     let index = catalog
@@ -983,6 +994,7 @@ fn the_suffixes_are_exactly_those_of_the_dictionary() {
             tessari_types::DatabaseId::new(1),
             table,
         )
+        .now()
         .unwrap()
         .into_iter()
         .find(|index| index.name == "by_body")
@@ -1072,7 +1084,9 @@ fn a_search_answers_an_infix_from_its_members() {
 /// itself; without the weight the two tie and `a` comes first by identity.
 #[test]
 fn a_fuzzy_search_reaches_surfaces_and_ranks_the_exact_word_first() {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(

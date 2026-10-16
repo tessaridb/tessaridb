@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tessari_storage::Now;
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -40,11 +41,13 @@ struct Split {
 
 impl Split {
     fn new() -> Self {
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let mut transaction = store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("prod").unwrap().id;
-        let database = catalog.create_database(namespace, "shop").unwrap().id;
+        let namespace = catalog.create_namespace("prod").now().unwrap().id;
+        let database = catalog.create_database(namespace, "shop").now().unwrap().id;
         let shape = |split: Vec<RecordId>| TableShape {
             schemafull: false,
             kind: TableKind::Table,
@@ -62,13 +65,15 @@ impl Split {
                 "orders",
                 shape(vec![RecordId::from("g"), RecordId::from("p")]),
             )
+            .now()
             .unwrap()
             .id;
         let notes = catalog
             .create_table(namespace, database, "notes", shape(Vec::new()))
+            .now()
             .unwrap()
             .id;
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         Self {
             store,
             namespace,
@@ -109,7 +114,7 @@ impl Split {
         for address in addresses {
             transaction.put(address.clone(), b"{}".to_vec());
         }
-        transaction.commit().map(|_| ())
+        transaction.commit().now().map(|_| ())
     }
 
     /// How far this node's own log for `home` has reached.
@@ -138,6 +143,7 @@ impl Split {
                     None,
                     None,
                 )
+                .now()
                 .unwrap();
         }
         for (range, node) in led {
@@ -146,9 +152,10 @@ impl Split {
                 .record_leadership(*range, node, Epoch::new(4))
                 .unwrap();
         }
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         self.store
-            .hold(Epoch::new(4), Lease::taken_at(Instant::now(), LEASE_TTL));
+            .hold(Epoch::new(4), Lease::taken_at(Instant::now(), LEASE_TTL))
+            .now();
     }
 }
 
@@ -172,6 +179,7 @@ impl Split {
         ] {
             catalog
                 .create_replica(name, endpoint, writer, Some(node), None, None)
+                .now()
                 .unwrap();
         }
         for (index, (range, node)) in placed.iter().enumerate() {
@@ -184,6 +192,7 @@ impl Split {
                     None,
                     Some(*range),
                 )
+                .now()
                 .unwrap();
         }
         for (range, node, epoch) in rows {
@@ -191,7 +200,7 @@ impl Split {
                 .record_leadership(*range, own(*node), Epoch::new(*epoch))
                 .unwrap();
         }
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     fn live() -> Lease {
@@ -347,9 +356,10 @@ fn two_namespaces_led_by_two_nodes_are_refused_the_same_way() {
     let mut transaction = split.store.begin().unwrap();
     let other = Catalog::new(&mut transaction)
         .create_namespace("staging")
+        .now()
         .unwrap()
         .id;
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     split.led(&[
         (Reach::Namespace(split.namespace), ME),
         (Reach::Namespace(other), THEM),
@@ -387,7 +397,7 @@ fn ranges_all_led_by_one_other_node_are_still_a_redirect() {
 fn a_placed_shard_is_carved_out_of_the_store_line() {
     let split = Split::new();
     split.placed(&[(split.shard(2), THEM)], &[]);
-    split.store.hold(Epoch::new(4), Split::live());
+    split.store.hold(Epoch::new(4), Split::live()).now();
     // The store line still writes everything the placement did not carve out.
     split.write(&[split.order("a")]).unwrap();
     split.write(&[split.note("n")]).unwrap();
@@ -400,7 +410,7 @@ fn a_placed_shard_is_carved_out_of_the_store_line() {
 fn a_placed_shard_with_a_leader_redirects_the_store_leader_to_it() {
     let split = Split::new();
     split.placed(&[(split.shard(2), THEM)], &[(split.shard(2), THEM, 1)]);
-    split.store.hold(Epoch::new(4), Split::live());
+    split.store.hold(Epoch::new(4), Split::live()).now();
     let refused = split.write(&[split.order("h")]).unwrap_err();
     assert!(
         matches!(refused, Error::WriteIsElsewhere { node, .. } if node == THEM),
@@ -416,7 +426,8 @@ fn a_node_holding_only_a_shards_line_writes_that_shard_and_nothing_else() {
     split.placed(&[(split.shard(2), ME)], &[]);
     split
         .store
-        .hold_range(split.shard(2), Epoch::new(1), Split::live());
+        .hold_range(split.shard(2), Epoch::new(1), Split::live())
+        .now();
     split.write(&[split.order("h")]).unwrap();
     for elsewhere in [split.order("a"), split.note("n")] {
         let refused = split.write(&[elsewhere]).unwrap_err();
@@ -428,10 +439,11 @@ fn a_node_holding_only_a_shards_line_writes_that_shard_and_nothing_else() {
 fn a_spent_line_refuses_its_own_range_and_only_that() {
     let split = Split::new();
     split.placed(&[(split.shard(2), ME)], &[]);
-    split.store.hold(Epoch::new(4), Split::live());
+    split.store.hold(Epoch::new(4), Split::live()).now();
     split
         .store
-        .hold_range(split.shard(2), Epoch::new(1), Split::spent());
+        .hold_range(split.shard(2), Epoch::new(1), Split::spent())
+        .now();
     let refused = split.write(&[split.order("h")]).unwrap_err();
     assert!(matches!(refused, Error::LeaseSpent { .. }), "{refused:?}");
     split.write(&[split.order("a")]).unwrap();
@@ -441,10 +453,11 @@ fn a_spent_line_refuses_its_own_range_and_only_that() {
 fn a_spent_store_lease_does_not_refuse_a_write_its_own_line_covers() {
     let split = Split::new();
     split.placed(&[(split.shard(2), ME)], &[]);
-    split.store.hold(Epoch::new(4), Split::spent());
+    split.store.hold(Epoch::new(4), Split::spent()).now();
     split
         .store
-        .hold_range(split.shard(2), Epoch::new(1), Split::live());
+        .hold_range(split.shard(2), Epoch::new(1), Split::live())
+        .now();
     split.write(&[split.order("h")]).unwrap();
     let refused = split.write(&[split.order("a")]).unwrap_err();
     assert!(matches!(refused, Error::LeaseSpent { .. }), "{refused:?}");
@@ -456,10 +469,11 @@ fn a_spent_store_lease_does_not_refuse_a_write_its_own_line_covers() {
 fn a_rows_epoch_is_superseded_by_this_nodes_epoch_on_its_own_line() {
     let split = Split::new();
     split.placed(&[(split.shard(2), ME)], &[(split.shard(2), THEM, 3)]);
-    split.store.hold(Epoch::new(1), Split::live());
+    split.store.hold(Epoch::new(1), Split::live()).now();
     split
         .store
-        .hold_range(split.shard(2), Epoch::new(5), Split::live());
+        .hold_range(split.shard(2), Epoch::new(5), Split::live())
+        .now();
     split.write(&[split.order("h")]).unwrap();
 }
 
@@ -469,10 +483,11 @@ fn a_store_epoch_never_supersedes_a_placed_ranges_row() {
     // won shard 2's line at 3, and this node's own line there is only at 2.
     let split = Split::new();
     split.placed(&[(split.shard(2), ME)], &[(split.shard(2), THEM, 3)]);
-    split.store.hold(Epoch::new(9), Split::live());
+    split.store.hold(Epoch::new(9), Split::live()).now();
     split
         .store
-        .hold_range(split.shard(2), Epoch::new(2), Split::live());
+        .hold_range(split.shard(2), Epoch::new(2), Split::live())
+        .now();
     let refused = split.write(&[split.order("h")]).unwrap_err();
     assert!(
         matches!(refused, Error::WriteIsElsewhere { node, .. } if node == THEM),
@@ -491,7 +506,8 @@ fn the_store_leaders_row_does_not_govern_a_range_placed_on_its_own_line() {
     split.placed(&[(split.shard(2), ME)], &[(Reach::Store, THEM, 40)]);
     split
         .store
-        .hold_range(split.shard(2), Epoch::new(1), Split::live());
+        .hold_range(split.shard(2), Epoch::new(1), Split::live())
+        .now();
     split.write(&[split.order("h")]).unwrap();
     // An unplaced range is still the store leader's.
     let refused = split.write(&[split.order("a")]).unwrap_err();
@@ -507,8 +523,10 @@ impl Split {
     /// Split `orders` at `point` and commit it.
     fn split_at(&self, point: &str) -> Result<(), Error> {
         let mut transaction = self.store.begin()?;
-        Catalog::new(&mut transaction).split_table(self.orders, &RecordId::from(point))?;
-        transaction.commit().map(|_| ())
+        Catalog::new(&mut transaction)
+            .split_table(self.orders, &RecordId::from(point))
+            .now()?;
+        transaction.commit().now().map(|_| ())
     }
 }
 
@@ -536,14 +554,16 @@ fn a_committed_split_files_the_next_write_in_the_shard_that_replaced_the_old_one
 #[test]
 fn a_follower_that_applies_a_split_files_its_next_write_in_the_new_shard() {
     let leader = Split::new();
-    let follower = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let follower = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     // The namespace and database are declared in the store's log; a table's
     // definition, and so its split, travels in its database's.
     let writer = leader.store.writer().unwrap();
     let replay = |home: Reach, from: Sequence| {
         let log = leader.store.own_log(home).unwrap();
         for (at, record) in leader.store.log_records(log, from, 1024).unwrap() {
-            follower.apply_record(writer, at, &record).unwrap();
+            follower.apply_record(writer, at, &record).now().unwrap();
         }
     };
     replay(Reach::Store, Sequence::ZERO);
@@ -557,7 +577,7 @@ fn a_follower_that_applies_a_split_files_its_next_write_in_the_new_shard() {
     let write = || {
         let mut transaction = follower.begin().unwrap();
         transaction.put(leader.order("n"), b"{}".to_vec());
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     };
     // The follower learns the declared map from its own first write.
     write();
@@ -588,8 +608,9 @@ fn a_merge_files_the_next_write_in_the_shard_it_minted() {
     let mut transaction = split.store.begin().unwrap();
     Catalog::new(&mut transaction)
         .merge_shards(split.orders, ShardId::new(5), ShardId::new(4))
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     split.write(&[split.order("n")]).unwrap();
     assert_eq!(
         split.tail(split.shard(5)),
@@ -613,6 +634,7 @@ fn a_split_or_merge_that_cannot_describe_a_map_is_refused_by_name() {
     let refused = attempt(&|catalog| {
         catalog
             .split_table(split.notes, &RecordId::from("m"))
+            .now()
             .map(|_| ())
     })
     .unwrap_err();
@@ -623,6 +645,7 @@ fn a_split_or_merge_that_cannot_describe_a_map_is_refused_by_name() {
     let refused = attempt(&|catalog| {
         catalog
             .split_table(split.orders, &RecordId::from("g"))
+            .now()
             .map(|_| ())
     })
     .unwrap_err();
@@ -633,6 +656,7 @@ fn a_split_or_merge_that_cannot_describe_a_map_is_refused_by_name() {
     let refused = attempt(&|catalog| {
         catalog
             .merge_shards(split.orders, ShardId::new(1), ShardId::new(3))
+            .now()
             .map(|_| ())
     })
     .unwrap_err();
@@ -645,6 +669,7 @@ fn a_split_or_merge_that_cannot_describe_a_map_is_refused_by_name() {
     let refused = attempt(&|catalog| {
         catalog
             .merge_shards(split.orders, ShardId::new(2), ShardId::new(4))
+            .now()
             .map(|_| ())
     })
     .unwrap_err();
@@ -667,8 +692,9 @@ fn a_shard_a_replica_row_names_is_not_split_out_from_under_it() {
             Some(split.shard(2)),
             None,
         )
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     let refused = split.split_at("m").unwrap_err();
     assert!(
         matches!(

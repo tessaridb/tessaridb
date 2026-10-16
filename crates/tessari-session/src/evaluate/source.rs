@@ -56,13 +56,13 @@ impl Session<'_> {
     /// remembering to call it is the shape of thing this whole feature avoids,
     /// and the mechanical enumeration of read paths belongs to the negative
     /// matrix in W122, where it can be derived rather than recalled.
-    pub(crate) fn refuse_reading_a_vault(
+    pub(crate) async fn refuse_reading_a_vault(
         &self,
         transaction: &mut Transaction<'_>,
         id: TableId,
         table: &TableRef,
     ) -> Result<()> {
-        let definition = Catalog::new(transaction).table(id)?;
+        let definition = Catalog::new(transaction).table(id).await?;
         if definition.as_ref().is_some_and(TableDefinition::is_vault) {
             return Err(Error::NotReadBySelect {
                 table: table.name.text.clone(),
@@ -73,8 +73,8 @@ impl Session<'_> {
         // the fact, so a caller who may read only part of its source is refused
         // rather than answered from fields they may not see (ADR-0109 D7). Here
         // because this is asked at every source that reads a table.
-        if let Some(kept) = self.materialized_view(transaction, id)?
-            && self.visible_in(transaction, kept.source)?.is_some()
+        if let Some(kept) = self.materialized_view(transaction, id).await?
+            && self.visible_in(transaction, kept.source).await?.is_some()
         {
             return Err(Error::MaterializedFromHidden {
                 view: table.name.text.clone(),
@@ -91,14 +91,14 @@ impl Session<'_> {
     /// a table and do not gather (G033): a join side and a `FETCH`. What is
     /// missing is decided by [`Self::missing`], which the gathered read asks
     /// too, so the two cannot disagree about what this node holds.
-    pub(crate) fn refuse_reading_a_part(
+    pub(crate) async fn refuse_reading_a_part(
         &self,
         transaction: &mut Transaction<'_>,
         id: TableId,
         part: Part<'_>,
     ) -> Result<()> {
-        match self.missing(transaction, id, part)? {
-            Some(missing) => Err(self.not_held_here(&missing)?),
+        match self.missing(transaction, id, part).await? {
+            Some(missing) => Err(self.not_held_here(&missing).await?),
             None => Ok(()),
         }
     }
@@ -106,7 +106,7 @@ impl Session<'_> {
     /// The records of `found` the condition keeps, tested as a local read
     /// tests them — over the redacted record, with the searched context and the
     /// read's notes.
-    fn kept(
+    async fn kept(
         &self,
         transaction: &mut Transaction<'_>,
         condition: &Expr,
@@ -116,13 +116,15 @@ impl Session<'_> {
     ) -> Result<Vec<(tessari_types::RecordId, tessari_types::Value)>> {
         let mut kept = Vec::new();
         for (record_id, record) in found {
-            let held = self.evaluate_in(
-                transaction,
-                condition,
-                Scope::searching(&record, searched)
-                    .identified(&record_id)
-                    .noticing(reporting.noticed),
-            )?;
+            let held = self
+                .evaluate_in(
+                    transaction,
+                    condition,
+                    Scope::searching(&record, searched)
+                        .identified(&record_id)
+                        .noticing(reporting.noticed),
+                )
+                .await?;
             if boolean(&held, condition.span)? {
                 kept.push((record_id, record));
             }
@@ -130,7 +132,7 @@ impl Session<'_> {
         Ok(kept)
     }
 
-    pub(super) fn prepare_source<'a>(
+    pub(super) async fn prepare_source<'a>(
         &self,
         transaction: &mut Transaction<'_>,
         select: &'a Select,
@@ -142,8 +144,9 @@ impl Session<'_> {
             // below like any other source (ADR-0105 D6). An ungrouped one never
             // reaches here — it answers through `search_answer`.
             Source::Search { .. } => {
-                let (records, plan) =
-                    self.search_records(transaction, select, reporting.noticed)?;
+                let (records, plan) = self
+                    .search_records(transaction, select, reporting.noticed)
+                    .await?;
                 Ok((Prepared::Held(records, plan), Searched::default()))
             }
             // Resolved from `meta` rather than read from a table, because that
@@ -152,7 +155,7 @@ impl Session<'_> {
             // `USE` — a node is not in a database.
             Source::Node => Ok((
                 Prepared::Held(
-                    vec![node_row(self.store)?],
+                    vec![node_row(self.store).await?],
                     Plan {
                         source: Some("node"),
                         ..Plan::new(AccessPath::Record)
@@ -161,18 +164,22 @@ impl Session<'_> {
                 Searched::default(),
             )),
             Source::Record(target) => {
-                let (_, address) = self.address(transaction, target)?;
-                self.refuse_reading_a_vault(transaction, address.table, &target.table)?;
-                if let Some((found, note)) = self.gather_a_part(
-                    transaction,
-                    address.table,
-                    Part::Record(&address.id),
-                    None,
-                    None,
-                    None,
-                )? {
+                let (_, address) = self.address(transaction, target).await?;
+                self.refuse_reading_a_vault(transaction, address.table, &target.table)
+                    .await?;
+                if let Some((found, note)) = self
+                    .gather_a_part(
+                        transaction,
+                        address.table,
+                        Part::Record(&address.id),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await?
+                {
                     reporting.collected.push(note);
-                    let visible = self.visible_in(transaction, address.table)?;
+                    let visible = self.visible_in(transaction, address.table).await?;
                     return Ok((
                         Prepared::Held(
                             self.records_of(found, &visible)?,
@@ -184,9 +191,11 @@ impl Session<'_> {
                 // One record is still a member of its table's collection, so
                 // a score or an explanation over it is measured against that
                 // collection exactly as the table read measures it (Q-869).
-                let searched = self.searched_for(transaction, address.table, &shown(select))?;
-                let visible = self.visible_in(transaction, address.table)?;
-                let found = match transaction.get(&address)? {
+                let searched = self
+                    .searched_for(transaction, address.table, &shown(select))
+                    .await?;
+                let visible = self.visible_in(transaction, address.table).await?;
+                let found = match transaction.get(&address).await? {
                     Some(payload) => {
                         vec![(address.id, self.record_of(&payload, &visible)?)]
                     }
@@ -201,21 +210,24 @@ impl Session<'_> {
                 ))
             }
             Source::Table(table) => {
-                let (context, id) = self.resolve_readable_table(transaction, table)?;
-                self.refuse_reading_a_vault(transaction, id, table)?;
-                let searched = self.searched_for(transaction, id, &shown(select))?;
-                let visible = self.visible_in(transaction, id)?;
+                let (context, id) = self.resolve_readable_table(transaction, table).await?;
+                self.refuse_reading_a_vault(transaction, id, table).await?;
+                let searched = self.searched_for(transaction, id, &shown(select)).await?;
+                let visible = self.visible_in(transaction, id).await?;
                 // ADR-0102: with no condition, a leader ranks exactly the
                 // records this node would, so an ordered `LIMIT` travels.
                 let ordered = super::shape_rules::travelling_order(select, &visible);
-                if let Some((found, note)) = self.gather_a_part(
-                    transaction,
-                    id,
-                    Part::Whole,
-                    None,
-                    super::shape_rules::held_bound(select),
-                    ordered.as_ref(),
-                )? {
+                if let Some((found, note)) = self
+                    .gather_a_part(
+                        transaction,
+                        id,
+                        Part::Whole,
+                        None,
+                        super::shape_rules::held_bound(select),
+                        ordered.as_ref(),
+                    )
+                    .await?
+                {
                     reporting.collected.push(note);
                     return Ok((
                         Prepared::Held(
@@ -238,9 +250,9 @@ impl Session<'_> {
                 inclusive,
                 span,
             } => {
-                let (context, id) = self.resolve_readable_table(transaction, table)?;
-                self.refuse_reading_a_vault(transaction, id, table)?;
-                let visible = self.visible_in(transaction, id)?;
+                let (context, id) = self.resolve_readable_table(transaction, table).await?;
+                self.refuse_reading_a_vault(transaction, id, table).await?;
+                let visible = self.visible_in(transaction, id).await?;
                 let part = Part::Span {
                     lower: lower.fixed(*span)?,
                     upper: upper.fixed(*span)?,
@@ -248,9 +260,10 @@ impl Session<'_> {
                 };
                 let plan = Plan::new(AccessPath::Span)
                     .on(table.name.text.as_str())
-                    .touching(self.shards_touched(transaction, id, part)?);
-                if let Some((found, note)) =
-                    self.gather_a_part(transaction, id, part, None, None, None)?
+                    .touching(self.shards_touched(transaction, id, part).await?);
+                if let Some((found, note)) = self
+                    .gather_a_part(transaction, id, part, None, None, None)
+                    .await?
                 {
                     reporting.collected.push(note);
                     return Ok((
@@ -258,15 +271,17 @@ impl Session<'_> {
                         Searched::default(),
                     ));
                 }
-                let searched = self.searched_for(transaction, id, &shown(select))?;
-                let found = transaction.records_in_span(
-                    context.namespace,
-                    context.database,
-                    id,
-                    lower.fixed(*span)?,
-                    upper.fixed(*span)?,
-                    *inclusive,
-                )?;
+                let searched = self.searched_for(transaction, id, &shown(select)).await?;
+                let found = transaction
+                    .records_in_span(
+                        context.namespace,
+                        context.database,
+                        id,
+                        lower.fixed(*span)?,
+                        upper.fixed(*span)?,
+                        *inclusive,
+                    )
+                    .await?;
                 Ok((
                     Prepared::Held(self.records_of(found, &visible)?, plan),
                     searched,
@@ -282,27 +297,30 @@ impl Session<'_> {
                 // The parser has established one hop to a named table and a
                 // `DEPTH` beside every `PATH TO` (G055 W6).
                 if let (Some(path), Some(hop), Some(depth)) = (path, hops.first(), depth) {
-                    let (found, note) =
-                        self.shortest_path(transaction, (from, *direction, hop, *depth), path)?;
+                    let (found, note) = self
+                        .shortest_path(transaction, (from, *direction, hop, *depth), path)
+                        .await?;
                     reporting.collected.extend(note);
                     return Ok((
                         Prepared::Held(found, Plan::new(AccessPath::Graph)),
                         Searched::default(),
                     ));
                 }
-                let found = self.traverse(transaction, from, *direction, hops, *depth)?;
+                let found = self
+                    .traverse(transaction, from, *direction, hops, *depth)
+                    .await?;
                 Ok((
                     Prepared::Held(found, Plan::new(AccessPath::Graph)),
                     Searched::default(),
                 ))
             }
             Source::Where { table, condition } => {
-                let (context, id) = self.resolve_readable_table(transaction, table)?;
+                let (context, id) = self.resolve_readable_table(transaction, table).await?;
                 // Ahead of the analyzer resolution below, so a `WHERE` naming a
                 // secret field is refused for being a read of a vault rather
                 // than for the shape of its condition — one refusal, and the one
                 // that names the statement to use instead.
-                self.refuse_reading_a_vault(transaction, id, table)?;
+                self.refuse_reading_a_vault(transaction, id, table).await?;
                 // Resolved once for the query rather than once per record: which
                 // analyzer a field carries is a property of the schema, and the
                 // schema does not change under a read; nor does the collection a
@@ -311,11 +329,11 @@ impl Session<'_> {
                 // query into the terms it holds.
                 let mut expressions: Vec<&Expr> = vec![condition];
                 expressions.extend(shown(select));
-                let searched = self.searched_for(transaction, id, &expressions)?;
+                let searched = self.searched_for(transaction, id, &expressions).await?;
                 // ADR-0097: the leader may narrow what it sends by the condition,
                 // under this session's visibility. Every record that arrives is
                 // still tested below, so the narrowing changes only what travels.
-                let visible = self.visible_in(transaction, id)?;
+                let visible = self.visible_in(transaction, id).await?;
                 let pushed =
                     tessari_ql::portable(condition).map(|(condition, parameters)| crate::Pushed {
                         visible: visible.clone(),
@@ -325,7 +343,7 @@ impl Session<'_> {
                 // ADR-0096 D3: a condition fixing a partitioned table's field
                 // reads that partition's span — here or on the one shard holding
                 // it — and is still tested on every record the span holds.
-                let region = self.partition_span(transaction, id, condition)?;
+                let region = self.partition_span(transaction, id, condition).await?;
                 let part = match &region {
                     Some((lower, upper)) => Part::Span {
                         lower,
@@ -335,51 +353,57 @@ impl Session<'_> {
                     None => Part::Whole,
                 };
                 let plan = match region {
-                    Some(_) => Plan::new(AccessPath::Span).touching(self.shards_touched(
-                        transaction,
-                        id,
-                        part,
-                    )?),
+                    Some(_) => Plan::new(AccessPath::Span)
+                        .touching(self.shards_touched(transaction, id, part).await?),
                     None => Plan::new(AccessPath::Scan),
                 }
                 .on(table.name.text.as_str());
-                if let Some((found, note)) = self.gather_a_part(
-                    transaction,
-                    id,
-                    part,
-                    pushed.as_ref(),
-                    // Bounded only when the condition went with it: then the
-                    // leader keeps exactly what this node keeps, and its first
-                    // `n` are this node's first `n`.
-                    pushed
-                        .as_ref()
-                        .and_then(|_| super::shape_rules::held_bound(select)),
-                    // Ranked there only when the condition went with it, for
-                    // the same reason (ADR-0102 D2).
-                    pushed
-                        .as_ref()
-                        .and_then(|_| super::shape_rules::travelling_order(select, &visible))
-                        .as_ref(),
-                )? {
+                if let Some((found, note)) = self
+                    .gather_a_part(
+                        transaction,
+                        id,
+                        part,
+                        pushed.as_ref(),
+                        // Bounded only when the condition went with it: then the
+                        // leader keeps exactly what this node keeps, and its first
+                        // `n` are this node's first `n`.
+                        pushed
+                            .as_ref()
+                            .and_then(|_| super::shape_rules::held_bound(select)),
+                        // Ranked there only when the condition went with it, for
+                        // the same reason (ADR-0102 D2).
+                        pushed
+                            .as_ref()
+                            .and_then(|_| super::shape_rules::travelling_order(select, &visible))
+                            .as_ref(),
+                    )
+                    .await?
+                {
                     reporting.collected.push(note);
                     // Narrowed after the records are in hand, over the redacted
                     // record, exactly as a materialised source is: a hidden
                     // field is as absent to this condition as to a local scan.
                     let found = self.records_of(found, &visible)?;
-                    let kept = self.kept(transaction, condition, found, &searched, reporting)?;
+                    let kept = self
+                        .kept(transaction, condition, found, &searched, reporting)
+                        .await?;
                     return Ok((Prepared::Held(kept, plan), searched));
                 }
                 if let Some((lower, upper)) = &region {
-                    let found = transaction.records_in_span(
-                        context.namespace,
-                        context.database,
-                        id,
-                        lower,
-                        upper,
-                        false,
-                    )?;
+                    let found = transaction
+                        .records_in_span(
+                            context.namespace,
+                            context.database,
+                            id,
+                            lower,
+                            upper,
+                            false,
+                        )
+                        .await?;
                     let found = self.records_of(found, &visible)?;
-                    let kept = self.kept(transaction, condition, found, &searched, reporting)?;
+                    let kept = self
+                        .kept(transaction, condition, found, &searched, reporting)
+                        .await?;
                     return Ok((Prepared::Held(kept, plan), searched));
                 }
                 Ok((Prepared::Filtered(context, id, condition), searched))
@@ -392,14 +416,16 @@ impl Session<'_> {
                 asof: true,
                 condition,
             } => {
-                let (found, plan, searched) = self.asof_join(
-                    transaction,
-                    select,
-                    (left, right),
-                    (left_key, right_key),
-                    condition.as_deref(),
-                    reporting,
-                )?;
+                let (found, plan, searched) = self
+                    .asof_join(
+                        transaction,
+                        select,
+                        (left, right),
+                        (left_key, right_key),
+                        condition.as_deref(),
+                        reporting,
+                    )
+                    .await?;
                 Ok((Prepared::Held(found, plan), searched))
             }
             Source::Join {
@@ -410,19 +436,21 @@ impl Session<'_> {
                 asof: false,
                 condition,
             } => {
-                let (found, plan, searched) = self.join(
-                    transaction,
-                    select,
-                    JoinClause {
-                        left,
-                        right,
-                        left_key,
-                        right_key,
-                        condition: condition.as_deref(),
-                    },
-                    reporting,
-                    within,
-                )?;
+                let (found, plan, searched) = self
+                    .join(
+                        transaction,
+                        select,
+                        JoinClause {
+                            left,
+                            right,
+                            left_key,
+                            right_key,
+                            condition: condition.as_deref(),
+                        },
+                        reporting,
+                        within,
+                    )
+                    .await?;
                 Ok((Prepared::Held(found, plan), searched))
             }
             // The inner read answers first and the outer statement reads what it
@@ -448,7 +476,7 @@ impl Session<'_> {
                 // fails in a way somebody can see rather than answering a prefix
                 // that looks whole.
                 let ceiling = Ceiling::over(read);
-                let inner = self.read(transaction, read, within, ceiling)?;
+                let inner = Box::pin(self.read(transaction, read, within, ceiling)).await?;
                 reporting.collected.extend(inner.notes);
                 reporting
                     .collected
@@ -473,13 +501,15 @@ impl Session<'_> {
                 let searched = Searched::default();
                 let mut kept = Vec::new();
                 for (id, record) in found {
-                    let held = self.evaluate_in(
-                        transaction,
-                        condition,
-                        Scope::searching(&record, &searched)
-                            .identified(&id)
-                            .noticing(reporting.noticed),
-                    )?;
+                    let held = self
+                        .evaluate_in(
+                            transaction,
+                            condition,
+                            Scope::searching(&record, &searched)
+                                .identified(&id)
+                                .noticing(reporting.noticed),
+                        )
+                        .await?;
                     if boolean(&held, condition.span)? {
                         kept.push((id, record));
                     }

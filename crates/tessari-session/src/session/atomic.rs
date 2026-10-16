@@ -36,7 +36,7 @@ impl Atomic<'_, '_> {
         parameters: &Parameters,
     ) -> Result<Vec<Outcome>> {
         let store = self.session.store;
-        let mut script = self.session.bind_script(parse(source)?, parameters)?;
+        let mut script = self.session.bind_script(parse(source)?, parameters).await?;
         if let Some(verb) = script.statements.iter().find(|statement| {
             matches!(
                 statement.kind,
@@ -67,7 +67,7 @@ impl Atomic<'_, '_> {
     /// # Errors
     ///
     /// Whatever reading the consumer's parked messages refuses.
-    pub fn keep_quarantined(
+    pub async fn keep_quarantined(
         &mut self,
         consumer: u32,
         (partition, offset): (i32, i64),
@@ -78,7 +78,9 @@ impl Atomic<'_, '_> {
                 span: Span::new(0, 0),
             });
         };
-        Ok(transaction.keep_quarantined(consumer, partition, offset, record)?)
+        Ok(transaction
+            .keep_quarantined(consumer, partition, offset, record)
+            .await?)
     }
 
     /// Run a script that is already parsed, bound and vetted inside the held
@@ -132,7 +134,7 @@ impl<'a> Session<'a> {
         };
         match answered {
             Ok(value) => {
-                settle(transaction)?;
+                settle(transaction).await?;
                 Ok(value)
             }
             Err(failure) => {

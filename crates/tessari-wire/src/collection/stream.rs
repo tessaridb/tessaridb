@@ -175,16 +175,15 @@ impl Streamed {
 /// # Errors
 ///
 /// The first log's refusal, unchanged — the caller ends the stream on it.
-pub(crate) fn answer(
+pub(crate) async fn answer(
     origin: &dyn Origin,
     follower: [u8; NODE_ID_LEN],
     asked: &StreamAsk,
 ) -> Result<Streamed> {
-    let answers = asked
-        .asks
-        .iter()
-        .map(|ask| origin.collected(follower, *ask))
-        .collect::<Result<Vec<_>>>()?;
+    let mut answers = Vec::with_capacity(asked.asks.len());
+    for ask in &asked.asks {
+        answers.push(origin.collected(follower, *ask).await?);
+    }
     Ok(Streamed { answers })
 }
 
@@ -194,16 +193,15 @@ pub(crate) fn answer(
 /// # Errors
 ///
 /// As [`answer`].
-pub(crate) fn answer_pushed(
+pub(crate) async fn answer_pushed(
     origin: &dyn Origin,
     follower: [u8; NODE_ID_LEN],
     asked: &StreamAsk,
 ) -> Result<Streamed> {
-    let answers = asked
-        .asks
-        .iter()
-        .map(|ask| origin.collected_pushed(follower, *ask))
-        .collect::<Result<Vec<_>>>()?;
+    let mut answers = Vec::with_capacity(asked.asks.len());
+    for ask in &asked.asks {
+        answers.push(origin.collected_pushed(follower, *ask).await?);
+    }
     Ok(Streamed { answers })
 }
 
@@ -212,15 +210,15 @@ pub(crate) fn answer_pushed(
 /// # Errors
 ///
 /// The first log's store failure.
-pub(crate) fn held(
+pub(crate) async fn held(
     origin: &dyn Origin,
     follower: [u8; NODE_ID_LEN],
     holds: &StreamAsk,
 ) -> Result<()> {
-    holds
-        .asks
-        .iter()
-        .try_for_each(|ask| origin.held(follower, *ask))
+    for ask in &holds.asks {
+        origin.held(follower, *ask).await?;
+    }
+    Ok(())
 }
 
 /// A follower's held stream to one leader.

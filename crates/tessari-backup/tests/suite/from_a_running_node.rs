@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -24,7 +25,7 @@ const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Two records in a database, on a store nobody has closed.
@@ -78,7 +79,9 @@ fn a_backup_taken_through_the_language_verifies_and_restores() {
     assert!(verified.records > 0, "{verified:?}");
 
     let restored_store = store();
-    tessari_backup::read(&restored_store, &mut held.as_slice()).unwrap();
+    tessari_backup::read(&restored_store, &mut held.as_slice())
+        .now()
+        .unwrap();
     let mut restored = Session::new(&restored_store);
     restored
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
@@ -122,7 +125,9 @@ fn an_increment_through_the_language_is_refused_where_a_sequence_names_no_log() 
     // And the whole backup still answers with the whole store, which is the
     // half that did not change.
     let restored_store = store();
-    tessari_backup::read(&restored_store, &mut base.as_slice()).unwrap();
+    tessari_backup::read(&restored_store, &mut base.as_slice())
+        .now()
+        .unwrap();
     let mut restored = Session::new(&restored_store);
     restored
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
@@ -150,7 +155,9 @@ fn a_write_that_lands_after_the_backup_began_is_outside_it_and_does_not_damage_i
     let verified = tessari_backup::verify(&mut held.as_slice()).unwrap();
     assert!(!verified.truncated, "{verified:?}");
     let restored_store = store();
-    tessari_backup::read(&restored_store, &mut held.as_slice()).unwrap();
+    tessari_backup::read(&restored_store, &mut held.as_slice())
+        .now()
+        .unwrap();
     let mut restored = Session::new(&restored_store);
     restored
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
@@ -174,7 +181,7 @@ fn only_an_owner_may_take_one() {
         .unwrap();
 
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
         .unwrap();
     root.run_now("DEFINE USER kay ON prod.shop ROLE viewer PASSWORD 'correct horse battery';")
@@ -183,7 +190,7 @@ fn only_an_owner_may_take_one() {
     assert!(!taken(&mut root, "BACKUP;").is_empty());
     for name in ["ada", "kay"] {
         let mut other = Session::new(&store);
-        other.sign_in(name, PASSWORD).unwrap();
+        other.sign_in(name, PASSWORD).now().unwrap();
         assert!(
             other.run_now("BACKUP;").is_err(),
             "{name} took a backup of the whole store"
@@ -202,7 +209,7 @@ fn a_grant_can_never_permit_one() {
     open.run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now("DEFINE USER gran ON prod.shop ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
     root.run_now("USE NAMESPACE prod; USE DATABASE shop; GRANT read ON orders TO gran;")
@@ -212,7 +219,7 @@ fn a_grant_can_never_permit_one() {
     // refuses, which is the case an emptiness-reads-as-permission bug would let
     // through.
     let mut granted = Session::new(&store);
-    granted.sign_in("gran", PASSWORD).unwrap();
+    granted.sign_in("gran", PASSWORD).now().unwrap();
     let refused = granted.run_now("BACKUP;");
     assert!(refused.is_err(), "{refused:?}");
     assert!(
@@ -247,7 +254,9 @@ fn a_backup_is_the_whole_store_and_not_the_selected_namespace() {
     let held = taken(&mut session, "BACKUP LOG;");
 
     let restored_store = store();
-    tessari_backup::read(&restored_store, &mut held.as_slice()).unwrap();
+    tessari_backup::read(&restored_store, &mut held.as_slice())
+        .now()
+        .unwrap();
     let mut restored = Session::new(&restored_store);
     restored
         .run_now("USE NAMESPACE other; USE DATABASE archive;")

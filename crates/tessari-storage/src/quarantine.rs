@@ -48,7 +48,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the consumer's parked messages cannot be read.
-    pub fn keep_quarantined(
+    pub async fn keep_quarantined(
         &mut self,
         consumer: u32,
         partition: i32,
@@ -56,7 +56,9 @@ impl Transaction<'_> {
         record: &Value,
     ) -> Result<()> {
         let id = parked_id(consumer, partition, offset);
-        let held = self.system_rows_prefixed(KAFKA_QUARANTINE, &consumer_prefix(consumer))?;
+        let held = self
+            .system_rows_prefixed(KAFKA_QUARANTINE, &consumer_prefix(consumer))
+            .await?;
         if held.len() >= KAFKA_QUARANTINE_HELD
             && !held.iter().any(|(kept, _)| *kept == id)
             && let Some((oldest, _)) = held.into_iter().next()
@@ -75,8 +77,9 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the store cannot be read or a row decoded.
-    pub fn quarantined(&self, consumer: u32) -> Result<Vec<Value>> {
-        self.system_rows_prefixed(KAFKA_QUARANTINE, &consumer_prefix(consumer))?
+    pub async fn quarantined(&self, consumer: u32) -> Result<Vec<Value>> {
+        self.system_rows_prefixed(KAFKA_QUARANTINE, &consumer_prefix(consumer))
+            .await?
             .into_iter()
             .map(|(_, payload)| Ok(decode_payload(&payload)?))
             .collect()
@@ -87,8 +90,11 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the store cannot be read.
-    pub fn forget_quarantined(&mut self, consumer: u32) -> Result<()> {
-        for (id, _) in self.system_rows_prefixed(KAFKA_QUARANTINE, &consumer_prefix(consumer))? {
+    pub async fn forget_quarantined(&mut self, consumer: u32) -> Result<()> {
+        for (id, _) in self
+            .system_rows_prefixed(KAFKA_QUARANTINE, &consumer_prefix(consumer))
+            .await?
+        {
             self.delete(system::address(KAFKA_QUARANTINE, id));
         }
         Ok(())
@@ -99,6 +105,7 @@ impl Transaction<'_> {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use crate::now::Now;
     use std::sync::Arc;
 
     use tessari_kv::{KvBackend, MemoryBackend};
@@ -112,40 +119,52 @@ mod tests {
 
     #[test]
     fn a_consumer_keeps_its_bound_and_loses_the_oldest_first() {
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let mut transaction = store.begin().unwrap();
         let held = i64::try_from(KAFKA_QUARANTINE_HELD).unwrap();
         for offset in 0..=held {
             transaction
                 .keep_quarantined(7, 0, offset, &parked(offset))
+                .now()
                 .unwrap();
         }
         // Another consumer's rows are its own.
-        transaction.keep_quarantined(8, 0, 0, &parked(0)).unwrap();
-        transaction.commit().unwrap();
+        transaction
+            .keep_quarantined(8, 0, 0, &parked(0))
+            .now()
+            .unwrap();
+        transaction.commit().now().unwrap();
         let transaction = store.begin().unwrap();
-        let kept = transaction.quarantined(7).unwrap();
+        let kept = transaction.quarantined(7).now().unwrap();
         assert_eq!(kept.len(), KAFKA_QUARANTINE_HELD);
         assert_eq!(kept.first(), Some(&parked(1)));
         assert_eq!(kept.last(), Some(&parked(held)));
-        assert_eq!(transaction.quarantined(8).unwrap(), vec![parked(0)]);
+        assert_eq!(transaction.quarantined(8).now().unwrap(), vec![parked(0)]);
     }
 
     #[test]
     fn a_redelivered_message_is_parked_where_it_was_and_evicts_nothing() {
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let mut transaction = store.begin().unwrap();
         let held = i64::try_from(KAFKA_QUARANTINE_HELD).unwrap();
         for offset in 0..held {
             transaction
                 .keep_quarantined(7, 0, offset, &parked(offset))
+                .now()
                 .unwrap();
         }
-        transaction.keep_quarantined(7, 0, 5, &parked(5)).unwrap();
-        let kept = transaction.quarantined(7).unwrap();
+        transaction
+            .keep_quarantined(7, 0, 5, &parked(5))
+            .now()
+            .unwrap();
+        let kept = transaction.quarantined(7).now().unwrap();
         assert_eq!(kept.len(), KAFKA_QUARANTINE_HELD);
         assert_eq!(kept.first(), Some(&parked(0)));
-        transaction.forget_quarantined(7).unwrap();
-        assert!(transaction.quarantined(7).unwrap().is_empty());
+        transaction.forget_quarantined(7).now().unwrap();
+        assert!(transaction.quarantined(7).now().unwrap().is_empty());
     }
 }

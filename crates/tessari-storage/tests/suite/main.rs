@@ -9,6 +9,7 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
+use tessari_storage::Now;
 mod catalog;
 mod counted_reads;
 mod descending_order;
@@ -80,7 +81,10 @@ pub(crate) fn replay(source: &tessari_storage::Store, target: &tessari_storage::
             .log_records(log, tessari_types::Sequence::ZERO, 4096)
             .unwrap()
         {
-            target.apply_record(log.writer, sequence, &record).unwrap();
+            target
+                .apply_record(log.writer, sequence, &record)
+                .now()
+                .unwrap();
             applied = applied.saturating_add(1);
         }
     }

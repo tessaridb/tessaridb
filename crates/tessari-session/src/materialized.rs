@@ -79,7 +79,7 @@ impl Session<'_> {
     /// `DEFINE VIEW … MATERIALIZED AS …`: judge the read, declare the view, and
     /// fill it in the same transaction, so a view is never readable before it
     /// holds its rows (ADR-0109 D3).
-    pub(crate) fn define_materialized(
+    pub(crate) async fn define_materialized(
         &self,
         transaction: &mut Transaction<'_>,
         name: &tessari_ql::Name,
@@ -90,37 +90,42 @@ impl Session<'_> {
         let understood = Understood::of(read, span)?;
         // The source must be a table this session may read now: a view, a
         // vault or a missing name is refused with its own message.
-        let (_, source) = self.resolve_table(transaction, &understood.source)?;
-        self.refuse_reading_a_vault(transaction, source, &understood.source)?;
-        let context = self.context(transaction, None, span)?;
+        let (_, source) = self.resolve_table(transaction, &understood.source).await?;
+        self.refuse_reading_a_vault(transaction, source, &understood.source)
+            .await?;
+        let context = self.context(transaction, None, span).await?;
         if if_not_exists
             && Catalog::new(transaction)
-                .table_id(context.namespace, context.database, &name.text)?
+                .table_id(context.namespace, context.database, &name.text)
+                .await?
                 .is_some()
         {
             return Ok(crate::outcome::Outcome::Done);
         }
-        let outcome = self.define_table(
-            transaction,
-            name,
-            tessari_storage::TableShape {
-                schemafull: false,
-                kind: TableKind::View(tessari_storage::ViewDeclaration {
-                    read: read.to_owned(),
-                    materialized: true,
-                }),
-                identity: tessari_types::IdentityKind::default(),
-                graph: None,
-                conflict: None,
-                split: Vec::new(),
-                partition: None,
-                spread: false,
-            },
-            false,
-            span,
-        )?;
-        let Some(view) =
-            Catalog::new(transaction).table_id(context.namespace, context.database, &name.text)?
+        let outcome = self
+            .define_table(
+                transaction,
+                name,
+                tessari_storage::TableShape {
+                    schemafull: false,
+                    kind: TableKind::View(tessari_storage::ViewDeclaration {
+                        read: read.to_owned(),
+                        materialized: true,
+                    }),
+                    identity: tessari_types::IdentityKind::default(),
+                    graph: None,
+                    conflict: None,
+                    split: Vec::new(),
+                    partition: None,
+                    spread: false,
+                },
+                false,
+                span,
+            )
+            .await?;
+        let Some(view) = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)
+            .await?
         else {
             return Ok(outcome);
         };
@@ -132,14 +137,19 @@ impl Session<'_> {
                 understood,
                 source,
             },
-        )?;
+        )
+        .await?;
         Ok(outcome)
     }
 
     /// Fill a just-declared materialized view in the declaring transaction:
     /// its whole read, and a state stating the transaction's snapshot.
-    pub(crate) fn build_view(&self, transaction: &mut Transaction<'_>, kept: &Kept) -> Result<()> {
-        self.recompute_all(transaction, kept)?;
+    pub(crate) async fn build_view(
+        &self,
+        transaction: &mut Transaction<'_>,
+        kept: &Kept,
+    ) -> Result<()> {
+        self.recompute_all(transaction, kept).await?;
         let snapshot = transaction.snapshot();
         let positions = self.positions_after(kept, snapshot, &[])?;
         transaction.put_view_state(
@@ -158,15 +168,15 @@ impl Session<'_> {
     ///
     /// Answers how many source changes it applied, or `None` when nothing was
     /// written — no change, and a state recent enough to leave alone.
-    pub(crate) fn maintain_view(
+    pub(crate) async fn maintain_view(
         &self,
         transaction: &mut Transaction<'_>,
         kept: &Kept,
     ) -> Result<Option<usize>> {
         let snapshot = transaction.snapshot();
-        let Some(state) = transaction.view_state(kept.view)? else {
+        let Some(state) = transaction.view_state(kept.view).await? else {
             // A view without a state is one this build did not fill: fill it.
-            self.build_view(transaction, kept)?;
+            self.build_view(transaction, kept).await?;
             return Ok(Some(0));
         };
         let positions = self.positions_after(kept, state.version, &state.positions)?;
@@ -205,12 +215,12 @@ impl Session<'_> {
         }
         if applied > 0 || rebuild {
             if whole {
-                self.recompute_all(transaction, kept)?;
+                self.recompute_all(transaction, kept).await?;
             } else if by_group {
-                self.recompute_groups(transaction, kept, &changed)?;
+                self.recompute_groups(transaction, kept, &changed).await?;
             } else {
                 for id in &changed {
-                    self.recompute_record(transaction, kept, id)?;
+                    self.recompute_record(transaction, kept, id).await?;
                 }
             }
         }
@@ -249,22 +259,25 @@ impl Session<'_> {
     }
 
     /// Recompute the whole view, in the form its shape keeps.
-    fn recompute_all(&self, transaction: &mut Transaction<'_>, kept: &Kept) -> Result<()> {
+    async fn recompute_all(&self, transaction: &mut Transaction<'_>, kept: &Kept) -> Result<()> {
         if matches!(kept.understood.shape, Shape::Grouped) {
-            self.recompute_groups_whole(transaction, kept)
+            self.recompute_groups_whole(transaction, kept).await
         } else {
-            self.recompute_whole(transaction, kept)
+            self.recompute_whole(transaction, kept).await
         }
     }
 
     /// Replace every stored row with the read's whole answer.
-    fn recompute_whole(&self, transaction: &mut Transaction<'_>, kept: &Kept) -> Result<()> {
-        let stored =
-            transaction.scan_table(kept.context.namespace, kept.context.database, kept.view)?;
+    async fn recompute_whole(&self, transaction: &mut Transaction<'_>, kept: &Kept) -> Result<()> {
+        let stored = transaction
+            .scan_table(kept.context.namespace, kept.context.database, kept.view)
+            .await?;
         for (id, _) in stored {
             transaction.delete(self.row(kept, id));
         }
-        let answered = self.read(transaction, &kept.understood.select, None, None)?;
+        let answered = self
+            .read(transaction, &kept.understood.select, None, None)
+            .await?;
         let keyed = matches!(kept.understood.shape, Shape::PerRecord);
         for (position, (id, value)) in answered.records.into_iter().enumerate() {
             // A per-record view keeps the source record's identity, so its rows
@@ -281,7 +294,7 @@ impl Session<'_> {
     }
 
     /// Recompute the one row a source record answers, or remove it.
-    fn recompute_record(
+    async fn recompute_record(
         &self,
         transaction: &mut Transaction<'_>,
         kept: &Kept,
@@ -293,17 +306,21 @@ impl Session<'_> {
             kept.source,
             id.clone(),
         );
-        let passes = match (transaction.get(&source)?, &kept.understood.condition) {
+        let passes = match (transaction.get(&source).await?, &kept.understood.condition) {
             (None, _) => false,
             (Some(_), None) => true,
             (Some(payload), Some(condition)) => {
                 let record = self.record_of(&payload, &None)?;
-                let searched = self.searched_for(transaction, kept.source, &[condition])?;
-                let value = self.evaluate_in(
-                    transaction,
-                    condition,
-                    Scope::searching(&record, &searched).identified(id),
-                )?;
+                let searched = self
+                    .searched_for(transaction, kept.source, &[condition])
+                    .await?;
+                let value = self
+                    .evaluate_in(
+                        transaction,
+                        condition,
+                        Scope::searching(&record, &searched).identified(id),
+                    )
+                    .await?;
                 boolean(&value, condition.span)?
             }
         };
@@ -319,7 +336,7 @@ impl Session<'_> {
             id: Identity::Fixed(id.clone()),
             span: kept.understood.source.span,
         });
-        let answered = self.read(transaction, &one, None, None)?;
+        let answered = self.read(transaction, &one, None, None).await?;
         match answered.records.into_iter().next() {
             Some((_, value)) => transaction.put(row, encode_payload(&value).into_bytes()),
             None => transaction.delete(row),
@@ -333,12 +350,12 @@ impl Session<'_> {
 
     /// The materialized view `view` names, resolved: its read understood and
     /// its source found in the view's own tenancy.
-    pub(crate) fn materialized_view(
+    pub(crate) async fn materialized_view(
         &self,
         transaction: &mut Transaction<'_>,
         view: TableId,
     ) -> Result<Option<Kept>> {
-        let Some(definition) = Catalog::new(transaction).table(view)? else {
+        let Some(definition) = Catalog::new(transaction).table(view).await? else {
             return Ok(None);
         };
         let TableKind::View(declared) = &definition.kind else {
@@ -352,11 +369,13 @@ impl Session<'_> {
             namespace: definition.namespace,
             database: definition.database,
         };
-        let Some(source) = Catalog::new(transaction).table_id(
-            context.namespace,
-            context.database,
-            &understood.source.name.text,
-        )?
+        let Some(source) = Catalog::new(transaction)
+            .table_id(
+                context.namespace,
+                context.database,
+                &understood.source.name.text,
+            )
+            .await?
         else {
             return Ok(None);
         };
@@ -379,10 +398,10 @@ impl Session<'_> {
 ///
 /// Returns an error when the catalog cannot be read, or a view's maintenance
 /// fails for a reason other than not being this node's to write.
-pub fn maintain_views(store: &Store) -> Result<Maintained> {
+pub async fn maintain_views(store: &Store) -> Result<Maintained> {
     let views = {
         let mut transaction = store.begin()?;
-        let found = materialized_views(&mut transaction)?;
+        let found = materialized_views(&mut transaction).await?;
         transaction.rollback();
         found
     };
@@ -394,13 +413,13 @@ pub fn maintain_views(store: &Store) -> Result<Maintained> {
         session.namespace = Some(namespace);
         session.database = Some(database);
         let mut transaction = store.begin()?;
-        let Some(kept) = session.materialized_view(&mut transaction, view)? else {
+        let Some(kept) = session.materialized_view(&mut transaction, view).await? else {
             transaction.rollback();
             continue;
         };
-        match session.maintain_view(&mut transaction, &kept)? {
+        match session.maintain_view(&mut transaction, &kept).await? {
             Some(applied) => {
-                transaction.commit()?;
+                transaction.commit().await?;
                 if applied > 0 {
                     done.views = done.views.saturating_add(1);
                     done.changes = done.changes.saturating_add(applied);
@@ -413,12 +432,14 @@ pub fn maintain_views(store: &Store) -> Result<Maintained> {
 }
 
 /// Every materialized view in the store, with the names of its tenancy.
-fn materialized_views(transaction: &mut Transaction<'_>) -> Result<Vec<(TableId, String, String)>> {
+async fn materialized_views(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<(TableId, String, String)>> {
     let mut found = Vec::new();
     let catalog = Catalog::new(transaction);
-    for namespace in catalog.namespaces()? {
-        for database in catalog.databases_in(namespace.id)? {
-            for table in catalog.tables_in(namespace.id, database.id)? {
+    for namespace in catalog.namespaces().await? {
+        for database in catalog.databases_in(namespace.id).await? {
+            for table in catalog.tables_in(namespace.id, database.id).await? {
                 if matches!(&table.kind, TableKind::View(declared) if declared.materialized) {
                     found.push((table.id, namespace.name.clone(), database.name.clone()));
                 }
@@ -439,12 +460,12 @@ fn now_millis() -> i64 {
 
 /// The version a materialized view's rows equal its read at, and how far the
 /// store has moved past it — what `INFO FOR TABLE` reports.
-pub(crate) fn freshness(
+pub(crate) async fn freshness(
     store: &Store,
     transaction: &Transaction<'_>,
     view: TableId,
 ) -> Result<Option<(ViewState, Sequence)>> {
-    let Some(state) = transaction.view_state(view)? else {
+    let Some(state) = transaction.view_state(view).await? else {
         return Ok(None);
     };
     let head = store.committed_version()?;

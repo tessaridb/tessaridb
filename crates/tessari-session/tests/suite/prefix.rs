@@ -24,6 +24,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -31,7 +32,9 @@ use tessari_session::{AccessPath, Error, Outcome, Session};
 use tessari_storage::Store;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// The same rows, the same analyzer, and an index only when asked for.

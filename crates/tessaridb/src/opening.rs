@@ -13,10 +13,10 @@ impl Db {
     /// # Errors
     ///
     /// Returns an error when the store cannot be initialised.
-    pub fn in_memory() -> Result<Self> {
+    pub async fn in_memory() -> Result<Self> {
         let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
         Ok(Self {
-            store: Store::open(backend)?,
+            store: Store::open(backend).await?,
             gather: std::sync::OnceLock::new(),
             participants: std::sync::OnceLock::new(),
             standing_since: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -39,8 +39,8 @@ impl Db {
     ///
     /// Returns an error when the engine cannot open the path, or when the store
     /// cannot be initialised on it.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_with(path, StoreConfig::default())
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with(path, StoreConfig::default()).await
     }
 
     /// Open a database at `path` with a configuration you chose.
@@ -49,8 +49,8 @@ impl Db {
     ///
     /// Returns an error when the engine cannot open the path, or when the store
     /// cannot be initialised on it.
-    pub fn open_with(path: impl AsRef<Path>, config: StoreConfig) -> Result<Self> {
-        Self::open_encrypted(path, config, None)
+    pub async fn open_with(path: impl AsRef<Path>, config: StoreConfig) -> Result<Self> {
+        Self::open_encrypted(path, config, None).await
     }
 
     /// Open a database at `path`, its files encrypted under `key` when one is
@@ -62,7 +62,7 @@ impl Db {
     /// # Errors
     ///
     /// As [`Db::open_with`], and a refusal naming which key is wrong.
-    pub fn open_encrypted(
+    pub async fn open_encrypted(
         path: impl AsRef<Path>,
         config: StoreConfig,
         key: Option<AtRestKey>,
@@ -71,7 +71,7 @@ impl Db {
             .map_err(tessari_storage::Error::from)?;
         let backend: Arc<dyn KvBackend> = Arc::new(backend);
         Ok(Self {
-            store: Store::open(backend)?,
+            store: Store::open(backend).await?,
             gather: std::sync::OnceLock::new(),
             participants: std::sync::OnceLock::new(),
             standing_since: std::sync::Mutex::new(std::collections::BTreeMap::new()),

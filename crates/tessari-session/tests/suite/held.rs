@@ -23,6 +23,7 @@
 
 use std::fmt::Write as _;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -43,7 +44,9 @@ DEFINE COLLECTION events;
 ";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// A session over `events` holding `count` records, ids `1..=count`.

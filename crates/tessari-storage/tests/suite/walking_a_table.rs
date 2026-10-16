@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::encode_payload;
@@ -31,7 +32,9 @@ const DATABASE: DatabaseId = DatabaseId::new(1);
 const TABLE: TableId = TableId::new(1);
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn at(id: &str) -> RecordAddress {
@@ -47,17 +50,21 @@ fn payload(mark: &str) -> Vec<u8> {
 fn walked(transaction: &mut Transaction<'_>) -> Vec<(RecordId, Vec<u8>)> {
     let mut found = Vec::new();
     transaction
-        .walk_table(NAMESPACE, DATABASE, TABLE, |_, id, record| {
+        .walk_table(NAMESPACE, DATABASE, TABLE, async |_, id, record| {
             found.push((id, record));
             Ok::<_, Error>(ControlFlow::Continue(()))
         })
+        .now()
         .unwrap();
     found
 }
 
 /// What reading the whole table hands back.
 fn scanned(transaction: &Transaction<'_>) -> Vec<(RecordId, Vec<u8>)> {
-    transaction.scan_table(NAMESPACE, DATABASE, TABLE).unwrap()
+    transaction
+        .scan_table(NAMESPACE, DATABASE, TABLE)
+        .now()
+        .unwrap()
 }
 
 /// Enough records to need three batches, so a boundary is crossed twice.
@@ -71,7 +78,7 @@ fn populated() -> Store {
     for n in 0..RECORDS {
         writing.put(at(&format!("r{n:06}")), payload("first"));
     }
-    writing.commit().unwrap();
+    writing.commit().now().unwrap();
 
     let mut rewriting = store.begin().unwrap();
     // One on each side of a batch boundary and one far from any, because a
@@ -88,7 +95,7 @@ fn populated() -> Store {
     }
     rewriting.delete(at(&format!("r{:06}", RANGE_SCAN_BATCH_ENTRIES * 2)));
     rewriting.delete(at("r000007"));
-    rewriting.commit().unwrap();
+    rewriting.commit().now().unwrap();
     store
 }
 
@@ -127,7 +134,7 @@ fn the_walk_stops_where_the_caller_says_stop() {
 
     let mut found = Vec::new();
     transaction
-        .walk_table(NAMESPACE, DATABASE, TABLE, |_, id, record| {
+        .walk_table(NAMESPACE, DATABASE, TABLE, async |_, id, record| {
             found.push((id, record));
             Ok::<_, Error>(if found.len() == 3 {
                 ControlFlow::Break(())
@@ -135,6 +142,7 @@ fn the_walk_stops_where_the_caller_says_stop() {
                 ControlFlow::Continue(())
             })
         })
+        .now()
         .unwrap();
 
     // Three, and the same three the whole read would have started with: a walk
@@ -213,6 +221,7 @@ fn paged(
                 after.as_ref(),
                 page,
             )
+            .now()
             .unwrap();
         assert!(next.len() <= page, "a page of {page} held {}", next.len());
         let short = next.len() < page;

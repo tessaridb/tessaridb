@@ -30,6 +30,7 @@
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -65,7 +66,7 @@ const ONE_OF_EACH: &str = "CREATE probe:1 = {\n\
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {

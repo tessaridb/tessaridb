@@ -3,6 +3,7 @@
 #![allow(clippy::unwrap_used)]
 
 use tessari_encoding::NODE_ID_LEN;
+use tessari_session::Now;
 use tessari_session::Peer;
 use tessari_types::Epoch;
 use tessaridb::Db;
@@ -24,7 +25,7 @@ fn whole() -> Peer {
 /// and remembers nothing: the map moves back into agreement on its own.
 #[test]
 fn a_moved_map_naming_a_whole_holder_is_a_transient_redirect() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let moved = |holder| {
         Err(tessaridb::Error::ShardMapMoved {
             table: "ledger".to_owned(),
@@ -33,7 +34,7 @@ fn a_moved_map_naming_a_whole_holder_is_a_transient_redirect() {
         })
     };
     assert_eq!(
-        redirected(&db, &moved(Some(whole()))),
+        redirected(&db, &moved(Some(whole()))).now(),
         Some(Elsewhere {
             endpoint: WHOLE_AT.to_owned(),
             node: [5; NODE_ID_LEN],
@@ -41,5 +42,9 @@ fn a_moved_map_naming_a_whole_holder_is_a_transient_redirect() {
             settlement: Settlement::Transient,
         })
     );
-    assert_eq!(redirected(&db, &moved(None)), None, "nobody to send it to");
+    assert_eq!(
+        redirected(&db, &moved(None)).now(),
+        None,
+        "nobody to send it to"
+    );
 }

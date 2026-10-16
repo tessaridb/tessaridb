@@ -65,10 +65,10 @@ pub trait Holding: Origin + Send + Sync + 'static {
     ///
     /// [`Error::NothingToSay`] when the store cannot answer, which ends the
     /// door rather than every connection failing the same way in turn.
-    fn hello(&self) -> Result<Hello>;
+    fn hello(&self) -> crate::collection::Answering<'_, Result<Hello>>;
 
     /// A peer was served to the end; record what it said and how it was voted.
-    fn met(&self, met: &Met);
+    fn met<'a>(&'a self, met: &'a Met) -> crate::collection::Answering<'a, ()>;
 
     /// A wake-up that moves whenever this node lands a commit, so a held
     /// stream sends a record the moment it exists (ADR-0106 D5) instead of on
@@ -103,12 +103,12 @@ pub trait Holding: Origin + Send + Sync + 'static {
     ///
     /// The reason this node will not write it, in words and with its kind,
     /// which the asking node passes on as *not prepared*.
-    fn across(
-        &self,
+    fn across<'a>(
+        &'a self,
         from: [u8; NODE_ID_LEN],
-        assertion: &Assertion,
-        asked: &[u8],
-    ) -> std::result::Result<Vec<u8>, tessari_session::PartRefused>;
+        assertion: &'a Assertion,
+        asked: &'a [u8],
+    ) -> crate::collection::Answering<'a, std::result::Result<Vec<u8>, tessari_session::PartRefused>>;
 }
 
 /// How one served connection ended, for the loop that decides what next.

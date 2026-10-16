@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -22,7 +23,9 @@ const TEAM_PASSPHRASE: &str = "the team passphrase";
 const PLANTED: &str = "team-secret-4c1d";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// A store with a store-custody vault `shared` and an own-custody vault `team`,
@@ -269,7 +272,7 @@ fn a_reader_of_the_vault_may_open_it_and_only_a_manager_may_change_its_passphras
         .run_now("DEFINE USER root ROLE owner PASSWORD 'root-password';")
         .unwrap();
     let mut root = Session::new(&store);
-    root.sign_in("root", "root-password").unwrap();
+    root.sign_in("root", "root-password").now().unwrap();
     root.run_now(
         "DEFINE USER ada ON prod.work ROLE viewer PASSWORD 'ada-password';
          USE NAMESPACE prod; USE DATABASE work; SEAL VAULT team;",
@@ -277,7 +280,7 @@ fn a_reader_of_the_vault_may_open_it_and_only_a_manager_may_change_its_passphras
     .unwrap();
 
     let mut ada = Session::new(&store);
-    ada.sign_in("ada", "ada-password").unwrap();
+    ada.sign_in("ada", "ada-password").now().unwrap();
     ada.run_now("USE NAMESPACE prod; USE DATABASE work;")
         .unwrap();
     ada.run_now(&format!("UNSEAL VAULT team WITH '{TEAM_PASSPHRASE}';"))

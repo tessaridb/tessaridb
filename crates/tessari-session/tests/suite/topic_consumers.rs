@@ -24,7 +24,9 @@ const DECLARE: &str = "DEFINE TOPIC CONSUMER orders_in FROM orders GROUP 'rows' 
 /// `prod.shop` with a topic, its dead letter, a group that can park a message,
 /// a group that cannot, and a destination; and `prod.other` with a table.
 fn shaped() -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(

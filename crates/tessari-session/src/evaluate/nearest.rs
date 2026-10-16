@@ -42,7 +42,7 @@ impl Session<'_> {
     /// [`Walked::NotServed`] when no graph may serve the read (the refusals in
     /// [`Session::nearest_gate`]); [`Walked::Declined`] when one tried and came
     /// back cut or short, so the exact path answers with a note saying so.
-    pub(super) fn walk_admitted(
+    pub(super) async fn walk_admitted(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
@@ -50,7 +50,10 @@ impl Session<'_> {
         wanted: &plan::Nearest<'_>,
         testing: Testing<'_>,
     ) -> Result<Walked> {
-        let Some(gated) = self.nearest_gate(transaction, context, table, wanted)? else {
+        let Some(gated) = self
+            .nearest_gate(transaction, context, table, wanted)
+            .await?
+        else {
             return Ok(Walked::NotServed);
         };
         let Some(graph) = transaction.vector_graph(&gated.index)? else {
@@ -62,32 +65,37 @@ impl Session<'_> {
             noticed,
         } = testing;
         let mut admitted: BTreeMap<RecordId, Value> = BTreeMap::new();
-        let matched = graph.nearest_matching(
-            &gated.query,
-            plan::walked_for(wanted.wanted, gated.index.quantized),
-            wanted.effort,
-            |id: &RecordId| -> std::result::Result<bool, Error> {
-                // Read at this reader's own snapshot: a node left behind by a
-                // deleted record has nothing to read and is not admitted.
-                let at = RecordAddress::new(context.namespace, context.database, table, id.clone());
-                let Some(payload) = transaction.get(&at)? else {
-                    return Ok(false);
-                };
-                let record = self.record_of(&payload, &gated.visible)?;
-                let held = self.evaluate_in(
-                    transaction,
-                    condition,
-                    Scope::searching(&record, searched)
-                        .identified(id)
-                        .noticing(noticed),
-                )?;
-                if !boolean(&held, condition.span)? {
-                    return Ok(false);
-                }
-                admitted.insert(id.clone(), record);
-                Ok(true)
-            },
-        )?;
+        let matched = graph
+            .nearest_matching(
+                &gated.query,
+                plan::walked_for(wanted.wanted, gated.index.quantized),
+                wanted.effort,
+                async |id: &RecordId| -> std::result::Result<bool, Error> {
+                    // Read at this reader's own snapshot: a node left behind by a
+                    // deleted record has nothing to read and is not admitted.
+                    let at =
+                        RecordAddress::new(context.namespace, context.database, table, id.clone());
+                    let Some(payload) = transaction.get(&at).await? else {
+                        return Ok(false);
+                    };
+                    let record = self.record_of(&payload, &gated.visible)?;
+                    let held = self
+                        .evaluate_in(
+                            transaction,
+                            condition,
+                            Scope::searching(&record, searched)
+                                .identified(id)
+                                .noticing(noticed),
+                        )
+                        .await?;
+                    if !boolean(&held, condition.span)? {
+                        return Ok(false);
+                    }
+                    admitted.insert(id.clone(), record);
+                    Ok(true)
+                },
+            )
+            .await?;
         if matched.cut || matched.ids.len() < wanted.wanted {
             return Ok(Walked::Declined);
         }

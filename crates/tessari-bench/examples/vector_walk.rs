@@ -12,6 +12,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::error::Error;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessaridb::Db;
@@ -44,7 +45,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let dir = std::env::args()
         .nth(1)
         .ok_or("usage: vector_walk <empty directory>")?;
-    let db = Db::open(&dir)?;
+    let db = Db::open(&dir).now()?;
     let mut session = db.session();
     session.run_now(&format!(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench; DEFINE DATABASE v; USE DATABASE v; \

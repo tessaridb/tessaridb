@@ -40,7 +40,7 @@ use tessari_types::RecordId;
 /// A first build has nothing to clear and no statistics to reset, so the extra
 /// work it pays for is four scans over an empty range — next to reading the
 /// whole table, which it already does.
-pub(crate) fn build(
+pub(crate) async fn build(
     store: &Store,
     mut batch: WriteBatch,
     view: &mut Transaction<'_>,
@@ -63,7 +63,8 @@ pub(crate) fn build(
     pending.terms.insert(address, BTreeMap::new());
     pending.lengths.remove(&address);
     let mut rows: BTreeMap<RecordId, Vec<u8>> = view
-        .sweep_table(definition.namespace, definition.database, definition.table)?
+        .sweep_table(definition.namespace, definition.database, definition.table)
+        .await?
         .into_iter()
         .collect();
 
@@ -151,9 +152,10 @@ pub(crate) fn build(
             definition.namespace,
             definition.database,
             definition.table,
-        )?;
+        )
+        .await?;
         let named = if definition.engine.is_some() {
-            analyzers_named(view)?
+            analyzers_named(view).await?
         } else {
             BTreeMap::new()
         };

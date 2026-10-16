@@ -118,14 +118,14 @@ impl Session<'_> {
                 span,
             });
         }
-        let (context, id) = self.resolve_table(transaction, table)?;
-        let declared = queue_declaration(transaction, id, &table.name.text, table.span)?;
+        let (context, id) = self.resolve_table(transaction, table).await?;
+        let declared = queue_declaration(transaction, id, &table.name.text, table.span).await?;
         // Tested against the record as this session may see it, so a condition
         // cannot ask about a field a grant hides from the caller.
         let matching = match condition {
             Some(condition) => Some(Matching {
                 condition,
-                visible: self.visible_in(transaction, id)?,
+                visible: self.visible_in(transaction, id).await?,
             }),
             None => None,
         };
@@ -169,7 +169,8 @@ impl Session<'_> {
         // judged exactly as the walk judges it.
         let served = match condition {
             Some(condition) => {
-                self.served_candidates(transaction, (context, id), table, condition)?
+                self.served_candidates(transaction, (context, id), table, condition)
+                    .await?
             }
             None => None,
         };
@@ -177,7 +178,8 @@ impl Session<'_> {
             Some((candidates, plan)) => {
                 for (record, bytes) in candidates {
                     if self
-                        .offer(transaction, &mut taking, record, &bytes)?
+                        .offer(transaction, &mut taking, record, &bytes)
+                        .await?
                         .is_break()
                     {
                         break;
@@ -186,12 +188,16 @@ impl Session<'_> {
                 plan
             }
             None => {
-                transaction.walk_table(
-                    context.namespace,
-                    context.database,
-                    id,
-                    |walking, record, bytes| self.offer(walking, &mut taking, record, &bytes),
-                )?;
+                transaction
+                    .walk_table(
+                        context.namespace,
+                        context.database,
+                        id,
+                        async |walking, record, bytes| {
+                            self.offer(walking, &mut taking, record, &bytes).await
+                        },
+                    )
+                    .await?;
                 Plan::new(AccessPath::Scan).on(&table.name.text)
             }
         };
@@ -209,7 +215,8 @@ impl Session<'_> {
         // twice.
         for (record, payload) in writes {
             let address = RecordAddress::new(context.namespace, context.database, id, record);
-            self.put_engine_record(transaction, address, payload, span)?;
+            self.put_engine_record(transaction, address, payload, span)
+                .await?;
         }
         self.bury(transaction, (context, id, table), &declared, buried, span)
             .await?;
@@ -246,20 +253,21 @@ impl Session<'_> {
     ///
     /// [`Error::NotAQueue`] when the table is not one, [`Error::Unknown`] when
     /// there is no such record, and the mapped storage failure otherwise.
-    pub(crate) fn claim_record(
+    pub(crate) async fn claim_record(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
         span: Span,
     ) -> Result<Outcome> {
-        let (_, address) = self.address(transaction, target)?;
+        let (_, address) = self.address(transaction, target).await?;
         let declared = queue_declaration(
             transaction,
             address.table,
             &target.table.name.text,
             target.span,
-        )?;
-        let Some(stored) = transaction.get(&address)? else {
+        )
+        .await?;
+        let Some(stored) = transaction.get(&address).await? else {
             return Err(Error::Unknown {
                 entity: "record",
                 name: address.id.to_string(),
@@ -287,7 +295,8 @@ impl Session<'_> {
         mark_claimant(&mut fields, self.consumer.as_ref());
         let payload = Value::Object(fields);
         let record = address.id.clone();
-        self.put_engine_record(transaction, address, payload.clone(), span)?;
+        self.put_engine_record(transaction, address, payload.clone(), span)
+            .await?;
 
         // Written before the answer is built, and read back by nothing: a second
         // targeted claim in the same transaction reaches this record through
@@ -326,7 +335,7 @@ impl Session<'_> {
     /// [`Error::NotAQueue`] when the table is not one, [`Error::Unknown`] when
     /// there is no such record, [`Error::HeldByAnother`] when the hold is not
     /// the caller's, and the mapped storage failure otherwise.
-    pub(crate) fn release(
+    pub(crate) async fn release(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
@@ -334,15 +343,16 @@ impl Session<'_> {
         not_before: Option<Datetime>,
         span: Span,
     ) -> Result<Outcome> {
-        let (context, address) = self.address(transaction, target)?;
+        let (context, address) = self.address(transaction, target).await?;
         let declared = queue_declaration(
             transaction,
             address.table,
             &target.table.name.text,
             target.span,
-        )?;
+        )
+        .await?;
         let delay = delay_field(&declared, not_before, &target.table.name.text, span)?;
-        let Some(stored) = transaction.get(&address)? else {
+        let Some(stored) = transaction.get(&address).await? else {
             return Err(Error::Unknown {
                 entity: "record",
                 name: address.id.to_string(),
@@ -392,7 +402,8 @@ impl Session<'_> {
             fields.insert(field.clone(), Value::Datetime(*instant));
         }
         let _ = context;
-        self.put_engine_record(transaction, address, Value::Object(fields), span)?;
+        self.put_engine_record(transaction, address, Value::Object(fields), span)
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -411,7 +422,7 @@ impl Session<'_> {
     /// [`Error::NotAQueue`] when the table is not one,
     /// [`Error::NoConsumerDeclared`] when the bare form is used by a session
     /// that never said who it is, and the mapped storage failure otherwise.
-    pub(crate) fn release_all(
+    pub(crate) async fn release_all(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
@@ -419,8 +430,8 @@ impl Session<'_> {
         not_before: Option<Datetime>,
         span: Span,
     ) -> Result<Outcome> {
-        let (context, id) = self.resolve_table(transaction, table)?;
-        let declared = queue_declaration(transaction, id, &table.name.text, table.span)?;
+        let (context, id) = self.resolve_table(transaction, table).await?;
+        let declared = queue_declaration(transaction, id, &table.name.text, table.span).await?;
         let delay = delay_field(&declared, not_before, &table.name.text, span)?;
         // The bare form is refused rather than answered, because a session with
         // no instance has no *everything mine* to name. Succeeding on nothing
@@ -435,41 +446,44 @@ impl Session<'_> {
 
         let mut freed: Vec<(RecordId, Value)> = Vec::new();
         let mut writes: Vec<(RecordId, Value)> = Vec::new();
-        transaction.walk_table(
-            context.namespace,
-            context.database,
-            id,
-            |_, record, bytes| -> Result<ControlFlow<()>> {
-                let Value::Object(mut fields) = decode_payload(&bytes)? else {
-                    return Ok(ControlFlow::Continue(()));
-                };
-                let Some(holder) = claimant_of(&fields) else {
-                    return Ok(ControlFlow::Continue(()));
-                };
-                if !whose.holds(&holder) {
-                    return Ok(ControlFlow::Continue(()));
-                }
-                fields.remove(QUEUE_CLAIMED_UNTIL);
-                fields.remove(QUEUE_CLAIMED_BY);
-                if let Some((field, instant)) = &delay {
-                    fields.insert(field.clone(), Value::Datetime(*instant));
-                }
-                // The attempt count is left alone, for `release`'s reason: it
-                // was taken at the hand-out, and a record that was handed out
-                // was handed out whatever happened next.
-                let payload = Value::Object(fields);
-                freed.push((record.clone(), payload.clone()));
-                writes.push((record, payload));
-                Ok(ControlFlow::Continue(()))
-            },
-        )?;
+        transaction
+            .walk_table(
+                context.namespace,
+                context.database,
+                id,
+                async |_, record, bytes| -> Result<ControlFlow<()>> {
+                    let Value::Object(mut fields) = decode_payload(&bytes)? else {
+                        return Ok(ControlFlow::Continue(()));
+                    };
+                    let Some(holder) = claimant_of(&fields) else {
+                        return Ok(ControlFlow::Continue(()));
+                    };
+                    if !whose.holds(&holder) {
+                        return Ok(ControlFlow::Continue(()));
+                    }
+                    fields.remove(QUEUE_CLAIMED_UNTIL);
+                    fields.remove(QUEUE_CLAIMED_BY);
+                    if let Some((field, instant)) = &delay {
+                        fields.insert(field.clone(), Value::Datetime(*instant));
+                    }
+                    // The attempt count is left alone, for `release`'s reason: it
+                    // was taken at the hand-out, and a record that was handed out
+                    // was handed out whatever happened next.
+                    let payload = Value::Object(fields);
+                    freed.push((record.clone(), payload.clone()));
+                    writes.push((record, payload));
+                    Ok(ControlFlow::Continue(()))
+                },
+            )
+            .await?;
 
         // After the walk, for the reason the selecting claim writes after its
         // own: a record written during a walk is merged into an order that was
         // already decided.
         for (record, payload) in writes {
             let address = RecordAddress::new(context.namespace, context.database, id, record);
-            self.put_engine_record(transaction, address, payload, span)?;
+            self.put_engine_record(transaction, address, payload, span)
+                .await?;
         }
 
         Ok(Outcome::Records {
@@ -545,7 +559,7 @@ pub(crate) struct Matching<'c> {
 impl Session<'_> {
     /// Whether a claimable record also satisfies the claim's condition — every
     /// record does when the claim states none.
-    pub(crate) fn matches(
+    pub(crate) async fn matches(
         &self,
         transaction: &mut Transaction<'_>,
         matching: Option<&Matching<'_>>,
@@ -554,12 +568,15 @@ impl Session<'_> {
     ) -> Result<bool> {
         match matching {
             None => Ok(true),
-            Some(matching) => self.holds_for(
-                transaction,
-                matching.condition,
-                (id, Value::Object(fields.clone())),
-                &matching.visible,
-            ),
+            Some(matching) => {
+                self.holds_for(
+                    transaction,
+                    matching.condition,
+                    (id, Value::Object(fields.clone())),
+                    &matching.visible,
+                )
+                .await
+            }
         }
     }
 }

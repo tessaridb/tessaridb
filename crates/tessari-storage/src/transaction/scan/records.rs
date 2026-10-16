@@ -11,18 +11,18 @@ use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
 impl Transaction<'_> {
-    pub(crate) fn table_records(
+    pub(crate) async fn table_records(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
         table: TableId,
         walk: Walk<'_>,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
-        self.records_of(namespace, database, table, walk)
+        self.records_of(namespace, database, table, walk).await
     }
 
     /// The walk all four of the readers above share.
-    pub(crate) fn records_of(
+    pub(crate) async fn records_of(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -68,7 +68,7 @@ impl Transaction<'_> {
             }
             None => opening,
         };
-        let floor = self.series_floor(namespace, table)?;
+        let floor = self.series_floor(namespace, table).await?;
         let opening = match &floor {
             Some(floor) => {
                 let at = RecordKey::versions_prefix(namespace, database, table, floor);
@@ -138,7 +138,7 @@ impl Transaction<'_> {
             };
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             let entries = batch.len();
-            for (id, value) in self.settled(batch, &mut resolved)? {
+            for (id, value) in self.settled(batch, &mut resolved).await? {
                 if matches!(value, RecordValue::Present(_)) {
                     present = present.saturating_add(1);
                 }
@@ -208,7 +208,7 @@ impl Transaction<'_> {
     /// Asked by both the collecting walk and the streaming one. The two answer
     /// different shapes and must not disagree about which version a reader sees;
     /// two copies of that rule would be two places for it to drift.
-    pub(crate) fn settled(
+    pub(crate) async fn settled(
         &self,
         batch: Vec<(Key, tessari_kv::Value)>,
         resolved: &mut Option<RecordId>,
@@ -224,7 +224,7 @@ impl Transaction<'_> {
             // transaction across leaders whose parts this snapshot does not all
             // hold — does not settle its record: the version under it, next in
             // this same walk, does (ADR-0112 D5, D6a).
-            if self.passes_over(&stored)? {
+            if self.passes_over(&stored).await? {
                 continue;
             }
             *resolved = Some(decoded.id.clone());

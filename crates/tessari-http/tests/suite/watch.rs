@@ -12,6 +12,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_http::Node;
 use tessaridb::Db;
@@ -28,7 +29,7 @@ const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A node on a loopback port the operating system picked, plus its address.
 fn node() -> (Arc<Node>, String) {
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
@@ -460,7 +461,7 @@ fn a_change_committed_past_the_node_arrives_on_its_feed() {
     // a replica's apply, the wire surface or a cadence does. A feed runs a round
     // only when the store announces a landing, so a landing it did not announce
     // would never arrive (Q-838).
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);

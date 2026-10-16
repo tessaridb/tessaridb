@@ -20,6 +20,7 @@
 //! the log and asking the authorities already costs.
 
 use std::time::Instant;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessaridb::Db;
@@ -86,12 +87,12 @@ fn fan_out(
                 parameters: asked,
             }),
         };
-        feeds.push(Feed::open(db, session, &following)?);
+        feeds.push(Feed::open(db, session, &following).now()?);
     }
     // Read up to the present first, untimed: what is measured is one new
     // commit, never the backlog an earlier row left.
     for feed in &mut feeds {
-        while feed.round(db, session, &mut |_, _, _, _| true)? != Round::Empty {}
+        while feed.round(db, session, &mut |_, _, _, _| true).now()? != Round::Empty {}
     }
     let mut delivered = 0_usize;
     let mut samples = Samples::with_capacity(COMMITS);
@@ -102,10 +103,13 @@ fn fan_out(
         ))?;
         let started = Instant::now();
         for feed in &mut feeds {
-            while feed.round(db, session, &mut |_, _, _, _| {
-                delivered = delivered.saturating_add(1);
-                true
-            })? != Round::Empty
+            while feed
+                .round(db, session, &mut |_, _, _, _| {
+                    delivered = delivered.saturating_add(1);
+                    true
+                })
+                .now()?
+                != Round::Empty
             {}
         }
         samples.push(started.elapsed());

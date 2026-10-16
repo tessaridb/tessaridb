@@ -60,7 +60,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn member_candidates(
+    pub async fn member_candidates(
         &self,
         index: &IndexDefinition,
         groups: &[Vec<String>],
@@ -68,7 +68,7 @@ impl Transaction<'_> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let mut holding: Option<BTreeSet<RecordId>> = None;
         for group in groups {
-            let found = self.union(&address, group)?;
+            let found = self.union(&address, group).await?;
             let narrowed = match holding {
                 None => found,
                 Some(mut held) => {

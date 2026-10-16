@@ -91,8 +91,8 @@ impl Store {
     /// # Errors
     ///
     /// The same as [`Self::log_led_by`].
-    pub fn line_log(&self, home: Reach) -> Result<LogId> {
-        self.log_led_by(home, self.writer()?)
+    pub async fn line_log(&self, home: Reach) -> Result<LogId> {
+        self.log_led_by(home, self.writer()?).await
     }
 
     /// The log this node's position on `home`'s line is read from — what it
@@ -105,8 +105,8 @@ impl Store {
     /// # Errors
     ///
     /// The same as [`Self::line_log`], and a tail that cannot be read.
-    pub fn history_log(&self, home: Reach) -> Result<LogId> {
-        let line = self.line_log(home)?;
+    pub async fn history_log(&self, home: Reach) -> Result<LogId> {
+        let line = self.line_log(home).await?;
         if self.committed_tail(line)? > Sequence::ZERO {
             return Ok(line);
         }
@@ -122,8 +122,8 @@ impl Store {
     /// # Errors
     ///
     /// The same as [`Self::log_led_by`], and a tail that cannot be read.
-    pub fn followed_log(&self, home: Reach, leader: Writer) -> Result<LogId> {
-        let line = self.log_led_by(home, leader)?;
+    pub async fn followed_log(&self, home: Reach, leader: Writer) -> Result<LogId> {
+        let line = self.log_led_by(home, leader).await?;
         if line.writer != Writer::LINE || self.committed_tail(line)? > Sequence::ZERO {
             return Ok(line);
         }
@@ -137,8 +137,8 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the namespace's class cannot be read.
-    pub(crate) fn log_led_by(&self, home: Reach, leader: Writer) -> Result<LogId> {
-        if self.admits_two_writers(home)? {
+    pub(crate) async fn log_led_by(&self, home: Reach, leader: Writer) -> Result<LogId> {
+        if self.admits_two_writers(home).await? {
             return Ok(LogId::new(home, leader));
         }
         Ok(LogId::line(home))

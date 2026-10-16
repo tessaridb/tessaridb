@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_encoding::{FormatVersion, FormatVersionKey, NodeVersion, StoreKey, StoreValue};
@@ -36,9 +37,9 @@ fn stamped(backend: &Arc<dyn KvBackend>, version: u32) {
 /// A store as a format-5 build left it, opened by this one.
 fn held_at_five() -> (Arc<dyn KvBackend>, Store) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    drop(Store::open(Arc::clone(&backend)).unwrap());
+    drop(Store::open(Arc::clone(&backend)).now().unwrap());
     stamped(&backend, 5);
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     (backend, store)
 }
 
@@ -89,7 +90,7 @@ fn a_node_whose_older_build_applied_the_finalize_raises_its_stamp_when_it_opens(
     // What an older build leaves after applying the record: the record, and
     // its own stamp where it was.
     stamped(&backend, 5);
-    let reopened = Store::open(Arc::clone(&backend)).unwrap();
+    let reopened = Store::open(Arc::clone(&backend)).now().unwrap();
     assert_eq!(stamp(&backend), FormatVersion::CURRENT.get());
     assert_eq!(reopened.held_format().unwrap(), FormatVersion::CURRENT);
 }
@@ -103,7 +104,9 @@ fn a_finalize_waits_for_every_replica_to_run_a_build_that_writes_the_format() {
              REPLICATES STORE;"
         ))
         .unwrap();
-    store.hold(Epoch::new(1), Lease::taken(Duration::from_secs(60)));
+    store
+        .hold(Epoch::new(1), Lease::taken(Duration::from_secs(60)))
+        .now();
     let finalize = || Session::new(&store).run_now("ALTER STORE FINALIZE FORMAT;");
 
     match finalize() {
@@ -145,6 +148,7 @@ fn a_follower_raises_its_stamp_when_it_applies_the_finalize() {
         {
             follower
                 .apply_record(log.writer, sequence, &record)
+                .now()
                 .unwrap();
         }
     }

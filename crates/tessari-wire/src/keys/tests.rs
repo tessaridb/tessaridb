@@ -1,4 +1,5 @@
 use std::thread::JoinHandle;
+use tessari_session::Now;
 
 use tessari_encoding::NODE_ID_LEN;
 
@@ -18,12 +19,14 @@ fn serving(held: &PeerKeys) -> (std::net::SocketAddr, JoinHandle<Result<Met>>) {
     let peers = Peers::bind("127.0.0.1:0", held).expect("a peer door on loopback");
     let address = peers.address().expect("the door's address");
     let greeting = std::thread::spawn(move || {
-        peers.greet(
-            || Ok(hello(DOOR)),
-            &DOOR,
-            &Deciding::holding(settled()),
-            &NoLog,
-        )
+        peers
+            .greet(
+                || Ok(hello(DOOR)),
+                &DOOR,
+                &Deciding::holding(settled()),
+                &NoLog,
+            )
+            .now()
     });
     (address, greeting)
 }
@@ -175,8 +178,12 @@ fn a_door_presents_its_replaced_credential_from_the_next_handshake() {
     let address = peers.address().expect("the door's address");
     let answering = std::thread::spawn(move || {
         let deciding = Deciding::holding(settled());
-        let first = peers.greet(|| Ok(hello(DOOR)), &DOOR, &deciding, &NoLog);
-        let second = peers.greet(|| Ok(hello(DOOR)), &DOOR, &deciding, &NoLog);
+        let first = peers
+            .greet(|| Ok(hello(DOOR)), &DOOR, &deciding, &NoLog)
+            .now();
+        let second = peers
+            .greet(|| Ok(hello(DOOR)), &DOOR, &deciding, &NoLog)
+            .now();
         (first, second)
     });
 

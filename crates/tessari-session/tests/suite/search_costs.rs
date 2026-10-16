@@ -32,7 +32,9 @@ const OPTIONS: [&str; 5] = [
 /// Rows with phrases in both orders, stemmed forms, a repeated pair and words
 /// sharing beginnings, under the `english` chain.
 fn noted(index: Option<&str>) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(
@@ -136,7 +138,9 @@ fn the_options_are_said_back_and_survive_a_script() {
     let script = tessari_session::write_script(&held).now().unwrap().text;
     let declared = "DEFINE INDEX by_body ON notes FIELDS body SEARCH POSITIONS OFFSETS NO SCORE;";
     assert!(script.contains(declared), "{script}");
-    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&restored);
     session.run_now(&script).unwrap();
     assert!(
@@ -216,6 +220,7 @@ fn the_index_stores_the_lists_it_promises() {
                 tessari_types::DatabaseId::new(1),
                 "notes",
             )
+            .now()
             .unwrap()
             .unwrap();
         let index = catalog
@@ -224,6 +229,7 @@ fn the_index_stores_the_lists_it_promises() {
                 tessari_types::DatabaseId::new(1),
                 table,
             )
+            .now()
             .unwrap()
             .remove(0);
         let found = transaction
@@ -252,6 +258,7 @@ fn the_index_stores_the_lists_it_promises() {
                 tessari_types::DatabaseId::new(1),
                 "notes",
             )
+            .now()
             .unwrap()
             .unwrap();
         let index = catalog
@@ -260,6 +267,7 @@ fn the_index_stores_the_lists_it_promises() {
                 tessari_types::DatabaseId::new(1),
                 table,
             )
+            .now()
             .unwrap()
             .remove(0);
         assert_eq!(

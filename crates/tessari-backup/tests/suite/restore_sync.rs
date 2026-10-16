@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_kv::{Key, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value, WriteBatch};
 use tessari_session::Session;
@@ -78,7 +79,7 @@ impl Counted {
 const RECORDS: usize = 2_500;
 
 fn backup_of_many() -> Vec<u8> {
-    let source = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let source = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = Session::new(&source);
     session
         .run_now("DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE TABLE t SCHEMALESS;")
@@ -101,7 +102,9 @@ fn counted() -> (Arc<Counted>, Store) {
         syncs: AtomicUsize::new(0),
         exposed: AtomicUsize::new(0),
     });
-    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     (backend, store)
 }
 
@@ -111,7 +114,9 @@ fn a_restore_lands_each_record_unsynced_and_syncs_per_chunk() {
     let (backend, restored) = counted();
     let (synced, unsynced, syncs) = backend.landed();
 
-    let outcome = tessari_backup::read(&restored, &mut taken.as_slice()).unwrap();
+    let outcome = tessari_backup::read(&restored, &mut taken.as_slice())
+        .now()
+        .unwrap();
 
     let records = usize::try_from(outcome.records).unwrap();
     assert!(records >= RECORDS, "the backup held {records} records");
@@ -142,7 +147,11 @@ fn a_restore_refused_part_way_syncs_what_it_applied() {
     let (backend, restored) = counted();
     let (_, unsynced, syncs) = backend.landed();
 
-    assert!(tessari_backup::read(&restored, &mut taken.as_slice()).is_err());
+    assert!(
+        tessari_backup::read(&restored, &mut taken.as_slice())
+            .now()
+            .is_err()
+    );
 
     let (_, unsynced_after, syncs_after) = backend.landed();
     assert!(

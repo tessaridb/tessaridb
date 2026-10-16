@@ -59,7 +59,7 @@ pub(super) fn take_ordered(from: &[u8], at: usize) -> Result<(tessari_session::O
 ///
 /// Ranked again for every page asked: a page is a separate request, and the
 /// ranked set is at most `most` records, which is what the asker can take.
-pub(super) fn ranked_page(
+pub(super) async fn ranked_page(
     store: &Store,
     transaction: &mut Transaction<'_>,
     asked: &Gather,
@@ -69,25 +69,28 @@ pub(super) fn ranked_page(
 ) -> Result<Page> {
     let mut after: Option<RecordId> = None;
     let mut done = false;
-    let ranked = tessari_session::leading(store, ordered, || {
+    let ranked = tessari_session::leading(store, ordered, async || {
         if done {
             return Ok(None);
         }
-        let page = transaction.records_between(
-            asked.namespace,
-            asked.database,
-            asked.table,
-            window,
-            after.as_ref(),
-            GATHER_PAGE_RECORDS,
-        )?;
+        let page = transaction
+            .records_between(
+                asked.namespace,
+                asked.database,
+                asked.table,
+                window,
+                after.as_ref(),
+                GATHER_PAGE_RECORDS,
+            )
+            .await?;
         done = page.len() < GATHER_PAGE_RECORDS;
         after = page.last().map(|(id, _)| id.clone());
         Ok(Some(match &asked.pushed {
-            Some(pushed) => tessari_session::keeping(store, pushed, page)?,
+            Some(pushed) => tessari_session::keeping(store, pushed, page).await?,
             None => page,
         }))
     })
+    .await
     .map_err(|why| Error::Refused {
         message: why.to_string(),
         class: None,

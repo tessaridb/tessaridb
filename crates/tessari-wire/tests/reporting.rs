@@ -12,6 +12,7 @@
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::sync::{Arc, Mutex, OnceLock};
+use tessari_session::Now;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -123,7 +124,7 @@ fn connection_in(line: &str) -> Option<u64> {
 #[test]
 fn one_conversation_is_reported_from_accept_to_close_under_one_name() {
     let _floor = listening();
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
 
     // A credential nobody declared, so the node refuses it. The refusal is the
     // middle of the three lines and the one an operator is actually looking for.
@@ -173,7 +174,7 @@ fn one_conversation_is_reported_from_accept_to_close_under_one_name() {
 #[test]
 fn a_refused_sign_in_reports_the_name_and_never_the_password() {
     let _floor = listening();
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
 
     let secret = "correct horse battery staple";
     let mut client = Client::connect(&address).unwrap();
@@ -200,7 +201,7 @@ fn a_client_that_says_nothing_is_let_go_rather_than_holding_a_thread() {
     use std::time::{Duration, Instant};
 
     let _floor = listening();
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
 
     // Connect, greet nobody, send not one byte. Before the deadline existed this
     // held a node thread for the life of the process, at a cost to the client of
@@ -228,7 +229,8 @@ fn a_client_that_says_nothing_is_let_go_rather_than_holding_a_thread() {
 #[test]
 fn a_place_at_the_door_is_taken_for_a_connection_and_given_back_after_it() {
     let _floor = listening();
-    let node = Arc::new(Node::bind(Arc::new(Db::in_memory().unwrap()), "127.0.0.1:0").unwrap());
+    let node =
+        Arc::new(Node::bind(Arc::new(Db::in_memory().now().unwrap()), "127.0.0.1:0").unwrap());
     let address = node.address().unwrap();
     let door = node.door();
     let held = Arc::clone(&node);
@@ -263,7 +265,7 @@ fn a_place_at_the_door_is_taken_for_a_connection_and_given_back_after_it() {
 fn a_session_carried_over_a_websocket_takes_its_place_at_the_same_door() {
     // ADR-0089: `/wire` sessions and TCP connections share one ceiling. A
     // second door would let a node hold twice what it was sized for.
-    let node = Node::bind(Arc::new(Db::in_memory().unwrap()), "127.0.0.1:0").unwrap();
+    let node = Node::bind(Arc::new(Db::in_memory().now().unwrap()), "127.0.0.1:0").unwrap();
     let door = node.door();
     let carrier = node.carrier();
 
@@ -334,17 +336,22 @@ fn a_pass_that_outlasts_its_period_is_reported_and_the_next_one_waits_for_it() {
             Arc::clone(&overlapped),
             Arc::clone(&passes),
         );
-        every("slow-test", Duration::from_millis(20), &stop, move |_| {
-            if entering.fetch_add(1, Ordering::SeqCst) > 0 {
-                crossed.store(true, Ordering::SeqCst);
-            }
-            std::thread::sleep(Duration::from_millis(300));
-            entering.fetch_sub(1, Ordering::SeqCst);
-            if counted.fetch_add(1, Ordering::SeqCst) >= 1 {
-                stopping.cancel();
-            }
-            Ok(())
-        })
+        every(
+            "slow-test",
+            Duration::from_millis(20),
+            &stop,
+            async move |_| {
+                if entering.fetch_add(1, Ordering::SeqCst) > 0 {
+                    crossed.store(true, Ordering::SeqCst);
+                }
+                std::thread::sleep(Duration::from_millis(300));
+                entering.fetch_sub(1, Ordering::SeqCst);
+                if counted.fetch_add(1, Ordering::SeqCst) >= 1 {
+                    stopping.cancel();
+                }
+                Ok(())
+            },
+        )
         .await;
         assert_eq!(passes.load(Ordering::SeqCst), 2);
         assert!(
@@ -377,15 +384,20 @@ fn a_pass_that_fails_is_reported_with_its_cadence_and_the_cadence_goes_on() {
         let stopping = stop.clone();
         let passes = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&passes);
-        every("failing-test", Duration::from_secs(1), &stop, move |_| {
-            if counted.fetch_add(1, Ordering::SeqCst) >= 1 {
-                stopping.cancel();
-            }
-            Err(PassFailed::new(
-                "the test cannot do its work",
-                std::io::Error::other("refused on purpose"),
-            ))
-        })
+        every(
+            "failing-test",
+            Duration::from_secs(1),
+            &stop,
+            async move |_| {
+                if counted.fetch_add(1, Ordering::SeqCst) >= 1 {
+                    stopping.cancel();
+                }
+                Err(PassFailed::new(
+                    "the test cannot do its work",
+                    std::io::Error::other("refused on purpose"),
+                ))
+            },
+        )
         .await;
         assert_eq!(
             passes.load(Ordering::SeqCst),
@@ -430,7 +442,7 @@ fn a_paced_pass_that_fails_waits_the_last_period_rather_than_running_again_at_on
             &stop,
             &wake,
             Duration::from_secs(3600),
-            move |_| {
+            async move |_| {
                 let mut seen = seen.lock().unwrap();
                 seen.push(began.elapsed());
                 if seen.len() >= 2 {

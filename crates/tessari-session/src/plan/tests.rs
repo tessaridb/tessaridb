@@ -10,6 +10,7 @@
 
 use crate::run_now::RunNow;
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_ql::{Expr, Source, StatementKind, parse};
@@ -23,7 +24,7 @@ use super::rank::choose;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).expect("a store")
+    Store::open(backend).now().expect("a store")
 }
 
 /// `users` with a unique index on `email`, a secondary one on `city`, and a
@@ -77,6 +78,7 @@ fn planned(session: &Session<'_>, store: &Store, written: &str) -> (String, Rows
             tessari_types::DatabaseId::new(1),
             "users",
         )
+        .now()
         .expect("a lookup")
         .expect("the table");
     let declared = Catalog::new(&mut transaction)
@@ -85,12 +87,15 @@ fn planned(session: &Session<'_>, store: &Store, written: &str) -> (String, Rows
             tessari_types::DatabaseId::new(1),
             table,
         )
+        .now()
         .expect("the indexes");
     let searched = session
         .searched_for(&mut transaction, table, &[&condition])
+        .now()
         .expect("the searched context");
     let offered = session
         .enumerate(&mut transaction, &condition, &declared, &searched)
+        .now()
         .expect("the candidates");
     let chosen = choose(offered).expect("a candidate");
     (chosen.index.name, chosen.rows)
@@ -162,6 +167,7 @@ fn a_condition_no_index_can_serve_offers_nothing() {
             &declared,
             &Searched::default(),
         )
+        .now()
         .expect("the candidates");
     assert!(offered.is_empty());
     assert!(choose(offered).is_none());

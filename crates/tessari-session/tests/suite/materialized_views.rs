@@ -10,6 +10,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -19,7 +20,7 @@ use tessari_types::{Number, RecordId, Value};
 
 pub(super) fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 pub(super) fn ready(store: &Store) -> Session<'_> {
@@ -140,7 +141,7 @@ fn a_per_record_view_follows_writes_updates_and_deletes() {
         .collect();
     assert!(!stale.contains(&RecordId::Int(100)) && stale.contains(&RecordId::Int(5)));
     equals_its_read(&mut session, "big", BIG, true);
-    let done = maintain_views(&store).unwrap();
+    let done = maintain_views(&store).now().unwrap();
     assert_eq!(done.views, 1);
     assert!(number(&kept(&mut session, "big"), "version") > before);
     let ids: Vec<RecordId> = records(&mut session, "SELECT * FROM big;")
@@ -177,13 +178,13 @@ fn a_grouped_view_keeps_min_and_max_through_a_delete() {
             }
         ))
         .unwrap();
-    maintain_views(&store).unwrap();
+    maintain_views(&store).now().unwrap();
     equals_its_read(&mut session, "bands", read, false);
     // A whole group goes: the view loses a row rather than keeping a stale one.
     session
         .run_now("DELETE FROM orders WHERE band = 3 LIMIT ALL;")
         .unwrap();
-    maintain_views(&store).unwrap();
+    maintain_views(&store).now().unwrap();
     assert_eq!(records(&mut session, "SELECT * FROM bands;").len(), 3);
     equals_its_read(&mut session, "bands", read, false);
 }
@@ -197,7 +198,7 @@ fn an_ordered_bounded_view_keeps_its_order() {
         .run_now(&format!("DEFINE VIEW top MATERIALIZED AS {read};"))
         .unwrap();
     session.run_now("UPDATE orders:2 SET total = 99;").unwrap();
-    maintain_views(&store).unwrap();
+    maintain_views(&store).now().unwrap();
     let first = records(&mut session, "SELECT * FROM top LIMIT 1;");
     let Value::Object(row) = &first[0].1 else {
         panic!()
@@ -278,7 +279,7 @@ fn dropping_a_kept_view_takes_its_rows_and_its_state() {
         .run_now("DEFINE VIEW big MATERIALIZED AS SELECT n FROM orders WHERE n < 3;")
         .unwrap();
     assert_eq!(records(&mut session, "SELECT * FROM big;").len(), 3);
-    assert_eq!(maintain_views(&store).unwrap().views, 0);
+    assert_eq!(maintain_views(&store).now().unwrap().views, 0);
 }
 
 #[test]
@@ -292,7 +293,7 @@ fn a_reader_who_may_see_only_part_of_the_source_is_refused() {
         ))
         .unwrap();
     let mut root = Session::new(&store);
-    root.sign_in("root", "correct horse battery").unwrap();
+    root.sign_in("root", "correct horse battery").now().unwrap();
     root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
          DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
@@ -303,7 +304,10 @@ fn a_reader_who_may_see_only_part_of_the_source_is_refused() {
     .unwrap();
     let signed = |name: &str| {
         let mut session = Session::new(&store);
-        session.sign_in(name, "correct horse battery").unwrap();
+        session
+            .sign_in(name, "correct horse battery")
+            .now()
+            .unwrap();
         session
             .run_now("USE NAMESPACE prod; USE DATABASE shop;")
             .unwrap();
@@ -350,11 +354,11 @@ fn under_concurrent_writes_every_read_equals_the_view_at_its_version() {
             });
         }
         for _ in 0..20 {
-            maintain_views(&store).unwrap();
+            maintain_views(&store).now().unwrap();
             equals_its_read(&mut session, "big", BIG, true);
         }
     });
-    maintain_views(&store).unwrap();
+    maintain_views(&store).now().unwrap();
     equals_its_read(&mut session, "big", BIG, true);
     // Caught up, the stored rows are the read now.
     assert_eq!(
@@ -372,7 +376,9 @@ fn a_store_reopened_mid_maintenance_holds_its_view_at_its_version_and_catches_up
             tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
         )
         .unwrap();
-        Store::open(Arc::new(backend) as Arc<dyn KvBackend>).unwrap()
+        Store::open(Arc::new(backend) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap()
     };
     {
         let disk = open();
@@ -391,7 +397,7 @@ fn a_store_reopened_mid_maintenance_holds_its_view_at_its_version_and_catches_up
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     equals_its_read(&mut session, "big", BIG, true);
-    maintain_views(&disk).unwrap();
+    maintain_views(&disk).now().unwrap();
     equals_its_read(&mut session, "big", BIG, true);
     assert_eq!(
         records(&mut session, "SELECT * FROM big;"),

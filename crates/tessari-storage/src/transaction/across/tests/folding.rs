@@ -3,6 +3,7 @@
 //! versions drop their provenance and its markers go — so markers are bounded
 //! exactly as version history is.
 
+use crate::now::Now;
 use tessari_encoding::{
     AcrossPartKey, Decision, KeyKind, RecordKey, StampedValue, StoreKey, StoreValue,
     TRANSACTION_ID_LEN, TransactionId, TransactionRecord,
@@ -18,22 +19,25 @@ impl Fixture {
         let transaction = TransactionId::new([round; TRANSACTION_ID_LEN]);
         let mut writing = self.store.begin()?;
         writing.put(self.address(), vec![round]);
-        writing.prepare_across(transaction, self.coordinator(), self.seen()?)?;
+        writing
+            .prepare_across(transaction, self.coordinator(), self.seen()?)
+            .now()?;
         for decision in [Decision::Pending, Decision::Committed] {
-            self.store.begin()?.decide_across(
-                transaction,
-                TransactionRecord {
-                    participants: self.prepared(),
-                    ..self.record(decision)
-                },
-            )?;
+            self.store
+                .begin()?
+                .decide_across(
+                    transaction,
+                    TransactionRecord {
+                        participants: self.prepared(),
+                        ..self.record(decision)
+                    },
+                )
+                .now()?;
         }
-        self.store.begin()?.resolve_across(
-            transaction,
-            true,
-            &[self.address()],
-            &self.prepared(),
-        )?;
+        self.store
+            .begin()?
+            .resolve_across(transaction, true, &[self.address()], &self.prepared())
+            .now()?;
         Ok(transaction)
     }
 
@@ -119,7 +123,7 @@ fn a_reader_still_below_a_marker_keeps_it() -> Result<()> {
     }
     // A reader that began here holds the floor below the last two.
     let reading = fixture.store.begin()?;
-    let seen = reading.get(&fixture.address())?;
+    let seen = reading.get(&fixture.address()).now()?;
     for round in 4..=5 {
         fixture.settled(round)?;
     }
@@ -131,7 +135,7 @@ fn a_reader_still_below_a_marker_keeps_it() -> Result<()> {
         2,
         "the markers above the reader's snapshot stay"
     );
-    assert_eq!(reading.get(&fixture.address())?, seen);
+    assert_eq!(reading.get(&fixture.address()).now()?, seen);
     assert_eq!(seen, Some(vec![3]));
     Ok(())
 }

@@ -1,4 +1,5 @@
 use super::*;
+use tessari_session::Now;
 
 #[test]
 fn two_nodes_that_prove_who_they_are_exchange_what_they_hold() {
@@ -6,7 +7,9 @@ fn two_nodes_that_prove_who_they_are_exchange_what_they_hold() {
     let (peers, mine) = door(&authority);
     let address = peers.address().expect("the door's address");
     let listening = std::thread::spawn(move || {
-        peers.greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
+        peers
+            .greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
+            .now()
     });
 
     let theirs = call_with(
@@ -51,21 +54,23 @@ fn the_greeting_carries_what_this_node_holds_when_the_peer_arrives_not_when_the_
         // Sent before `greet`, so the advance below cannot land while this
         // thread is still being scheduled.
         entered.send(()).expect("the test is still listening");
-        peers.greet(
-            || {
-                Ok(Hello::about(
-                    &identity(HERE),
-                    Epoch::new(4),
-                    Sequence::new(read.load(std::sync::atomic::Ordering::SeqCst)),
-                    LEVEL.leadership,
-                    Some(core::time::Duration::ZERO),
-                    None,
-                ))
-            },
-            &HERE,
-            &Deciding::holding(settled()),
-            &NoLog,
-        )
+        peers
+            .greet(
+                || {
+                    Ok(Hello::about(
+                        &identity(HERE),
+                        Epoch::new(4),
+                        Sequence::new(read.load(std::sync::atomic::Ordering::SeqCst)),
+                        LEVEL.leadership,
+                        Some(core::time::Duration::ZERO),
+                        None,
+                    ))
+                },
+                &HERE,
+                &Deciding::holding(settled()),
+                &NoLog,
+            )
+            .now()
     });
     waiting.recv().expect("the door's thread starts");
     // The pause is for the FALSIFICATION and not for this assertion. Reading
@@ -107,7 +112,9 @@ fn a_door_with_no_log_refuses_a_collection_as_a_refusal_and_not_by_hanging_up() 
     let (peers, mine) = door(&authority);
     let address = peers.address().expect("the door's address");
     let listening = std::thread::spawn(move || {
-        peers.greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
+        peers
+            .greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
+            .now()
     });
 
     let failure = call_with(
@@ -149,7 +156,9 @@ fn a_client_credential_on_the_peer_link_is_refused_on_its_purpose() {
     let (peers, mine) = door(&authority);
     let address = peers.address().expect("the door's address");
     let listening = std::thread::spawn(move || {
-        peers.greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
+        peers
+            .greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
+            .now()
     });
 
     // The id is perfectly correct. What is wrong is the link it was issued
@@ -176,7 +185,9 @@ fn a_credential_that_does_not_name_the_greeter_is_refused_and_names_the_file() {
     let (peers, mine) = door(&authority);
     let address = peers.address().expect("the door's address");
     let listening = std::thread::spawn(move || {
-        peers.greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
+        peers
+            .greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
+            .now()
     });
 
     // Issued by the right authority, for the right link, for the wrong node.
@@ -210,7 +221,9 @@ fn a_connection_offering_no_credential_never_reaches_a_frame() {
     let (peers, mine) = door(&authority);
     let address = peers.address().expect("the door's address");
     let listening = std::thread::spawn(move || {
-        peers.greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
+        peers
+            .greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
+            .now()
     });
 
     let mut roots = rustls::RootCertStore::empty();

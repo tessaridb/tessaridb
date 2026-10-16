@@ -188,6 +188,7 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
+    use tessari_session::Now;
 
     use tessari_serve::{Bridge, Stopping};
     use tessari_session::RunNow;
@@ -230,7 +231,7 @@ mod tests {
         first: &str,
         then: &[u8],
     ) -> (TcpStream, mpsc::Receiver<Result<Cooled>>, Arc<Db>) {
-        let db = Arc::new(Db::in_memory().expect("an in-memory store"));
+        let db = Arc::new(Db::in_memory().now().expect("an in-memory store"));
         let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         let mut client =
             TcpStream::connect(listener.local_addr().expect("its address")).expect("a connection");

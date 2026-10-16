@@ -91,6 +91,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -231,7 +232,7 @@ fn ready<'a>(store: &'a Store, indexes: &[&str]) -> Session<'a> {
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// What a read answered and how it was served, in answer order.

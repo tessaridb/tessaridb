@@ -15,7 +15,7 @@ impl Session<'_> {
     ///
     /// An absent or null argument answers `none`, the rule every call follows.
     /// The catalog is read only when the value holds a reference at all.
-    pub(super) fn json_encode(
+    pub(super) async fn json_encode(
         &self,
         transaction: &mut Transaction<'_>,
         arguments: &[Value],
@@ -31,7 +31,7 @@ impl Session<'_> {
             let catalog = Catalog::new(transaction);
             for table in wanted {
                 // A dropped table keeps its id and gains no name, as on HTTP.
-                if let Some(defined) = catalog.table(table)? {
+                if let Some(defined) = catalog.table(table).await? {
                     names.insert(table, defined.name);
                 }
             }

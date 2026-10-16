@@ -1,8 +1,8 @@
 //! The one async runtime a serving process owns (ADR-0085 §1).
 //!
 //! Built here and nowhere else: the libraries return futures and never start a
-//! runtime of their own, and the one-shot modes — a statement, a file, a backup,
-//! a health check — never build one at all.
+//! runtime of their own, and the one-shot modes (a statement, a file, a backup,
+//! a health check) drive their store calls on one thread instead.
 
 use std::num::NonZeroUsize;
 use std::time::Duration;
@@ -26,6 +26,13 @@ const BLOCKING: usize = tessari_constants::MAX_STORE_CALLS * 2 + CADENCES;
 /// greeting, collection and leadership rounds.
 const CADENCES: usize = 4;
 
+/// The stack of every runtime thread, workers and blocking threads alike.
+///
+/// A statement is one future nested as deep as the statement is: a debug
+/// build's frames for the vault surface overflowed the 2 MiB default. Stated
+/// here so the node does not depend on `RUST_MIN_STACK` in its environment.
+const STACK: usize = 8 * 1024 * 1024;
+
 /// How long the runtime's own tasks are given to end when the node stops.
 ///
 /// Its tasks do no store work of their own at this point, so this is a
@@ -39,6 +46,7 @@ pub fn build() -> std::io::Result<Runtime> {
         .worker_threads(workers)
         .max_blocking_threads(BLOCKING)
         .thread_name("tessaridb-runtime")
+        .thread_stack_size(STACK)
         .enable_all()
         .build()
 }

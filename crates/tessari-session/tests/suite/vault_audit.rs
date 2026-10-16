@@ -28,6 +28,7 @@
 
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -72,7 +73,9 @@ impl AuditDevice for Watching {
 }
 
 fn holding() -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     {
         let mut session = Session::new(&store);
         session
@@ -97,6 +100,7 @@ fn session_on(store: &Store) -> Session<'_> {
 /// Every entry in the trail, as one blob of text to search.
 fn trail_text(store: &Store) -> String {
     tessari_storage::audit_entries(store)
+        .now()
         .unwrap()
         .iter()
         .map(|entry| format!("{entry:?}"))
@@ -109,7 +113,7 @@ fn a_read_leaves_a_record_naming_who_and_what() {
     let mut session = session_on(&store);
     session.run_now("REVEAL token FROM team:'github';").unwrap();
 
-    let entries = tessari_storage::audit_entries(&store).unwrap();
+    let entries = tessari_storage::audit_entries(&store).now().unwrap();
     assert_eq!(entries.len(), 1, "expected exactly one recorded read");
     let Value::Object(entry) = &entries[0] else {
         panic!("the entry is not an object");
@@ -141,7 +145,7 @@ fn the_record_survives_a_transaction_the_reader_cancels() {
         .unwrap();
 
     assert_eq!(
-        tessari_storage::audit_entries(&store).unwrap().len(),
+        tessari_storage::audit_entries(&store).now().unwrap().len(),
         1,
         "the record was rolled away with the reader's transaction",
     );
@@ -228,7 +232,7 @@ fn the_forensic_question_is_answered_against_real_data_and_timed() {
             .run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
             .unwrap();
         let mut root = Session::new(&store);
-        root.sign_in("root", PASSWORD).unwrap();
+        root.sign_in("root", PASSWORD).now().unwrap();
         root.run_now(&format!(
             "{USING}
              DEFINE USER ada ON prod.work ROLE editor PASSWORD 'correct horse battery';
@@ -242,7 +246,7 @@ fn the_forensic_question_is_answered_against_real_data_and_timed() {
     for name in ["ada", "root"] {
         for _ in 0..25 {
             let mut session = Session::new(&store);
-            session.sign_in(name, PASSWORD).unwrap();
+            session.sign_in(name, PASSWORD).now().unwrap();
             session.run_now(USING).unwrap();
             session.run_now("REVEAL token FROM team:'github';").unwrap();
         }
@@ -250,7 +254,7 @@ fn the_forensic_question_is_answered_against_real_data_and_timed() {
 
     // *This credential was compromised; what did it read?*
     let started = Instant::now();
-    let reads = tessari_storage::reads_by(&store, "ada").unwrap();
+    let reads = tessari_storage::reads_by(&store, "ada").now().unwrap();
     let took = started.elapsed();
 
     assert_eq!(reads.len(), 25, "the answer is not ada's reads alone");
@@ -295,7 +299,9 @@ const PASSWORD: &str = "correct horse battery";
 /// demanded — and the thing worth proving is the other half, that holding it
 /// over a tenancy is not holding it over the store.
 fn peopled() -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     {
         let mut session = Session::new(&store);
         session
@@ -310,7 +316,7 @@ fn peopled() -> Store {
             ))
             .unwrap();
         let mut root = Session::new(&store);
-        root.sign_in("root", "correct horse battery").unwrap();
+        root.sign_in("root", "correct horse battery").now().unwrap();
         root.run_now(&format!(
             "{USING}
              DEFINE USER ada ON prod.work ROLE owner PASSWORD '{PASSWORD}';
@@ -323,7 +329,10 @@ fn peopled() -> Store {
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, "correct horse battery").unwrap();
+    session
+        .sign_in(name, "correct horse battery")
+        .now()
+        .unwrap();
     session.run_now(USING).unwrap();
     session
 }

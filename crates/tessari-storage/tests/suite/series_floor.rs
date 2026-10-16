@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tessari_storage::Now;
 
 use tessari_encoding::{RecordKey, StoreKey, encode_payload};
 use tessari_kv::{KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
@@ -83,12 +84,15 @@ impl Fixture {
     /// A table of `kind`, holding one record from two hours ago and one from now.
     pub(super) fn holding(kind: TableKind, identity_kind: IdentityKind) -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        let store = Store::open(Arc::clone(&backend)).unwrap();
+        let store = Store::open(Arc::clone(&backend)).now().unwrap();
 
         let mut transaction = store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("prod").unwrap();
-        let database = catalog.create_database(namespace.id, "metrics").unwrap();
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog
+            .create_database(namespace.id, "metrics")
+            .now()
+            .unwrap();
         let table = catalog
             .create_table(
                 namespace.id,
@@ -105,8 +109,9 @@ impl Fixture {
                     spread: false,
                 },
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
 
         let base = now_millis();
         let held = Self {
@@ -135,7 +140,7 @@ impl Fixture {
             self.address(id),
             encode_payload(&Value::Object(fields)).into_bytes(),
         );
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     /// The labels a plain read of the table answers with, in key order.
@@ -143,6 +148,7 @@ impl Fixture {
         let transaction = self.store.begin().unwrap();
         transaction
             .scan_table(self.namespace, self.database, self.table)
+            .now()
             .unwrap()
             .into_iter()
             .map(|(_, payload)| {
@@ -220,12 +226,14 @@ fn a_point_read_below_the_floor_answers_nothing() {
     assert!(
         transaction
             .get(&fixture.address(fixture.old.clone()))
+            .now()
             .unwrap()
             .is_none()
     );
     assert!(
         transaction
             .get(&fixture.address(fixture.fresh.clone()))
+            .now()
             .unwrap()
             .is_some()
     );
@@ -251,6 +259,7 @@ fn a_batched_read_below_the_floor_answers_nothing() {
             fixture.address(fixture.old.clone()),
             fixture.address(fixture.fresh.clone()),
         ])
+        .now()
         .unwrap();
     assert!(answers[0].is_none());
     assert!(answers[1].is_some());
@@ -278,6 +287,7 @@ fn a_record_written_below_the_floor_in_this_transaction_is_not_answered_either()
     // would be a property of who is asking rather than of the table.
     let answered: Vec<RecordId> = transaction
         .scan_table(fixture.namespace, fixture.database, fixture.table)
+        .now()
         .unwrap()
         .into_iter()
         .map(|(id, _)| id)
@@ -314,6 +324,7 @@ fn the_pass_removes_what_the_floor_had_already_hidden_and_changes_no_answer() {
     let expired = fixture
         .store
         .expire_series(fixture.namespace, fixture.database, fixture.table)
+        .now()
         .unwrap();
     assert_eq!(
         expired,
@@ -350,6 +361,7 @@ fn a_second_pass_removes_nothing() {
     fixture
         .store
         .expire_series(fixture.namespace, fixture.database, fixture.table)
+        .now()
         .unwrap();
 
     // Without the tombstone check the pass would find the record it just
@@ -358,6 +370,7 @@ fn a_second_pass_removes_nothing() {
     let again = fixture
         .store
         .expire_series(fixture.namespace, fixture.database, fixture.table)
+        .now()
         .unwrap();
     assert_eq!(again, tessari_storage::Expired::default());
 }
@@ -371,6 +384,7 @@ fn the_pass_over_a_plain_table_removes_nothing() {
     let expired = fixture
         .store
         .expire_series(fixture.namespace, fixture.database, fixture.table)
+        .now()
         .unwrap();
     assert_eq!(expired, tessari_storage::Expired::default());
     assert_eq!(fixture.stored_entries(), 2);

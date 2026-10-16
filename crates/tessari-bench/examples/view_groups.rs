@@ -11,6 +11,7 @@
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::KvBackend;
@@ -40,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .nth(1)
         .ok_or("usage: view_groups <empty directory>")?;
     let backend: Arc<dyn KvBackend> = Arc::new(LsmBackend::open(&dir, StoreConfig::default())?);
-    let store = Store::open(backend)?;
+    let store = Store::open(backend).now()?;
     let mut session = Session::new(&store);
     session.run_now(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench; DEFINE DATABASE v; USE DATABASE v; \
@@ -70,7 +71,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let n = batch.wrapping_mul(4_099) % RECORDS;
         session.run_now(&format!("UPDATE t:{n} SET v = {};", batch % 1_000))?;
         let began = Instant::now();
-        maintain_views(&store)?;
+        maintain_views(&store).now()?;
         timings.push(began.elapsed().as_micros());
     }
     timings.sort_unstable();

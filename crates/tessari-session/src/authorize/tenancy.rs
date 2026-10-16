@@ -12,7 +12,7 @@ impl<'a> Session<'a> {
     /// — it only records a name for the statements after it. Without it a scoped
     /// user's `USE NAMESPACE other` would succeed and the refusal would arrive
     /// one statement later, naming something the author did not just write.
-    pub(crate) fn within_tenancy(
+    pub(crate) async fn within_tenancy(
         &self,
         kind: &StatementKind,
         span: tessari_ql::Span,
@@ -39,7 +39,7 @@ impl<'a> Session<'a> {
                 .into_iter()
                 .flatten()
             {
-                if !self.names_own_tenancy(user, &named.text) {
+                if !self.names_own_tenancy(user, &named.text).await {
                     return Err(Error::OutsideTenancy {
                         name: named.text.clone(),
                         span,
@@ -48,6 +48,7 @@ impl<'a> Session<'a> {
             }
         }
         self.holds_something_named(user, namespace.as_ref(), database.as_ref(), span)
+            .await
     }
 
     /// Refuse a `USE` naming a container this user holds nothing at.
@@ -74,7 +75,7 @@ impl<'a> Session<'a> {
     /// *not yours* for the other would leave it open with extra steps. The cost
     /// is that a typo now reads as a permission refusal, which is the same trade
     /// [`Error::OutsideTenancy`] already makes for a table.
-    pub(crate) fn holds_something_named(
+    pub(crate) async fn holds_something_named(
         &self,
         user: &tessari_storage::UserDefinition,
         namespace: Option<&tessari_ql::Name>,
@@ -90,12 +91,13 @@ impl<'a> Session<'a> {
         };
         let mut transaction = self.store.begin()?;
         let catalog = Catalog::new(&mut transaction);
-        let found = catalog.namespace_id(&within).ok().flatten();
+        let found = catalog.namespace_id(&within).await.ok().flatten();
         let reach = match (found, database) {
             (None, _) => None,
             (Some(id), None) => Some(tessari_storage::Reach::Namespace(id)),
             (Some(id), Some(named)) => catalog
                 .database_id(id, &named.text)
+                .await
                 .ok()
                 .flatten()
                 .map(|inner| tessari_storage::Reach::Database(id, inner)),
@@ -130,7 +132,7 @@ impl<'a> Session<'a> {
     /// because holding a namespace is holding what it contains. It fires only
     /// when the user has no database of their own, so a database-scoped user is
     /// still confined to exactly one.
-    pub(crate) fn names_own_tenancy(
+    pub(crate) async fn names_own_tenancy(
         &self,
         user: &tessari_storage::UserDefinition,
         named: &str,
@@ -139,26 +141,31 @@ impl<'a> Session<'a> {
             return false;
         };
         let catalog = Catalog::new(&mut transaction);
-        let named_namespace = user.namespace.is_some_and(|id| {
-            catalog
+        let named_namespace = match user.namespace {
+            Some(id) => catalog
                 .namespace(id)
+                .await
                 .ok()
                 .flatten()
-                .is_some_and(|found| found.name == named)
-        });
-        let named_database = user.database.is_some_and(|id| {
-            catalog
+                .is_some_and(|found| found.name == named),
+            None => false,
+        };
+        let named_database = match user.database {
+            Some(id) => catalog
                 .database(id)
+                .await
                 .ok()
                 .flatten()
-                .is_some_and(|found| found.name == named)
-        });
-        let inside_own_namespace = user.database.is_none()
-            && user.namespace.is_some_and(|id| {
-                catalog
-                    .database_id(id, named)
-                    .is_ok_and(|found| found.is_some())
-            });
+                .is_some_and(|found| found.name == named),
+            None => false,
+        };
+        let inside_own_namespace = match (user.database, user.namespace) {
+            (None, Some(id)) => catalog
+                .database_id(id, named)
+                .await
+                .is_ok_and(|found| found.is_some()),
+            _ => false,
+        };
         transaction.rollback();
         named_namespace || named_database || inside_own_namespace
     }

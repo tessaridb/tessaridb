@@ -67,14 +67,14 @@ impl Session<'_> {
         span: Span,
     ) -> Result<Outcome> {
         let amount = match by {
-            Some(by) => self.evaluate(transaction, by)?,
+            Some(by) => self.evaluate(transaction, by).await?,
             None => Value::Number(Number::Integer(1)),
         };
-        let (_, address) = self.writable(transaction, target)?;
-        let held = self.read_key(transaction, target)?;
+        let (_, address) = self.writable(transaction, target).await?;
+        let held = self.read_key(transaction, target).await?;
         // Kept across the write: an increment alters the value and not how long
         // the key lives, which is the rule the cache semantics here follow.
-        let expires = transaction.expires(&address)?;
+        let expires = transaction.expires(&address).await?;
         let current = match held {
             Value::None => Value::Number(Number::Integer(0)),
             other => other,
@@ -89,18 +89,18 @@ impl Session<'_> {
     }
 
     /// Whether a conditional `SET`'s condition holds for the key as it is now.
-    pub(crate) fn set_condition_holds(
+    pub(crate) async fn set_condition_holds(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
         condition: &SetCondition,
     ) -> Result<bool> {
-        let held = self.read_key(transaction, target)?;
+        let held = self.read_key(transaction, target).await?;
         Ok(match condition {
             SetCondition::Absent => held == Value::None,
             SetCondition::Present => held != Value::None,
             SetCondition::Equals(expected) => {
-                held != Value::None && held == self.evaluate(transaction, expected)?
+                held != Value::None && held == self.evaluate(transaction, expected).await?
             }
         })
     }

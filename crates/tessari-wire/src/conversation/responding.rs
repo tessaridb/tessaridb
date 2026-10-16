@@ -18,7 +18,7 @@ pub(crate) async fn respond(
         snapshot: None,
     };
     if let Some((name, password)) = &request.credentials
-        && let Err(refused) = session.sign_in(name, password)
+        && let Err(refused) = session.sign_in(name, password).await
     {
         // The session's own refusal, travelling as one. A second rule here
         // would be a second place for "who may do this" to be decided.
@@ -60,17 +60,19 @@ pub(crate) async fn respond(
         && (matches!(refused, tessaridb::Error::NotWritable { .. }) || theirs < frame::REDIRECTS)
         && tessaridb::travels(&request.script)
         && let Some(coordinator) = db.coordinator()
-        && let Some(to) = db.answers_instead(refused)
+        && let Some(to) = db.answers_instead(refused).await
     {
-        let carried = coordinator.coordinate(&tessaridb::Coordination {
-            to,
-            user: session.signed_in(),
-            namespace: selected.0.as_deref(),
-            database: selected.1.as_deref(),
-            script: &request.script,
-            parameters: &request.parameters,
-            surface: tessaridb::Surface::Wire { minor: theirs },
-        });
+        let carried = coordinator
+            .coordinate(&tessaridb::Coordination {
+                to,
+                user: session.signed_in(),
+                namespace: selected.0.as_deref(),
+                database: selected.1.as_deref(),
+                script: &request.script,
+                parameters: &request.parameters,
+                surface: tessaridb::Surface::Wire { minor: theirs },
+            })
+            .await;
         return match carried {
             Ok(answer) => match u8::try_from(answer.kind)
                 .ok()
@@ -101,7 +103,7 @@ pub(crate) async fn respond(
     if matches!(ran, Err(tessaridb::Error::NotWritable { .. })) {
         return refusal(
             RefusalClass::Unavailable,
-            match db.writable_peer() {
+            match db.writable_peer().await {
                 Ok(Some(peer)) => format!(
                     "this node does not take writes; the peer declared writable takes them at {}",
                     peer.clients.unwrap_or(peer.endpoint)
@@ -123,7 +125,7 @@ pub(crate) async fn respond(
     // of itself gets the refusal rather than an invitation to commit it twice.
     if theirs >= frame::REDIRECTS
         && !session.landed()
-        && let Some(sent) = redirected(db, &ran)
+        && let Some(sent) = redirected(db, &ran).await
     {
         return Answer {
             kind: frame::Kind::Elsewhere,
@@ -132,7 +134,7 @@ pub(crate) async fn respond(
             snapshot: None,
         };
     }
-    let mut answer = render(db, &ran, theirs);
+    let mut answer = render(db, &ran, theirs).await;
     // Parts precede only an answer: a refusal ends the request without them,
     // and the spooled file goes with it.
     if answer.kind == frame::Kind::Answer {
@@ -168,7 +170,7 @@ fn spooled(session: &mut tessaridb::Session<'_>) -> std::io::Result<std::fs::Fil
 
 /// A run's answer as this surface writes it: one outcome per statement, or the
 /// refusal in the store's own words.
-pub(super) fn render(
+pub(super) async fn render(
     db: &Db,
     ran: &tessaridb::Result<Vec<tessaridb::Outcome>>,
     theirs: u8,
@@ -184,7 +186,7 @@ pub(super) fn render(
                 // Resolved here because the catalog is here. `names_in` walks
                 // the answer first and touches nothing when it holds no
                 // reference, which is most answers.
-                let names = message::names_for(db, outcome);
+                let names = message::names_for(db, outcome).await;
                 answer.extend_from_slice(&message::encode_outcome(outcome, &names));
             }
             // Checked here, where every answer body is made, and not at the
@@ -229,13 +231,12 @@ pub(crate) fn refused_as(refused: &tessaridb::Error, theirs: u8) -> Answer {
 /// A carried request's answer, rendered for a wire client by the node that ran
 /// it (ADR-0108 D1). A refusal naming yet another node is a refusal here: the
 /// request has made its one hop.
-#[must_use]
-pub fn render_coordinated(
+pub async fn render_coordinated(
     db: &Db,
     ran: &tessaridb::Result<Vec<tessaridb::Outcome>>,
     minor: u8,
 ) -> tessaridb::Coordinated {
-    let answer = render(db, ran, minor);
+    let answer = render(db, ran, minor).await;
     tessaridb::Coordinated {
         kind: u16::from(answer.kind.tag()),
         body: answer.body,
@@ -253,7 +254,7 @@ pub(crate) async fn respond_vault(
     theirs: u8,
 ) -> Answer {
     if let Some((name, password)) = &asked.credentials
-        && let Err(refused) = session.sign_in(name, password)
+        && let Err(refused) = session.sign_in(name, password).await
     {
         tracing::warn!(refusal = %refused, "request refused");
         return refused_as(&refused, theirs);

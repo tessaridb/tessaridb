@@ -41,13 +41,17 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// A backend failure, or a stored row that is not a revocation.
-    pub fn revoked_certificates(&self) -> Result<Vec<String>> {
+    pub async fn revoked_certificates(&self) -> Result<Vec<String>> {
         let mut found = Vec::new();
-        for (_, payload) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::REVOKED_CERTIFICATES,
-        )? {
+        for (_, payload) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::REVOKED_CERTIFICATES,
+            )
+            .await?
+        {
             let row = decode_payload(&payload)?;
             match &row {
                 Value::Object(fields) => match fields.get(FIELD_FINGERPRINT) {

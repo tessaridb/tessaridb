@@ -66,6 +66,7 @@ pub(crate) async fn run_batch(
     if let Some(declarer) = definition.declarer {
         session
             .acting_as(declarer)
+            .await
             .map_err(|refused| format!("it cannot act as the user that declared it: {refused}"))?;
     }
     let answered = session
@@ -145,6 +146,7 @@ pub(crate) async fn hand_back_one(
     if let Some(declarer) = definition.declarer {
         session
             .acting_as(declarer)
+            .await
             .map_err(|refused| format!("it cannot act as the user that declared it: {refused}"))?;
     }
     let answered = session
@@ -268,6 +270,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
     use std::sync::Arc;
+    use tessari_storage::Now;
 
     use tessari_kv::{KvBackend, MemoryBackend};
     use tessari_session::{Outcome, RunNow, Session, now};
@@ -281,7 +284,9 @@ mod tests {
     /// message after three deliveries, a strict destination, and a consumer
     /// declared over them with `policy`.
     fn shaped(policy: &str) -> Store {
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         Session::new(&store)
             .run_now(&format!(
                 "DEFINE NAMESPACE shop; USE NAMESPACE shop; DEFINE DATABASE live; \
@@ -305,7 +310,7 @@ mod tests {
     }
 
     fn the_consumer(store: &Store) -> (tessari_storage::ConsumerDefinition, Names) {
-        let mut found = declared(store).unwrap();
+        let mut found = declared(store).now().unwrap();
         assert_eq!(found.len(), 1, "one topic consumer is declared");
         found.remove(0)
     }

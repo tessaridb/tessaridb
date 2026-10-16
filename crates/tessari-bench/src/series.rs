@@ -55,6 +55,7 @@
 //! interval is an operational decision that wants a measurement of its own.
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_storage::Catalog;
@@ -169,17 +170,20 @@ fn expire(db: &Db, table: &str) -> Failable<usize> {
         let mut transaction = store.begin()?;
         let catalog = Catalog::new(&mut transaction);
         let namespace = catalog
-            .namespace_id("bench")?
+            .namespace_id("bench")
+            .now()?
             .ok_or("the bench namespace is missing")?;
         let database = catalog
-            .database_id(namespace, "bench")?
+            .database_id(namespace, "bench")
+            .now()?
             .ok_or("the bench database is missing")?;
         let id = catalog
-            .table_id(namespace, database, table)?
+            .table_id(namespace, database, table)
+            .now()?
             .ok_or("the table this cell just built is missing")?;
         (namespace, database, id)
     };
-    Ok(store.expire_series(namespace, database, id)?.ranges)
+    Ok(store.expire_series(namespace, database, id).now()?.ranges)
 }
 
 /// The same window removed by a declared clause and by a condition, at four

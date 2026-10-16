@@ -18,6 +18,7 @@
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_wire::{Answer, Client, Node};
@@ -60,7 +61,9 @@ fn replicate(leader: &Db, follower: &Db) -> u64 {
         );
         let mut carried = Vec::new();
         let sent = tessari_backup::write_from(leader.store(), &mut carried, home, from).unwrap();
-        let applied = tessari_backup::bootstrap(follower.store(), &mut carried.as_slice()).unwrap();
+        let applied = tessari_backup::bootstrap(follower.store(), &mut carried.as_slice())
+            .now()
+            .unwrap();
         assert_eq!(
             applied.records, sent.records,
             "the follower applied a different number of records than the leader sent",
@@ -109,7 +112,7 @@ fn two_nodes() -> (Arc<Db>, String, Arc<Db>, String, Arc<Node>, Arc<Node>) {
 fn two_nodes_declared(
     at: impl Fn(&str) -> String,
 ) -> (Arc<Db>, String, Arc<Db>, String, Arc<Node>, Arc<Node>) {
-    let leader = Arc::new(Db::in_memory().unwrap());
+    let leader = Arc::new(Db::in_memory().now().unwrap());
     let (leader_node, leader_address) = serving(&leader);
 
     leader
@@ -123,7 +126,7 @@ fn two_nodes_declared(
         ))
         .unwrap();
 
-    let follower = Arc::new(Db::in_memory().unwrap());
+    let follower = Arc::new(Db::in_memory().now().unwrap());
     replicate(&leader, &follower);
     // Local half, and last: before this the node still takes writes, which is
     // what lets the statement that drops the role be run against it at all.
@@ -196,7 +199,7 @@ fn the_refusal_names_where_a_client_reaches_the_leader() {
 /// one fixture a write demonstrably tries to leave and cannot, so a read that
 /// answers cannot have tried.
 fn read_only_with_no_peer() -> (Arc<Db>, String, Arc<Node>) {
-    let alone = Arc::new(Db::in_memory().unwrap());
+    let alone = Arc::new(Db::in_memory().now().unwrap());
     alone
         .session()
         .run_now(

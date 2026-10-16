@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
+use tessari_session::Now;
 
 use tessari_kv::{
     Key, Keyspace, KvBackend, Result as KvResult, ScanRequest, Value as KvValue, WriteBatch,
@@ -161,7 +162,9 @@ fn a_prefix_walk_reads_its_stretch_and_not_the_space() {
             inner: Arc::clone(&backend.raw),
             entries: AtomicUsize::new(0),
         });
-        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let mut session = opened(&store);
         let mut script = String::new();
         for n in 0..1_000 {

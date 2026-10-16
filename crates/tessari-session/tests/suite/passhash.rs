@@ -6,6 +6,7 @@
 //! no way to plant a credential weaker than the store would have made itself.
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -16,7 +17,7 @@ const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// The stored hash of the user named `name`.
@@ -24,6 +25,7 @@ fn stored(store: &Store, name: &str) -> String {
     let mut view = store.begin().unwrap();
     Catalog::new(&mut view)
         .users()
+        .now()
         .unwrap()
         .into_iter()
         .find(|user| user.name == name)
@@ -50,8 +52,13 @@ fn a_user_defined_by_their_stored_hash_signs_in_with_their_password() {
         hash,
         "the hash was not stored as given"
     );
-    assert!(Session::new(&target).sign_in("ada", PASSWORD).is_ok());
-    assert!(Session::new(&target).sign_in("ada", "not it").is_err());
+    assert!(Session::new(&target).sign_in("ada", PASSWORD).now().is_ok());
+    assert!(
+        Session::new(&target)
+            .sign_in("ada", "not it")
+            .now()
+            .is_err()
+    );
 }
 
 /// A real Argon2id hash of `PASSWORD` at these parameters.

@@ -71,7 +71,8 @@ impl Session<'_> {
             return Ok(());
         }
         let is_topic = Catalog::new(transaction)
-            .table(letters)?
+            .table(letters)
+            .await?
             .is_some_and(|found| matches!(found.kind, TableKind::Topic(_)));
         if !is_topic {
             return Ok(());
@@ -89,7 +90,9 @@ impl Session<'_> {
                 ("attempts".to_owned(), Value::from(attempts)),
                 ("value".to_owned(), Value::Object(fields)),
             ]));
-            let at = self.free_identity(transaction, &context, letters, &letter, span)?;
+            let at = self
+                .free_identity(transaction, &context, letters, &letter, span)
+                .await?;
             self.put_record(
                 transaction,
                 RecordAddress::new(context.namespace, context.database, letters, at),

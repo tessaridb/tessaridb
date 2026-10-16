@@ -176,11 +176,21 @@ fn run(asked: Asked) -> Result<Ended, String> {
         return statements(&mut remote, &mut out, &asked.source, Where::Node(address));
     }
 
-    let db = match &asked.store {
-        Some(path) => Db::open_encrypted(path, tessaridb::StoreConfig::default(), at_rest)
-            .map_err(|failure| format!("{}: {failure}", path.display()))?,
-        None => Db::in_memory().map_err(|failure| failure.to_string())?,
-    };
+    // bgv-allow(current-thread): opening the store and a one-shot store
+    // operation are one call at a time on this thread; serving builds its own
+    // multi-threaded runtime.
+    let oneshot = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|why| format!("the runtime would not start: {why}"))?;
+    let db = oneshot.block_on(async {
+        match &asked.store {
+            Some(path) => Db::open_encrypted(path, tessaridb::StoreConfig::default(), at_rest)
+                .await
+                .map_err(|failure| format!("{}: {failure}", path.display())),
+            None => Db::in_memory().await.map_err(|failure| failure.to_string()),
+        }
+    })?;
 
     // These are store operations rather than statements, so they never reach a
     // session at all — and an operator rehearses a restore with a command, which
@@ -190,18 +200,25 @@ fn run(asked: Asked) -> Result<Ended, String> {
         // has a `--from`, and `--from 1` is the whole of it.
         Source::Backup(path) => {
             return match sequence {
-                None => snapshot(&db, path),
-                Some(_) => backup(&db, path, sequence),
+                None => oneshot.block_on(snapshot(&db, path)),
+                Some(_) => oneshot.block_on(backup(&db, path, sequence)),
             }
             .map(|()| Ended::Fine);
         }
-        Source::Snapshot(path) => return snapshot(&db, path).map(|()| Ended::Fine),
-        Source::Dump(path) => return dump(&db, path).map(|()| Ended::Fine),
-        Source::Restore(path) => {
-            return restore(&db, path, sequence, backup_key.as_ref()).map(|()| Ended::Fine);
+        Source::Snapshot(path) => {
+            return oneshot.block_on(snapshot(&db, path)).map(|()| Ended::Fine);
         }
-        Source::Health => return health(&db),
-        Source::Serve => return serve(db, &asked.serving, asked.cluster.as_ref(), started),
+        Source::Dump(path) => return oneshot.block_on(dump(&db, path)).map(|()| Ended::Fine),
+        Source::Restore(path) => {
+            return oneshot
+                .block_on(restore(&db, path, sequence, backup_key.as_ref()))
+                .map(|()| Ended::Fine);
+        }
+        Source::Health => return oneshot.block_on(health(&db)),
+        Source::Serve => {
+            drop(oneshot);
+            return serve(db, &asked.serving, asked.cluster.as_ref(), started);
+        }
         Source::Verify(_)
         | Source::Version
         | Source::Help

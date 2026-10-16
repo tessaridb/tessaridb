@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_kv::{Keyspace, KvBackend};
 use tessari_session::Session;
@@ -25,14 +26,18 @@ use crate::restore::{INTERROGATION, dump, one_log, original, signed_in, store};
 /// Take a snapshot of `source` into bytes.
 fn snapshot(source: &Store) -> Vec<u8> {
     let mut taken = Vec::new();
-    tessari_backup::write_state(source, &mut taken).unwrap();
+    tessari_backup::write_state(source, &mut taken)
+        .now()
+        .unwrap();
     taken
 }
 
 /// Restore `file` into a fresh store.
 fn restored(file: &[u8]) -> (Arc<dyn KvBackend>, Store) {
     let (backend, target) = store();
-    tessari_backup::read_state(&target, || Ok(file)).unwrap();
+    tessari_backup::read_state(&target, || Ok(file))
+        .now()
+        .unwrap();
     (backend, target)
 }
 
@@ -200,7 +205,9 @@ fn a_snapshot_and_the_log_after_it_answer_what_the_source_answers_now() {
     .unwrap();
 
     let (target_backend, target) = restored(&taken);
-    tessari_backup::read(&target, &mut after.as_slice()).unwrap();
+    tessari_backup::read(&target, &mut after.as_slice())
+        .now()
+        .unwrap();
     assert_eq!(crate::tails(&target), crate::tails(&source));
     assert_eq!(
         current(&source_backend, None),
@@ -248,7 +255,11 @@ fn a_snapshot_that_is_not_whole_is_refused_and_nothing_is_written() {
             "a snapshot cut at byte {cut} was not refused"
         );
         let (target_backend, target) = store();
-        assert!(tessari_backup::read_state(&target, || Ok(short)).is_err());
+        assert!(
+            tessari_backup::read_state(&target, || Ok(short))
+                .now()
+                .is_err()
+        );
         assert!(
             target.holds_nothing().unwrap(),
             "a refused snapshot wrote something"
@@ -276,9 +287,19 @@ fn a_snapshot_that_is_not_whole_is_refused_and_nothing_is_written() {
     let inside = damaged.len() / 2;
     damaged[inside] ^= 0x40;
     assert!(
-        tessari_backup::verify_state(&mut damaged.as_slice()).is_err(),
+        matches!(
+            tessari_backup::verify_state(&mut damaged.as_slice()),
+            Err(tessari_backup::Error::Damaged { .. })
+        ),
         "a damaged snapshot verified"
     );
+    // And a restore refuses it before writing a chunk of it.
+    let (target_backend, target) = store();
+    assert!(matches!(
+        tessari_backup::read_state(&target, || Ok(damaged.as_slice())).now(),
+        Err(tessari_backup::Error::Damaged { .. })
+    ));
+    assert!(dump(&target_backend, Keyspace::DATA).is_empty());
 }
 
 #[test]
@@ -291,7 +312,7 @@ fn a_snapshot_is_refused_by_a_store_that_holds_something() {
     let taken = snapshot(&source);
     let refused = tessari_backup::read_state(&occupied, || Ok(taken.as_slice()));
     assert!(matches!(
-        refused,
+        refused.now(),
         Err(tessari_backup::Error::WrongBase { .. })
     ));
 }
@@ -342,7 +363,7 @@ fn writes_committed_after_a_snapshot_began_are_not_in_it() {
         .run_now("CREATE t:99 = { n: 99 }; DELETE t:0;")
         .unwrap();
     let mut read = BTreeMap::new();
-    while let Some(chunk) = reader.next_chunk(7).unwrap() {
+    while let Some(chunk) = reader.next_chunk(7).now().unwrap() {
         for mutation in chunk.mutations() {
             let mut key = tessari_encoding::RecordKey::versions_prefix(
                 mutation.namespace,
@@ -397,7 +418,7 @@ fn a_topic_emptied_by_retention_carries_on_numbering_after_a_restore() {
     }
     std::thread::sleep(std::time::Duration::from_millis(120));
     assert_eq!(
-        source.remove_expired().unwrap().records,
+        source.remove_expired().now().unwrap().records,
         4,
         "retention did not empty the topic"
     );

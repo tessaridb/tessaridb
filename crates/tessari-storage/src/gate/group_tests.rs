@@ -8,6 +8,7 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
+use crate::now::Now;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -108,13 +109,15 @@ fn address(id: usize) -> RecordAddress {
 fn write(store: &Store, id: usize) {
     let mut transaction = store.begin().unwrap();
     transaction.put(address(id), format!("{{\"n\":{id}}}").into_bytes());
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 }
 
 #[test]
 fn commits_arriving_while_one_lands_land_together() {
     let backend = Arc::new(HeldOpen::new());
-    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     // Opening the store writes; only the commits below are counted.
     backend.writes.store(0, Ordering::SeqCst);
     // And each commit that landed in a group is announced to whatever follows
@@ -166,7 +169,7 @@ fn commits_arriving_while_one_lands_land_together() {
     let transaction = store.begin().unwrap();
     for id in 0..=BEHIND {
         assert_eq!(
-            transaction.get(&address(id)).unwrap(),
+            transaction.get(&address(id)).now().unwrap(),
             Some(format!("{{\"n\":{id}}}").into_bytes()),
             "record {id}"
         );
@@ -215,7 +218,9 @@ fn a_landing_that_panicked_does_not_stop_every_later_commit() {
         engine: MemoryBackend::new(),
         groups: AtomicUsize::new(0),
     });
-    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let first = {
         let store = store.clone();
         std::thread::spawn(move || write(&store, 0))
@@ -241,7 +246,7 @@ fn a_landing_that_panicked_does_not_stop_every_later_commit() {
     second.join().unwrap();
     let transaction = store.begin().unwrap();
     assert_eq!(
-        transaction.get(&address(1)).unwrap(),
+        transaction.get(&address(1)).now().unwrap(),
         Some(b"{\"n\":1}".to_vec())
     );
 }

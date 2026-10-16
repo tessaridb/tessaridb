@@ -8,12 +8,12 @@ impl<'a> Transaction<'a> {
     /// that carrying is the entire reason a later comparison can tell ignorance
     /// from sequence — a producer that started from an empty stamp would make
     /// every write concurrent with every other one.
-    pub(crate) fn read_newest_stamped(
+    pub(crate) async fn read_newest_stamped(
         &self,
         address: &RecordAddress,
     ) -> Result<Option<(Sequence, StampedValue)>> {
         let prefix = address.versions_prefix();
-        self.first_in_range(KeyRange::prefix(&prefix))
+        self.first_in_range(KeyRange::prefix(&prefix)).await
     }
 
     /// The versions of a record that nothing has superseded, newest first.
@@ -140,26 +140,31 @@ impl<'a> Transaction<'a> {
     }
 
     /// The newest version of a record at or before `snapshot`.
-    pub(super) fn read_at(
+    pub(super) async fn read_at(
         &self,
         address: &RecordAddress,
         snapshot: Sequence,
     ) -> Result<Option<(Sequence, RecordValue)>> {
         let now = self.reading_at();
         Ok(self
-            .read_stamped_as_of(address, snapshot)?
+            .read_stamped_as_of(address, snapshot)
+            .await?
             .map(|(version, stamped)| (version, stamped.into_visible_at(now))))
     }
 
     /// The version a reader at this transaction's snapshot resolves to, stamp
     /// and expiry included and **not** judged against the clock.
-    pub(crate) fn read_stamped_at(&self, address: &RecordAddress) -> Result<Option<StampedValue>> {
+    pub(crate) async fn read_stamped_at(
+        &self,
+        address: &RecordAddress,
+    ) -> Result<Option<StampedValue>> {
         Ok(self
-            .read_stamped_as_of(address, self.snapshot)?
+            .read_stamped_as_of(address, self.snapshot)
+            .await?
             .map(|(_, stamped)| stamped))
     }
 
-    fn read_stamped_as_of(
+    async fn read_stamped_as_of(
         &self,
         address: &RecordAddress,
         snapshot: Sequence,
@@ -170,7 +175,7 @@ impl<'a> Transaction<'a> {
             Bound::Included(address.key_at(snapshot).encode()),
             bounds.end().clone(),
         );
-        self.first_in_range(range)
+        self.first_in_range(range).await
     }
 
     /// The newest entry in a span of one record's versions, stamp and all.
@@ -187,7 +192,7 @@ impl<'a> Transaction<'a> {
     /// snapshot does not all hold — is passed over and the version under it
     /// answers (ADR-0112 D5, D6a). One read per such version, which is none for
     /// every record no transaction across leaders wrote.
-    pub(in crate::transaction) fn first_in_range(
+    pub(in crate::transaction) async fn first_in_range(
         &self,
         mut range: KeyRange,
     ) -> Result<Option<(Sequence, StampedValue)>> {
@@ -203,7 +208,7 @@ impl<'a> Transaction<'a> {
                 return Ok(None);
             };
             let decoded_value = StampedValue::decode(value.as_slice())?;
-            if self.passes_over(&decoded_value)? {
+            if self.passes_over(&decoded_value).await? {
                 range = KeyRange::from_bounds(Bound::Excluded(key.clone()), range.end().clone());
                 continue;
             }

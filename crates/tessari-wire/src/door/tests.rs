@@ -28,42 +28,59 @@ struct Holder {
 }
 
 impl Origin for Holder {
-    fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
-        NoLog.collected(follower, asked)
-    }
-
-    fn gathered(&self, asker: [u8; NODE_ID_LEN], asked: &Gather) -> Result<Page> {
-        NoLog.gathered(asker, asked)
-    }
-
-    fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> bool {
-        NoLog.places(candidate, range)
-    }
-
-    fn copied(
+    fn collected(
         &self,
         follower: [u8; NODE_ID_LEN],
-        write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
-    ) -> Result<()> {
-        NoLog.copied(follower, write)
+        asked: Collect,
+    ) -> crate::collection::Answering<'_, crate::Result<Collected>> {
+        Box::pin(async move { NoLog.collected(follower, asked).await })
+    }
+
+    fn gathered<'a>(
+        &'a self,
+        asker: [u8; NODE_ID_LEN],
+        asked: &'a Gather,
+    ) -> crate::collection::Answering<'a, crate::Result<Page>> {
+        Box::pin(async move { NoLog.gathered(asker, asked).await })
+    }
+
+    fn places(
+        &self,
+        candidate: [u8; NODE_ID_LEN],
+        range: Reach,
+    ) -> crate::collection::Answering<'_, bool> {
+        Box::pin(async move { NoLog.places(candidate, range).await })
+    }
+
+    fn copied<'a>(
+        &'a self,
+        follower: [u8; NODE_ID_LEN],
+        write: &'a mut dyn FnMut(
+            u8,
+            Vec<u8>,
+        )
+            -> crate::collection::Answering<'static, crate::Result<()>>,
+    ) -> crate::collection::Answering<'a, crate::Result<()>> {
+        Box::pin(async move { NoLog.copied(follower, write).await })
     }
 }
 
 impl Holding for Holder {
-    fn hello(&self) -> Result<Hello> {
+    fn hello(&self) -> crate::collection::Answering<'_, Result<Hello>> {
         self.greeted
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let said = hello(HERE);
-        Ok(Hello {
+        Box::pin(std::future::ready(Ok(Hello {
             build: self.build.unwrap_or(said.build),
             ..said
-        })
+        })))
     }
 
-    fn met(&self, met: &Met) {
+    fn met<'a>(&'a self, met: &'a Met) -> crate::collection::Answering<'a, ()> {
         if let Ok(mut held) = self.met.lock() {
             held.push(*met);
         }
+        Box::pin(std::future::ready(()))
     }
 
     fn commits(&self) -> tokio::sync::watch::Receiver<u64> {
@@ -79,16 +96,17 @@ impl Holding for Holder {
         Err("this test door carries no requests".to_owned())
     }
 
-    fn across(
-        &self,
+    fn across<'a>(
+        &'a self,
         _: [u8; NODE_ID_LEN],
-        _: &crate::assertion::Assertion,
-        _: &[u8],
-    ) -> std::result::Result<Vec<u8>, tessari_session::PartRefused> {
-        Err(tessari_session::PartRefused {
+        _: &'a crate::assertion::Assertion,
+        _: &'a [u8],
+    ) -> crate::collection::Answering<'a, std::result::Result<Vec<u8>, tessari_session::PartRefused>>
+    {
+        Box::pin(std::future::ready(Err(tessari_session::PartRefused {
             kind: tessari_session::RefusalKind::Invalid,
             reason: "this test door writes no cross-leader records".to_owned(),
-        })
+        })))
     }
 }
 

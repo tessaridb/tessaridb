@@ -61,6 +61,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -78,7 +79,7 @@ const RECORDS: u64 = 200;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Two staff records, a search index over `notes`, an ordered index over `title`
@@ -114,7 +115,7 @@ fn ready(store: &Store) {
         )
         .unwrap();
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now(
         "DEFINE USER wide ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
          DEFINE USER narrow ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
@@ -127,7 +128,7 @@ fn ready(store: &Store) {
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();

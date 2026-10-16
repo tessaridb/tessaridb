@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_ql::{Expr, ExprKind, StatementKind, parse};
-use tessari_session::{Outcome, RunNow, Session};
+use tessari_session::{Now, Outcome, RunNow, Session};
 use tessari_storage::Store;
 use tessari_types::Value;
 
@@ -51,7 +51,7 @@ pub fn run(corpus: &Corpus) -> Vec<CaseResult> {
 /// that only the memory backend happens to give cannot pass as the language's.
 #[must_use]
 pub fn run_on(corpus: &Corpus, backend: Arc<dyn KvBackend>) -> Vec<CaseResult> {
-    let Ok(store) = Store::open(backend) else {
+    let Ok(store) = Store::open(backend).now() else {
         return vec![CaseResult {
             corpus: corpus.name.clone(),
             name: "<the store>".to_owned(),

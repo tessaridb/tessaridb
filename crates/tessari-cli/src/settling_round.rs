@@ -25,7 +25,7 @@ pub(crate) async fn settle_across(
         "settling",
         std::time::Duration::from_secs(tessari_constants::AWARENESS_SECONDS),
         &stop,
-        move |_| match db.settle_across() {
+        async move |_| match db.settle_across().await {
             Ok(settled) => {
                 if settled.aborted > 0 || settled.committed > 0 || settled.resolved > 0 {
                     tracing::info!(

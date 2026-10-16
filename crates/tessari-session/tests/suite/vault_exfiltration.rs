@@ -33,6 +33,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KeyRange, Keyspace, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
@@ -97,7 +98,7 @@ fn everything(backend: &Arc<dyn KvBackend>) -> Vec<u8> {
 /// A store holding one vault record: a planted secret, and a control beside it.
 fn planted() -> (Arc<dyn KvBackend>, Store) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     {
         let mut session = Session::new(&store);
         session.run_now(SETUP).unwrap();

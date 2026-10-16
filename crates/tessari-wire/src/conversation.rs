@@ -309,7 +309,7 @@ async fn reply(
 /// The address is the one a **client** reaches the node at when its member row
 /// says so (`CLIENTS AT`, ADR-0101); otherwise the address the refusal carried,
 /// which is what every redirect named before that clause existed.
-fn redirected(
+async fn redirected(
     db: &Db,
     ran: &tessaridb::Result<Vec<tessaridb::Outcome>>,
 ) -> Option<redirect::Elsewhere> {
@@ -344,7 +344,12 @@ fn redirected(
     };
     // A catalog that cannot be read leaves the address the refusal carried: the
     // redirect is still right about who leads, and a refusal would be worse.
-    let clients = db.member(node).ok().flatten().and_then(|row| row.clients);
+    let clients = db
+        .member(node)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|row| row.clients);
     Some(redirect::Elsewhere {
         endpoint: clients.unwrap_or_else(|| endpoint.clone()),
         node: *node,

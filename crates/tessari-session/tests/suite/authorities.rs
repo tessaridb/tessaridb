@@ -26,6 +26,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -41,7 +42,7 @@ const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Two namespaces, a database in each, and a store owner to declare the rest.
@@ -66,7 +67,7 @@ fn governed(store: &Store) {
 /// A signed-in session, with no tenancy selected.
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
 }
 
@@ -793,6 +794,7 @@ fn a_node_with_credentials_and_no_authority_may_not_take_the_log() {
             tessari_types::Sequence::new(1),
             16,
         )
+        .now()
         .unwrap_err();
     assert!(
         matches!(refusal, tessari_session::Error::RoleForbids { needs, .. } if needs == "replicate"),
@@ -823,6 +825,7 @@ fn a_node_granted_replication_over_the_store_receives_the_log() {
             tessari_types::Sequence::new(1),
             64,
         )
+        .now()
         .unwrap();
     assert!(
         !records.is_empty(),
@@ -854,6 +857,7 @@ fn reading_every_record_is_not_authority_to_take_the_log() {
             tessari_types::Sequence::new(1),
             16,
         )
+        .now()
         .unwrap_err();
     assert!(
         matches!(refusal, tessari_session::Error::RoleForbids { needs, .. } if needs == "replicate"),
@@ -882,6 +886,7 @@ fn operating_the_node_is_not_authority_to_take_the_log() {
             tessari_types::Sequence::new(1),
             16,
         )
+        .now()
         .unwrap_err();
     assert!(
         matches!(refusal, tessari_session::Error::RoleForbids { needs, .. } if needs == "replicate"),
@@ -1025,6 +1030,7 @@ fn a_store_reach_holder_may_still_subscribe_over_one_namespace() {
         let mut transaction = store.begin().unwrap();
         tessari_storage::Catalog::new(&mut transaction)
             .namespace_id("prod")
+            .now()
             .unwrap()
             .expect("prod was declared")
     };
@@ -1037,6 +1043,7 @@ fn a_store_reach_holder_may_still_subscribe_over_one_namespace() {
         tessari_types::Sequence::new(1),
         16,
     )
+    .now()
     .expect("a store-reach authority answers for a namespace inside the store");
 }
 
@@ -1063,6 +1070,7 @@ fn a_revoked_replication_authority_stops_a_node_that_was_already_reading() {
         tessari_types::Sequence::new(1),
         16,
     )
+    .now()
     .expect("granted, so the first read is served");
 
     root.run_now("REVOKE replicate ON STORE FROM node;")
@@ -1077,6 +1085,7 @@ fn a_revoked_replication_authority_stops_a_node_that_was_already_reading() {
             tessari_types::Sequence::new(1),
             16,
         )
+        .now()
         .unwrap_err();
     assert!(
         matches!(refusal, tessari_session::Error::RoleForbids { needs, .. } if needs == "replicate"),
@@ -1113,6 +1122,7 @@ fn an_open_store_hands_out_its_log_because_an_open_store_hands_out_everything() 
             tessari_types::Sequence::new(1),
             64,
         )
+        .now()
         .unwrap();
     assert!(
         !records.is_empty(),

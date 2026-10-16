@@ -33,6 +33,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessaridb::{Db, Parameters, Value};
@@ -339,7 +340,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let held: BTreeSet<String> = found.into_iter().map(|(name, _)| name).collect();
     let judged = judgments(Path::new(judged_at), &held)?;
 
-    let db = Db::in_memory()?;
+    let db = Db::in_memory().now()?;
     let mut session = db.session();
     session.run_now(SCHEMA)?;
     for (number, fragment) in fragments.iter().enumerate() {

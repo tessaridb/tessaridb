@@ -127,8 +127,8 @@ pub use crate::carrier::{Admission, Carrier};
 pub use crate::client::{Client, Feed, Sent, Served};
 #[cfg(feature = "server")]
 pub use crate::collection::{
-    Collect, Collected, Collector, Following, NoLog, Origin, PUSHED_FROM, Pushed, Serving,
-    StreamAsk, Streamed, Subscriptions, logs_to_collect,
+    Answering, Collect, Collected, Collector, Following, NoLog, Origin, PUSHED_FROM, Pushed,
+    Serving, StreamAsk, Streamed, Subscriptions, logs_to_collect,
 };
 #[cfg(feature = "server")]
 pub use crate::conversation::render_coordinated;
@@ -150,7 +150,7 @@ pub use crate::driver::{
 };
 pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]
-pub use crate::gatherer::{Gathering, Greeting, GreetingUnavailable};
+pub use crate::gatherer::{Gathering, Greeted, Greeting, GreetingUnavailable};
 #[cfg(feature = "server")]
 pub use crate::gathering::{Gather, Page, Ungathered};
 #[cfg(feature = "server")]

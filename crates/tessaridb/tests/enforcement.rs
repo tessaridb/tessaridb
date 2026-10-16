@@ -1518,7 +1518,7 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ),
     (
         "tessari-cli/src/collection_round.rs",
-        "let tail = store.committed_tail(log).ok()?;",
+        "let Ok(tail) = store.committed_tail(log) else {",
     ),
     (
         "tessari-cli/src/streaming.rs",

@@ -45,14 +45,14 @@ use crate::transaction::{Lifetime, RecordAddress};
 /// # Errors
 ///
 /// A backend or catalog error.
-pub(crate) fn admit(
+pub(crate) async fn admit(
     store: &Store,
     record: &LogRecord,
     now: u64,
     lifetimes: &BTreeMap<RecordAddress, Lifetime>,
 ) -> Result<Option<LogRecord>> {
     let mut view = store.begin_local()?;
-    let declared = declared_in(&mut view, record)?;
+    let declared = declared_in(&mut view, record).await?;
     if declared.is_empty() {
         return Ok(None);
     }
@@ -72,7 +72,7 @@ pub(crate) fn admit(
         let at = match lifetimes.get(&address) {
             Some(Lifetime::Cleared) => continue,
             Some(Lifetime::Carried(at)) => Some(*at),
-            None => match view.read_newest_stamped(&address)? {
+            None => match view.read_newest_stamped(&address).await? {
                 // Still answered: its instant, if it has one, stands.
                 Some((_, held)) if !held.value().is_tombstone() && !held.is_expired_at(now) => {
                     held.expires()
@@ -110,13 +110,13 @@ pub(crate) fn admit(
 /// # Errors
 ///
 /// A backend or catalog error.
-pub(crate) fn pending(
+pub(crate) async fn pending(
     transaction: &mut crate::transaction::Transaction<'_>,
     address: &RecordAddress,
     lifetime: Option<Lifetime>,
     now: u64,
 ) -> Result<Option<u64>> {
-    let Some(definition) = Catalog::new(transaction).table(address.table)? else {
+    let Some(definition) = Catalog::new(transaction).table(address.table).await? else {
         return Ok(None);
     };
     if definition.namespace != address.namespace || definition.database != address.database {
@@ -128,7 +128,7 @@ pub(crate) fn pending(
     Ok(match lifetime {
         Some(Lifetime::Cleared) => None,
         Some(Lifetime::Carried(at)) => Some(at),
-        None => match transaction.read_stamped_at(address)? {
+        None => match transaction.read_stamped_at(address).await? {
             Some(held) if !held.value().is_tombstone() && !held.is_expired_at(now) => {
                 held.expires()
             }
@@ -141,7 +141,7 @@ pub(crate) fn pending(
 }
 
 /// The tables `record` writes that declare expiry, by tenancy and id.
-fn declared_in(
+async fn declared_in(
     view: &mut crate::transaction::Transaction<'_>,
     record: &LogRecord,
 ) -> Result<BTreeMap<(NamespaceId, DatabaseId, TableId), TableExpiry>> {
@@ -152,7 +152,7 @@ fn declared_in(
         if !seen.insert(table) {
             continue;
         }
-        let Some(definition) = Catalog::new(view).table(mutation.table)? else {
+        let Some(definition) = Catalog::new(view).table(mutation.table).await? else {
             continue;
         };
         if definition.namespace != mutation.namespace || definition.database != mutation.database {

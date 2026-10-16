@@ -8,6 +8,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -16,7 +17,9 @@ use tessari_storage::Store;
 use tessari_types::{Number, Value};
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// A session in `prod`/`shop` with a queue `jobs` of three records and a

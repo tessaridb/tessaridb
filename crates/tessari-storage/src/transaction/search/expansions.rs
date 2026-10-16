@@ -253,7 +253,7 @@ impl Transaction<'_> {
         }))
     }
 
-    pub(crate) fn postings(
+    pub(crate) async fn postings(
         &self,
         address: &IndexAddress,
         term: &str,
@@ -264,11 +264,12 @@ impl Transaction<'_> {
         self.walk_range(
             PostingKey::keyspace(),
             &KeyRange::prefix(&prefix),
-            |key, _| {
+            async |key, _| {
                 found.insert(PostingKey::decode(key.as_slice())?.id);
                 Ok(())
             },
-        )?;
+        )
+        .await?;
         Ok(found)
     }
 
@@ -291,7 +292,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn records_with_string_prefix(
+    pub async fn records_with_string_prefix(
         &self,
         index: &IndexDefinition,
         prefix: &str,
@@ -305,26 +306,31 @@ impl Transaction<'_> {
         let mut bounds = address.prefix(kind);
         bounds.extend_from_slice(&IndexValues::string_prefix(prefix));
         let mut found: BTreeMap<RecordId, Vec<u8>> = BTreeMap::new();
-        self.walk_range(kind.keyspace(), &KeyRange::prefix(&bounds), |key, value| {
-            // A unique entry carries the record it points at in its value; a
-            // secondary one carries it in its key.
-            let id = if index.unique {
-                IndexTarget::decode(value.as_slice())?.id
-            } else {
-                SecondaryIndexKey::decode(key.as_slice())?.id
-            };
-            let record = RecordAddress::new(index.namespace, index.database, index.table, id);
-            if let Some(payload) = self.confirm_prefix(index, &record, prefix)? {
-                found.insert(record.id, payload);
-            }
-            Ok(())
-        })?;
+        self.walk_range(
+            kind.keyspace(),
+            &KeyRange::prefix(&bounds),
+            async |key, value| {
+                // A unique entry carries the record it points at in its value; a
+                // secondary one carries it in its key.
+                let id = if index.unique {
+                    IndexTarget::decode(value.as_slice())?.id
+                } else {
+                    SecondaryIndexKey::decode(key.as_slice())?.id
+                };
+                let record = RecordAddress::new(index.namespace, index.database, index.table, id);
+                if let Some(payload) = self.confirm_prefix(index, &record, prefix).await? {
+                    found.insert(record.id, payload);
+                }
+                Ok(())
+            },
+        )
+        .await?;
         // Behind the tail, the records that matched at this snapshot and have
         // changed since are named by retired entries (Q-S3-34).
         let end = crate::transaction::address::after(bounds.clone());
         for id in self.retired_candidates(index, &bounds, &end)? {
             let record = RecordAddress::new(index.namespace, index.database, index.table, id);
-            if let Some(payload) = self.confirm_prefix(index, &record, prefix)? {
+            if let Some(payload) = self.confirm_prefix(index, &record, prefix).await? {
                 found.insert(record.id, payload);
             }
         }
@@ -339,7 +345,7 @@ impl Transaction<'_> {
             {
                 continue;
             }
-            match self.confirm_prefix(index, pending, prefix)? {
+            match self.confirm_prefix(index, pending, prefix).await? {
                 Some(payload) => {
                     found.insert(pending.id.clone(), payload);
                 }
@@ -353,13 +359,13 @@ impl Transaction<'_> {
 
     /// The record's payload, if it exists at the snapshot and its first indexed
     /// value is still a string beginning with `prefix`.
-    pub(crate) fn confirm_prefix(
+    pub(crate) async fn confirm_prefix(
         &self,
         index: &IndexDefinition,
         address: &RecordAddress,
         prefix: &str,
     ) -> Result<Option<Vec<u8>>> {
-        let Some(payload) = self.get(address)? else {
+        let Some(payload) = self.get(address).await? else {
             return Ok(None);
         };
         let value = decode_payload(&payload)?;

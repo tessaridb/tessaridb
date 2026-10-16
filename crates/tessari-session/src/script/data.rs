@@ -18,15 +18,18 @@ const BATCH: usize = 1_000;
 /// The indexes go after the data, as a dump's post-data section does: an index
 /// declared over rows that are already there is built once, where one declared
 /// first is maintained for every row the script then writes.
-pub(super) fn declared(
+pub(super) async fn declared(
     reader: &Session<'_>,
     table: &TableDefinition,
 ) -> Result<std::result::Result<(String, String), String>> {
     let mut view = reader.store.begin()?;
     let catalog = Catalog::new(&mut view);
-    let fields = catalog.fields_on(table.namespace, table.database, table.id)?;
+    let fields = catalog
+        .fields_on(table.namespace, table.database, table.id)
+        .await?;
     let indexes: Vec<_> = catalog
-        .indexes_on(table.namespace, table.database, table.id)?
+        .indexes_on(table.namespace, table.database, table.id)
+        .await?
         .into_iter()
         .filter(|index| index.namespace == table.namespace && index.database == table.database)
         .collect();

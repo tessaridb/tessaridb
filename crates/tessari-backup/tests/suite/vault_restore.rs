@@ -27,6 +27,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_kv::{KeyRange, Keyspace, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
 use tessari_session::{Outcome, Session};
@@ -84,7 +85,7 @@ fn entries_in(backend: &Arc<dyn KvBackend>, keyspace: Keyspace) -> usize {
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     (backend, store)
 }
 
@@ -119,7 +120,9 @@ fn a_vault_survives_a_backup_and_opens_again_with_only_the_passphrase() {
     // a test would arrive at by reusing the source store.
     let (restored_backend, restored) = store();
     let restore_started = Instant::now();
-    let brought_up = tessari_backup::bootstrap(&restored, &mut artifact.as_slice()).unwrap();
+    let brought_up = tessari_backup::bootstrap(&restored, &mut artifact.as_slice())
+        .now()
+        .unwrap();
     let restore_took = restore_started.elapsed();
     assert!(!brought_up.truncated);
     assert!(brought_up.records > 0, "a restore that applied nothing");

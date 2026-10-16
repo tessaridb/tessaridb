@@ -27,7 +27,9 @@ use tessari_session::{Error, Outcome, Parameters, Session};
 use tessari_storage::Store;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// How many retired entries the store holds, read off the backend directly so
@@ -190,7 +192,9 @@ fn a_new_store_keeps_retired_entries_from_its_first_version() {
 #[test]
 fn retired_entries_are_kept_while_a_reader_needs_them_and_reclaimed_after() {
     let backend = Arc::new(MemoryBackend::new());
-    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     Session::new(&store).run_now(SCHEMA).unwrap();
     assert_eq!(retired(&backend), 0, "nothing has been removed yet");
 
@@ -216,7 +220,9 @@ fn retired_entries_are_kept_while_a_reader_needs_them_and_reclaimed_after() {
 #[test]
 fn an_update_that_keeps_its_value_retires_nothing() {
     let backend = Arc::new(MemoryBackend::new());
-    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     Session::new(&store).run_now(SCHEMA).unwrap();
     session(&store)
         .run_now("UPDATE t:1 MERGE { note: 'k is unchanged' };")

@@ -32,7 +32,7 @@ pub(super) fn delay_field(
 impl Session<'_> {
     /// What a release's `NOT BEFORE` names: an instant as written, or a span
     /// added to this node's clock once, here, so every copy holds one instant.
-    pub(crate) fn release_instant(
+    pub(crate) async fn release_instant(
         &self,
         transaction: &mut Transaction<'_>,
         written: Option<&tessari_ql::Expr>,
@@ -41,7 +41,7 @@ impl Session<'_> {
         let Some(written) = written else {
             return Ok(None);
         };
-        match self.evaluate(transaction, written)? {
+        match self.evaluate(transaction, written).await? {
             Value::Datetime(instant) => Ok(Some(instant)),
             Value::Duration(by) => Ok(Some(later(crate::call::instant(span)?, by, span)?)),
             other => Err(Error::NotAnInstant {

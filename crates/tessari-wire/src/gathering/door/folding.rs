@@ -2,10 +2,10 @@ use super::*;
 
 /// ADR-0097 D2: asked for folds, a leader sends groups and no record, a
 /// page of records at a time, each page resuming where its read stopped.
-#[test]
-fn a_shard_is_folded_page_by_page_and_no_record_travels() {
+#[tokio::test]
+async fn a_shard_is_folded_page_by_page_and_no_record_travels() {
     let authority = Authority::new();
-    let (db, table) = leader();
+    let (db, table) = leader().await;
     let (address, handle) = folding_door(&authority, &db, Some(shard(table, 2)), (1 << 20, 2), 2);
     let count_and_sum = || tessari_session::Reduce {
         visible: None,
@@ -67,11 +67,11 @@ fn a_shard_is_folded_page_by_page_and_no_record_travels() {
 /// ADR-0103: a shard's search figures, counted on its leader a page of
 /// records at a time and summed by the asker, are what the leader's own
 /// index holds for those records.
-#[test]
-fn a_shards_search_figures_are_counted_page_by_page_and_no_record_travels() {
-    let db = Db::in_memory().unwrap();
+#[tokio::test]
+async fn a_shards_search_figures_are_counted_page_by_page_and_no_record_travels() {
+    let db = Db::in_memory().await.unwrap();
     db.session()
-        .run_now(
+        .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
                  USE DATABASE shop; \
                  DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer; \
@@ -81,15 +81,18 @@ fn a_shards_search_figures_are_counted_page_by_page_and_no_record_travels() {
                  CREATE docs:'b' = { body: 'a fox and a fox' }; \
                  CREATE docs:'c' = { body: 'dogs' }; CREATE docs:'h' = { body: 'fox' };",
         )
+        .await
         .unwrap();
     let (table, index) = {
         let mut transaction = db.store().begin().unwrap();
         let table = Catalog::new(&mut transaction)
             .table_id(NamespaceId::new(1), DatabaseId::new(1), "docs")
+            .await
             .unwrap()
             .unwrap();
         let index = Catalog::new(&mut transaction)
             .indexes_on(NamespaceId::new(1), DatabaseId::new(1), table)
+            .await
             .unwrap()
             .into_iter()
             .find(|index| index.search)
@@ -135,10 +138,10 @@ fn a_shards_search_figures_are_counted_page_by_page_and_no_record_travels() {
 }
 
 /// A page of groups past the byte budget declines rather than being cut.
-#[test]
-fn a_page_of_groups_past_the_budget_declines() {
+#[tokio::test]
+async fn a_page_of_groups_past_the_budget_declines() {
     let authority = Authority::new();
-    let (db, table) = leader();
+    let (db, table) = leader().await;
     let (address, handle) = door(&authority, &db, Some(shard(table, 2)), 1, 1);
     let page = ask(
         &authority,
@@ -162,10 +165,10 @@ fn a_page_of_groups_past_the_budget_declines() {
 
 /// G050 C4: what a gather moves, in bytes of `Gathered` page bodies, for
 /// one shard of 1 100 records read whole, bounded to 3, and narrowed to 5.
-#[test]
-fn a_bounded_or_narrowed_gather_moves_fewer_bytes() {
+#[tokio::test]
+async fn a_bounded_or_narrowed_gather_moves_fewer_bytes() {
     let authority = Authority::new();
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().await.unwrap();
     let mut script = String::from(
         "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
              DEFINE TABLE ledger (n int) IDENTITY uuid SPLIT AT 'g';",
@@ -173,11 +176,12 @@ fn a_bounded_or_narrowed_gather_moves_fewer_bytes() {
     for n in 0..1100 {
         script.push_str(&format!(" CREATE ledger:'a{n:04}' = {{ n: {n} }};"));
     }
-    db.session().run_now(&script).unwrap();
+    db.session().run(&script).await.unwrap();
     let table = {
         let mut transaction = db.store().begin().unwrap();
         Catalog::new(&mut transaction)
             .table_id(NamespaceId::new(1), DatabaseId::new(1), "ledger")
+            .await
             .unwrap()
             .unwrap()
     };
@@ -242,10 +246,10 @@ fn a_bounded_or_narrowed_gather_moves_fewer_bytes() {
 /// ADR-0121: asked for the folds that hold their group, a leader sends their
 /// states — a median's runs, a collect's values in key order, a counter's
 /// summary, or its samples when asked again for them — and no record.
-#[test]
-fn the_folds_that_hold_their_group_travel_as_states_and_no_record_travels() {
+#[tokio::test]
+async fn the_folds_that_hold_their_group_travel_as_states_and_no_record_travels() {
     let authority = Authority::new();
-    let (db, table) = leader();
+    let (db, table) = leader().await;
     let (address, handle) = folding_door(&authority, &db, Some(shard(table, 2)), (1 << 20, 16), 2);
     let text = |text: &str| Some((text.to_owned(), tessari_session::Parameters::new()));
     let holding = |samples| tessari_session::Reduce {

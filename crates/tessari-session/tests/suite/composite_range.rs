@@ -33,6 +33,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{
@@ -202,7 +203,9 @@ fn slice_identities() -> Vec<RecordId> {
 
 #[test]
 fn a_range_under_an_equality_is_served_by_the_composite_that_holds_both() {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, COMPOSITE);
     assert_eq!(plan(&mut session, SLICE, "access"), r#"String("index")"#);
     assert_eq!(plan(&mut session, SLICE, "index"), r#"String("by_at_tag")"#);
@@ -216,7 +219,9 @@ fn the_read_costs_the_slice_and_not_the_group() {
     // that took the range fetches the ten the bounds name. Both answer the same
     // ten records, so only the count can tell them apart.
     let counting = Counting::new();
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, COMPOSITE);
 
     counting.reset();
@@ -243,9 +248,13 @@ fn the_read_costs_the_slice_and_not_the_group() {
 
 #[test]
 fn the_answer_is_what_the_scan_answers() {
-    let served = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let served = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut with = ready(&served, COMPOSITE);
-    let scanned = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let scanned = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut without = ready(&scanned, "");
 
     let (from_index, path) = answered(&mut with, SLICE);
@@ -261,9 +270,13 @@ fn one_sided_bounds_answer_what_the_scan_answers() {
     // Where a prefix-plus-`after` construction goes wrong: with no lower bound
     // the walk must start at the group, not at the whole index, and with no
     // upper bound it must stop at the group's end, not at the index's.
-    let served = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let served = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut with = ready(&served, COMPOSITE);
-    let scanned = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let scanned = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut without = ready(&scanned, "");
 
     for read in [
@@ -286,7 +299,9 @@ fn a_range_on_a_later_field_with_nothing_fixing_the_first_is_refused() {
     // the tags in range are scattered across every group, and finding them means
     // visiting each group's slice in turn — a different traversal, and one that
     // wants its own node rather than arriving as a side effect of this one.
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, COMPOSITE);
     let read = "SELECT * FROM events WHERE tag >= 1950 AND tag <= 1959;";
     assert_eq!(plan(&mut session, read, "access"), r#"String("scan")"#);
@@ -298,9 +313,13 @@ fn a_range_on_a_leading_field_is_served_exactly_as_before() {
     // The regression proof for the generalisation: with nothing fixed, the key
     // bounds this wave builds are byte-identical to the ones it replaces, so a
     // range on a single-field index must be untouched in path, index and answer.
-    let served = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let served = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut with = ready(&served, "DEFINE INDEX by_tag ON events FIELDS tag;");
-    let scanned = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let scanned = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut without = ready(&scanned, "");
 
     let read = "SELECT * FROM events WHERE tag >= 1950 AND tag <= 1959;";
@@ -318,7 +337,9 @@ fn a_single_field_index_on_the_ranged_field_still_wins_when_it_exists() {
     // it wins — and this test exists because the opposite would also look
     // plausible: the single-field index is the shorter entry, which is what
     // decided the previous wave's tie.
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, COMPOSITE);
     session
         .run_now("DEFINE INDEX by_tag ON events FIELDS tag;")

@@ -14,6 +14,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_encoding::{decode_payload, encode_payload};
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -45,15 +46,18 @@ struct Fixture {
 /// and it does not exercise the statement that will one day set them up.
 fn fixture(secret: bool) -> Fixture {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
 
     let (root, master) = Root::create(PASSPHRASE).unwrap();
     store.vault().adopt(master).unwrap();
 
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("prod").unwrap();
-    let database = catalog.create_database(namespace.id, "people").unwrap();
+    let namespace = catalog.create_namespace("prod").now().unwrap();
+    let database = catalog
+        .create_database(namespace.id, "people")
+        .now()
+        .unwrap();
 
     // The vault's own key, wrapped under the master key, bound to the name the
     // table is about to claim — the same binding the write path recomputes.
@@ -75,6 +79,7 @@ fn fixture(secret: bool) -> Fixture {
                 ..TableShape::default()
             },
         )
+        .now()
         .unwrap();
     catalog
         .create_field(
@@ -86,13 +91,14 @@ fn fixture(secret: bool) -> Fixture {
                 ..FieldShape::default()
             },
         )
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     // Kept so a test can prove the root record is safe to hold beside the data.
     let mut transaction = store.begin().unwrap();
     Catalog::new(&mut transaction).set_vault_root(&tessari_storage::VaultRoot(root));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     Fixture {
         backend,
@@ -127,9 +133,11 @@ impl Fixture {
     fn write(&self) -> Value {
         let mut transaction = self.store.begin().unwrap();
         let address = self.address();
-        let sealed = seal_secrets(&mut transaction, &address, Self::record()).unwrap();
+        let sealed = seal_secrets(&mut transaction, &address, Self::record())
+            .now()
+            .unwrap();
         transaction.put(address, encode_payload(&sealed).into_bytes());
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         sealed
     }
 
@@ -271,7 +279,7 @@ fn a_sealed_store_refuses_the_write_rather_than_writing_plaintext() {
 
     let mut transaction = fixture.store.begin().unwrap();
     let address = fixture.address();
-    let refused = seal_secrets(&mut transaction, &address, Fixture::record());
+    let refused = seal_secrets(&mut transaction, &address, Fixture::record()).now();
     assert!(
         matches!(refused, Err(Error::Vault(tessari_vault::Error::Sealed))),
         "{refused:?}"
@@ -305,7 +313,7 @@ fn a_write_may_not_supply_the_key_set_itself() {
         .into_iter()
         .collect(),
     );
-    let refused = seal_secrets(&mut transaction, &address, forged);
+    let refused = seal_secrets(&mut transaction, &address, forged).now();
     assert!(
         matches!(refused, Err(Error::VaultReservedField { .. })),
         "{refused:?}"
@@ -316,16 +324,20 @@ fn a_write_may_not_supply_the_key_set_itself() {
 #[test]
 fn an_ordinary_table_is_left_alone() {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
 
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("prod").unwrap();
-    let database = catalog.create_database(namespace.id, "people").unwrap();
+    let namespace = catalog.create_namespace("prod").now().unwrap();
+    let database = catalog
+        .create_database(namespace.id, "people")
+        .now()
+        .unwrap();
     let table = catalog
         .create_table(namespace.id, database.id, "staff", TableShape::default())
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     // Sealed keyring, ordinary table. If the vault path ran at all this would
     // refuse — which is the cheap way to assert that it did not run.
@@ -336,7 +348,9 @@ fn an_ordinary_table_is_left_alone() {
         table.id,
         RecordId::Text("ada".to_owned()),
     );
-    let untouched = seal_secrets(&mut transaction, &address, Fixture::record()).unwrap();
+    let untouched = seal_secrets(&mut transaction, &address, Fixture::record())
+        .now()
+        .unwrap();
     transaction.rollback();
 
     assert_eq!(untouched, Fixture::record());
@@ -382,7 +396,7 @@ struct Crossing {
 
 fn crossing() -> Crossing {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(backend).unwrap();
+    let store = Store::open(backend).now().unwrap();
     let (_root, master) = Root::create(PASSPHRASE).unwrap();
     store.vault().adopt(master).unwrap();
 
@@ -390,13 +404,13 @@ fn crossing() -> Crossing {
     // ids do not exist until the catalog allocates them.
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let prod = catalog.create_namespace("prod").unwrap().id;
-    let staging = catalog.create_namespace("staging").unwrap().id;
-    let people = catalog.create_database(prod, "people").unwrap().id;
-    let payroll = catalog.create_database(prod, "payroll").unwrap().id;
-    let finance = catalog.create_database(prod, "finance").unwrap().id;
-    let other_people = catalog.create_database(staging, "people").unwrap().id;
-    transaction.commit().unwrap();
+    let prod = catalog.create_namespace("prod").now().unwrap().id;
+    let staging = catalog.create_namespace("staging").now().unwrap().id;
+    let people = catalog.create_database(prod, "people").now().unwrap().id;
+    let payroll = catalog.create_database(prod, "payroll").now().unwrap().id;
+    let finance = catalog.create_database(prod, "finance").now().unwrap().id;
+    let other_people = catalog.create_database(staging, "people").now().unwrap().id;
+    transaction.commit().now().unwrap();
 
     let mint = |namespace, database| {
         let scope = vault_key_scope(namespace, database, "credentials");
@@ -429,6 +443,7 @@ fn crossing() -> Crossing {
                     ..TableShape::default()
                 },
             )
+            .now()
             .unwrap();
         catalog
             .create_field(
@@ -440,10 +455,11 @@ fn crossing() -> Crossing {
                     ..FieldShape::default()
                 },
             )
+            .now()
             .unwrap();
         declared.push(table);
     }
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let control = declared.pop().unwrap();
     let across_namespaces = declared.pop().unwrap();
@@ -470,10 +486,10 @@ fn attempt_write(store: &Store, vault: &TableDefinition) -> Result<(), Error> {
         vault.id,
         RecordId::Text("ada".to_owned()),
     );
-    match seal_secrets(&mut transaction, &address, Fixture::record()) {
+    match seal_secrets(&mut transaction, &address, Fixture::record()).now() {
         Ok(sealed) => {
             transaction.put(address, encode_payload(&sealed).into_bytes());
-            transaction.commit().map(|_| ())
+            transaction.commit().now().map(|_| ())
         }
         Err(error) => {
             transaction.rollback();
@@ -530,7 +546,9 @@ fn a_vault_key_from_another_tenancy_does_not_open_this_vault() {
 // that refused everything would pass the first test.
 
 fn unsealed_for(period: std::time::Duration) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     store.vault().last_for(period);
     let (_, master) = Root::create(PASSPHRASE).unwrap();
     store.vault().adopt(master).unwrap();

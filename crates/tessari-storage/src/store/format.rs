@@ -36,9 +36,11 @@ impl Store {
     ///
     /// Returns the substrate's failure, or a decoding failure for the stamp or
     /// the record.
-    pub(super) fn catch_up_with_the_finalized_format(&self) -> Result<()> {
+    pub(super) async fn catch_up_with_the_finalized_format(&self) -> Result<()> {
         let mut transaction = self.begin()?;
-        let finalized = crate::catalog::Catalog::new(&mut transaction).finalized_format()?;
+        let finalized = crate::catalog::Catalog::new(&mut transaction)
+            .finalized_format()
+            .await?;
         drop(transaction);
         if let Some(raised) = crate::format_stamp::caught_up(self.held_format()?, finalized) {
             self.backend().apply(WriteBatch::new().put(

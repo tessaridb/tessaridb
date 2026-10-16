@@ -29,6 +29,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_encoding::{
     IndexAddress, IndexValues, KeyKind, SecondaryIndexKey, SpatialIndexKey, StoreKey,
@@ -89,14 +90,18 @@ impl Fixture {
     /// composite and path projection, and both key layouts.
     fn new() -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        let store = Store::open(Arc::clone(&backend)).unwrap();
+        let store = Store::open(Arc::clone(&backend)).now().unwrap();
 
         let mut transaction = store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("prod").unwrap();
-        let database = catalog.create_database(namespace.id, "orders").unwrap();
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog
+            .create_database(namespace.id, "orders")
+            .now()
+            .unwrap();
         let table = catalog
             .create_table(namespace.id, database.id, "people", TableShape::default())
+            .now()
             .unwrap();
         let indexes = vec![
             catalog
@@ -114,6 +119,7 @@ impl Fixture {
                         costs: tessari_storage::SearchCosts::default(),
                     },
                 )
+                .now()
                 .unwrap(),
             catalog
                 .create_index(
@@ -122,6 +128,7 @@ impl Fixture {
                     vec![Path::field("city")],
                     IndexShape::default(),
                 )
+                .now()
                 .unwrap(),
             catalog
                 .create_index(
@@ -130,6 +137,7 @@ impl Fixture {
                     vec![Path::field("city"), Path::field("name")],
                     IndexShape::default(),
                 )
+                .now()
                 .unwrap(),
             catalog
                 .create_index(
@@ -138,6 +146,7 @@ impl Fixture {
                     vec![Path::parse("address.city").unwrap()],
                     IndexShape::default(),
                 )
+                .now()
                 .unwrap(),
             // A **multikey** index: one entry per element. It is here rather than
             // in a test of its own because reclamation is the thing a multikey
@@ -152,6 +161,7 @@ impl Fixture {
                     vec![Path::parse("tags[*]").unwrap()],
                     IndexShape::default(),
                 )
+                .now()
                 .unwrap(),
             // A **spatial** index: one entry per cell of the record's covering,
             // so a record contributes a *set* of keys whose size depends on how
@@ -176,9 +186,10 @@ impl Fixture {
                         costs: tessari_storage::SearchCosts::default(),
                     },
                 )
+                .now()
                 .unwrap(),
         ];
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
 
         Self {
             backend,
@@ -235,6 +246,7 @@ impl Fixture {
         let transaction = self.store.begin().unwrap();
         let records = transaction
             .scan_table(self.namespace, self.database, self.table)
+            .now()
             .unwrap();
 
         let mut expected = BTreeSet::new();
@@ -526,7 +538,7 @@ fn step(fixture: &Fixture, rolls: &mut Rolls) {
             // A rewrite that moves only the unindexed `name`: every index keeps
             // its entries as they are, which is the path an update skips index
             // work on. A record that is not there is written whole instead.
-            let current = transaction.get(&address).unwrap();
+            let current = transaction.get(&address).now().unwrap();
             let fields = match current.map(|held| decode_payload(&held).unwrap()) {
                 Some(Value::Object(mut fields)) => {
                     fields.insert(
@@ -587,7 +599,7 @@ fn step(fixture: &Fixture, rolls: &mut Rolls) {
         }
     }
 
-    match transaction.commit() {
+    match transaction.commit().now() {
         Ok(_) => {}
         // The unique index refusing a duplicate is part of the workload, not a
         // failure of it — and a refusal that left entries behind is exactly the

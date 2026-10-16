@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
@@ -85,8 +86,9 @@ fn declare(store: &Store, node: [u8; NODE_ID_LEN], reach: Reach) {
             preferred: false,
             region: None,
         })
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 }
 
 const fn the_database() -> Reach {
@@ -99,13 +101,13 @@ fn named(follower: &Store, heard: [u8; NODE_ID_LEN], read: &str) -> Option<Peer>
     session
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
-    let before = follower.health().unwrap().not_held_here;
+    let before = follower.health().now().unwrap().not_held_here;
     match session.run_now(read) {
         Err(tessari_session::Error::NotHeldHere { table, holder, .. }) => {
             assert_eq!(table, "ledger", "{read}");
             // G053 C6: each refusal is counted once, where it is made.
             assert_eq!(
-                Some(follower.health().unwrap().not_held_here),
+                Some(follower.health().now().unwrap().not_held_here),
                 before.checked_add(1),
                 "{read}"
             );
@@ -157,6 +159,7 @@ fn a_node_holding_one_shard_is_not_named() {
     let mut transaction = leader.begin().unwrap();
     let ledger = Catalog::new(&mut transaction)
         .table_id(NamespaceId::new(1), DatabaseId::new(1), "ledger")
+        .now()
         .unwrap()
         .unwrap();
     drop(transaction);

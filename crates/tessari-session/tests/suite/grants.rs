@@ -10,6 +10,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -19,7 +20,7 @@ use tessari_types::Value;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 const PASSWORD: &str = "correct horse battery";
@@ -43,7 +44,7 @@ fn ready(store: &Store) -> Session<'_> {
     // The first user closed the store, so the second is declared by the owner —
     // which is the shape every store past its first day is in.
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
         .unwrap();
     session
@@ -52,7 +53,7 @@ fn ready(store: &Store) -> Session<'_> {
 /// A signed-in session with the tenancy selected.
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
@@ -242,7 +243,7 @@ fn grants_survive_a_reopen_because_they_are_catalog_and_not_memory() {
         .unwrap();
 
     let mut later = Session::new(&store);
-    later.sign_in("ada", PASSWORD).unwrap();
+    later.sign_in("ada", PASSWORD).now().unwrap();
     later
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();

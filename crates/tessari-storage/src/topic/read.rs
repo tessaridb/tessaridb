@@ -53,7 +53,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// A backend failure, or a payload that cannot be decoded.
-    pub fn topic_after(
+    pub async fn topic_after(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -89,10 +89,10 @@ impl Transaction<'_> {
                 let entry = TopicOffsetKey::decode(key.as_slice())?;
                 from = entry.offset.saturating_add(1);
                 let address = RecordAddress::new(namespace, database, table, entry.id.clone());
-                if self.get_held(&address)?.is_none() {
+                if self.get_held(&address).await?.is_none() {
                     break 'pages;
                 }
-                match self.get(&address)? {
+                match self.get(&address).await? {
                     Some(payload) => found.messages.push(Message {
                         position: entry.offset,
                         id: entry.id,

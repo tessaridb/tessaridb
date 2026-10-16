@@ -72,16 +72,18 @@ impl Session<'_> {
     /// Writing past the end of a file would leave a gap, and zero-filling it
     /// would be the store inventing bytes nobody wrote. A real hole is a
     /// sparse-file feature and nobody has asked for one.
-    pub(crate) fn put_file(
+    pub(crate) async fn put_file(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
         start: Option<u64>,
         bytes: &[u8],
     ) -> Result<Outcome> {
-        let (context, table, ceiling) = self.bucket(transaction, target)?;
+        let (context, table, ceiling) = self.bucket(transaction, target).await?;
         let path = text_identity(target.id.fixed(target.span)?, target.span)?;
-        let chunks = self.chunk_table(transaction, &context, table, target.span)?;
+        let chunks = self
+            .chunk_table(transaction, &context, table, target.span)
+            .await?;
         let id = target.id.fixed(target.span)?.clone();
         let at = RecordAddress::new(context.namespace, context.database, table, id.clone());
 
@@ -92,7 +94,8 @@ impl Session<'_> {
             // ever read, until a later write made the count long enough to reach
             // them again.
             None => {
-                self.clear_chunks(transaction, &context, chunks, table, &id)?;
+                self.clear_chunks(transaction, &context, chunks, table, &id)
+                    .await?;
                 bytes.to_vec()
             }
             // An offset — including zero. `START 0` writes at the beginning and
@@ -100,9 +103,10 @@ impl Session<'_> {
             // offset" means; replacing the file is what leaving `START` out is
             // for, and one spelling per thing.
             Some(offset) => {
-                let existing = match transaction.get(&at)? {
+                let existing = match transaction.get(&at).await? {
                     Some(payload) => {
-                        self.whole_file(transaction, &context, chunks, path, &payload, target.span)?
+                        self.whole_file(transaction, &context, chunks, path, &payload, target.span)
+                            .await?
                     }
                     None => Vec::new(),
                 };
@@ -123,7 +127,8 @@ impl Session<'_> {
                 if let Some(slice) = spliced.get_mut(offset..end) {
                     slice.copy_from_slice(bytes);
                 }
-                self.clear_chunks(transaction, &context, chunks, table, &id)?;
+                self.clear_chunks(transaction, &context, chunks, table, &id)
+                    .await?;
                 spliced
             }
         };
@@ -180,9 +185,12 @@ impl Session<'_> {
 
     /// The place a snapshot is of: the one `OF` names, which the parser holds
     /// to one (ADR-0094 D5), or the whole store.
-    pub(crate) fn state_scope(&self, of: &[tessari_ql::ReachRef]) -> Result<tessari_types::Reach> {
+    pub(crate) async fn state_scope(
+        &self,
+        of: &[tessari_ql::ReachRef],
+    ) -> Result<tessari_types::Reach> {
         match of.first() {
-            Some(named) => self.reach_of(&mut self.store.begin()?, named),
+            Some(named) => self.reach_of(&mut self.store.begin()?, named).await,
             None => Ok(tessari_types::Reach::Store),
         }
     }
@@ -192,7 +200,7 @@ impl Session<'_> {
     /// Called before a write and before a delete. Silent when there is no file:
     /// a bucket with nothing at that path has no chunks to remove, which is not
     /// a condition worth an error.
-    pub(crate) fn clear_chunks(
+    pub(crate) async fn clear_chunks(
         &self,
         transaction: &mut Transaction<'_>,
         context: &Context,
@@ -204,7 +212,7 @@ impl Session<'_> {
             return Ok(());
         };
         let address = RecordAddress::new(context.namespace, context.database, bucket, id.clone());
-        let Some(payload) = transaction.get(&address)? else {
+        let Some(payload) = transaction.get(&address).await? else {
             return Ok(());
         };
         let held = decode_payload(&payload)?;
@@ -229,14 +237,15 @@ impl Session<'_> {
     ///
     /// `DELETE` is deliberately not here: removing a file is how a file is
     /// removed, and it takes the chunks with it.
-    pub(crate) fn writable(
+    pub(crate) async fn writable(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
     ) -> Result<(Context, RecordAddress)> {
-        let (context, address) = self.address(transaction, target)?;
+        let (context, address) = self.address(transaction, target).await?;
         if Catalog::new(transaction)
-            .table(address.table)?
+            .table(address.table)
+            .await?
             .is_some_and(|found| found.is_bucket())
         {
             return Err(Error::NotWrittenByHand {
@@ -252,21 +261,23 @@ impl Session<'_> {
     /// Called by `DELETE`, which is the statement that removes a file — so the
     /// bytes go with the metadata in one commit, and a bucket cannot accumulate
     /// chunks nothing describes.
-    pub(crate) fn clear_file(
+    pub(crate) async fn clear_file(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
     ) -> Result<()> {
-        let (context, table) = self.resolve_table(transaction, &target.table)?;
+        let (context, table) = self.resolve_table(transaction, &target.table).await?;
         let named = Catalog::new(transaction)
-            .table(table)?
+            .table(table)
+            .await?
             .filter(|found| found.is_bucket())
             .map(|found| Catalog::chunks_named(&found.name));
         let Some(named) = named else {
             return Ok(());
         };
-        let Some(chunks) =
-            Catalog::new(transaction).table_id(context.namespace, context.database, &named)?
+        let Some(chunks) = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &named)
+            .await?
         else {
             return Ok(());
         };
@@ -277,6 +288,7 @@ impl Session<'_> {
             table,
             target.id.fixed(target.span)?,
         )
+        .await
     }
 
     /// Resolve a target that must name a bucket.
@@ -285,13 +297,13 @@ impl Session<'_> {
     /// record that looks like a file: the two are the same shape on disk, and a
     /// table that gained file semantics because somebody used the wrong verb is
     /// a state nothing could later tell apart.
-    pub(crate) fn bucket(
+    pub(crate) async fn bucket(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
     ) -> Result<(Context, TableId, Option<u64>)> {
-        let (context, table) = self.resolve_table(transaction, &target.table)?;
-        let definition = Catalog::new(transaction).table(table)?;
+        let (context, table) = self.resolve_table(transaction, &target.table).await?;
+        let definition = Catalog::new(transaction).table(table).await?;
         let Some(definition) = definition.filter(|found| found.is_bucket()) else {
             return Err(Error::NotABucket {
                 table: target.table.name.text.clone(),
@@ -306,7 +318,7 @@ impl Session<'_> {
     }
 
     /// The table a bucket's chunks live in.
-    fn chunk_table(
+    async fn chunk_table(
         &self,
         transaction: &mut Transaction<'_>,
         context: &Context,
@@ -314,7 +326,8 @@ impl Session<'_> {
         span: Span,
     ) -> Result<TableId> {
         let named = Catalog::new(transaction)
-            .table(bucket)?
+            .table(bucket)
+            .await?
             .map(|found| Catalog::chunks_named(&found.name));
         let Some(named) = named else {
             return Err(Error::Unknown {
@@ -324,7 +337,8 @@ impl Session<'_> {
             });
         };
         Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &named)?
+            .table_id(context.namespace, context.database, &named)
+            .await?
             .ok_or(Error::Unknown {
                 entity: "the table a bucket's chunks live in",
                 name: named,

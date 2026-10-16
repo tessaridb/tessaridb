@@ -20,18 +20,18 @@ impl<'a> Session<'a> {
     /// # Errors
     ///
     /// Whatever reading the catalog or the record refuses.
-    pub(crate) fn events_before(
+    pub(crate) async fn events_before(
         &self,
         transaction: &mut Transaction<'_>,
         address: &RecordAddress,
     ) -> Result<Option<Pending>> {
-        let Some(definition) = Catalog::new(transaction).table(address.table)? else {
+        let Some(definition) = Catalog::new(transaction).table(address.table).await? else {
             return Ok(None);
         };
         if definition.events.is_empty() {
             return Ok(None);
         }
-        let old = match transaction.get(address)? {
+        let old = match transaction.get(address).await? {
             Some(bytes) => Some(decode_payload(&bytes).map_err(tessari_storage::Error::from)?),
             None => None,
         };
@@ -72,7 +72,10 @@ impl<'a> Session<'a> {
                 });
             }
             if child.is_none() {
-                child = Some(self.event_session(transaction, address, &pending, new, kind)?);
+                child = Some(
+                    self.event_session(transaction, address, &pending, new, kind)
+                        .await?,
+                );
             }
             let Some((session, bindings)) = child.as_mut() else {
                 continue;
@@ -90,7 +93,7 @@ impl<'a> Session<'a> {
     }
 
     /// The session a body runs in and the four values it is bound to.
-    fn event_session(
+    async fn event_session(
         &self,
         transaction: &mut Transaction<'_>,
         address: &RecordAddress,
@@ -99,8 +102,11 @@ impl<'a> Session<'a> {
         kind: WriteKind,
     ) -> Result<(Session<'a>, Parameters)> {
         let catalog = Catalog::new(transaction);
-        let namespace = catalog.namespace(address.namespace)?.map(|held| held.name);
-        let defined = catalog.database(address.database)?;
+        let namespace = catalog
+            .namespace(address.namespace)
+            .await?
+            .map(|held| held.name);
+        let defined = catalog.database(address.database).await?;
         // The database's params as they stand in this transaction, so a body
         // reads the value `OR REPLACE` last stored (ADR-0124 D2).
         let params = defined
@@ -150,8 +156,9 @@ impl<'a> Session<'a> {
         let open = self.identity.user().is_none();
         let readable = session
             .authorize_as_refreshed(self.store, &probe, open, Span::new(0, 0))
+            .await
             .is_ok();
-        let visible = self.visible_in(transaction, address.table)?;
+        let visible = self.visible_in(transaction, address.table).await?;
         let seen = |value: Option<&Value>| match value {
             Some(value) if readable => crate::redact::seen(value.clone(), &visible),
             _ => Value::None,
@@ -197,7 +204,7 @@ impl<'a> Session<'a> {
             else {
                 return Ok(());
             };
-            if self.evaluate(transaction, value)? != Value::Bool(true) {
+            if self.evaluate(transaction, value).await? != Value::Bool(true) {
                 return Ok(());
             }
         }
@@ -209,9 +216,10 @@ impl<'a> Session<'a> {
         while at < body.statements.len() {
             let statement = &body.statements[at];
             let span = statement.span;
-            let expanded = self.expand_views(self.store, &statement.kind)?;
+            let expanded = self.expand_views(self.store, &statement.kind).await?;
             let kind = expanded.as_ref().unwrap_or(&statement.kind);
-            self.authorize_as_refreshed(self.store, kind, open, span)?;
+            self.authorize_as_refreshed(self.store, kind, open, span)
+                .await?;
             // Boxed: an event runs statements, and a statement may fire an event.
             let outcome = Box::pin(self.execute(transaction, kind, span)).await?;
             if let StatementKind::Let { name, .. } = &body.statements[at].kind {

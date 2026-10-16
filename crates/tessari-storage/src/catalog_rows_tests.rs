@@ -7,6 +7,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use crate::now::Now;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -82,16 +83,19 @@ fn fixture() -> Fixture {
         engine: MemoryBackend::new(),
         reads: AtomicUsize::new(0),
     });
-    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("ns").unwrap().id;
-    let database = catalog.create_database(namespace, "db").unwrap().id;
+    let namespace = catalog.create_namespace("ns").now().unwrap().id;
+    let database = catalog.create_database(namespace, "db").now().unwrap().id;
     let table = catalog
         .create_table(namespace, database, "t", TableShape::default())
+        .now()
         .unwrap()
         .id;
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     Fixture {
         backend,
         store,
@@ -105,11 +109,12 @@ fn fixture() -> Fixture {
 fn resolve(fixture: &Fixture) -> Option<TableId> {
     let mut transaction = fixture.store.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("ns").unwrap()?;
-    let database = catalog.database_id(namespace, "db").unwrap()?;
-    let table = catalog.table_id(namespace, database, "t").unwrap()?;
+    let namespace = catalog.namespace_id("ns").now().unwrap()?;
+    let database = catalog.database_id(namespace, "db").now().unwrap()?;
+    let table = catalog.table_id(namespace, database, "t").now().unwrap()?;
     catalog
         .table(table)
+        .now()
         .unwrap()
         .map(|definition| definition.id)
 }
@@ -140,9 +145,10 @@ fn a_dropped_table_is_gone_for_new_readers_and_kept_for_old_ones() {
     assert!(
         Catalog::new(&mut transaction)
             .drop_table(fixture.table)
+            .now()
             .unwrap()
     );
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     assert_eq!(
         resolve(&fixture),
@@ -152,6 +158,7 @@ fn a_dropped_table_is_gone_for_new_readers_and_kept_for_old_ones() {
     let old = Catalog::new(&mut before_the_drop);
     assert_eq!(
         old.table_id(fixture.namespace, fixture.database, "t")
+            .now()
             .unwrap(),
         Some(fixture.table),
         "a reader from before the drop lost the table its snapshot holds"

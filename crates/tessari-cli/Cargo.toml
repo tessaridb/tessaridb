@@ -35,7 +35,7 @@ tessari-constants.workspace = true
 # The terminal's raw mode, and the immediate exit a second stop signal asks for.
 # Already in the tree through the engine, so this costs no crate.
 libc.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "signal", "macros", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal", "macros", "io-util", "sync"] }
 tokio-util.workspace = true
 futures-util.workspace = true
 tracing.workspace = true

@@ -27,6 +27,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -37,7 +38,9 @@ use tessari_types::Value;
 const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// A database holding four people, two of them in engineering.
@@ -250,7 +253,7 @@ fn a_caller_granted_the_view_and_not_the_table_is_refused_naming_the_table() {
         )
         .unwrap();
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
          DEFINE TABLE audit SCHEMALESS;\n\
@@ -273,7 +276,7 @@ fn a_caller_granted_the_view_and_not_the_table_is_refused_naming_the_table() {
     );
 
     let mut caller = Session::new(&store);
-    caller.sign_in("caller", PASSWORD).unwrap();
+    caller.sign_in("caller", PASSWORD).now().unwrap();
     caller
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
@@ -287,7 +290,7 @@ fn a_caller_granted_the_view_and_not_the_table_is_refused_naming_the_table() {
     // same statement, the same view, a caller granted the base table instead —
     // and it answers.
     let mut definer = Session::new(&store);
-    definer.sign_in("definer", PASSWORD).unwrap();
+    definer.sign_in("definer", PASSWORD).now().unwrap();
     definer
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();

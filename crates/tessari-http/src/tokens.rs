@@ -179,7 +179,7 @@ impl Tokens {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use tessari_session::RunNow;
+    use tessari_session::{Now, RunNow};
 
     use std::sync::Arc;
     use std::time::Instant;
@@ -193,7 +193,7 @@ mod tests {
 
     fn store() -> Store {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        Store::open(backend).unwrap()
+        Store::open(backend).now().unwrap()
     }
 
     /// A store with one user, signed in.
@@ -208,7 +208,10 @@ mod tests {
             .run_now("DEFINE USER ada ROLE owner PASSWORD 'correct horse battery';")
             .unwrap();
         let mut session = Session::new(store);
-        session.sign_in("ada", "correct horse battery").unwrap();
+        session
+            .sign_in("ada", "correct horse battery")
+            .now()
+            .unwrap();
         session
     }
 

@@ -27,6 +27,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -42,7 +43,7 @@ const USERS: [&str; 6] = ["root", "ada", "vic", "ed", "gus", "gina"];
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Two tenancies sharing a database name, two tables, and six people whose
@@ -60,7 +61,7 @@ fn peopled(store: &Store) -> Session<'_> {
         )
         .unwrap();
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
          DEFINE USER ada ON prod.shop ROLE owner PASSWORD 'correct horse battery';\n\
@@ -113,14 +114,14 @@ fn reported(session: &mut Session<'_>, table: &str) -> Vec<(String, bool, bool)>
 /// and nowhere above it.
 fn attempted(store: &Store, user: &str, table: &str) -> (bool, bool) {
     let mut read = Session::new(store);
-    read.sign_in(user, PASSWORD).unwrap();
+    read.sign_in(user, PASSWORD).now().unwrap();
     let reading = read
         .run_now(&format!(
             "USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM {table};"
         ))
         .is_ok();
     let mut write = Session::new(store);
-    write.sign_in(user, PASSWORD).unwrap();
+    write.sign_in(user, PASSWORD).now().unwrap();
     let writing = write
         .run_now(&format!(
             "USE NAMESPACE prod; USE DATABASE shop; DELETE {table}:0;"
@@ -229,7 +230,7 @@ fn a_tenant_of_another_namespace_reaches_nothing_here_and_is_said_to() {
     // And the attempt agrees, which is what makes the row above a fact about
     // the store rather than about this function.
     let mut nina = Session::new(&store);
-    nina.sign_in("nina", PASSWORD).unwrap();
+    nina.sign_in("nina", PASSWORD).now().unwrap();
     let refused = nina
         .run_now("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;")
         .unwrap_err();
@@ -253,7 +254,7 @@ fn the_report_is_refused_to_everybody_who_does_not_administer_the_table() {
 
     for who in ["vic", "ed"] {
         let mut session = Session::new(&store);
-        session.sign_in(who, PASSWORD).unwrap();
+        session.sign_in(who, PASSWORD).now().unwrap();
         let refused = session
             .run_now("USE NAMESPACE prod; USE DATABASE shop; INFO FOR ACCESS TO TABLE orders;")
             .unwrap_err();
@@ -266,7 +267,7 @@ fn the_report_is_refused_to_everybody_who_does_not_administer_the_table() {
     // And an owner is not, without which the two refusals above would be
     // satisfied by a statement nobody can run.
     let mut ada = Session::new(&store);
-    ada.sign_in("ada", PASSWORD).unwrap();
+    ada.sign_in("ada", PASSWORD).now().unwrap();
     ada.run_now("USE NAMESPACE prod; USE DATABASE shop; INFO FOR ACCESS TO TABLE orders;")
         .unwrap();
 }

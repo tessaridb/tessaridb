@@ -92,7 +92,7 @@ pub(crate) async fn answer(
         Ok(request) => request,
         Err(refused) => return refused,
     };
-    let mut session = match session_for(db, tokens, presented) {
+    let mut session = match session_for(db, tokens, presented).await {
         Ok(session) => session,
         Err(answer) => return answer,
     };
@@ -107,7 +107,10 @@ pub(crate) async fn answer(
     }
     // Asked after the `USE`, so only a caller who may reach the database learns
     // what it holds; not there and not a space are one answer.
-    match db.is_space(aimed.namespace, aimed.database, aimed.space) {
+    match db
+        .is_space(aimed.namespace, aimed.database, aimed.space)
+        .await
+    {
         Ok(true) => {}
         Ok(false) => {
             return Answer::new(

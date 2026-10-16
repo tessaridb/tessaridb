@@ -22,6 +22,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -38,7 +39,7 @@ fn backend() -> Arc<dyn KvBackend> {
 /// The one record `$node` answers, read as an owner.
 fn asked(store: &Store) -> (String, Value) {
     let mut session = Session::new(store);
-    session.sign_in("root", PASSWORD).ok();
+    session.sign_in("root", PASSWORD).now().ok();
     let outcomes = session.run_now("SELECT * FROM $node;").unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.first() else {
         panic!("not a read: {outcomes:?}");
@@ -49,7 +50,7 @@ fn asked(store: &Store) -> (String, Value) {
 
 /// A store closed by an owner, so that permission is actually being tested.
 fn closed(backend: &Arc<dyn KvBackend>) -> Store {
-    let store = Store::open(Arc::clone(backend)).unwrap();
+    let store = Store::open(Arc::clone(backend)).now().unwrap();
     {
         let mut session = Session::new(&store);
         session
@@ -128,7 +129,7 @@ fn the_identity_survives_a_restart() {
     let (before, _) = asked(&first);
     drop(first);
 
-    let second = Store::open(Arc::clone(&held)).unwrap();
+    let second = Store::open(Arc::clone(&held)).now().unwrap();
     let (after, _) = asked(&second);
     assert_eq!(before, after);
 }
@@ -149,7 +150,7 @@ fn a_node_answers_without_a_namespace_or_a_database_selected() {
     // the helper above happens not to `USE` anything.
     let store = closed(&backend());
     let mut session = Session::new(&store);
-    session.sign_in("root", PASSWORD).ok();
+    session.sign_in("root", PASSWORD).now().ok();
     assert!(session.namespace().is_none());
     assert!(session.database().is_none());
     assert!(session.run_now("SELECT * FROM $node;").is_ok());
@@ -162,7 +163,7 @@ fn a_viewer_is_refused_rather_than_passed_over_by_an_empty_grant_check() {
     let store = closed(&backend());
     {
         let mut owner = Session::new(&store);
-        owner.sign_in("root", PASSWORD).unwrap();
+        owner.sign_in("root", PASSWORD).now().unwrap();
         owner
             .run_now(&format!(
                 "DEFINE USER ada ROLE viewer PASSWORD '{PASSWORD}';"
@@ -170,7 +171,7 @@ fn a_viewer_is_refused_rather_than_passed_over_by_an_empty_grant_check() {
             .unwrap();
     }
     let mut viewer = Session::new(&store);
-    viewer.sign_in("ada", PASSWORD).unwrap();
+    viewer.sign_in("ada", PASSWORD).now().unwrap();
     let refused = viewer
         .run_now("SELECT * FROM $node;")
         .unwrap_err()
@@ -189,7 +190,7 @@ fn an_anonymous_session_reads_the_node_of_an_open_store() {
     // The other half of the permission rule, and the one that keeps an empty
     // store usable: a store with no users is open, and `$node` is not an
     // exception to that in either direction.
-    let store = Store::open(backend()).unwrap();
+    let store = Store::open(backend()).now().unwrap();
     let mut session = Session::new(&store);
     assert!(session.run_now("SELECT * FROM $node;").is_ok());
 }
@@ -200,7 +201,7 @@ fn a_parameter_called_node_is_still_the_callers_own() {
     // name, refused because a caller may legitimately supply one called `node`
     // and the shadowing would be decided by evaluation order. `$node` is read as
     // a source only in the `FROM` position, so this must still work.
-    let store = Store::open(backend()).unwrap();
+    let store = Store::open(backend()).now().unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(
@@ -228,7 +229,7 @@ fn a_parameter_called_node_is_still_the_callers_own() {
 fn the_plan_for_a_node_read_names_the_source_rather_than_a_table() {
     let store = closed(&backend());
     let mut session = Session::new(&store);
-    session.sign_in("root", PASSWORD).ok();
+    session.sign_in("root", PASSWORD).now().ok();
     let outcomes = session.run_now("EXPLAIN SELECT * FROM $node;").unwrap();
     let Some(Outcome::Value(Value::Object(plan))) = outcomes.first() else {
         panic!("not a plan: {outcomes:?}");
@@ -258,7 +259,7 @@ fn the_plan_for_a_node_read_names_the_source_rather_than_a_table() {
 #[test]
 fn replication_turned_on_later_brings_the_whole_history_with_it() {
     let leader_backend = backend();
-    let leader = Store::open(Arc::clone(&leader_backend)).unwrap();
+    let leader = Store::open(Arc::clone(&leader_backend)).now().unwrap();
 
     let mut session = Session::new(&leader);
     session
@@ -289,7 +290,7 @@ fn replication_turned_on_later_brings_the_whole_history_with_it() {
 
     // A follower that begins subscribing has nothing but the log.
     let follower_backend = backend();
-    let follower = Store::open(Arc::clone(&follower_backend)).unwrap();
+    let follower = Store::open(Arc::clone(&follower_backend)).now().unwrap();
     let applied = crate::replay(&leader, &follower);
     assert!(applied > 0, "the leader wrote nothing to replay");
 

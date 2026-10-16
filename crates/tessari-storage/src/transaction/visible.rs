@@ -31,15 +31,15 @@ impl Transaction<'_> {
     /// Whether a reader passes over `stored` for the version under it: an
     /// intent of a transaction this one does not see, or a version resolved
     /// from one.
-    pub(crate) fn passes_over(&self, stored: &StampedValue) -> Result<bool> {
+    pub(crate) async fn passes_over(&self, stored: &StampedValue) -> Result<bool> {
         match stored.provenance() {
             None => Ok(false),
-            Some(provenance) => Ok(!self.sees(provenance)?),
+            Some(provenance) => Ok(!self.sees(provenance).await?),
         }
     }
 
     /// Whether this transaction sees the transaction `provenance` names.
-    pub(super) fn sees(&self, provenance: &Provenance) -> Result<bool> {
+    pub(super) async fn sees(&self, provenance: &Provenance) -> Result<bool> {
         // A commit writing this transaction's resolution carries its decision,
         // so it asks nobody about it — least of all the record's leader, under
         // the write turn, while the record it is deciding still stages (Q-931).
@@ -64,6 +64,7 @@ impl Transaction<'_> {
                 _ => match self
                     .store
                     .asked_decision(provenance.transaction, provenance.coordinator)
+                    .await
                 {
                     Some(record) if record.decision == Decision::Committed => {
                         self.holds_every_part(provenance, &record.participants)?

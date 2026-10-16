@@ -23,6 +23,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -89,16 +90,26 @@ const DECLARATIONS: [&str; 12] = [
 fn stored_kind(store: &Store) -> TableKind {
     let mut transaction = store.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
-    let id = catalog.table_id(namespace, database, "t").unwrap().unwrap();
-    let kind = catalog.table(id).unwrap().unwrap().kind;
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "shop")
+        .now()
+        .unwrap()
+        .unwrap();
+    let id = catalog
+        .table_id(namespace, database, "t")
+        .now()
+        .unwrap()
+        .unwrap();
+    let kind = catalog.table(id).now().unwrap().unwrap().kind;
     transaction.rollback();
     kind
 }
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// The `definition` field of `INFO FOR TABLE t`, or the reason there is none.

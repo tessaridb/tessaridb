@@ -145,7 +145,7 @@ pub(crate) async fn put(
     if !target.named_properly() {
         return Answer::bad_request("a namespace, database and bucket are ordinary names");
     }
-    let mut session = match session_for(db, tokens, presented) {
+    let mut session = match session_for(db, tokens, presented).await {
         Ok(session) => session,
         Err(answer) => return answer,
     };
@@ -169,7 +169,7 @@ pub(crate) async fn get(
     if !target.named_properly() {
         return Answer::bad_request("a namespace, database and bucket are ordinary names");
     }
-    let mut session = match session_for(db, tokens, presented) {
+    let mut session = match session_for(db, tokens, presented).await {
         Ok(session) => session,
         Err(answer) => return answer,
     };
@@ -229,7 +229,7 @@ pub(crate) async fn delete(
     if !target.named_properly() {
         return Answer::bad_request("a namespace, database and bucket are ordinary names");
     }
-    let mut session = match session_for(db, tokens, presented) {
+    let mut session = match session_for(db, tokens, presented).await {
         Ok(session) => session,
         Err(answer) => return answer,
     };

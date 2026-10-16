@@ -200,7 +200,7 @@ pub(crate) fn table_named(source: &Source) -> Option<&str> {
 /// The id sits beside the value rather than inside it, which is where a record's
 /// id sits everywhere else in this store — so a caller reads it the same way it
 /// reads any other answer, and no projection has to learn a special field.
-pub(crate) fn node_row(store: &Store) -> Result<(RecordId, Value)> {
+pub(crate) async fn node_row(store: &Store) -> Result<(RecordId, Value)> {
     let identity = store.node_identity()?;
     let mut fields = BTreeMap::new();
     // The effective role, matching `INFO FOR NODE` — both are reports of the
@@ -209,7 +209,8 @@ pub(crate) fn node_row(store: &Store) -> Result<(RecordId, Value)> {
         "roles".to_owned(),
         Value::Array(
             store
-                .effective_roles()?
+                .effective_roles()
+                .await?
                 .names()
                 .into_iter()
                 .map(Value::from)

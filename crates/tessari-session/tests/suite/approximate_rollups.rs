@@ -11,6 +11,7 @@
 )]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_encoding::{FormatVersion, FormatVersionKey, StoreKey, StoreValue};
@@ -21,7 +22,7 @@ use tessari_types::{Number, RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 const DEFINE: &str = "DEFINE ROLLUP hourly FROM visits WINDOW 1h BY page COMPUTE count(*) AS n, \
@@ -196,7 +197,7 @@ fn a_rollup_keeps_a_sketch_only_as_declared() {
 #[test]
 fn a_store_holding_an_older_format_refuses_a_sketch_rollup_until_finalized() {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    drop(Store::open(Arc::clone(&backend)).unwrap());
+    drop(Store::open(Arc::clone(&backend)).now().unwrap());
     let older = FormatVersion::SKETCH_ROLLUP.get().checked_sub(1).unwrap();
     backend
         .apply(WriteBatch::new().put(
@@ -205,7 +206,7 @@ fn a_store_holding_an_older_format_refuses_a_sketch_rollup_until_finalized() {
             FormatVersion::new(older).encode(),
         ))
         .unwrap();
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(
@@ -232,7 +233,10 @@ fn a_sketch_column_the_reader_may_not_see_merges_nothing() {
         .run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
     let mut owner = Session::new(&store);
-    owner.sign_in("root", "correct horse battery").unwrap();
+    owner
+        .sign_in("root", "correct horse battery")
+        .now()
+        .unwrap();
     owner
         .run_now(
             "DEFINE USER narrow ON NAMESPACE prod AUTHORITIES read \
@@ -241,7 +245,10 @@ fn a_sketch_column_the_reader_may_not_see_merges_nothing() {
         )
         .unwrap();
     let mut narrow = Session::new(&store);
-    narrow.sign_in("narrow", "correct horse battery").unwrap();
+    narrow
+        .sign_in("narrow", "correct horse battery")
+        .now()
+        .unwrap();
     narrow
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();

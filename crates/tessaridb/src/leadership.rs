@@ -34,8 +34,8 @@ impl Db {
     /// are read together: the fence answers *may I still write*, the epoch
     /// answers *which leadership am I writing under*, and a greeting carries the
     /// second to every peer that routes on it.
-    pub fn hold(&self, epoch: tessari_types::Epoch, lease: Lease) {
-        self.store.hold(epoch, lease);
+    pub async fn hold(&self, epoch: tessari_types::Epoch, lease: Lease) {
+        self.store.hold(epoch, lease).await;
     }
 
     /// Write into the log that this node took the leadership of `range`.
@@ -77,11 +77,11 @@ impl Db {
     /// read, the row cannot be encoded, or the commit is refused — including by
     /// this node's own lease fence, which is the correct refusal: a node past
     /// its fence may not write.
-    pub fn record_leadership(&self, range: Reach, epoch: tessari_types::Epoch) -> Result<()> {
+    pub async fn record_leadership(&self, range: Reach, epoch: tessari_types::Epoch) -> Result<()> {
         let me = self.store.node_identity()?.id;
         let mut transaction = self.store.begin()?;
         Catalog::new(&mut transaction).record_leadership(range, me, epoch)?;
-        transaction.commit()?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -102,9 +102,9 @@ impl Db {
     ///
     /// Returns an error when the transaction cannot be opened or a stored
     /// definition cannot be read.
-    pub fn leader_of(&self, range: Reach) -> Result<Option<LeadershipDefinition>> {
+    pub async fn leader_of(&self, range: Reach) -> Result<Option<LeadershipDefinition>> {
         let mut transaction = self.store.begin()?;
-        Ok(Catalog::new(&mut transaction).leader_of(range)?)
+        Ok(Catalog::new(&mut transaction).leader_of(range).await?)
     }
 
     /// The leadership epoch this node is writing under, if a round granted it
@@ -147,10 +147,11 @@ impl Db {
     /// second finder for the second field would be a second answer to *which
     /// peer may write*, and the two would disagree the day somebody declared
     /// two writable peers and only one of them checked.
-    pub fn writable_peer(&self) -> Result<Option<ReplicaDefinition>> {
+    pub async fn writable_peer(&self) -> Result<Option<ReplicaDefinition>> {
         let mut transaction = self.store.begin()?;
         let mut writable = Catalog::new(&mut transaction)
-            .replicas()?
+            .replicas()
+            .await?
             .into_iter()
             .filter(|peer| peer.roles.has(Roles::WRITABLE));
         let Some(found) = writable.next() else {
@@ -175,10 +176,11 @@ impl Db {
     /// # Errors
     ///
     /// Returns an error when the catalog cannot be read.
-    pub fn member(&self, node: &[u8; NODE_ID_LEN]) -> Result<Option<ReplicaDefinition>> {
+    pub async fn member(&self, node: &[u8; NODE_ID_LEN]) -> Result<Option<ReplicaDefinition>> {
         let mut transaction = self.store.begin()?;
         Ok(Catalog::new(&mut transaction)
-            .replicas()?
+            .replicas()
+            .await?
             .into_iter()
             .find(|peer| peer.node.as_ref() == Some(node)))
     }

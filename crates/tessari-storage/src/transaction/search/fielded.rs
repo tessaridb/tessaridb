@@ -28,7 +28,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a posting cannot be decoded.
-    pub fn member_postings(
+    pub async fn member_postings(
         &self,
         index: &IndexDefinition,
         terms: &[String],
@@ -42,7 +42,7 @@ impl Transaction<'_> {
             self.walk_range(
                 PostingKey::keyspace(),
                 &KeyRange::prefix(&prefix),
-                |key, value| {
+                async |key, value| {
                     let fields = Posting::located(value.as_slice())?.fields;
                     if fields.is_empty() {
                         fielded = false;
@@ -52,7 +52,8 @@ impl Transaction<'_> {
                     found.entry(id).or_default().insert(term.clone(), fields);
                     Ok(())
                 },
-            )?;
+            )
+            .await?;
             if !fielded {
                 return Ok(None);
             }

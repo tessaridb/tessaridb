@@ -17,15 +17,21 @@ use super::AFTER_PLACEMENT;
 use crate::catalog::ShardMap;
 use crate::{Catalog, Reach, RecordAddress, Store, TableKind, TableShape};
 
-#[test]
-fn a_map_that_moves_before_the_gate_files_the_write_where_the_new_map_puts_it() {
+#[tokio::test]
+async fn a_map_that_moves_before_the_gate_files_the_write_where_the_new_map_puts_it() {
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .await
         .expect("a memory store opens");
     let mut transaction = store.begin().expect("a transaction begins");
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("prod").expect("namespace").id;
+    let namespace = catalog
+        .create_namespace("prod")
+        .await
+        .expect("namespace")
+        .id;
     let database = catalog
         .create_database(namespace, "shop")
+        .await
         .expect("database")
         .id;
     let orders = catalog
@@ -44,9 +50,10 @@ fn a_map_that_moves_before_the_gate_files_the_write_where_the_new_map_puts_it() 
                 spread: false,
             },
         )
+        .await
         .expect("a split table")
         .id;
-    transaction.commit().expect("the declarations commit");
+    transaction.commit().await.expect("the declarations commit");
     let tail = |shard: u32| {
         store
             .committed_tail(
@@ -83,7 +90,7 @@ fn a_map_that_moves_before_the_gate_files_the_write_where_the_new_map_puts_it() 
         RecordAddress::new(namespace, database, orders, RecordId::from("r")),
         b"{}".to_vec(),
     );
-    write.commit().expect("the write commits");
+    write.commit().await.expect("the write commits");
 
     assert_eq!(
         tail(3),

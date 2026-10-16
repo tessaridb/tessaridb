@@ -16,30 +16,30 @@ impl Session<'_> {
     /// `uninitialised` is read from the catalog and the other two from this
     /// process, which is the split the root record and the key already have:
     /// the root travels with the store, the key never leaves the process.
-    pub(super) fn info_seal(
+    pub(super) async fn info_seal(
         &self,
         transaction: &mut Transaction<'_>,
     ) -> Result<BTreeMap<String, Value>> {
-        let initialised = Catalog::new(transaction).vault_root()?.is_some();
+        let initialised = Catalog::new(transaction).vault_root().await?.is_some();
         let state = self.store.vault().state();
         Ok(self.seal_report(if initialised { Some(state) } else { None }))
     }
 
     /// `INFO FOR SEAL OF team` (ADR-0093 D4): the state of whatever opens this
     /// vault — its own key, or the store's — and which of the two.
-    pub(super) fn info_seal_of(
+    pub(super) async fn info_seal_of(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
-        let (_, definition) = self.named_vault(transaction, name, span)?;
+        let (_, definition) = self.named_vault(transaction, name, span).await?;
         let (mut report, custody) = match definition.vault_custody() {
             Some(custody @ VaultCustody::Own(root)) => (
                 self.seal_report(Some(self.store.vault().own_state(root.key_id))),
                 custody,
             ),
-            Some(custody @ VaultCustody::Store(_)) => (self.info_seal(transaction)?, custody),
+            Some(custody @ VaultCustody::Store(_)) => (self.info_seal(transaction).await?, custody),
             None => {
                 return Err(Error::Unknown {
                     entity: "vault",
@@ -73,27 +73,32 @@ impl Session<'_> {
         report
     }
 
-    pub(super) fn info_vault(
+    pub(super) async fn info_vault(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         let missing = || Error::Unknown {
             entity: "vault",
             name: name.text.clone(),
             span,
         };
         let id = Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &name.text)?
+            .table_id(context.namespace, context.database, &name.text)
+            .await?
             .ok_or_else(missing)?;
-        let definition = Catalog::new(transaction).table(id)?.ok_or_else(missing)?;
+        let definition = Catalog::new(transaction)
+            .table(id)
+            .await?
+            .ok_or_else(missing)?;
         if !definition.is_vault() {
             return Err(missing());
         }
         let fields = Catalog::new(transaction)
-            .declared_fields(id)?
+            .declared_fields(id)
+            .await?
             .into_iter()
             .map(|field| {
                 (
@@ -124,7 +129,7 @@ impl Session<'_> {
     /// to step over them: no field of any record reaches the answer, sealed or
     /// not. `next` is absent when the page came back short, because a short page
     /// is the last one.
-    pub(super) fn info_vault_records(
+    pub(super) async fn info_vault_records(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
@@ -137,24 +142,31 @@ impl Session<'_> {
             name: table.name.text.clone(),
             span,
         };
-        let (context, id) = self.resolve_any_table(transaction, table)?;
+        let (context, id) = self.resolve_any_table(transaction, table).await?;
         let is_vault = Catalog::new(transaction)
-            .table(id)?
+            .table(id)
+            .await?
             .is_some_and(|definition| definition.is_vault());
         if !is_vault {
             return Err(missing());
         }
         let wanted = usize::try_from(limit.unwrap_or(VAULT_PAGE)).unwrap_or(usize::MAX);
         let page = match after {
-            Some(anchor) => transaction.records_after(
-                context.namespace,
-                context.database,
-                id,
-                anchor.id.fixed(anchor.span)?,
-                Some(wanted),
-            )?,
+            Some(anchor) => {
+                transaction
+                    .records_after(
+                        context.namespace,
+                        context.database,
+                        id,
+                        anchor.id.fixed(anchor.span)?,
+                        Some(wanted),
+                    )
+                    .await?
+            }
             None => {
-                transaction.first_records_of(context.namespace, context.database, id, wanted)?
+                transaction
+                    .first_records_of(context.namespace, context.database, id, wanted)
+                    .await?
             }
         };
         let ids: Vec<Value> = page.into_iter().map(|(held, _)| id_value(held)).collect();
@@ -207,13 +219,13 @@ impl Session<'_> {
     /// The material comes back with the names because it is the application's
     /// own ciphertext and the store never read it. What the store's own entry
     /// holds is not in the answer — see `tessari_storage::recipients`.
-    pub(super) fn info_recipients(
+    pub(super) async fn info_recipients(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
-        let (_, definition, held) = self.vault_record(transaction, target, span)?;
+        let (_, definition, held) = self.vault_record(transaction, target, span).await?;
         let entries = tessari_storage::recipients(&held, &definition.name)?;
         Ok(BTreeMap::from([(
             "recipients".to_owned(),

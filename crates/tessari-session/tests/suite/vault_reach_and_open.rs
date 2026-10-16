@@ -22,6 +22,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -40,7 +41,9 @@ const USING: &str = "USE NAMESPACE prod; USE DATABASE work;";
 /// statement names finds nothing to refuse — so a test built on one would assert
 /// nothing at all.
 fn store() -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     {
         let mut session = Session::new(&store);
         session
@@ -56,7 +59,7 @@ fn store() -> Store {
             ))
             .unwrap();
         let mut root = Session::new(&store);
-        root.sign_in("root", PASSWORD).unwrap();
+        root.sign_in("root", PASSWORD).now().unwrap();
         root.run_now(&format!(
             "{USING}
              DEFINE USER ada ON prod.work ROLE editor PASSWORD '{PASSWORD}';
@@ -69,7 +72,7 @@ fn store() -> Store {
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session.run_now(USING).unwrap();
     session
 }

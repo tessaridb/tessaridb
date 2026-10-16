@@ -109,14 +109,14 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns [`Error::NameTaken`] when the name is already declared.
-    pub fn create_analyzer(
+    pub async fn create_analyzer(
         &mut self,
         name: &str,
         analyzer: Analyzer,
     ) -> Result<AnalyzerDefinition> {
         let qualified = qualify(Level::Analyzer, &[], name);
-        self.reserve_name(&qualified)?;
-        let id = self.allocate(Level::Analyzer)?;
+        self.reserve_name(&qualified).await?;
+        let id = self.allocate(Level::Analyzer).await?;
         let definition = AnalyzerDefinition {
             id,
             name: name.to_owned(),
@@ -132,8 +132,9 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn analyzer(&self, id: u32) -> Result<Option<AnalyzerDefinition>> {
-        self.read(system::ANALYZERS, id)?
+    pub async fn analyzer(&self, id: u32) -> Result<Option<AnalyzerDefinition>> {
+        self.read(system::ANALYZERS, id)
+            .await?
             .as_ref()
             .map(AnalyzerDefinition::from_value)
             .transpose()
@@ -155,8 +156,8 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn drop_analyzer(&mut self, id: u32) -> Result<bool> {
-        let Some(definition) = self.analyzer(id)? else {
+    pub async fn drop_analyzer(&mut self, id: u32) -> Result<bool> {
+        let Some(definition) = self.analyzer(id).await? else {
             return Ok(false);
         };
         let qualified = qualify(Level::Analyzer, &[], &definition.name);
@@ -174,13 +175,17 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn analyzers(&self) -> Result<Vec<AnalyzerDefinition>> {
+    pub async fn analyzers(&self) -> Result<Vec<AnalyzerDefinition>> {
         let mut found = Vec::new();
-        for (_, payload) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::ANALYZERS,
-        )? {
+        for (_, payload) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::ANALYZERS,
+            )
+            .await?
+        {
             found.push(AnalyzerDefinition::from_value(&decode_payload(&payload)?)?);
         }
         Ok(found)

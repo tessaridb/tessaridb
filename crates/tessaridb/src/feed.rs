@@ -194,22 +194,22 @@ impl Feed {
     /// does not exist or that it was not granted; a feed over a split table is
     /// also refused a cursor it cannot read and a log holding another node's
     /// writes.
-    pub fn open(
+    pub async fn open(
         db: &Db,
         session: &mut Session<'_>,
         asked: &Following<'_>,
     ) -> Result<Self, FeedRefused> {
-        if let Err(refusal) = session.may_read(db.store()) {
+        if let Err(refusal) = session.may_read(db.store()).await {
             return Err(refusal.into());
         }
         // The *table* question, which `may_read` does not answer. A
         // grant-governed subscriber sees what they were granted and nothing
         // else — the same answer their `SELECT` per table would give.
-        let readable = session.readable(db.store())?;
+        let readable = session.readable(db.store()).await?;
         let (Some(namespace), Some(database)) = (session.namespace(), session.database()) else {
             return Err(FeedRefused::NoDatabaseSelected);
         };
-        let Some(tenancy) = db.tenancy_in(namespace, database).ok().flatten() else {
+        let Some(tenancy) = db.tenancy_in(namespace, database).await.ok().flatten() else {
             return Err(FeedRefused::TenancyGone);
         };
         if asked.condition.is_some() && asked.table.is_none() {
@@ -217,7 +217,7 @@ impl Feed {
         }
         let watch = match asked.table {
             None => Watch::default(),
-            Some(name) => match db.table_in(namespace, database, name) {
+            Some(name) => match db.table_in(namespace, database, name).await {
                 Ok(Some(table)) => {
                     // Named explicitly, so the refusal is better than a feed
                     // that silently delivers nothing forever. Watching
@@ -245,10 +245,13 @@ impl Feed {
         // whose scope holds one follows all of them, in the writer's order,
         // with a cursor per log (Q-791). A scope with none reads the database's
         // log alone.
-        let split = in_scope(table.as_deref(), db.split_tables_in(tenancy.0, tenancy.1)?);
+        let split = in_scope(
+            table.as_deref(),
+            db.split_tables_in(tenancy.0, tenancy.1).await?,
+        );
         let narrowed = match (asked.condition, watch.table) {
             (Some(condition), Some(about)) => {
-                let visible = session.visible(db.store(), about)?;
+                let visible = session.visible(db.store(), about).await?;
                 Some((about, narrowed::Narrowed::open(&condition, &visible)?))
             }
             _ => None,
@@ -271,7 +274,7 @@ impl Feed {
     /// Returns a refusal **mid-feed** when the authority it was reading on is
     /// taken away, which is what ends a subscription a revocation was meant to
     /// end, and when a table it follows is split under it.
-    pub fn round(
+    pub async fn round(
         &mut self,
         db: &Db,
         session: &mut Session<'_>,
@@ -281,10 +284,10 @@ impl Feed {
         // round. Asked only at the start they would be bounded by the
         // subscription's lifetime — which for a connection that stays open is no
         // bound at all, and is the longest-lived hole a revocation can leave.
-        if let Err(refusal) = session.may_read(db.store()) {
+        if let Err(refusal) = session.may_read(db.store()).await {
             return Err(refusal.into());
         }
-        let readable = session.readable(db.store())?;
+        let readable = session.readable(db.store()).await?;
         // The field grant too: cached per table for the round, and a round is
         // what the cache lives for. A revocation that reached the table list but
         // not the field list would keep pushing a column nobody grants.
@@ -293,7 +296,7 @@ impl Feed {
         // writes into logs it is not reading, with nothing in an error state.
         let now = in_scope(
             self.table.as_deref(),
-            db.split_tables_in(self.tenancy.0, self.tenancy.1)?,
+            db.split_tables_in(self.tenancy.0, self.tenancy.1).await?,
         );
         if now != self.split {
             return Err(FeedRefused::SplitAfterStart);
@@ -301,7 +304,7 @@ impl Feed {
         // And the fields the condition reads: a grant that hides one ends the
         // feed rather than leaving it filtering on a field it may not see.
         if let Some((about, narrowed)) = &self.narrowed {
-            let held = session.visible(db.store(), *about)?;
+            let held = session.visible(db.store(), *about).await?;
             narrowed.still_visible(&held)?;
             self.visible.insert(*about, held);
         }
@@ -332,14 +335,20 @@ impl Feed {
             let allowed = match self.visible.get(&change.table) {
                 Some(held) => held.clone(),
                 None => {
-                    let held = session.visible(db.store(), change.table).unwrap_or(None);
+                    let held = session
+                        .visible(db.store(), change.table)
+                        .await
+                        .unwrap_or(None);
                     self.visible.insert(change.table, held.clone());
                     held
                 }
             };
             let mut removal = None;
             if let (Some((_, narrowed)), Some(transaction)) = (&mut self.narrowed, &mut judging) {
-                match narrowed.judge(db, session, transaction, change, &allowed)? {
+                match narrowed
+                    .judge(db, session, transaction, change, &allowed)
+                    .await?
+                {
                     narrowed::Verdict::Deliver => narrowed.delivered(),
                     narrowed::Verdict::Removal => {
                         narrowed.delivered();
@@ -358,7 +367,7 @@ impl Feed {
             // inventing one would be worse than not sending it. The cursor has
             // already moved past it either way. Asked only of a change that is
             // sent: a narrowed feed skips most of what it reads.
-            let named = db.table_name(change.table).unwrap_or(None);
+            let named = db.table_name(change.table).await.unwrap_or(None);
             let given = removal.as_ref().unwrap_or(change);
             if !deliver(given, named.as_deref(), &allowed, resume.as_deref()) {
                 return Ok(Round::Ended);
@@ -404,7 +413,7 @@ fn in_scope(table: Option<&str>, split: Vec<source::Split>) -> Vec<source::Split
 /// # Errors
 ///
 /// As [`Feed::open`] before the first change, and as [`Feed::round`] after it.
-pub fn follow(
+pub async fn follow(
     db: &Db,
     session: &mut Session<'_>,
     asked: &Following<'_>,
@@ -412,7 +421,7 @@ pub fn follow(
     stop: &dyn Fn() -> bool,
     deliver: &mut Deliver<'_>,
 ) -> Result<(), FeedRefused> {
-    let mut feed = Feed::open(db, session, asked)?;
+    let mut feed = Feed::open(db, session, asked).await?;
     let mut seen = 0;
     loop {
         // A staged shutdown reaches a feed here. A pusher spends its life
@@ -424,7 +433,7 @@ pub fn follow(
         if stop() {
             return Ok(());
         }
-        match feed.round(db, session, deliver)? {
+        match feed.round(db, session, deliver).await? {
             Round::Delivered => {}
             Round::Empty => seen = committed.wait(seen),
             Round::Ended => return Ok(()),

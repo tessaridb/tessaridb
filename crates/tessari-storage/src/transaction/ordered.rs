@@ -92,7 +92,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn records_in_descending_order(
+    pub async fn records_in_descending_order(
         &self,
         index: &IndexDefinition,
         leading_fields: usize,
@@ -169,7 +169,7 @@ impl Transaction<'_> {
                         RecordAddress::new(index.namespace, index.database, index.table, id.clone())
                     })
                     .collect();
-                for ((values, id), payload) in chunk.iter().zip(self.get_each(&addresses)?) {
+                for ((values, id), payload) in chunk.iter().zip(self.get_each(&addresses).await?) {
                     if let Some(edge) = &boundary
                         && values.leading_of(leading_fields)? != edge.as_slice()
                     {
@@ -237,7 +237,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn records_in_ascending_order(
+    pub async fn records_in_ascending_order(
         &self,
         index: &IndexDefinition,
         leading_fields: usize,
@@ -307,7 +307,7 @@ impl Transaction<'_> {
                         RecordAddress::new(index.namespace, index.database, index.table, id.clone())
                     })
                     .collect();
-                for ((values, id), payload) in chunk.iter().zip(self.get_each(&addresses)?) {
+                for ((values, id), payload) in chunk.iter().zip(self.get_each(&addresses).await?) {
                     if let Some(edge) = &boundary
                         && values.leading_of(leading_fields)? != edge.as_slice()
                     {

@@ -16,6 +16,7 @@
 // bgv-allow(unwrap): test-only module; a panic is how a test reports its failure, as in group_tests.rs.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
+use crate::now::Now;
 use std::sync::{Arc, Mutex};
 
 use tessari_kv::{
@@ -89,16 +90,18 @@ fn address(id: u32) -> RecordAddress {
 fn write(store: &Store, id: u32) -> crate::Result<()> {
     let mut transaction = store.begin()?;
     transaction.put(address(id), format!("{{\"n\":{id}}}").into_bytes());
-    transaction.commit().map(|_| ())
+    transaction.commit().now().map(|_| ())
 }
 
 fn read(store: &Store, id: u32) -> Option<Vec<u8>> {
-    store.begin().unwrap().get(&address(id)).unwrap()
+    store.begin().unwrap().get(&address(id)).now().unwrap()
 }
 
 fn a_failed_sync_stops_writes_until_the_store_is_reopened(grouped: bool) {
     let backend = Faulty::new(grouped);
-    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     write(&store, 1).unwrap();
 
     backend.fail_next(Error::Unavailable {
@@ -125,7 +128,9 @@ fn a_failed_sync_stops_writes_until_the_store_is_reopened(grouped: bool) {
     assert!(read(&store, 3).is_none(), "the refused write did not land");
 
     drop(store);
-    let reopened = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let reopened = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     write(&reopened, 4).unwrap();
     assert!(read(&reopened, 1).is_some() && read(&reopened, 4).is_some());
 }
@@ -144,7 +149,9 @@ fn a_failed_write_stops_a_store_that_lands_commits_as_a_group() {
 fn a_write_refused_before_it_was_taken_does_not_stop_the_store() {
     for grouped in [false, true] {
         let backend = Faulty::new(grouped);
-        let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         backend.fail_next(Error::Busy {
             backend: "faulty",
             reason: "writes are stalled".to_owned(),

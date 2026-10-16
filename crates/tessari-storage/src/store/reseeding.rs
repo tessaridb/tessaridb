@@ -36,7 +36,7 @@ impl Store {
     ///
     /// Returns an error when the store cannot be read, a stored value cannot be
     /// decoded, or a tombstone is refused by the catalog.
-    pub fn sweep_unreplaced(&self, within: Reach, before: Sequence) -> Result<u64> {
+    pub async fn sweep_unreplaced(&self, within: Reach, before: Sequence) -> Result<u64> {
         let mut catalog: Vec<Mutation> = Vec::new();
         let mut data: Vec<Mutation> = Vec::new();
         let mut removed = 0_u64;
@@ -79,7 +79,8 @@ impl Store {
                     continue;
                 }
                 let shard = crate::catalog::Catalog::new(&mut self.begin()?)
-                    .table(stored.table)?
+                    .table(stored.table)
+                    .await?
                     .and_then(|definition| definition.shards)
                     .map(|map| map.shard_of(&stored.id));
                 let mutation = Mutation {
@@ -98,7 +99,7 @@ impl Store {
                 } else {
                     data.push(mutation);
                     if data.len() >= PAGE {
-                        removed = removed.saturating_add(self.tombstone(&mut data)?);
+                        removed = removed.saturating_add(self.tombstone(&mut data).await?);
                     }
                 }
             }
@@ -106,18 +107,19 @@ impl Store {
                 break;
             }
         }
-        removed = removed.saturating_add(self.tombstone(&mut data)?);
-        removed = removed.saturating_add(self.tombstone(&mut catalog)?);
+        removed = removed.saturating_add(self.tombstone(&mut data).await?);
+        removed = removed.saturating_add(self.tombstone(&mut catalog).await?);
         Ok(removed)
     }
 
     /// Apply a held run of tombstones as one chunk, and empty the run.
-    fn tombstone(&self, held: &mut Vec<Mutation>) -> Result<u64> {
+    async fn tombstone(&self, held: &mut Vec<Mutation>) -> Result<u64> {
         if held.is_empty() {
             return Ok(0);
         }
         let count = u64::try_from(held.len()).unwrap_or(u64::MAX);
-        self.restore_state_chunk(&LogRecord::new(std::mem::take(held)))?;
+        self.restore_state_chunk(&LogRecord::new(std::mem::take(held)))
+            .await?;
         Ok(count)
     }
 }

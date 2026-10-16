@@ -35,7 +35,7 @@ impl Session<'_> {
     /// re-test of `first`. Candidates are still emitted in the order the author
     /// wrote the conjuncts, because that is what makes an equal-ranked tie
     /// predictable from the condition rather than from the schema.
-    pub(crate) fn enumerate(
+    pub(crate) async fn enumerate(
         &self,
         transaction: &mut Transaction<'_>,
         condition: &Expr,
@@ -52,7 +52,7 @@ impl Session<'_> {
         // cannot be a bound; `seekable` has already excluded those.
         let mut bounds_of = Vec::with_capacity(seeks.len());
         for seek in &seeks {
-            bounds_of.push(self.evaluate(transaction, seek.value)?);
+            bounds_of.push(self.evaluate(transaction, seek.value).await?);
         }
         // What the condition fixes each path to. The **first** equality on a
         // path wins: `a = 1 AND a = 2` answers with nothing whichever value
@@ -436,8 +436,10 @@ impl Session<'_> {
             }
         }
 
-        self.offer_regional(transaction, condition, declared, &mut offered)?;
-        self.offer_containing(transaction, condition, declared, &mut offered)?;
+        self.offer_regional(transaction, condition, declared, &mut offered)
+            .await?;
+        self.offer_containing(transaction, condition, declared, &mut offered)
+            .await?;
         Ok(offered)
     }
 }

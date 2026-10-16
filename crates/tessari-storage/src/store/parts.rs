@@ -288,9 +288,12 @@ impl Store {
     /// refusal for the same reason [`Store::admits_two_writers`] answers `false`
     /// on a missing namespace: an absent declaration is not a declaration, and
     /// of the two readings it is the one that loses nothing.
-    pub(crate) fn conflict_policy(&self, table: TableId) -> Result<ConflictPolicy> {
+    pub(crate) async fn conflict_policy(&self, table: TableId) -> Result<ConflictPolicy> {
         let mut transaction = self.begin()?;
-        let Some(definition) = crate::catalog::Catalog::new(&mut transaction).table(table)? else {
+        let Some(definition) = crate::catalog::Catalog::new(&mut transaction)
+            .table(table)
+            .await?
+        else {
             return Ok(ConflictPolicy::Refuse);
         };
         Ok(definition.conflict.unwrap_or(ConflictPolicy::Refuse))
@@ -310,13 +313,14 @@ impl Store {
     /// enforced. A class stored by a later build that this one cannot read is a
     /// decoding failure from the catalog and propagates as one, rather than
     /// being read as either answer.
-    pub(crate) fn admits_two_writers(&self, home: Reach) -> Result<bool> {
+    pub(crate) async fn admits_two_writers(&self, home: Reach) -> Result<bool> {
         let (Some(namespace), _) = home.parts() else {
             return Ok(false);
         };
         let mut transaction = self.begin()?;
-        let Some(definition) =
-            crate::catalog::Catalog::new(&mut transaction).namespace(namespace)?
+        let Some(definition) = crate::catalog::Catalog::new(&mut transaction)
+            .namespace(namespace)
+            .await?
         else {
             // The namespace is gone while its log is still being applied. Not a
             // declaration, so not an exemption — the fence stands, which is the

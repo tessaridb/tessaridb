@@ -25,18 +25,18 @@ use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 /// It reads the whole table, which is the only honest way to answer, and it is
 /// therefore a statement an operator runs rather than something the store does
 /// on its own.
-pub fn violations(
+pub async fn violations(
     view: &mut Transaction<'_>,
     namespace: NamespaceId,
     database: DatabaseId,
     table: TableId,
 ) -> Result<Vec<Violation>> {
-    let schema = declared_schema(view, table)?;
+    let schema = declared_schema(view, table).await?;
     if schema.constrains_nothing() {
         return Ok(Vec::new());
     }
     let mut found = Vec::new();
-    for (id, payload) in view.sweep_table(namespace, database, table)? {
+    for (id, payload) in view.sweep_table(namespace, database, table).await? {
         let Some(refusal) = check(&schema, &decode_payload(&payload)?, &id) else {
             continue;
         };
@@ -50,8 +50,11 @@ pub fn violations(
 /// The half of [`build_schema`] that reads nothing but the catalog, so that a
 /// caller with no log record in hand — [`violations`] — asks the same question
 /// the apply path asks and cannot drift from it by asking a second way.
-pub(crate) fn declared_schema(view: &mut Transaction<'_>, table: TableId) -> Result<TableSchema> {
-    let defined = Catalog::new(view).table(table)?;
+pub(crate) async fn declared_schema(
+    view: &mut Transaction<'_>,
+    table: TableId,
+) -> Result<TableSchema> {
+    let defined = Catalog::new(view).table(table).await?;
     let name = defined
         .as_ref()
         .map(|found| found.name.clone())
@@ -64,7 +67,11 @@ pub(crate) fn declared_schema(view: &mut Transaction<'_>, table: TableId) -> Res
         .map(|found| (found.namespace, found.database));
     let schemafull = defined.is_some_and(|found| found.schemafull);
     let fields: BTreeMap<String, Declared> = match tenancy {
-        Some((namespace, database)) => Catalog::new(view).fields_on(namespace, database, table)?,
+        Some((namespace, database)) => {
+            Catalog::new(view)
+                .fields_on(namespace, database, table)
+                .await?
+        }
         None => Vec::new(),
     }
     .into_iter()
@@ -91,7 +98,7 @@ pub(crate) fn declared_schema(view: &mut Transaction<'_>, table: TableId) -> Res
 }
 
 /// The schema a table will have once this record is applied.
-pub(crate) fn build_schema(
+pub(crate) async fn build_schema(
     view: &mut Transaction<'_>,
     record: &LogRecord,
     table: TableId,
@@ -103,7 +110,7 @@ pub(crate) fn build_schema(
         mut vault,
         queue,
         mut partition,
-    } = declared_schema(view, table)?;
+    } = declared_schema(view, table).await?;
 
     for mutation in record.mutations() {
         match catalog_change(mutation)? {
@@ -127,7 +134,7 @@ pub(crate) fn build_schema(
             // A tombstone carries only the field's id, so what it removed has to
             // be read back from the state this record is applied on top of.
             Some(CatalogChange::FieldDropped(address)) => {
-                if let Some(payload) = view.get(&address)? {
+                if let Some(payload) = view.get(&address).await? {
                     let dropped =
                         crate::catalog::FieldDefinition::from_value(&decode_payload(&payload)?)?;
                     if dropped.table == table {
@@ -154,7 +161,7 @@ pub(crate) fn build_schema(
 ///
 /// Loosening never needs a re-check: a dropped declaration only widens what is
 /// allowed, and a table redefined schemaless refuses less than it did.
-pub(crate) fn tightened_tables(
+pub(crate) async fn tightened_tables(
     view: &mut Transaction<'_>,
     record: &LogRecord,
 ) -> Result<BTreeSet<TableAddress>> {
@@ -193,7 +200,7 @@ pub(crate) fn tightened_tables(
             // nothing, and the cost is one scan on a statement `DEFINE FIELD`
             // already pays a scan for.
             Some(CatalogChange::FieldDropped(address)) => {
-                if let Some(payload) = view.get(&address)? {
+                if let Some(payload) = view.get(&address).await? {
                     let dropped =
                         crate::catalog::FieldDefinition::from_value(&decode_payload(&payload)?)?;
                     tables.insert((dropped.namespace, dropped.database, dropped.table));
@@ -206,13 +213,14 @@ pub(crate) fn tightened_tables(
 }
 
 /// Every row a table holds once this record is applied.
-pub(crate) fn rows_after(
+pub(crate) async fn rows_after(
     view: &Transaction<'_>,
     record: &LogRecord,
     address: &TableAddress,
 ) -> Result<Vec<(RecordId, Vec<u8>)>> {
     let mut rows: BTreeMap<RecordId, Vec<u8>> = view
-        .sweep_table(address.0, address.1, address.2)?
+        .sweep_table(address.0, address.1, address.2)
+        .await?
         .into_iter()
         .collect();
     for mutation in record.mutations() {

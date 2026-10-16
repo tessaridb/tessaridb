@@ -65,10 +65,11 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored record cannot be read.
-    pub fn finalized_format(&self) -> Result<Option<FormatVersion>> {
+    pub async fn finalized_format(&self) -> Result<Option<FormatVersion>> {
         let Some(payload) = self
             .transaction
-            .get(&system::address(system::FAILOVER, key()))?
+            .get(&system::address(system::FAILOVER, key()))
+            .await?
         else {
             return Ok(None);
         };

@@ -44,17 +44,17 @@ use super::worth::worth_serving;
 /// # Errors
 ///
 /// Returns an error when the catalog, a statistic or an index cannot be read.
-pub(crate) fn serving(
+pub(crate) async fn serving(
     transaction: &mut Transaction<'_>,
     table: TableId,
     offered: Vec<Candidate>,
     lifted: bool,
 ) -> Result<Option<Candidate>> {
-    let offered = estimated(transaction, table, offered)?;
+    let offered = estimated(transaction, table, offered).await?;
     let Some(mut chosen) = choose(offered) else {
         return Ok(None);
     };
-    match worth_serving(transaction, table, &chosen, lifted)? {
+    match worth_serving(transaction, table, &chosen, lifted).await? {
         Some(rows) => {
             chosen.rows = rows;
             Ok(Some(chosen))
@@ -104,7 +104,7 @@ pub(crate) fn narrows_to(
 }
 
 /// Every `Unknown` candidate a fresh statistic can estimate, estimated.
-fn estimated(
+async fn estimated(
     transaction: &mut Transaction<'_>,
     table: TableId,
     mut offered: Vec<Candidate>,
@@ -115,7 +115,7 @@ fn estimated(
     {
         return Ok(offered);
     }
-    let records = Catalog::new(transaction).record_count(table)?;
+    let records = Catalog::new(transaction).record_count(table).await?;
     for candidate in &mut offered {
         if candidate.rows != Rows::Unknown {
             continue;

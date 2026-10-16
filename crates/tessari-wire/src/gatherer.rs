@@ -42,7 +42,11 @@ use crate::link::{Answered, Ask, call};
 use crate::peer::Hello;
 
 /// What this node would tell a peer about itself, read when it is asked.
-pub type Greeting = Box<dyn Fn() -> Result<Hello, GreetingUnavailable> + Send + Sync>;
+pub type Greeting = Box<dyn Fn() -> Greeted + Send + Sync>;
+
+/// What a [`Greeting`] answers, once it has read the store.
+pub type Greeted =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Hello, GreetingUnavailable>>>>;
 
 /// Why this node could not say what it would tell a peer.
 #[derive(Debug)]
@@ -116,11 +120,12 @@ impl Gathering {
     }
 
     /// The leader of `shard`'s governing line and where to dial it.
-    fn leader_of(&self, shard: Reach) -> Result<([u8; NODE_ID_LEN], String), String> {
+    async fn leader_of(&self, shard: Reach) -> Result<([u8; NODE_ID_LEN], String), String> {
         let db = self.db.upgrade().ok_or("this node is stopping")?;
         let mut transaction = db.store().begin().map_err(|why| why.to_string())?;
         let declared = Catalog::new(&mut transaction)
             .replicas()
+            .await
             .map_err(|why| why.to_string())?;
         transaction.rollback();
         let placed: BTreeSet<Reach> = declared.iter().filter_map(|peer| peer.leads).collect();
@@ -138,180 +143,184 @@ impl Gathering {
 }
 
 impl Gathers for Gathering {
-    fn gather(&self, asked: &Asked<'_>) -> Result<Gathered, Unanswered> {
-        let shard = Reach::Shard(asked.namespace, asked.database, asked.table, asked.shard);
-        let (node, endpoint) = self.leader_of(shard).map_err(Unanswered::Refused)?;
-        if node == self.me {
-            return Err(Unanswered::Refused(
-                "this node leads that shard's line and does not hold the shard".to_owned(),
-            ));
-        }
-        if let Some(reduce) = asked.reduce {
-            let heard = self
-                .routing
-                .current()
-                .at(&endpoint)
-                .map(|heard| heard.said.build);
-            if !reads_every_fold(reduce, heard) {
-                return Ok(Gathered {
-                    records: Vec::new(),
-                    node,
-                    reduced: Some(tessari_session::Reduced::Declined),
-                    counted: None,
-                });
+    fn gather<'a>(&'a self, asked: &'a Asked<'_>) -> tessari_session::Gathering<'a> {
+        Box::pin(async move {
+            let shard = Reach::Shard(asked.namespace, asked.database, asked.table, asked.shard);
+            let (node, endpoint) = self.leader_of(shard).await.map_err(Unanswered::Refused)?;
+            if node == self.me {
+                return Err(Unanswered::Refused(
+                    "this node leads that shard's line and does not hold the shard".to_owned(),
+                ));
             }
-        }
-        let said = (self.greeting)().map_err(|why| Unanswered::Refused(why.to_string()))?;
-        let mut page = Gather {
-            namespace: asked.namespace,
-            database: asked.database,
-            table: asked.table,
-            shard: asked.shard,
-            from: asked.window.from.cloned(),
-            to: asked
-                .window
-                .to
-                .map(|(id, inclusive)| (id.clone(), inclusive)),
-            after: None,
-            pushed: asked.pushed.cloned(),
-            enough: asked.enough.and_then(|enough| u64::try_from(enough).ok()),
-            reduce: asked.reduce.cloned(),
-            ordered: asked.ordered.cloned(),
-            counting: asked.counting.cloned(),
-        };
-        let mut records = Vec::new();
-        let mut partials = Vec::new();
-        let mut counted: Option<tessari_storage::SearchCounts> = None;
-        loop {
-            let (_, answered) = call(
-                endpoint.as_str(),
-                &self.keys,
-                node,
-                &said,
-                Ask::Gather(&page),
-            )
-            .map_err(|why| match why {
-                // The leader's map differs from the one this ask was built
-                // from: said as itself, so the asker reads its map again
-                // rather than looking for a leader that did not answer.
-                crate::Error::NotGathered(crate::gathering::Ungathered::MapMoved) => {
-                    Unanswered::Moved
-                }
-                other => Unanswered::Refused(format!("{endpoint}: {other}")),
-            })?;
-            let Answered::Gathered(answered) = answered else {
-                return Err(Unanswered::Refused(format!(
-                    "{endpoint} answered something other than a page"
-                )));
-            };
-            // Counted: figures rather than records, summed page by page; a
-            // leader that sent no count fails the read rather than leaving the
-            // score measured against part of the collection (ADR-0103).
-            if let Some(counting) = asked.counting {
-                let Some(page_counted) = answered
-                    .counted
-                    .filter(|page| page.holding.len() == counting.terms.len())
-                else {
-                    return Err(Unanswered::Refused(format!(
-                        "{endpoint} did not count the shard it was asked to count"
-                    )));
-                };
-                let total = counted.get_or_insert_with(|| tessari_storage::SearchCounts {
-                    holding: vec![0; counting.terms.len()],
-                    ..tessari_storage::SearchCounts::default()
-                });
-                total.documents = total.documents.saturating_add(page_counted.documents);
-                total.tokens = total.tokens.saturating_add(page_counted.tokens);
-                for (held, more) in total.holding.iter_mut().zip(page_counted.holding) {
-                    *held = held.saturating_add(more);
-                }
-                if !answered.more {
-                    return Ok(Gathered {
-                        records: Vec::new(),
-                        node,
-                        reduced: None,
-                        counted,
-                    });
-                }
-                let Some(resume) = answered.resume else {
-                    return Err(Unanswered::Refused(format!(
-                        "{endpoint} said more records follow and gave no place to resume"
-                    )));
-                };
-                page.after = Some(resume);
-                continue;
-            }
-            // Folded: groups rather than records, each page resuming where
-            // the leader's read stopped. A page that declined, or a leader that
-            // sent records when it was asked for folds, sends the asker back to
-            // the records.
-            if asked.reduce.is_some() {
-                let Some(tessari_session::Reduced::Partials(folded)) = answered.reduced else {
+            if let Some(reduce) = asked.reduce {
+                let heard = self
+                    .routing
+                    .current()
+                    .at(&endpoint)
+                    .map(|heard| heard.said.build);
+                if !reads_every_fold(reduce, heard) {
                     return Ok(Gathered {
                         records: Vec::new(),
                         node,
                         reduced: Some(tessari_session::Reduced::Declined),
                         counted: None,
                     });
+                }
+            }
+            let said = (self.greeting)()
+                .await
+                .map_err(|why| Unanswered::Refused(why.to_string()))?;
+            let mut page = Gather {
+                namespace: asked.namespace,
+                database: asked.database,
+                table: asked.table,
+                shard: asked.shard,
+                from: asked.window.from.cloned(),
+                to: asked
+                    .window
+                    .to
+                    .map(|(id, inclusive)| (id.clone(), inclusive)),
+                after: None,
+                pushed: asked.pushed.cloned(),
+                enough: asked.enough.and_then(|enough| u64::try_from(enough).ok()),
+                reduce: asked.reduce.cloned(),
+                ordered: asked.ordered.cloned(),
+                counting: asked.counting.cloned(),
+            };
+            let mut records = Vec::new();
+            let mut partials = Vec::new();
+            let mut counted: Option<tessari_storage::SearchCounts> = None;
+            loop {
+                let (_, answered) = call(
+                    endpoint.as_str(),
+                    &self.keys,
+                    node,
+                    &said,
+                    Ask::Gather(&page),
+                )
+                .map_err(|why| match why {
+                    // The leader's map differs from the one this ask was built
+                    // from: said as itself, so the asker reads its map again
+                    // rather than looking for a leader that did not answer.
+                    crate::Error::NotGathered(crate::gathering::Ungathered::MapMoved) => {
+                        Unanswered::Moved
+                    }
+                    other => Unanswered::Refused(format!("{endpoint}: {other}")),
+                })?;
+                let Answered::Gathered(answered) = answered else {
+                    return Err(Unanswered::Refused(format!(
+                        "{endpoint} answered something other than a page"
+                    )));
                 };
-                partials.extend(folded);
-                if partials.len() > asked.most {
+                // Counted: figures rather than records, summed page by page; a
+                // leader that sent no count fails the read rather than leaving the
+                // score measured against part of the collection (ADR-0103).
+                if let Some(counting) = asked.counting {
+                    let Some(page_counted) = answered
+                        .counted
+                        .filter(|page| page.holding.len() == counting.terms.len())
+                    else {
+                        return Err(Unanswered::Refused(format!(
+                            "{endpoint} did not count the shard it was asked to count"
+                        )));
+                    };
+                    let total = counted.get_or_insert_with(|| tessari_storage::SearchCounts {
+                        holding: vec![0; counting.terms.len()],
+                        ..tessari_storage::SearchCounts::default()
+                    });
+                    total.documents = total.documents.saturating_add(page_counted.documents);
+                    total.tokens = total.tokens.saturating_add(page_counted.tokens);
+                    for (held, more) in total.holding.iter_mut().zip(page_counted.holding) {
+                        *held = held.saturating_add(more);
+                    }
+                    if !answered.more {
+                        return Ok(Gathered {
+                            records: Vec::new(),
+                            node,
+                            reduced: None,
+                            counted,
+                        });
+                    }
+                    let Some(resume) = answered.resume else {
+                        return Err(Unanswered::Refused(format!(
+                            "{endpoint} said more records follow and gave no place to resume"
+                        )));
+                    };
+                    page.after = Some(resume);
+                    continue;
+                }
+                // Folded: groups rather than records, each page resuming where
+                // the leader's read stopped. A page that declined, or a leader that
+                // sent records when it was asked for folds, sends the asker back to
+                // the records.
+                if asked.reduce.is_some() {
+                    let Some(tessari_session::Reduced::Partials(folded)) = answered.reduced else {
+                        return Ok(Gathered {
+                            records: Vec::new(),
+                            node,
+                            reduced: Some(tessari_session::Reduced::Declined),
+                            counted: None,
+                        });
+                    };
+                    partials.extend(folded);
+                    if partials.len() > asked.most {
+                        return Err(Unanswered::Ceiling);
+                    }
+                    if !answered.more {
+                        return Ok(Gathered {
+                            records: Vec::new(),
+                            node,
+                            reduced: Some(tessari_session::Reduced::Partials(partials)),
+                            counted: None,
+                        });
+                    }
+                    let Some(resume) = answered.resume else {
+                        return Err(Unanswered::Refused(format!(
+                            "{endpoint} said more groups follow and gave no place to resume"
+                        )));
+                    };
+                    page.after = Some(resume);
+                    continue;
+                }
+                let more = answered.more;
+                let empty = answered.records.is_empty();
+                records.extend(answered.records);
+                if records.len() > asked.most {
                     return Err(Unanswered::Ceiling);
                 }
-                if !answered.more {
+                // Enough is enough even from a leader that sent past it.
+                if let Some(enough) = asked.enough
+                    && records.len() >= enough
+                {
+                    records.truncate(enough);
                     return Ok(Gathered {
-                        records: Vec::new(),
+                        records,
                         node,
-                        reduced: Some(tessari_session::Reduced::Partials(partials)),
+                        reduced: None,
                         counted: None,
                     });
                 }
-                let Some(resume) = answered.resume else {
-                    return Err(Unanswered::Refused(format!(
-                        "{endpoint} said more groups follow and gave no place to resume"
-                    )));
-                };
-                page.after = Some(resume);
-                continue;
-            }
-            let more = answered.more;
-            let empty = answered.records.is_empty();
-            records.extend(answered.records);
-            if records.len() > asked.most {
-                return Err(Unanswered::Ceiling);
-            }
-            // Enough is enough even from a leader that sent past it.
-            if let Some(enough) = asked.enough
-                && records.len() >= enough
-            {
-                records.truncate(enough);
-                return Ok(Gathered {
-                    records,
-                    node,
-                    reduced: None,
-                    counted: None,
-                });
-            }
-            if !more {
-                return Ok(Gathered {
-                    records,
-                    node,
-                    reduced: None,
-                    counted: None,
-                });
-            }
-            // A narrowed page may keep none of what it read, and says where it
-            // got to; an un-narrowed one that sent nothing never got anywhere.
-            match answered.resume {
-                Some(resume) => page.after = Some(resume),
-                None if empty => {
-                    return Err(Unanswered::Refused(format!(
-                        "{endpoint} said more records follow and sent none"
-                    )));
+                if !more {
+                    return Ok(Gathered {
+                        records,
+                        node,
+                        reduced: None,
+                        counted: None,
+                    });
                 }
-                None => page.after = records.last().map(|(id, _)| id.clone()),
+                // A narrowed page may keep none of what it read, and says where it
+                // got to; an un-narrowed one that sent nothing never got anywhere.
+                match answered.resume {
+                    Some(resume) => page.after = Some(resume),
+                    None if empty => {
+                        return Err(Unanswered::Refused(format!(
+                            "{endpoint} said more records follow and sent none"
+                        )));
+                    }
+                    None => page.after = records.last().map(|(id, _)| id.clone()),
+                }
             }
-        }
+        })
     }
 }
 

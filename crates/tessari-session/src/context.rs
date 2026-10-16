@@ -46,7 +46,7 @@ impl Session<'_> {
     }
 
     /// The namespace the session selected.
-    pub(crate) fn namespace_id(
+    pub(crate) async fn namespace_id(
         &self,
         transaction: &mut Transaction<'_>,
         span: Span,
@@ -56,7 +56,8 @@ impl Session<'_> {
             .ok_or(Error::NoNamespaceSelected { span })?
             .to_owned();
         Catalog::new(transaction)
-            .namespace_id(&name)?
+            .namespace_id(&name)
+            .await?
             .ok_or(Error::Unknown {
                 entity: "namespace",
                 name,
@@ -66,13 +67,13 @@ impl Session<'_> {
 
     /// The tenancy a statement runs in, with `qualified` overriding the session's
     /// database when the statement named one.
-    pub(crate) fn context(
+    pub(crate) async fn context(
         &self,
         transaction: &mut Transaction<'_>,
         qualified: Option<&str>,
         span: Span,
     ) -> Result<Context> {
-        let namespace = self.namespace_id(transaction, span)?;
+        let namespace = self.namespace_id(transaction, span).await?;
         let name = match qualified {
             Some(name) => name.to_owned(),
             None => self
@@ -81,7 +82,8 @@ impl Session<'_> {
                 .to_owned(),
         };
         let database = Catalog::new(transaction)
-            .database_id(namespace, &name)?
+            .database_id(namespace, &name)
+            .await?
             .ok_or_else(|| Error::Unknown {
                 entity: "database",
                 name: name.clone(),
@@ -100,7 +102,7 @@ impl Session<'_> {
     /// qualifier is the namespace and the name the database. Written once here
     /// so `DEFINE USER … ON prod.orders` resolves through the same catalog reads
     /// every other reference does, and cannot name a database that is not there.
-    pub(crate) fn tenancy_of(
+    pub(crate) async fn tenancy_of(
         &self,
         transaction: &mut Transaction<'_>,
         named: &TableRef,
@@ -108,17 +110,21 @@ impl Session<'_> {
         let Some(namespace) = named.database.as_ref() else {
             // Unqualified: the name is the database, inside the session's
             // namespace.
-            return self.context(transaction, Some(&named.name.text), named.span);
+            return self
+                .context(transaction, Some(&named.name.text), named.span)
+                .await;
         };
         let namespace_id = Catalog::new(transaction)
-            .namespace_id(&namespace.text)?
+            .namespace_id(&namespace.text)
+            .await?
             .ok_or_else(|| Error::Unknown {
                 entity: "namespace",
                 name: namespace.text.clone(),
                 span: named.span,
             })?;
         let database = Catalog::new(transaction)
-            .database_id(namespace_id, &named.name.text)?
+            .database_id(namespace_id, &named.name.text)
+            .await?
             .ok_or_else(|| Error::Unknown {
                 entity: "database",
                 name: named.name.text.clone(),
@@ -132,12 +138,12 @@ impl Session<'_> {
     }
 
     /// The table a reference names, and the tenancy it lives in.
-    pub(crate) fn resolve_table(
+    pub(crate) async fn resolve_table(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
     ) -> Result<(Context, TableId)> {
-        let (context, id) = self.resolve_any_table(transaction, table)?;
+        let (context, id) = self.resolve_any_table(transaction, table).await?;
         // **A view never resolves here, and that is the backstop the whole
         // feature rests on.** Reading a view is not a resolution at all: the
         // statement is rewritten before anything is authorized, so by the time
@@ -154,7 +160,7 @@ impl Session<'_> {
         // correct empty result. The statements that legitimately name a view —
         // `DROP VIEW` and `INFO` — ask the catalog directly, the way
         // `drop_vault` already does.
-        if let Some(definition) = Catalog::new(transaction).table(id)?
+        if let Some(definition) = Catalog::new(transaction).table(id).await?
             && matches!(definition.kind, TableKind::View(_))
         {
             return Err(Error::ViewIsNotATable {
@@ -170,13 +176,13 @@ impl Session<'_> {
     /// and reading them is the point of keeping it (ADR-0109). A plain view is
     /// still refused here, and every write still resolves through
     /// `resolve_table`, so a kept view's rows have one writer.
-    pub(crate) fn resolve_readable_table(
+    pub(crate) async fn resolve_readable_table(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
     ) -> Result<(Context, TableId)> {
-        let (context, id) = self.resolve_any_table(transaction, table)?;
-        if let Some(definition) = Catalog::new(transaction).table(id)?
+        let (context, id) = self.resolve_any_table(transaction, table).await?;
+        if let Some(definition) = Catalog::new(transaction).table(id).await?
             && let TableKind::View(declared) = &definition.kind
             && !declared.materialized
         {
@@ -196,15 +202,16 @@ impl Session<'_> {
     /// legitimately name a view — `INFO FOR TABLE`, which describes it, and the
     /// expansion, which is why the name is there at all. A caller reaching for
     /// this has to say so.
-    pub(crate) fn resolve_any_table(
+    pub(crate) async fn resolve_any_table(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
     ) -> Result<(Context, TableId)> {
         let qualified = table.database.as_ref().map(|name| name.text.as_str());
-        let context = self.context(transaction, qualified, table.span)?;
+        let context = self.context(transaction, qualified, table.span).await?;
         let id = Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &table.name.text)?
+            .table_id(context.namespace, context.database, &table.name.text)
+            .await?
             .ok_or_else(|| Error::Unknown {
                 entity: "table",
                 name: table.name.text.clone(),
@@ -223,7 +230,7 @@ impl Session<'_> {
     /// filter on `address.city` and one on `address` does not. That is the same
     /// rule composite indexes already follow: an index answers the question it
     /// projects, and no other.
-    pub(crate) fn index_on_path(
+    pub(crate) async fn index_on_path(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
@@ -233,7 +240,8 @@ impl Session<'_> {
             return Ok(None);
         }
         Ok(Catalog::new(transaction)
-            .field_indexes_on(table)?
+            .field_indexes_on(table)
+            .await?
             .into_iter()
             .find(|index| index.fields.as_slice() == [path.clone()]))
     }
@@ -258,7 +266,7 @@ impl Session<'_> {
     /// Deliberately separate rather than a widening of `index_on_path`, whose
     /// other three callers ask a different question — *which index answers this
     /// value* — and for whom a leading match would be wrong.
-    pub(crate) fn index_ordering_on_path(
+    pub(crate) async fn index_ordering_on_path(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
@@ -267,7 +275,7 @@ impl Session<'_> {
         if !transaction.indexes_are_current_for(table)? {
             return Ok(None);
         }
-        let indexes = Catalog::new(transaction).field_indexes_on(table)?;
+        let indexes = Catalog::new(transaction).field_indexes_on(table).await?;
         if let Some(exact) = indexes
             .iter()
             .find(|index| index.fields.as_slice() == [path.clone()])

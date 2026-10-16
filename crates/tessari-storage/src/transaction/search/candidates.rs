@@ -11,13 +11,13 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn records_with_term(
+    pub async fn records_with_term(
         &self,
         index: &IndexDefinition,
         term: &str,
     ) -> Result<BTreeSet<RecordId>> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
-        self.postings(&address, term)
+        self.postings(&address, term).await
     }
 
     /// What this index says one term does in one record.
@@ -85,7 +85,7 @@ impl Transaction<'_> {
     /// what unique means. Everything else is a prefix scan — including a leading
     /// lookup on a unique composite index, where one value of the first field
     /// may have many entries and a point read would find none of them.
-    pub(in crate::transaction) fn candidates(
+    pub(in crate::transaction) async fn candidates(
         &self,
         index: &IndexDefinition,
         address: &IndexAddress,
@@ -108,11 +108,12 @@ impl Transaction<'_> {
             self.walk_range(
                 UniqueIndexKey::keyspace(),
                 &KeyRange::prefix(&prefix),
-                |_, value| {
+                async |_, value| {
                     found.push(IndexTarget::decode(value.as_slice())?.id);
                     Ok(())
                 },
-            )?;
+            )
+            .await?;
             return Ok(found);
         }
 
@@ -122,11 +123,12 @@ impl Transaction<'_> {
         self.walk_range(
             SecondaryIndexKey::keyspace(),
             &KeyRange::prefix(&prefix),
-            |key, _| {
+            async |key, _| {
                 found.push(SecondaryIndexKey::decode(key.as_slice())?.id);
                 Ok(())
             },
-        )?;
+        )
+        .await?;
         // Behind the tail, the records that held the value at this snapshot and
         // lost it since are named by retired entries (Q-S3-34); each candidate
         // is confirmed at the snapshot like every other.
@@ -137,13 +139,13 @@ impl Transaction<'_> {
 
     /// The record's payload, if it exists at the snapshot and one of its entries
     /// begins with `wanted`.
-    pub(in crate::transaction) fn confirm(
+    pub(in crate::transaction) async fn confirm(
         &self,
         index: &IndexDefinition,
         address: &RecordAddress,
         wanted: &[u8],
     ) -> Result<Option<Vec<u8>>> {
-        let Some(payload) = self.get(address)? else {
+        let Some(payload) = self.get(address).await? else {
             return Ok(None);
         };
         let value = decode_payload(&payload)?;

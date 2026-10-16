@@ -149,6 +149,12 @@ pub enum AcrossAsk {
     },
 }
 
+/// What [`Participants::ask`] answers with: the asking crosses a link, and the
+/// trait is held as an object, so its future is boxed.
+pub type Asking<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = std::result::Result<AcrossAnswer, PartRefused>> + 'a>,
+>;
+
 /// Who carries a record of a transaction across leaders to the node that
 /// leads its range, as the user a session verified (ADR-0108, ADR-0112).
 ///
@@ -161,12 +167,12 @@ pub trait Participants: core::fmt::Debug + Send + Sync {
     ///
     /// The refusal in words with its kind — the asking node's, the link's, or
     /// the answering node's — which the coordinator treats as *not prepared*.
-    fn ask(
-        &self,
+    fn ask<'a>(
+        &'a self,
         to: [u8; tessari_storage::NODE_ID_LEN],
-        user: Option<&tessari_storage::UserDefinition>,
-        asked: &AcrossAsk,
-    ) -> std::result::Result<AcrossAnswer, PartRefused>;
+        user: Option<&'a tessari_storage::UserDefinition>,
+        asked: &'a AcrossAsk,
+    ) -> Asking<'a>;
 }
 
 /// What the leader did.
@@ -201,7 +207,7 @@ impl Session<'_> {
     /// still-running coordinator can commit, half applied. Writing the same
     /// decision at a majority makes the answer one a failover keeps, and with
     /// it every entry of the log before it.
-    fn settle_across(
+    async fn settle_across(
         &mut self,
         transaction: TransactionId,
         coordinator: Reach,
@@ -236,13 +242,13 @@ impl Session<'_> {
             transaction,
             record: record.clone(),
         };
-        match self.answer_across(&deciding) {
+        match Box::pin(self.answer_across(&deciding)).await {
             Ok(_) => Ok(AcrossAnswer::Outcome(record)),
             // Decided between the read and the abort — the coordinator's own
             // decision won — so that decision is the one written again. Once:
             // a decided record never changes, so it cannot be refused twice.
             Err(Error::Store(tessari_storage::Error::AcrossDecided { .. })) => {
-                self.settle_across(transaction, coordinator)
+                Box::pin(self.settle_across(transaction, coordinator)).await
             }
             Err(refused) => Err(refused),
         }
@@ -253,14 +259,14 @@ impl Session<'_> {
     /// the record as it stands, `PENDING` or `STAGING`, with nothing written
     /// (D13d) — a staging one for the reader to recover without barring
     /// (D14e).
-    fn lookup_across(
+    async fn lookup_across(
         &mut self,
         transaction: TransactionId,
         coordinator: Reach,
     ) -> Result<AcrossAnswer> {
         match self.store.transaction_record(transaction)? {
             Some(record) if record.decision.is_decided() => {
-                self.settle_across(transaction, coordinator)
+                self.settle_across(transaction, coordinator).await
             }
             Some(record) => Ok(AcrossAnswer::Outcome(record)),
             None => Ok(AcrossAnswer::Outcome(TransactionRecord {
@@ -275,7 +281,7 @@ impl Session<'_> {
     /// stands, or this range's log through its tail is not yet held by a
     /// majority — a resolution waits for its leader alone, and a successor
     /// missing it would settle the intent against a forgotten record (D12).
-    fn holds_across(
+    async fn holds_across(
         &mut self,
         transaction: TransactionId,
         range: Reach,
@@ -285,7 +291,7 @@ impl Session<'_> {
         if store.holds_intents_of(transaction)? {
             return Ok(AcrossAnswer::Holding(true));
         }
-        self.hold_tail(range, span)?;
+        self.hold_tail(range, span).await?;
         Ok(AcrossAnswer::Holding(false))
     }
 
@@ -294,7 +300,7 @@ impl Session<'_> {
     /// holds is one a failover can lose, and an implicit commit counted on it
     /// would not be one (D14c). Not landed and `prevent`: barred first, at a
     /// majority, so the prepare can never land after the answer.
-    fn bar_across(
+    async fn bar_across(
         &mut self,
         transaction: TransactionId,
         range: Reach,
@@ -303,16 +309,17 @@ impl Session<'_> {
     ) -> Result<AcrossAnswer> {
         let store = self.store;
         if let Some(at) = store.part_landed(transaction, range)? {
-            self.hold_tail(range, span)?;
+            self.hold_tail(range, span).await?;
             return Ok(AcrossAnswer::Landed(Some(at)));
         }
         if !prevent {
             return Ok(AcrossAnswer::Landed(None));
         }
         let mut barring = store.begin()?;
-        let waiting =
-            self.acknowledgement_in(&mut barring, Some(range), Some(Acknowledge::Majority), span)?;
-        match barring.prevent_across(transaction, range) {
+        let waiting = self
+            .acknowledgement_in(&mut barring, Some(range), Some(Acknowledge::Majority), span)
+            .await?;
+        match barring.prevent_across(transaction, range).await {
             Ok(committed) => {
                 Self::await_acknowledged(store, committed, waiting, span)?;
                 Ok(AcrossAnswer::Landed(None))
@@ -320,7 +327,7 @@ impl Session<'_> {
             // The prepare landed between the look and the bar: it stands.
             Err(tessari_storage::Error::AcrossDecided {
                 decided: "prepared",
-            }) => self.bar_across(transaction, range, prevent, span),
+            }) => Box::pin(self.bar_across(transaction, range, prevent, span)).await,
             Err(refused) => Err(advised(refused)),
         }
     }
@@ -328,20 +335,21 @@ impl Session<'_> {
     /// Wait until a majority of `range`'s voters hold its log through the tail
     /// as it stands now — a tail that holds an entry of this node's own
     /// leadership, or the wait proves nothing a later election keeps.
-    fn hold_tail(&mut self, range: Reach, span: Span) -> Result<()> {
+    async fn hold_tail(&mut self, range: Reach, span: Span) -> Result<()> {
         let store = self.store;
         let mut reading = store.begin()?;
-        let waiting =
-            self.acknowledgement_in(&mut reading, Some(range), Some(Acknowledge::Majority), span)?;
+        let waiting = self
+            .acknowledgement_in(&mut reading, Some(range), Some(Acknowledge::Majority), span)
+            .await?;
         reading.rollback();
         // The log the range's commits go to: its line's under a leadership,
         // this node's own before one. Its own log alone stands still once the
         // line holds records, and a wait on that is a wait nobody answers.
-        let log = store.history_log(range)?;
+        let log = store.history_log(range).await?;
         // The Raft rule: a tail held by a majority is settled only once an
         // entry of this node's own leadership is part of it (Q-921) — an
         // earlier leader's entries a majority holds may still be overruled.
-        let leading = store.writing_epoch(range)?;
+        let leading = store.writing_epoch(range).await?;
         if store.tail_leadership(log)? < leading {
             return Err(Error::Store(
                 tessari_storage::Error::LeadershipUnconfirmed { range },
@@ -356,8 +364,13 @@ impl Session<'_> {
 
     /// Refuse writes this session's user could not have made here, or into a
     /// table whose engine has a write path of its own.
-    fn may_write_records(&mut self, store: &Store, writes: &[Mutation], span: Span) -> Result<()> {
-        let open = self.refresh(store)?;
+    async fn may_write_records(
+        &mut self,
+        store: &Store,
+        writes: &[Mutation],
+        span: Span,
+    ) -> Result<()> {
+        let open = self.refresh(store).await?;
         let tables: BTreeSet<(NamespaceId, DatabaseId, TableId)> = writes
             .iter()
             .map(|mutation| (mutation.namespace, mutation.database, mutation.table))
@@ -366,11 +379,11 @@ impl Session<'_> {
         let catalog = Catalog::new(&mut reading);
         let user = self.identity.user();
         let grants = match user {
-            Some(user) => catalog.grants_for(user.id)?,
+            Some(user) => catalog.grants_for(user.id).await?,
             None => Vec::new(),
         };
         for (namespace, database, table) in tables {
-            let Some(definition) = catalog.table(table)? else {
+            let Some(definition) = catalog.table(table).await? else {
                 return Err(Error::Store(tessari_storage::Error::AcrossMalformed {
                     part: "prepare",
                     problem: "a write into a table this node does not know",

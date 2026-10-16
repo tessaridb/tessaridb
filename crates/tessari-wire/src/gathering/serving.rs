@@ -7,7 +7,7 @@ use super::*;
 /// [`Error::NotGathered`] with the reason when the peer may not have the shard
 /// or this node cannot give it, and [`Error::Refused`] when the store cannot be
 /// read.
-pub(crate) fn serve(
+pub(crate) async fn serve(
     store: &Store,
     granted: &dyn Subscriptions,
     asker: [u8; NODE_ID_LEN],
@@ -21,6 +21,7 @@ pub(crate) fn serve(
     let mut transaction = store.begin().map_err(refused)?;
     let definition = Catalog::new(&mut transaction)
         .table(asked.table)
+        .await
         .map_err(refused)?
         .filter(|found| found.namespace == asked.namespace && found.database == asked.database);
     let Some(map) = definition.and_then(|found| found.shards) else {
@@ -33,7 +34,7 @@ pub(crate) fn serve(
         return Err(Error::NotGathered(Ungathered::MapMoved));
     };
     let shard_of = |shard| Reach::Shard(asked.namespace, asked.database, asked.table, shard);
-    let entitled = granted.granted(asker)?.is_some_and(|over| {
+    let entitled = granted.granted(asker).await?.is_some_and(|over| {
         over.contains(Reach::Database(asked.namespace, asked.database))
             || map.spans().any(|each| over.contains(shard_of(each.id)))
     });
@@ -72,10 +73,11 @@ pub(crate) fn serve(
                 asked.after.as_ref(),
                 fold_records,
             )
+            .await
             .map_err(refused)?;
         transaction.rollback();
         let more = found.len() == fold_records;
-        return folded(store, reduce, (found, more), budget);
+        return folded(store, reduce, (found, more), budget).await;
     }
     if let Some(counting) = &asked.counting {
         let page = counted::counted_page(
@@ -84,7 +86,8 @@ pub(crate) fn serve(
             counting,
             Window { from, to },
             fold_records,
-        );
+        )
+        .await;
         transaction.rollback();
         return page;
     }
@@ -96,7 +99,8 @@ pub(crate) fn serve(
             ordered,
             Window { from, to },
             budget,
-        );
+        )
+        .await;
         transaction.rollback();
         return page;
     }
@@ -109,6 +113,7 @@ pub(crate) fn serve(
             asked.after.as_ref(),
             GATHER_PAGE_RECORDS,
         )
+        .await
         .map_err(refused)?;
     transaction.rollback();
     let more = found.len() == GATHER_PAGE_RECORDS;
@@ -118,12 +123,12 @@ pub(crate) fn serve(
     let read_to = found.last().map(|(id, _)| id.clone());
     let narrowed = asked.pushed.is_some();
     let found = match &asked.pushed {
-        Some(pushed) => {
-            tessari_session::keeping(store, pushed, found).map_err(|why| Error::Refused {
+        Some(pushed) => tessari_session::keeping(store, pushed, found)
+            .await
+            .map_err(|why| Error::Refused {
                 message: why.to_string(),
                 class: None,
-            })?
-        }
+            })?,
         None => found,
     };
     // Enough is a promise about the asker's need, not a budget: the records past

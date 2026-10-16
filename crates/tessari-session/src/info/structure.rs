@@ -29,13 +29,13 @@ impl Session<'_> {
     /// makes `USE NAMESPACE <anything>` unable to select it. A listing that had
     /// to *remember* to exclude it would be one somebody could later forget to,
     /// which is exactly the change this statement was expected to bring.
-    pub(super) fn info_store(
+    pub(super) async fn info_store(
         &self,
         transaction: &mut Transaction<'_>,
     ) -> Result<BTreeMap<String, Value>> {
         let own = self.identity.user().and_then(|user| user.namespace);
         let mut names = Vec::new();
-        for namespace in Catalog::new(transaction).namespaces()? {
+        for namespace in Catalog::new(transaction).namespaces().await? {
             // A user declared `ON prod.orders` belongs to one namespace and may
             // not name another, so the store as they may see it holds one.
             if own.is_some_and(|id| id != namespace.id) {
@@ -64,14 +64,14 @@ impl Session<'_> {
     /// only when it was set would make silence look like a missing feature
     /// rather than an unanswered question, and this answer is the only place an
     /// operator can see which of the two they have (ADR-0060).
-    pub(super) fn info_namespace(
+    pub(super) async fn info_namespace(
         &self,
         transaction: &mut Transaction<'_>,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
-        let namespace = self.namespace_id(transaction, span)?;
+        let namespace = self.namespace_id(transaction, span).await?;
         let own = self.identity.user().and_then(|user| user.database);
-        let held = Catalog::new(transaction).namespace(namespace)?;
+        let held = Catalog::new(transaction).namespace(namespace).await?;
         let replication = held
             .as_ref()
             .and_then(|definition| definition.replication)
@@ -101,7 +101,7 @@ impl Session<'_> {
             .and_then(|definition| definition.acknowledge)
             .map_or(Value::None, tessari_types::Acknowledgement::to_value);
         let mut names = Vec::new();
-        for database in Catalog::new(transaction).databases_in(namespace)? {
+        for database in Catalog::new(transaction).databases_in(namespace).await? {
             if own.is_some_and(|id| id != database.id) {
                 continue;
             }
@@ -115,17 +115,20 @@ impl Session<'_> {
         ]))
     }
 
-    pub(super) fn info_database(
+    pub(super) async fn info_database(
         &self,
         transaction: &mut Transaction<'_>,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
-        let context = self.context(transaction, None, span)?;
-        let readable = self.readable_in(transaction)?;
+        let context = self.context(transaction, None, span).await?;
+        let readable = self.readable_in(transaction).await?;
         let mut names = Vec::new();
         let mut topics = Vec::new();
         let mut vaults = Vec::new();
-        for table in Catalog::new(transaction).tables_in(context.namespace, context.database)? {
+        for table in Catalog::new(transaction)
+            .tables_in(context.namespace, context.database)
+            .await?
+        {
             // A bucket's chunks live in a companion table whose name carries a
             // byte no identifier can hold, so no statement can name it and
             // `SELECT * FROM media` answers with files rather than chunks
@@ -157,7 +160,8 @@ impl Session<'_> {
         // one of their tables: `INFO FOR TABLE` skips a search's members, so this
         // is the one enumeration that reaches them.
         let searches: std::collections::BTreeSet<String> = Catalog::new(transaction)
-            .engine_members()?
+            .engine_members()
+            .await?
             .into_iter()
             .filter(|member| {
                 member.namespace == context.namespace
@@ -171,7 +175,8 @@ impl Session<'_> {
         // The database's own named values (ADR-0124 D2), readable by anybody who
         // may run a statement here, as `$name` is.
         let params = Catalog::new(transaction)
-            .database(context.database)?
+            .database(context.database)
+            .await?
             .map(|definition| definition.params)
             .unwrap_or_default();
         Ok(BTreeMap::from([
@@ -199,7 +204,7 @@ impl Session<'_> {
     /// rule and for the same reason: an index is named after the values it
     /// projects, so `by_salary ON staff FIELDS salary` says the field exists as
     /// plainly as the field list would.
-    pub(super) fn info_table(
+    pub(super) async fn info_table(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
@@ -207,18 +212,18 @@ impl Session<'_> {
         // The one read that may name a view: describing one is the point of
         // asking, and a report refused because the subject is a view would be a
         // report nobody could get for the thing they asked about.
-        let (_, id) = self.resolve_any_table(transaction, table)?;
-        let visible = self.visible_in(transaction, id)?;
+        let (_, id) = self.resolve_any_table(transaction, table).await?;
+        let visible = self.visible_in(transaction, id).await?;
         let catalog = Catalog::new(transaction);
-        let Some(definition) = catalog.table(id)? else {
+        let Some(definition) = catalog.table(id).await? else {
             return Err(Error::Unknown {
                 entity: "table",
                 name: table.name.text.clone(),
                 span: table.span,
             });
         };
-        let mut fields = catalog.declared_fields(id)?;
-        let mut indexes = catalog.field_indexes_on(id)?;
+        let mut fields = catalog.declared_fields(id).await?;
+        let mut indexes = catalog.field_indexes_on(id).await?;
         fields.sort_by(|left, right| left.name.cmp(&right.name));
         indexes.sort_by(|left, right| left.name.cmp(&right.name));
         let declared = (fields.len(), indexes.len());
@@ -230,7 +235,7 @@ impl Session<'_> {
         // the declaration below cannot say it: the catalog holds its id.
         if let TableKind::Queue(declared) = &definition.kind
             && let Some(letters) = declared.dead_letter
-            && let Some(topic) = Catalog::new(transaction).table(letters)?
+            && let Some(topic) = Catalog::new(transaction).table(letters).await?
         {
             report.insert("dead_letter".to_owned(), Value::from(topic.name.as_str()));
         }
@@ -291,10 +296,15 @@ impl Session<'_> {
         // A kept view says how fresh it is (ADR-0109 D5): the version its rows
         // equal its read at, how many versions the store has moved past it, how
         // many rows it holds, and when it last reached the head.
-        if let Some((state, head)) = crate::materialized::freshness(self.store, transaction, id)? {
+        if let Some((state, head)) =
+            crate::materialized::freshness(self.store, transaction, id).await?
+        {
             let count =
                 |held: u64| Value::Number(Number::Integer(i64::try_from(held).unwrap_or(i64::MAX)));
-            let rows = Catalog::new(transaction).record_count(id)?.unwrap_or(0);
+            let rows = Catalog::new(transaction)
+                .record_count(id)
+                .await?
+                .unwrap_or(0);
             let mut kept = BTreeMap::new();
             kept.insert("version".to_owned(), count(state.version.get()));
             kept.insert(
@@ -315,13 +325,14 @@ impl Session<'_> {
     ///
     /// Resolved back from ids rather than stored as text, so a table renamed
     /// under a consumer reports its new name instead of the one that was typed.
-    pub(super) fn named_table(
+    pub(super) async fn named_table(
         &self,
         transaction: &mut Transaction<'_>,
         consumer: &ConsumerDefinition,
     ) -> Result<String> {
         let named = Catalog::new(transaction)
-            .tables_in(consumer.namespace, consumer.database)?
+            .tables_in(consumer.namespace, consumer.database)
+            .await?
             .into_iter()
             .find(|table| table.id == consumer.destination)
             .map(|table| table.name);

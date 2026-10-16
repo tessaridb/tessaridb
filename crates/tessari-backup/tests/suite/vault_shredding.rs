@@ -30,6 +30,7 @@
 
 use std::sync::Arc;
 use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -41,7 +42,9 @@ const PASSPHRASE: &str = "an operator passphrase, held by a person";
 const USING: &str = "USE NAMESPACE prod; USE DATABASE work;";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// A store holding one sealed secret, and the backup taken before anything else.
@@ -82,7 +85,9 @@ fn a_backup_taken_before_the_drop_restores_a_vault_that_opens() {
     // And back, from a file somebody kept. The passphrase is all it takes,
     // because the wrapped key travelled in the log along with everything else.
     let restored = store();
-    tessari_backup::bootstrap(&restored, &mut before_the_drop.as_slice()).unwrap();
+    tessari_backup::bootstrap(&restored, &mut before_the_drop.as_slice())
+        .now()
+        .unwrap();
     let mut session = Session::new(&restored);
     session.run_now(USING).unwrap();
     session
@@ -125,7 +130,9 @@ fn a_backup_taken_after_the_drop_carries_nothing_that_opens() {
     tessari_backup::write(&source, &mut after_the_drop).unwrap();
 
     let restored = store();
-    tessari_backup::bootstrap(&restored, &mut after_the_drop.as_slice()).unwrap();
+    tessari_backup::bootstrap(&restored, &mut after_the_drop.as_slice())
+        .now()
+        .unwrap();
     let mut session = Session::new(&restored);
     session.run_now(USING).unwrap();
     session

@@ -32,6 +32,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -41,7 +42,7 @@ use tessari_types::{RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// A tenancy with two ordinary tables for an edge table to join.

@@ -54,6 +54,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{
@@ -141,7 +142,9 @@ impl KvBackend for Counting {
 fn counted() -> (Store, Arc<Counting>) {
     let inner = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let counting = Arc::new(Counting::new(inner));
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     (store, counting)
 }
 

@@ -14,7 +14,9 @@ use tessari_storage::Store;
 const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     Session::new(&store)
         .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE work; USE DATABASE work;
@@ -28,7 +30,7 @@ fn store() -> Store {
 
 fn acting<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
 }
 

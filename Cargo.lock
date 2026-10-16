@@ -1888,9 +1888,11 @@ dependencies = [
  "tessari-encoding",
  "tessari-geo",
  "tessari-kv",
+ "tessari-storage",
  "tessari-types",
  "tessari-vault",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 

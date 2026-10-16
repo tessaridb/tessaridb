@@ -14,6 +14,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
+use tessari_storage::Now;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_storage::{Error, RecordAddress, Store};
@@ -25,7 +26,9 @@ const CONCURRENCY_RUNS: u32 = 25;
 const WRITERS: u32 = 8;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn at(id: &str) -> RecordAddress {
@@ -40,11 +43,11 @@ fn at(id: &str) -> RecordAddress {
 fn write(store: &Store, id: &str, payload: &[u8]) {
     let mut txn = store.begin().unwrap();
     txn.put(at(id), payload.to_vec());
-    txn.commit().unwrap();
+    txn.commit().now().unwrap();
 }
 
 fn read(store: &Store, id: &str) -> Option<Vec<u8>> {
-    store.begin().unwrap().get(&at(id)).unwrap()
+    store.begin().unwrap().get(&at(id)).now().unwrap()
 }
 
 // ---------------------------------------------------------------- guarantees
@@ -55,11 +58,11 @@ fn a_transaction_sees_its_own_writes_before_commit() {
     let mut txn = store.begin().unwrap();
     txn.put(at("r"), b"pending".to_vec());
 
-    assert_eq!(txn.get(&at("r")).unwrap(), Some(b"pending".to_vec()));
+    assert_eq!(txn.get(&at("r")).now().unwrap(), Some(b"pending".to_vec()));
     // ...and nobody else does yet.
     assert_eq!(read(&store, "r"), None);
 
-    txn.commit().unwrap();
+    txn.commit().now().unwrap();
     assert_eq!(read(&store, "r"), Some(b"pending".to_vec()));
 }
 
@@ -70,11 +73,11 @@ fn a_transaction_sees_a_deletion_it_has_not_committed() {
 
     let mut txn = store.begin().unwrap();
     txn.delete(at("r"));
-    assert_eq!(txn.get(&at("r")).unwrap(), None);
+    assert_eq!(txn.get(&at("r")).now().unwrap(), None);
     // Other readers still see it until the delete commits.
     assert_eq!(read(&store, "r"), Some(b"value".to_vec()));
 
-    txn.commit().unwrap();
+    txn.commit().now().unwrap();
     assert_eq!(read(&store, "r"), None);
 }
 
@@ -87,7 +90,7 @@ fn a_commit_after_begin_is_invisible_to_the_open_transaction() {
     write(&store, "r", b"second");
 
     // The open transaction still reads at its own snapshot.
-    assert_eq!(reader.get(&at("r")).unwrap(), Some(b"first".to_vec()));
+    assert_eq!(reader.get(&at("r")).now().unwrap(), Some(b"first".to_vec()));
     // A fresh transaction sees the new value.
     assert_eq!(read(&store, "r"), Some(b"second".to_vec()));
 }
@@ -100,9 +103,9 @@ fn an_older_snapshot_still_sees_a_record_that_was_deleted_later() {
     let reader = store.begin().unwrap();
     let mut deleter = store.begin().unwrap();
     deleter.delete(at("r"));
-    deleter.commit().unwrap();
+    deleter.commit().now().unwrap();
 
-    assert_eq!(reader.get(&at("r")).unwrap(), Some(b"alive".to_vec()));
+    assert_eq!(reader.get(&at("r")).now().unwrap(), Some(b"alive".to_vec()));
     assert_eq!(read(&store, "r"), None);
 }
 
@@ -116,8 +119,8 @@ fn the_first_committer_wins_and_the_loser_writes_nothing() {
     first.put(at("r"), b"first".to_vec());
     second.put(at("r"), b"second".to_vec());
 
-    let winner = first.commit().unwrap();
-    let error = second.commit().unwrap_err();
+    let winner = first.commit().now().unwrap();
+    let error = second.commit().now().unwrap_err();
 
     match error {
         Error::Conflict {
@@ -145,8 +148,8 @@ fn a_losing_commit_writes_none_of_its_records_not_even_the_uncontended_ones() {
     second.put(at("contended"), b"second".to_vec());
     second.put(at("untouched"), b"collateral".to_vec());
 
-    first.commit().unwrap();
-    assert!(second.commit().is_err());
+    first.commit().now().unwrap();
+    assert!(second.commit().now().is_err());
 
     // The uncontended record from the losing transaction must not exist: a
     // commit is all or nothing.
@@ -167,7 +170,7 @@ fn an_empty_commit_succeeds_and_advances_nothing() {
     // (Q-622); what "advances nothing" means is that no log moved.
     let txn = store.begin().unwrap();
     assert_eq!(
-        txn.commit().unwrap(),
+        txn.commit().now().unwrap(),
         store
             .committed_tail(store.own_log(tessari_types::Reach::Store).unwrap())
             .unwrap()
@@ -221,14 +224,22 @@ fn write_skew_happens_and_that_is_the_declared_contract() {
     let mut a = store.begin().unwrap();
     let mut b = store.begin().unwrap();
 
-    assert_eq!(a.get(&at("on_call_b")).unwrap(), Some(b"yes".to_vec()));
-    assert_eq!(b.get(&at("on_call_a")).unwrap(), Some(b"yes".to_vec()));
+    assert_eq!(
+        a.get(&at("on_call_b")).now().unwrap(),
+        Some(b"yes".to_vec())
+    );
+    assert_eq!(
+        b.get(&at("on_call_a")).now().unwrap(),
+        Some(b"yes".to_vec())
+    );
 
     a.put(at("on_call_a"), b"no".to_vec());
     b.put(at("on_call_b"), b"no".to_vec());
 
-    a.commit().unwrap();
-    b.commit().expect("write skew is permitted at this level");
+    a.commit().now().unwrap();
+    b.commit()
+        .now()
+        .expect("write skew is permitted at this level");
 
     assert_eq!(read(&store, "on_call_a"), Some(b"no".to_vec()));
     assert_eq!(read(&store, "on_call_b"), Some(b"no".to_vec()));
@@ -254,8 +265,8 @@ fn materialising_the_constraint_turns_write_skew_into_a_detected_conflict() {
     b.put(at("on_call_b"), b"no".to_vec());
     b.put(at("on_call_guard"), b"1".to_vec());
 
-    a.commit().unwrap();
-    let error = b.commit().unwrap_err();
+    a.commit().now().unwrap();
+    let error = b.commit().now().unwrap_err();
     assert!(matches!(error, Error::Conflict { .. }), "{error}");
 
     assert_eq!(read(&store, "on_call_b"), Some(b"yes".to_vec()));
@@ -284,7 +295,7 @@ fn concurrent_writers_to_one_record_never_lose_an_update() {
                     loop {
                         let mut txn = store.begin().unwrap();
                         let current: u32 =
-                            String::from_utf8(txn.get(&at("counter")).unwrap().unwrap())
+                            String::from_utf8(txn.get(&at("counter")).now().unwrap().unwrap())
                                 .unwrap()
                                 .parse()
                                 .unwrap();
@@ -292,7 +303,7 @@ fn concurrent_writers_to_one_record_never_lose_an_update() {
                             at("counter"),
                             current.saturating_add(1).to_string().into_bytes(),
                         );
-                        match txn.commit() {
+                        match txn.commit().now() {
                             Ok(_) => break,
                             Err(Error::Conflict { .. } | Error::CommitContention { .. }) => {
                                 conflicts.fetch_add(1, Ordering::Relaxed);
@@ -330,7 +341,7 @@ fn concurrent_writers_to_different_records_all_succeed() {
                     loop {
                         let mut txn = store.begin().unwrap();
                         txn.put(at(&id), writer.to_string().into_bytes());
-                        match txn.commit() {
+                        match txn.commit().now() {
                             Ok(_) => break,
                             Err(Error::CommitContention { .. }) => continue,
                             Err(other) => panic!("unexpected error: {other}"),
@@ -374,7 +385,7 @@ fn writers_committing_different_records_are_never_refused() {
                 for n in 0..COMMITS_EACH {
                     let mut txn = store.begin().unwrap();
                     txn.put(at(&format!("w{writer}-{n}")), n.to_string().into_bytes());
-                    match txn.commit() {
+                    match txn.commit().now() {
                         Ok(_) => {}
                         Err(Error::CommitContention { .. }) => {
                             refused.fetch_add(1, Ordering::Relaxed);
@@ -416,7 +427,7 @@ fn a_reader_holding_a_snapshot_is_unaffected_by_concurrent_commits() {
                     loop {
                         let mut txn = store.begin().unwrap();
                         txn.put(at("r"), format!("v{writer}").into_bytes());
-                        match txn.commit() {
+                        match txn.commit().now() {
                             Ok(_) => break,
                             Err(Error::Conflict { .. } | Error::CommitContention { .. }) => {}
                             Err(other) => panic!("unexpected error: {other}"),
@@ -427,7 +438,7 @@ fn a_reader_holding_a_snapshot_is_unaffected_by_concurrent_commits() {
         });
 
         assert_eq!(
-            reader.get(&at("r")).unwrap(),
+            reader.get(&at("r")).now().unwrap(),
             Some(b"original".to_vec()),
             "run {run}: a held snapshot saw a later commit"
         );

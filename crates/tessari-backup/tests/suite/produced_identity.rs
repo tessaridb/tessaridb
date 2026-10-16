@@ -24,6 +24,7 @@
 
 use std::sync::Arc;
 use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -36,7 +37,9 @@ DEFINE DATABASE orders; USE DATABASE orders;\n\
 DEFINE COLLECTION readings;";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// The identities a store holds in `readings`, in the order it reads them back.
@@ -83,7 +86,9 @@ fn leader() -> (Store, Vec<RecordId>, Vec<u8>) {
 
 fn follower_of(prefix: &[u8]) -> Store {
     let store = store();
-    let brought_up = tessari_backup::bootstrap(&store, &mut { prefix }).unwrap();
+    let brought_up = tessari_backup::bootstrap(&store, &mut { prefix })
+        .now()
+        .unwrap();
     assert!(brought_up.records > 0, "a bootstrap that applied nothing");
     store
 }

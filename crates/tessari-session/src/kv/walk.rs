@@ -45,16 +45,19 @@ struct Stretch {
 
 impl Session<'_> {
     /// The keys of a space, in key order.
-    pub(crate) fn keys(
+    pub(crate) async fn keys(
         &self,
         transaction: &mut Transaction<'_>,
         space: &TableRef,
         walk: Walk<'_>,
     ) -> Result<Outcome> {
-        let (context, table) = self.resolve_table(transaction, space)?;
-        let Stretch { from, to } = self.stretch(transaction, walk)?;
+        let (context, table) = self.resolve_table(transaction, space).await?;
+        let Stretch { from, to } = self.stretch(transaction, walk).await?;
         let after = match walk.after {
-            Some(after) => Some(key_bound(&self.evaluate(transaction, after)?, after.span)?),
+            Some(after) => Some(key_bound(
+                &self.evaluate(transaction, after).await?,
+                after.span,
+            )?),
             None => None,
         };
         let bound = walk.limit.map_or(usize::MAX, |limit| {
@@ -63,25 +66,33 @@ impl Session<'_> {
         if bound == 0 {
             return Ok(Outcome::Keys(Vec::new()));
         }
-        let found = transaction.records_between(
-            context.namespace,
-            context.database,
-            table,
-            Window {
-                from: from.as_ref(),
-                to: to.as_ref().map(|(id, inclusive)| (id, *inclusive)),
-            },
-            after.as_ref(),
-            bound,
-        )?;
+        let found = transaction
+            .records_between(
+                context.namespace,
+                context.database,
+                table,
+                Window {
+                    from: from.as_ref(),
+                    to: to.as_ref().map(|(id, inclusive)| (id, *inclusive)),
+                },
+                after.as_ref(),
+                bound,
+            )
+            .await?;
         Ok(Outcome::Keys(found.into_iter().map(|(id, _)| id).collect()))
     }
 
     /// The stretch of the space a walk names.
-    fn stretch(&self, transaction: &mut Transaction<'_>, walk: Walk<'_>) -> Result<Stretch> {
+    async fn stretch(&self, transaction: &mut Transaction<'_>, walk: Walk<'_>) -> Result<Stretch> {
         if let Some(range) = walk.range {
-            let start = key_bound(&self.evaluate(transaction, &range.start)?, range.start.span)?;
-            let end = key_bound(&self.evaluate(transaction, &range.end)?, range.end.span)?;
+            let start = key_bound(
+                &self.evaluate(transaction, &range.start).await?,
+                range.start.span,
+            )?;
+            let end = key_bound(
+                &self.evaluate(transaction, &range.end).await?,
+                range.end.span,
+            )?;
             return Ok(Stretch {
                 from: Some(start),
                 to: Some((end, range.inclusive)),
@@ -93,7 +104,7 @@ impl Session<'_> {
                 to: None,
             });
         };
-        let Value::String(text) = self.evaluate(transaction, prefix)? else {
+        let Value::String(text) = self.evaluate(transaction, prefix).await? else {
             return Err(Error::InvalidKeyBound { span: prefix.span });
         };
         if text.is_empty() {

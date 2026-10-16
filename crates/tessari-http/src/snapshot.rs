@@ -155,7 +155,8 @@ async fn spool(
     // this request whether it ends in a refusal, a cut connection or a crash.
     std::fs::remove_file(&path).map_err(|why| unwritable(&why))?;
     let writer = file.try_clone().map_err(|why| unwritable(&why))?;
-    let mut session = session_for(&node.db, &node.tokens, presented)?
+    let mut session = session_for(&node.db, &node.tokens, presented)
+        .await?
         .snapshot_into(Box::new(std::io::BufWriter::new(writer)));
     session
         .run("BACKUP STATE;")

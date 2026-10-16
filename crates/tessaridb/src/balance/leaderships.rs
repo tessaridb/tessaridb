@@ -68,15 +68,15 @@ impl Db {
     ///
     /// The store's failure to read the catalog or commit, and the catalog's
     /// refusal of the move.
-    pub fn balance_leaderships(&self, moves: &mut LeadershipMoves) -> Result<Option<Moved>> {
+    pub async fn balance_leaderships(&self, moves: &mut LeadershipMoves) -> Result<Option<Moved>> {
         let store = self.store();
-        if !store.leads(Reach::Store)? {
+        if !store.leads(Reach::Store).await? {
             return Ok(None);
         }
         let mut reading = store.begin()?;
         let catalog = Catalog::new(&mut reading);
-        let policy = catalog.failover()?;
-        let rows = catalog.replicas()?;
+        let policy = catalog.failover().await?;
+        let rows = catalog.replicas().await?;
         reading.rollback();
         let Some(policy) = policy.filter(|held| held.balance_leaderships) else {
             return Ok(None);
@@ -85,18 +85,22 @@ impl Db {
         if moves.waits(spacing) {
             return Ok(None);
         }
-        let Some(planned) = plan(&rows, &store.line_leaders()?) else {
+        let Some(planned) = plan(&rows, &store.line_leaders().await?) else {
             return Ok(None);
         };
         let mut writing = store.begin()?;
         let mut catalog = Catalog::new(&mut writing);
-        let placed = catalog.alter_replica_leads(&planned.to, Some(planned.range), false)?;
-        let released = catalog.alter_replica_leads(&planned.from, None, false)?;
+        let placed = catalog
+            .alter_replica_leads(&planned.to, Some(planned.range), false)
+            .await?;
+        let released = catalog
+            .alter_replica_leads(&planned.from, None, false)
+            .await?;
         if !(placed && released) {
             writing.rollback();
             return Ok(None);
         }
-        writing.commit()?;
+        writing.commit().await?;
         store.leadership_moved();
         moves.last = Some(Instant::now());
         Ok(Some(planned))

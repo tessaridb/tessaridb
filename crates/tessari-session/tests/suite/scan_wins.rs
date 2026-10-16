@@ -26,6 +26,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{
@@ -88,7 +89,9 @@ fn ready(store: &Store) -> Session<'_> {
 }
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// A backend that answers exactly as the one beneath it and counts the rows it
@@ -285,7 +288,9 @@ fn the_path_the_guard_keeps_costs_a_fraction_of_the_one_it_declines() {
     // first were not much smaller, the index would not be worth the maintenance
     // it costs on every write, never mind the choosing.
     let backend = Counting::new();
-    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store);
 
     backend.reset();

@@ -34,19 +34,19 @@ impl Store {
     /// Nothing is re-checked here. Whether the grant was legitimate was settled
     /// by the round; a store asking again would be asking about a fact it has no
     /// way to know.
-    pub fn hold(&self, epoch: Epoch, lease: crate::lease::Lease) {
+    pub async fn hold(&self, epoch: Epoch, lease: crate::lease::Lease) {
         self.lease.hold(lease);
         if let Ok(mut leading) = self.leading.lock() {
             *leading = Some(epoch);
         }
-        self.adopt_on_leading();
+        self.adopt_on_leading().await;
     }
 
     /// A first lease makes this node's own pre-cluster history the start of the
     /// line's log (ADR-0107 D3). Reported rather than returned: the lease is
     /// held either way, and the next lease taken tries again.
-    fn adopt_on_leading(&self) {
-        if let Err(why) = self.adopt_own_history() {
+    async fn adopt_on_leading(&self) {
+        if let Err(why) = self.adopt_own_history().await {
             tracing::warn!(error = %why, "this node's own history could not be adopted into the line's log");
         }
     }
@@ -79,12 +79,12 @@ impl Store {
     /// The store line is [`Self::hold`]; this is every other line, and the two
     /// are one call so a caller campaigning for several ranges does not choose
     /// the seam by hand.
-    pub fn hold_range(&self, range: Reach, epoch: Epoch, lease: crate::lease::Lease) {
+    pub async fn hold_range(&self, range: Reach, epoch: Epoch, lease: crate::lease::Lease) {
         if range == Reach::Store {
-            self.hold(epoch, lease);
+            self.hold(epoch, lease).await;
         } else {
             self.lines.hold(range, epoch, lease);
-            self.adopt_on_leading();
+            self.adopt_on_leading().await;
         }
     }
 
@@ -120,11 +120,12 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the membership cannot be read.
-    pub fn writing_epoch(&self, home: Reach) -> crate::error::Result<Epoch> {
+    pub async fn writing_epoch(&self, home: Reach) -> crate::error::Result<Epoch> {
         let mut transaction = self.begin()?;
         let placed: std::collections::BTreeSet<Reach> =
             crate::catalog::Catalog::new(&mut transaction)
-                .replicas()?
+                .replicas()
+                .await?
                 .into_iter()
                 .filter_map(|peer| peer.leads)
                 .collect();

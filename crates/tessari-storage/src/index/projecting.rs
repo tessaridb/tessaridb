@@ -11,13 +11,15 @@ use tessari_geo::{Bounds, Cell, Shape};
 use tessari_types::{Analyzer, DatabaseId, NamespaceId, TableId, Value};
 
 /// The analyzer each analysed field of a table declares, by field name.
-pub(crate) fn analyzers_on(
+pub(crate) async fn analyzers_on(
     view: &mut Transaction<'_>,
     namespace: NamespaceId,
     database: DatabaseId,
     table: TableId,
 ) -> Result<BTreeMap<String, Analyzer>> {
-    let declared = Catalog::new(view).fields_on(namespace, database, table)?;
+    let declared = Catalog::new(view)
+        .fields_on(namespace, database, table)
+        .await?;
     let wanted: BTreeMap<String, String> = declared
         .into_iter()
         .filter_map(|field| field.analyzer.map(|named| (field.name, named)))
@@ -26,7 +28,7 @@ pub(crate) fn analyzers_on(
         return Ok(BTreeMap::new());
     }
     let mut resolved = BTreeMap::new();
-    for definition in Catalog::new(view).analyzers()? {
+    for definition in Catalog::new(view).analyzers().await? {
         for (field, named) in &wanted {
             if *named == definition.name {
                 resolved.insert(field.clone(), definition.analyzer.clone());
@@ -332,9 +334,12 @@ pub(crate) fn analyzer_for<'a>(
 
 /// Every analyzer the store declares, by name — what a search member resolves
 /// its analyzer against.
-pub(crate) fn analyzers_named(view: &mut Transaction<'_>) -> Result<BTreeMap<String, Analyzer>> {
+pub(crate) async fn analyzers_named(
+    view: &mut Transaction<'_>,
+) -> Result<BTreeMap<String, Analyzer>> {
     Ok(Catalog::new(view)
-        .analyzers()?
+        .analyzers()
+        .await?
         .into_iter()
         .map(|definition| (definition.name, definition.analyzer))
         .collect())

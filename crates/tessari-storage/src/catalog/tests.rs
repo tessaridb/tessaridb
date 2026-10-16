@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use crate::now::Now;
 
 /// The two directions of one format, asserted against each other.
 ///
@@ -78,7 +79,9 @@ fn a_tables_definitions_found_by_its_names_are_the_whole_catalogs_answer() {
     use std::sync::Arc;
     use tessari_types::{FieldKind, Path};
 
-    let store = Store::open(Arc::new(tessari_kv::MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(tessari_kv::MemoryBackend::new()))
+        .now()
+        .unwrap();
     let mut seed = 0x2545_f491_u64;
     let mut roll = |below: u64| {
         seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
@@ -88,9 +91,9 @@ fn a_tables_definitions_found_by_its_names_are_the_whole_catalogs_answer() {
     let mut catalog = Catalog::new(&mut transaction);
     let mut tables = Vec::new();
     for space in ["a", "b"] {
-        let namespace = catalog.create_namespace(space).unwrap();
+        let namespace = catalog.create_namespace(space).now().unwrap();
         for base in ["x", "y"] {
-            let database = catalog.create_database(namespace.id, base).unwrap();
+            let database = catalog.create_database(namespace.id, base).now().unwrap();
             for nth in 0..60 {
                 let table = catalog
                     .create_table(
@@ -99,6 +102,7 @@ fn a_tables_definitions_found_by_its_names_are_the_whole_catalogs_answer() {
                         &format!("t{nth}"),
                         TableShape::default(),
                     )
+                    .now()
                     .unwrap();
                 for index in 0..roll(4) {
                     catalog
@@ -108,6 +112,7 @@ fn a_tables_definitions_found_by_its_names_are_the_whole_catalogs_answer() {
                             vec![Path::field("a")],
                             IndexShape::default(),
                         )
+                        .now()
                         .unwrap();
                 }
                 for field in 0..roll(3) {
@@ -118,47 +123,55 @@ fn a_tables_definitions_found_by_its_names_are_the_whole_catalogs_answer() {
                             FieldKind::Any,
                             FieldShape::default(),
                         )
+                        .now()
                         .unwrap();
                 }
                 tables.push((namespace.id, database.id, table.id));
             }
         }
     }
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     for &(namespace, database, table) in &tables {
         match roll(4) {
-            0 => drop(catalog.drop_table(table).unwrap()),
+            0 => drop(catalog.drop_table(table).now().unwrap()),
             1 => {
-                for index in catalog.indexes_on(namespace, database, table).unwrap() {
-                    catalog.drop_index(index.id).unwrap();
+                for index in catalog
+                    .indexes_on(namespace, database, table)
+                    .now()
+                    .unwrap()
+                {
+                    catalog.drop_index(index.id).now().unwrap();
                 }
             }
             _ => {}
         }
     }
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let mut transaction = store.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    let fields = catalog.fields().unwrap();
+    let fields = catalog.fields().now().unwrap();
     let (mut dropped_with_children, mut live_with_indexes) = (0, Vec::new());
     for &(namespace, database, table) in &tables {
         let mut whole = fields.clone();
         whole.retain(|field| field.table == table);
-        let indexes = catalog.indexes_on(namespace, database, table).unwrap();
+        let indexes = catalog
+            .indexes_on(namespace, database, table)
+            .now()
+            .unwrap();
         assert_eq!(
             indexes,
-            catalog.every_index_on(table).unwrap(),
+            catalog.every_index_on(table).now().unwrap(),
             "indexes of {table:?}"
         );
         assert_eq!(
-            catalog.fields_on(namespace, database, table).unwrap(),
+            catalog.fields_on(namespace, database, table).now().unwrap(),
             whole,
             "fields of {table:?}"
         );
-        let present = catalog.table(table).unwrap().is_some();
+        let present = catalog.table(table).now().unwrap().is_some();
         if !present && !(indexes.is_empty() && whole.is_empty()) {
             dropped_with_children += 1;
         }
@@ -166,24 +179,26 @@ fn a_tables_definitions_found_by_its_names_are_the_whole_catalogs_answer() {
             live_with_indexes.push(table.get().to_string());
         }
     }
-    for namespace in catalog.namespaces().unwrap() {
+    for namespace in catalog.namespaces().now().unwrap() {
         let mut whole = catalog
             .all(system::DATABASES, DatabaseDefinition::from_value)
+            .now()
             .unwrap();
         whole.retain(|found| found.namespace == namespace.id);
         assert_eq!(
-            catalog.databases_in(namespace.id).unwrap(),
+            catalog.databases_in(namespace.id).now().unwrap(),
             whole,
             "databases of {namespace:?}"
         );
         for database in whole {
             let mut tables = catalog
                 .all(system::TABLES, TableDefinition::from_value)
+                .now()
                 .unwrap();
             tables.retain(|found| found.namespace == namespace.id && found.database == database.id);
             assert!(!tables.is_empty(), "the control: a database with tables");
             assert_eq!(
-                catalog.tables_in(namespace.id, database.id).unwrap(),
+                catalog.tables_in(namespace.id, database.id).now().unwrap(),
                 tables,
                 "tables of {database:?}"
             );
@@ -214,13 +229,16 @@ fn a_held_definition_is_the_one_each_snapshot_holds() {
     use std::sync::Arc;
     use tessari_types::{FieldKind, Path};
 
-    let store = Store::open(Arc::new(tessari_kv::MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(tessari_kv::MemoryBackend::new()))
+        .now()
+        .unwrap();
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("prod").unwrap().id;
-    let database = catalog.create_database(namespace, "shop").unwrap().id;
+    let namespace = catalog.create_namespace("prod").now().unwrap().id;
+    let database = catalog.create_database(namespace, "shop").now().unwrap().id;
     let table = catalog
         .create_table(namespace, database, "users", TableShape::default())
+        .now()
         .unwrap()
         .id;
     let declare = |catalog: &mut Catalog<'_, '_>, name: &str| {
@@ -231,22 +249,26 @@ fn a_held_definition_is_the_one_each_snapshot_holds() {
                 vec![Path::field(name)],
                 IndexShape::default(),
             )
+            .now()
             .unwrap();
         catalog
             .create_field(table, name, FieldKind::Any, FieldShape::default())
+            .now()
             .unwrap();
     };
     declare(&mut catalog, "a");
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     let answer = |catalog: &Catalog<'_, '_>| {
         let indexes: Vec<String> = catalog
             .indexes_on(namespace, database, table)
+            .now()
             .unwrap()
             .into_iter()
             .map(|index| index.name)
             .collect();
         let fields: Vec<String> = catalog
             .fields_on(namespace, database, table)
+            .now()
             .unwrap()
             .into_iter()
             .map(|field| field.name)
@@ -268,7 +290,7 @@ fn a_held_definition_is_the_one_each_snapshot_holds() {
 
     let mut transaction = store.begin().unwrap();
     declare(&mut Catalog::new(&mut transaction), "b");
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     assert_eq!(
         read(),
         (named(&["a", "b"], "by_"), named(&["a", "b"], "")),
@@ -297,9 +319,13 @@ fn a_held_definition_is_the_one_each_snapshot_holds() {
 
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let first = catalog.indexes_on(namespace, database, table).unwrap()[0].id;
-    catalog.drop_index(first).unwrap();
-    transaction.commit().unwrap();
+    let first = catalog
+        .indexes_on(namespace, database, table)
+        .now()
+        .unwrap()[0]
+        .id;
+    catalog.drop_index(first).now().unwrap();
+    transaction.commit().now().unwrap();
     assert_eq!(
         read().0,
         named(&["b"], "by_"),
@@ -312,16 +338,21 @@ fn a_held_definition_is_the_one_each_snapshot_holds() {
         let mut transaction = store.begin().unwrap();
         Catalog::new(&mut transaction)
             .indexes_on(namespace, database, table)
+            .now()
             .unwrap()[0]
             .unique
     };
     let held = unique_now(&store);
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let mut rewritten = catalog.indexes_on(namespace, database, table).unwrap()[0].clone();
+    let mut rewritten = catalog
+        .indexes_on(namespace, database, table)
+        .now()
+        .unwrap()[0]
+        .clone();
     rewritten.unique = !held;
     catalog.rebuild_index(&rewritten);
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     assert_eq!(
         unique_now(&store),
         !held,

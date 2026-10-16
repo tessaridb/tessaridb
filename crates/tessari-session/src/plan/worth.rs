@@ -86,7 +86,7 @@ use super::candidate::{Candidate, Rows, Served};
 /// # Errors
 ///
 /// Returns an error when the catalog or the index cannot be read.
-pub(crate) fn worth_serving(
+pub(crate) async fn worth_serving(
     transaction: &mut Transaction<'_>,
     table: TableId,
     chosen: &Candidate,
@@ -99,7 +99,7 @@ pub(crate) fn worth_serving(
     if lifted {
         return Ok(Some(chosen.rows));
     }
-    let Some(records) = Catalog::new(transaction).record_count(table)? else {
+    let Some(records) = Catalog::new(transaction).record_count(table).await? else {
         return Ok(Some(chosen.rows));
     };
     if records < PLANNER_SCAN_FLOOR_RECORDS {

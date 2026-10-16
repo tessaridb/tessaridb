@@ -36,7 +36,7 @@ impl Session<'_> {
     /// ran out before it held enough — the records without a shape belong to the
     /// answer then, and the index holds none of them — a distance that does not
     /// converge, or more records taken than [`SPATIAL_NEAREST_EXAMINATION_CAP`].
-    pub(super) fn walk_to_place(
+    pub(super) async fn walk_to_place(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
@@ -45,13 +45,14 @@ impl Session<'_> {
         condition: Option<&Expr>,
         scope: Scope<'_>,
     ) -> Result<Walked> {
-        let Some((index, visible)) =
-            self.index_serving_place(transaction, context, table, wanted.path)?
+        let Some((index, visible)) = self
+            .index_serving_place(transaction, context, table, wanted.path)
+            .await?
         else {
             return Ok(Walked::NotServed);
         };
         let Value::Geometry(tessari_types::Geometry::Point(position)) =
-            self.evaluate(transaction, wanted.query)?
+            self.evaluate(transaction, wanted.query).await?
         else {
             return Ok(Walked::NotServed);
         };
@@ -73,12 +74,9 @@ impl Session<'_> {
                     .into_iter()
                     .map(|(cell, _)| cell)
                     .collect();
-            let near = transaction.records_in_region(
-                &index,
-                &cells,
-                zone,
-                tessari_geo::Relation::Meets,
-            )?;
+            let near = transaction
+                .records_in_region(&index, &cells, zone, tessari_geo::Relation::Meets)
+                .await?;
             if !near.rows.is_empty() {
                 return Ok(Walked::Declined);
             }
@@ -100,19 +98,21 @@ impl Session<'_> {
                 return Ok(Walked::Declined);
             }
             let address = RecordAddress::new(index.namespace, index.database, index.table, id);
-            let Some(payload) = transaction.get(&address)? else {
+            let Some(payload) = transaction.get(&address).await? else {
                 continue;
             };
             let record = self.record_of(&payload, &visible)?;
             if let Some(condition) = condition {
-                let passed =
-                    self.evaluate_in(transaction, condition, scope.with(&address.id, &record))?;
+                let passed = self
+                    .evaluate_in(transaction, condition, scope.with(&address.id, &record))
+                    .await?;
                 if !boolean(&passed, condition.span)? {
                     continue;
                 }
             }
-            let measured =
-                self.evaluate_in(transaction, wanted.key, scope.with(&address.id, &record))?;
+            let measured = self
+                .evaluate_in(transaction, wanted.key, scope.with(&address.id, &record))
+                .await?;
             // `NONE` is a distance that did not converge, which sorts below every
             // number: a walk ranking it would put it where the scan does not.
             let Value::Number(metres) = measured else {

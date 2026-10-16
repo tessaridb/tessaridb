@@ -22,6 +22,7 @@
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tessari_storage::Now;
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -31,7 +32,9 @@ use tessari_storage::{
 use tessari_types::{DatabaseId, Epoch, NamespaceId, RecordId, Sequence, TableId};
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn at(id: &str) -> RecordAddress {
@@ -47,14 +50,14 @@ fn at(id: &str) -> RecordAddress {
 fn write(store: &Store, id: &str) -> Result<(), Error> {
     let mut transaction = store.begin().unwrap();
     transaction.put(at(id), b"{}".to_vec());
-    transaction.commit().map(|_| ())
+    transaction.commit().now().map(|_| ())
 }
 
 /// The same write, rehearsed rather than applied.
 fn rehearse(store: &Store, id: &str) -> Result<(), Error> {
     let mut transaction = store.begin().unwrap();
     transaction.put(at(id), b"{}".to_vec());
-    transaction.dry_run()
+    transaction.dry_run().now()
 }
 
 #[test]
@@ -176,6 +179,7 @@ fn a_transaction_that_writes_nothing_is_not_fenced() {
     let transaction = store.begin().unwrap();
     transaction
         .commit()
+        .now()
         .expect("an empty commit writes nothing, so there is nothing to refuse");
 }
 
@@ -186,7 +190,7 @@ fn a_node_nobody_made_a_leader_publishes_no_remainder_at_all() {
     // out, and reporting it as one would leave every single-node deployment
     // permanently at the alarm value.
     let store = store();
-    assert!(store.health().unwrap().lease_remaining.is_none());
+    assert!(store.health().now().unwrap().lease_remaining.is_none());
 }
 
 #[test]
@@ -196,6 +200,7 @@ fn a_lease_with_room_in_it_publishes_how_much() {
     store.hold_lease(ttl);
     let left = store
         .health()
+        .now()
         .unwrap()
         .lease_remaining
         .expect("a lease was granted");
@@ -249,7 +254,7 @@ fn the_remainder_and_the_refusal_are_one_question_asked_twice() {
     let spent = store();
     spent.hold_lease(Duration::ZERO);
     assert_eq!(
-        spent.health().unwrap().lease_remaining,
+        spent.health().now().unwrap().lease_remaining,
         Some(Duration::ZERO)
     );
     assert!(spent.lease_spent().is_some());
@@ -257,7 +262,7 @@ fn the_remainder_and_the_refusal_are_one_question_asked_twice() {
 
     let live = store();
     live.hold_lease(LEASE_GUARD.saturating_add(Duration::from_secs(60)));
-    assert!(live.health().unwrap().lease_remaining > Some(Duration::ZERO));
+    assert!(live.health().now().unwrap().lease_remaining > Some(Duration::ZERO));
     assert!(live.lease_spent().is_none());
     assert!(write(&live, "taken").is_ok());
 }
@@ -275,7 +280,7 @@ fn a_node_whose_lease_lapsed_stops_reporting_that_it_may_write() {
     );
 
     store.hold_lease(Duration::ZERO);
-    assert!(!store.effective_roles().unwrap().has(Roles::WRITABLE));
+    assert!(!store.effective_roles().now().unwrap().has(Roles::WRITABLE));
     // The adopted set is untouched: what the lease takes away is what this node
     // is *serving under*, not what it was configured to be.
     assert_eq!(store.node_identity().unwrap().roles, adopted);
@@ -287,7 +292,7 @@ fn a_node_nobody_granted_a_lease_reports_every_role_it_adopted() {
     // spent lease, and a node standing alone is not a leader running out of one.
     let store = store();
     assert_eq!(
-        store.effective_roles().unwrap(),
+        store.effective_roles().now().unwrap(),
         store.node_identity().unwrap().roles
     );
 }
@@ -307,7 +312,7 @@ fn the_role_reported_and_the_write_refused_cannot_disagree() {
         if let Some(ttl) = ttl {
             store.hold_lease(ttl);
         }
-        let writable = store.effective_roles().unwrap().has(Roles::WRITABLE);
+        let writable = store.effective_roles().now().unwrap().has(Roles::WRITABLE);
         let refused = write(&store, "probe").is_err();
         assert_eq!(
             writable, !refused,
@@ -322,7 +327,7 @@ fn a_node_that_may_write_is_current_as_of_now() {
     // is the origin of what it holds, so there is nothing for it to be stale
     // relative to. The zero is the whole claim.
     let store = store();
-    assert_eq!(store.current_as_of().unwrap(), Some(Duration::ZERO));
+    assert_eq!(store.current_as_of().now().unwrap(), Some(Duration::ZERO));
 }
 
 #[test]
@@ -332,7 +337,7 @@ fn a_copy_this_node_did_not_write_has_no_known_age() {
     // answer rather than a cautious one.
     let store = store();
     store.hold_lease(Duration::ZERO);
-    assert_eq!(store.current_as_of().unwrap(), None);
+    assert_eq!(store.current_as_of().now().unwrap(), None);
 }
 
 #[test]
@@ -347,6 +352,7 @@ fn a_level_collection_gives_the_copy_an_age() {
 
     let age = store
         .current_as_of()
+        .now()
         .unwrap()
         .expect("a node that has been level knows how old its copy is");
     assert!(age < Duration::from_secs(1), "{age:?}");
@@ -363,7 +369,7 @@ fn a_bounded_collection_that_filled_its_limit_is_not_a_catch_up() {
     store.collected(Sequence::new(9), Currency::Behind);
 
     assert_eq!(
-        store.current_as_of().unwrap(),
+        store.current_as_of().now().unwrap(),
         None,
         "a full answer is contact, not arrival"
     );
@@ -389,7 +395,7 @@ fn an_earlier_arrival_survives_a_later_collection_that_did_not_arrive() {
     store.collected(Sequence::new(9), Currency::Behind);
 
     assert!(
-        store.current_as_of().unwrap().is_some(),
+        store.current_as_of().now().unwrap().is_some(),
         "the arrival at 4 still dates this copy"
     );
     assert_eq!(
@@ -423,8 +429,8 @@ fn an_uncollected_copys_currency_and_the_right_to_write_are_one_answer() {
         if let Some(ttl) = ttl {
             store.hold_lease(ttl);
         }
-        let writable = store.effective_roles().unwrap().has(Roles::WRITABLE);
-        let current = store.current_as_of().unwrap().is_some();
+        let writable = store.effective_roles().now().unwrap().has(Roles::WRITABLE);
+        let current = store.current_as_of().now().unwrap().is_some();
         assert_eq!(
             writable, current,
             "reported writable={writable} while current_as_of said {current}, at ttl={ttl:?}"
@@ -449,17 +455,23 @@ fn a_node_reports_the_epoch_it_was_granted_and_nothing_before_one() {
     let span = LEASE_GUARD
         .checked_add(Duration::from_secs(60))
         .expect("representable");
-    store.hold(Epoch::new(7), Lease::taken_at(Instant::now(), span));
+    store
+        .hold(Epoch::new(7), Lease::taken_at(Instant::now(), span))
+        .now();
     assert_eq!(store.leading(), Some(Epoch::new(7)));
 
     // And a renewal moves it, because the epoch a node writes under is the one
     // it most recently won and not the first one it ever did.
-    store.hold(Epoch::new(8), Lease::taken_at(Instant::now(), span));
+    store
+        .hold(Epoch::new(8), Lease::taken_at(Instant::now(), span))
+        .now();
     assert_eq!(store.leading(), Some(Epoch::new(8)));
 
     // The local form has no round behind it and therefore no epoch to report.
     // It is the fence alone, which is all a test of the fence ever wanted.
-    let alone = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let alone = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     alone.hold_lease(span);
     assert_eq!(
         alone.leading(),
@@ -481,7 +493,9 @@ fn a_lease_installed_whole_keeps_the_instant_it_was_taken_at() {
         .expect("representable");
     let opened = Instant::now().checked_sub(span).expect("representable");
 
-    store.hold(Epoch::new(4), Lease::taken_at(opened, span));
+    store
+        .hold(Epoch::new(4), Lease::taken_at(opened, span))
+        .now();
     assert!(
         store.lease_spent().is_some(),
         "a lease whose whole span was spent before it arrived is already fenced"
@@ -490,7 +504,9 @@ fn a_lease_installed_whole_keeps_the_instant_it_was_taken_at() {
 
     // The control: the same span, taken now. What differs between the two is the
     // instant and nothing else, so the difference is the dating.
-    store.hold(Epoch::new(5), Lease::taken_at(Instant::now(), span));
+    store
+        .hold(Epoch::new(5), Lease::taken_at(Instant::now(), span))
+        .now();
     assert_eq!(store.lease_spent(), None);
     write(&store, "two").expect("inside the window it writes");
 }
@@ -515,8 +531,9 @@ fn joined() -> Store {
             None,
             None,
         )
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     store
 }
 
@@ -553,14 +570,16 @@ fn a_node_whose_catalog_names_a_peer_does_not_write_before_it_has_won_anything()
         "the operator declared a writable node that does not vote — the exact          combination the role predicate could not see"
     );
     assert!(
-        !store.effective_roles().unwrap().has(Roles::WRITABLE),
+        !store.effective_roles().now().unwrap().has(Roles::WRITABLE),
         "a node in a cluster writes under a leadership, and holds none yet"
     );
     write(&store, "before").expect_err("and the refusal is the write path's too");
 
     // What it is waiting for, and the whole of it: a lease.
-    store.hold(Epoch::new(1), Lease::taken_at(Instant::now(), LEASE_TTL));
-    assert!(store.effective_roles().unwrap().has(Roles::WRITABLE));
+    store
+        .hold(Epoch::new(1), Lease::taken_at(Instant::now(), LEASE_TTL))
+        .now();
+    assert!(store.effective_roles().now().unwrap().has(Roles::WRITABLE));
     write(&store, "after").expect("the node a majority elected writes");
 }
 
@@ -580,8 +599,9 @@ fn following() -> Store {
             None,
             None,
         )
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     store
 }
 
@@ -596,7 +616,7 @@ fn a_read_only_follower_is_not_a_leadership_and_the_leader_goes_on_writing() {
     // procedure the join is documented as.
     let store = following();
     assert!(
-        store.effective_roles().unwrap().has(Roles::WRITABLE),
+        store.effective_roles().now().unwrap().has(Roles::WRITABLE),
         "a node whose only peer takes no writes is still the only writer"
     );
     write(&store, "still-the-writer").expect("a read-only follower is not a leadership");
@@ -611,7 +631,7 @@ fn two_peers_that_can_elect_nobody_still_fence_each_other() {
     // different road. Fenced, they are a dead cluster an operator can see.
     let store = joined();
     assert!(
-        !store.effective_roles().unwrap().has(Roles::WRITABLE),
+        !store.effective_roles().now().unwrap().has(Roles::WRITABLE),
         "a declared peer that may write is a peer this node must not race"
     );
     write(&store, "raced").expect_err("unable to write is the property, and it takes both bits");
@@ -633,7 +653,7 @@ fn a_deciding_set_of_one_is_not_a_cluster_and_goes_on_writing() {
             .has(Roles::COORDINATING)
     );
     assert!(
-        store.effective_roles().unwrap().has(Roles::WRITABLE),
+        store.effective_roles().now().unwrap().has(Roles::WRITABLE),
         "the role is not the predicate, in this direction too"
     );
     write(&store, "alone-but-coordinating").expect("no peer is declared, so there is no cluster");
@@ -650,7 +670,7 @@ fn a_store_standing_alone_is_untouched_by_the_leadership_rule() {
     let store = store();
     let adopted = store.node_identity().unwrap().roles;
     assert!(adopted.has(Roles::WRITABLE) && !adopted.has(Roles::COORDINATING));
-    assert_eq!(store.effective_roles().unwrap(), adopted);
+    assert_eq!(store.effective_roles().now().unwrap(), adopted);
     write(&store, "alone").expect("a store on its own goes on writing");
 }
 
@@ -666,7 +686,7 @@ fn the_role_and_the_refusal_agree_for_a_node_in_a_cluster_too() {
             if let Some(ttl) = lease {
                 store.hold_lease(ttl);
             }
-            let writable = store.effective_roles().unwrap().has(Roles::WRITABLE);
+            let writable = store.effective_roles().now().unwrap().has(Roles::WRITABLE);
             let refused = write(&store, "pair").is_err();
             assert_eq!(
                 writable, !refused,
@@ -704,9 +724,11 @@ fn a_cluster_is_declared_in_one_transaction_because_the_gate_shuts_on_the_first_
             None,
             None,
         )
+        .now()
         .unwrap();
     first
         .commit()
+        .now()
         .expect("the first peer is declared from a store still alone");
     let mut second = one_at_a_time.begin().unwrap();
     Catalog::new(&mut second)
@@ -718,9 +740,11 @@ fn a_cluster_is_declared_in_one_transaction_because_the_gate_shuts_on_the_first_
             None,
             None,
         )
+        .now()
         .unwrap();
     second
         .commit()
+        .now()
         .expect_err("and by now this node is in a cluster that has elected nobody");
 
     // One commit is judged once, so a whole cluster goes in at once.
@@ -736,6 +760,7 @@ fn a_cluster_is_declared_in_one_transaction_because_the_gate_shuts_on_the_first_
             None,
             None,
         )
+        .now()
         .unwrap();
     catalog
         .create_replica(
@@ -746,8 +771,10 @@ fn a_cluster_is_declared_in_one_transaction_because_the_gate_shuts_on_the_first_
             None,
             None,
         )
+        .now()
         .unwrap();
     both.commit()
+        .now()
         .expect("a cluster declared in one transaction");
     write(&together, "afterwards").expect_err("and the door is shut behind it");
 }

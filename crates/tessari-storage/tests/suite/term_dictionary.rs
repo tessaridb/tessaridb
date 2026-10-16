@@ -30,6 +30,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_encoding::{
     IndexAddress, IndexValues, KeyKind, Posting, PostingKey, SearchSurfaceKey, SearchTermKey,
@@ -103,19 +104,20 @@ impl Fixture {
 
     fn analysed(analyzer: Analyzer) -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        let store = Store::open(Arc::clone(&backend)).unwrap();
+        let store = Store::open(Arc::clone(&backend)).now().unwrap();
         let mut transaction = store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("prod").unwrap();
-        let database = catalog.create_database(namespace.id, "shop").unwrap();
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog.create_database(namespace.id, "shop").now().unwrap();
         let table = catalog
             .create_table(namespace.id, database.id, "notes", TableShape::default())
+            .now()
             .unwrap();
         // The analyzer is on the **field**. A search index over a field that
         // declares none posts no terms at all, silently — so a sweep that found
         // an empty dictionary matching empty postings would pass while proving
         // nothing. The population assertion in each test is what catches that.
-        catalog.create_analyzer("plain", analyzer).unwrap();
+        catalog.create_analyzer("plain", analyzer).now().unwrap();
         catalog
             .create_field(
                 table.id,
@@ -129,6 +131,7 @@ impl Fixture {
                     assert: None,
                 },
             )
+            .now()
             .unwrap();
         let index = catalog
             .create_index(
@@ -145,8 +148,9 @@ impl Fixture {
                     costs: tessari_storage::SearchCosts::default(),
                 },
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         Self {
             backend,
             store,
@@ -183,13 +187,13 @@ impl Fixture {
             self.at(n),
             encode_payload(&Value::Object(fields)).into_bytes(),
         );
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     fn delete(&self, n: u64) {
         let mut transaction = self.store.begin().unwrap();
         transaction.delete(self.at(n));
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     fn keys(&self, kind: KeyKind) -> Vec<Vec<u8>> {
@@ -467,7 +471,7 @@ fn a_rebuild_makes_the_dictionary_what_the_rows_imply_rather_than_adding_to_it()
     // notice it drifting.
     let mut transaction = fixture.store.begin().unwrap();
     Catalog::new(&mut transaction).rebuild_index(&fixture.index);
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     fixture.assert_agrees("after the rebuild");
     let held = fixture.dictionary();
@@ -523,8 +527,9 @@ fn dropping_the_index_leaves_no_dictionary_behind() {
     let mut transaction = fixture.store.begin().unwrap();
     Catalog::new(&mut transaction)
         .drop_index(fixture.index.id)
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     // A dropped index keeps its entries by design — the same stance a dropped
     // table takes towards its records — so this asserts what the store actually
     // promises rather than what a reader might assume, and pins it so a change
@@ -614,7 +619,7 @@ fn a_rebuild_recomputes_a_bound_that_maintenance_left_loose() {
 
     let mut transaction = fixture.store.begin().unwrap();
     Catalog::new(&mut transaction).rebuild_index(&fixture.index);
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     fixture.assert_agrees("after the rebuild");
     assert_eq!(

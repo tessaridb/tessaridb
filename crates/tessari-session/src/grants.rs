@@ -28,7 +28,7 @@ impl Session<'_> {
     /// in their tenancy. The moment they have one, their grants are the whole
     /// story. That is stated rather than discovered, and it is what makes the
     /// feature able to narrow — a role can only widen.
-    pub(crate) fn grant(
+    pub(crate) async fn grant(
         &self,
         transaction: &mut Transaction<'_>,
         verbs: &[Name],
@@ -37,7 +37,9 @@ impl Session<'_> {
         user: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let (asked, held) = self.grant_operands(transaction, verbs, table, user, span)?;
+        let (asked, held) = self
+            .grant_operands(transaction, verbs, table, user, span)
+            .await?;
         // A user who cannot see a field but may write the record would overwrite
         // it whole and destroy what they cannot see — a data-loss hole created by
         // the permission system rather than closed by it.
@@ -50,7 +52,7 @@ impl Session<'_> {
     }
 
     /// Take verbs away, and refuse to take away the last grant.
-    pub(crate) fn revoke(
+    pub(crate) async fn revoke(
         &self,
         transaction: &mut Transaction<'_>,
         verbs: &[Name],
@@ -58,8 +60,10 @@ impl Session<'_> {
         user: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let (asked, held) = self.grant_operands(transaction, verbs, table, user, span)?;
-        let existing = Catalog::new(transaction).grants_for(held.id)?;
+        let (asked, held) = self
+            .grant_operands(transaction, verbs, table, user, span)
+            .await?;
+        let existing = Catalog::new(transaction).grants_for(held.id).await?;
         let remaining: Vec<Verb> = existing
             .iter()
             .find(|grant| grant.table == asked.1)
@@ -102,7 +106,7 @@ impl Session<'_> {
     ///
     /// Shared because `GRANT` and `REVOKE` resolve exactly the same three things
     /// and differ only in what they then do with them.
-    fn grant_operands(
+    async fn grant_operands(
         &self,
         transaction: &mut Transaction<'_>,
         verbs: &[Name],
@@ -122,9 +126,10 @@ impl Session<'_> {
         }
         // Resolved through the same path every other statement uses, so a grant
         // cannot name a table outside the granting session's own tenancy.
-        let (_, id) = self.resolve_table(transaction, table)?;
+        let (_, id) = self.resolve_table(transaction, table).await?;
         let held = Catalog::new(transaction)
-            .users()?
+            .users()
+            .await?
             .into_iter()
             .find(|held| held.name == user.text)
             .ok_or_else(|| Error::Unknown {

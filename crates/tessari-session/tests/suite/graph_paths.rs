@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -62,7 +63,9 @@ fn generated(seed: u64) -> Edges {
 }
 
 fn store_of(edges: &Edges) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     let mut script = String::from(
         "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE town; USE DATABASE town;\n\

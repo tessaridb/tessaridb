@@ -30,7 +30,9 @@ use tessari_storage::Store;
 use tessari_types::Value;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// A queue holding three pieces of work, under the declaration the test names.

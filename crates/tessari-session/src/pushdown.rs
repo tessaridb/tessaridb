@@ -43,7 +43,7 @@ pub struct Pushed {
 ///
 /// A condition that does not read back, or a store that cannot be read. A
 /// record whose payload does not decode is kept, for the asker to refuse.
-pub fn keeping(
+pub async fn keeping(
     store: &Store,
     pushed: &Pushed,
     found: Vec<(RecordId, Vec<u8>)>,
@@ -53,14 +53,19 @@ pub fn keeping(
     let mut transaction = store.begin()?;
     let mut kept = Vec::with_capacity(found.len());
     for (id, payload) in found {
-        let answered = decode_payload(&payload).map(|record| {
-            let record = seen(record, &pushed.visible);
-            session.evaluate_in(
-                &mut transaction,
-                &condition,
-                Scope::of(&record).identified(&id),
-            )
-        });
+        let answered = match decode_payload(&payload) {
+            Ok(record) => {
+                let record = seen(record, &pushed.visible);
+                Ok(session
+                    .evaluate_in(
+                        &mut transaction,
+                        &condition,
+                        Scope::of(&record).identified(&id),
+                    )
+                    .await)
+            }
+            Err(failure) => Err(failure),
+        };
         let refused = matches!(
             answered,
             Ok(Ok(Value::Bool(false) | Value::None | Value::Null))
@@ -113,10 +118,10 @@ pub struct OrderKey {
 ///
 /// A key that does not read back, a page that could not be read, or a store
 /// that cannot be read.
-pub fn leading(
+pub async fn leading(
     store: &Store,
     ordered: &Ordered,
-    mut pages: impl FnMut() -> Result<Option<Vec<(RecordId, Vec<u8>)>>>,
+    mut pages: impl AsyncFnMut() -> Result<Option<Vec<(RecordId, Vec<u8>)>>>,
 ) -> Result<Vec<(RecordId, Vec<u8>)>> {
     let order = ordered
         .keys
@@ -133,23 +138,29 @@ pub fn leading(
     let mut transaction = store.begin()?;
     let mut topmost = crate::shape::Topmost::keeping(&order, Some(most));
     let mut unranked = Vec::new();
-    while let Some(page) = pages()? {
+    while let Some(page) = pages().await? {
         for (id, payload) in page {
             let Ok(record) = decode_payload(&payload) else {
                 unranked.push((id, payload));
                 continue;
             };
             let record = seen(record, &ordered.visible);
-            let keys: Result<Vec<Value>> = order
-                .iter()
-                .map(|key| {
-                    session.evaluate_in(
-                        &mut transaction,
-                        &key.key,
-                        Scope::of(&record).identified(&id),
-                    )
-                })
-                .collect();
+            let keys: Result<Vec<Value>> = async {
+                let mut keys = Vec::with_capacity(order.len());
+                for key in order.iter() {
+                    keys.push(
+                        session
+                            .evaluate_in(
+                                &mut transaction,
+                                &key.key,
+                                Scope::of(&record).identified(&id),
+                            )
+                            .await?,
+                    );
+                }
+                Ok(keys)
+            }
+            .await;
             match keys {
                 Ok(keys) => topmost.offer(keys, id, Value::Bytes(payload)),
                 Err(_) => unranked.push((id, payload)),

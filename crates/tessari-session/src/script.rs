@@ -66,7 +66,8 @@ pub async fn write_script(store: &Store) -> Result<ScriptTaken> {
     let owner = {
         let mut view = store.begin()?;
         Catalog::new(&mut view)
-            .users()?
+            .users()
+            .await?
             .into_iter()
             .find(|user| {
                 user.authorities.iter().any(|held| {
@@ -78,7 +79,7 @@ pub async fn write_script(store: &Store) -> Result<ScriptTaken> {
     };
     let mut reader = Session::new(store);
     if let Some(id) = owner {
-        reader.acting_as(id)?;
+        reader.acting_as(id).await?;
     }
     written(&mut reader, &[]).await
 }
@@ -90,9 +91,11 @@ impl Session<'_> {
     pub(crate) async fn state_script(&self, of: &[tessari_ql::ReachRef]) -> Result<ScriptTaken> {
         let part = {
             let mut view = self.store.begin()?;
-            of.iter()
-                .map(|named| self.reach_of(&mut view, named))
-                .collect::<Result<Vec<Reach>>>()?
+            let mut part = Vec::with_capacity(of.len());
+            for named in of {
+                part.push(self.reach_of(&mut view, named).await?);
+            }
+            part
         };
         let mut reader = Session::new(self.store);
         reader.identity = self.identity.clone();
@@ -124,10 +127,10 @@ async fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken
         let catalog = Catalog::new(&mut view);
         let mut placed = Vec::new();
         let mut names = tessari_ql::literal::Names::new();
-        for namespace in catalog.namespaces()? {
+        for namespace in catalog.namespaces().await? {
             let whole = part.contains(&Reach::Namespace(namespace.id));
             let mut databases = Vec::new();
-            for database in catalog.databases_in(namespace.id)? {
+            for database in catalog.databases_in(namespace.id).await? {
                 if !carried(part, namespace.id, database.id) {
                     continue;
                 }
@@ -135,14 +138,16 @@ async fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken
                 // statement can name; the chunks travel as the file `PUT`
                 // writes, and an edge kind is named among what is not carried.
                 let tables: Vec<_> = catalog
-                    .tables_in(namespace.id, database.id)?
+                    .tables_in(namespace.id, database.id)
+                    .await?
                     .into_iter()
                     .filter(|table| crate::info::nameable(&table.name))
                     .collect();
                 for table in &tables {
                     names.insert(table.id, table.name.clone());
                 }
-                let searches = crate::engine::searches_script(&catalog, namespace.id, database.id)?;
+                let searches =
+                    crate::engine::searches_script(&catalog, namespace.id, database.id).await?;
                 databases.push((database.name, tables, searches));
             }
             if part.is_empty() || whole || !databases.is_empty() {
@@ -155,9 +160,9 @@ async fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken
         (
             placed,
             names,
-            access::analyzers(&catalog, part)?
-                + &crate::engine::word_sets_script(&catalog, !part.is_empty())?,
-            access::uncarried(&catalog, part)?,
+            access::analyzers(&catalog, part).await?
+                + &crate::engine::word_sets_script(&catalog, !part.is_empty()).await?,
+            access::uncarried(&catalog, part).await?,
         )
     };
     refused.extend(catalog_refusals);
@@ -188,7 +193,7 @@ async fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken
             }
             let mut writable = Vec::new();
             for table in tables {
-                match data::declared(reader, table)? {
+                match data::declared(reader, table).await? {
                     Ok((declaration, table_indexes)) => {
                         body.push_str(&declaration);
                         if !table_indexes.is_empty() {
@@ -216,7 +221,7 @@ async fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken
     body.push_str(&indexes);
     let mut text = String::from("-- TessariDB state script (ADR-0091)\n");
     if part.is_empty() {
-        body.push_str(&access::users(reader, &placed_ids(reader.store)?)?);
+        body.push_str(&access::users(reader, &placed_ids(reader.store).await?).await?);
         let _ = writeln!(
             text,
             "-- written by {} — restore into an EMPTY store with `tessaridb <store> -f <this file>`",
@@ -264,13 +269,13 @@ async fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken
 }
 
 /// Where each table lives, for the grants that name tables by id.
-fn placed_ids(store: &Store) -> Result<Vec<(TableId, String, String, String)>> {
+async fn placed_ids(store: &Store) -> Result<Vec<(TableId, String, String, String)>> {
     let mut view = store.begin()?;
     let catalog = Catalog::new(&mut view);
     let mut placed = Vec::new();
-    for namespace in catalog.namespaces()? {
-        for database in catalog.databases_in(namespace.id)? {
-            for table in catalog.tables_in(namespace.id, database.id)? {
+    for namespace in catalog.namespaces().await? {
+        for database in catalog.databases_in(namespace.id).await? {
+            for table in catalog.tables_in(namespace.id, database.id).await? {
                 placed.push((
                     table.id,
                     namespace.name.clone(),

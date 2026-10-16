@@ -19,7 +19,9 @@ use tessari_types::Value;
 const PASSPHRASE: &str = "an operator passphrase";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn answer(session: &mut Session<'_>, statement: &str) -> std::collections::BTreeMap<String, Value> {
@@ -93,11 +95,11 @@ fn any_signed_in_user_may_ask() {
         .unwrap();
     // The first user closes the store, so the second is declared by the owner.
     let mut root = Session::new(&store);
-    root.sign_in("root", "root-password").unwrap();
+    root.sign_in("root", "root-password").now().unwrap();
     root.run_now("DEFINE USER ada ON prod.work ROLE viewer PASSWORD 'ada-password';")
         .unwrap();
     let mut viewer = Session::new(&store);
-    viewer.sign_in("ada", "ada-password").unwrap();
+    viewer.sign_in("ada", "ada-password").now().unwrap();
     assert_eq!(state(&mut viewer), "uninitialised");
 
     let mut nobody = Session::new(&store);
@@ -215,12 +217,12 @@ fn the_surface_asks_the_authority_the_statement_asks() {
         )
         .unwrap();
     let mut root = Session::new(&store);
-    root.sign_in("root", "root-password").unwrap();
+    root.sign_in("root", "root-password").now().unwrap();
     root.run_now("DEFINE USER ada ON prod.work ROLE viewer PASSWORD 'ada-password';")
         .unwrap();
 
     let mut viewer = Session::new(&store);
-    viewer.sign_in("ada", "ada-password").unwrap();
+    viewer.sign_in("ada", "ada-password").now().unwrap();
     assert!(
         viewer
             .vault(
@@ -456,7 +458,7 @@ fn a_listing_is_asked_of_the_vault_it_names() {
         )
         .unwrap();
     let mut root = Session::new(&store);
-    root.sign_in("root", "root-password").unwrap();
+    root.sign_in("root", "root-password").now().unwrap();
     root.run_now(
         "USE NAMESPACE prod; USE DATABASE work;
          DEFINE USER ada ON prod.work ROLE editor PASSWORD 'ada-password';
@@ -464,7 +466,7 @@ fn a_listing_is_asked_of_the_vault_it_names() {
     )
     .unwrap();
     let mut ada = Session::new(&store);
-    ada.sign_in("ada", "ada-password").unwrap();
+    ada.sign_in("ada", "ada-password").now().unwrap();
     ada.run_now("USE NAMESPACE prod; USE DATABASE work;")
         .unwrap();
     assert!(

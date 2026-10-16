@@ -42,12 +42,12 @@ impl Db {
     ///
     /// The store's failure to list its records or intents; a refusal for one
     /// transaction is logged and passes on to the next.
-    pub fn settle_across(&self) -> Result<SettledAcross> {
-        self.settle_across_at(now_millis())
+    pub async fn settle_across(&self) -> Result<SettledAcross> {
+        self.settle_across_at(now_millis()).await
     }
 
     /// [`Self::settle_across`] as of `now`, milliseconds since the Unix epoch.
-    pub(crate) fn settle_across_at(&self, now: u64) -> Result<SettledAcross> {
+    pub(crate) async fn settle_across_at(&self, now: u64) -> Result<SettledAcross> {
         let store = self.store();
         let mut settled = SettledAcross::default();
         // A leader that did not answer is not asked again this pass: a node
@@ -57,24 +57,29 @@ impl Db {
         // First, so a record resolved in this pass is forgotten in the next:
         // forgetting asks every participant, and a pass that has just
         // resolved here would only be told so a moment later.
-        self.forget_decided(&mut settled, &mut silent)?;
+        self.forget_decided(&mut settled, &mut silent).await?;
         let pending = store.pending_across()?;
         let pending_seen = pending.len();
         for (transaction, record) in pending {
             let Some(coordinator) = record.participants.first().map(|part| part.range) else {
                 continue;
             };
-            if record.deadline > now || store.leader_of(coordinator)?.is_some() {
+            if record.deadline > now || store.leader_of(coordinator).await?.is_some() {
                 continue;
             }
             if record.decision == Decision::Staging {
-                self.recover(transaction, &record, &mut settled, &mut silent)?;
+                self.recover(transaction, &record, &mut settled, &mut silent)
+                    .await?;
                 continue;
             }
-            match self.session().answer_across(&AcrossAsk::Settle {
-                transaction,
-                coordinator,
-            }) {
+            match self
+                .session()
+                .answer_across(&AcrossAsk::Settle {
+                    transaction,
+                    coordinator,
+                })
+                .await
+            {
                 Ok(AcrossAnswer::Outcome(decided)) if decided.decision == Decision::Aborted => {
                     settled.aborted = settled.aborted.saturating_add(1);
                 }
@@ -84,7 +89,7 @@ impl Db {
         }
         let standing = store.standing_across()?;
         let standing_seen = standing.len();
-        let young = self.young_standing(&standing, now)?;
+        let young = self.young_standing(&standing, now).await?;
         for (transaction, coordinator) in standing {
             // Asked of the record's range's leader even when this node holds
             // a copy of the record: a copy, or the leader's own read, may be a
@@ -107,7 +112,7 @@ impl Db {
                     coordinator,
                 }
             };
-            let record = match self.ask_leader_of(coordinator, &asked, &mut silent)? {
+            let record = match self.ask_leader_of(coordinator, &asked, &mut silent).await? {
                 // Undecided, `STAGING` included: it may be committed
                 // implicitly already, and only recovery decides it (D14c).
                 Some(Ok(AcrossAnswer::Outcome(record))) if record.decision.is_decided() => record,
@@ -125,16 +130,20 @@ impl Db {
             let committed = record.decision == Decision::Committed;
             // Refused where this node does not lead the intents' home, which is
             // the design: their leader resolves them and this copy follows.
-            match self.session().answer_across(&AcrossAsk::Resolve {
-                transaction,
-                committed,
-                records: Vec::new(),
-                participants: if committed {
-                    record.participants
-                } else {
-                    Vec::new()
-                },
-            }) {
+            match self
+                .session()
+                .answer_across(&AcrossAsk::Resolve {
+                    transaction,
+                    committed,
+                    records: Vec::new(),
+                    participants: if committed {
+                        record.participants
+                    } else {
+                        Vec::new()
+                    },
+                })
+                .await
+            {
                 Ok(AcrossAnswer::Resolved(Some(_))) => {
                     settled.resolved = settled.resolved.saturating_add(1);
                 }
@@ -161,7 +170,7 @@ impl Db {
     /// every part landed → `COMMITTED`; one not landed is barred at its range
     /// first → `ABORTED`. The decision by compare-and-set on `STAGING`, so a
     /// coordinator concluding meanwhile wins, and loses nothing.
-    fn recover(
+    async fn recover(
         &self,
         transaction: tessari_storage::TransactionId,
         record: &tessari_storage::TransactionRecord,
@@ -170,17 +179,18 @@ impl Db {
     ) -> Result<()> {
         let mut failed = Ok(());
         let recovered =
-            tessari_session::recover_staging(transaction, record, true, |range, asked| match self
-                .ask_leader_of(range, asked, silent)
-            {
-                Ok(Some(answered)) => answered,
-                Ok(None) => Err(format!("the leader of {range:?} did not answer this pass")),
-                Err(why) => {
-                    let said = why.to_string();
-                    failed = Err(why);
-                    Err(said)
+            tessari_session::recover_staging(transaction, record, true, async |range, asked| {
+                match self.ask_leader_of(range, asked, silent).await {
+                    Ok(Some(answered)) => answered,
+                    Ok(None) => Err(format!("the leader of {range:?} did not answer this pass")),
+                    Err(why) => {
+                        let said = why.to_string();
+                        failed = Err(why);
+                        Err(said)
+                    }
                 }
-            });
+            })
+            .await;
         failed?;
         let decided = match recovered {
             Recovery::Committed(committed) => committed,
@@ -196,10 +206,14 @@ impl Db {
             }
         };
         let committed = decided.decision == Decision::Committed;
-        match self.session().answer_across(&AcrossAsk::Decide {
-            transaction,
-            record: decided,
-        }) {
+        match self
+            .session()
+            .answer_across(&AcrossAsk::Decide {
+                transaction,
+                record: decided,
+            })
+            .await
+        {
             Ok(_) if committed => settled.committed = settled.committed.saturating_add(1),
             Ok(_) => settled.aborted = settled.aborted.saturating_add(1),
             Err(why) => settled.last_refusal = Some(why.to_string()),
@@ -209,7 +223,7 @@ impl Db {
 
     /// Forget each decided record whose range this node leads once every
     /// participant answers that its intents are gone for good (ADR-0112 D12).
-    fn forget_decided(
+    async fn forget_decided(
         &self,
         settled: &mut SettledAcross,
         silent: &mut BTreeSet<[u8; tessari_storage::NODE_ID_LEN]>,
@@ -219,7 +233,7 @@ impl Db {
             let Some(coordinator) = record.participants.first().map(|part| part.range) else {
                 continue;
             };
-            if store.leader_of(coordinator)?.is_some() {
+            if store.leader_of(coordinator).await?.is_some() {
                 continue;
             }
             let mut gone = true;
@@ -228,7 +242,10 @@ impl Db {
                     transaction,
                     range: participant.range,
                 };
-                match self.ask_leader_of(participant.range, &asked, silent)? {
+                match self
+                    .ask_leader_of(participant.range, &asked, silent)
+                    .await?
+                {
                     Some(Ok(AcrossAnswer::Holding(false))) => {}
                     Some(Err(why)) => {
                         settled.last_refusal = Some(why);
@@ -244,10 +261,14 @@ impl Db {
             if !gone {
                 continue;
             }
-            match self.session().answer_across(&AcrossAsk::Forget {
-                transaction,
-                coordinator,
-            }) {
+            match self
+                .session()
+                .answer_across(&AcrossAsk::Forget {
+                    transaction,
+                    coordinator,
+                })
+                .await
+            {
                 Ok(AcrossAnswer::Forgotten(_)) => {
                     settled.forgotten = settled.forgotten.saturating_add(1);
                 }
@@ -261,12 +282,12 @@ impl Db {
     /// The standing transactions this node first found standing less than a
     /// lapse before `now`, recording when it first found each new one and
     /// forgetting those no longer standing.
-    fn young_standing(
+    async fn young_standing(
         &self,
         standing: &[(tessari_storage::TransactionId, tessari_types::Reach)],
         now: u64,
     ) -> Result<BTreeSet<tessari_storage::TransactionId>> {
-        let lapse = tessari_session::across_lapse_millis(self.store())?;
+        let lapse = tessari_session::across_lapse_millis(self.store()).await?;
         let mut since = self
             .standing_since
             .lock()
@@ -285,13 +306,13 @@ impl Db {
     /// Ask `range`'s leader — this node itself when it leads it. `None` when
     /// that leader did not answer earlier in this pass and is not asked again;
     /// a leader that does not answer now joins `silent`.
-    fn ask_leader_of(
+    async fn ask_leader_of(
         &self,
         range: tessari_types::Reach,
         asked: &AcrossAsk,
         silent: &mut BTreeSet<[u8; tessari_storage::NODE_ID_LEN]>,
     ) -> Result<Option<std::result::Result<AcrossAnswer, String>>> {
-        let leader = match self.store().leader_of(range)? {
+        let leader = match self.store().leader_of(range).await? {
             Some(node) => Some(node),
             // A range this node holds none of: its leadership rows live in
             // logs this node never collects, so its catalog cannot say who
@@ -302,7 +323,7 @@ impl Db {
                 .served()
                 .is_some_and(|over| !over.contains(range)) =>
             {
-                match self.heard_leading(range)? {
+                match self.heard_leading(range).await? {
                     Some(node) => Some(node),
                     None => {
                         return Ok(Some(Err(format!("no leader of {range:?} has been heard"))));
@@ -316,10 +337,12 @@ impl Db {
             None => self
                 .session()
                 .answer_across(asked)
+                .await
                 .map_err(|why| why.to_string()),
             Some(node) => match self.participants.get() {
                 Some(carrier) => carrier
                     .ask(node, None, asked)
+                    .await
                     .map_err(|refused| refused.reason),
                 None => Err("this node carries nothing to other nodes".to_owned()),
             },
@@ -334,7 +357,7 @@ impl Db {
 impl Db {
     /// The node heard leading the line `range` is judged on — the most
     /// specific placed range containing it, else the store line.
-    fn heard_leading(
+    async fn heard_leading(
         &self,
         range: tessari_types::Reach,
     ) -> Result<Option<[u8; tessari_storage::NODE_ID_LEN]>> {
@@ -343,7 +366,8 @@ impl Db {
         };
         let mut reading = self.store().begin()?;
         let placed: BTreeSet<tessari_types::Reach> = tessari_storage::Catalog::new(&mut reading)
-            .replicas()?
+            .replicas()
+            .await?
             .into_iter()
             .filter_map(|peer| peer.leads)
             .collect();
@@ -371,37 +395,43 @@ impl tessari_storage::Decisions for LeadersDecide {
         &self,
         transaction: tessari_storage::TransactionId,
         coordinator: tessari_types::Reach,
-    ) -> Option<tessari_storage::TransactionRecord> {
-        let db = self.0.upgrade()?;
-        let asked = AcrossAsk::Lookup {
-            transaction,
-            coordinator,
-        };
-        let mut silent = BTreeSet::new();
-        match db.ask_leader_of(coordinator, &asked, &mut silent) {
-            Ok(Some(Ok(AcrossAnswer::Outcome(record)))) if record.decision.is_decided() => {
-                Some(record)
-            }
-            // Committed implicitly only if every part is held — asked without
-            // barring, so a read never aborts a live transaction (D14e).
-            Ok(Some(Ok(AcrossAnswer::Outcome(record)))) if record.decision == Decision::Staging => {
-                let recovered = tessari_session::recover_staging(
-                    transaction,
-                    &record,
-                    false,
-                    |range, asked| match db.ask_leader_of(range, asked, &mut silent) {
-                        Ok(Some(answered)) => answered,
-                        Ok(None) => Err(format!("the leader of {range:?} did not answer")),
-                        Err(why) => Err(why.to_string()),
-                    },
-                );
-                match recovered {
-                    Recovery::Committed(committed) => Some(committed),
-                    Recovery::Barred(_) | Recovery::Missing(_) | Recovery::Unknown(_) => None,
+    ) -> tessari_storage::Deciding<'_> {
+        Box::pin(async move {
+            let db = self.0.upgrade()?;
+            let asked = AcrossAsk::Lookup {
+                transaction,
+                coordinator,
+            };
+            let mut silent = BTreeSet::new();
+            match db.ask_leader_of(coordinator, &asked, &mut silent).await {
+                Ok(Some(Ok(AcrossAnswer::Outcome(record)))) if record.decision.is_decided() => {
+                    Some(record)
                 }
+                // Committed implicitly only if every part is held — asked without
+                // barring, so a read never aborts a live transaction (D14e).
+                Ok(Some(Ok(AcrossAnswer::Outcome(record))))
+                    if record.decision == Decision::Staging =>
+                {
+                    let recovered = tessari_session::recover_staging(
+                        transaction,
+                        &record,
+                        false,
+                        async |range, asked| match db.ask_leader_of(range, asked, &mut silent).await
+                        {
+                            Ok(Some(answered)) => answered,
+                            Ok(None) => Err(format!("the leader of {range:?} did not answer")),
+                            Err(why) => Err(why.to_string()),
+                        },
+                    )
+                    .await;
+                    match recovered {
+                        Recovery::Committed(committed) => Some(committed),
+                        Recovery::Barred(_) | Recovery::Missing(_) | Recovery::Unknown(_) => None,
+                    }
+                }
+                _ => None,
             }
-            _ => None,
-        }
+        })
     }
 }
 

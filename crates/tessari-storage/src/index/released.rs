@@ -36,7 +36,7 @@ use crate::transaction::RecordAddress;
 /// # Errors
 ///
 /// A backend, catalog or decoding error.
-pub(crate) fn release_expired_holders(
+pub(crate) async fn release_expired_holders(
     store: &Store,
     record: &LogRecord,
     now: u64,
@@ -67,7 +67,8 @@ pub(crate) fn release_expired_holders(
             continue;
         };
         let unique: Vec<_> = Catalog::new(&mut view)
-            .indexes_on(mutation.namespace, mutation.database, mutation.table)?
+            .indexes_on(mutation.namespace, mutation.database, mutation.table)
+            .await?
             .into_iter()
             .filter(|definition| definition.unique)
             .collect();
@@ -100,7 +101,7 @@ pub(crate) fn release_expired_holders(
                 if written.contains(&held_at) {
                     continue;
                 }
-                let Some((_, held)) = view.read_newest_stamped(&held_at)? else {
+                let Some((_, held)) = view.read_newest_stamped(&held_at).await? else {
                     continue;
                 };
                 if held.value().is_tombstone() || !held.is_expired_at(now) {

@@ -17,6 +17,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -28,7 +29,9 @@ const USE: &str = "USE NAMESPACE prod; USE DATABASE shop;";
 const READ: &str = "SELECT id FROM notes WHERE body MATCHES '東京';";
 
 fn store() -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     Session::new(&store)
         .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
@@ -51,21 +54,27 @@ fn store() -> Store {
 fn written_by(store: &Store, index: &str, built: Option<u32>) {
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "shop")
+        .now()
+        .unwrap()
+        .unwrap();
     let table = catalog
         .table_id(namespace, database, "notes")
+        .now()
         .unwrap()
         .unwrap();
     let mut definition = catalog
         .indexes_on(namespace, database, table)
+        .now()
         .unwrap()
         .into_iter()
         .find(|held| held.name == index)
         .unwrap();
     definition.tokenizer = built;
     catalog.rebuild_index(&definition);
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 }
 
 /// The ids a read answered with, sorted, its path, and its rebuild notes.
@@ -238,7 +247,7 @@ fn a_field_the_grant_hides_names_no_index_in_the_note() {
     let mut root = Session::new(&store);
     root.run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
          DEFINE FIELD title ON notes TYPE string;\n\
@@ -250,7 +259,7 @@ fn a_field_the_grant_hides_names_no_index_in_the_note() {
     assert_eq!(owner.len(), 1, "the owner is told: {owner:?}");
 
     let mut ada = Session::new(&store);
-    ada.sign_in("ada", PASSWORD).unwrap();
+    ada.sign_in("ada", PASSWORD).now().unwrap();
     ada.run_now(USE).unwrap();
     let (_, _, hidden) = read(&mut ada, READ);
     assert!(

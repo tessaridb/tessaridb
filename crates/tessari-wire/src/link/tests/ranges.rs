@@ -1,4 +1,6 @@
 use super::*;
+use crate::gathering::{Gather, Page};
+use tessari_types::Reach;
 
 #[test]
 fn a_range_ballot_is_judged_on_both_greetings_positions_for_that_range() {
@@ -30,12 +32,14 @@ fn a_range_ballot_is_judged_on_both_greetings_positions_for_that_range() {
     let answering = std::thread::spawn(move || {
         (0..3)
             .map(|_| {
-                peers.greet(
-                    || Ok(mine),
-                    &HERE,
-                    &deciding,
-                    &Placing(vec![shard(2), shard(3)]),
-                )
+                peers
+                    .greet(
+                        || Ok(mine),
+                        &HERE,
+                        &deciding,
+                        &Placing(vec![shard(2), shard(3)]),
+                    )
+                    .now()
             })
             .collect::<Vec<_>>()
     });
@@ -79,28 +83,40 @@ fn a_range_ballot_is_judged_on_both_greetings_positions_for_that_range() {
 struct Placing(Vec<tessari_types::Reach>);
 
 impl Origin for Placing {
-    fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
-        NoLog.collected(follower, asked)
-    }
-
-    fn gathered(
-        &self,
-        asker: [u8; NODE_ID_LEN],
-        asked: &crate::gathering::Gather,
-    ) -> Result<crate::gathering::Page> {
-        NoLog.gathered(asker, asked)
-    }
-
-    fn copied(
+    fn collected(
         &self,
         follower: [u8; NODE_ID_LEN],
-        write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
-    ) -> Result<()> {
-        NoLog.copied(follower, write)
+        asked: Collect,
+    ) -> crate::collection::Answering<'_, crate::Result<Collected>> {
+        Box::pin(async move { NoLog.collected(follower, asked).await })
     }
 
-    fn places(&self, candidate: [u8; NODE_ID_LEN], range: tessari_types::Reach) -> bool {
-        candidate == THERE && self.0.contains(&range)
+    fn gathered<'a>(
+        &'a self,
+        asker: [u8; NODE_ID_LEN],
+        asked: &'a Gather,
+    ) -> crate::collection::Answering<'a, crate::Result<Page>> {
+        Box::pin(async move { NoLog.gathered(asker, asked).await })
+    }
+
+    fn copied<'a>(
+        &'a self,
+        follower: [u8; NODE_ID_LEN],
+        write: &'a mut dyn FnMut(
+            u8,
+            Vec<u8>,
+        )
+            -> crate::collection::Answering<'static, crate::Result<()>>,
+    ) -> crate::collection::Answering<'a, crate::Result<()>> {
+        Box::pin(async move { NoLog.copied(follower, write).await })
+    }
+
+    fn places(
+        &self,
+        candidate: [u8; NODE_ID_LEN],
+        range: Reach,
+    ) -> crate::collection::Answering<'_, bool> {
+        Box::pin(async move { candidate == THERE && self.0.contains(&range) })
     }
 }
 
@@ -110,32 +126,47 @@ impl Origin for Placing {
 struct Former(tessari_types::Reach, crate::grant::Reached);
 
 impl Origin for Former {
-    fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
-        NoLog.collected(follower, asked)
-    }
-
-    fn gathered(
-        &self,
-        asker: [u8; NODE_ID_LEN],
-        asked: &crate::gathering::Gather,
-    ) -> Result<crate::gathering::Page> {
-        NoLog.gathered(asker, asked)
-    }
-
-    fn copied(
+    fn collected(
         &self,
         follower: [u8; NODE_ID_LEN],
-        write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
-    ) -> Result<()> {
-        NoLog.copied(follower, write)
+        asked: Collect,
+    ) -> crate::collection::Answering<'_, crate::Result<Collected>> {
+        Box::pin(async move { NoLog.collected(follower, asked).await })
     }
 
-    fn places(&self, candidate: [u8; NODE_ID_LEN], range: tessari_types::Reach) -> bool {
-        candidate == THERE && range == self.0
+    fn gathered<'a>(
+        &'a self,
+        asker: [u8; NODE_ID_LEN],
+        asked: &'a Gather,
+    ) -> crate::collection::Answering<'a, crate::Result<Page>> {
+        Box::pin(async move { NoLog.gathered(asker, asked).await })
     }
 
-    fn reached_on(&self, range: tessari_types::Reach) -> Result<Option<crate::grant::Reached>> {
-        Ok((range == self.0).then_some(self.1))
+    fn copied<'a>(
+        &'a self,
+        follower: [u8; NODE_ID_LEN],
+        write: &'a mut dyn FnMut(
+            u8,
+            Vec<u8>,
+        )
+            -> crate::collection::Answering<'static, crate::Result<()>>,
+    ) -> crate::collection::Answering<'a, crate::Result<()>> {
+        Box::pin(async move { NoLog.copied(follower, write).await })
+    }
+
+    fn places(
+        &self,
+        candidate: [u8; NODE_ID_LEN],
+        range: Reach,
+    ) -> crate::collection::Answering<'_, bool> {
+        Box::pin(async move { candidate == THERE && range == self.0 })
+    }
+
+    fn reached_on(
+        &self,
+        range: Reach,
+    ) -> crate::collection::Answering<'_, crate::Result<Option<crate::grant::Reached>>> {
+        Box::pin(async move { Ok((range == self.0).then_some(self.1)) })
     }
 }
 
@@ -164,7 +195,9 @@ fn a_voter_holding_a_line_it_no_longer_leads_refuses_a_candidate_behind_it() {
         tail: Sequence::new(40),
     };
     let answering = std::thread::spawn(move || {
-        peers.greet(|| Ok(mine), &HERE, &deciding, &Former(shard, held))
+        peers
+            .greet(|| Ok(mine), &HERE, &deciding, &Former(shard, held))
+            .now()
     });
     let mut candidate = hello(THERE);
     candidate.line = Some(Line {
@@ -215,7 +248,7 @@ fn a_range_ballot_from_a_candidate_not_placed_on_it_is_refused() {
     let placing = Placing(vec![shard(2)]);
     let answering = std::thread::spawn(move || {
         (0..3)
-            .map(|_| peers.greet(|| Ok(mine), &HERE, &deciding, &placing))
+            .map(|_| peers.greet(|| Ok(mine), &HERE, &deciding, &placing).now())
             .collect::<Vec<_>>()
     });
     let candidate = hello(THERE);

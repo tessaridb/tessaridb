@@ -158,13 +158,13 @@ impl Store {
     /// Returns the store's refusal of the first record that does not apply;
     /// what was applied before it stays applied, as a log at a time did. A
     /// failed sync is returned in place of the answer.
-    pub fn apply_in_writer_order(&self, pages: &[Page<'_>]) -> Result<Vec<Option<Sequence>>> {
-        let applied = self.apply_pages(pages);
+    pub async fn apply_in_writer_order(&self, pages: &[Page<'_>]) -> Result<Vec<Option<Sequence>>> {
+        let applied = self.apply_pages(pages).await;
         self.backend().sync_applied()?;
         applied
     }
 
-    fn apply_pages(&self, pages: &[Page<'_>]) -> Result<Vec<Option<Sequence>>> {
+    async fn apply_pages(&self, pages: &[Page<'_>]) -> Result<Vec<Option<Sequence>>> {
         // Every page proves its history continuous with this copy before any
         // record of the round applies — the empty page included. Raft checks
         // the previous entry on an AppendEntries carrying none for this reason:
@@ -184,7 +184,8 @@ impl Store {
             let Some((at, record)) = page.records.get(position) else {
                 continue;
             };
-            self.land_from_stream(page.log, *at, *before, record, Landing::Deferred)?;
+            self.land_from_stream(page.log, *at, *before, record, Landing::Deferred)
+                .await?;
             *before = record.epoch();
             if let Some(slot) = reached.get_mut(index) {
                 *slot = Some(*at);

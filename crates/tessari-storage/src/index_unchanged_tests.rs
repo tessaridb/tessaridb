@@ -7,6 +7,7 @@
 
 #![allow(clippy::panic, clippy::unwrap_used)]
 
+use crate::now::Now;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -30,13 +31,16 @@ impl Fixture {
     /// A table with an ordered, a unique and a multi-valued index, holding one
     /// record written through a commit.
     fn new() -> Self {
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let mut transaction = store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("ns").unwrap().id;
-        let database = catalog.create_database(namespace, "db").unwrap().id;
+        let namespace = catalog.create_namespace("ns").now().unwrap().id;
+        let database = catalog.create_database(namespace, "db").now().unwrap().id;
         let table = catalog
             .create_table(namespace, database, "t", TableShape::default())
+            .now()
             .unwrap()
             .id;
         catalog
@@ -46,6 +50,7 @@ impl Fixture {
                 vec![Path::field("city")],
                 IndexShape::default(),
             )
+            .now()
             .unwrap();
         catalog
             .create_index(
@@ -57,6 +62,7 @@ impl Fixture {
                     ..IndexShape::default()
                 },
             )
+            .now()
             .unwrap();
         catalog
             .create_index(
@@ -65,8 +71,9 @@ impl Fixture {
                 vec![Path::parse("tags[*]").expect("a path")],
                 IndexShape::default(),
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         let fixture = Self {
             store,
             namespace,
@@ -75,7 +82,7 @@ impl Fixture {
         };
         let mut transaction = fixture.store.begin().unwrap();
         transaction.put(fixture.address(), fixture.record("a", Value::from(1_i64)));
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         fixture
     }
 
@@ -112,7 +119,9 @@ impl Fixture {
             value: StampedValue::new(RecordValue::Present(payload)),
         }]);
         let version = self.store.committed_version().unwrap();
-        maintain(&self.store, &update, WriteBatch::new(), version).unwrap()
+        maintain(&self.store, &update, WriteBatch::new(), version)
+            .now()
+            .unwrap()
     }
 }
 

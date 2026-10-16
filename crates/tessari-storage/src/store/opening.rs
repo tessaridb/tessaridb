@@ -26,7 +26,7 @@ impl Store {
     ///
     /// Returns an error when the backend fails, when the stored metadata cannot
     /// be decoded, or when the on-disk format is newer than this build.
-    pub fn open(backend: Arc<dyn KvBackend>) -> Result<Self> {
+    pub async fn open(backend: Arc<dyn KvBackend>) -> Result<Self> {
         // The format is settled before anything else is written, the node
         // identity included: a store this build is about to refuse must not be
         // modified on the way to refusing it.
@@ -90,10 +90,10 @@ impl Store {
         };
         // Last, because it reads the catalog: the format is settled and the
         // identity exists by the time this asks which node it is.
-        store.reconcile_roles()?;
+        store.reconcile_roles().await?;
         // And after it for the same reason: a finalize this node's older build
         // applied left the record and not the stamp (ADR-0118).
-        store.catch_up_with_the_finalized_format()?;
+        store.catch_up_with_the_finalized_format().await?;
         // After the stamp is settled: a store holding format 8 keeps retired
         // index entries from the first commit after this open (Q-S3-34).
         store.begin_keeping_retired_entries()?;
@@ -138,10 +138,10 @@ impl Store {
     ///
     /// Returns the substrate's failure, and a decoding failure when the node
     /// identity cannot be read.
-    pub fn effective_roles(&self) -> Result<Roles> {
+    pub async fn effective_roles(&self) -> Result<Roles> {
         let identity = self.node_identity()?;
         let adopted = identity.roles;
-        if self.lease.spent().is_none() && !self.awaiting(&identity.id)? {
+        if self.lease.spent().is_none() && !self.awaiting(&identity.id).await? {
             return Ok(adopted);
         }
         let without_writing = adopted.bits() & !Roles::WRITABLE.bits();

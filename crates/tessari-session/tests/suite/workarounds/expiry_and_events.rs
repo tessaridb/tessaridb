@@ -2,6 +2,7 @@
 
 use std::thread;
 use std::time::Duration;
+use tessari_session::Now;
 
 use super::{inside, rows, run, store};
 
@@ -19,7 +20,7 @@ fn a_record_removed_by_expiry_runs_no_delete_event_and_a_deleted_one_does() {
         "CREATE sessions:1 = { owner: 'ada' }; CREATE sessions:2 = { owner: 'bob' };",
     );
     thread::sleep(Duration::from_millis(120));
-    let removed = store.remove_expired().unwrap();
+    let removed = store.remove_expired().now().unwrap();
     assert_eq!(removed.records, 2, "{removed:?}");
     assert!(
         rows(&mut session, "SELECT * FROM seen;").is_empty(),

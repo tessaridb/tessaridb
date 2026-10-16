@@ -12,6 +12,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::{Arc, Mutex};
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -24,12 +25,14 @@ const A_FOLLOWER: [u8; 16] = [7; 16];
 const THE_LEADER: [u8; 16] = [9; 16];
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 pub(crate) fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
 }
 
@@ -74,6 +77,7 @@ fn table(store: &Store, name: &str) -> TableId {
     let mut transaction = store.begin().unwrap();
     tessari_storage::Catalog::new(&mut transaction)
         .table_id(NamespaceId::new(1), DatabaseId::new(1), name)
+        .now()
         .unwrap()
         .unwrap()
 }
@@ -107,11 +111,13 @@ fn follower_of(leader: &Store, over: Reach) -> Store {
     for log in leader.logs().unwrap() {
         let carried = node
             .replicate_from(leader, A_FOLLOWER, over, log, Sequence::new(1), 256)
+            .now()
             .unwrap();
         let mut previous = tessari_types::Epoch::ZERO;
         for (sequence, record) in carried {
             follower
                 .apply_from_stream(log, sequence, previous, &record)
+                .now()
                 .unwrap();
             previous = record.epoch();
         }
@@ -136,89 +142,101 @@ struct FromTheLeader {
 }
 
 impl Gather for FromTheLeader {
-    fn gather(&self, asked: &Asked<'_>) -> Result<Gathered, Unanswered> {
-        self.asked.lock().unwrap().push((
-            asked.shard.get(),
-            asked.window.from.cloned(),
-            asked
-                .window
-                .to
-                .map(|(id, inclusive)| (id.clone(), inclusive)),
-        ));
-        self.pushed.lock().unwrap().push(asked.pushed.cloned());
-        let transaction = self.leader.begin().unwrap();
-        let records = transaction
-            .records_between(
-                asked.namespace,
-                asked.database,
-                asked.table,
-                asked.window,
-                None,
-                match (asked.reduce, asked.counting) {
-                    (None, None) => asked.most.saturating_add(1),
-                    _ => usize::MAX,
-                },
-            )
-            .unwrap();
-        // Folded as the peer door folds, in one page.
-        if let Some(reduce) = asked.reduce {
-            let reduced = match tessari_session::reducing(&self.leader, reduce, records).unwrap() {
-                Some(partials) => Reduced::Partials(partials),
-                None => Reduced::Declined,
+    fn gather<'a>(&'a self, asked: &'a Asked<'_>) -> tessari_session::Gathering<'a> {
+        Box::pin(async move {
+            self.asked.lock().unwrap().push((
+                asked.shard.get(),
+                asked.window.from.cloned(),
+                asked
+                    .window
+                    .to
+                    .map(|(id, inclusive)| (id.clone(), inclusive)),
+            ));
+            self.pushed.lock().unwrap().push(asked.pushed.cloned());
+            let transaction = self.leader.begin().unwrap();
+            let records = transaction
+                .records_between(
+                    asked.namespace,
+                    asked.database,
+                    asked.table,
+                    asked.window,
+                    None,
+                    match (asked.reduce, asked.counting) {
+                        (None, None) => asked.most.saturating_add(1),
+                        _ => usize::MAX,
+                    },
+                )
+                .await
+                .unwrap();
+            // Folded as the peer door folds, in one page.
+            if let Some(reduce) = asked.reduce {
+                let reduced = match tessari_session::reducing(&self.leader, reduce, records)
+                    .await
+                    .unwrap()
+                {
+                    Some(partials) => Reduced::Partials(partials),
+                    None => Reduced::Declined,
+                };
+                return Ok(Gathered {
+                    records: Vec::new(),
+                    node: THE_LEADER,
+                    reduced: Some(reduced),
+                    counted: None,
+                });
+            }
+            // Counted as the peer door counts, through the analysis the leader's
+            // own index writer uses (ADR-0103).
+            if let Some(counting) = asked.counting {
+                let mut transaction = self.leader.begin().unwrap();
+                let index = tessari_storage::Catalog::new(&mut transaction)
+                    .indexes_on(asked.namespace, asked.database, asked.table)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|index| index.id == counting.index)
+                    .unwrap();
+                let counted = transaction
+                    .search_counts(&index, &records, &counting.terms)
+                    .await
+                    .unwrap();
+                return Ok(Gathered {
+                    records: Vec::new(),
+                    node: THE_LEADER,
+                    reduced: None,
+                    counted: Some(counted),
+                });
+            }
+            // Narrowed as the peer door narrows, so every equality below runs
+            // with the leader's half of the pushdown in place.
+            let records = match asked.pushed {
+                Some(pushed) => tessari_session::keeping(&self.leader, pushed, records)
+                    .await
+                    .unwrap(),
+                None => records,
             };
-            return Ok(Gathered {
-                records: Vec::new(),
-                node: THE_LEADER,
-                reduced: Some(reduced),
-                counted: None,
-            });
-        }
-        // Counted as the peer door counts, through the analysis the leader's
-        // own index writer uses (ADR-0103).
-        if let Some(counting) = asked.counting {
-            let mut transaction = self.leader.begin().unwrap();
-            let index = tessari_storage::Catalog::new(&mut transaction)
-                .indexes_on(asked.namespace, asked.database, asked.table)
-                .unwrap()
-                .into_iter()
-                .find(|index| index.id == counting.index)
-                .unwrap();
-            let counted = transaction
-                .search_counts(&index, &records, &counting.terms)
-                .unwrap();
-            return Ok(Gathered {
-                records: Vec::new(),
+            // Ranked as the peer door ranks, so only the shard's first `n` is sent
+            // (ADR-0102).
+            let records = match asked.ordered {
+                Some(ordered) => {
+                    let mut page = Some(records);
+                    tessari_session::leading(&self.leader, ordered, async || Ok(page.take()))
+                        .await
+                        .unwrap()
+                }
+                None => records,
+            };
+            if records.len() > asked.most {
+                return Err(Unanswered::Ceiling);
+            }
+            let mut sent = self.sent.lock().unwrap();
+            *sent = sent.saturating_add(records.len());
+            drop(sent);
+            Ok(Gathered {
+                records,
                 node: THE_LEADER,
                 reduced: None,
-                counted: Some(counted),
-            });
-        }
-        // Narrowed as the peer door narrows, so every equality below runs
-        // with the leader's half of the pushdown in place.
-        let records = match asked.pushed {
-            Some(pushed) => tessari_session::keeping(&self.leader, pushed, records).unwrap(),
-            None => records,
-        };
-        // Ranked as the peer door ranks, so only the shard's first `n` is sent
-        // (ADR-0102).
-        let records = match asked.ordered {
-            Some(ordered) => {
-                let mut page = Some(records);
-                tessari_session::leading(&self.leader, ordered, || Ok(page.take())).unwrap()
-            }
-            None => records,
-        };
-        if records.len() > asked.most {
-            return Err(Unanswered::Ceiling);
-        }
-        let mut sent = self.sent.lock().unwrap();
-        *sent = sent.saturating_add(records.len());
-        drop(sent);
-        Ok(Gathered {
-            records,
-            node: THE_LEADER,
-            reduced: None,
-            counted: None,
+                counted: None,
+            })
         })
     }
 }
@@ -228,8 +246,8 @@ impl Gather for FromTheLeader {
 struct Unreachable;
 
 impl Gather for Unreachable {
-    fn gather(&self, _: &Asked<'_>) -> Result<Gathered, Unanswered> {
-        Err(Unanswered::Refused("nobody answered".to_owned()))
+    fn gather<'a>(&'a self, _asked: &'a Asked<'_>) -> tessari_session::Gathering<'a> {
+        Box::pin(async move { Err(Unanswered::Refused("nobody answered".to_owned())) })
     }
 }
 
@@ -238,8 +256,8 @@ impl Gather for Unreachable {
 pub(crate) struct Moved;
 
 impl Gather for Moved {
-    fn gather(&self, _: &Asked<'_>) -> Result<Gathered, Unanswered> {
-        Err(Unanswered::Moved)
+    fn gather<'a>(&'a self, _asked: &'a Asked<'_>) -> tessari_session::Gathering<'a> {
+        Box::pin(async move { Err(Unanswered::Moved) })
     }
 }
 
@@ -248,15 +266,17 @@ impl Gather for Moved {
 struct Flooding;
 
 impl Gather for Flooding {
-    fn gather(&self, asked: &Asked<'_>) -> Result<Gathered, Unanswered> {
-        let records = (0..=asked.most)
-            .map(|n| (RecordId::from(format!("a{n:07}").as_str()), Vec::new()))
-            .collect();
-        Ok(Gathered {
-            records,
-            node: THE_LEADER,
-            reduced: None,
-            counted: None,
+    fn gather<'a>(&'a self, asked: &'a Asked<'_>) -> tessari_session::Gathering<'a> {
+        Box::pin(async move {
+            let records = (0..=asked.most)
+                .map(|n| (RecordId::from(format!("a{n:07}").as_str()), Vec::new()))
+                .collect();
+            Ok(Gathered {
+                records,
+                node: THE_LEADER,
+                reduced: None,
+                counted: None,
+            })
         })
     }
 }
@@ -412,29 +432,31 @@ fn a_grouping_read_is_folded_on_the_leader_and_no_record_travels() {
 struct Folding024(Arc<FromTheLeader>);
 
 impl Gather for Folding024 {
-    fn gather(&self, asked: &Asked<'_>) -> Result<Gathered, Unanswered> {
-        let mut gathered = self.0.gather(asked)?;
-        let (Some(reduce), Some(Reduced::Partials(partials))) =
-            (asked.reduce, gathered.reduced.as_mut())
-        else {
-            return Ok(gathered);
-        };
-        for partial in partials.iter_mut() {
-            for (folded, state) in reduce.folds.iter().zip(partial.states.iter_mut()) {
-                if folded.fold != tessari_ql::Aggregate::Sum {
-                    continue;
+    fn gather<'a>(&'a self, asked: &'a Asked<'_>) -> tessari_session::Gathering<'a> {
+        Box::pin(async move {
+            let mut gathered = self.0.gather(asked).await?;
+            let (Some(reduce), Some(Reduced::Partials(partials))) =
+                (asked.reduce, gathered.reduced.as_mut())
+            else {
+                return Ok(gathered);
+            };
+            for partial in partials.iter_mut() {
+                for (folded, state) in reduce.folds.iter().zip(partial.states.iter_mut()) {
+                    if folded.fold != tessari_ql::Aggregate::Sum {
+                        continue;
+                    }
+                    let Value::Array(held) = state else {
+                        panic!("{state:?}")
+                    };
+                    if held[2] == Value::Bool(true) {
+                        gathered.reduced = Some(Reduced::Declined);
+                        return Ok(gathered);
+                    }
+                    *state = Value::Array(vec![held[0].clone(), held[1].clone()]);
                 }
-                let Value::Array(held) = state else {
-                    panic!("{state:?}")
-                };
-                if held[2] == Value::Bool(true) {
-                    gathered.reduced = Some(Reduced::Declined);
-                    return Ok(gathered);
-                }
-                *state = Value::Array(vec![held[0].clone(), held[1].clone()]);
             }
-        }
-        Ok(gathered)
+            Ok(gathered)
+        })
     }
 }
 
@@ -491,32 +513,34 @@ impl FoldingMany {
 }
 
 impl Gather for FoldingMany {
-    fn gather(&self, asked: &Asked<'_>) -> Result<Gathered, Unanswered> {
-        // Asked for the records themselves, there are too many to send.
-        if asked.reduce.is_none() {
-            return Err(Unanswered::Ceiling);
-        }
-        let many = Self::many();
-        let total = tessari_types::Number::from(many).as_decimal().unwrap();
-        Ok(Gathered {
-            records: Vec::new(),
-            node: THE_LEADER,
-            counted: None,
-            reduced: Some(Reduced::Partials(vec![tessari_session::Partial {
-                key: vec![Value::from("many")],
-                first: asked
-                    .window
-                    .from
-                    .cloned()
-                    .unwrap_or_else(|| RecordId::from("a")),
-                states: vec![
-                    Value::from(many),
-                    Value::Array(vec![
-                        Value::Number(tessari_types::Number::Decimal(total)),
-                        Value::Bool(true),
-                    ]),
-                ],
-            }])),
+    fn gather<'a>(&'a self, asked: &'a Asked<'_>) -> tessari_session::Gathering<'a> {
+        Box::pin(async move {
+            // Asked for the records themselves, there are too many to send.
+            if asked.reduce.is_none() {
+                return Err(Unanswered::Ceiling);
+            }
+            let many = Self::many();
+            let total = tessari_types::Number::from(many).as_decimal().unwrap();
+            Ok(Gathered {
+                records: Vec::new(),
+                node: THE_LEADER,
+                counted: None,
+                reduced: Some(Reduced::Partials(vec![tessari_session::Partial {
+                    key: vec![Value::from("many")],
+                    first: asked
+                        .window
+                        .from
+                        .cloned()
+                        .unwrap_or_else(|| RecordId::from("a")),
+                    states: vec![
+                        Value::from(many),
+                        Value::Array(vec![
+                            Value::Number(tessari_types::Number::Decimal(total)),
+                            Value::Bool(true),
+                        ]),
+                    ],
+                }])),
+            })
         })
     }
 }
@@ -559,9 +583,11 @@ fn a_fold_over_more_records_than_a_gather_holds_answers() {
 struct FoldingSlowly;
 
 impl Gather for FoldingSlowly {
-    fn gather(&self, asked: &Asked<'_>) -> Result<Gathered, Unanswered> {
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        FoldingMany.gather(asked)
+    fn gather<'a>(&'a self, asked: &'a Asked<'_>) -> tessari_session::Gathering<'a> {
+        Box::pin(async move {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            FoldingMany.gather(asked).await
+        })
     }
 }
 
@@ -1001,11 +1027,13 @@ fn follower_of_the_database(leader: &Store) -> Store {
     for log in leader.logs().unwrap() {
         let carried = node
             .replicate_from(leader, A_FOLLOWER, over, log, Sequence::new(1), 256)
+            .now()
             .unwrap();
         let mut previous = tessari_types::Epoch::ZERO;
         for (sequence, record) in carried {
             follower
                 .apply_from_stream(log, sequence, previous, &record)
+                .now()
                 .unwrap();
             previous = record.epoch();
         }
@@ -1068,7 +1096,9 @@ fn a_node_holding_every_shard_backs_the_database_up_complete() {
     assert_eq!(recorded, shards, "{:?}", taken.positions);
 
     let restored = store();
-    tessari_backup::read_state(&restored, || Ok(std::io::Cursor::new(file.clone()))).unwrap();
+    tessari_backup::read_state(&restored, || Ok(std::io::Cursor::new(file.clone())))
+        .now()
+        .unwrap();
     let read = "USE NAMESPACE prod; USE DATABASE shop; SELECT note FROM ledger;";
     assert_eq!(
         format!("{:?}", signed_in(&restored, "root").run_now(read).unwrap()),

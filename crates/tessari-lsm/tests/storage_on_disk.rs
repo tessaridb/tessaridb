@@ -15,6 +15,7 @@
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_kv::KvBackend;
 use tessari_lsm::{Durability, LsmBackend, StoreConfig};
@@ -23,7 +24,9 @@ use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
 fn open(path: &std::path::Path) -> Store {
     let backend = LsmBackend::open(path, StoreConfig::new(Durability::ProcessCrashSafe)).unwrap();
-    Store::open(Arc::new(backend) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn at(id: &str) -> RecordAddress {
@@ -38,7 +41,7 @@ fn at(id: &str) -> RecordAddress {
 fn write(store: &Store, id: &str, payload: &[u8]) {
     let mut transaction = store.begin().unwrap();
     transaction.put(at(id), payload.to_vec());
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 }
 
 #[test]
@@ -50,9 +53,9 @@ fn a_held_snapshot_still_reads_the_old_version_from_disk() {
     let reader = store.begin().unwrap();
     write(&store, "r", b"second");
 
-    assert_eq!(reader.get(&at("r")).unwrap(), Some(b"first".to_vec()));
+    assert_eq!(reader.get(&at("r")).now().unwrap(), Some(b"first".to_vec()));
     assert_eq!(
-        store.begin().unwrap().get(&at("r")).unwrap(),
+        store.begin().unwrap().get(&at("r")).now().unwrap(),
         Some(b"second".to_vec())
     );
 }
@@ -66,10 +69,10 @@ fn a_deletion_hides_the_record_from_later_snapshots_and_not_from_earlier_ones() 
     let reader = store.begin().unwrap();
     let mut deleter = store.begin().unwrap();
     deleter.delete(at("r"));
-    deleter.commit().unwrap();
+    deleter.commit().now().unwrap();
 
-    assert_eq!(reader.get(&at("r")).unwrap(), Some(b"alive".to_vec()));
-    assert_eq!(store.begin().unwrap().get(&at("r")).unwrap(), None);
+    assert_eq!(reader.get(&at("r")).now().unwrap(), Some(b"alive".to_vec()));
+    assert_eq!(store.begin().unwrap().get(&at("r")).now().unwrap(), None);
 }
 
 #[test]
@@ -83,12 +86,12 @@ fn the_first_committer_still_wins_when_the_versions_are_on_disk() {
     first.put(at("r"), b"first".to_vec());
     second.put(at("r"), b"second".to_vec());
 
-    first.commit().unwrap();
-    let error = second.commit().unwrap_err();
+    first.commit().now().unwrap();
+    let error = second.commit().now().unwrap_err();
     assert!(matches!(error, Error::Conflict { .. }), "{error}");
 
     assert_eq!(
-        store.begin().unwrap().get(&at("r")).unwrap(),
+        store.begin().unwrap().get(&at("r")).now().unwrap(),
         Some(b"first".to_vec())
     );
 }
@@ -120,12 +123,12 @@ fn versions_and_the_committed_position_come_back_together_after_a_reopen() {
 
     let transaction = reopened.begin().unwrap();
     assert_eq!(
-        transaction.get(&at("r")).unwrap(),
+        transaction.get(&at("r")).now().unwrap(),
         Some(b"second".to_vec()),
         "a reopened store must read the newest version, not the first one it finds"
     );
     assert_eq!(
-        transaction.get(&at("other")).unwrap(),
+        transaction.get(&at("other")).now().unwrap(),
         Some(b"value".to_vec())
     );
 }
@@ -144,14 +147,14 @@ fn a_log_replayed_between_two_stores_on_disk_reproduces_them_byte_for_byte() {
     )
     .unwrap();
     let source_backend = Arc::new(source_backend) as Arc<dyn KvBackend>;
-    let source = Store::open(Arc::clone(&source_backend)).unwrap();
+    let source = Store::open(Arc::clone(&source_backend)).now().unwrap();
 
     write(&source, "alpha", b"one");
     write(&source, "beta", b"two");
     write(&source, "alpha", b"one-again");
     let mut remover = source.begin().unwrap();
     remover.delete(at("beta"));
-    remover.commit().unwrap();
+    remover.commit().now().unwrap();
 
     let replica_backend = LsmBackend::open(
         root.path().join("replica"),
@@ -159,13 +162,16 @@ fn a_log_replayed_between_two_stores_on_disk_reproduces_them_byte_for_byte() {
     )
     .unwrap();
     let replica_backend = Arc::new(replica_backend) as Arc<dyn KvBackend>;
-    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    let replica = Store::open(Arc::clone(&replica_backend)).now().unwrap();
 
     // Every log, not the store's alone: a replay that read one would reproduce
     // part of a store and compare it against the whole (S6.2).
     for log in source.logs().unwrap() {
         for (sequence, record) in source.log_records(log, Sequence::ZERO, 1024).unwrap() {
-            replica.apply_record(log.writer, sequence, &record).unwrap();
+            replica
+                .apply_record(log.writer, sequence, &record)
+                .now()
+                .unwrap();
         }
     }
 
@@ -215,7 +221,7 @@ fn a_commit_after_a_reopen_continues_the_sequence_instead_of_restarting_it() {
     let reopened = open(&path);
     let mut transaction = reopened.begin().unwrap();
     transaction.put(at("r"), b"after".to_vec());
-    let after = transaction.commit().unwrap();
+    let after = transaction.commit().now().unwrap();
 
     assert!(
         after > before,

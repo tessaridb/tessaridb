@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_encoding::{
@@ -21,7 +22,7 @@ const USE: &str = "USE NAMESPACE prod; USE DATABASE shop;";
 
 /// A store set up by `script`, in `prod.shop`.
 fn store(script: &str) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     Session::new(&store)
         .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; {USE} {script}"
@@ -36,10 +37,15 @@ fn committed_not_resolved(store: &Store, table: &str, id: RecordId, value: Value
     let mut session = Session::new(store);
     let mut reading = store.begin().unwrap();
     let catalog = Catalog::new(&mut reading);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "shop")
+        .now()
+        .unwrap()
+        .unwrap();
     let table = catalog
         .table_id(namespace, database, table)
+        .now()
         .unwrap()
         .unwrap();
     reading.rollback();
@@ -58,6 +64,7 @@ fn committed_not_resolved(store: &Store, table: &str, id: RecordId, value: Value
                 value: StampedValue::new(RecordValue::Present(encode_payload(&value).into_bytes())),
             }],
         })
+        .now()
         .unwrap();
     let tessari_session::AcrossAnswer::Prepared(at) = prepared else {
         panic!("{prepared:?}");
@@ -75,6 +82,7 @@ fn committed_not_resolved(store: &Store, table: &str, id: RecordId, value: Value
                     }],
                 },
             })
+            .now()
             .unwrap();
     }
 }
@@ -142,10 +150,15 @@ fn a_traversal_over_edges_part_way_here_is_refused_as_retriable() {
     let users = {
         let mut reading = store.begin().unwrap();
         let catalog = Catalog::new(&mut reading);
-        let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-        let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
+        let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+        let database = catalog
+            .database_id(namespace, "shop")
+            .now()
+            .unwrap()
+            .unwrap();
         catalog
             .table_id(namespace, database, "users")
+            .now()
             .unwrap()
             .unwrap()
     };

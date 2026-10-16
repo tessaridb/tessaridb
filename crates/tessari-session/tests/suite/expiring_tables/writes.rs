@@ -4,6 +4,7 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration as Wait;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::MemoryBackend;
@@ -19,7 +20,7 @@ const SHORT: &str = "300ms";
 const PAST_SHORT: Wait = Wait::from_millis(450);
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new())).unwrap()
+    Store::open(Arc::new(MemoryBackend::new())).now().unwrap()
 }
 
 /// Whether the record carries an instant: `TTL` answers a duration for one,

@@ -10,6 +10,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -21,7 +22,7 @@ const PASSWORD: &str = "a long one";
 
 fn store() -> Store {
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
-    let store = Store::open(backend).unwrap();
+    let store = Store::open(backend).now().unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(
@@ -38,7 +39,7 @@ fn store() -> Store {
 
 fn owner<'a>(store: &'a Store, folder: &Path) -> Session<'a> {
     let mut session = Session::new(store).backing_up_into(Arc::from(folder));
-    session.sign_in("root", PASSWORD).unwrap();
+    session.sign_in("root", PASSWORD).now().unwrap();
     session
 }
 
@@ -209,7 +210,7 @@ fn an_existing_file_is_never_overwritten() {
 fn a_node_with_no_folder_refuses_and_backup_without_to_still_answers() {
     let store = store();
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
 
     let error = refused(&mut root, "BACKUP STATE TO 'state.tessarisnap';");
 
@@ -228,7 +229,7 @@ fn only_a_store_wide_owner_may_write_one() {
     let store = store();
     let folder = tempfile::tempdir().unwrap();
     let mut nina = Session::new(&store).backing_up_into(Arc::from(folder.path()));
-    nina.sign_in("nina", PASSWORD).unwrap();
+    nina.sign_in("nina", PASSWORD).now().unwrap();
 
     let error = refused(&mut nina, "BACKUP TO 'nightly.tessarilog';");
 
@@ -257,8 +258,10 @@ fn a_snapshot_of_one_namespace_restores_that_namespace_and_nothing_else() {
         panic!("a snapshot is bytes");
     };
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
-    let restored = Store::open(backend).unwrap();
-    tessari_backup::read_state(&restored, || Ok(std::io::Cursor::new(snapshot.clone()))).unwrap();
+    let restored = Store::open(backend).now().unwrap();
+    tessari_backup::read_state(&restored, || Ok(std::io::Cursor::new(snapshot.clone())))
+        .now()
+        .unwrap();
 
     // The store-wide users come with the place, so the restored store is as
     // closed as the one the snapshot was taken of: an open store would answer
@@ -270,7 +273,7 @@ fn a_snapshot_of_one_namespace_restores_that_namespace_and_nothing_else() {
         "a restored part answered a caller who never signed in"
     );
     let mut reader = Session::new(&restored);
-    reader.sign_in("root", PASSWORD).unwrap();
+    reader.sign_in("root", PASSWORD).now().unwrap();
     let kept = reader
         .run_now("USE NAMESPACE prod; USE DATABASE app; SELECT body FROM notes;")
         .unwrap();
@@ -293,10 +296,12 @@ fn a_snapshot_of_one_namespace_restores_that_namespace_and_nothing_else() {
         panic!("a snapshot is bytes");
     };
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
-    let restored = Store::open(backend).unwrap();
-    tessari_backup::read_state(&restored, || Ok(std::io::Cursor::new(snapshot.clone()))).unwrap();
+    let restored = Store::open(backend).now().unwrap();
+    tessari_backup::read_state(&restored, || Ok(std::io::Cursor::new(snapshot.clone())))
+        .now()
+        .unwrap();
     let mut reader = Session::new(&restored);
-    reader.sign_in("root", PASSWORD).unwrap();
+    reader.sign_in("root", PASSWORD).now().unwrap();
     let kept = reader
         .run_now("USE NAMESPACE prod; USE DATABASE app; SELECT body FROM notes;")
         .unwrap();
@@ -333,7 +338,7 @@ fn a_streamed_snapshot_is_the_answered_one_and_a_refused_caller_streams_nothing(
 
     let streamed = Shared::default();
     let mut root = Session::new(&store).snapshot_into(Box::new(streamed.clone()));
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     let summary = answer(&mut root, "BACKUP STATE;");
     assert_eq!(field(&summary, "form"), &Value::String("state".to_owned()));
     assert_eq!(*streamed.0.lock().unwrap(), answered);
@@ -342,7 +347,7 @@ fn a_streamed_snapshot_is_the_answered_one_and_a_refused_caller_streams_nothing(
     // is never written.
     let refused_sink = Shared::default();
     let mut nina = Session::new(&store).snapshot_into(Box::new(refused_sink.clone()));
-    nina.sign_in("nina", PASSWORD).unwrap();
+    nina.sign_in("nina", PASSWORD).now().unwrap();
     assert!(nina.run_now("BACKUP STATE;").is_err());
     assert!(refused_sink.0.lock().unwrap().is_empty());
 }
@@ -401,7 +406,7 @@ fn a_node_with_a_key_seals_every_backup_it_produces() {
     let mut streaming = Session::new(&store)
         .sealing_backups(key)
         .snapshot_into(Box::new(streamed.clone()));
-    streaming.sign_in("root", PASSWORD).unwrap();
+    streaming.sign_in("root", PASSWORD).now().unwrap();
     answer(&mut streaming, "BACKUP STATE;");
     let sent = streamed.0.lock().unwrap().clone();
     assert!(sent.starts_with(tessari_vault::at_rest::SEALED_MAGIC));

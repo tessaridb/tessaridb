@@ -55,21 +55,23 @@ fn id(at: usize) -> RecordId {
 }
 
 /// The same graph built whole in memory and written to a store.
-fn both(count: usize, width: usize) -> (Graph, Store) {
+async fn both(count: usize, width: usize) -> (Graph, Store) {
     let mut whole = Graph::empty(VectorDistance::Cosine, false);
     let mut written = std::collections::BTreeMap::new();
     for (at, vector) in vectors(count, width).into_iter().enumerate() {
         written.extend(whole.insert(&id(at), vector).unwrap());
     }
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .await
+        .unwrap();
     let batch = write(WriteBatch::new(), &address(), &written);
     store.backend().apply(batch).unwrap();
     (whole, store)
 }
 
-#[test]
-fn a_graph_read_node_by_node_answers_as_the_whole_graph_does() {
-    let (whole, store) = both(600, 8);
+#[tokio::test]
+async fn a_graph_read_node_by_node_answers_as_the_whole_graph_does() {
+    let (whole, store) = both(600, 8).await;
     let stored = Graph::read(&store, &address(), VectorDistance::Cosine, false).unwrap();
     assert_eq!(
         stored.entry().unwrap(),
@@ -84,9 +86,9 @@ fn a_graph_read_node_by_node_answers_as_the_whole_graph_does() {
     }
 }
 
-#[test]
-fn a_walk_holds_only_the_nodes_it_reaches() {
-    let (_, store) = both(2_000, 8);
+#[tokio::test]
+async fn a_walk_holds_only_the_nodes_it_reaches() {
+    let (_, store) = both(2_000, 8).await;
     let stored = Graph::read(&store, &address(), VectorDistance::Cosine, false).unwrap();
     let found = stored.nearest(&vectors(1, 8)[0], 10, None).unwrap();
     assert_eq!(found.len(), 10);
@@ -97,11 +99,11 @@ fn a_walk_holds_only_the_nodes_it_reaches() {
     );
 }
 
-#[test]
-fn edits_in_one_operation_are_seen_by_its_later_walks_and_the_entry() {
+#[tokio::test]
+async fn edits_in_one_operation_are_seen_by_its_later_walks_and_the_entry() {
     // A write batch removes the smallest id and adds a smaller one: the entry
     // moves exactly as it would in the graph held whole.
-    let (mut whole, store) = both(300, 8);
+    let (mut whole, store) = both(300, 8).await;
     let mut stored = Graph::read(&store, &address(), VectorDistance::Cosine, false).unwrap();
     let first = whole.entry().unwrap().unwrap();
     whole.remove(&first);

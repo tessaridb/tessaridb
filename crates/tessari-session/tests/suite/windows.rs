@@ -13,6 +13,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -22,7 +23,7 @@ use tessari_types::{Number, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
@@ -395,7 +396,7 @@ fn what_retention_removes_is_reclaimed_rather_than_left_behind() {
     // reader still needs the version. Asserted end to end rather than assumed:
     // the versions are counted on disk before and after.
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     {
         let mut session = ready(&store);
         populate(&mut session);
@@ -426,10 +427,15 @@ fn tenancy(
 ) {
     let mut transaction = store.begin().unwrap();
     let catalog = tessari_storage::Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "orders").unwrap().unwrap();
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "orders")
+        .now()
+        .unwrap()
+        .unwrap();
     let table = catalog
         .table_id(namespace, database, "readings")
+        .now()
         .unwrap()
         .unwrap();
     (namespace, database, table)

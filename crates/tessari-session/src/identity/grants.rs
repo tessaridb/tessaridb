@@ -18,7 +18,7 @@ impl Session<'_> {
     /// `pub(crate)` rather than private: `DEFINE REPLICA … REPLICATES` resolves
     /// a subscription's reach and must resolve it with the same reader a grant
     /// uses, or the two spellings of one thing acquire two meanings.
-    pub(crate) fn reach_of(
+    pub(crate) async fn reach_of(
         &self,
         transaction: &mut Transaction<'_>,
         named: &ReachRef,
@@ -27,7 +27,8 @@ impl Session<'_> {
             ReachRef::Store => Ok(Reach::Store),
             ReachRef::Namespace(name) => {
                 let namespace = Catalog::new(transaction)
-                    .namespace_id(&name.text)?
+                    .namespace_id(&name.text)
+                    .await?
                     .ok_or_else(|| Error::Unknown {
                         entity: "namespace",
                         name: name.text.clone(),
@@ -36,7 +37,7 @@ impl Session<'_> {
                 Ok(Reach::Namespace(namespace))
             }
             ReachRef::Database(table) => {
-                let context = self.tenancy_of(transaction, table)?;
+                let context = self.tenancy_of(transaction, table).await?;
                 Ok(Reach::Database(context.namespace, context.database))
             }
             // G031 — resolved by name at every level, and refused unless the
@@ -59,16 +60,22 @@ impl Session<'_> {
                     span: table.span,
                 };
                 let catalog = Catalog::new(transaction);
-                let namespace = catalog.namespace_id(&namespace.text)?.ok_or_else(unknown)?;
+                let namespace = catalog
+                    .namespace_id(&namespace.text)
+                    .await?
+                    .ok_or_else(unknown)?;
                 let database = catalog
-                    .database_id(namespace, &database.text)?
+                    .database_id(namespace, &database.text)
+                    .await?
                     .ok_or_else(unknown)?;
                 let table_id = catalog
-                    .table_id(namespace, database, &table.text)?
+                    .table_id(namespace, database, &table.text)
+                    .await?
                     .ok_or_else(unknown)?;
                 let shard = tessari_types::ShardId::new(*shard);
                 let held = catalog
-                    .table(table_id)?
+                    .table(table_id)
+                    .await?
                     .and_then(|definition| definition.shards)
                     .is_some_and(|shards| shards.holds(shard));
                 if !held {
@@ -111,7 +118,7 @@ impl Session<'_> {
     /// Adding rather than replacing, because a user reaches more than one place
     /// and a grant names one of them: replacing would make every grant a silent
     /// revocation of every other.
-    pub(crate) fn grant_authority(
+    pub(crate) async fn grant_authority(
         &self,
         transaction: &mut Transaction<'_>,
         kinds: &[Name],
@@ -123,7 +130,7 @@ impl Session<'_> {
         // answered before anything about the store is looked up, so a mistyped
         // kind reads as a mistyped kind rather than as an unknown user.
         let kinds = kinds.iter().map(kind_named).collect::<Result<Vec<_>>>()?;
-        let reach = self.reach_of(transaction, reach)?;
+        let reach = self.reach_of(transaction, reach).await?;
         // Before `may_hand_out`, and the order is the message. Asked after it, a
         // namespace owner naming `replicate` would be told they do not hold it —
         // which is true, and sends them to ask somebody for a grant that nobody
@@ -133,7 +140,7 @@ impl Session<'_> {
             holdable_at(*kind, reach, span)?;
         }
         self.may_hand_out(&kinds, reach, span)?;
-        let mut found = self.user_to_change(transaction, user, span)?;
+        let mut found = self.user_to_change(transaction, user, span).await?;
         // And the reach has to meet the subject's own `ON` somewhere, or the
         // grant would be stored and never usable: a declared tenancy is a second
         // confinement asked before the held set, so `GRANT read ON NAMESPACE
@@ -220,7 +227,7 @@ impl Session<'_> {
     /// leaves. That is `DROP USER`'s rule and it is the same rule, because a
     /// revocation that fails halfway through a list is worse than one that is
     /// idempotent.
-    pub(crate) fn revoke_authority(
+    pub(crate) async fn revoke_authority(
         &self,
         transaction: &mut Transaction<'_>,
         kinds: &[Name],
@@ -229,13 +236,13 @@ impl Session<'_> {
         span: Span,
     ) -> Result<Outcome> {
         let kinds = kinds.iter().map(kind_named).collect::<Result<Vec<_>>>()?;
-        let reach = self.reach_of(transaction, reach)?;
+        let reach = self.reach_of(transaction, reach).await?;
         // Only the first of the two questions. Taking an authority away can
         // never mint one, so holding what is being revoked is not required —
         // and requiring it would mean a namespace administrator could not clean
         // up a grant somebody above them made.
         self.may_hand_out(&[], reach, span)?;
-        let mut found = self.user_to_change(transaction, user, span)?;
+        let mut found = self.user_to_change(transaction, user, span).await?;
         for kind in kinds {
             found.authorities.remove(&Authority::new(kind, reach));
         }

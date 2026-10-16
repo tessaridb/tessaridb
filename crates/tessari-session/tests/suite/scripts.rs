@@ -7,6 +7,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -16,7 +17,7 @@ use tessari_types::{Number, RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// A session with `prod / orders` defined and selected.
@@ -2597,7 +2598,9 @@ fn a_declared_analyzer_survives_a_replica_replaying_the_log() {
 
     let replica_backend =
         std::sync::Arc::new(tessari_kv::MemoryBackend::new()) as std::sync::Arc<dyn KvBackend>;
-    let replica = Store::open(std::sync::Arc::clone(&replica_backend)).unwrap();
+    let replica = Store::open(std::sync::Arc::clone(&replica_backend))
+        .now()
+        .unwrap();
     crate::replay(&store, &replica);
 
     // The analyzer, the attachment and the records all arrived through one log,
@@ -2757,7 +2760,9 @@ fn a_replica_builds_the_same_postings_from_the_same_log() {
 
     let replica_backend =
         std::sync::Arc::new(tessari_kv::MemoryBackend::new()) as std::sync::Arc<dyn KvBackend>;
-    let replica = Store::open(std::sync::Arc::clone(&replica_backend)).unwrap();
+    let replica = Store::open(std::sync::Arc::clone(&replica_backend))
+        .now()
+        .unwrap();
     crate::replay(&store, &replica);
 
     let mut mirrored = Session::new(&replica);
@@ -2894,7 +2899,7 @@ fn guarded(session: &mut Session<'_>) {
              DEFINE USER root ROLE owner PASSWORD 'root secret';",
         )
         .unwrap();
-    session.sign_in("root", "root secret").unwrap();
+    session.sign_in("root", "root secret").now().unwrap();
     session
         .run_now(
             "DEFINE USER ada ON prod.orders ROLE editor PASSWORD 'correct horse';\n\
@@ -2930,12 +2935,15 @@ fn a_signin_matches_the_password_and_says_nothing_about_which_half_was_wrong() {
 
     // One message for a wrong name and a wrong password alike: telling them
     // apart tells an attacker which half to keep guessing at.
-    let wrong_password = session.sign_in("ada", "incorrect horse").unwrap_err();
-    let wrong_name = session.sign_in("nobody", "correct horse").unwrap_err();
+    let wrong_password = session.sign_in("ada", "incorrect horse").now().unwrap_err();
+    let wrong_name = session
+        .sign_in("nobody", "correct horse")
+        .now()
+        .unwrap_err();
     assert_eq!(wrong_password.to_string(), wrong_name.to_string());
     assert!(matches!(wrong_password, Error::SignInRefused));
 
-    session.sign_in("ada", "correct horse").unwrap();
+    session.sign_in("ada", "correct horse").now().unwrap();
     session.run_now("SELECT * FROM notes;").unwrap();
 }
 
@@ -2946,7 +2954,7 @@ fn a_role_decides_what_a_signed_in_session_may_do() {
     guarded(&mut session);
 
     // A viewer reads and does nothing else.
-    session.sign_in("grace", "watch only").unwrap();
+    session.sign_in("grace", "watch only").now().unwrap();
     session.run_now("SELECT * FROM notes;").unwrap();
     for refused in [
         "CREATE notes:2 = { body: 'no' };",
@@ -2963,7 +2971,7 @@ fn a_role_decides_what_a_signed_in_session_may_do() {
     }
 
     // An editor writes and defines structure, and may not declare users.
-    session.sign_in("ada", "correct horse").unwrap();
+    session.sign_in("ada", "correct horse").now().unwrap();
     session
         .run_now("CREATE notes:2 = { body: 'yes' };")
         .unwrap();
@@ -2977,7 +2985,7 @@ fn a_role_decides_what_a_signed_in_session_may_do() {
     );
 
     // An owner does all of it.
-    session.sign_in("root", "root secret").unwrap();
+    session.sign_in("root", "root secret").now().unwrap();
     session
         .run_now("DEFINE USER another ROLE viewer PASSWORD 'y';")
         .unwrap();
@@ -2989,8 +2997,8 @@ fn signing_in_again_replaces_the_identity_rather_than_adding_to_it() {
     let mut session = ready(&store);
     guarded(&mut session);
 
-    session.sign_in("root", "root secret").unwrap();
-    session.sign_in("grace", "watch only").unwrap();
+    session.sign_in("root", "root secret").now().unwrap();
+    session.sign_in("grace", "watch only").now().unwrap();
     // A session is one conversation with one user at a time, so the owner's
     // rights do not survive becoming a viewer.
     assert!(session.run_now("DEFINE COLLECTION more;").is_err());
@@ -3007,10 +3015,10 @@ fn a_scoped_user_cannot_reach_another_tenancy() {
     let store = store();
     let mut session = ready(&store);
     guarded(&mut session);
-    session.sign_in("root", "root secret").unwrap();
+    session.sign_in("root", "root secret").now().unwrap();
     session.run_now("DEFINE NAMESPACE other;").unwrap();
 
-    session.sign_in("ada", "correct horse").unwrap();
+    session.sign_in("ada", "correct horse").now().unwrap();
     let error = session.run_now("USE NAMESPACE other;").unwrap_err();
     // The refusal names the tenancy and not a record: one that says whether a
     // record exists has answered the question it declined.
@@ -3046,7 +3054,7 @@ fn a_scoped_user_cannot_reach_another_database_by_naming_it() {
     let store = store();
     let mut session = ready(&store);
     guarded(&mut session);
-    session.sign_in("root", "root secret").unwrap();
+    session.sign_in("root", "root secret").now().unwrap();
     session
         .run_now(
             "DEFINE DATABASE archive;\n\
@@ -3056,7 +3064,7 @@ fn a_scoped_user_cannot_reach_another_database_by_naming_it() {
         )
         .unwrap();
 
-    session.sign_in("ada", "correct horse").unwrap();
+    session.sign_in("ada", "correct horse").now().unwrap();
     session
         .run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
@@ -3097,7 +3105,7 @@ fn the_system_namespace_has_no_name_and_so_no_statement_can_reach_it() {
 
     let mut transaction = store.begin().unwrap();
     let mut catalog = tessari_storage::Catalog::new(&mut transaction);
-    let first = catalog.create_namespace("the very first").unwrap();
+    let first = catalog.create_namespace("the very first").now().unwrap();
     assert_ne!(
         first.id.get(),
         0,

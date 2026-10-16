@@ -17,7 +17,7 @@ impl Transaction<'_> {
     ///
     /// Whatever a commit returns, and [`Error::AcrossMalformed`] for a
     /// committed resolution missing a participant's prepare position.
-    pub fn resolve_across(
+    pub async fn resolve_across(
         mut self,
         transaction: TransactionId,
         committed: bool,
@@ -36,7 +36,10 @@ impl Transaction<'_> {
             });
         }
         self.writes.clear();
-        let Some(coordinator) = self.buffer_resolutions(transaction, committed, records)? else {
+        let Some(coordinator) = self
+            .buffer_resolutions(transaction, committed, records)
+            .await?
+        else {
             return Ok(None);
         };
         self.across = Some(Work {
@@ -52,13 +55,13 @@ impl Transaction<'_> {
                 Vec::new()
             },
         });
-        self.commit_placed().map(Some)
+        self.commit_placed().await.map(Some)
     }
 
     /// Buffer the resolution of `transaction`'s intents on `records` — every
     /// intent of it this node holds when none is named — and answer the
     /// coordinator's range the intents name, or `None` when none is left.
-    pub(super) fn buffer_resolutions(
+    pub(super) async fn buffer_resolutions(
         &mut self,
         transaction: TransactionId,
         committed: bool,
@@ -96,7 +99,7 @@ impl Transaction<'_> {
         }
         if every_held && !self.writes.is_empty() {
             // Buffered first, so the placement knows every table they fall in.
-            let placement = self.placement()?;
+            let placement = self.placement().await?;
             let mut elsewhere = Vec::new();
             for address in self.writes.keys() {
                 let home =
@@ -108,7 +111,7 @@ impl Transaction<'_> {
                         shard: placement.shard_of(address),
                         value: tessari_encoding::StampedValue::new(RecordValue::Tombstone),
                     }]))?;
-                if !self.store.leads(home)? {
+                if !self.store.leads(home).await? {
                     elsewhere.push(address.clone());
                 }
             }
@@ -146,10 +149,10 @@ impl Transaction<'_> {
     ///
     /// [`Error::AcrossNotHeldHere`] for a home this node holds no copy of, a
     /// conflict on this copy, and the substrate's failures.
-    pub fn across_plan(&self) -> Result<Vec<AcrossPart>> {
+    pub async fn across_plan(&self) -> Result<Vec<AcrossPart>> {
         let me = self.store.node_identity()?.id;
-        let placement = self.placement()?;
-        let record = self.log_record(me, &placement)?;
+        let placement = self.placement().await?;
+        let record = self.log_record(me, &placement).await?;
         let mut homes: std::collections::BTreeMap<Reach, Vec<tessari_encoding::Mutation>> =
             std::collections::BTreeMap::new();
         for mutation in record.mutations() {
@@ -158,9 +161,10 @@ impl Transaction<'_> {
         }
         let mut reading = self.store.begin()?;
         let catalog = crate::catalog::Catalog::new(&mut reading);
-        let held = catalog.leaderships()?;
+        let held = catalog.leaderships().await?;
         let placed: std::collections::BTreeSet<Reach> = catalog
-            .replicas()?
+            .replicas()
+            .await?
             .into_iter()
             .filter_map(|peer| peer.leads)
             .collect();
@@ -171,7 +175,7 @@ impl Transaction<'_> {
             if served.is_some_and(|over| !over.contains(home)) {
                 return Err(Error::AcrossNotHeldHere { range: home });
             }
-            let leader = match self.store.led(&held, &placed, home, &me)? {
+            let leader = match self.store.led(&held, &placed, home, &me).await? {
                 crate::store::Led::Elsewhere(leader) => Some(leader.node),
                 crate::store::Led::Here | crate::store::Led::Unled | crate::store::Led::Shared => {
                     None
@@ -197,7 +201,7 @@ impl Transaction<'_> {
         // After every position was read: a commit landing between a read and
         // this check is either below its position — and seen here — or above
         // it, and seen by the participant's walk.
-        self.check_for_conflicts()?;
+        self.check_for_conflicts().await?;
         Ok(parts)
     }
 

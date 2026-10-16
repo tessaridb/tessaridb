@@ -252,7 +252,7 @@ impl Session<'_> {
     /// what is left. That is the whole of what makes `mean(age) * 2` work — the
     /// composition is evaluated by the same code that evaluates `age * 2`, over
     /// a literal.
-    pub(crate) fn grouped(
+    pub(crate) async fn grouped(
         &self,
         transaction: &mut Transaction<'_>,
         records: Vec<(RecordId, Value)>,
@@ -268,13 +268,15 @@ impl Session<'_> {
             records,
             &occurrences,
             (group, merging),
-        )?;
+        )
+        .await?;
         self.answer_groups(transaction, groups, wanted, &occurrences, group, fill)
+            .await
     }
 
     /// Groups already folded — some of them on other nodes — answered as
     /// [`Self::grouped`] answers its own (ADR-0097 D2).
-    pub(crate) fn grouped_from(
+    pub(crate) async fn grouped_from(
         &self,
         transaction: &mut Transaction<'_>,
         groups: Groups,
@@ -284,6 +286,7 @@ impl Session<'_> {
     ) -> Result<Answered> {
         let occurrences = occurrences(wanted);
         self.answer_groups(transaction, groups, wanted, &occurrences, group, fill)
+            .await
     }
 
     /// The first pass: offer every record to its group's folds.
@@ -295,7 +298,7 @@ impl Session<'_> {
     /// Groups folded here may be merged with another node's: every fold that
     /// has a state holds it exactly, floats included (ADR-0114), so a merge
     /// answers what one walk would.
-    pub(crate) fn fold_into(
+    pub(crate) async fn fold_into(
         &self,
         transaction: &mut Transaction<'_>,
         groups: &mut Groups,
@@ -310,7 +313,10 @@ impl Session<'_> {
             // did through one more layer.
             let mut key = Vec::with_capacity(group.len());
             for held in group {
-                key.push(self.evaluate_in(transaction, held, Scope::of(&record))?);
+                key.push(
+                    self.evaluate_in(transaction, held, Scope::of(&record))
+                        .await?,
+                );
             }
             let entry = groups
                 .entry(key)
@@ -329,9 +335,10 @@ impl Session<'_> {
                         merging.and_then(|merging| Some((merging, merging.column(index)?)))
                     {
                         let rank = match at {
-                            Some(at) => {
-                                Some(self.evaluate_in(transaction, at, Scope::of(&record))?)
-                            }
+                            Some(at) => Some(
+                                self.evaluate_in(transaction, at, Scope::of(&record))
+                                    .await?,
+                            ),
                             None => None,
                         };
                         if let Some(accumulator) = entry
@@ -339,13 +346,15 @@ impl Session<'_> {
                             .get_mut(position)
                             .and_then(|held| held.get_mut(which))
                         {
-                            merging.merge_row(
-                                transaction,
-                                accumulator,
-                                (&record, column),
-                                rank.as_ref(),
-                                *span,
-                            )?;
+                            merging
+                                .merge_row(
+                                    transaction,
+                                    accumulator,
+                                    (&record, column),
+                                    rank.as_ref(),
+                                    *span,
+                                )
+                                .await?;
                         }
                         continue;
                     }
@@ -354,14 +363,18 @@ impl Session<'_> {
                         // it is offered is one placeholder per record rather
                         // than a value read out of one.
                         None => Value::Bool(true),
-                        Some(expr) => self.evaluate_in(transaction, expr, Scope::of(&record))?,
+                        Some(expr) => {
+                            self.evaluate_in(transaction, expr, Scope::of(&record))
+                                .await?
+                        }
                     };
                     // A counter fold is offered the value with the instant it
                     // was observed at, so it can order its samples itself.
                     let value = match at {
                         Some(at) => Value::Array(vec![
                             value,
-                            self.evaluate_in(transaction, at, Scope::of(&record))?,
+                            self.evaluate_in(transaction, at, Scope::of(&record))
+                                .await?,
                         ]),
                         None => value,
                     };
@@ -380,7 +393,7 @@ impl Session<'_> {
 
     /// The second pass: each group's folds answer, and the projection is
     /// evaluated over what they answered.
-    fn answer_groups(
+    async fn answer_groups(
         &self,
         transaction: &mut Transaction<'_>,
         groups: Groups,
@@ -424,7 +437,8 @@ impl Session<'_> {
                 } else {
                     let mut taken = computed.into_iter();
                     let substituted = substituted(&value.value, &mut taken);
-                    self.evaluate_in(transaction, &substituted, Scope::none())?
+                    self.evaluate_in(transaction, &substituted, Scope::none())
+                        .await?
                 };
                 if answer.is_present() {
                     fields.insert(value.name.text.clone(), answer);
@@ -433,7 +447,10 @@ impl Session<'_> {
             answered.push((key, id, fields));
         }
         let (rows, filled) = match fill {
-            Some(fill) => self.fill_windows(transaction, answered, wanted, group, fill)?,
+            Some(fill) => {
+                self.fill_windows(transaction, answered, wanted, group, fill)
+                    .await?
+            }
             None => (
                 answered
                     .into_iter()

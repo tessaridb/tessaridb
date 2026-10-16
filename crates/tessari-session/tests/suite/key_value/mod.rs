@@ -4,6 +4,7 @@
 //! the owner's condition for this feature is that a space behaves the same in
 //! either, and a feature tested on one backend is a claim about one backend.
 
+use tessari_session::Now;
 use tessari_session::RunNow;
 mod atomic;
 mod bounded;
@@ -39,7 +40,7 @@ pub(super) fn on_each_backend(case: impl Fn(&Backend)) {
     let raw = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     case(&Backend {
         name: "memory",
-        store: Store::open(Arc::clone(&raw)).unwrap(),
+        store: Store::open(Arc::clone(&raw)).now().unwrap(),
         raw,
         _directory: None,
     });
@@ -53,7 +54,7 @@ pub(super) fn on_each_backend(case: impl Fn(&Backend)) {
     ) as Arc<dyn KvBackend>;
     case(&Backend {
         name: "disk",
-        store: Store::open(Arc::clone(&raw)).unwrap(),
+        store: Store::open(Arc::clone(&raw)).now().unwrap(),
         raw,
         _directory: Some(directory),
     });

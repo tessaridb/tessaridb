@@ -69,7 +69,7 @@ pub(crate) async fn stand_for_leadership(
     // pass (G053 SG2c): a pass that returns before it reaches the catalog keeps
     // the last one it read.
     let mut cadence = tessari_storage::Failover::DEFAULT.campaign();
-    let mut pass = move |now: std::time::Instant, cadence: &mut std::time::Duration| {
+    let mut pass = async move |now: std::time::Instant, cadence: &mut std::time::Duration| {
         let (db, keys, voter, published, runtime) = (&*db, &keys, &*voter, &*published, &runtime);
         let store = db.store();
         // Identity first, and the catalog only once this node is known to
@@ -90,12 +90,7 @@ pub(crate) async fn stand_for_leadership(
         // Both in one transaction: the membership and the policy stamp are
         // read on every tick of this cadence, and a node the operator made
         // writable should pay for one begin here rather than two.
-        let (declared, policy) = match store.begin().and_then(|mut transaction| {
-            let catalog = tessari_storage::Catalog::new(&mut transaction);
-            let declared = catalog.replicas()?;
-            let policy = catalog.failover()?;
-            Ok((declared, policy))
-        }) {
+        let (declared, policy) = match crate::peers::declared_with_policy(store).await {
             Ok(read) => read,
             Err(why) => {
                 tracing::warn!(error = %why, "this node cannot say who its peers are");
@@ -134,19 +129,25 @@ pub(crate) async fn stand_for_leadership(
             published,
             runtime,
             periods,
-            leads_the_store: store.leads(tessari_types::Reach::Store).unwrap_or(false),
+            leads_the_store: store
+                .leads(tessari_types::Reach::Store)
+                .await
+                .unwrap_or(false),
             roles: me.roles,
         };
         let (on_a_line, yielded) = (&mut on_a_line, &mut yielded);
+        // Both on scoped threads of their own: each drives its store work and
+        // its canvass through the runtime's handle, which a thread already
+        // inside the runtime (this pass's) may not do.
         std::thread::scope(|scope| {
             scope.spawn(|| stand_for_a_placed_range(db, &candidate, (on_a_line, yielded), now));
-            stand_for_the_store(db, &candidate, (&mut renewing, policy), now);
+            scope.spawn(|| stand_for_the_store(db, &candidate, (&mut renewing, policy), now));
         });
     };
     // Nothing wakes the campaign early: it runs on the policy's cadence alone.
     let unwoken = tokio::sync::Notify::new();
-    tessari_wire::every_paced("leadership", &stop, &unwoken, cadence, move |now| {
-        pass(now, &mut cadence);
+    tessari_wire::every_paced("leadership", &stop, &unwoken, cadence, async move |now| {
+        pass(now, &mut cadence).await;
         Ok(cadence)
     })
     .await;
@@ -252,7 +253,7 @@ fn stand_for_the_store(
     if peers.is_empty() {
         return;
     }
-    let said = match greeting(db) {
+    let said = match runtime.block_on(greeting(db)) {
         Ok(said) => said,
         Err(why) => {
             tracing::warn!(error = %why, "this node cannot say what it holds");
@@ -283,7 +284,7 @@ fn stand_for_the_store(
         // instant the round opened, so handing the store a span instead
         // would restart that clock here and spend the canvass out of the
         // voters' window rather than this node's.
-        db.hold(held.epoch, held.lease());
+        runtime.block_on(db.hold(held.epoch, held.lease()));
     }
     if held.epoch != before.epoch {
         tracing::info!(epoch = held.epoch.get(), "leading the store line");
@@ -300,7 +301,9 @@ fn stand_for_the_store(
         // leads. A store that refuses the write has not un-elected this
         // node, and treating it as fatal would let a disk hiccup
         // overturn a decision a majority took.
-        if let Err(refused) = db.record_leadership(tessaridb::Reach::Store, held.epoch) {
+        if let Err(refused) =
+            runtime.block_on(db.record_leadership(tessaridb::Reach::Store, held.epoch))
+        {
             tracing::warn!(
                 epoch = held.epoch.get(),
                 refusal = %refused,
@@ -399,9 +402,10 @@ pub(crate) fn stand_for_a_placed_range(
     // The ballot names where this node stands on THIS range's line: a store
     // leader taking a range back is placed nowhere, so its greeting names no
     // line, and a voter would read it as holding none of the range.
-    let said = match greeting(db).and_then(|mut said| {
-        said.line = Some(crate::greeting_round::line_of(db.store(), range)?);
-        Ok(said)
+    let said = match candidate.runtime.block_on(async {
+        let mut said = greeting(db).await?;
+        said.line = Some(crate::greeting_round::line_of(db.store(), range).await?);
+        Ok::<_, tessari_storage::Error>(said)
     }) {
         Ok(said) => said,
         Err(why) => {
@@ -449,11 +453,16 @@ pub(crate) fn stand_for_a_placed_range(
             .block_on(standing.renew(candidate.voter, lease, next, now))
     });
     if held != before {
-        db.store().hold_range(range, held.epoch, held.lease());
+        candidate
+            .runtime
+            .block_on(db.store().hold_range(range, held.epoch, held.lease()));
     }
     if held.epoch != before.epoch {
         tracing::info!(range = ?range, epoch = held.epoch.get(), "leading a range");
-        if let Err(refused) = db.record_leadership(range, held.epoch) {
+        if let Err(refused) = candidate
+            .runtime
+            .block_on(db.record_leadership(range, held.epoch))
+        {
             tracing::warn!(
                 range = ?range,
                 epoch = held.epoch.get(),
@@ -491,7 +500,10 @@ fn hands_to_the_preferred(
     if since.is_some_and(|since| since < patient) || db.store().leading_of(range).is_none() {
         return false;
     }
-    let Ok(line) = crate::greeting_round::line_of(db.store(), range) else {
+    let Ok(line) = candidate
+        .runtime
+        .block_on(crate::greeting_round::line_of(db.store(), range))
+    else {
         return false;
     };
     let Some(to) = tessari_wire::preferred_to_yield_to(

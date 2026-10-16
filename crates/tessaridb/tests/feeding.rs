@@ -18,6 +18,7 @@
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::cell::Cell;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessaridb::feed::{Commits, FeedRefused, Following, follow};
@@ -34,7 +35,7 @@ const ROUNDS_ALLOWED: u32 = 20;
 
 #[test]
 fn revoking_the_read_ends_a_subscription_that_is_already_running() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let mut owner = db.session();
     owner
         .run_now(
@@ -45,7 +46,7 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
         )
         .unwrap();
     let mut root = db.session();
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     root.run_now(
@@ -55,7 +56,7 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
     root.run_now("CREATE orders:1 = { total: 5 };").unwrap();
 
     let mut kim = db.session();
-    kim.sign_in("kim", PASSWORD).unwrap();
+    kim.sign_in("kim", PASSWORD).now().unwrap();
     kim.run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
 
@@ -84,17 +85,24 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
             // pushes, so the subscription is unambiguously already running when
             // the authority goes away.
             if delivered.get() == 0 {
-                let mut taking = db.session();
-                taking.sign_in("root", PASSWORD).unwrap();
-                taking
-                    .run_now("USE NAMESPACE prod; USE DATABASE shop; REVOKE read ON NAMESPACE prod FROM kim;")
-                    .unwrap();
+                // The push runs inside the feed's future, which cannot be blocked
+                // on from within; the revocation runs to its end on a thread of
+                // its own before the feed takes another round.
+                std::thread::scope(|scope| {
+                    scope.spawn(|| {
+                        let mut taking = db.session();
+                        taking.sign_in("root", PASSWORD).now().unwrap();
+                        taking
+                            .run_now("USE NAMESPACE prod; USE DATABASE shop; REVOKE read ON NAMESPACE prod FROM kim;")
+                            .unwrap();
+                    });
+                });
                 taken.set(Some(std::time::Instant::now()));
             }
             delivered.set(delivered.get().saturating_add(1));
             true
         },
-    );
+    ).now();
 
     assert!(delivered.get() >= 1, "the feed pushed nothing to revoke");
     let refusal = outcome.expect_err("the revocation did not reach the running feed");
@@ -133,7 +141,7 @@ fn a_subscription_is_never_told_about_a_tenancy_the_session_could_not_select() {
     // feed can actually make is to be *handed* it: the change log is the whole
     // store's, and a subscription that did not confine itself would push every
     // write in every namespace to whoever was watching.
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let mut owner = db.session();
     owner
         .run_now(
@@ -144,7 +152,7 @@ fn a_subscription_is_never_told_about_a_tenancy_the_session_could_not_select() {
         )
         .unwrap();
     let mut root = db.session();
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now(
         "DEFINE NAMESPACE staging; USE NAMESPACE staging; DEFINE DATABASE shop; \
          USE DATABASE shop; DEFINE COLLECTION orders;",
@@ -164,11 +172,15 @@ fn a_subscription_is_never_told_about_a_tenancy_the_session_could_not_select() {
         .unwrap();
 
     let mut nina = db.session();
-    nina.sign_in("nina", PASSWORD).unwrap();
+    nina.sign_in("nina", PASSWORD).now().unwrap();
     nina.run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
 
-    let mine = db.tenancy_in("prod", "shop").unwrap().expect("her tenancy");
+    let mine = db
+        .tenancy_in("prod", "shop")
+        .now()
+        .unwrap()
+        .expect("her tenancy");
     let seen = Cell::new(Vec::new());
     let rounds = Cell::new(0_u32);
     let committed = Commits::default();
@@ -178,24 +190,27 @@ fn a_subscription_is_never_told_about_a_tenancy_the_session_could_not_select() {
         cursor: None,
         condition: None,
     };
-    drop(follow(
-        &db,
-        &mut nina,
-        &following,
-        &committed,
-        &|| {
-            rounds.set(rounds.get().saturating_add(1));
-            // Two rounds: the first drains what is already in the log, the
-            // second is where anything wrongly queued would still arrive.
-            rounds.get() > 2
-        },
-        &mut |change, _name, _allowed, _cursor| {
-            let mut held = seen.take();
-            held.push((change.namespace, change.database));
-            seen.set(held);
-            true
-        },
-    ));
+    drop(
+        follow(
+            &db,
+            &mut nina,
+            &following,
+            &committed,
+            &|| {
+                rounds.set(rounds.get().saturating_add(1));
+                // Two rounds: the first drains what is already in the log, the
+                // second is where anything wrongly queued would still arrive.
+                rounds.get() > 2
+            },
+            &mut |change, _name, _allowed, _cursor| {
+                let mut held = seen.take();
+                held.push((change.namespace, change.database));
+                seen.set(held);
+                true
+            },
+        )
+        .now(),
+    );
 
     let delivered = seen.take();
     assert!(
@@ -245,7 +260,8 @@ fn fed(
             given.push((change.id.to_string(), total, cursor.map(str::to_owned)));
             true
         },
-    )?;
+    )
+    .now()?;
     Ok(given)
 }
 
@@ -258,7 +274,7 @@ fn fed(
 /// arrive before or after both shard writes rather than between them.
 #[test]
 fn a_feed_over_a_split_table_merges_its_logs_in_commit_order_and_resumes_from_its_cursor() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let mut session = db.session();
     session
         .run_now(
@@ -354,7 +370,7 @@ fn every_landing_is_announced_to_the_database_and_a_read_is_not() {
     // A feed wakes on what the store landed, whichever way it arrived: a commit
     // made on a session, and a record applied from another writer's stream,
     // which no surface of this node ever saw. A read lands nothing.
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let mut landed = db.commits().watching();
     let mut session = db.session();
     session
@@ -372,7 +388,7 @@ fn every_landing_is_announced_to_the_database_and_a_read_is_not() {
         "a read was announced as a landing"
     );
 
-    let (namespace, database) = db.tenancy_in("prod", "shop").unwrap().unwrap();
+    let (namespace, database) = db.tenancy_in("prod", "shop").now().unwrap().unwrap();
     let elsewhere = tessaridb::LogId::new(
         tessaridb::Reach::Database(namespace, database),
         tessaridb::Writer::new([7; 16]),
@@ -384,6 +400,7 @@ fn every_landing_is_announced_to_the_database_and_a_read_is_not() {
             tessari_types::Epoch::ZERO,
             &tessari_encoding::LogRecord::at(tessari_types::Epoch::new(1), Vec::new()),
         )
+        .now()
         .unwrap();
     assert!(
         landed.has_changed().unwrap(),
@@ -393,7 +410,7 @@ fn every_landing_is_announced_to_the_database_and_a_read_is_not() {
 
 #[test]
 fn a_split_feed_over_another_writers_log_is_refused_by_name() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let mut session = db.session();
     session
         .run_now(
@@ -401,8 +418,12 @@ fn a_split_feed_over_another_writers_log_is_refused_by_name() {
              DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g';",
         )
         .unwrap();
-    let (namespace, database) = db.tenancy_in("prod", "shop").unwrap().unwrap();
-    let table = db.table_in("prod", "shop", "orders").unwrap().unwrap();
+    let (namespace, database) = db.tenancy_in("prod", "shop").now().unwrap().unwrap();
+    let table = db
+        .table_in("prod", "shop", "orders")
+        .now()
+        .unwrap()
+        .unwrap();
     let elsewhere = tessaridb::LogId::new(
         tessaridb::Reach::Shard(namespace, database, table, tessari_types::ShardId::new(2)),
         tessaridb::Writer::new([7; 16]),
@@ -414,6 +435,7 @@ fn a_split_feed_over_another_writers_log_is_refused_by_name() {
             tessari_types::Epoch::ZERO,
             &tessari_encoding::LogRecord::at(tessari_types::Epoch::new(1), Vec::new()),
         )
+        .now()
         .unwrap();
     let refusal = fed(&db, &mut session, 0, None, Some("orders")).unwrap_err();
     assert!(
@@ -427,7 +449,7 @@ fn a_split_feed_over_another_writers_log_is_refused_by_name() {
 /// rather than going quietly deaf to that table (Q-791).
 #[test]
 fn a_feed_ends_when_a_split_table_appears_in_its_scope() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let mut session = db.session();
     session
         .run_now(
@@ -453,17 +475,24 @@ fn a_feed_ends_when_a_split_table_appears_in_its_scope() {
         },
         &mut |_, _, _, _| {
             if delivered.replace(delivered.get().saturating_add(1)) == 0 {
-                let mut other = db.session();
-                other
-                    .run_now(
-                        "USE NAMESPACE prod; USE DATABASE shop;\n\
-                         DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g';",
-                    )
-                    .unwrap();
+                // Declared on a thread of its own: the push runs inside the feed's
+                // future, which cannot be blocked on from within.
+                std::thread::scope(|scope| {
+                    scope.spawn(|| {
+                        let mut other = db.session();
+                        other
+                            .run_now(
+                                "USE NAMESPACE prod; USE DATABASE shop;\n\
+                                 DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g';",
+                            )
+                            .unwrap();
+                    });
+                });
             }
             true
         },
-    );
+    )
+    .now();
     assert!(
         delivered.get() > 0,
         "the feed delivered nothing, so it proves nothing"

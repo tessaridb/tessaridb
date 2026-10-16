@@ -3,9 +3,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use tessari_session::Now;
 
 use tessari_encoding::NODE_ID_LEN;
-use tessari_session::RunNow;
 use tessari_storage::{Catalog, Reach};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, ShardId, TableId};
 use tessaridb::Db;
@@ -29,26 +29,31 @@ const LEADER: [u8; NODE_ID_LEN] = [71_u8; NODE_ID_LEN];
 struct Granting(Option<Reach>);
 
 impl Subscriptions for Granting {
-    fn granted(&self, _follower: [u8; NODE_ID_LEN]) -> Result<Option<Reach>> {
-        Ok(self.0)
+    fn granted(
+        &self,
+        _follower: [u8; NODE_ID_LEN],
+    ) -> crate::collection::Answering<'_, Result<Option<Reach>>> {
+        Box::pin(async move { Ok(self.0) })
     }
 }
 
-fn leader() -> (Arc<Db>, TableId) {
-    let db = Db::in_memory().unwrap();
+async fn leader() -> (Arc<Db>, TableId) {
+    let db = Db::in_memory().await.unwrap();
     db.session()
-        .run_now(
+        .run(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
                  USE DATABASE shop; \
                  DEFINE TABLE ledger (n int) IDENTITY uuid SPLIT AT 'g'; \
                  CREATE ledger:'a' = { n: 1 }; CREATE ledger:'b' = { n: 2 }; \
                  CREATE ledger:'c' = { n: 3 }; CREATE ledger:'h' = { n: 4 };",
         )
+        .await
         .unwrap();
     let table = {
         let mut transaction = db.store().begin().unwrap();
         Catalog::new(&mut transaction)
             .table_id(NamespaceId::new(1), DatabaseId::new(1), "ledger")
+            .await
             .unwrap()
             .unwrap()
     };
@@ -101,12 +106,16 @@ fn folding_door(
     let handle = std::thread::spawn(move || {
         let granting = Granting(granted);
         for _ in 0..rounds {
-            drop(peers.greet(
-                || Ok(mine),
-                &LEADER,
-                &Deciding::holding(settled()),
-                &Serving::within(db.store(), &granting, budget).folding_by(fold),
-            ));
+            drop(
+                peers
+                    .greet(
+                        || Ok(mine),
+                        &LEADER,
+                        &Deciding::holding(settled()),
+                        &Serving::within(db.store(), &granting, budget).folding_by(fold),
+                    )
+                    .now(),
+            );
         }
     });
     (address, handle)

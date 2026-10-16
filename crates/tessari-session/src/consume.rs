@@ -52,7 +52,7 @@ pub(crate) trait Consumer {
     ///
     /// `Break` stops the source where it stands — the same mechanism a bound
     /// already uses to reach it (ADR-0013) rather than a second one beside it.
-    fn take(
+    async fn take(
         &mut self,
         transaction: &mut Transaction<'_>,
         id: RecordId,
@@ -106,7 +106,7 @@ impl Consumer for Collecting<'_> {
         self.records.reserve(records);
     }
 
-    fn take(
+    async fn take(
         &mut self,
         _transaction: &mut Transaction<'_>,
         id: RecordId,
@@ -250,7 +250,7 @@ impl<'a, 's> Shaping<'a, 's> {
     ///
     /// Nothing is spent against the budget. The anchor is not a record of the
     /// answer, and a ceiling of one should not refuse a page of one.
-    pub(crate) fn resume_after(
+    pub(crate) async fn resume_after(
         &mut self,
         transaction: &mut Transaction<'_>,
         id: RecordId,
@@ -258,14 +258,14 @@ impl<'a, 's> Shaping<'a, 's> {
     ) -> Result<()> {
         let keys = match record {
             None => Vec::new(),
-            Some(record) => self.keyed(transaction, &id, record)?.0,
+            Some(record) => self.keyed(transaction, &id, record).await?.0,
         };
         self.topmost.after(keys, id);
         Ok(())
     }
 
     /// One record projected, and the order's keys evaluated over it.
-    fn keyed(
+    async fn keyed(
         &self,
         transaction: &mut Transaction<'_>,
         id: &RecordId,
@@ -274,21 +274,25 @@ impl<'a, 's> Shaping<'a, 's> {
         let Some(wanted) = &self.wanted else {
             // Already projected by a barrier stage above, so there is no source
             // left to overlay and nothing was dropped that a key could want.
-            let keys = self.keys_against(transaction, id, &record)?;
+            let keys = self.keys_against(transaction, id, &record).await?;
             return Ok((keys, record));
         };
-        let projected = self.session.project(
-            transaction,
-            id,
-            &record,
-            wanted,
-            self.searched,
-            self.noticed,
-        )?;
+        let projected = self
+            .session
+            .project(
+                transaction,
+                id,
+                &record,
+                wanted,
+                self.searched,
+                self.noticed,
+            )
+            .await?;
         let keys = if self.keys_reach_past_the_projection {
-            self.keys_against(transaction, id, &overlaid(record, &projected))?
+            self.keys_against(transaction, id, &overlaid(record, &projected))
+                .await?
         } else {
-            self.keys_against(transaction, id, &projected)?
+            self.keys_against(transaction, id, &projected).await?
         };
         Ok((keys, projected))
     }
@@ -299,7 +303,7 @@ impl<'a, 's> Shaping<'a, 's> {
     /// has to reach the same numbers it reaches in the `WHERE` that produced the
     /// record — which is why the identity travels here too and not only into the
     /// projection.
-    fn keys_against(
+    async fn keys_against(
         &self,
         transaction: &mut Transaction<'_>,
         id: &RecordId,
@@ -308,13 +312,15 @@ impl<'a, 's> Shaping<'a, 's> {
         let mut keys = Vec::with_capacity(self.keys.len());
         for key in &self.keys {
             keys.push(
-                self.session.evaluate_in(
-                    transaction,
-                    key,
-                    Scope::searching(record, self.searched)
-                        .identified(id)
-                        .noticing(self.noticed),
-                )?,
+                self.session
+                    .evaluate_in(
+                        transaction,
+                        key,
+                        Scope::searching(record, self.searched)
+                            .identified(id)
+                            .noticing(self.noticed),
+                    )
+                    .await?,
             );
         }
         Ok(keys)
@@ -369,14 +375,14 @@ fn overlaid(source: Value, projected: &Value) -> Value {
 }
 
 impl Consumer for Shaping<'_, '_> {
-    fn take(
+    async fn take(
         &mut self,
         transaction: &mut Transaction<'_>,
         id: RecordId,
         record: Value,
     ) -> Result<ControlFlow<()>> {
         self.budget.spend()?;
-        let (keys, record) = self.keyed(transaction, &id, record)?;
+        let (keys, record) = self.keyed(transaction, &id, record).await?;
         self.topmost.offer(keys, id, record);
         Ok(ControlFlow::Continue(()))
     }

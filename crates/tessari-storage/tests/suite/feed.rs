@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_encoding::encode_payload;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -29,16 +30,20 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        let store = Store::open(backend).unwrap();
+        let store = Store::open(backend).now().unwrap();
 
         let mut transaction = store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("prod").unwrap();
-        let database = catalog.create_database(namespace.id, "orders").unwrap();
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog
+            .create_database(namespace.id, "orders")
+            .now()
+            .unwrap();
         let table = catalog
             .create_table(namespace.id, database.id, "users", TableShape::default())
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
 
         Self {
             store,
@@ -105,7 +110,7 @@ fn a_commit_of_two_records_is_two_changes_at_one_sequence() {
     let mut transaction = fixture.begin();
     transaction.put(fixture.at("u1"), record("ada"));
     transaction.put(fixture.at("u2"), record("grace"));
-    let at = transaction.commit().unwrap();
+    let at = transaction.commit().now().unwrap();
 
     let changes = fixture.changes();
     assert_eq!(changes.len(), 2, "{changes:?}");
@@ -121,11 +126,11 @@ fn a_delete_is_a_removal_and_a_write_carries_its_value() {
     let fixture = Fixture::new();
     let mut transaction = fixture.begin();
     transaction.put(fixture.at("u1"), record("ada"));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let mut transaction = fixture.begin();
     transaction.delete(fixture.at("u1"));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let changes = fixture.changes();
     assert_eq!(changes.len(), 2);
@@ -155,9 +160,10 @@ fn the_catalog_is_not_in_the_feed_and_the_records_beside_it_are() {
             vec![tessari_types::Path::field("name")],
             IndexShape::default(),
         )
+        .now()
         .unwrap();
     transaction.put(fixture.at("u1"), record("ada"));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     // The STORE's log, because a record's log is the JOIN of what its mutations
     // are carried to (Q-620) and this commit carries both: an index definition,
@@ -183,11 +189,11 @@ fn reading_from_a_sequence_returns_what_follows_it() {
     let fixture = Fixture::new();
     let mut transaction = fixture.begin();
     transaction.put(fixture.at("u1"), record("ada"));
-    let first = transaction.commit().unwrap();
+    let first = transaction.commit().now().unwrap();
 
     let mut transaction = fixture.begin();
     transaction.put(fixture.at("u2"), record("grace"));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let later = fixture
         .store
@@ -227,14 +233,14 @@ fn a_replicas_feed_is_the_leaders_feed() {
     let mut transaction = fixture.begin();
     transaction.put(fixture.at("u1"), record("ada"));
     transaction.put(fixture.at("u2"), record("grace"));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let mut transaction = fixture.begin();
     transaction.delete(fixture.at("u1"));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    let replica = Store::open(Arc::clone(&replica_backend)).now().unwrap();
     crate::replay(&fixture.store, &replica);
 
     assert_eq!(
@@ -255,7 +261,7 @@ fn a_record_written_and_deleted_in_one_commit_appears_as_the_log_carries_it() {
     let mut transaction = fixture.begin();
     transaction.put(fixture.at("u1"), record("ada"));
     transaction.delete(fixture.at("u1"));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let changes = fixture.changes();
     assert_eq!(changes.len(), 1, "{changes:?}");
@@ -290,7 +296,7 @@ fn a_commit_that_changes_no_records_still_moves_the_reader_forward() {
     // catalog commit above never was.
     let mut transaction = fixture.begin();
     transaction.put(fixture.at("u1"), record("ada"));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     let next = fixture
         .store
         .changes_since(
@@ -311,7 +317,7 @@ fn a_limit_bounds_commits_and_never_splits_one() {
         let mut transaction = fixture.begin();
         transaction.put(fixture.at(&format!("a{round}")), record("ada"));
         transaction.put(fixture.at(&format!("b{round}")), record("grace"));
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     // Two log records, both data commits — the fixture's own catalog commit is
@@ -365,8 +371,9 @@ fn other_table(fixture: &Fixture) -> TableId {
             "notes",
             TableShape::default(),
         )
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     table.id
 }
 
@@ -381,7 +388,7 @@ fn write(fixture: &Fixture, table: TableId, id: &str, name: &str) {
         ),
         record(name),
     );
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 }
 
 #[test]
@@ -584,7 +591,7 @@ fn a_position_carries_to_another_store_holding_the_same_log() {
     write(&fixture, fixture.table, "u2", "grace");
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    let replica = Store::open(Arc::clone(&replica_backend)).now().unwrap();
     crate::replay(&fixture.store, &replica);
 
     let resumed = subscription.poll(&replica, 1024).unwrap();
@@ -625,7 +632,7 @@ fn a_records_history_is_its_own_writes_newest_first() {
     for name in ["ada", "grace", "edith"] {
         let mut transaction = fixture.begin();
         transaction.put(fixture.at("u1"), record(name));
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     let history = fixture.history("u1", 10);
@@ -661,7 +668,7 @@ fn a_history_holds_no_other_records_writes() {
     let mut transaction = fixture.begin();
     transaction.put(fixture.at("u1"), record("ada"));
     transaction.put(fixture.at("u2"), record("grace"));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     // The two were written in ONE commit, so they share a sequence. A filter
     // that keyed on the commit rather than the address would return both, and
@@ -677,10 +684,10 @@ fn a_removal_is_in_the_history_and_a_record_that_never_existed_has_none() {
     let fixture = Fixture::new();
     let mut transaction = fixture.begin();
     transaction.put(fixture.at("u1"), record("ada"));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     let mut transaction = fixture.begin();
     transaction.delete(fixture.at("u1"));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let history = fixture.history("u1", 10);
     assert_eq!(history.events.len(), 2, "{history:?}");
@@ -700,7 +707,7 @@ fn a_history_cut_short_by_its_limit_still_says_it_is_complete() {
     for name in ["ada", "grace", "edith"] {
         let mut transaction = fixture.begin();
         transaction.put(fixture.at("u1"), record(name));
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     // `limit` and `complete` answer different questions, and conflating them is
@@ -727,7 +734,7 @@ fn the_walk_is_bounded_and_reports_what_it_read() {
     for (id, name) in [("u1", "ada"), ("u2", "grace"), ("u1", "edith")] {
         let mut transaction = fixture.begin();
         transaction.put(fixture.at(id), record(name));
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     let history = fixture.history("u1", 10);

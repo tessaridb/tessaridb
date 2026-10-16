@@ -44,15 +44,16 @@ fn handed(position: u64, value: Value, deliveries: u64) -> Value {
 
 impl Session<'_> {
     /// The table a group statement names, refused when it is not a topic.
-    pub(crate) fn group_topic(
+    pub(crate) async fn group_topic(
         &self,
         transaction: &mut Transaction<'_>,
         topic: &TableRef,
         span: Span,
     ) -> Result<(Context, TableId)> {
-        let (context, table) = self.resolve_table(transaction, topic)?;
+        let (context, table) = self.resolve_table(transaction, topic).await?;
         let is_topic = Catalog::new(transaction)
-            .table(table)?
+            .table(table)
+            .await?
             .is_some_and(|definition| matches!(definition.kind, TableKind::Topic(_)));
         if !is_topic {
             return Err(Error::NotATopic {
@@ -64,7 +65,7 @@ impl Session<'_> {
     }
 
     /// The group `name` on this topic, refused when there is none.
-    pub(crate) fn existing_group(
+    pub(crate) async fn existing_group(
         transaction: &mut Transaction<'_>,
         context: &Context,
         table: TableId,
@@ -73,7 +74,8 @@ impl Session<'_> {
         span: Span,
     ) -> Result<GroupState> {
         Catalog::new(transaction)
-            .topic_group(context.namespace, context.database, table, name)?
+            .topic_group(context.namespace, context.database, table, name)
+            .await?
             .ok_or_else(|| Error::NoSuchGroup {
                 group: name.to_owned(),
                 topic: topic.name.text.clone(),
@@ -87,7 +89,7 @@ impl Session<'_> {
     /// name, so declaring a group for readers that already read the topic does
     /// not hand them everything again; otherwise it starts at the beginning, as
     /// a named reader does.
-    pub(crate) fn define_group(
+    pub(crate) async fn define_group(
         &self,
         transaction: &mut Transaction<'_>,
         name: &str,
@@ -96,9 +98,10 @@ impl Session<'_> {
         clauses: &GroupClauses,
         span: Span,
     ) -> Result<Outcome> {
-        let (context, table) = self.group_topic(transaction, topic, span)?;
+        let (context, table) = self.group_topic(transaction, topic, span).await?;
         if Catalog::new(transaction)
-            .topic_group(context.namespace, context.database, table, name)?
+            .topic_group(context.namespace, context.database, table, name)
+            .await?
             .is_some()
         {
             if if_not_exists {
@@ -112,7 +115,7 @@ impl Session<'_> {
         }
         let dead_letter = match &clauses.dead_letter {
             Some(dead_letter) => {
-                let (_, letters) = self.group_topic(transaction, dead_letter, span)?;
+                let (_, letters) = self.group_topic(transaction, dead_letter, span).await?;
                 if letters == table {
                     return Err(Error::DeadLetterIsTheTopic {
                         topic: topic.name.text.clone(),
@@ -130,7 +133,8 @@ impl Session<'_> {
             dead_letter,
         };
         let cursor = Catalog::new(transaction)
-            .topic_position(context.namespace, context.database, table, name)?
+            .topic_position(context.namespace, context.database, table, name)
+            .await?
             .unwrap_or(0);
         Catalog::new(transaction).put_topic_group(
             context.namespace,
@@ -143,15 +147,15 @@ impl Session<'_> {
     }
 
     /// `DROP GROUP` — the group and what it holds in flight are forgotten.
-    pub(crate) fn drop_group(
+    pub(crate) async fn drop_group(
         &self,
         transaction: &mut Transaction<'_>,
         name: &str,
         topic: &TableRef,
         span: Span,
     ) -> Result<Outcome> {
-        let (context, table) = self.group_topic(transaction, topic, span)?;
-        Self::existing_group(transaction, &context, table, name, topic, span)?;
+        let (context, table) = self.group_topic(transaction, topic, span).await?;
+        Self::existing_group(transaction, &context, table, name, topic, span).await?;
         Catalog::new(transaction).drop_topic_group(
             context.namespace,
             context.database,
@@ -163,7 +167,7 @@ impl Session<'_> {
 
     /// `ALTER GROUP … START AT n` — the group next hands out position `n + 1`,
     /// and what it held in flight is forgotten rather than handed out twice.
-    pub(crate) fn alter_group(
+    pub(crate) async fn alter_group(
         &self,
         transaction: &mut Transaction<'_>,
         name: &str,
@@ -171,13 +175,16 @@ impl Session<'_> {
         start_at: &Expr,
         span: Span,
     ) -> Result<Outcome> {
-        let (context, table) = self.group_topic(transaction, topic, span)?;
-        let mut state = Self::existing_group(transaction, &context, table, name, topic, span)?;
-        state.cursor = self.whole(
-            transaction,
-            start_at,
-            "a position is a whole number at or above zero",
-        )?;
+        let (context, table) = self.group_topic(transaction, topic, span).await?;
+        let mut state =
+            Self::existing_group(transaction, &context, table, name, topic, span).await?;
+        state.cursor = self
+            .whole(
+                transaction,
+                start_at,
+                "a position is a whole number at or above zero",
+            )
+            .await?;
         state.flight.clear();
         Catalog::new(transaction).put_topic_group(
             context.namespace,
@@ -221,7 +228,9 @@ impl Session<'_> {
             if answered.len() >= limit {
                 break;
             }
-            let message = self.message_at(transaction, context, table, held.position)?;
+            let message = self
+                .message_at(transaction, context, table, held.position)
+                .await?;
             let spent = state
                 .declaration
                 .deliveries
@@ -267,8 +276,9 @@ impl Session<'_> {
             .min(limit.saturating_sub(answered.len()));
         if room > 0 {
             let after = state.cursor;
-            let found =
-                transaction.topic_after(context.namespace, context.database, table, after, room)?;
+            let found = transaction
+                .topic_after(context.namespace, context.database, table, after, room)
+                .await?;
             let passed = missed(&found, after);
             missed_count = missed_count.saturating_add(passed);
             let reached = found.messages.last().map(|message| message.position);
@@ -318,7 +328,7 @@ impl Session<'_> {
     /// `ACK` — answers how many of the positions were in flight and are now
     /// done. A position not in flight counts nothing and refuses nothing, so an
     /// acknowledgement retried after a lost answer is harmless.
-    pub(crate) fn ack_topic(
+    pub(crate) async fn ack_topic(
         &self,
         transaction: &mut Transaction<'_>,
         topic: &TableRef,
@@ -326,8 +336,9 @@ impl Session<'_> {
         positions: &[Expr],
         span: Span,
     ) -> Result<Outcome> {
-        let (context, table, mut state, positions) =
-            self.settling(transaction, topic, consumer, positions, span)?;
+        let (context, table, mut state, positions) = self
+            .settling(transaction, topic, consumer, positions, span)
+            .await?;
         let before = state.flight.len();
         state
             .flight
@@ -349,7 +360,7 @@ impl Session<'_> {
 
     /// `NACK` — the positions become deliverable now, or after the delay, and
     /// the answer is how many were in flight.
-    pub(crate) fn nack_topic(
+    pub(crate) async fn nack_topic(
         &self,
         transaction: &mut Transaction<'_>,
         topic: &TableRef,
@@ -357,8 +368,9 @@ impl Session<'_> {
         (positions, delay): (&[Expr], Option<tessari_types::Duration>),
         span: Span,
     ) -> Result<Outcome> {
-        let (context, table, mut state, positions) =
-            self.settling(transaction, topic, consumer, positions, span)?;
+        let (context, table, mut state, positions) = self
+            .settling(transaction, topic, consumer, positions, span)
+            .await?;
         let now = crate::call::instant(span)?;
         let from: Datetime = match delay {
             Some(delay) => later(now, delay, span)?,
@@ -384,7 +396,7 @@ impl Session<'_> {
     }
 
     /// The topic, the group and the positions an `ACK` or `NACK` names.
-    fn settling(
+    async fn settling(
         &self,
         transaction: &mut Transaction<'_>,
         topic: &TableRef,
@@ -392,13 +404,10 @@ impl Session<'_> {
         positions: &[Expr],
         span: Span,
     ) -> Result<(Context, TableId, GroupState, Vec<u64>)> {
-        let (context, table) = self.group_topic(transaction, topic, span)?;
-        let Some(state) = Catalog::new(transaction).topic_group(
-            context.namespace,
-            context.database,
-            table,
-            consumer,
-        )?
+        let (context, table) = self.group_topic(transaction, topic, span).await?;
+        let Some(state) = Catalog::new(transaction)
+            .topic_group(context.namespace, context.database, table, consumer)
+            .await?
         else {
             return Err(Error::NotAGroup {
                 consumer: consumer.to_owned(),
@@ -408,30 +417,35 @@ impl Session<'_> {
         };
         let mut named = Vec::with_capacity(positions.len());
         for position in positions {
-            named.extend(self.positions(
-                transaction,
-                position,
-                "a position is a whole number at or above zero",
-            )?);
+            named.extend(
+                self.positions(
+                    transaction,
+                    position,
+                    "a position is a whole number at or above zero",
+                )
+                .await?,
+            );
         }
         Ok((context, table, state, named))
     }
 
     /// The message at one position, or `None` when retention removed it.
-    fn message_at(
+    async fn message_at(
         &self,
         transaction: &mut Transaction<'_>,
         context: &Context,
         table: TableId,
         position: u64,
     ) -> Result<Option<(RecordId, Value)>> {
-        let found = transaction.topic_after(
-            context.namespace,
-            context.database,
-            table,
-            position.saturating_sub(1),
-            1,
-        )?;
+        let found = transaction
+            .topic_after(
+                context.namespace,
+                context.database,
+                table,
+                position.saturating_sub(1),
+                1,
+            )
+            .await?;
         Ok(found
             .messages
             .into_iter()
@@ -456,7 +470,9 @@ impl Session<'_> {
             ("deliveries".to_owned(), whole(held.deliveries)),
             ("value".to_owned(), value),
         ]));
-        let id = self.free_identity(transaction, context, letters, &letter, span)?;
+        let id = self
+            .free_identity(transaction, context, letters, &letter, span)
+            .await?;
         self.put_record(
             transaction,
             RecordAddress::new(context.namespace, context.database, letters, id),

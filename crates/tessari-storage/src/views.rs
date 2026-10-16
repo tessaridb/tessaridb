@@ -155,9 +155,9 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the store cannot be read or the state is
     /// malformed.
-    pub fn view_state(&self, view: TableId) -> Result<Option<ViewState>> {
+    pub async fn view_state(&self, view: TableId) -> Result<Option<ViewState>> {
         let address = system::address(system::VIEW_STATES, state_id(view));
-        match self.get(&address)? {
+        match self.get(&address).await? {
             Some(bytes) => Ok(Some(ViewState::from_value(&decode_payload(&bytes)?)?)),
             None => Ok(None),
         }
@@ -183,9 +183,9 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the membership rows cannot be read.
-    pub fn forget_view(&mut self, view: TableId) -> Result<()> {
+    pub async fn forget_view(&mut self, view: TableId) -> Result<()> {
         self.delete(system::address(system::VIEW_STATES, state_id(view)));
-        self.forget_view_members(view)
+        self.forget_view_members(view).await
     }
 }
 

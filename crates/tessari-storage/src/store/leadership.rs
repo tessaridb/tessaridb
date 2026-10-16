@@ -58,8 +58,8 @@ impl Store {
     ///
     /// Returns the substrate's failure, and a decoding failure when the node
     /// identity cannot be read.
-    pub fn awaiting_leadership(&self) -> Result<bool> {
-        self.awaiting(&self.node_identity()?.id)
+    pub async fn awaiting_leadership(&self) -> Result<bool> {
+        self.awaiting(&self.node_identity()?.id).await
     }
 
     /// Whether this node holds no leadership and is not alone in holding none.
@@ -73,11 +73,11 @@ impl Store {
     /// [`crate::lease::Held::remaining`] is an in-memory read and the catalog is
     /// not, so a node that holds a leadership never reaches the second question
     /// — which is the state a leader is in for every commit it takes.
-    pub(crate) fn awaiting(&self, me: &[u8; NODE_ID_LEN]) -> Result<bool> {
+    pub(crate) async fn awaiting(&self, me: &[u8; NODE_ID_LEN]) -> Result<bool> {
         if self.lease.remaining().is_some() {
             return Ok(false);
         }
-        self.in_a_cluster(me)
+        self.in_a_cluster(me).await
     }
 
     /// Whether the committed catalog names a peer that is not this node.
@@ -105,9 +105,11 @@ impl Store {
     ///
     /// Returns the substrate's failure, and a decoding failure when a stored
     /// membership row cannot be read.
-    pub(crate) fn in_a_cluster(&self, me: &[u8; NODE_ID_LEN]) -> Result<bool> {
+    pub(crate) async fn in_a_cluster(&self, me: &[u8; NODE_ID_LEN]) -> Result<bool> {
         let mut transaction = self.begin()?;
-        let declared = crate::catalog::Catalog::new(&mut transaction).replicas()?;
+        let declared = crate::catalog::Catalog::new(&mut transaction)
+            .replicas()
+            .await?;
         Ok(crate::catalog::another_node_may_write(&declared, me))
     }
 
@@ -192,19 +194,20 @@ impl Store {
     /// [`crate::Error::WriteIsElsewhere`] when another node leads one of the
     /// ranges, plus the substrate's failure and a decoding failure when a stored
     /// definition cannot be read.
-    pub(crate) fn refuse_if_led_elsewhere(
+    pub(crate) async fn refuse_if_led_elsewhere(
         &self,
         ranges: &BTreeSet<Reach>,
         me: &[u8; NODE_ID_LEN],
     ) -> Result<BTreeSet<Reach>> {
         let mut transaction = self.begin()?;
         let catalog = crate::catalog::Catalog::new(&mut transaction);
-        let held = catalog.leaderships()?;
+        let held = catalog.leaderships().await?;
         // The placement, read in the same transaction as the rows it carves:
         // the line a row belongs to and the line a write is judged on are one
         // question asked of one catalog (ADR-0082).
         let placed: BTreeSet<Reach> = catalog
-            .replicas()?
+            .replicas()
+            .await?
             .into_iter()
             .filter_map(|peer| peer.leads)
             .collect();
@@ -217,7 +220,7 @@ impl Store {
         let mut elsewhere: Vec<crate::catalog::LeadershipDefinition> = Vec::new();
         let mut leads_one_here = false;
         for range in ranges {
-            match self.led(&held, &placed, *range, me)? {
+            match self.led(&held, &placed, *range, me).await? {
                 Led::Unled | Led::Shared => {}
                 Led::Here => leads_one_here = true,
                 Led::Elsewhere(leader) => {
@@ -240,7 +243,9 @@ impl Store {
             return Ok(placed);
         };
         let mut transaction = self.begin()?;
-        let declared = crate::catalog::Catalog::new(&mut transaction).replicas()?;
+        let declared = crate::catalog::Catalog::new(&mut transaction)
+            .replicas()
+            .await?;
         // A leadership the log carries whose node no membership row names is a
         // catalog that disagrees with itself. Refusing with an empty address is
         // still the right refusal — this node may not take the write — and it
@@ -304,8 +309,8 @@ impl Store {
     ///
     /// Returns the substrate's failure, and a decoding failure when the node
     /// identity cannot be read.
-    pub fn current_as_of(&self) -> Result<Option<std::time::Duration>> {
-        if self.effective_roles()?.has(Roles::WRITABLE) {
+    pub async fn current_as_of(&self) -> Result<Option<std::time::Duration>> {
+        if self.effective_roles().await?.has(Roles::WRITABLE) {
             return Ok(Some(std::time::Duration::ZERO));
         }
         Ok(self
@@ -368,10 +373,12 @@ impl Store {
     ///
     /// Returns the substrate's failure, and a decoding failure when a stored
     /// membership row or the node identity cannot be read.
-    pub(super) fn reconcile_roles(&self) -> Result<Option<Roles>> {
+    pub(super) async fn reconcile_roles(&self) -> Result<Option<Roles>> {
         let identity = self.node_identity()?;
         let mut transaction = self.begin()?;
-        let desired = crate::catalog::Catalog::new(&mut transaction).desired_roles(&identity.id)?;
+        let desired = crate::catalog::Catalog::new(&mut transaction)
+            .desired_roles(&identity.id)
+            .await?;
         let Some(desired) = desired else {
             return Ok(None);
         };
@@ -405,18 +412,19 @@ impl Store {
     ///
     /// The substrate's failure, and a decoding failure when a stored definition
     /// cannot be read.
-    pub fn leader_of(&self, range: Reach) -> Result<Option<[u8; NODE_ID_LEN]>> {
+    pub async fn leader_of(&self, range: Reach) -> Result<Option<[u8; NODE_ID_LEN]>> {
         let me = self.node_identity()?.id;
         let mut transaction = self.begin()?;
         let catalog = crate::catalog::Catalog::new(&mut transaction);
-        let held = catalog.leaderships()?;
+        let held = catalog.leaderships().await?;
         let placed: BTreeSet<Reach> = catalog
-            .replicas()?
+            .replicas()
+            .await?
             .into_iter()
             .filter_map(|peer| peer.leads)
             .collect();
         drop(transaction);
-        Ok(match self.led(&held, &placed, range, &me)? {
+        Ok(match self.led(&held, &placed, range, &me).await? {
             Led::Elsewhere(leader) => Some(leader.node),
             Led::Here | Led::Unled | Led::Shared => None,
         })
@@ -430,15 +438,15 @@ impl Store {
     ///
     /// The substrate's failure, and a decoding failure when a stored definition
     /// cannot be read.
-    pub fn leads(&self, range: Reach) -> Result<bool> {
+    pub async fn leads(&self, range: Reach) -> Result<bool> {
         let me = self.node_identity()?.id;
         let mut transaction = self.begin()?;
         let catalog = crate::catalog::Catalog::new(&mut transaction);
-        let held = catalog.leaderships()?;
-        let peers = catalog.replicas()?;
+        let held = catalog.leaderships().await?;
+        let peers = catalog.replicas().await?;
         drop(transaction);
         let placed: BTreeSet<Reach> = peers.iter().filter_map(|peer| peer.leads).collect();
-        Ok(match self.led(&held, &placed, range, &me)? {
+        Ok(match self.led(&held, &placed, range, &me).await? {
             Led::Here => true,
             Led::Unled => peers.is_empty(),
             Led::Elsewhere(_) | Led::Shared => false,
@@ -448,7 +456,7 @@ impl Store {
     /// Who leads `range`, judged exactly as the write gate judges it — the one
     /// answer [`Self::refuse_if_led_elsewhere`] and a transaction across
     /// leaders both read, so the two cannot come to disagree about a range.
-    pub(crate) fn led(
+    pub(crate) async fn led(
         &self,
         held: &[crate::catalog::LeadershipDefinition],
         placed: &BTreeSet<Reach>,
@@ -486,7 +494,7 @@ impl Store {
         // touching a declared range and an undeclared one must still be
         // refused for the undeclared one. Exempting on the first offender
         // would let the second travel under its cover.
-        if self.admits_two_writers(range)? {
+        if self.admits_two_writers(range).await? {
             return Ok(Led::Shared);
         }
         Ok(Led::Elsewhere(*leader))

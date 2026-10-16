@@ -27,6 +27,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{
@@ -94,7 +95,7 @@ fn opened(session: &mut Session<'_>) -> String {
 #[test]
 fn an_older_sealed_payload_restored_under_a_rotated_record_opens() {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     let mut session = Session::new(&store);
     session.run_now(SETUP).unwrap();
     session
@@ -141,7 +142,7 @@ fn an_older_sealed_payload_restored_under_a_rotated_record_opens() {
 #[test]
 fn a_version_kept_in_the_record_would_be_restored_with_it() {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     let mut session = Session::new(&store);
     session.run_now(SETUP).unwrap();
     // Sealed like the token, because a vault answers no `SELECT` — and because

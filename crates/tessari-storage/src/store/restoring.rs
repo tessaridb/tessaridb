@@ -66,19 +66,21 @@ impl Store {
     ///
     /// Returns the store's refusal when a record does not satisfy the catalog
     /// already restored, and a backend error when the batch cannot land.
-    pub fn restore_state_chunk(&self, record: &LogRecord) -> Result<()> {
+    pub async fn restore_state_chunk(&self, record: &LogRecord) -> Result<()> {
         let _turn = self.writing.hold();
         self.writing.land_all(self.backend.as_ref());
-        crate::schema::validate(self, record)?;
+        crate::schema::validate(self, record).await?;
         let version = Sequence::new(self.committed_version()?.get().saturating_add(1));
-        let landed = self.derive_and_land(
-            record,
-            crate::log::state_batch(version, record),
-            version,
-            // A state lands in no log: what it carries is applied, not logged.
-            None,
-            crate::gate::Landing::Synced,
-        );
+        let landed = self
+            .derive_and_land(
+                record,
+                crate::log::state_batch(version, record),
+                version,
+                // A state lands in no log: what it carries is applied, not logged.
+                None,
+                crate::gate::Landing::Synced,
+            )
+            .await;
         // A state writes a decided record as `PENDING` and then its decision
         // (ADR-0112 D9a). Copied onto a store already holding the decision —
         // a follower copying its leader's state again — the first is refused

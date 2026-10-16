@@ -17,6 +17,7 @@ use tessari_encoding::{LogId, LogRecord, NODE_ID_LEN, StoreValue};
 use tessari_storage::{Store, TopicHead};
 use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, TableId};
 
+use crate::collection::Answering;
 use crate::error::{Error, Result};
 use crate::frame;
 use crate::keys::PeerKeys;
@@ -47,10 +48,10 @@ pub struct Copied {
 /// # Errors
 ///
 /// The store's failure, and whatever `write` returns.
-pub(crate) fn serve(
+pub(crate) async fn serve(
     store: &Store,
     over: Reach,
-    write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
+    write: &mut dyn FnMut(u8, Vec<u8>) -> Answering<'static, Result<()>>,
 ) -> Result<()> {
     let refused = |why: tessari_storage::Error| Error::Refused {
         message: why.to_string(),
@@ -72,14 +73,15 @@ pub(crate) fn serve(
         frame::put_log(&mut head, *log);
         frame::put_u64(&mut head, at.get());
     }
-    write(PeerFrame::StateHead.tag(), head)?;
+    write(PeerFrame::StateHead.tag(), head).await?;
     let mut records = 0_u64;
-    while let Some(chunk) = reader.next_chunk(COPY_CHUNK).map_err(refused)? {
+    while let Some(chunk) = reader.next_chunk(COPY_CHUNK).await.map_err(refused)? {
         records = records.saturating_add(u64::try_from(chunk.mutations().len()).unwrap_or(0));
         write(
             PeerFrame::StateChunk.tag(),
             chunk.encode().as_slice().to_vec(),
-        )?;
+        )
+        .await?;
     }
     let topics = reader.topic_heads().map_err(refused)?;
     let mut end = Vec::new();
@@ -91,7 +93,7 @@ pub(crate) fn serve(
         frame::put_u32(&mut end, topic.table.get());
         frame::put_u64(&mut end, topic.last);
     }
-    write(PeerFrame::StateEnd.tag(), end)?;
+    write(PeerFrame::StateEnd.tag(), end).await?;
     hold.keep_for(Duration::from_secs(
         tessari_constants::REPLICA_COPY_GRACE_SECONDS,
     ));
@@ -107,7 +109,7 @@ pub(crate) fn serve(
 /// transport or framing failure, and the store's refusal when a chunk or the
 /// sweep cannot land. A failure leaves `into` behind its leader, never ahead
 /// of it: the positions are written last.
-pub fn copy(
+pub async fn copy(
     address: &str,
     keys: &PeerKeys,
     at: [u8; NODE_ID_LEN],
@@ -120,7 +122,7 @@ pub fn copy(
         say(&mut link, said)?;
         hear(&mut link)?;
         frame::write_tagged(&mut link, PeerFrame::State.tag(), &[])?;
-        receive(&mut link, into)
+        receive(&mut link, into).await
     };
     session.send_close_notify();
     drop(session.write_tls(&mut socket));
@@ -128,7 +130,7 @@ pub fn copy(
 }
 
 /// Read a copy off `link` and install it.
-fn receive(link: &mut impl std::io::Read, into: &Store) -> Result<Copied> {
+async fn receive(link: &mut impl std::io::Read, into: &Store) -> Result<Copied> {
     let refused = |why: tessari_storage::Error| Error::Refused {
         message: why.to_string(),
         class: None,
@@ -145,7 +147,7 @@ fn receive(link: &mut impl std::io::Read, into: &Store) -> Result<Copied> {
         if tag == PeerFrame::StateChunk.tag() {
             let chunk = LogRecord::decode(&body).map_err(|_| Error::Malformed)?;
             records = records.saturating_add(u64::try_from(chunk.mutations().len()).unwrap_or(0));
-            into.restore_state_chunk(&chunk).map_err(refused)?;
+            into.restore_state_chunk(&chunk).await.map_err(refused)?;
         } else if tag == PeerFrame::StateEnd.tag() {
             let (carried, topics) = end(&body)?;
             if carried != records {
@@ -154,7 +156,7 @@ fn receive(link: &mut impl std::io::Read, into: &Store) -> Result<Copied> {
                 // state this node does not hold.
                 return Err(Error::Malformed);
             }
-            let removed = into.sweep_unreplaced(over, before).map_err(refused)?;
+            let removed = into.sweep_unreplaced(over, before).await.map_err(refused)?;
             into.finish_state(&positions, &topics).map_err(refused)?;
             return Ok(Copied {
                 over,

@@ -47,7 +47,7 @@ use crate::transaction::{RecordAddress, Transaction};
 ///
 /// Returns an error when the store cannot be read or a held count cannot be
 /// decoded.
-pub(crate) fn maintain(
+pub(crate) async fn maintain(
     store: &Store,
     record: &LogRecord,
     mut batch: WriteBatch,
@@ -73,7 +73,10 @@ pub(crate) fn maintain(
         // over an existing record is a replacement and not an arrival, and a
         // delete of something already gone is not a departure. Both are zero,
         // and only the stored state tells them from the other two cases.
-        let delta = match (view.get_held(&address)?.is_some(), mutation.value.value()) {
+        let delta = match (
+            view.get_held(&address).await?.is_some(),
+            mutation.value.value(),
+        ) {
             (false, RecordValue::Present(_)) => 1_i64,
             (true, RecordValue::Tombstone) => -1_i64,
             _ => continue,
@@ -86,13 +89,13 @@ pub(crate) fn maintain(
         if delta == 0 {
             continue;
         }
-        batch = write_count(&view, batch, table, delta, version)?;
+        batch = write_count(&view, batch, table, delta, version).await?;
     }
     Ok(batch)
 }
 
 /// The count a table will hold once this commit lands.
-fn write_count(
+async fn write_count(
     view: &Transaction<'_>,
     batch: WriteBatch,
     table: TableId,
@@ -101,7 +104,7 @@ fn write_count(
 ) -> Result<WriteBatch> {
     let id = RecordId::Int(i64::from(table.get()));
     let address = system::address(system::RECORD_COUNTS, id.clone());
-    let held = match view.get_held(&address)? {
+    let held = match view.get_held(&address).await? {
         Some(bytes) => definition::count_of(&decode_payload(&bytes)?, "record count", "held")?,
         None => 0_u64,
     };

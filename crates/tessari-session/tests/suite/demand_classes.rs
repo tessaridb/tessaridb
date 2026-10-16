@@ -18,6 +18,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -50,7 +51,7 @@ const CLASSES: [(&str, &[&str]); 9] = [
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// A closed store with `prod.shop.orders`, and one store-wide user per kind,
@@ -78,7 +79,7 @@ fn without_one_kind_each(store: &Store) {
 /// A session signed in and selected onto `prod.shop`.
 fn working<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();

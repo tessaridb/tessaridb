@@ -17,6 +17,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use std::collections::BTreeMap;
@@ -30,7 +31,7 @@ const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// An open store with a tenancy and two tables, one of them described.
@@ -225,7 +226,7 @@ fn governed(store: &Store) -> Session<'_> {
         .run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
         .unwrap();
     session
@@ -233,7 +234,7 @@ fn governed(store: &Store) -> Session<'_> {
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
@@ -682,7 +683,7 @@ fn a_constraint_with_no_faithful_spelling_withholds_the_definition_and_names_the
 fn two_scopes(store: &Store) -> Session<'_> {
     let session = governed(store);
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now(
         "DEFINE USER nina ON NAMESPACE prod ROLE editor PASSWORD 'correct horse battery';",
     )
@@ -1668,8 +1669,12 @@ fn multi_master() -> (Store, Store, Store) {
 fn shared_range(store: &Store) -> Reach {
     let mut transaction = store.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("shared").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "books").unwrap().unwrap();
+    let namespace = catalog.namespace_id("shared").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "books")
+        .now()
+        .unwrap()
+        .unwrap();
     Reach::Database(namespace, database)
 }
 
@@ -1705,6 +1710,7 @@ fn replay(source: &Store, target: &Store, home: Reach) {
         for (at, record) in source.log_records(log, Sequence::ZERO, 1024).unwrap() {
             target
                 .apply_record(log.writer, at, &record)
+                .now()
                 .expect("a follower applies both logs without a gap refusal");
         }
     }

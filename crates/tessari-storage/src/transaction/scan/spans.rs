@@ -26,7 +26,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn records_after(
+    pub async fn records_after(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -44,6 +44,7 @@ impl Transaction<'_> {
                 ..Walk::default()
             },
         )
+        .await
     }
 
     /// The first `wanted` live records of one table, in key order.
@@ -83,7 +84,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn first_records_of(
+    pub async fn first_records_of(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -99,6 +100,7 @@ impl Transaction<'_> {
                 ..Walk::default()
             },
         )
+        .await
     }
 
     /// The live records of one table whose identity falls in a span.
@@ -121,7 +123,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn records_in_span(
+    pub async fn records_in_span(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -143,6 +145,7 @@ impl Transaction<'_> {
                 ..Walk::default()
             },
         )
+        .await
     }
 
     /// The live records of one table, all of them or the first `bound` of them,
@@ -156,7 +159,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Whatever reading the table returns.
-    pub fn records_between(
+    pub async fn records_between(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -165,18 +168,20 @@ impl Transaction<'_> {
         after: Option<&RecordId>,
         bound: usize,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
-        let mut found = self.table_records(
-            namespace,
-            database,
-            table,
-            Walk {
-                bound: Some(bound),
-                anchor: after,
-                from: window.from,
-                to: window.to,
-                ..Walk::default()
-            },
-        )?;
+        let mut found = self
+            .table_records(
+                namespace,
+                database,
+                table,
+                Walk {
+                    bound: Some(bound),
+                    anchor: after,
+                    from: window.from,
+                    to: window.to,
+                    ..Walk::default()
+                },
+            )
+            .await?;
         // A walk that knows its bound asks for exactly what it still needs, and
         // a batch may still end past it; the page is the bound.
         found.truncate(bound);

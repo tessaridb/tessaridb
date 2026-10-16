@@ -29,6 +29,7 @@
 
 #![allow(clippy::panic, clippy::unwrap_used)]
 
+use tessari_session::Now;
 use tessari_session::RunNow;
 use tessari_session::{Outcome, Session};
 use tessari_storage::Store;
@@ -41,7 +42,9 @@ use tessari_kv::{KvBackend, MemoryBackend};
 const INDEX: &str = "DEFINE INDEX by_where ON places FIELDS at SPATIAL;";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// A table of places at every scale from a point to a continent.

@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::encode_payload;
@@ -29,13 +30,14 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        let store = Store::open(backend).unwrap();
+        let store = Store::open(backend).now().unwrap();
         let mut transaction = store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("prod").unwrap();
-        let database = catalog.create_database(namespace.id, "shop").unwrap();
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog.create_database(namespace.id, "shop").now().unwrap();
         let table = catalog
             .create_table(namespace.id, database.id, "readings", TableShape::default())
+            .now()
             .unwrap();
         let index = catalog
             .create_index(
@@ -52,8 +54,9 @@ impl Fixture {
                     costs: tessari_storage::SearchCosts::default(),
                 },
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         Self {
             store,
             namespace: namespace.id,
@@ -78,7 +81,7 @@ impl Fixture {
             let record = Value::Object(BTreeMap::from([("taken".to_owned(), Value::from(taken))]));
             transaction.put(self.at(id), encode_payload(&record).into_bytes());
         }
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     /// The identities a range read produces.
@@ -91,6 +94,7 @@ impl Fixture {
                 lower.map(Value::from).as_ref(),
                 upper.map(Value::from).as_ref(),
             )
+            .now()
             .unwrap();
         transaction.rollback();
         found.into_iter().map(|(id, _)| id).collect()
@@ -214,6 +218,7 @@ fn an_equality_lookup_wider_than_a_batch_answers_every_record_holding_the_value(
     let transaction = fixture.store.begin().unwrap();
     let found = transaction
         .records_by_index(&fixture.index, &[Value::from(7_i64)])
+        .now()
         .unwrap();
     transaction.rollback();
 
@@ -249,6 +254,7 @@ fn an_uncommitted_write_is_folded_into_a_range_of_any_width() {
 
     let found = transaction
         .records_in_range(&fixture.index, &[], None, None)
+        .now()
         .unwrap();
     transaction.rollback();
 

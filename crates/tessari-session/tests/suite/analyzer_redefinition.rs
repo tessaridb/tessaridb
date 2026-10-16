@@ -45,7 +45,9 @@ const USE: &str = "USE NAMESPACE prod; USE DATABASE shop;";
 /// `Running`, so a chain that lost it answers differently and the test can see
 /// the difference.
 fn stemming_store() -> Store {
-    let held = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let held = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&held);
     session
         .run_now(&format!(
@@ -135,7 +137,9 @@ fn if_not_exists_keeps_the_declared_chain_rather_than_replacing_it() {
 /// looking tested.
 #[test]
 fn without_the_stemmer_the_same_query_reaches_nothing() {
-    let held = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let held = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&held);
     session
         .run_now(&format!(
@@ -182,7 +186,9 @@ fn a_second_analyzer_under_a_new_name_is_not_a_redefinition() {
 
 /// A store whose `body` field is analysed in `language`, indexed or not.
 fn in_language(language: &str, indexed: bool, records: &[&str]) -> Store {
-    let held = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let held = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&held);
     let mut script = format!(
         "{PLACE}\
@@ -251,7 +257,9 @@ fn a_stemmers_language_is_declared_and_an_unknown_one_is_refused() {
         script.contains("FILTERS lowercase, stemmer(russian);"),
         "{script}"
     );
-    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&restored);
     session.run_now(&script).unwrap();
     session.run_now(USE).unwrap();

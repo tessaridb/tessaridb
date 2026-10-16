@@ -3,6 +3,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_encoding::encode_payload;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -11,20 +12,24 @@ use tessari_types::{RecordId, Sequence, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// A namespace, database and table, committed.
 fn tree(store: &Store) -> (u32, u32, u32) {
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("prod").unwrap();
-    let database = catalog.create_database(namespace.id, "orders").unwrap();
+    let namespace = catalog.create_namespace("prod").now().unwrap();
+    let database = catalog
+        .create_database(namespace.id, "orders")
+        .now()
+        .unwrap();
     let table = catalog
         .create_table(namespace.id, database.id, "users", TableShape::default())
+        .now()
         .unwrap();
     let ids = (namespace.id.get(), database.id.get(), table.id.get());
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     ids
 }
 
@@ -44,7 +49,7 @@ fn write(store: &Store, at: &RecordAddress, name: &str) -> Sequence {
         at.clone(),
         encode_payload(&Value::Object(object)).into_bytes(),
     );
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     store.committed_version().unwrap()
 }
 
@@ -188,7 +193,7 @@ fn record(store: &Store, namespace: u32, database: u32, table: u32, id: i64) -> 
 
 /// The `name` field of the record a reader resolves to.
 fn name_seen_by(reader: &tessari_storage::Transaction<'_>, at: &RecordAddress) -> Option<String> {
-    let payload = reader.get(at).unwrap()?;
+    let payload = reader.get(at).now().unwrap()?;
     let Value::Object(object) = tessari_encoding::decode_payload(&payload).unwrap() else {
         panic!("expected an object");
     };
@@ -263,7 +268,7 @@ fn a_deleted_record_stops_costing_space() {
     write(&store, &at, "grace");
     let mut transaction = store.begin().unwrap();
     transaction.delete(at.clone());
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let removed = store
         .reclaim_table(at.namespace, at.database, at.table)
@@ -274,7 +279,7 @@ fn a_deleted_record_stops_costing_space() {
     // A reader that finds a tombstone and one that finds nothing reach the same
     // conclusion, which is what makes removing it safe.
     let reader = store.begin().unwrap();
-    assert!(reader.get(&at).unwrap().is_none());
+    assert!(reader.get(&at).now().unwrap().is_none());
 }
 
 #[test]

@@ -24,6 +24,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -87,7 +88,7 @@ const NOT_BELOW_THE_STORE: &[&str] = &["replicate@R"];
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn held(session: &mut Session<'_>, user: &str) -> Vec<String> {
@@ -128,7 +129,7 @@ fn peopled(store: &Store) -> Session<'_> {
         )
         .unwrap();
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     root
@@ -209,7 +210,10 @@ fn an_editor_still_defines_structure_and_a_viewer_still_cannot() {
     for (statement, allowed) in promised {
         for (index, role) in ["viewer", "editor", "owner"].into_iter().enumerate() {
             let mut session = Session::new(&store);
-            session.sign_in(&format!("{role}_d"), PASSWORD).unwrap();
+            session
+                .sign_in(&format!("{role}_d"), PASSWORD)
+                .now()
+                .unwrap();
             let answered = session.run_now(&format!(
                 "USE NAMESPACE prod; USE DATABASE shop; {}",
                 statement.replace("%R%", role)

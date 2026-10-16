@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration as Wait;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -25,7 +26,9 @@ const PAST_SHORT: Wait = Wait::from_millis(450);
 /// the expiring records in the first and last shards, a permanent one in
 /// every shard.
 fn leader() -> Arc<Store> {
-    let leader = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let leader = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     Session::new(&leader)
         .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\

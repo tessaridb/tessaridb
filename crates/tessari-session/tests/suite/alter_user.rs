@@ -21,6 +21,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -32,7 +33,7 @@ const ROTATED: &str = "a different horse entirely";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// A store with a tenancy, a store owner, a database owner, and two others.
@@ -68,7 +69,7 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
 
 fn signed_in_with<'a>(store: &'a Store, name: &str, password: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, password).unwrap();
+    session.sign_in(name, password).now().unwrap();
     session
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
@@ -77,7 +78,7 @@ fn signed_in_with<'a>(store: &'a Store, name: &str, password: &str) -> Session<'
 
 /// Whether this name and password are accepted right now.
 fn signs_in(store: &Store, name: &str, password: &str) -> bool {
-    Session::new(store).sign_in(name, password).is_ok()
+    Session::new(store).sign_in(name, password).now().is_ok()
 }
 
 #[test]

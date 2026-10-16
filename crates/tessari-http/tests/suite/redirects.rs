@@ -26,6 +26,7 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Instant;
 use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_storage::{Catalog, LEASE_TTL, Lease, Reach, ReplicaDefinition};
@@ -43,7 +44,7 @@ const THEIR_EPOCH: u64 = 7;
 /// A node leading `mine` beside a peer leading `theirs`, the peer's row naming
 /// where clients reach it when `addressed`.
 fn one_of_two(addressed: bool) -> Arc<Db> {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     db.session()
         .run_now(
             "DEFINE NAMESPACE mine; USE NAMESPACE mine; DEFINE DATABASE d; USE DATABASE d; \
@@ -52,8 +53,8 @@ fn one_of_two(addressed: bool) -> Arc<Db> {
              DEFINE COLLECTION c;",
         )
         .unwrap();
-    let (mine, _) = db.tenancy_in("mine", "d").unwrap().unwrap();
-    let (theirs, _) = db.tenancy_in("theirs", "d").unwrap().unwrap();
+    let (mine, _) = db.tenancy_in("mine", "d").now().unwrap().unwrap();
+    let (theirs, _) = db.tenancy_in("theirs", "d").now().unwrap().unwrap();
     let store = db.store();
     let me = store.node_identity().unwrap().id;
     // One transaction, as a cluster is declared: the first committed member row
@@ -76,6 +77,7 @@ fn one_of_two(addressed: bool) -> Arc<Db> {
             preferred: false,
             region: None,
         })
+        .now()
         .unwrap();
     catalog
         .record_leadership(Reach::Namespace(mine), me, Epoch::new(MY_EPOCH))
@@ -87,11 +89,13 @@ fn one_of_two(addressed: bool) -> Arc<Db> {
             Epoch::new(THEIR_EPOCH),
         )
         .unwrap();
-    transaction.commit().unwrap();
-    store.hold(
-        Epoch::new(MY_EPOCH),
-        Lease::taken_at(Instant::now(), LEASE_TTL),
-    );
+    transaction.commit().now().unwrap();
+    store
+        .hold(
+            Epoch::new(MY_EPOCH),
+            Lease::taken_at(Instant::now(), LEASE_TTL),
+        )
+        .now();
     Arc::new(db)
 }
 

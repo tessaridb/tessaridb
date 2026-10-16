@@ -137,6 +137,7 @@ async fn follow(mut socket: WebSocket, node: &Shared, presented: Presented, body
         .bridge
         .call_async((claimed, asked), move |(claimed, asked)| async move {
             let mut session = crate::respond::session_for(&db, &tokens, &claimed)
+                .await
                 .map_err(|answer| String::from_utf8_lossy(&answer.body).into_owned())?;
             if !crate::object::is_identifier(&asked.namespace)
                 || !crate::object::is_identifier(&asked.database)
@@ -160,8 +161,9 @@ async fn follow(mut socket: WebSocket, node: &Shared, presented: Presented, body
                     .as_ref()
                     .map(|(text, parameters)| tessaridb::feed::Condition { text, parameters }),
             };
-            let opened =
-                Feed::open(&db, &mut session, &following).map_err(|refusal| refusal.to_string())?;
+            let opened = Feed::open(&db, &mut session, &following)
+                .await
+                .map_err(|refusal| refusal.to_string())?;
             Ok::<_, String>((session.detach(), opened))
         })
         .await;
@@ -186,31 +188,48 @@ async fn follow(mut socket: WebSocket, node: &Shared, presented: Presented, body
             let db = Arc::clone(&node.db);
             let ran = node
                 .rounds
-                .call(
+                .call_async(
                     (session, following),
-                    move |(held, mut open): (Detached, Feed)| {
+                    move |(held, mut open): (Detached, Feed)| async move {
                         let mut attached = held.attach(db.store());
-                        let mut texts = Vec::new();
-                        let round =
-                            open.round(&db, &mut attached, &mut |change, name, allowed, cursor| {
+                        // What each change needs to be written, gathered during the
+                        // round and written after it: naming a change's records
+                        // reads the store, and the round's delivery cannot wait.
+                        let mut delivered = Vec::new();
+                        let round = open
+                            .round(&db, &mut attached, &mut |change, name, allowed, cursor| {
                                 // A change whose table has been dropped has no name to give.
-                                let Some(table) = name else {
-                                    return true;
-                                };
-                                let names = db
-                                    .names_in(&[(
-                                        change.id.clone(),
-                                        match &change.kind {
-                                            tessaridb::ChangeKind::Written(held) => held.clone(),
-                                            tessaridb::ChangeKind::Removed => {
-                                                tessaridb::Value::Null
-                                            }
-                                        },
-                                    )])
-                                    .unwrap_or_default();
-                                texts.push(follow::encode(change, table, allowed, &names, cursor));
+                                if let Some(table) = name {
+                                    delivered.push((
+                                        change.clone(),
+                                        table.to_owned(),
+                                        allowed.clone(),
+                                        cursor.map(str::to_owned),
+                                    ));
+                                }
                                 true
-                            });
+                            })
+                            .await;
+                        let mut texts = Vec::with_capacity(delivered.len());
+                        for (change, table, allowed, cursor) in &delivered {
+                            let names = db
+                                .names_in(&[(
+                                    change.id.clone(),
+                                    match &change.kind {
+                                        tessaridb::ChangeKind::Written(held) => held.clone(),
+                                        tessaridb::ChangeKind::Removed => tessaridb::Value::Null,
+                                    },
+                                )])
+                                .await
+                                .unwrap_or_default();
+                            texts.push(follow::encode(
+                                change,
+                                table,
+                                allowed,
+                                &names,
+                                cursor.as_deref(),
+                            ));
+                        }
                         // How far a narrowed feed read past what it sent, when
                         // it has said nothing for a while.
                         if let Some(at) = open.progress(std::time::Instant::now()) {

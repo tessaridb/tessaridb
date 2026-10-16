@@ -17,6 +17,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -32,7 +33,7 @@ const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Two tenants with data, a store owner, and a reader inside each.
@@ -87,7 +88,7 @@ fn two_tenants(store: &Store) {
 /// refusal is the assertion the empty-record test below leans on.
 fn follow(leader: &Store, over: Reach, as_user: &str) -> Store {
     let mut node = Session::new(leader);
-    node.sign_in(as_user, PASSWORD).unwrap();
+    node.sign_in(as_user, PASSWORD).now().unwrap();
     follow_in_pages(&mut node, leader, over, 256)
 }
 
@@ -109,6 +110,7 @@ fn follow_in_pages(node: &mut Session<'_>, leader: &Store, over: Reach, page: us
             let order = leader.committed_version().unwrap();
             let records = node
                 .replicate_from(leader, A_FOLLOWER, over, *log, from[index], page)
+                .now()
                 .unwrap();
             let horizon = if records.len() < page {
                 tessari_storage::Horizon::Level(order)
@@ -135,7 +137,7 @@ fn follow_in_pages(node: &mut Session<'_>, leader: &Store, over: Reach, page: us
                 },
             )
             .collect();
-        let reached = follower.apply_in_writer_order(&pages).unwrap();
+        let reached = follower.apply_in_writer_order(&pages).now().unwrap();
         assert!(
             reached.iter().any(Option::is_some),
             "a round with nothing new committed applied nothing — the round stalls"
@@ -157,7 +159,7 @@ fn follow_in_pages(node: &mut Session<'_>, leader: &Store, over: Reach, page: us
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
 }
 
@@ -217,15 +219,16 @@ fn a_selective_followers_reader_cannot_name_another_tenants_table() {
     let mut transaction = follower.begin().unwrap();
     let catalog = tessari_storage::Catalog::new(&mut transaction);
     assert!(
-        catalog.namespace_id("prod").unwrap().is_some(),
+        catalog.namespace_id("prod").now().unwrap().is_some(),
         "the subscribed namespace is on the follower"
     );
     assert!(
-        catalog.namespace_id("staging").unwrap().is_none(),
+        catalog.namespace_id("staging").now().unwrap().is_none(),
         "the other tenant's namespace must not exist on this follower at all"
     );
     let names: Vec<String> = catalog
         .namespaces()
+        .now()
         .unwrap()
         .into_iter()
         .map(|declared| declared.name)
@@ -253,7 +256,7 @@ fn a_selective_follower_receives_every_tenancys_users() {
     two_tenants(&leader);
 
     let mut node = Session::new(&leader);
-    node.sign_in("node", PASSWORD).unwrap();
+    node.sign_in("node", PASSWORD).now().unwrap();
     let carried = node
         .replicate_from(
             &leader,
@@ -266,6 +269,7 @@ fn a_selective_follower_receives_every_tenancys_users() {
             Sequence::new(1),
             256,
         )
+        .now()
         .unwrap();
 
     let mut hashes = 0;
@@ -332,7 +336,7 @@ fn a_commit_entirely_outside_the_reach_arrives_empty_and_the_tail_advances() {
     // purpose, so that the two subscriptions being compared differ in their
     // `over` argument and in nothing else about them that is easy to overlook.
     let mut owner = Session::new(&leader);
-    owner.sign_in("root", PASSWORD).unwrap();
+    owner.sign_in("root", PASSWORD).now().unwrap();
     let whole = owner
         .replicate_from(
             &leader,
@@ -342,9 +346,10 @@ fn a_commit_entirely_outside_the_reach_arrives_empty_and_the_tail_advances() {
             Sequence::new(1),
             256,
         )
+        .now()
         .unwrap();
     let mut node = Session::new(&leader);
-    node.sign_in("node", PASSWORD).unwrap();
+    node.sign_in("node", PASSWORD).now().unwrap();
     let carried = node
         .replicate_from(
             &leader,
@@ -357,6 +362,7 @@ fn a_commit_entirely_outside_the_reach_arrives_empty_and_the_tail_advances() {
             Sequence::new(1),
             256,
         )
+        .now()
         .unwrap();
 
     assert_eq!(
@@ -486,6 +492,7 @@ fn a_store_level_user_signs_in_on_a_selective_follower() {
     let mut session = Session::new(&follower);
     session
         .sign_in("root", PASSWORD)
+        .now()
         .expect("the cluster has one set of users, so the store owner is known here too");
 }
 
@@ -514,6 +521,7 @@ fn a_namespace_owner_on_a_selective_follower_cannot_read_another_tenancys_creden
         assert!(
             catalog
                 .users()
+                .now()
                 .unwrap()
                 .iter()
                 .any(|user| user.name == "root"),
@@ -522,7 +530,7 @@ fn a_namespace_owner_on_a_selective_follower_cannot_read_another_tenancys_creden
     }
 
     let mut tenant = Session::new(&follower);
-    tenant.sign_in("prod_owner", PASSWORD).unwrap();
+    tenant.sign_in("prod_owner", PASSWORD).now().unwrap();
     let refusal = tenant.run_now("INFO FOR USER root;").unwrap_err();
     assert!(
         matches!(refusal, tessari_session::Error::NotYours { ref user, .. } if user == "root"),
@@ -595,6 +603,7 @@ fn sharded_tenant() -> (Store, tessari_storage::Reach, tessari_types::TableId) {
                 tessari_types::DatabaseId::new(1),
                 "ledger",
             )
+            .now()
             .unwrap()
             .unwrap()
     };
@@ -624,6 +633,7 @@ fn a_shard_subscriber_holds_its_shards_records_and_not_its_siblings() {
                 table,
                 tessari_types::RecordId::from(id),
             ))
+            .now()
             .unwrap()
             .is_some()
     };
@@ -850,9 +860,15 @@ fn every_interleaving_of_homes_ends_level_on_a_follower_at_every_page_size() {
         let mut transaction = leader.begin().unwrap();
         let catalog = tessari_storage::Catalog::new(&mut transaction);
         let prod = NamespaceId::new(1);
-        let shop = catalog.database_id(prod, "shop").unwrap().unwrap();
-        let other = catalog.database_id(prod, "other").unwrap().unwrap();
-        let table = |database, name: &str| catalog.table_id(prod, database, name).unwrap().unwrap();
+        let shop = catalog.database_id(prod, "shop").now().unwrap().unwrap();
+        let other = catalog.database_id(prod, "other").now().unwrap().unwrap();
+        let table = |database, name: &str| {
+            catalog
+                .table_id(prod, database, name)
+                .now()
+                .unwrap()
+                .unwrap()
+        };
         let (ledger, orders, notes) = (
             table(shop, "ledger"),
             table(shop, "orders"),
@@ -872,11 +888,11 @@ fn every_interleaving_of_homes_ends_level_on_a_follower_at_every_page_size() {
         let transaction = store.begin().unwrap();
         addresses
             .iter()
-            .map(|address| transaction.get(address).unwrap())
+            .map(|address| transaction.get(address).now().unwrap())
             .collect()
     };
     let mut node = Session::new(&leader);
-    node.sign_in("node", PASSWORD).unwrap();
+    node.sign_in("node", PASSWORD).now().unwrap();
     let over = Reach::Namespace(NamespaceId::new(1));
     let mut state: u64 = 0x9e37_79b9;
     let mut n = 10_u64;

@@ -53,7 +53,7 @@ impl Session<'_> {
     /// Judged against the range the commit LANDS in, not the namespace the
     /// session has selected: a membership row is a store-wide write whatever
     /// `USE` came before it, and a write lands where its records live.
-    pub(super) fn acknowledgement_for(
+    pub(super) async fn acknowledgement_for(
         &self,
         transaction: &mut Transaction<'_>,
         asked: Option<Acknowledge>,
@@ -64,6 +64,7 @@ impl Session<'_> {
             return Ok(None);
         }
         self.acknowledgement_in(transaction, None, asked, span)
+            .await
     }
 
     /// [`Self::acknowledgement_for`], for a commit landing in `home` — or, when
@@ -72,7 +73,7 @@ impl Session<'_> {
     /// A record of a transaction across leaders names its range itself: a
     /// decision writes no records, so nothing else could say where it lands
     /// (ADR-0112).
-    pub(super) fn acknowledgement_in(
+    pub(super) async fn acknowledgement_in(
         &self,
         transaction: &mut Transaction<'_>,
         home: Option<Reach>,
@@ -81,7 +82,8 @@ impl Session<'_> {
     ) -> Result<Option<Waiting>> {
         let me = self.store.node_identity()?.id;
         let voting: Vec<_> = Catalog::new(transaction)
-            .replicas()?
+            .replicas()
+            .await?
             .into_iter()
             .filter(|peer| peer.roles.has(Roles::COORDINATING))
             .filter_map(|peer| peer.node.map(|node| (node, peer)))
@@ -95,14 +97,14 @@ impl Session<'_> {
         }
         let home = match home {
             Some(home) => home,
-            None => transaction.home()?,
+            None => transaction.home().await?,
         };
         let catalog = Catalog::new(transaction);
         let definition = match home {
             Reach::Store => None,
             Reach::Namespace(namespace)
             | Reach::Database(namespace, _)
-            | Reach::Shard(namespace, ..) => catalog.namespace(namespace)?,
+            | Reach::Shard(namespace, ..) => catalog.namespace(namespace).await?,
         };
         // Unstated, the level follows the replication: a namespace kept on more
         // than one node waits for a majority of them, one kept on one node is
@@ -143,7 +145,8 @@ impl Session<'_> {
         // no region named (G075 C2b).
         let voting = if level == Acknowledge::LocalMajority && !voting.is_empty() {
             let mine = Catalog::new(transaction)
-                .replicas()?
+                .replicas()
+                .await?
                 .into_iter()
                 .find(|row| row.node == Some(me))
                 .and_then(|row| row.region)
@@ -174,7 +177,8 @@ impl Session<'_> {
             });
         }
         let within = catalog
-            .failover()?
+            .failover()
+            .await?
             .map_or(Failover::DEFAULT, |definition| definition.policy)
             .round();
         Ok(Some(Waiting {
@@ -185,13 +189,13 @@ impl Session<'_> {
     }
 
     /// Commit, then wait for the copies `waiting` names.
-    pub(super) fn commit_acknowledged(
+    pub(super) async fn commit_acknowledged(
         store: &Store,
         transaction: Transaction<'_>,
         waiting: Option<Waiting>,
         span: Span,
     ) -> Result<()> {
-        let committed = transaction.commit_placed().map_err(advised)?;
+        let committed = transaction.commit_placed().await.map_err(advised)?;
         Self::await_acknowledged(store, committed, waiting, span)
     }
 

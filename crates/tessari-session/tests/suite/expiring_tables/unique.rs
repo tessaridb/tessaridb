@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration as Wait;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_encoding::{IndexTarget, KeyKind, StoreKey, StoreValue, UniqueIndexKey};
@@ -33,7 +34,7 @@ fn unique_holders(backend: &Arc<dyn KvBackend>) -> Vec<RecordId> {
 
 fn claimed_after_expiry(declaration: &str, first: &str) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     let mut session = opened(&store);
     run(&mut session, declaration);
     run(
@@ -50,7 +51,7 @@ fn claimed_after_expiry(declaration: &str, first: &str) {
         "{declaration}: the value moved to the new record and nothing else holds it"
     );
     // The pass finds nothing left to remove and must not take the new entry.
-    let lapsed = store.remove_expired().unwrap();
+    let lapsed = store.remove_expired().now().unwrap();
     assert_eq!(lapsed.stale, 0);
     assert_eq!(unique_holders(&backend), vec![RecordId::Int(2)]);
 }
@@ -73,7 +74,7 @@ fn a_key_that_expired_releases_its_unique_value_too() {
 
 #[test]
 fn a_unique_value_a_live_record_holds_is_still_refused() {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = opened(&store);
     run(
         &mut session,

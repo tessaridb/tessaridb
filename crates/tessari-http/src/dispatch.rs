@@ -142,12 +142,12 @@ pub(super) async fn answer(id: u64, node: &Shared, mut request: Incoming) -> Ans
         // Health carries no data, so it answers a listening socket the same way
         // for everyone: a load balancer must not need a credential to tell a
         // live node from a dead one.
-        (Method::GET, "/health") => respond::health(db),
+        (Method::GET, "/health") => respond::health(db).await,
         // A different question, and a supervisor acts on the two in opposite
         // ways — a readiness failure means stop sending traffic, a liveness
         // failure means restart. No credential, for the same reason health
         // needs none.
-        (Method::GET, "/ready") => respond::ready(db, stopping.ready()),
+        (Method::GET, "/ready") => respond::ready(db, stopping.ready()).await,
         // Also without a credential, and for the third time the same reason: a
         // scraper that needs one is a scraper nobody configures. What it carries
         // is operational — an uptime, a sequence, some counts — with no user
@@ -171,12 +171,12 @@ pub(super) async fn answer(id: u64, node: &Shared, mut request: Incoming) -> Ans
         // Where a password is spent, once, for a token that stands in for it
         // afterwards. Both halves are here rather than only the first: a
         // credential a client cannot hand back is one it holds until it exits.
-        (Method::POST, "/session") => respond::open_session(db, &presented, tokens),
+        (Method::POST, "/session") => respond::open_session(db, &presented, tokens).await,
         (Method::DELETE, "/session") => respond::close_session(&presented, tokens),
         // Basic only, deliberately: the second proof is the whole route, and a
         // token is not proof of a password.
         (Method::POST, "/password") => match body::text(&mut request) {
-            Ok(body) => respond::change_password(db, &presented, body.trim_end_matches('\n')),
+            Ok(body) => respond::change_password(db, &presented, body.trim_end_matches('\n')).await,
             Err(refused) => refused,
         },
         // The vault's own surface. The passphrase is the body and nothing else,

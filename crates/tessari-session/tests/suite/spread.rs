@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -20,7 +21,9 @@ use tessari_types::{RecordId, Value};
 const RECORDS: usize = 400;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn tenancy(store: &Store) -> Session<'_> {
@@ -49,13 +52,18 @@ fn per_shard(store: &Store, session: &mut Session<'_>) -> BTreeMap<u32, usize> {
     assert_eq!(named.len(), RECORDS);
     let mut transaction = store.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
-    let table = catalog
-        .table_id(namespace, database, "orders")
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "shop")
+        .now()
         .unwrap()
         .unwrap();
-    let map = catalog.table(table).unwrap().unwrap().shards.unwrap();
+    let table = catalog
+        .table_id(namespace, database, "orders")
+        .now()
+        .unwrap()
+        .unwrap();
+    let map = catalog.table(table).now().unwrap().unwrap().shards.unwrap();
     let mut counted = BTreeMap::new();
     for id in &named {
         let held = counted.entry(map.shard_of(id).get()).or_insert(0_usize);

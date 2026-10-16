@@ -177,16 +177,17 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the catalog or the backend cannot be read.
-    pub fn analyze_table(
+    pub async fn analyze_table(
         &mut self,
         namespace: tessari_types::NamespaceId,
         database: tessari_types::DatabaseId,
         table: tessari_types::TableId,
     ) -> Result<Vec<(IndexDefinition, IndexStatistics)>> {
         let mut catalog = Catalog::new(self);
-        let records = catalog.record_count(table)?.unwrap_or(0);
+        let records = catalog.record_count(table).await?.unwrap_or(0);
         let indexes: Vec<IndexDefinition> = catalog
-            .indexes_on(namespace, database, table)?
+            .indexes_on(namespace, database, table)
+            .await?
             .into_iter()
             .filter(kept)
             .collect();
@@ -233,22 +234,25 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the backend fails or the catalog cannot be read.
-    pub fn refresh_statistics(&self) -> Result<usize> {
+    pub async fn refresh_statistics(&self) -> Result<usize> {
         let transaction = self.begin()?;
         let mut stale = Vec::new();
         {
             let mut reading = self.begin()?;
             let mut catalog = Catalog::new(&mut reading);
-            'tables: for namespace in catalog.namespaces()? {
-                for database in catalog.databases_in(namespace.id)? {
-                    for table in catalog.tables_in(namespace.id, database.id)? {
-                        let Some(records) = catalog.record_count(table.id)? else {
+            'tables: for namespace in catalog.namespaces().await? {
+                for database in catalog.databases_in(namespace.id).await? {
+                    for table in catalog.tables_in(namespace.id, database.id).await? {
+                        let Some(records) = catalog.record_count(table.id).await? else {
                             continue;
                         };
                         if records < PLANNER_SCAN_FLOOR_RECORDS {
                             continue;
                         }
-                        for index in catalog.indexes_on(namespace.id, database.id, table.id)? {
+                        for index in catalog
+                            .indexes_on(namespace.id, database.id, table.id)
+                            .await?
+                        {
                             if !kept(&index) || transaction.fresh_statistics(&index)?.is_some() {
                                 continue;
                             }

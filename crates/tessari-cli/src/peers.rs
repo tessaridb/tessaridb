@@ -220,3 +220,41 @@ pub(crate) fn host(
         ));
     }
 }
+
+/// The declared peers, read in a transaction of their own.
+///
+/// # Errors
+///
+/// The store's refusal to begin or to read the catalog.
+pub(crate) async fn declared(
+    store: &tessari_storage::Store,
+) -> tessari_storage::Result<Vec<tessari_storage::ReplicaDefinition>> {
+    let mut transaction = store.begin()?;
+    let read = tessari_storage::Catalog::new(&mut transaction)
+        .replicas()
+        .await;
+    transaction.rollback();
+    read
+}
+
+/// The declared peers and the installed failover policy, read in one
+/// transaction so the two answer about one catalog.
+///
+/// # Errors
+///
+/// As [`declared`].
+pub(crate) async fn declared_with_policy(
+    store: &tessari_storage::Store,
+) -> tessari_storage::Result<(
+    Vec<tessari_storage::ReplicaDefinition>,
+    Option<tessari_storage::FailoverDefinition>,
+)> {
+    let mut transaction = store.begin()?;
+    let catalog = tessari_storage::Catalog::new(&mut transaction);
+    let read = match catalog.replicas().await {
+        Ok(declared) => catalog.failover().await.map(|policy| (declared, policy)),
+        Err(why) => Err(why),
+    };
+    transaction.rollback();
+    read
+}

@@ -126,13 +126,14 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn scan_table(
+    pub async fn scan_table(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
         table: TableId,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
         self.table_records(namespace, database, table, Walk::default())
+            .await
     }
 
     /// Every live record of one table, for a pass that will not read them again.
@@ -149,7 +150,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn sweep_table(
+    pub async fn sweep_table(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -164,6 +165,7 @@ impl Transaction<'_> {
                 ..Walk::default()
             },
         )
+        .await
     }
 
     /// Every live record of one table, handed over as the walk finds them.
@@ -205,7 +207,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails, when stored bytes cannot be
     /// decoded, or when `hand` itself fails.
-    pub fn walk_table<F, E>(
+    pub async fn walk_table<F, E>(
         &mut self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -213,7 +215,7 @@ impl Transaction<'_> {
         mut hand: F,
     ) -> std::result::Result<(), E>
     where
-        F: FnMut(&mut Self, RecordId, Vec<u8>) -> std::result::Result<ControlFlow<()>, E>,
+        F: AsyncFnMut(&mut Self, RecordId, Vec<u8>) -> std::result::Result<ControlFlow<()>, E>,
         E: From<crate::error::Error>,
     {
         let prefix = RecordKey::table_prefix(namespace, database, table);
@@ -224,7 +226,7 @@ impl Transaction<'_> {
         // The streaming twin opens at the floor for the reason the collecting
         // walk does, and it is the same call so the two cannot drift about where
         // a series table begins.
-        let floor = self.series_floor(namespace, table).map_err(E::from)?;
+        let floor = self.series_floor(namespace, table).await.map_err(E::from)?;
         let mut pending = self
             .writes
             .iter()
@@ -258,14 +260,14 @@ impl Transaction<'_> {
             let batch = self.batch_of(&from, &end, Some(RANGE_SCAN_BATCH_ENTRIES))?;
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             let entries = batch.len();
-            for (id, value) in self.settled(batch, &mut resolved)? {
+            for (id, value) in self.settled(batch, &mut resolved).await? {
                 // Pending writes sorting before this record come first, so the
                 // records arrive in key order whether they are committed or not
                 // — the order `scan_table` answers in, and therefore the order a
                 // bound above truncates.
                 while let Some((waiting, written)) = pending.next_if(|(waiting, _)| waiting < &id) {
                     if let RecordValue::Present(payload) = written
-                        && hand(self, waiting, payload)?.is_break()
+                        && hand(self, waiting, payload).await?.is_break()
                     {
                         return Ok(());
                     }
@@ -278,7 +280,7 @@ impl Transaction<'_> {
                     None => value,
                 };
                 if let RecordValue::Present(payload) = value
-                    && hand(self, id, payload)?.is_break()
+                    && hand(self, id, payload).await?.is_break()
                 {
                     return Ok(());
                 }
@@ -296,7 +298,7 @@ impl Transaction<'_> {
         // transaction that sort after the last one on disk.
         for (waiting, written) in pending {
             if let RecordValue::Present(payload) = written
-                && hand(self, waiting, payload)?.is_break()
+                && hand(self, waiting, payload).await?.is_break()
             {
                 return Ok(());
             }

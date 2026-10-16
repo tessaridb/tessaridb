@@ -39,7 +39,7 @@ impl Session<'_> {
     /// be deleted while an edge still names it, and that is a state of the graph,
     /// not a failure of the query — the alternative is a read that breaks because
     /// of a write it has nothing to do with.
-    pub(super) fn traverse(
+    pub(super) async fn traverse(
         &self,
         transaction: &mut Transaction<'_>,
         from: &RecordTarget,
@@ -72,16 +72,20 @@ impl Session<'_> {
                 span: from.span,
             });
         }
-        let (origin, start) = self.address(transaction, from)?;
+        let (origin, start) = self.address(transaction, from).await?;
         let anchors = vec![RecordRef::new(start.table, start.id.clone())];
         match depth {
-            None => self.walk_written_out(transaction, &origin, anchors, direction, hops),
+            None => {
+                self.walk_written_out(transaction, &origin, anchors, direction, hops)
+                    .await
+            }
             // The parser has already established that there is exactly one hop
             // and that it names the table it lands on, so this indexes rather
             // than re-checking: a second copy of the rule is a second place for
             // it to disagree with itself.
             Some(limit) => {
                 self.walk_repeatedly(transaction, &origin, anchors, direction, &hops[0], limit)
+                    .await
             }
         }
     }
@@ -91,7 +95,7 @@ impl Session<'_> {
     /// Bounded because the statement says how many steps there are — which is
     /// why this form needs no visited set and may legitimately answer with the
     /// same record twice if two written steps reach it.
-    pub(super) fn walk_written_out(
+    pub(super) async fn walk_written_out(
         &self,
         transaction: &mut Transaction<'_>,
         origin: &crate::context::Context,
@@ -101,7 +105,9 @@ impl Session<'_> {
     ) -> Result<Vec<(RecordId, Value)>> {
         let mut answer = Vec::new();
         for hop in hops {
-            let (found, next) = self.one_hop(transaction, origin, &anchors, direction, hop)?;
+            let (found, next) = self
+                .one_hop(transaction, origin, &anchors, direction, hop)
+                .await?;
             answer = found;
             anchors = next;
             // The last step named no node, so the edges themselves are the
@@ -134,7 +140,7 @@ impl Session<'_> {
     /// Breadth-first rather than depth-first for the same reason: a record first
     /// reached in `d` steps has every neighbour of its own reached by `d + 1`,
     /// so expanding it again from a longer path can add nothing.
-    pub(super) fn walk_repeatedly(
+    pub(super) async fn walk_repeatedly(
         &self,
         transaction: &mut Transaction<'_>,
         origin: &crate::context::Context,
@@ -153,7 +159,9 @@ impl Session<'_> {
             if frontier.is_empty() {
                 break;
             }
-            let (found, next) = self.one_hop(transaction, origin, &frontier, direction, hop)?;
+            let (found, next) = self
+                .one_hop(transaction, origin, &frontier, direction, hop)
+                .await?;
             // One pass, and the answer is filtered against a SET rather than
             // against a scan of the round's own results. A round's frontier is a
             // node's whole neighbourhood, so a linear search per record reached
@@ -179,7 +187,7 @@ impl Session<'_> {
     /// once. Both branches answer with the same pair — the records this step
     /// reached, and the anchors the next step would start from — so a repeat is
     /// the same call again and not a second traversal implementation.
-    pub(super) fn one_hop(
+    pub(super) async fn one_hop(
         &self,
         transaction: &mut Transaction<'_>,
         origin: &crate::context::Context,
@@ -194,16 +202,18 @@ impl Session<'_> {
         // edge record. The far records are still read individually — the
         // caller asked for records — but the edges themselves are never
         // touched, and that is the difference the layout buys.
-        if let Some(kind) = Catalog::new(transaction).edge_kind_id(
-            origin.namespace,
-            origin.database,
-            &hop.edges.name.text,
-        )? {
-            return self.hop_in_graph(transaction, kind, anchors, direction, hop);
+        if let Some(kind) = Catalog::new(transaction)
+            .edge_kind_id(origin.namespace, origin.database, &hop.edges.name.text)
+            .await?
+        {
+            return self
+                .hop_in_graph(transaction, kind, anchors, direction, hop)
+                .await;
         }
-        let (_, edge_table) = self.resolve_table(transaction, &hop.edges)?;
+        let (_, edge_table) = self.resolve_table(transaction, &hop.edges).await?;
         if !Catalog::new(transaction)
-            .table(edge_table)?
+            .table(edge_table)
+            .await?
             .is_some_and(|found| found.is_edge())
         {
             return Err(Error::NotAnEdgeTable {
@@ -212,11 +222,13 @@ impl Session<'_> {
             });
         }
         edges_settled(transaction, edge_table, &hop.edges)?;
-        let Some(index) = self.index_on_path(
-            transaction,
-            edge_table,
-            &Path::field(direction.from_field()),
-        )?
+        let Some(index) = self
+            .index_on_path(
+                transaction,
+                edge_table,
+                &Path::field(direction.from_field()),
+            )
+            .await?
         else {
             // An edge table always has both, so reaching here means the
             // catalog and the flag disagree — which is corruption, not a
@@ -227,11 +239,11 @@ impl Session<'_> {
             });
         };
 
-        let edge_visible = self.visible_in(transaction, edge_table)?;
+        let edge_visible = self.visible_in(transaction, edge_table).await?;
         let mut found = Vec::new();
         for anchor in anchors {
             let value = Value::Record(anchor.clone());
-            let offered = transaction.records_by_index(&index, &[value])?;
+            let offered = transaction.records_by_index(&index, &[value]).await?;
             found.extend(self.records_of(offered, &edge_visible)?);
         }
 
@@ -241,11 +253,11 @@ impl Session<'_> {
             return Ok((found, Vec::new()));
         };
 
-        let (context, target_table) = self.resolve_table(transaction, target)?;
+        let (context, target_table) = self.resolve_table(transaction, target).await?;
         // The far side is read from its own table, so its own grant applies —
         // reaching a record through an edge is not a way around one, and that
         // holds at every hop rather than only at the first.
-        let far_visible = self.visible_in(transaction, target_table)?;
+        let far_visible = self.visible_in(transaction, target_table).await?;
         let mut reached: BTreeMap<RecordId, Value> = BTreeMap::new();
         for (_, edge) in found {
             let Value::Object(fields) = &edge else {
@@ -263,7 +275,7 @@ impl Session<'_> {
                 target_table,
                 far.id.clone(),
             );
-            if let Some(payload) = transaction.get(&address)? {
+            if let Some(payload) = transaction.get(&address).await? {
                 reached.insert(far.id.clone(), self.record_of(&payload, &far_visible)?);
             }
         }
@@ -281,7 +293,7 @@ impl Session<'_> {
     /// from the adjacency entry rather than fetched: the endpoints are in the key
     /// and the properties are in the value, so an edge of a declared kind is
     /// never read as a record on this path at all.
-    pub(super) fn hop_in_graph(
+    pub(super) async fn hop_in_graph(
         &self,
         transaction: &mut Transaction<'_>,
         kind: tessari_types::EdgeKindId,
@@ -289,13 +301,13 @@ impl Session<'_> {
         direction: Direction,
         hop: &Hop,
     ) -> Result<Hopped> {
-        let declared =
-            Catalog::new(transaction)
-                .edge_kind(kind)?
-                .ok_or_else(|| Error::NotAnEdgeTable {
-                    table: hop.edges.name.text.clone(),
-                    span: hop.edges.span,
-                })?;
+        let declared = Catalog::new(transaction)
+            .edge_kind(kind)
+            .await?
+            .ok_or_else(|| Error::NotAnEdgeTable {
+                table: hop.edges.name.text.clone(),
+                span: hop.edges.span,
+            })?;
         edges_settled(transaction, declared.edges, &hop.edges)?;
         let along = match direction {
             Direction::Outgoing => AdjacencyDirection::Out,
@@ -339,10 +351,10 @@ impl Session<'_> {
             return Ok((answer, Vec::new()));
         };
 
-        let (context, target_table) = self.resolve_table(transaction, target)?;
+        let (context, target_table) = self.resolve_table(transaction, target).await?;
         // The far side is read from its own table, so its own grant applies —
         // reaching a record through an edge is not a way around one.
-        let far_visible = self.visible_in(transaction, target_table)?;
+        let far_visible = self.visible_in(transaction, target_table).await?;
         let mut reached: BTreeMap<RecordId, Value> = BTreeMap::new();
         for (_, neighbour) in edges {
             if neighbour.table != target_table {
@@ -357,7 +369,7 @@ impl Session<'_> {
             // A deleted neighbour drops out of the walk rather than failing it,
             // as it does on the edge-table path: a record can go while an entry
             // still names it, and that is a state of the graph.
-            if let Some(payload) = transaction.get(&address)? {
+            if let Some(payload) = transaction.get(&address).await? {
                 reached.insert(
                     neighbour.id.clone(),
                     self.record_of(&payload, &far_visible)?,

@@ -70,6 +70,7 @@ impl DecodedTables {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use crate::now::Now;
     use std::sync::Arc;
 
     use tessari_kv::{KvBackend, MemoryBackend};
@@ -81,15 +82,18 @@ mod tests {
 
     /// A store holding `count` tables, and each table's stored definition row.
     fn stored_rows(count: u32) -> Vec<Vec<u8>> {
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let mut transaction = store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("ns").unwrap().id;
-        let database = catalog.create_database(namespace, "db").unwrap().id;
+        let namespace = catalog.create_namespace("ns").now().unwrap().id;
+        let database = catalog.create_database(namespace, "db").now().unwrap().id;
         let ids: Vec<_> = (0..count)
             .map(|n| {
                 catalog
                     .create_table(namespace, database, &format!("t{n}"), TableShape::default())
+                    .now()
                     .unwrap()
                     .id
             })
@@ -97,7 +101,7 @@ mod tests {
         ids.iter()
             .map(|id| {
                 let address = system::address(system::TABLES, RecordId::Int(i64::from(id.get())));
-                transaction.get(&address).unwrap().unwrap()
+                transaction.get(&address).now().unwrap().unwrap()
             })
             .collect()
     }

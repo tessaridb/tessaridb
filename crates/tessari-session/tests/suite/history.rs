@@ -21,6 +21,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -30,7 +31,7 @@ use tessari_types::{RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
@@ -401,18 +402,21 @@ fn docs_ids(
     let catalog = tessari_storage::Catalog::new(&mut transaction);
     let namespace = catalog
         .namespaces()
+        .now()
         .unwrap()
         .into_iter()
         .find(|found| found.name == "prod")
         .unwrap();
     let database = catalog
         .databases_in(namespace.id)
+        .now()
         .unwrap()
         .into_iter()
         .find(|found| found.name == "library")
         .unwrap();
     let table = catalog
         .tables_in(namespace.id, database.id)
+        .now()
         .unwrap()
         .into_iter()
         .find(|found| found.name == "docs")

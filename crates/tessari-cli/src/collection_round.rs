@@ -37,12 +37,6 @@ use tessaridb::Db;
 /// the cursor alone and are logged. The node goes on serving what it holds, and
 /// its copy goes on ageing, which is exactly what a staleness bound is there to
 /// notice.
-#[expect(
-    unused_assignments,
-    reason = "the failover period the pass re-reads is state for the NEXT pass; rustc lints a \
-              by-value capture assigned in an FnMut closure as never read when the closure also \
-              returns early without reading it (G060 SG4)"
-)]
 pub(crate) async fn collect_from_upstream(
     db: std::sync::Arc<Db>,
     keys: tessari_wire::PeerKeys,
@@ -62,10 +56,11 @@ pub(crate) async fn collect_from_upstream(
         tessari_wire::Collecting,
     > = std::collections::BTreeMap::new();
     // The held streams this round starts once it has succeeded against a leader
-    // (ADR-0106 D5). A std mutex and not a channel or a concurrent map: one
-    // pass at a time touches it, never across an `.await`, and it outlives the
-    // loop only so the threads can be joined off the runtime at stop.
-    let streams = std::sync::Arc::new(std::sync::Mutex::new(crate::streaming::Streams::default()));
+    // (ADR-0106 D5). One pass at a time holds it, across the pass's awaits, so
+    // an async mutex; it outlives the loop only so the threads can be joined
+    // off the runtime at stop.
+    let streams =
+        std::sync::Arc::new(tokio::sync::Mutex::new(crate::streaming::Streams::default()));
     let joined = std::sync::Arc::clone(&streams);
     let stopped = stop.clone();
     // A stream that ended leaves the round's cursors behind the store, so the
@@ -80,20 +75,15 @@ pub(crate) async fn collect_from_upstream(
     // heard rather than up to a collection interval later (G053 SG2b).
     let woken = std::sync::Arc::clone(&wakes);
     let first = tessari_storage::Failover::DEFAULT.collection();
-    tessari_wire::every_paced("collection", &stop, &woken.collection, first, move |_| {
-        let Ok(mut streams) = streams.lock() else {
-            return Err(tessari_wire::PassFailed::new(
-                "the stream registry is poisoned; collecting by rounds only",
-                "a thread panicked while it held the registry",
-            ));
-        };
+    tessari_wire::every_paced("collection", &stop, &woken.collection, first, async move |_| {
+        let mut streams = streams.lock().await;
         let (handle, published_handle) = (
             std::sync::Arc::clone(&db),
             std::sync::Arc::clone(&published),
         );
         let (db, keys, seeds, published) = (&*db, &keys, &seeds[..], &*published);
         let store = db.store();
-        let roles = match store.effective_roles() {
+        let roles = match store.effective_roles().await {
             Ok(roles) => roles,
             Err(why) => {
                 return Err(tessari_wire::PassFailed::new(
@@ -107,10 +97,7 @@ pub(crate) async fn collect_from_upstream(
         // can fail over (ADR-0063, ADR-0064), and the rule that read the
         // declaration refused exactly that shape — so the candidate set
         // comes from the catalog and the choice comes from the greetings.
-        let declared = match db.store().begin().and_then(|mut transaction| {
-            let catalog = tessari_storage::Catalog::new(&mut transaction);
-            Ok((catalog.replicas()?, catalog.failover()?))
-        }) {
+        let declared = match crate::peers::declared_with_policy(db.store()).await {
             Ok((declared, policy)) => {
                 collection = policy
                     .map_or(tessari_storage::Failover::DEFAULT, |definition| {
@@ -145,7 +132,9 @@ pub(crate) async fn collect_from_upstream(
             (&declared, me, &heard, std::sync::Arc::clone(&published_handle)),
             &mut by_leader,
             (&mut streams, &stopped, std::sync::Arc::clone(&wakes)),
-        ) {
+        )
+        .await
+        {
             // A copy from a range's leader moved every log this node holds.
             collecting = tessari_wire::Collecting::new();
         }
@@ -174,7 +163,7 @@ pub(crate) async fn collect_from_upstream(
         if streamed_from.take().is_some() {
             collecting = tessari_wire::Collecting::new();
         }
-        let said = match greeting(db) {
+        let said = match greeting(db).await {
             Ok(said) => said,
             Err(why) => {
                 return Err(tessari_wire::PassFailed::new(
@@ -192,7 +181,7 @@ pub(crate) async fn collect_from_upstream(
         // Every log this node should hold, store's own first, derived from
         // the catalog it has itself replayed — so the set is inside the
         // grant without the grant ever crossing the wire (Q-620, Q-621).
-        let logs = match tessari_wire::logs_to_collect(store) {
+        let logs = match tessari_wire::logs_to_collect(store).await {
             Ok(logs) => on_the_store_line(logs, &declared),
             Err(why) => {
                 return Err(tessari_wire::PassFailed::new(
@@ -226,7 +215,7 @@ pub(crate) async fn collect_from_upstream(
             // The seed for a log with no cursor yet: the first position
             // this node does not hold THERE. Read here rather than inside
             // the collector, which may not reach the feed.
-            let log = match store.followed_log(home, tessari_storage::Writer::new(node)) {
+            let log = match store.followed_log(home, tessari_storage::Writer::new(node)).await {
                 Ok(log) => log,
                 Err(why) => {
                     tracing::warn!(range = ?home, error = %why, "this node cannot say which log of a range it follows");
@@ -242,7 +231,7 @@ pub(crate) async fn collect_from_upstream(
             };
             asks.push((home, collecting.reached(home).unwrap_or(seed)));
         }
-        let answers = collector.round(store, &asks);
+        let answers = collector.round(store, &asks).await;
         let below = repaired_by_a_copy(&answers);
         // A clean round against a member of this node's own catalog is what
         // a stream starts from; a refusal or a seed is the round's alone.
@@ -275,20 +264,19 @@ pub(crate) async fn collect_from_upstream(
         }
         if clean {
             let homes: crate::streaming::Homes = Box::new(|db: &Db| {
-                let declared = db
-                    .store()
-                    .begin()
-                    .and_then(|mut transaction| {
-                        tessari_storage::Catalog::new(&mut transaction).replicas()
-                    })
-                    .ok()?;
-                tessari_wire::logs_to_collect(db.store())
-                    .ok()
-                    .map(|logs| on_the_store_line(logs, &declared))
+                Box::pin(async move {
+                    let declared = crate::peers::declared(db.store()).await.ok()?;
+                    tessari_wire::logs_to_collect(db.store())
+                        .await
+                        .ok()
+                        .map(|logs| on_the_store_line(logs, &declared))
+                })
             });
             let heard_from = std::sync::Arc::clone(&published_handle);
-            let still: crate::streaming::Still =
-                Box::new(move |db: &Db| store_line_upstream(db, &heard_from) == Some(node));
+            let still: crate::streaming::Still = Box::new(move |db: &Db| {
+                let heard_from = std::sync::Arc::clone(&heard_from);
+                Box::pin(async move { store_line_upstream(db, &heard_from).await == Some(node) })
+            });
             streams.start(
                 std::sync::Arc::clone(&handle),
                 keys.clone(),
@@ -305,6 +293,7 @@ pub(crate) async fn collect_from_upstream(
                 &said,
                 crate::reseeding::leads_a_range(&declared, me),
             )
+            .await
         {
             // The copy stood each log where the leader's stood, so every
             // cursor starts again from this node's own tails — the placed
@@ -317,9 +306,7 @@ pub(crate) async fn collect_from_upstream(
     .await;
     // Off the runtime: each stream notices the stop within a heartbeat.
     let joining = tokio::task::spawn_blocking(move || {
-        if let Ok(mut held) = joined.lock() {
-            std::mem::take(&mut *held).join();
-        }
+        std::mem::take(&mut *joined.blocking_lock()).join();
     });
     if joining.await.is_err() {
         tracing::warn!("joining the collection streams panicked");
@@ -366,7 +353,7 @@ fn holders_of(
 /// against this copy — so a holder whose copy parted from this one is refused
 /// rather than followed. Nothing here starts a stream: the leader, once one is
 /// elected, is what a range is followed from.
-fn catch_up_from(
+async fn catch_up_from(
     store: &tessari_storage::Store,
     (keys, said): (&tessari_wire::PeerKeys, &tessari_wire::Hello),
     (holder, at): ([u8; tessari_storage::NODE_ID_LEN], &str),
@@ -379,22 +366,23 @@ fn catch_up_from(
         peer: (holder, at),
         limit: tessari_constants::COLLECTION_RECORDS,
     };
-    let asks: Vec<_> = logs
-        .iter()
-        .copied()
-        .filter(|home| range.contains(*home))
-        .filter_map(|home| {
-            let log = store
-                .followed_log(home, tessari_storage::Writer::new(holder))
-                .ok()?;
-            let tail = store.committed_tail(log).ok()?;
-            Some((
-                home,
-                tessari_types::Sequence::new(tail.get().saturating_add(1)),
-            ))
-        })
-        .collect();
-    for ((home, from), answer) in asks.iter().zip(collector.round(store, &asks)) {
+    let mut asks = Vec::new();
+    for home in logs.iter().copied().filter(|home| range.contains(*home)) {
+        let Ok(log) = store
+            .followed_log(home, tessari_storage::Writer::new(holder))
+            .await
+        else {
+            continue;
+        };
+        let Ok(tail) = store.committed_tail(log) else {
+            continue;
+        };
+        asks.push((
+            home,
+            tessari_types::Sequence::new(tail.get().saturating_add(1)),
+        ));
+    }
+    for ((home, from), answer) in asks.iter().zip(collector.round(store, &asks).await) {
         match answer {
             Ok(reached) if reached.get() >= from.get() => {
                 tracing::info!(
@@ -441,16 +429,13 @@ fn on_the_store_line(
 }
 
 /// The node the store line follows right now, asked the way the round asks it.
-fn store_line_upstream(
+async fn store_line_upstream(
     db: &Db,
     published: &tessari_wire::Published,
 ) -> Option<[u8; tessari_storage::NODE_ID_LEN]> {
     let store = db.store();
-    let roles = store.effective_roles().ok()?;
-    let declared = store
-        .begin()
-        .and_then(|mut transaction| tessari_storage::Catalog::new(&mut transaction).replicas())
-        .ok()?;
+    let roles = store.effective_roles().await.ok()?;
+    let declared = crate::peers::declared(store).await.ok()?;
     tessari_wire::upstream(roles, &declared, &published.current()).map(|(node, _)| node)
 }
 

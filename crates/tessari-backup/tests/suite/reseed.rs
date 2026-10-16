@@ -9,6 +9,7 @@
 
 use tessari_kv::Keyspace;
 use tessari_session::RunNow;
+use tessari_storage::Now;
 use tessari_storage::Store;
 use tessari_types::Reach;
 
@@ -19,12 +20,12 @@ fn copied(source: &Store, onto: &Store, within: Reach) -> u64 {
     let before = onto.committed_version().unwrap();
     let mut reader = source.read_state_within(within).unwrap();
     let positions = reader.positions().to_vec();
-    while let Some(chunk) = reader.next_chunk(500).unwrap() {
-        onto.restore_state_chunk(&chunk).unwrap();
+    while let Some(chunk) = reader.next_chunk(500).now().unwrap() {
+        onto.restore_state_chunk(&chunk).now().unwrap();
     }
     let topics = reader.topic_heads().unwrap();
     drop(reader);
-    let removed = onto.sweep_unreplaced(within, before).unwrap();
+    let removed = onto.sweep_unreplaced(within, before).now().unwrap();
     onto.finish_state(&positions, &topics).unwrap();
     removed
 }

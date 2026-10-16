@@ -245,7 +245,7 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// A backend failure, or a stored row that is not a group.
-    pub fn topic_group(
+    pub async fn topic_group(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -253,7 +253,7 @@ impl Catalog<'_, '_> {
         name: &str,
     ) -> Result<Option<GroupState>> {
         let address = system::address(system::TOPIC_GROUPS, row(namespace, database, table, name));
-        match self.transaction.get(&address)? {
+        match self.transaction.get(&address).await? {
             Some(payload) => Ok(Some(GroupState::from_value(&decode_payload(&payload)?)?)),
             None => Ok(None),
         }
@@ -293,7 +293,7 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// A backend failure, or a stored row that is not a group.
-    pub fn topic_groups(
+    pub async fn topic_groups(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -301,11 +301,15 @@ impl Catalog<'_, '_> {
     ) -> Result<Vec<(String, GroupState)>> {
         let prefix = topic_prefix(namespace, database, table);
         let mut found = Vec::new();
-        for (id, payload) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::TOPIC_GROUPS,
-        )? {
+        for (id, payload) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::TOPIC_GROUPS,
+            )
+            .await?
+        {
             let RecordId::Text(key) = &id else {
                 continue;
             };

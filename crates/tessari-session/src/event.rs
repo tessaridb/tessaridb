@@ -75,14 +75,14 @@ impl<'a> Session<'a> {
     /// [`Error::EventOnKind`] on a table that cannot carry one,
     /// [`Error::EventExists`] for a name already defined there, and whatever
     /// resolving the table refuses.
-    pub(crate) fn define_event(
+    pub(crate) async fn define_event(
         &self,
         transaction: &mut Transaction<'_>,
         declared: &Declared<'_>,
         span: Span,
     ) -> Result<Outcome> {
-        let (_, id) = self.resolve_any_table(transaction, declared.table)?;
-        let Some(definition) = Catalog::new(transaction).table(id)? else {
+        let (_, id) = self.resolve_any_table(transaction, declared.table).await?;
+        let Some(definition) = Catalog::new(transaction).table(id).await? else {
             return Err(Error::Unknown {
                 entity: "table",
                 name: declared.table.name.text.clone(),
@@ -100,7 +100,8 @@ impl<'a> Session<'a> {
         // database, or the event is refused where the name is written, as an
         // unbound parameter always was (ADR-0124 D2).
         let held = Catalog::new(transaction)
-            .database(definition.database)?
+            .database(definition.database)
+            .await?
             .map(|database| database.params)
             .unwrap_or_default();
         if let Some((name, at)) = declared
@@ -139,7 +140,7 @@ impl<'a> Session<'a> {
             body: declared.body.to_owned(),
         });
         events.sort_by(|left, right| left.name.cmp(&right.name));
-        Catalog::new(transaction).set_events(id, events)?;
+        Catalog::new(transaction).set_events(id, events).await?;
         Ok(Outcome::Done)
     }
 
@@ -149,14 +150,14 @@ impl<'a> Session<'a> {
     ///
     /// [`Error::Unknown`] naming the event when the table has none by that
     /// name, and whatever resolving the table refuses.
-    pub(crate) fn drop_event(
+    pub(crate) async fn drop_event(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         table: &TableRef,
     ) -> Result<Outcome> {
-        let (_, id) = self.resolve_any_table(transaction, table)?;
-        let Some(definition) = Catalog::new(transaction).table(id)? else {
+        let (_, id) = self.resolve_any_table(transaction, table).await?;
+        let Some(definition) = Catalog::new(transaction).table(id).await? else {
             return Err(Error::Unknown {
                 entity: "table",
                 name: table.name.text.clone(),
@@ -174,7 +175,7 @@ impl<'a> Session<'a> {
                 span: name.span,
             });
         }
-        Catalog::new(transaction).set_events(id, events)?;
+        Catalog::new(transaction).set_events(id, events).await?;
         Ok(Outcome::Done)
     }
 }

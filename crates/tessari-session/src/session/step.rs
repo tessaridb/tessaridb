@@ -22,9 +22,9 @@ impl<'a> Session<'a> {
         // would be checked as one table -- its own -- while the read it stands
         // for reached tables nobody granted. Rewriting here means the tree whose
         // tables are counted is the tree that runs.
-        let expanded = self.expand_views(store, &statement.kind)?;
+        let expanded = self.expand_views(store, &statement.kind).await?;
         let kind = expanded.as_ref().unwrap_or(&statement.kind);
-        self.authorize(store, kind, span)?;
+        self.authorize(store, kind, span).await?;
         match kind {
             StatementKind::Use {
                 namespace,
@@ -71,12 +71,14 @@ impl<'a> Session<'a> {
                 // asked for (ADR-0106 D2).
                 let asked = statement.acknowledge.max(self.acknowledge_open.take());
                 let across = statement.across || std::mem::take(&mut self.across_open);
-                if across && let Some(parts) = Self::across_parts(&transaction)? {
-                    self.drive_across(store, transaction, parts, span)?;
+                if across && let Some(parts) = Self::across_parts(&transaction).await? {
+                    self.drive_across(store, transaction, parts, span).await?;
                     return Ok(Outcome::Done);
                 }
-                let waiting = self.acknowledgement_for(&mut transaction, asked, span)?;
-                Self::commit_acknowledged(store, transaction, waiting, span)?;
+                let waiting = self
+                    .acknowledgement_for(&mut transaction, asked, span)
+                    .await?;
+                Self::commit_acknowledged(store, transaction, waiting, span).await?;
                 Ok(Outcome::Done)
             }
             StatementKind::Cancel => {
@@ -97,7 +99,7 @@ impl<'a> Session<'a> {
                 };
                 self.acknowledge_open = None;
                 self.across_open = false;
-                transaction.dry_run().map_err(advised)?;
+                transaction.dry_run().await.map_err(advised)?;
                 Ok(Outcome::Done)
             }
             // Its backfill is a second commit after the declaration's, which
@@ -154,20 +156,18 @@ impl<'a> Session<'a> {
                         let mut transaction = store.begin()?;
                         let outcome = self.execute(&mut transaction, other, span).await?;
                         if statement.across
-                            && let Some(parts) = Self::across_parts(&transaction)?
+                            && let Some(parts) = Self::across_parts(&transaction).await?
                         {
-                            self.drive_across(store, transaction, parts, span)?;
+                            self.drive_across(store, transaction, parts, span).await?;
                             return Ok(outcome);
                         }
-                        let waiting = self.acknowledgement_for(
-                            &mut transaction,
-                            statement.acknowledge,
-                            span,
-                        )?;
-                        match Self::commit_acknowledged(store, transaction, waiting, span) {
+                        let waiting = self
+                            .acknowledgement_for(&mut transaction, statement.acknowledge, span)
+                            .await?;
+                        match Self::commit_acknowledged(store, transaction, waiting, span).await {
                             Ok(()) => {
                                 if let StatementKind::DefineRollup { name, source, .. } = other {
-                                    self.backfilled(store, source, name)?;
+                                    self.backfilled(store, source, name).await?;
                                 }
                                 return Ok(outcome);
                             }
@@ -189,7 +189,7 @@ impl<'a> Session<'a> {
 
     /// `DEFINE ROLLUP`'s second commit, retried while a concurrent raw write
     /// lands on a row it also writes (ADR-0088 §6).
-    fn backfilled(
+    async fn backfilled(
         &mut self,
         store: &'a Store,
         source: &tessari_ql::Name,
@@ -198,8 +198,8 @@ impl<'a> Session<'a> {
         let started = std::time::Instant::now();
         loop {
             let mut transaction = store.begin()?;
-            self.backfill_rollup(&mut transaction, source, name)?;
-            match settle(transaction) {
+            self.backfill_rollup(&mut transaction, source, name).await?;
+            match settle(transaction).await {
                 Ok(()) => return Ok(()),
                 Err(Error::Store(refusal))
                     if conflicting(&refusal)

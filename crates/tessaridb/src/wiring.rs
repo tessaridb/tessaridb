@@ -78,7 +78,10 @@ impl Db {
     /// peer holding the whole of a split table, or the one peer declared
     /// writable when this node may not write.
     #[must_use]
-    pub fn answers_instead(&self, refused: &Error) -> Option<[u8; tessari_storage::NODE_ID_LEN]> {
+    pub async fn answers_instead(
+        &self,
+        refused: &Error,
+    ) -> Option<[u8; tessari_storage::NODE_ID_LEN]> {
         match refused {
             Error::ReadIsElsewhere { node, .. }
             | Error::Store(tessari_storage::Error::WriteIsElsewhere { node, .. }) => Some(*node),
@@ -94,12 +97,10 @@ impl Db {
             // declares several writable rows, and "the one writable row" then
             // names nobody (DB-16). The row stays the answer before any
             // leadership has been recorded.
-            Error::NotWritable { .. } => self
-                .store
-                .leader_of(Reach::Store)
-                .ok()
-                .flatten()
-                .or_else(|| self.writable_peer().ok().flatten()?.node),
+            Error::NotWritable { .. } => match self.store.leader_of(Reach::Store).await {
+                Ok(Some(leader)) => Some(leader),
+                _ => self.writable_peer().await.ok().flatten()?.node,
+            },
             _ => None,
         }
     }
@@ -127,6 +128,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use tessari_storage::Now;
     use tessari_storage::{Catalog, Roles};
 
     const OTHER: [u8; tessari_storage::NODE_ID_LEN] = [7; tessari_storage::NODE_ID_LEN];
@@ -137,7 +139,7 @@ mod tests {
     /// refusal with `ManyWritablePeers` and named nobody to go to).
     #[test]
     fn a_refused_write_is_sent_to_the_store_lines_leader() {
-        let db = Db::in_memory().unwrap();
+        let db = Db::in_memory().now().unwrap();
         let mut transaction = db.store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
         let both = Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING);
@@ -151,16 +153,17 @@ mod tests {
                     Some(Reach::Store),
                     None,
                 )
+                .now()
                 .unwrap();
         }
         catalog
             .record_leadership(Reach::Store, OTHER, tessari_types::Epoch::new(3))
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
 
         let refused = Error::NotWritable {
             span: tessari_ql::Span::new(0, 1),
         };
-        assert_eq!(db.answers_instead(&refused), Some(OTHER));
+        assert_eq!(db.answers_instead(&refused).now(), Some(OTHER));
     }
 }

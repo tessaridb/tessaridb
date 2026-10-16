@@ -13,6 +13,7 @@
 use std::error::Error;
 use std::fs;
 use std::path::Path;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KeyRange, Keyspace, KvBackend, ScanRequest};
@@ -39,7 +40,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let time = args.get(3).is_some_and(|held| held == "time");
     let clause = if time { " TIME at" } else { "" };
 
-    let db = Db::open(dir)?;
+    let db = Db::open(dir).now()?;
     let mut session = db.session();
     session.run_now(&format!(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench; DEFINE DATABASE bench; \

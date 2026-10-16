@@ -39,28 +39,31 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new() -> Result<Self> {
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)?;
+    async fn new() -> Result<Self> {
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).await?;
         let mut transaction = store.begin()?;
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("ns")?.id;
-        let database = catalog.create_database(namespace, "db")?.id;
+        let namespace = catalog.create_namespace("ns").await?.id;
+        let database = catalog.create_database(namespace, "db").await?.id;
         let table = catalog
-            .create_table(namespace, database, "t", TableShape::default())?
+            .create_table(namespace, database, "t", TableShape::default())
+            .await?
             .id;
-        catalog.create_index(
-            table,
-            "by_city",
-            vec![Path::field("city")],
-            IndexShape::default(),
-        )?;
-        transaction.commit()?;
+        catalog
+            .create_index(
+                table,
+                "by_city",
+                vec![Path::field("city")],
+                IndexShape::default(),
+            )
+            .await?;
+        transaction.commit().await?;
         let mut transaction = store.begin()?;
         transaction.put(
             RecordAddress::new(namespace, database, table, RecordId::from("r")),
             doc("old"),
         );
-        transaction.commit()?;
+        transaction.commit().await?;
         Ok(Self {
             store,
             namespace,
@@ -104,33 +107,38 @@ impl Fixture {
             .from_transaction(self.provenance(provisional))
     }
 
-    fn apply(&mut self, part: Part, mutations: Vec<Mutation>) -> Result<()> {
+    async fn apply(&mut self, part: Part, mutations: Vec<Mutation>) -> Result<()> {
         let record = LogRecord::new(mutations).across(Across {
             transaction: TRANSACTION,
             part,
         });
         let at = self.at.saturating_add(1);
         self.store
-            .apply_record_in(self.log, Sequence::new(at), &record)?;
+            .apply_record_in(self.log, Sequence::new(at), &record)
+            .await?;
         self.at = at;
         Ok(())
     }
 
-    fn prepare(&mut self) -> Result<()> {
+    async fn prepare(&mut self) -> Result<()> {
         let coordinator = Reach::Namespace(self.namespace);
         self.apply(
             Part::Prepare { coordinator },
             vec![self.write(self.new_value(true))],
         )
+        .await
     }
 
-    fn read(&self) -> Result<Option<Vec<u8>>> {
-        self.store.begin()?.get(&RecordAddress::new(
-            self.namespace,
-            self.database,
-            self.table,
-            RecordId::from("r"),
-        ))
+    async fn read(&self) -> Result<Option<Vec<u8>>> {
+        self.store
+            .begin()?
+            .get(&RecordAddress::new(
+                self.namespace,
+                self.database,
+                self.table,
+                RecordId::from("r"),
+            ))
+            .await
     }
 
     /// Every entry of the index keyspace, as bytes.
@@ -193,54 +201,68 @@ fn decided(decision: Decision) -> TransactionRecord {
     }
 }
 
-#[test]
-fn a_committed_transaction_becomes_the_value_and_leaves_no_intent() -> Result<()> {
-    let mut fixture = Fixture::new()?;
-    fixture.prepare()?;
+#[tokio::test]
+async fn a_committed_transaction_becomes_the_value_and_leaves_no_intent() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
+    fixture.prepare().await?;
     assert_eq!(
-        fixture.read()?,
+        fixture.read().await?,
         Some(doc("old")),
         "an intent is not a value"
     );
     assert!(fixture.intent_left()?);
     // A record is written PENDING before it is decided, as the coordinator
     // writes it.
-    fixture.apply(Part::Decide(decided(Decision::Pending)), vec![])?;
-    fixture.apply(Part::Decide(decided(Decision::Committed)), vec![])?;
+    fixture
+        .apply(Part::Decide(decided(Decision::Pending)), vec![])
+        .await?;
+    fixture
+        .apply(Part::Decide(decided(Decision::Committed)), vec![])
+        .await?;
     assert_eq!(
         record_of(&fixture.store)?,
         Some(decided(Decision::Committed))
     );
     let resolved = fixture.write(fixture.new_value(false));
-    fixture.apply(Part::Resolve { committed: true }, vec![resolved])?;
-    assert_eq!(fixture.read()?, Some(doc("new")));
+    fixture
+        .apply(Part::Resolve { committed: true }, vec![resolved])
+        .await?;
+    assert_eq!(fixture.read().await?, Some(doc("new")));
     assert!(!fixture.intent_left()?, "the resolution removes its intent");
     Ok(())
 }
 
-#[test]
-fn an_aborted_transaction_leaves_the_old_value_and_no_intent() -> Result<()> {
-    let mut fixture = Fixture::new()?;
-    fixture.prepare()?;
+#[tokio::test]
+async fn an_aborted_transaction_leaves_the_old_value_and_no_intent() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
+    fixture.prepare().await?;
     // A record is written PENDING before it is decided, as the coordinator
     // writes it.
-    fixture.apply(Part::Decide(decided(Decision::Pending)), vec![])?;
-    fixture.apply(Part::Decide(decided(Decision::Aborted)), vec![])?;
+    fixture
+        .apply(Part::Decide(decided(Decision::Pending)), vec![])
+        .await?;
+    fixture
+        .apply(Part::Decide(decided(Decision::Aborted)), vec![])
+        .await?;
     // An aborted resolution names the record; the value it carries is never
     // written.
     let named = fixture.write(fixture.new_value(true));
-    fixture.apply(Part::Resolve { committed: false }, vec![named])?;
-    assert_eq!(fixture.read()?, Some(doc("old")));
+    fixture
+        .apply(Part::Resolve { committed: false }, vec![named])
+        .await?;
+    assert_eq!(fixture.read().await?, Some(doc("old")));
     assert!(!fixture.intent_left()?);
     Ok(())
 }
 
-#[test]
-fn a_prepare_carrying_a_plain_write_is_refused_and_lands_nothing() -> Result<()> {
-    let mut fixture = Fixture::new()?;
+#[tokio::test]
+async fn a_prepare_carrying_a_plain_write_is_refused_and_lands_nothing() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
     let coordinator = Reach::Namespace(fixture.namespace);
     let plain = fixture.write(StampedValue::new(RecordValue::Present(doc("new"))));
-    let refused = fixture.apply(Part::Prepare { coordinator }, vec![plain]);
+    let refused = fixture
+        .apply(Part::Prepare { coordinator }, vec![plain])
+        .await;
     assert!(
         matches!(
             refused,
@@ -251,18 +273,20 @@ fn a_prepare_carrying_a_plain_write_is_refused_and_lands_nothing() -> Result<()>
         ),
         "{refused:?}"
     );
-    assert_eq!(fixture.read()?, Some(doc("old")));
+    assert_eq!(fixture.read().await?, Some(doc("old")));
     // The position did not move: the same record number is still free.
-    fixture.prepare()?;
+    fixture.prepare().await?;
     assert!(fixture.intent_left()?);
     Ok(())
 }
 
-#[test]
-fn a_decision_carrying_writes_is_refused() -> Result<()> {
-    let mut fixture = Fixture::new()?;
+#[tokio::test]
+async fn a_decision_carrying_writes_is_refused() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
     let smuggled = fixture.write(fixture.new_value(false));
-    let refused = fixture.apply(Part::Decide(decided(Decision::Committed)), vec![smuggled]);
+    let refused = fixture
+        .apply(Part::Decide(decided(Decision::Committed)), vec![smuggled])
+        .await;
     assert!(
         matches!(refused, Err(Error::AcrossMalformed { part: "decide", .. })),
         "{refused:?}"
@@ -271,22 +295,28 @@ fn a_decision_carrying_writes_is_refused() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn an_intent_derives_no_index_entry_and_its_resolution_does() -> Result<()> {
-    let mut fixture = Fixture::new()?;
+#[tokio::test]
+async fn an_intent_derives_no_index_entry_and_its_resolution_does() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
     let before = fixture.index_entries()?;
-    fixture.prepare()?;
+    fixture.prepare().await?;
     // A record is written PENDING before it is decided, as the coordinator
     // writes it.
-    fixture.apply(Part::Decide(decided(Decision::Pending)), vec![])?;
-    fixture.apply(Part::Decide(decided(Decision::Committed)), vec![])?;
+    fixture
+        .apply(Part::Decide(decided(Decision::Pending)), vec![])
+        .await?;
+    fixture
+        .apply(Part::Decide(decided(Decision::Committed)), vec![])
+        .await?;
     assert_eq!(
         fixture.index_entries()?,
         before,
         "a prepare and a decision leave every index byte as it was"
     );
     let resolved = fixture.write(fixture.new_value(false));
-    fixture.apply(Part::Resolve { committed: true }, vec![resolved])?;
+    fixture
+        .apply(Part::Resolve { committed: true }, vec![resolved])
+        .await?;
     assert_ne!(
         fixture.index_entries()?,
         before,

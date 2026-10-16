@@ -46,25 +46,24 @@ impl Session<'_> {
     /// on-disk identity format and the natural home for a real cluster name,
     /// which is a door for whoever designs cluster identity rather than for a
     /// response shape.
-    pub(super) fn info_node(
+    pub(super) async fn info_node(
         &self,
         transaction: &mut Transaction<'_>,
     ) -> Result<BTreeMap<String, Value>> {
         let identity = self.store.node_identity()?;
         let (retention, retained_by) = self.store.effective_retention()?;
         let catalog = Catalog::new(transaction);
-        let peers = catalog
-            .replicas()?
-            .iter()
-            .map(|replica| described_replica(replica, &catalog))
-            .collect::<Result<Vec<_>>>()?;
+        let mut peers = Vec::new();
+        for replica in &catalog.replicas().await? {
+            peers.push(described_replica(replica, &catalog).await?);
+        }
         let peers = Value::Array(peers);
         // Asked of the catalog rather than computed from `peers` above, so that
         // what is reported and what a reopen would adopt are one answer to one
         // question. `null` when nothing names this node — which is a different
         // statement from an empty role set, and the difference is the whole
         // point: no row is *unbound*, an empty set is *drained*.
-        let desired = match catalog.desired_roles(&identity.id)? {
+        let desired = match catalog.desired_roles(&identity.id).await? {
             Some(roles) => Value::Array(roles.names().into_iter().map(Value::from).collect()),
             None => Value::Null,
         };
@@ -75,7 +74,7 @@ impl Session<'_> {
         // Asked through `health()` rather than of the lease directly, so that
         // this and `/metrics` are one answer to one question rather than two
         // that can drift.
-        let held = self.store.health()?;
+        let held = self.store.health().await?;
         let campaigns = held.campaigns;
         let across = across_report(&held);
         let lease = match held.lease_remaining {
@@ -99,7 +98,8 @@ impl Session<'_> {
         // reaching it.
         let revoked = Value::Array(
             Catalog::new(transaction)
-                .revoked_certificates()?
+                .revoked_certificates()
+                .await?
                 .into_iter()
                 .map(|fingerprint| Value::from(fingerprint.as_str()))
                 .collect(),
@@ -107,12 +107,13 @@ impl Session<'_> {
         // Nodes removed from the cluster and never admitted again (ADR-0108 D9).
         let tombstoned = Value::Array(
             Catalog::new(transaction)
-                .tombstoned_nodes()?
+                .tombstoned_nodes()
+                .await?
                 .into_iter()
                 .map(Value::Uuid)
                 .collect(),
         );
-        let failover = match Catalog::new(transaction).failover()? {
+        let failover = match Catalog::new(transaction).failover().await? {
             None => Value::Null,
             Some(held) => described_failover(&held),
         };
@@ -129,10 +130,11 @@ impl Session<'_> {
                 ),
             ]))
         });
-        let leaders = described_leaders(&Catalog::new(transaction))?;
+        let leaders = described_leaders(&Catalog::new(transaction)).await?;
         let followers = self
             .store
-            .follower_lag()?
+            .follower_lag()
+            .await?
             .into_iter()
             .map(described_follower)
             .collect();
@@ -151,7 +153,8 @@ impl Session<'_> {
                 "roles".to_owned(),
                 Value::Array(
                     self.store
-                        .effective_roles()?
+                        .effective_roles()
+                        .await?
                         .names()
                         .into_iter()
                         .map(Value::from)
@@ -312,14 +315,15 @@ impl Session<'_> {
     ///   this feature is not a bug, it is that their delivery semantics are
     ///   documented somewhere other than where a person configures the thing.
     ///   Somebody reading this output is configuring it right now.
-    pub(super) fn info_consumer(
+    pub(super) async fn info_consumer(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
         let found = Catalog::new(transaction)
-            .consumers()?
+            .consumers()
+            .await?
             .into_iter()
             .find(|held| held.name == name.text);
         let Some(consumer) = found else {
@@ -342,7 +346,7 @@ impl Session<'_> {
                 span,
             });
         };
-        let destination = self.named_table(transaction, &consumer)?;
+        let destination = self.named_table(transaction, &consumer).await?;
         Ok(BTreeMap::from([
             (
                 "declared".to_owned(),
@@ -356,7 +360,8 @@ impl Session<'_> {
             // here after any restart (Q-708).
             (
                 "quarantine".to_owned(),
-                self.parked(transaction, &consumer, &destination, span)?,
+                self.parked(transaction, &consumer, &destination, span)
+                    .await?,
             ),
             ("guarantees".to_owned(), guarantees()),
         ]))
@@ -367,11 +372,11 @@ impl Session<'_> {
     /// The counters are left to `INFO FOR KAFKA CONSUMER <name>`: this is the listing
     /// an operator reads to find out *which* consumer to ask about, and a table
     /// of every partition position would bury that.
-    pub(super) fn info_consumers(
+    pub(super) async fn info_consumers(
         &self,
         transaction: &mut Transaction<'_>,
     ) -> Result<BTreeMap<String, Value>> {
-        let declared = Catalog::new(transaction).consumers()?;
+        let declared = Catalog::new(transaction).consumers().await?;
         let mut described = Vec::with_capacity(declared.len());
         for consumer in declared {
             // Kafka consumers only: a topic consumer is listed by the topic it

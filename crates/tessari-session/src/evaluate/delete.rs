@@ -54,13 +54,14 @@ impl Session<'_> {
             DeleteBound::AtMost(count) => count,
             DeleteBound::All => u64::MAX,
         };
-        let (context, id) = self.resolve_table(transaction, table)?;
+        let (context, id) = self.resolve_table(transaction, table).await?;
         // A node holding part of a split table would find only its own part's
         // records, remove them, and report the count as the statement's (G051
         // C4): the condition is about the table, so the read refuses as a read
         // of the whole table does.
-        self.refuse_reading_a_part(transaction, id, super::Part::Whole)?;
-        let searched = self.searched_for(transaction, id, &[condition])?;
+        self.refuse_reading_a_part(transaction, id, super::Part::Whole)
+            .await?;
+        let searched = self.searched_for(transaction, id, &[condition]).await?;
         // A plan is reported only when the removed records are the answer
         // (`RETURN BEFORE`); a count has no plan to carry one on.
         //
@@ -81,7 +82,7 @@ impl Session<'_> {
         let candidates =
             // `false`: a delete carries no read tail, so there is no clause to lift
             // the guard and nothing here to read one from.
-            match self.candidates(transaction, id, context, condition, &searched, Asked::nothing())? {
+            match self.candidates(transaction, id, context, condition, &searched, Asked::nothing()).await? {
                 Some(reached) => {
                     plan = reached.plan;
                     match reached.records {
@@ -96,21 +97,21 @@ impl Session<'_> {
                             lower,
                             upper,
                         } => {
-                            let visible = self.visible_in(transaction, id)?;
+                            let visible = self.visible_in(transaction, id).await?;
                             let found = transaction.records_in_range(
                                 &index,
                                 &fixed,
                                 lower.as_ref(),
                                 upper.as_ref(),
-                            )?;
+                            ).await?;
                             self.records_of(found, &visible)?
                         }
                     }
                 }
                 None => {
-                    let visible = self.visible_in(transaction, id)?;
+                    let visible = self.visible_in(transaction, id).await?;
                     let scanned =
-                        transaction.scan_table(context.namespace, context.database, id)?;
+                        transaction.scan_table(context.namespace, context.database, id).await?;
                     self.records_of(scanned, &visible)?
                 }
             };
@@ -123,11 +124,13 @@ impl Session<'_> {
             // Tested against the whole condition, exactly as a read is: the
             // index narrowed, and the condition decides. A delete that trusted
             // the narrowing would remove records the statement did not name.
-            let held = self.evaluate_in(
-                transaction,
-                condition,
-                Scope::searching(&record, &searched).identified(&record_id),
-            )?;
+            let held = self
+                .evaluate_in(
+                    transaction,
+                    condition,
+                    Scope::searching(&record, &searched).identified(&record_id),
+                )
+                .await?;
             if !boolean(&held, condition.span)? {
                 continue;
             }
@@ -175,7 +178,7 @@ impl Session<'_> {
             DeleteBound::AtMost(count) => count,
             DeleteBound::All => u64::MAX,
         };
-        let (context, id) = self.resolve_table(transaction, table)?;
+        let (context, id) = self.resolve_table(transaction, table).await?;
         let lower = span.lower.fixed(span.at)?;
         let upper = span.upper.fixed(span.at)?;
         // As in `delete_where`: a span reaching a shard this node lacks would
@@ -188,21 +191,24 @@ impl Session<'_> {
                 upper,
                 inclusive: span.inclusive,
             },
-        )?;
-        let found = transaction.records_in_span(
-            context.namespace,
-            context.database,
-            id,
-            lower,
-            upper,
-            span.inclusive,
-        )?;
+        )
+        .await?;
+        let found = transaction
+            .records_in_span(
+                context.namespace,
+                context.database,
+                id,
+                lower,
+                upper,
+                span.inclusive,
+            )
+            .await?;
 
         let mut removed = Removed::new(answer);
         // Decoded only when answered, and through the redaction every read
         // goes through, so the answer is the record as this session may see it.
         let visible = match removed.records {
-            Some(_) => self.visible_in(transaction, id)?,
+            Some(_) => self.visible_in(transaction, id).await?,
             None => None,
         };
         for (record_id, bytes) in found {

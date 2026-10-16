@@ -27,20 +27,21 @@ impl Session<'_> {
     /// # Errors
     ///
     /// Whatever choosing or reading the index refuses.
-    pub(super) fn served_candidates(
+    pub(super) async fn served_candidates(
         &self,
         transaction: &mut Transaction<'_>,
         (context, table): (Context, TableId),
         named: &TableRef,
         condition: &Expr,
     ) -> Result<Option<Served>> {
-        let searched = self.searched_for(transaction, table, &[condition])?;
+        let searched = self.searched_for(transaction, table, &[condition]).await?;
         let asked = Asked {
             named: Some(named.name.text.as_str()),
             lift_scan_guard: false,
         };
-        let Some(reached) =
-            self.candidates(transaction, table, context, condition, &searched, asked)?
+        let Some(reached) = self
+            .candidates(transaction, table, context, condition, &searched, asked)
+            .await?
         else {
             return Ok(None);
         };
@@ -52,7 +53,11 @@ impl Session<'_> {
                 fixed,
                 lower,
                 upper,
-            } => transaction.records_in_range(&index, &fixed, lower.as_ref(), upper.as_ref())?,
+            } => {
+                transaction
+                    .records_in_range(&index, &fixed, lower.as_ref(), upper.as_ref())
+                    .await?
+            }
             // Read again, a second decode per candidate: the read path hands a
             // held set over redacted, and a redacted record written back would
             // lose the fields this caller may not see.
@@ -61,7 +66,7 @@ impl Session<'_> {
                 for (id, _) in held {
                     let address =
                         RecordAddress::new(context.namespace, context.database, table, id.clone());
-                    if let Some(bytes) = transaction.get(&address)? {
+                    if let Some(bytes) = transaction.get(&address).await? {
                         stored.push((id, bytes));
                     }
                 }

@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -18,7 +19,7 @@ use tessari_types::{Number, RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// `count` people with `band = n % 10` and `rare = n % 500`, in one table that
@@ -210,14 +211,14 @@ fn an_index_that_selects_most_of_the_table_loses_to_it_on_the_statistic_alone() 
 fn a_serving_node_takes_the_statistics_itself() {
     let store = store();
     let mut session = ready(&store, 2_000);
-    assert_eq!(store.refresh_statistics().unwrap(), 3);
+    assert_eq!(store.refresh_statistics().now().unwrap(), 3);
     let plan = explained(&mut session, "band = 3");
     assert_eq!(
         estimate(&plan).map(|(_, by)| by),
         Some("statistics".to_owned())
     );
     // Fresh now, so the next pass has nothing to take.
-    assert_eq!(store.refresh_statistics().unwrap(), 0);
+    assert_eq!(store.refresh_statistics().now().unwrap(), 0);
 }
 
 #[test]
@@ -275,7 +276,10 @@ fn an_estimate_on_a_field_the_caller_cannot_read_is_withheld() {
     )
     .unwrap();
     let mut owner = Session::new(&store);
-    owner.sign_in("root", "correct horse battery").unwrap();
+    owner
+        .sign_in("root", "correct horse battery")
+        .now()
+        .unwrap();
     owner
         .run_now(
             "USE NAMESPACE prod; USE DATABASE shop;\n\
@@ -296,7 +300,7 @@ fn an_estimate_on_a_field_the_caller_cannot_read_is_withheld() {
     // below passes for a plan that never carries an estimate at all.
     assert!(estimate(&plan(&mut owner)).is_some());
     let mut ada = Session::new(&store);
-    ada.sign_in("ada", "correct horse battery").unwrap();
+    ada.sign_in("ada", "correct horse battery").now().unwrap();
     ada.run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     let hidden = plan(&mut ada);

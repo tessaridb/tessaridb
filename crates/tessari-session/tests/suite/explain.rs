@@ -14,6 +14,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -25,7 +26,7 @@ const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
@@ -262,14 +263,14 @@ fn it_needs_exactly_the_permission_the_read_needs() {
         )
         .unwrap();
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
         .unwrap();
     root.run_now("USE NAMESPACE prod; USE DATABASE shop; GRANT read ON users TO ada;")
         .unwrap();
 
     let mut ada = Session::new(&store);
-    ada.sign_in("ada", PASSWORD).unwrap();
+    ada.sign_in("ada", PASSWORD).now().unwrap();
     ada.run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     // Granted on `users`: the read runs and so does its explanation.

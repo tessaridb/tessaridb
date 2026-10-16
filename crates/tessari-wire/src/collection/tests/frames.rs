@@ -1,4 +1,5 @@
 use super::*;
+use tessari_session::Now;
 
 #[test]
 fn a_collection_frame_round_trips() {
@@ -287,6 +288,7 @@ fn a_collection_is_recorded_on_the_leader() {
         leader
             .store()
             .follower_lag()
+            .now()
             .expect("a leader can be asked")
             .is_empty(),
         "nothing has collected yet"
@@ -298,6 +300,7 @@ fn a_collection_is_recorded_on_the_leader() {
     let lag = leader
         .store()
         .follower_lag()
+        .now()
         .expect("a leader can be asked");
     assert_eq!(lag.len(), 1, "{lag:?}");
     let seen = lag.first().expect("one follower");

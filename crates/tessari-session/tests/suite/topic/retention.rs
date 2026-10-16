@@ -2,6 +2,7 @@
 //! tells a reader what it missed.
 
 use std::thread;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_session::Note;
@@ -37,7 +38,7 @@ fn retention_removes_messages_and_a_reader_behind_it_is_told_how_many_it_missed(
         assert_eq!(missed(&notes), Some(3), "{}: {notes:?}", backend.name);
 
         // Removed through the log: both indexes lose them, the numbering does not.
-        let removed = backend.store.remove_expired().unwrap();
+        let removed = backend.store.remove_expired().now().unwrap();
         assert_eq!(removed.records, 4, "{}: {removed:?}", backend.name);
         let (by_position, by_message) = entries(backend);
         assert!(
@@ -63,7 +64,7 @@ fn a_message_whose_retention_has_not_passed_is_not_removed_by_the_pass() {
         let mut session = opened(&backend.store);
         run(&mut session, "DEFINE TOPIC long RETAIN 1h;");
         run(&mut session, "CREATE long:'kept' = { n: 1 };");
-        let removed = backend.store.remove_expired().unwrap();
+        let removed = backend.store.remove_expired().now().unwrap();
         assert_eq!(removed.records, 0, "{}", backend.name);
         let (answered, notes) = read(&mut session, "READ FROM long;");
         assert_eq!(answered.len(), 1, "{}", backend.name);

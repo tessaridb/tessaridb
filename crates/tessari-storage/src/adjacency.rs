@@ -49,7 +49,7 @@ use crate::store::Store;
 use crate::transaction::RecordAddress;
 
 /// Write the adjacency implied by everything one commit changed.
-pub(crate) fn maintain(
+pub(crate) async fn maintain(
     store: &Store,
     record: &LogRecord,
     mut batch: WriteBatch,
@@ -66,7 +66,8 @@ pub(crate) fn maintain(
             Some(found) => found,
             None => {
                 let found = Catalog::new(&mut view)
-                    .edge_kinds_in(tenancy.0, tenancy.1)?
+                    .edge_kinds_in(tenancy.0, tenancy.1)
+                    .await?
                     .into_iter()
                     .map(|kind| (kind.edges, kind))
                     .collect();
@@ -86,7 +87,7 @@ pub(crate) fn maintain(
             mutation.table,
             mutation.id.clone(),
         );
-        if let Some(previous) = view.get_held(&address)?
+        if let Some(previous) = view.get_held(&address).await?
             && let Some((from, to, _)) = endpoints(&decode_payload(&previous)?)
         {
             batch = write_pair(batch, &kind, &from, &to, None);

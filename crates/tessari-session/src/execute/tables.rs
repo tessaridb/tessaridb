@@ -24,7 +24,7 @@ pub(super) struct VectorStore<'a> {
 }
 
 impl Session<'_> {
-    pub(crate) fn define_table(
+    pub(crate) async fn define_table(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
@@ -32,20 +32,18 @@ impl Session<'_> {
         if_not_exists: bool,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         if if_not_exists
             && Catalog::new(transaction)
-                .table_id(context.namespace, context.database, &name.text)?
+                .table_id(context.namespace, context.database, &name.text)
+                .await?
                 .is_some()
         {
             return Ok(Outcome::Done);
         }
-        Catalog::new(transaction).create_table(
-            context.namespace,
-            context.database,
-            &name.text,
-            shape,
-        )?;
+        Catalog::new(transaction)
+            .create_table(context.namespace, context.database, &name.text, shape)
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -56,7 +54,7 @@ impl Session<'_> {
     /// the same log record and projects the table's rows under it into the same
     /// batch. The definition and its entries land together or neither does,
     /// inside an open `BEGIN` as much as outside one.
-    pub(super) fn define_index(
+    pub(super) async fn define_index(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
@@ -65,11 +63,12 @@ impl Session<'_> {
         shape: IndexShape,
         if_not_exists: bool,
     ) -> Result<Outcome> {
-        let (_, id) = self.resolve_table(transaction, table)?;
-        if if_not_exists && self.index_named(transaction, id, name).is_ok() {
+        let (_, id) = self.resolve_table(transaction, table).await?;
+        if if_not_exists && self.index_named(transaction, id, name).await.is_ok() {
             return Ok(Outcome::Done);
         }
-        self.refuse_indexing_a_secret(transaction, id, table, fields)?;
+        self.refuse_indexing_a_secret(transaction, id, table, fields)
+            .await?;
         if shape.containment {
             self.refuse_a_format_the_store_does_not_hold(
                 "a containment index",
@@ -77,7 +76,9 @@ impl Session<'_> {
             )?;
         }
         let fields = fields.iter().map(|field| field.path.clone()).collect();
-        Catalog::new(transaction).create_index(id, &name.text, fields, shape)?;
+        Catalog::new(transaction)
+            .create_index(id, &name.text, fields, shape)
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -108,7 +109,7 @@ impl Session<'_> {
     /// alone. The alternative makes the statement un-re-runnable — the table is
     /// tolerated and the first column then refuses — which is the opposite of
     /// what the words ask for.
-    pub(super) fn define_table_with_columns(
+    pub(super) async fn define_table_with_columns(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
@@ -117,7 +118,9 @@ impl Session<'_> {
         if_not_exists: bool,
         span: Span,
     ) -> Result<Outcome> {
-        let outcome = self.define_table(transaction, name, shape, if_not_exists, span)?;
+        let outcome = self
+            .define_table(transaction, name, shape, if_not_exists, span)
+            .await?;
         if columns.is_empty() {
             return Ok(outcome);
         }
@@ -140,7 +143,8 @@ impl Session<'_> {
                     assert: column.assert.clone(),
                 },
                 if_not_exists,
-            )?;
+            )
+            .await?;
         }
         Ok(outcome)
     }
@@ -174,7 +178,7 @@ impl Session<'_> {
     /// `IF NOT EXISTS` covers all three, for the reason it covers a table and
     /// its columns: tolerating the table and then refusing at the field makes
     /// the statement un-re-runnable, which is the opposite of what the words ask.
-    pub(super) fn define_vector(
+    pub(super) async fn define_vector(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
@@ -202,25 +206,27 @@ impl Session<'_> {
                 span,
             }
         })?;
-        let outcome = self.define_table(
-            transaction,
-            name,
-            TableShape {
-                schemafull: false,
-                kind: TableKind::Vector(VectorDeclaration {
-                    dimension: held,
-                    distance,
-                }),
-                identity: IdentityKind::default(),
-                graph: None,
-                conflict: None,
-                split: Vec::new(),
-                partition: None,
-                spread: false,
-            },
-            if_not_exists,
-            span,
-        )?;
+        let outcome = self
+            .define_table(
+                transaction,
+                name,
+                TableShape {
+                    schemafull: false,
+                    kind: TableKind::Vector(VectorDeclaration {
+                        dimension: held,
+                        distance,
+                    }),
+                    identity: IdentityKind::default(),
+                    graph: None,
+                    conflict: None,
+                    split: Vec::new(),
+                    partition: None,
+                    spread: false,
+                },
+                if_not_exists,
+                span,
+            )
+            .await?;
         let table = TableRef {
             database: None,
             name: name.clone(),
@@ -247,7 +253,8 @@ impl Session<'_> {
                 assert: None,
             },
             if_not_exists,
-        )?;
+        )
+        .await?;
         self.define_index(
             transaction,
             &field,
@@ -266,7 +273,8 @@ impl Session<'_> {
                 costs: tessari_storage::SearchCosts::default(),
             },
             if_not_exists,
-        )?;
+        )
+        .await?;
         Ok(outcome)
     }
 
@@ -296,22 +304,27 @@ impl Session<'_> {
     /// the word in the statement is a claim about what is being removed, and a
     /// `DROP SERIES` that removed a plain table would be a statement doing
     /// something other than what it says.
-    pub(super) fn drop_series(
+    pub(super) async fn drop_series(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         let unknown = || Error::Unknown {
             entity: "series",
             name: name.text.clone(),
             span,
         };
         let id = Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &name.text)?
+            .table_id(context.namespace, context.database, &name.text)
+            .await?
             .ok_or_else(unknown)?;
-        let series = match Catalog::new(transaction).table(id)?.map(|found| found.kind) {
+        let series = match Catalog::new(transaction)
+            .table(id)
+            .await?
+            .map(|found| found.kind)
+        {
             Some(TableKind::Series(series)) => series,
             _ => return Err(unknown()),
         };
@@ -321,32 +334,34 @@ impl Session<'_> {
                 span,
             });
         }
-        Catalog::new(transaction).drop_table(id)?;
+        Catalog::new(transaction).drop_table(id).await?;
         Ok(Outcome::Done)
     }
 
-    pub(super) fn drop_queue(
+    pub(super) async fn drop_queue(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         let unknown = || Error::Unknown {
             entity: "queue",
             name: name.text.clone(),
             span,
         };
         let id = Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &name.text)?
+            .table_id(context.namespace, context.database, &name.text)
+            .await?
             .ok_or_else(unknown)?;
         let is_queue = Catalog::new(transaction)
-            .table(id)?
+            .table(id)
+            .await?
             .is_some_and(|definition| matches!(definition.kind, TableKind::Queue(_)));
         if !is_queue {
             return Err(unknown());
         }
-        Catalog::new(transaction).drop_table(id)?;
+        Catalog::new(transaction).drop_table(id).await?;
         Ok(Outcome::Done)
     }
 
@@ -356,23 +371,25 @@ impl Session<'_> {
     /// nothing and orphans nothing. It refuses a name of another kind for the
     /// reason `DROP QUEUE` does: a word that removed a table of another kind
     /// would make the statement's own name the least reliable thing about it.
-    pub(super) fn drop_view(
+    pub(super) async fn drop_view(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         let unknown = || Error::Unknown {
             entity: "view",
             name: name.text.clone(),
             span,
         };
         let id = Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &name.text)?
+            .table_id(context.namespace, context.database, &name.text)
+            .await?
             .ok_or_else(unknown)?;
         let kind = Catalog::new(transaction)
-            .table(id)?
+            .table(id)
+            .await?
             .map(|definition| definition.kind);
         let Some(TableKind::View(declared)) = kind else {
             return Err(unknown());
@@ -380,28 +397,30 @@ impl Session<'_> {
         // A kept view's rows go with its table; its state and its membership
         // map are kept beside them and go too (ADR-0109 D1, D2).
         if declared.materialized {
-            transaction.forget_view(id)?;
+            transaction.forget_view(id).await?;
         }
-        Catalog::new(transaction).drop_table(id)?;
+        Catalog::new(transaction).drop_table(id).await?;
         Ok(Outcome::Done)
     }
 
-    pub(super) fn drop_vector(
+    pub(super) async fn drop_vector(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         let id = Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &name.text)?
+            .table_id(context.namespace, context.database, &name.text)
+            .await?
             .ok_or_else(|| Error::Unknown {
                 entity: "vector store",
                 name: name.text.clone(),
                 span,
             })?;
         let is_vector = Catalog::new(transaction)
-            .table(id)?
+            .table(id)
+            .await?
             .is_some_and(|definition| matches!(definition.kind, TableKind::Vector(_)));
         if !is_vector {
             return Err(Error::Unknown {
@@ -410,7 +429,7 @@ impl Session<'_> {
                 span,
             });
         }
-        Catalog::new(transaction).drop_table(id)?;
+        Catalog::new(transaction).drop_table(id).await?;
         Ok(Outcome::Done)
     }
 }

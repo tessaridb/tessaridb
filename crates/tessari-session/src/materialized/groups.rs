@@ -32,19 +32,22 @@ use crate::session::Session;
 
 impl Session<'_> {
     /// Bring the groups the changed records left and joined current.
-    pub(super) fn recompute_groups(
+    pub(super) async fn recompute_groups(
         &self,
         transaction: &mut Transaction<'_>,
         kept: &Kept,
         changed: &BTreeSet<RecordId>,
     ) -> Result<()> {
-        let searched = self.searched_of(transaction, kept)?;
+        let searched = self.searched_of(transaction, kept).await?;
         let mut affected: BTreeSet<Vec<u8>> = BTreeSet::new();
         for id in changed {
-            let left = transaction.view_group_of(kept.view, id)?;
-            let joined = match transaction.get(&self.source_row(kept, id))? {
-                Some(payload) => match self.passing(transaction, kept, id, &payload, &searched)? {
-                    Some(record) => Some(self.group_key(transaction, kept, &record)?),
+            let left = transaction.view_group_of(kept.view, id).await?;
+            let joined = match transaction.get(&self.source_row(kept, id)).await? {
+                Some(payload) => match self
+                    .passing(transaction, kept, id, &payload, &searched)
+                    .await?
+                {
+                    Some(record) => Some(self.group_key(transaction, kept, &record).await?),
                     None => None,
                 },
                 None => None,
@@ -59,45 +62,54 @@ impl Session<'_> {
             // Every member that changed was re-filed above, and a member that
             // did not change still holds what put it in this group.
             let mut members = Vec::new();
-            for id in transaction.view_group_members(kept.view, &group)? {
-                if let Some(payload) = transaction.get(&self.source_row(kept, &id))? {
+            for id in transaction.view_group_members(kept.view, &group).await? {
+                if let Some(payload) = transaction.get(&self.source_row(kept, &id)).await? {
                     members.push((id, self.record_of(&payload, &None)?));
                 }
             }
-            self.write_group(transaction, kept, group, members)?;
+            self.write_group(transaction, kept, group, members).await?;
         }
         Ok(())
     }
 
     /// Replace every row and the whole membership map from the source.
-    pub(super) fn recompute_groups_whole(
+    pub(super) async fn recompute_groups_whole(
         &self,
         transaction: &mut Transaction<'_>,
         kept: &Kept,
     ) -> Result<()> {
         let (namespace, database) = (kept.context.namespace, kept.context.database);
-        for (id, _) in transaction.scan_table(namespace, database, kept.view)? {
+        for (id, _) in transaction
+            .scan_table(namespace, database, kept.view)
+            .await?
+        {
             transaction.delete(self.row(kept, id));
         }
-        transaction.forget_view_members(kept.view)?;
-        let searched = self.searched_of(transaction, kept)?;
+        transaction.forget_view_members(kept.view).await?;
+        let searched = self.searched_of(transaction, kept).await?;
         let mut groups: BTreeMap<Vec<u8>, Vec<(RecordId, Value)>> = BTreeMap::new();
-        for (id, payload) in transaction.scan_table(namespace, database, kept.source)? {
-            let Some(record) = self.passing(transaction, kept, &id, &payload, &searched)? else {
+        for (id, payload) in transaction
+            .scan_table(namespace, database, kept.source)
+            .await?
+        {
+            let Some(record) = self
+                .passing(transaction, kept, &id, &payload, &searched)
+                .await?
+            else {
                 continue;
             };
-            let group = self.group_key(transaction, kept, &record)?;
+            let group = self.group_key(transaction, kept, &record).await?;
             transaction.move_view_member(kept.view, &id, None, Some(&group));
             groups.entry(group).or_default().push((id, record));
         }
         for (group, members) in groups {
-            self.write_group(transaction, kept, group, members)?;
+            self.write_group(transaction, kept, group, members).await?;
         }
         Ok(())
     }
 
     /// Write one group's row from its members, or remove it when it has none.
-    fn write_group(
+    async fn write_group(
         &self,
         transaction: &mut Transaction<'_>,
         kept: &Kept,
@@ -105,13 +117,15 @@ impl Session<'_> {
         members: Vec<(RecordId, Value)>,
     ) -> Result<()> {
         let select = &kept.understood.select;
-        let (mut rows, ..) = self.grouped(
-            transaction,
-            members,
-            select.projection.written(),
-            (&select.group, None),
-            None,
-        )?;
+        let (mut rows, ..) = self
+            .grouped(
+                transaction,
+                members,
+                select.projection.written(),
+                (&select.group, None),
+                None,
+            )
+            .await?;
         let row = self.row(kept, RecordId::Bytes(group));
         match (rows.pop(), rows.is_empty()) {
             (None, _) => transaction.delete(row),
@@ -130,7 +144,7 @@ impl Session<'_> {
 
     /// The group a record is in: its group key, evaluated as the read's fold
     /// evaluates it, in the order-preserving encoding.
-    fn group_key(
+    async fn group_key(
         &self,
         transaction: &mut Transaction<'_>,
         kept: &Kept,
@@ -139,13 +153,16 @@ impl Session<'_> {
         let group = &kept.understood.select.group;
         let mut key = Vec::with_capacity(group.len());
         for held in group {
-            key.push(self.evaluate_in(transaction, held, Scope::of(record))?);
+            key.push(
+                self.evaluate_in(transaction, held, Scope::of(record))
+                    .await?,
+            );
         }
         Ok(IndexValues::of(&key).as_slice().to_vec())
     }
 
     /// The record, decoded, when it passes the view's condition.
-    fn passing(
+    async fn passing(
         &self,
         transaction: &mut Transaction<'_>,
         kept: &Kept,
@@ -155,11 +172,13 @@ impl Session<'_> {
     ) -> Result<Option<Value>> {
         let record = self.record_of(payload, &None)?;
         if let Some(condition) = &kept.understood.condition {
-            let value = self.evaluate_in(
-                transaction,
-                condition,
-                Scope::searching(&record, searched).identified(id),
-            )?;
+            let value = self
+                .evaluate_in(
+                    transaction,
+                    condition,
+                    Scope::searching(&record, searched).identified(id),
+                )
+                .await?;
             if !boolean(&value, condition.span)? {
                 return Ok(None);
             }
@@ -168,9 +187,16 @@ impl Session<'_> {
     }
 
     /// What the condition's searches resolve to, once per batch.
-    fn searched_of(&self, transaction: &mut Transaction<'_>, kept: &Kept) -> Result<Searched> {
+    async fn searched_of(
+        &self,
+        transaction: &mut Transaction<'_>,
+        kept: &Kept,
+    ) -> Result<Searched> {
         match &kept.understood.condition {
-            Some(condition) => self.searched_for(transaction, kept.source, &[condition]),
+            Some(condition) => {
+                self.searched_for(transaction, kept.source, &[condition])
+                    .await
+            }
             None => Ok(Searched::default()),
         }
     }

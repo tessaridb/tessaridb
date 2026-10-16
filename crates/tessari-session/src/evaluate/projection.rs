@@ -28,7 +28,7 @@ impl Session<'_> {
     ///
     /// A computed projection is evaluated against this record, so it is the
     /// same evaluator a `WHERE` uses and cannot disagree with it.
-    pub(crate) fn project(
+    pub(crate) async fn project(
         &self,
         transaction: &mut Transaction<'_>,
         id: &RecordId,
@@ -45,11 +45,12 @@ impl Session<'_> {
             (searched, noticed),
             (None, None),
         )
+        .await
     }
 
     /// [`Self::project`], with the record's ranks when a fused read projects
     /// it, or its hit when a `FROM SEARCH` does.
-    pub(crate) fn project_with(
+    pub(crate) async fn project_with(
         &self,
         transaction: &mut Transaction<'_>,
         id: &RecordId,
@@ -114,11 +115,13 @@ impl Session<'_> {
                 .identified(id)
                 .noticing(noticed);
             let scope = ranks.map_or(scope, |ranks| scope.with_ranks(ranks));
-            let held = self.evaluate_in(
-                transaction,
-                &value.value,
-                hit.map_or(scope, |hit| scope.with_hit(hit)),
-            )?;
+            let held = self
+                .evaluate_in(
+                    transaction,
+                    &value.value,
+                    hit.map_or(scope, |hit| scope.with_hit(hit)),
+                )
+                .await?;
             if held.is_present() {
                 projected.insert(value.name.text.clone(), held);
             }
@@ -147,7 +150,7 @@ impl Session<'_> {
     /// difference is real rather than a style choice: a score with nothing to
     /// measure against has no honest number, while a highlight with nothing to
     /// mark has an honest answer and it is the empty one.
-    pub(super) fn highlight(
+    pub(super) async fn highlight(
         &self,
         transaction: &mut Transaction<'_>,
         arguments: &[Expr],
@@ -168,7 +171,7 @@ impl Session<'_> {
         };
         // Evaluated first, whatever marks it: a field this session may not read
         // resolves to nothing here, and nothing is marked.
-        let Value::String(text) = self.evaluate_in(transaction, first, scope)? else {
+        let Value::String(text) = self.evaluate_child(transaction, first, scope).await? else {
             return none;
         };
         let wanted = scope.wanted(&field.path);
@@ -201,7 +204,7 @@ impl Session<'_> {
         ))
     }
 
-    pub(super) fn rank(
+    pub(super) async fn rank(
         &self,
         transaction: &mut Transaction<'_>,
         arguments: &[Expr],
@@ -286,7 +289,7 @@ impl Session<'_> {
         if !membership {
             return Ok(answer(corpus, &Held::counted(occurrences, length)));
         }
-        let held = self.evaluate_in(transaction, first, scope)?;
+        let held = self.evaluate_child(transaction, first, scope).await?;
         let Value::String(text) = held else {
             // Not text: it holds none of the words, which scores zero. The same
             // answer a document of the wrong shape gets from `MATCHES`, in the

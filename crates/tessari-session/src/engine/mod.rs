@@ -47,12 +47,12 @@ pub(crate) struct Hit<'r> {
 }
 
 /// The text a `FROM SEARCH` asks, evaluated once.
-fn asked_text(
+async fn asked_text(
     session: &Session<'_>,
     transaction: &mut Transaction<'_>,
     asked: &Expr,
 ) -> Result<String> {
-    match session.evaluate(transaction, asked)? {
+    match session.evaluate(transaction, asked).await? {
         Value::String(text) => Ok(text),
         other => Err(Error::SearchNeedsText {
             found: other.type_name(),
@@ -85,7 +85,7 @@ impl Session<'_> {
 
     /// The plan `EXPLAIN` reports for a `FROM SEARCH`, read from the
     /// dictionary alone.
-    pub(crate) fn explain_search(
+    pub(crate) async fn explain_search(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
@@ -98,10 +98,10 @@ impl Session<'_> {
         else {
             return Ok(Plan::new(AccessPath::Scan));
         };
-        let resolved = self.resolve_search(transaction, name)?;
+        let resolved = self.resolve_search(transaction, name).await?;
         let (served, from_postings) = match ask {
             SearchAsk::Matches { operator, query } => {
-                let text = asked_text(self, transaction, query)?;
+                let text = asked_text(self, transaction, query).await?;
                 self.search_served(
                     transaction,
                     &resolved,
@@ -117,7 +117,7 @@ impl Session<'_> {
     /// The records a `FROM SEARCH` answers, ranked, without their hits — the
     /// source a grouped read folds (ADR-0105 D6: facets are `GROUP BY` over
     /// the search).
-    pub(crate) fn search_records(
+    pub(crate) async fn search_records(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
@@ -131,23 +131,25 @@ impl Session<'_> {
         else {
             return Ok((Vec::new(), Plan::new(AccessPath::Scan)));
         };
-        let resolved = self.resolve_search(transaction, name)?;
+        let resolved = self.resolve_search(transaction, name).await?;
         let SearchAsk::Matches { operator, query } = ask else {
             let beginning = ask_beginning(ask);
-            let text = asked_text(self, transaction, beginning)?;
+            let text = asked_text(self, transaction, beginning).await?;
             return Ok((
                 self.complete(transaction, &resolved, &text, beginning.span)?,
                 Self::search_plan(&name.text, true, false),
             ));
         };
-        let text = asked_text(self, transaction, query)?;
-        let (_, ranking) = self.rank_search(
-            transaction,
-            &resolved,
-            (*operator, &text, query.span),
-            condition.as_deref(),
-            noticed,
-        )?;
+        let text = asked_text(self, transaction, query).await?;
+        let (_, ranking) = self
+            .rank_search(
+                transaction,
+                &resolved,
+                (*operator, &text, query.span),
+                condition.as_deref(),
+                noticed,
+            )
+            .await?;
         let plan = Self::search_plan(&name.text, ranking.served, ranking.from_postings);
         Ok((
             ranking
@@ -161,7 +163,7 @@ impl Session<'_> {
 
     /// The whole answer of an ungrouped `FROM SEARCH`: ranked, bounded, then
     /// projected with each record's hit in scope.
-    pub(crate) fn search_answer(
+    pub(crate) async fn search_answer(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
@@ -185,7 +187,7 @@ impl Session<'_> {
                 span: ordering.key.span,
             });
         }
-        let resolved = self.resolve_search(transaction, name)?;
+        let resolved = self.resolve_search(transaction, name).await?;
         notes.extend(resolved.rebuild.iter().cloned());
         let skip = select
             .start
@@ -193,18 +195,19 @@ impl Session<'_> {
         let keep = select.limit.map_or(usize::MAX, |limit| {
             usize::try_from(limit).unwrap_or(usize::MAX)
         });
-        let wanted = self.shaped(transaction, select)?;
+        let wanted = self.shaped(transaction, select).await?;
         let searched = Searched::default();
         let SearchAsk::Matches { operator, query } = ask else {
             let beginning = ask_beginning(ask);
-            let text = asked_text(self, transaction, beginning)?;
+            let text = asked_text(self, transaction, beginning).await?;
             let completed = self.complete(transaction, &resolved, &text, beginning.span)?;
             let plan = Self::search_plan(&name.text, true, false);
             let mut answered = Vec::new();
             for (id, record) in completed.into_iter().skip(skip).take(keep) {
                 let shaped = match &wanted {
                     Some(wanted) => {
-                        self.project(transaction, &id, &record, wanted, &searched, noticed)?
+                        self.project(transaction, &id, &record, wanted, &searched, noticed)
+                            .await?
                     }
                     None => record,
                 };
@@ -220,14 +223,16 @@ impl Session<'_> {
                 suggestion: None,
             });
         };
-        let text = asked_text(self, transaction, query)?;
-        let (asked, ranking) = self.rank_search(
-            transaction,
-            &resolved,
-            (*operator, &text, query.span),
-            condition.as_deref(),
-            noticed,
-        )?;
+        let text = asked_text(self, transaction, query).await?;
+        let (asked, ranking) = self
+            .rank_search(
+                transaction,
+                &resolved,
+                (*operator, &text, query.span),
+                condition.as_deref(),
+                noticed,
+            )
+            .await?;
         let plan = Self::search_plan(&name.text, ranking.served, ranking.from_postings);
         let mut answered = Vec::new();
         for found in ranking.found.into_iter().skip(skip).take(keep) {
@@ -241,14 +246,17 @@ impl Session<'_> {
                 score: found.score,
             };
             let shaped = match &wanted {
-                Some(wanted) => self.project_with(
-                    transaction,
-                    &found.id,
-                    &found.record,
-                    wanted,
-                    (&searched, noticed),
-                    (None, Some(&hit)),
-                )?,
+                Some(wanted) => {
+                    self.project_with(
+                        transaction,
+                        &found.id,
+                        &found.record,
+                        wanted,
+                        (&searched, noticed),
+                        (None, Some(&hit)),
+                    )
+                    .await?
+                }
                 None => found.record,
             };
             answered.push((found.id, shaped));
@@ -267,7 +275,7 @@ impl Session<'_> {
     /// `search::score()`, `search::table_name()`, `search::snippet()` and a
     /// `search::highlight(field)` asked inside a `FROM SEARCH` — `None` for any
     /// other call, which the evaluator then answers as it always has.
-    pub(crate) fn answered_by_hit(
+    pub(crate) async fn answered_by_hit(
         &self,
         transaction: &mut Transaction<'_>,
         function: Function,
@@ -300,7 +308,8 @@ impl Session<'_> {
                 let ExprKind::Path(field) = &first.kind else {
                     return Ok(Some(none));
                 };
-                let Value::String(text) = self.evaluate_in(transaction, first, scope)? else {
+                let Value::String(text) = self.evaluate_child(transaction, first, scope).await?
+                else {
                     return Ok(Some(none));
                 };
                 snippet::marks(hit, &field.path, &text)

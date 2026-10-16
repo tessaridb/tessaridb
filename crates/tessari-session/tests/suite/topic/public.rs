@@ -1,6 +1,7 @@
 //! Who may append and read: an anonymous caller at a `PUBLIC` topic, and
 //! grants (S5.1, S5.2).
 
+use tessari_session::Now;
 use tessari_session::RunNow;
 use tessari_session::Session;
 use tessari_storage::Store;
@@ -22,7 +23,7 @@ fn closed(store: &Store) -> Session<'_> {
              DEFINE USER root ROLE owner PASSWORD '{PASSWORD}';"
         ),
     );
-    owner.sign_in("root", PASSWORD).unwrap();
+    owner.sign_in("root", PASSWORD).now().unwrap();
     owner
 }
 
@@ -127,7 +128,7 @@ fn read_on_a_topic_reads_and_keeps_a_position_and_write_appends() {
             ),
         );
         let mut ria = Session::new(&backend.store);
-        ria.sign_in("ria", PASSWORD).unwrap();
+        ria.sign_in("ria", PASSWORD).now().unwrap();
         run(&mut ria, "USE NAMESPACE prod; USE DATABASE app;");
         let (messages, _) = read(&mut ria, "READ FROM events FOR CONSUMER 'audit';");
         assert_eq!(messages.len(), 1, "{}", backend.name);
@@ -145,7 +146,7 @@ fn read_on_a_topic_reads_and_keeps_a_position_and_write_appends() {
         );
 
         let mut wes = Session::new(&backend.store);
-        wes.sign_in("wes", PASSWORD).unwrap();
+        wes.sign_in("wes", PASSWORD).now().unwrap();
         run(&mut wes, "USE NAMESPACE prod; USE DATABASE app;");
         run(&mut wes, "CREATE events = { n: 2 };");
         let why = refused(&mut wes, "READ FROM events;");

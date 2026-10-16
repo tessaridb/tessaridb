@@ -19,6 +19,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -28,7 +29,7 @@ use tessari_types::RecordId;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// A small social graph, written out so the answers are readable by inspection.
@@ -195,7 +196,7 @@ fn every_table_in_the_chain_is_asked_about_and_not_only_the_first() {
     // The first user closed the store, so everything after it is declared by
     // the owner — the shape every store past its first day is in.
     let mut root = Session::new(&store);
-    root.sign_in("root", "a long one").unwrap();
+    root.sign_in("root", "a long one").now().unwrap();
     root.run_now(
         "USE NAMESPACE prod; USE DATABASE social;\n\
          DEFINE USER ada ON prod.social ROLE editor PASSWORD 'a long one';\n\
@@ -205,7 +206,7 @@ fn every_table_in_the_chain_is_asked_about_and_not_only_the_first() {
     .unwrap();
 
     let mut narrow = Session::new(&store);
-    narrow.sign_in("ada", "a long one").unwrap();
+    narrow.sign_in("ada", "a long one").now().unwrap();
     narrow
         .run_now("USE NAMESPACE prod; USE DATABASE social;")
         .unwrap();

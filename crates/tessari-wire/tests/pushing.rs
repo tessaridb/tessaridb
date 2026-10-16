@@ -13,6 +13,7 @@
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_wire::{Became, Client, Follow, Happened, Node};
@@ -78,7 +79,7 @@ fn within(feed: &mpsc::Receiver<Happened>, what: &str) -> Happened {
 
 #[test]
 fn a_change_written_after_a_subscribe_arrives() {
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
@@ -117,7 +118,7 @@ fn a_connection_that_subscribes_close_behind_its_statements_is_fed() {
     // Statements close behind one another are answered on a store thread
     // (`hot.rs`), which reads the subscription itself and must hand it back to
     // the runtime with the session that selected the database.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
@@ -156,7 +157,7 @@ fn a_change_committed_past_the_node_reaches_its_feeds() {
     // what a replica's apply, the other surface or a cadence does. A feed runs a
     // round only when the store announces a landing, so a landing it did not
     // announce would never arrive (Q-838).
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
@@ -186,7 +187,7 @@ fn dropping_the_subscriber_ends_its_running_feed_with_nothing_else_written() {
     // A feed re-asks who may read on every round, and runs a round only when the
     // store lands something. The revocation is itself a landing, so it must end
     // the feed alone — with no later write to wake it (Q-838).
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut open = Client::connect(&address).unwrap();
     open.run(READY, None).unwrap();
@@ -237,7 +238,7 @@ fn dropping_the_subscriber_ends_its_running_feed_with_nothing_else_written() {
 fn a_subscription_from_an_earlier_position_replays_what_it_missed() {
     // The whole reason a position is a number the client keeps: a subscriber
     // that was away comes back to what happened while it was.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
@@ -270,7 +271,7 @@ fn a_subscription_from_an_earlier_position_replays_what_it_missed() {
 
 #[test]
 fn watching_one_table_is_not_told_about_another() {
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
@@ -303,7 +304,7 @@ fn watching_one_table_is_not_told_about_another() {
 
 #[test]
 fn a_removal_is_told_apart_from_a_write() {
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
@@ -335,7 +336,7 @@ fn a_removal_is_told_apart_from_a_write() {
 fn a_pushed_value_is_the_value_it_was_and_not_a_projection() {
     // A subscriber applying changes has the console's problem: a decimal it has
     // to decide about is a decimal it will get wrong.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
@@ -377,7 +378,7 @@ fn a_pushed_value_is_the_value_it_was_and_not_a_projection() {
 fn watching_a_table_that_is_not_there_is_refused_rather_than_silently_empty() {
     // A subscription to a name nobody defined delivers nothing forever, which
     // looks exactly like a subscription to a quiet table.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     Client::connect(&address).unwrap().run(READY, None).unwrap();
 
@@ -397,7 +398,7 @@ fn watching_a_table_that_is_not_there_is_refused_rather_than_silently_empty() {
 
 #[test]
 fn watching_a_table_before_a_database_is_selected_says_so() {
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     Client::connect(&address).unwrap().run(READY, None).unwrap();
 
@@ -420,7 +421,7 @@ fn a_node_with_a_subscriber_still_answers_everybody_else() {
     // A thread per connection is what buys this, and it is worth asserting
     // rather than assuming: a feed that held anything shared would stop the
     // node the moment somebody subscribed.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
@@ -449,7 +450,7 @@ fn a_closed_store_refuses_an_unauthenticated_subscription() {
     // "who may read" has to be asked here or not at all — and not at all means
     // an anonymous connection receiving every write on a store that refuses it a
     // `SELECT`.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut owner = Client::connect(&address).unwrap();
     owner.run(READY, None).unwrap();
@@ -504,7 +505,7 @@ fn a_subscription_is_confined_to_the_database_the_session_selected() {
     // The log is every tenancy's. A subscription that did not confine itself
     // would hand a caller every write in the store — which is a great deal more
     // than the database they said `USE` for.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
@@ -553,7 +554,7 @@ fn a_subscription_is_confined_to_the_database_the_session_selected() {
 fn following_before_a_database_is_selected_says_so_even_watching_everything() {
     // "Everything" has to mean everything in *a* database, and a session that
     // has not said which cannot be given one.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     Client::connect(&address).unwrap().run(READY, None).unwrap();
 
@@ -578,7 +579,7 @@ fn a_subscriber_that_hangs_up_on_a_quiet_feed_gives_its_place_back() {
     // until somebody, anybody, wrote a change (measured on 0.10.0-beta).
     // Nothing is written here after the subscribe: the node has to notice the
     // hang-up by itself.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
@@ -623,7 +624,7 @@ fn a_node_holds_more_idle_feeds_than_store_calls_and_still_answers() {
     // of conversations a surface holds is no longer the number of store calls
     // in flight (ADR-0085 §3). One feed past the store-call bound is held, and
     // a statement is still answered beside all of them.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
@@ -682,7 +683,7 @@ fn a_subscriber_that_stops_reading_is_cut_off_rather_than_buffered_and_loses_not
     // Run with `cargo test -p tessari-wire -- --ignored`.
     const WRITTEN: usize = 10_000;
 
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
@@ -755,7 +756,7 @@ fn a_grant_governed_subscriber_is_told_only_about_tables_it_was_granted() {
     // somebody a table nobody granted them. This surface has produced that shape
     // of hole twice; the test is what makes the third time a failure rather than
     // a discovery.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut open = Client::connect(&address).unwrap();
     open.run(READY, None).unwrap();
@@ -827,7 +828,7 @@ fn a_field_grant_reaches_the_feed_too() {
     // path, so a field grant reaches it here or not at all. This surface has
     // produced that class of hole twice; the test is what makes a third a
     // failure rather than a discovery.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut open = Client::connect(&address).unwrap();
     open.run(READY, None).unwrap();
@@ -891,7 +892,7 @@ fn serve_until_the_test_ends(node: &Node) {
 /// a position past what it skipped (ADR-0122 Part B) over the wire.
 #[test]
 fn a_narrowed_subscription_sends_what_matches_and_says_how_far_it_read() {
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
@@ -948,7 +949,7 @@ fn a_narrowed_subscription_sends_what_matches_and_says_how_far_it_read() {
 /// commit, which may never come (Q-956).
 #[test]
 fn a_skip_after_a_delivery_is_said_while_the_feed_is_quiet() {
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
@@ -1004,7 +1005,7 @@ fn a_skip_after_a_delivery_is_said_while_the_feed_is_quiet() {
 #[test]
 fn a_client_below_minor_four_is_never_sent_progress() {
     use std::io::{Read, Write};
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let (_node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();

@@ -18,29 +18,31 @@ impl Session<'_> {
     /// through the same functions. There is no geo-only path: what the word
     /// creates is what the three statements create, which is what makes the
     /// round trip through `INFO` honest.
-    pub(super) fn define_geo(
+    pub(super) async fn define_geo(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         if_not_exists: bool,
         span: Span,
     ) -> Result<Outcome> {
-        let outcome = self.define_table(
-            transaction,
-            name,
-            TableShape {
-                schemafull: false,
-                kind: TableKind::Geo,
-                identity: IdentityKind::default(),
-                graph: None,
-                conflict: None,
-                split: Vec::new(),
-                partition: None,
-                spread: false,
-            },
-            if_not_exists,
-            span,
-        )?;
+        let outcome = self
+            .define_table(
+                transaction,
+                name,
+                TableShape {
+                    schemafull: false,
+                    kind: TableKind::Geo,
+                    identity: IdentityKind::default(),
+                    graph: None,
+                    conflict: None,
+                    split: Vec::new(),
+                    partition: None,
+                    spread: false,
+                },
+                if_not_exists,
+                span,
+            )
+            .await?;
         let table = TableRef {
             database: None,
             name: name.clone(),
@@ -67,7 +69,8 @@ impl Session<'_> {
                 assert: None,
             },
             if_not_exists,
-        )?;
+        )
+        .await?;
         self.define_index(
             transaction,
             &field,
@@ -86,26 +89,29 @@ impl Session<'_> {
                 costs: tessari_storage::SearchCosts::default(),
             },
             if_not_exists,
-        )?;
+        )
+        .await?;
         Ok(outcome)
     }
 
-    pub(super) fn drop_geo(
+    pub(super) async fn drop_geo(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         let id = Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &name.text)?
+            .table_id(context.namespace, context.database, &name.text)
+            .await?
             .ok_or_else(|| Error::Unknown {
                 entity: "geo store",
                 name: name.text.clone(),
                 span,
             })?;
         let is_geo = Catalog::new(transaction)
-            .table(id)?
+            .table(id)
+            .await?
             .is_some_and(|definition| definition.kind == TableKind::Geo);
         if !is_geo {
             return Err(Error::Unknown {
@@ -114,11 +120,11 @@ impl Session<'_> {
                 span,
             });
         }
-        Catalog::new(transaction).drop_table(id)?;
+        Catalog::new(transaction).drop_table(id).await?;
         Ok(Outcome::Done)
     }
 
-    pub(super) fn define_field(
+    pub(super) async fn define_field(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
@@ -127,13 +133,14 @@ impl Session<'_> {
         shape: FieldShape,
         if_not_exists: bool,
     ) -> Result<Outcome> {
-        let (_, id) = self.resolve_table(transaction, table)?;
-        if if_not_exists && self.field_named(transaction, id, name).is_ok() {
+        let (_, id) = self.resolve_table(transaction, table).await?;
+        if if_not_exists && self.field_named(transaction, id, name).await.is_ok() {
             return Ok(Outcome::Done);
         }
         if shape.secret
             && !Catalog::new(transaction)
-                .table(id)?
+                .table(id)
+                .await?
                 .is_some_and(|definition| definition.is_vault())
         {
             return Err(Error::SecretNeedsVault {
@@ -150,7 +157,8 @@ impl Session<'_> {
         // matching.
         if let Some(named) = &shape.analyzer {
             let declared = Catalog::new(transaction)
-                .analyzers()?
+                .analyzers()
+                .await?
                 .into_iter()
                 .any(|held| &held.name == named);
             if !declared {
@@ -174,7 +182,7 @@ impl Session<'_> {
         // in the catalog and the failure looks like the write's fault.
         if let Some(written) = &shape.default {
             let expression = tessari_ql::parse_expression(written)?;
-            let value = self.evaluate(transaction, &expression)?;
+            let value = self.evaluate(transaction, &expression).await?;
             if !kind.accepts(&value) {
                 return Err(Error::DefaultDoesNotMatch {
                     field: name.text.clone(),
@@ -184,11 +192,13 @@ impl Session<'_> {
                 });
             }
         }
-        Catalog::new(transaction).create_field(id, &name.text, kind, shape)?;
+        Catalog::new(transaction)
+            .create_field(id, &name.text, kind, shape)
+            .await?;
         Ok(Outcome::Done)
     }
 
-    pub(super) fn define_analyzer(
+    pub(super) async fn define_analyzer(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
@@ -196,13 +206,16 @@ impl Session<'_> {
         if_not_exists: bool,
     ) -> Result<Outcome> {
         let declared = Catalog::new(transaction)
-            .analyzers()?
+            .analyzers()
+            .await?
             .into_iter()
             .any(|found| found.name == name.text);
         if if_not_exists && declared {
             return Ok(Outcome::Done);
         }
-        Catalog::new(transaction).create_analyzer(&name.text, Analyzer::new(filters.to_vec()))?;
+        Catalog::new(transaction)
+            .create_analyzer(&name.text, Analyzer::new(filters.to_vec()))
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -217,14 +230,15 @@ impl Session<'_> {
     /// Every field in the store is read, not every field on one table: an
     /// analyzer is declared once for the whole store, so no single table can
     /// answer whether it is still attached.
-    pub(super) fn drop_analyzer(
+    pub(super) async fn drop_analyzer(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
         let found = Catalog::new(transaction)
-            .analyzers()?
+            .analyzers()
+            .await?
             .into_iter()
             .find(|held| held.name == name.text);
         let Some(analyzer) = found else {
@@ -235,7 +249,8 @@ impl Session<'_> {
             });
         };
         let attached: Vec<String> = Catalog::new(transaction)
-            .fields()?
+            .fields()
+            .await?
             .into_iter()
             .filter(|field| field.analyzer.as_deref() == Some(name.text.as_str()))
             .map(|field| field.name)
@@ -255,8 +270,9 @@ impl Session<'_> {
             &name.text,
             span,
             |engine| engine.analyzer == name.text,
-        )?;
-        Catalog::new(transaction).drop_analyzer(analyzer.id)?;
+        )
+        .await?;
+        Catalog::new(transaction).drop_analyzer(analyzer.id).await?;
         Ok(Outcome::Done)
     }
 }

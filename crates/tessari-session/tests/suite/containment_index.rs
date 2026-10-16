@@ -16,6 +16,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_encoding::{ContainmentKey, IndexValues, KeyKind, StoreKey};
@@ -126,7 +127,7 @@ const QUESTIONS: usize = 160;
 
 fn memory() -> (Arc<dyn KvBackend>, Store) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     (backend, store)
 }
 
@@ -331,7 +332,9 @@ fn the_index_reads_back_after_the_store_is_closed_and_opened() {
             tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
         )
         .unwrap();
-        Store::open(Arc::new(backend) as Arc<dyn KvBackend>).unwrap()
+        Store::open(Arc::new(backend) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap()
     };
     let asked = "SELECT * FROM indexed WHERE doc CONTAINS { items: [{ sku: 'b' }] };";
     {
@@ -380,7 +383,7 @@ fn a_store_holding_format_five_refuses_a_containment_index_and_keeps_its_format(
             FormatVersion::new(5).encode(),
         ))
         .unwrap();
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(

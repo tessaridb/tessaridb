@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tessari_session::RunNow;
 
 use tessari_constants::GATHER_RECORDS;
-use tessari_session::{Asked, Gather, Gathered, Partial, Reduced, Unanswered};
+use tessari_session::{Asked, Gather, Gathered, Partial, Reduced};
 use tessari_types::{Number, RecordId, Value};
 
 use crate::gathered_reads::{
@@ -201,32 +201,34 @@ struct HoldingMany {
 }
 
 impl Gather for HoldingMany {
-    fn gather(&self, asked: &Asked<'_>) -> Result<Gathered, Unanswered> {
-        self.asked.fetch_add(1, Ordering::Relaxed);
-        let many = i64::try_from(GATHER_RECORDS).unwrap();
-        let states = asked
-            .reduce
-            .unwrap()
-            .folds
-            .iter()
-            .map(|folded| match folded.fold.spelling() {
-                "median" => Value::Array(vec![Value::Array(vec![
-                    Value::Number(Number::Decimal(1.into())),
-                    Value::from(many),
-                ])]),
-                "collect" => Value::Array(vec![Value::from(1_i64); GATHER_RECORDS]),
-                other => panic!("{other}"),
+    fn gather<'a>(&'a self, asked: &'a Asked<'_>) -> tessari_session::Gathering<'a> {
+        Box::pin(async move {
+            self.asked.fetch_add(1, Ordering::Relaxed);
+            let many = i64::try_from(GATHER_RECORDS).unwrap();
+            let states = asked
+                .reduce
+                .unwrap()
+                .folds
+                .iter()
+                .map(|folded| match folded.fold.spelling() {
+                    "median" => Value::Array(vec![Value::Array(vec![
+                        Value::Number(Number::Decimal(1.into())),
+                        Value::from(many),
+                    ])]),
+                    "collect" => Value::Array(vec![Value::from(1_i64); GATHER_RECORDS]),
+                    other => panic!("{other}"),
+                })
+                .collect();
+            Ok(Gathered {
+                records: Vec::new(),
+                node: [9; 16],
+                reduced: Some(Reduced::Partials(vec![Partial {
+                    key: Vec::new(),
+                    first: RecordId::from("a"),
+                    states,
+                }])),
+                counted: None,
             })
-            .collect();
-        Ok(Gathered {
-            records: Vec::new(),
-            node: [9; 16],
-            reduced: Some(Reduced::Partials(vec![Partial {
-                key: Vec::new(),
-                first: RecordId::from("a"),
-                states,
-            }])),
-            counted: None,
         })
     }
 }

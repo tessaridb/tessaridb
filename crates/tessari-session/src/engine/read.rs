@@ -104,17 +104,15 @@ pub(crate) struct Ranking {
 impl Session<'_> {
     /// The search `name` in the current database, narrowed to what this
     /// session may read.
-    pub(crate) fn resolve_search(
+    pub(crate) async fn resolve_search(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
     ) -> Result<Resolved> {
-        let context = self.context(transaction, None, name.span)?;
-        let members = Catalog::new(transaction).members_of(
-            context.namespace,
-            context.database,
-            &name.text,
-        )?;
+        let context = self.context(transaction, None, name.span).await?;
+        let members = Catalog::new(transaction)
+            .members_of(context.namespace, context.database, &name.text)
+            .await?;
         let Some(first) = members.first().and_then(|member| member.engine.clone()) else {
             return Err(Error::Unknown {
                 entity: "search",
@@ -123,7 +121,8 @@ impl Session<'_> {
             });
         };
         let analyzer = Catalog::new(transaction)
-            .analyzers()?
+            .analyzers()
+            .await?
             .into_iter()
             .find(|held| held.name == first.analyzer)
             .ok_or_else(|| Error::Unknown {
@@ -134,13 +133,14 @@ impl Session<'_> {
             .analyzer;
         let stopwords = match &first.stopwords {
             Some(set) => self
-                .word_set(transaction, WordSetKind::Stopwords, set, name.span)?
+                .word_set(transaction, WordSetKind::Stopwords, set, name.span)
+                .await?
                 .into_keys()
                 .flat_map(|word| analyzer.terms(&word))
                 .collect(),
             None => BTreeSet::new(),
         };
-        let readable = self.readable_in(transaction)?;
+        let readable = self.readable_in(transaction).await?;
         let mut reached = Vec::new();
         let mut rebuild = Vec::new();
         for index in members {
@@ -153,7 +153,7 @@ impl Session<'_> {
             {
                 continue;
             }
-            let visible = self.visible_in(transaction, index.table)?;
+            let visible = self.visible_in(transaction, index.table).await?;
             if let Some(visible) = &visible
                 && index
                     .fields
@@ -163,8 +163,9 @@ impl Session<'_> {
                 continue;
             }
             // A partial holder's statistics are not the collection's (ADR-0105 D8).
-            self.refuse_reading_a_part(transaction, index.table, Part::Whole)?;
-            let Some(table) = Catalog::new(transaction).table(index.table)? else {
+            self.refuse_reading_a_part(transaction, index.table, Part::Whole)
+                .await?;
+            let Some(table) = Catalog::new(transaction).table(index.table).await? else {
                 continue;
             };
             // No scan stands in for a member — it is the search — so it is read
@@ -182,7 +183,8 @@ impl Session<'_> {
             for (at, (path, declared)) in index.fields.iter().zip(&engine.fields).enumerate() {
                 let synonyms = match &declared.synonyms {
                     Some(set) => self
-                        .word_set(transaction, WordSetKind::Synonyms, set, name.span)?
+                        .word_set(transaction, WordSetKind::Synonyms, set, name.span)
+                        .await?
                         .into_iter()
                         .filter_map(|(word, alternatives)| {
                             let [word] = analyzer.terms(&word).try_into().ok()?;
@@ -230,7 +232,7 @@ impl Session<'_> {
     }
 
     /// A declared word set's entries, refused by name when it has gone.
-    fn word_set(
+    async fn word_set(
         &self,
         transaction: &mut Transaction<'_>,
         kind: WordSetKind,
@@ -238,7 +240,8 @@ impl Session<'_> {
         span: Span,
     ) -> Result<BTreeMap<String, Vec<String>>> {
         Catalog::new(transaction)
-            .word_set(kind, name)?
+            .word_set(kind, name)
+            .await?
             .map(|set| set.entries)
             .ok_or_else(|| Error::Unknown {
                 entity: kind.word(),

@@ -4,6 +4,7 @@
 
 use tessari_encoding::{Participant, TransactionRecord};
 use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_session::AcrossAsk;
 use tessari_storage::Decision;
@@ -32,6 +33,7 @@ fn stage(db: &Db, participants: &[Reach], deadline: u64) {
                         .collect(),
                 },
             })
+            .now()
             .unwrap();
     }
 }
@@ -57,7 +59,7 @@ fn an_overdue_staging_record_whose_every_part_landed_is_committed() {
     let (db, address) = left_behind(&[]);
     let (home, _) = ranges(&db);
     stage(&db, &[home], 0);
-    let settled = db.settle_across().unwrap();
+    let settled = db.settle_across().now().unwrap();
     assert_eq!(
         settled,
         SettledAcross {
@@ -75,7 +77,7 @@ fn an_overdue_staging_record_missing_a_part_is_barred_and_aborted() {
     let (db, address) = left_behind(&[]);
     let (home, elsewhere) = ranges(&db);
     stage(&db, &[home, elsewhere], 0);
-    let settled = db.settle_across().unwrap();
+    let settled = db.settle_across().now().unwrap();
     assert_eq!(
         settled,
         SettledAcross {
@@ -101,9 +103,11 @@ fn an_intent_under_a_staging_record_is_never_resolved_by_the_pass() {
     let (home, elsewhere) = ranges(&db);
     stage(&db, &[home, elsewhere], u64::MAX);
     let now = super::super::now_millis();
-    let lapse = tessari_session::across_lapse_millis(db.store()).unwrap();
+    let lapse = tessari_session::across_lapse_millis(db.store())
+        .now()
+        .unwrap();
     for at in [now, now.saturating_add(lapse).saturating_add(1)] {
-        let settled = db.settle_across_at(at).unwrap();
+        let settled = db.settle_across_at(at).now().unwrap();
         assert_eq!(settled.resolved, 0, "{settled:?}");
         assert!(db.store().holds_intents_of(TRANSACTION).unwrap());
     }
@@ -125,9 +129,17 @@ fn a_bar_ends_with_its_log_and_a_late_prepare_is_refused_as_too_old() {
     let (elsewhere, late) = {
         let mut reading = store.begin().unwrap();
         let catalog = tessari_storage::Catalog::new(&mut reading);
-        let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-        let other = catalog.database_id(namespace, "other").unwrap().unwrap();
-        let more = catalog.table_id(namespace, other, "more").unwrap().unwrap();
+        let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+        let other = catalog
+            .database_id(namespace, "other")
+            .now()
+            .unwrap()
+            .unwrap();
+        let more = catalog
+            .table_id(namespace, other, "more")
+            .now()
+            .unwrap()
+            .unwrap();
         reading.rollback();
         // The barred part's write, as its prepare carries it.
         let late = tessari_encoding::Mutation {
@@ -143,10 +155,10 @@ fn a_bar_ends_with_its_log_and_a_late_prepare_is_refused_as_too_old() {
         (Reach::Database(namespace, other), late)
     };
     // What the late prepare read: the barred range's log before the bar.
-    let log = store.history_log(elsewhere).unwrap();
+    let log = store.history_log(elsewhere).now().unwrap();
     let seen = store.committed_tail(log).unwrap();
     stage(&db, &[home, elsewhere], 0);
-    db.settle_across().unwrap();
+    db.settle_across().now().unwrap();
     assert_eq!(decision(&db), Some(Decision::Aborted));
     let bars = || store.bars_across().unwrap();
     assert_eq!(bars(), 1, "recovery barred the missing part");
@@ -160,12 +172,15 @@ fn a_bar_ends_with_its_log_and_a_late_prepare_is_refused_as_too_old() {
     let tail = store.committed_tail(log).unwrap();
     store.prune_log(log, tail).unwrap();
     assert_eq!(bars(), 0, "the bar went with the record that wrote it");
-    let refused = db.session().answer_across(&AcrossAsk::Prepare {
-        transaction: TRANSACTION,
-        coordinator: home,
-        seen,
-        writes: vec![late],
-    });
+    let refused = db
+        .session()
+        .answer_across(&AcrossAsk::Prepare {
+            transaction: TRANSACTION,
+            coordinator: home,
+            seen,
+            writes: vec![late],
+        })
+        .now();
     assert!(
         matches!(
             refused,

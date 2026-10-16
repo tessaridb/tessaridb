@@ -10,6 +10,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -19,7 +20,7 @@ use tessari_types::{Analyzer, DatabaseId, NamespaceId, Number, RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// A session with `prod / orders` selected, an analyzed `body` field on `notes`,
@@ -249,10 +250,12 @@ fn held(store: &Store) -> (u64, u64) {
     let mut transaction = store.begin().unwrap();
     let table = Catalog::new(&mut transaction)
         .table_id(NamespaceId::new(1), DatabaseId::new(1), "notes")
+        .now()
         .unwrap()
         .expect("the table");
     let index = Catalog::new(&mut transaction)
         .indexes_on(NamespaceId::new(1), DatabaseId::new(1), table)
+        .now()
         .unwrap()
         .into_iter()
         .find(|index| index.name == "by_body")

@@ -55,7 +55,7 @@ impl Transaction<'_> {
     /// [`Error::ConcurrentVersions`] when a contested record's table has not
     /// declared what to do, and the backend's failure when the versions or the
     /// declaration cannot be read.
-    pub(super) fn refuse_a_contested_record(&self) -> Result<u64> {
+    pub(super) async fn refuse_a_contested_record(&self) -> Result<u64> {
         let mut discarded = 0_u64;
         let mut two_writers: BTreeMap<NamespaceId, bool> = BTreeMap::new();
         for address in self.writes.keys() {
@@ -64,7 +64,8 @@ impl Transaction<'_> {
                 None => {
                     let admits = self
                         .store
-                        .admits_two_writers(Reach::Namespace(address.namespace))?;
+                        .admits_two_writers(Reach::Namespace(address.namespace))
+                        .await?;
                     two_writers.insert(address.namespace, admits);
                     admits
                 }
@@ -93,7 +94,8 @@ impl Transaction<'_> {
             // which is the one the stamp producer stood on.
             if self
                 .store
-                .conflict_policy(address.table)?
+                .conflict_policy(address.table)
+                .await?
                 .discards_the_loser()
             {
                 let lost = surviving.len().saturating_sub(1);
@@ -126,10 +128,12 @@ impl Transaction<'_> {
     /// This is the write-write detection, and it is only sound because the
     /// commit batch asserts the tail has not moved either — together they turn
     /// check-then-write into a compare-and-set over the whole commit.
-    pub(in crate::transaction) fn check_for_conflicts(&self) -> Result<()> {
+    pub(in crate::transaction) async fn check_for_conflicts(&self) -> Result<()> {
         // A guarded read is held to the same rule as a write: whatever decided
-        // this transaction's writes must not have changed under it.
-        let guarded = self.guarded.borrow();
+        // this transaction's writes must not have changed under it. Copied out
+        // so no borrow of the set is held across the awaits below, where a
+        // guarded read would take it mutably.
+        let guarded = self.guarded.borrow().clone();
         for address in self.writes.keys().chain(guarded.iter()) {
             // The newest version as stored, intents included — one read, as
             // before intents existed.
@@ -148,7 +152,7 @@ impl Transaction<'_> {
             // from the old value — so it is refused as a conflict, and passes
             // once this node's copies hold the transaction's every part.
             let unseen = match provenance.as_ref() {
-                Some(resolved) if !resolved.provisional => !self.sees(resolved)?,
+                Some(resolved) if !resolved.provisional => !self.sees(resolved).await?,
                 _ => false,
             };
             // ADR-0112 D5: a standing intent refuses the write whatever this

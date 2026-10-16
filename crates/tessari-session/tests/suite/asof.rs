@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -52,7 +53,9 @@ fn at(millis: u64) -> String {
 fn every_trade_gets_the_newest_quote_at_or_before_it_or_none() {
     let mut draw = Draw(0x5eed);
     for case in 0..1_000 {
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let mut session = opened(&store);
         // Quotes at distinct instants per symbol, so "newest" has one answer.
         let mut quotes: Vec<(u64, u64, u64)> = Vec::new();
@@ -133,7 +136,9 @@ fn every_trade_gets_the_newest_quote_at_or_before_it_or_none() {
 
 #[test]
 fn an_asof_join_needs_two_event_time_series() {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = opened(&store);
     session
         .run_now("DEFINE SERIES arrivals RETAIN 1d; DEFINE COLLECTION plain;")

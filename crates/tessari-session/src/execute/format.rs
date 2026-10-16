@@ -42,11 +42,15 @@ impl Session<'_> {
     /// Answers the format the store holds afterwards. Nothing is written when
     /// it already holds this build's format: a finalize never lowers, and one
     /// that changes nothing is not a write anybody needs replicated.
-    pub(super) fn finalize_format(&self, transaction: &mut Transaction<'_>) -> Result<Outcome> {
+    pub(super) async fn finalize_format(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<Outcome> {
         let target = FormatVersion::CURRENT;
         let holds = self.store.held_format()?;
         if holds < target {
-            self.refuse_a_peer_that_cannot_read(transaction, target)?;
+            self.refuse_a_peer_that_cannot_read(transaction, target)
+                .await?;
             Catalog::new(transaction).finalize_format(target);
         }
         Ok(Outcome::Value(Value::Object(BTreeMap::from([(
@@ -57,7 +61,7 @@ impl Session<'_> {
 
     /// Every declared replica but this node must have greeted it running a
     /// release that writes `target`.
-    fn refuse_a_peer_that_cannot_read(
+    async fn refuse_a_peer_that_cannot_read(
         &self,
         transaction: &mut Transaction<'_>,
         target: FormatVersion,
@@ -68,7 +72,7 @@ impl Session<'_> {
             needs: target.get(),
             holds: self.store.held_format()?.get(),
         })?;
-        for replica in Catalog::new(transaction).replicas()? {
+        for replica in Catalog::new(transaction).replicas().await? {
             if replica.node == Some(me) {
                 continue;
             }

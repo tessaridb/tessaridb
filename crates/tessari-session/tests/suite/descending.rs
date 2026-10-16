@@ -21,6 +21,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -30,7 +31,7 @@ use tessari_types::{RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 const INDEX: &str = "DEFINE INDEX by_joined ON users FIELDS joined;";
@@ -327,7 +328,7 @@ fn the_order_does_not_disclose_a_field_the_caller_cannot_read() {
         )
         .unwrap();
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
               DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
@@ -336,7 +337,7 @@ fn the_order_does_not_disclose_a_field_the_caller_cannot_read() {
     .unwrap();
 
     let mut ada = Session::new(&store);
-    ada.sign_in("ada", PASSWORD).unwrap();
+    ada.sign_in("ada", PASSWORD).now().unwrap();
     ada.run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
 

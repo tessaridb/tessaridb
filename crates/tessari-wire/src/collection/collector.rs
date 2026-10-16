@@ -77,8 +77,9 @@ impl Collector<'_> {
     /// So the records are filed where they were read from, which is the sentence
     /// `Store::apply_record_in` already makes about the home: a fact about the
     /// collect, and not a second authority over the record.
-    pub fn collect(&self, into: &Store, home: Reach, from: Sequence) -> Result<Sequence> {
+    pub async fn collect(&self, into: &Store, home: Reach, from: Sequence) -> Result<Sequence> {
         self.round(into, &[(home, from)])
+            .await
             .pop()
             .unwrap_or_else(|| Ok(Sequence::new(from.get().saturating_sub(1))))
     }
@@ -102,12 +103,12 @@ impl Collector<'_> {
     /// every home the round fetched, since the round is applied as one; what was
     /// applied before it stays, and each cursor stays where it was, so the next
     /// round re-offers records this node may already hold.
-    pub fn round(&self, into: &Store, asks: &[(Reach, Sequence)]) -> Vec<Result<Sequence>> {
-        let fetched: Vec<Result<Collected>> = asks
-            .iter()
-            .map(|(home, from)| self.fetch(into, *home, *from))
-            .collect();
-        self.apply(into, asks, fetched)
+    pub async fn round(&self, into: &Store, asks: &[(Reach, Sequence)]) -> Vec<Result<Sequence>> {
+        let mut fetched: Vec<Result<Collected>> = Vec::with_capacity(asks.len());
+        for (home, from) in asks {
+            fetched.push(self.fetch(into, *home, *from).await);
+        }
+        self.apply(into, asks, fetched).await
     }
 
     /// Apply one answer per ask — fetched by a round or sent on a held stream
@@ -116,7 +117,7 @@ impl Collector<'_> {
     ///
     /// The one apply path both share, so a record a stream delivers is applied
     /// exactly as the round would have applied it.
-    pub fn apply(
+    pub async fn apply(
         &self,
         into: &Store,
         asks: &[(Reach, Sequence)],
@@ -133,7 +134,7 @@ impl Collector<'_> {
                     collected.log.home,
                     tessari_storage::Writer::new(self.peer.0),
                 );
-                if let Err(why) = into.adopt_into_line(copy) {
+                if let Err(why) = into.adopt_into_line(copy).await {
                     tracing::warn!(error = %why, "this node's copy of its leader's log could not be adopted");
                 }
             }
@@ -153,7 +154,7 @@ impl Collector<'_> {
                     horizon: self.horizon_of(collected),
                 })
                 .collect();
-            into.apply_in_writer_order(&pages)
+            into.apply_in_writer_order(&pages).await
         };
         let mut applied = match applied {
             Ok(applied) => applied.into_iter(),
@@ -231,7 +232,12 @@ impl Collector<'_> {
     }
 
     /// Ask the peer for `home` from `from`, and hand back its answer unapplied.
-    pub(crate) fn fetch(&self, into: &Store, home: Reach, from: Sequence) -> Result<Collected> {
+    pub(crate) async fn fetch(
+        &self,
+        into: &Store,
+        home: Reach,
+        from: Sequence,
+    ) -> Result<Collected> {
         let held = Sequence::new(from.get().saturating_sub(1));
         // Before the dial, not after it: a node that must not apply this log has
         // no business opening a connection for it, and refusing after the answer
@@ -245,7 +251,7 @@ impl Collector<'_> {
         // node that had just legitimately taken the cluster's namespaces, which
         // is the opposite of what this defends.
         if matches!(home, Reach::Store) && held == Sequence::ZERO {
-            refuse_to_reinterpret(into)?;
+            refuse_to_reinterpret(into).await?;
         }
         let (_, answered) = call(
             self.peer.1,
@@ -302,14 +308,14 @@ impl Collector<'_> {
 ///
 /// Returns [`Error::Refused`] carrying the store's own words when the catalog
 /// cannot be read.
-pub fn logs_to_collect(store: &Store) -> Result<Vec<Reach>> {
+pub async fn logs_to_collect(store: &Store) -> Result<Vec<Reach>> {
     let mut transaction = store.begin().map_err(refused)?;
     let catalog = Catalog::new(&mut transaction);
     let mut logs = vec![Reach::Store];
-    let namespaces = catalog.namespaces().map_err(refused)?;
+    let namespaces = catalog.namespaces().await.map_err(refused)?;
     for namespace in namespaces {
         logs.push(Reach::Namespace(namespace.id));
-        for database in catalog.databases_in(namespace.id).map_err(refused)? {
+        for database in catalog.databases_in(namespace.id).await.map_err(refused)? {
             logs.push(Reach::Database(namespace.id, database.id));
             // Each shard of a split table is a log of its own (G031, ADR-0080),
             // asked for after its database because the table's definition — and
@@ -319,6 +325,7 @@ pub fn logs_to_collect(store: &Store) -> Result<Vec<Reach>> {
             // state: the shard logs would simply never be asked for.
             for table in catalog
                 .tables_in(namespace.id, database.id)
+                .await
                 .map_err(refused)?
             {
                 let Some(shards) = &table.shards else {
@@ -376,10 +383,11 @@ pub fn logs_to_collect(store: &Store) -> Result<Vec<Reach>> {
 /// two counters, not this particular answer: a leader that happens to have sent
 /// nothing yet will allocate namespace 1 later, and a check that waited for the
 /// colliding record to arrive would pass the collect that precedes it.
-pub(crate) fn refuse_to_reinterpret(into: &Store) -> Result<()> {
+pub(crate) async fn refuse_to_reinterpret(into: &Store) -> Result<()> {
     let mut transaction = into.begin().map_err(refused)?;
     let held = Catalog::new(&mut transaction)
         .namespaces()
+        .await
         .map_err(refused)?;
     transaction.rollback();
     if held.is_empty() {

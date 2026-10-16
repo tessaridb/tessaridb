@@ -15,23 +15,27 @@ impl Session<'_> {
     /// — a second copy on the graph would be a fact able to disagree with
     /// itself, which is the same reason a bucket's chunk table is derived from
     /// its name rather than stored beside it.
-    pub(in crate::info) fn info_graph(
+    pub(in crate::info) async fn info_graph(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         let id = Catalog::new(transaction)
-            .graph_id(context.namespace, context.database, &name.text)?
+            .graph_id(context.namespace, context.database, &name.text)
+            .await?
             .ok_or_else(|| Error::Unknown {
                 entity: "graph",
                 name: name.text.clone(),
                 span,
             })?;
-        let readable = self.readable_in(transaction)?;
+        let readable = self.readable_in(transaction).await?;
         let mut names = Vec::new();
-        for table in Catalog::new(transaction).tables_in(context.namespace, context.database)? {
+        for table in Catalog::new(transaction)
+            .tables_in(context.namespace, context.database)
+            .await?
+        {
             if table.graph != Some(id) || !nameable(&table.name) {
                 continue;
             }
@@ -47,7 +51,8 @@ impl Session<'_> {
         // with them, because they are not tables: nothing can select from one,
         // and a report that mixed the two would invite a caller to try.
         let kinds: Vec<_> = Catalog::new(transaction)
-            .edge_kinds_in(context.namespace, context.database)?
+            .edge_kinds_in(context.namespace, context.database)
+            .await?
             .into_iter()
             .filter(|kind| kind.graph == id)
             .map(|kind| kind.name)
@@ -79,22 +84,26 @@ impl Session<'_> {
     /// held at the time**, and the engine constants in force — because recall
     /// decays as records are added after a build, so a bare percentage goes
     /// stale in silence, which is the same failure by the other door.
-    pub(in crate::info) fn info_vector(
+    pub(in crate::info) async fn info_vector(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         let missing = || Error::Unknown {
             entity: "vector store",
             name: name.text.clone(),
             span,
         };
         let id = Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &name.text)?
+            .table_id(context.namespace, context.database, &name.text)
+            .await?
             .ok_or_else(missing)?;
-        let definition = Catalog::new(transaction).table(id)?.ok_or_else(missing)?;
+        let definition = Catalog::new(transaction)
+            .table(id)
+            .await?
+            .ok_or_else(missing)?;
         let TableKind::Vector(declared) = definition.kind else {
             return Err(missing());
         };
@@ -102,7 +111,8 @@ impl Session<'_> {
         // by the name the desugaring gave it — a name is a spelling and this is
         // the thing itself.
         let index = Catalog::new(transaction)
-            .field_indexes_on(id)?
+            .field_indexes_on(id)
+            .await?
             .into_iter()
             .find(|index| index.vector.is_some());
         let (measured, footprint, quantized) = match index {
@@ -150,22 +160,26 @@ impl Session<'_> {
         ]))
     }
 
-    pub(in crate::info) fn info_geo(
+    pub(in crate::info) async fn info_geo(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         let missing = || Error::Unknown {
             entity: "geo store",
             name: name.text.clone(),
             span,
         };
         let id = Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &name.text)?
+            .table_id(context.namespace, context.database, &name.text)
+            .await?
             .ok_or_else(missing)?;
-        let definition = Catalog::new(transaction).table(id)?.ok_or_else(missing)?;
+        let definition = Catalog::new(transaction)
+            .table(id)
+            .await?
+            .ok_or_else(missing)?;
         if definition.kind != TableKind::Geo {
             return Err(missing());
         }
@@ -173,7 +187,8 @@ impl Session<'_> {
         // the name the desugaring gave it, for the reason the vector store gives:
         // a name is a spelling, and this is the thing itself.
         let index = Catalog::new(transaction)
-            .field_indexes_on(id)?
+            .field_indexes_on(id)
+            .await?
             .into_iter()
             .find(|index| index.spatial);
         let measured = match &index {

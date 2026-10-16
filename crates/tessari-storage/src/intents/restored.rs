@@ -51,7 +51,7 @@ impl Store {
     ///
     /// The store's refusal of a settlement, and whatever the backend or the
     /// codec returns.
-    pub fn settle_restored(&self) -> Result<usize> {
+    pub async fn settle_restored(&self) -> Result<usize> {
         let mut settled = 0_usize;
         for (transaction, coordinator) in self.standing_across()? {
             let Some(outcome) = self.fixed_by_the_cut(transaction)? else {
@@ -66,7 +66,8 @@ impl Store {
                         self.restore_state_chunk(&LogRecord::new(Vec::new()).across(Across {
                             transaction,
                             part: Part::Decide(record),
-                        }))?;
+                        }))
+                        .await?;
                     }
                     Some(participants)
                 }
@@ -87,7 +88,7 @@ impl Store {
                     None => intent,
                 };
                 let resolution = LogRecord::new(vec![Mutation {
-                    shard: self.shard_of(&address)?,
+                    shard: self.shard_of(&address).await?,
                     namespace: address.namespace,
                     database: address.database,
                     table: address.table,
@@ -100,7 +101,7 @@ impl Store {
                         committed: participants.is_some(),
                     },
                 });
-                self.restore_state_chunk(&resolution)?;
+                self.restore_state_chunk(&resolution).await?;
             }
             settled = settled.saturating_add(1);
         }
@@ -240,10 +241,11 @@ impl Store {
 
     /// The shard of a split table `address` falls in, as the restored catalog
     /// says.
-    fn shard_of(&self, address: &RecordAddress) -> Result<Option<tessari_types::ShardId>> {
+    async fn shard_of(&self, address: &RecordAddress) -> Result<Option<tessari_types::ShardId>> {
         let mut reading = self.begin()?;
         Ok(crate::catalog::Catalog::new(&mut reading)
-            .table(address.table)?
+            .table(address.table)
+            .await?
             .and_then(|definition| definition.shards)
             .map(|map| map.shard_of(&address.id)))
     }

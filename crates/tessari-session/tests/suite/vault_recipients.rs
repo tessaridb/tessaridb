@@ -32,6 +32,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_encoding::decode_payload;
@@ -53,7 +54,9 @@ const USING: &str = "USE NAMESPACE prod; USE DATABASE work;";
 
 /// A store holding one vault record with one sealed field.
 fn holding() -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     {
         let mut session = Session::new(&store);
         session
@@ -112,6 +115,7 @@ fn stored_record(store: &Store) -> BTreeMap<String, Value> {
     let mut transaction = store.begin().unwrap();
     let namespace = Catalog::new(&mut transaction)
         .namespaces()
+        .now()
         .unwrap()
         .into_iter()
         .find(|namespace| namespace.name == "prod")
@@ -119,6 +123,7 @@ fn stored_record(store: &Store) -> BTreeMap<String, Value> {
         .id;
     let database = Catalog::new(&mut transaction)
         .databases_in(namespace)
+        .now()
         .unwrap()
         .into_iter()
         .find(|database| database.name == "work")
@@ -126,6 +131,7 @@ fn stored_record(store: &Store) -> BTreeMap<String, Value> {
         .id;
     let table = Catalog::new(&mut transaction)
         .table_id(namespace, database, "team")
+        .now()
         .unwrap()
         .expect("no vault");
     let address = RecordAddress::new(
@@ -134,7 +140,7 @@ fn stored_record(store: &Store) -> BTreeMap<String, Value> {
         table,
         RecordId::Text("github".to_owned()),
     );
-    let stored = transaction.get(&address).unwrap().expect("no record");
+    let stored = transaction.get(&address).now().unwrap().expect("no record");
     let Value::Object(fields) = decode_payload(&stored).unwrap() else {
         panic!("the record is not an object");
     };
@@ -391,7 +397,7 @@ fn the_recipient_set_is_not_readable_without_the_grant() {
             )
             .unwrap();
         let mut root = Session::new(&store);
-        root.sign_in("root", "correct horse battery").unwrap();
+        root.sign_in("root", "correct horse battery").now().unwrap();
         root.run_now(&format!(
             "{USING}
              DEFINE USER ada ON prod.work ROLE viewer PASSWORD 'correct horse battery';
@@ -401,7 +407,7 @@ fn the_recipient_set_is_not_readable_without_the_grant() {
     }
 
     let mut ada = Session::new(&store);
-    ada.sign_in("ada", "correct horse battery").unwrap();
+    ada.sign_in("ada", "correct horse battery").now().unwrap();
     ada.run_now(USING).unwrap();
 
     // Ada holds a grant, so the loop over what a statement reaches is not
@@ -415,12 +421,12 @@ fn the_recipient_set_is_not_readable_without_the_grant() {
     // being unusable by anyone but an owner.
     {
         let mut root = Session::new(&store);
-        root.sign_in("root", "correct horse battery").unwrap();
+        root.sign_in("root", "correct horse battery").now().unwrap();
         root.run_now(&format!("{USING} GRANT read ON team TO ada;"))
             .unwrap();
     }
     let mut ada = Session::new(&store);
-    ada.sign_in("ada", "correct horse battery").unwrap();
+    ada.sign_in("ada", "correct horse battery").now().unwrap();
     ada.run_now(USING).unwrap();
     assert_eq!(listed(&mut ada).len(), 1);
 }
@@ -466,6 +472,7 @@ fn address_of(store: &Store) -> RecordAddress {
     let mut transaction = store.begin().unwrap();
     let namespace = Catalog::new(&mut transaction)
         .namespaces()
+        .now()
         .unwrap()
         .into_iter()
         .find(|namespace| namespace.name == "prod")
@@ -473,6 +480,7 @@ fn address_of(store: &Store) -> RecordAddress {
         .id;
     let database = Catalog::new(&mut transaction)
         .databases_in(namespace)
+        .now()
         .unwrap()
         .into_iter()
         .find(|database| database.name == "work")
@@ -480,6 +488,7 @@ fn address_of(store: &Store) -> RecordAddress {
         .id;
     let table = Catalog::new(&mut transaction)
         .table_id(namespace, database, "team")
+        .now()
         .unwrap()
         .expect("no vault");
     RecordAddress::new(
@@ -512,7 +521,7 @@ fn a_concurrent_add_and_remove_leave_a_consistent_set() {
     let mut removing = store.begin().unwrap();
 
     for (transaction, change) in [(&mut adding, true), (&mut removing, false)] {
-        let stored = transaction.get(&address).unwrap().expect("no record");
+        let stored = transaction.get(&address).now().unwrap().expect("no record");
         let Value::Object(mut held) = decode_payload(&stored).unwrap() else {
             panic!("not an object");
         };
@@ -528,14 +537,14 @@ fn a_concurrent_add_and_remove_leave_a_consistent_set() {
         );
     }
 
-    adding.commit().unwrap();
+    adding.commit().now().unwrap();
     let second = removing.commit();
 
     // First committer wins and the second is **refused** rather than merged.
     // What matters is that the loser is told: a revocation that lost a race and
     // reported success is the same failure as one that matched nothing.
     assert!(
-        second.is_err(),
+        second.now().is_err(),
         "the second transaction committed over the first",
     );
 
@@ -601,7 +610,9 @@ fn a_recipient_survives_the_rotation_of_the_secret_they_were_shared() {
 
 #[test]
 fn an_edit_seals_what_it_names_and_leaves_the_other_envelope_alone() {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(&format!(

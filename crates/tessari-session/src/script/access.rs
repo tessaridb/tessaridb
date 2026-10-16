@@ -15,20 +15,20 @@ use crate::session::Session;
 /// A part carries only the analyzers its fields use, each `IF NOT EXISTS`: the
 /// store it restores into may already declare one of that name for fields of
 /// its own, and a part must not change what those find.
-pub(super) fn analyzers(catalog: &Catalog<'_, '_>, part: &[Reach]) -> Result<String> {
+pub(super) async fn analyzers(catalog: &Catalog<'_, '_>, part: &[Reach]) -> Result<String> {
     let used: Option<std::collections::BTreeSet<String>> = if part.is_empty() {
         None
     } else {
         Some(
             catalog
-                .fields()?
+                .fields().await?
                 .into_iter()
                 .filter(|field| super::carried(part, field.namespace, field.database))
                 .filter_map(|field| field.analyzer)
                 // A search reads with an analyzer no field may name.
                 .chain(
                     catalog
-                        .engine_members()?
+                        .engine_members().await?
                         .into_iter()
                         .filter(|member| super::carried(part, member.namespace, member.database))
                         .filter_map(|member| member.engine.map(|engine| engine.analyzer)),
@@ -37,7 +37,7 @@ pub(super) fn analyzers(catalog: &Catalog<'_, '_>, part: &[Reach]) -> Result<Str
         )
     };
     let mut written = String::new();
-    for analyzer in catalog.analyzers()? {
+    for analyzer in catalog.analyzers().await? {
         if used
             .as_ref()
             .is_some_and(|used| !used.contains(&analyzer.name))
@@ -65,32 +65,32 @@ pub(super) fn analyzers(catalog: &Catalog<'_, '_>, part: &[Reach]) -> Result<Str
 ///
 /// Graph memberships and declared edge endpoints are refused per table by the
 /// declaration writer; what is left here is what belongs to no table.
-pub(super) fn uncarried(catalog: &Catalog<'_, '_>, part: &[Reach]) -> Result<Vec<String>> {
+pub(super) async fn uncarried(catalog: &Catalog<'_, '_>, part: &[Reach]) -> Result<Vec<String>> {
     let mut refused = Vec::new();
-    for namespace in catalog.namespaces()? {
-        for database in catalog.databases_in(namespace.id)? {
+    for namespace in catalog.namespaces().await? {
+        for database in catalog.databases_in(namespace.id).await? {
             if !super::carried(part, namespace.id, database.id) {
                 continue;
             }
             let place = format!("{}.{}", namespace.name, database.name);
-            for graph in catalog.graphs_in(namespace.id, database.id)? {
+            for graph in catalog.graphs_in(namespace.id, database.id).await? {
                 refused.push(format!("{place}: graph `{}`", graph.name));
             }
-            for kind in catalog.edge_kinds_in(namespace.id, database.id)? {
+            for kind in catalog.edge_kinds_in(namespace.id, database.id).await? {
                 refused.push(format!("{place}: edge kind `{}`", kind.name));
             }
         }
     }
-    let replicas = catalog.replicas()?.len();
+    let replicas = catalog.replicas().await?.len();
     if replicas > 0 {
         refused.push(format!(
             "cluster topology: {replicas} replica declaration(s)"
         ));
     }
-    if catalog.failover()?.is_some() {
+    if catalog.failover().await?.is_some() {
         refused.push("cluster topology: the failover policy".to_owned());
     }
-    let consumers = catalog.consumers()?.len();
+    let consumers = catalog.consumers().await?.len();
     if consumers > 0 {
         refused.push(format!("{consumers} consumer declaration(s)"));
     }
@@ -102,22 +102,22 @@ pub(super) fn uncarried(catalog: &Catalog<'_, '_>, part: &[Reach]) -> Result<Vec
 /// At the end because the first user closes the store, and in one transaction
 /// so the grants land with the users they name rather than after a close that
 /// would refuse them.
-pub(super) fn users(
+pub(super) async fn users(
     reader: &Session<'_>,
     placed: &[(TableId, String, String, String)],
 ) -> Result<String> {
     let mut view = reader.store.begin()?;
     let catalog = Catalog::new(&mut view);
-    let users = catalog.users()?;
+    let users = catalog.users().await?;
     if users.is_empty() {
         return Ok(String::new());
     }
     let mut written = String::from("BEGIN;\n");
     for user in &users {
-        declare(&catalog, user, &mut written)?;
+        declare(&catalog, user, &mut written).await?;
     }
     for user in &users {
-        for grant in catalog.grants_for(user.id)? {
+        for grant in catalog.grants_for(user.id).await? {
             let Some((_, namespace, database, table)) =
                 placed.iter().find(|(id, ..)| *id == grant.table)
             else {
@@ -143,7 +143,11 @@ pub(super) fn users(
 
 /// `DEFINE USER` with the authorities held at the user's own reach, and a
 /// `GRANT` for each held anywhere else.
-fn declare(catalog: &Catalog<'_, '_>, user: &UserDefinition, written: &mut String) -> Result<()> {
+async fn declare(
+    catalog: &Catalog<'_, '_>,
+    user: &UserDefinition,
+    written: &mut String,
+) -> Result<()> {
     let own = match (user.namespace, user.database) {
         (None, _) => Reach::Store,
         (Some(namespace), None) => Reach::Namespace(namespace),
@@ -151,7 +155,9 @@ fn declare(catalog: &Catalog<'_, '_>, user: &UserDefinition, written: &mut Strin
     };
     let scope = match (user.namespace, user.database) {
         (None, _) => String::new(),
-        (Some(namespace), database) => format!(" ON {}", reach(catalog, namespace, database)?),
+        (Some(namespace), database) => {
+            format!(" ON {}", reach(catalog, namespace, database).await?)
+        }
     };
     let at_own: Vec<&str> = user
         .authorities
@@ -170,10 +176,13 @@ fn declare(catalog: &Catalog<'_, '_>, user: &UserDefinition, written: &mut Strin
         let target = match held.reach {
             Reach::Store => "STORE".to_owned(),
             Reach::Namespace(namespace) => {
-                format!("NAMESPACE {}", named_namespace(catalog, namespace)?)
+                format!("NAMESPACE {}", named_namespace(catalog, namespace).await?)
             }
             Reach::Database(namespace, database) => {
-                format!("DATABASE {}", reach(catalog, namespace, Some(database))?)
+                format!(
+                    "DATABASE {}",
+                    reach(catalog, namespace, Some(database)).await?
+                )
             }
             Reach::Shard(..) => continue,
         };
@@ -188,14 +197,14 @@ fn declare(catalog: &Catalog<'_, '_>, user: &UserDefinition, written: &mut Strin
 }
 
 /// A namespace, or a namespace and database, by name.
-fn reach(
+async fn reach(
     catalog: &Catalog<'_, '_>,
     namespace: tessari_types::NamespaceId,
     database: Option<tessari_types::DatabaseId>,
 ) -> Result<String> {
-    let named = named_namespace(catalog, namespace)?;
+    let named = named_namespace(catalog, namespace).await?;
     Ok(match database {
-        Some(database) => format!("{named}.{}", named_database(catalog, database)?),
+        Some(database) => format!("{named}.{}", named_database(catalog, database).await?),
         None => named,
     })
 }

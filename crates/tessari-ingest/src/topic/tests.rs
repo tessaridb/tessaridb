@@ -24,7 +24,9 @@ use super::run_topic_consumers;
 const PATIENCE: Duration = Duration::from_secs(20);
 
 async fn store_with(group: &str) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .await
+        .unwrap();
     Session::new(&store)
         .run(&format!(
             "DEFINE NAMESPACE shop; USE NAMESPACE shop; DEFINE DATABASE live; \

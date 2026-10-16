@@ -32,6 +32,7 @@
 
 use std::sync::Arc;
 use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_encoding::{AppliedPositionKey, LogId, LogKey, StoreKey, StoreValue};
 use tessari_kv::{KvBackend, MemoryBackend, WriteBatch};
@@ -85,7 +86,7 @@ const STORE_RECORDS: u64 = 5;
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     (backend, store)
 }
 
@@ -148,11 +149,15 @@ fn follower_at(leader: &Store, upto: u64) -> Store {
         Sequence::new(1),
     )
     .unwrap();
-    tessari_backup::read(&store, &mut definitions.as_slice()).unwrap();
+    tessari_backup::read(&store, &mut definitions.as_slice())
+        .now()
+        .unwrap();
 
     let mut records = Vec::new();
     tessari_backup::write_from(leader, &mut records, home, Sequence::new(1)).unwrap();
-    tessari_backup::read_until(&store, &mut records.as_slice(), Some(Sequence::new(upto))).unwrap();
+    tessari_backup::read_until(&store, &mut records.as_slice(), Some(Sequence::new(upto)))
+        .now()
+        .unwrap();
     assert_eq!(
         store.committed_tail(home).unwrap(),
         Sequence::new(upto),
@@ -201,7 +206,9 @@ fn a_log_that_no_longer_reaches_the_follower_is_refused_and_names_the_missing_se
     )
     .unwrap();
 
-    let refused = tessari_backup::bootstrap(&follower, &mut truncated.as_slice()).unwrap_err();
+    let refused = tessari_backup::bootstrap(&follower, &mut truncated.as_slice())
+        .now()
+        .unwrap_err();
 
     // Named, not merely refused: the numbers are the point, because "it
     // errored" does not tell an operator which record to go and find.
@@ -256,7 +263,9 @@ fn the_same_truncated_log_is_refused_again_rather_than_accepted_on_retry() {
     )
     .unwrap();
 
-    tessari_backup::bootstrap(&follower, &mut truncated.as_slice()).unwrap_err();
+    tessari_backup::bootstrap(&follower, &mut truncated.as_slice())
+        .now()
+        .unwrap_err();
     let stopped_at = follower.committed_tail(home).unwrap();
 
     // Offering the same stream again must not become an acceptance. A refusal
@@ -272,8 +281,9 @@ fn the_same_truncated_log_is_refused_again_rather_than_accepted_on_retry() {
     // the applier ever sees a record. Asserting `LogGap`
     // again would be asserting that the follower had *not* advanced, which is
     // the opposite of what the first test just proved.
-    let refused_again =
-        tessari_backup::bootstrap(&follower, &mut truncated.as_slice()).unwrap_err();
+    let refused_again = tessari_backup::bootstrap(&follower, &mut truncated.as_slice())
+        .now()
+        .unwrap_err();
     assert!(
         matches!(
             refused_again,
@@ -341,7 +351,9 @@ fn a_record_is_restored_into_the_log_it_was_backed_up_from() {
     let mut whole = Vec::new();
     tessari_backup::write(&held, &mut whole).unwrap();
     let (_backend, restored) = store();
-    tessari_backup::read(&restored, &mut whole.as_slice()).unwrap();
+    tessari_backup::read(&restored, &mut whole.as_slice())
+        .now()
+        .unwrap();
 
     assert_eq!(crate::tails(&restored), crate::tails(&held));
     assert_eq!(

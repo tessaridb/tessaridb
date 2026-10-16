@@ -33,6 +33,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{
@@ -190,7 +191,9 @@ fn shapes() -> Vec<String> {
 
 #[test]
 fn a_bounded_ascending_read_is_taken_from_the_index_that_holds_the_order() {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, REQUIRED);
     let read = format!("SELECT * FROM events ORDER BY at LIMIT {LIMIT};");
     assert_eq!(plan(&mut session, &read, "access"), "String(\"ordered\")");
@@ -201,7 +204,9 @@ fn a_bounded_ascending_read_is_taken_from_the_index_that_holds_the_order() {
 
 #[test]
 fn the_same_read_over_an_optional_field_is_refused_and_scans() {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, OPTIONAL);
     let read = format!("SELECT * FROM events ORDER BY at LIMIT {LIMIT};");
     // The index exists and holds the order. What it does not hold is a promise
@@ -213,8 +218,12 @@ fn the_same_read_over_an_optional_field_is_refused_and_scans() {
 
 #[test]
 fn both_answer_the_same_records_in_the_same_order() {
-    let served = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
-    let refused = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let served = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
+    let refused = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut with = ready(&served, REQUIRED);
     let mut without = ready(&refused, OPTIONAL);
     for read in shapes() {
@@ -240,7 +249,9 @@ fn the_first_record_of_an_ascending_answer_is_the_least_and_not_the_greatest() {
     // The assertion an equality against the scan cannot make on its own: if the
     // walk ran the wrong way and the scan's sort were also reversed, the two
     // would agree. This names the value.
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, REQUIRED);
     let (ids, path) = answered(
         &mut session,
@@ -257,7 +268,9 @@ fn the_first_record_of_an_ascending_answer_is_the_least_and_not_the_greatest() {
 #[test]
 fn a_bounded_ascending_read_examines_its_bound_and_not_the_table() {
     let counting = Counting::new();
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, REQUIRED);
     let read = format!("SELECT * FROM events ORDER BY at LIMIT {LIMIT};");
     counting.reset();
@@ -283,7 +296,9 @@ fn a_route_below_a_required_field_is_refused() {
     // `REQUIRED` is declared on a field, so it promises nothing about what lives
     // inside one: a required `address` does not promise an `address.city`. The
     // read is refused rather than approximated.
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(
@@ -310,7 +325,9 @@ fn a_required_field_cannot_be_declared_over_a_table_that_already_breaks_it() {
     // The half of the invariant nothing else depends on, pinned here because the
     // ascending read rests on it: enforcement on every write would not be enough
     // if a record written before the declaration could survive it.
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(
@@ -333,7 +350,9 @@ fn a_descending_read_over_an_optional_field_is_still_served() {
     // The direction rule must not have become a `REQUIRED` rule: descending has
     // no absence problem, because absences sort last and a bounded read never
     // reaches them.
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, OPTIONAL);
     let read = format!("SELECT * FROM events ORDER BY at DESC LIMIT {LIMIT};");
     assert_eq!(plan(&mut session, &read, "access"), "String(\"ordered\")");

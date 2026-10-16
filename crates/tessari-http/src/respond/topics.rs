@@ -128,7 +128,7 @@ pub(crate) async fn topic_series(
     if matches!(presented, Presented::Nobody) {
         return Ok(String::new());
     }
-    let mut session = session_for(db, tokens, presented)?;
+    let mut session = session_for(db, tokens, presented).await?;
     let store = session
         .run("INFO FOR STORE;")
         .await

@@ -13,6 +13,7 @@
 
 use crate::run_now::RunNow;
 use proptest::prelude::*;
+use tessari_storage::Now;
 
 use super::ExactSum;
 use super::oracle::{Wide, oracle};
@@ -266,6 +267,7 @@ fn measure_a_spread_inside_a_read() {
     let store = tessari_storage::Store::open(
         Arc::new(tessari_kv::MemoryBackend::new()) as Arc<dyn tessari_kv::KvBackend>
     )
+    .now()
     .unwrap();
     let mut session = crate::Session::new(&store);
     session

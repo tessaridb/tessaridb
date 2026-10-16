@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use tessari_encoding::{NODE_ID_LEN, NodeIdentity};
+use tessari_session::Now;
 use tessari_types::{Epoch, Sequence};
 
 mod ballots;
@@ -180,7 +181,8 @@ pub(crate) fn voting(
     let address = peers.address().expect("the door's address");
     let mine = hello(id);
     let deciding = Deciding::holding(voter);
-    let answering = std::thread::spawn(move || peers.greet(|| Ok(mine), &HERE, &deciding, &NoLog));
+    let answering =
+        std::thread::spawn(move || peers.greet(|| Ok(mine), &HERE, &deciding, &NoLog).now());
     (address, answering)
 }
 

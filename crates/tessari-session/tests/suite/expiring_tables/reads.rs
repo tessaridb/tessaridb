@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration as Wait;
+use tessari_session::Now;
 
 use tessari_kv::MemoryBackend;
 use tessari_session::{Outcome, Session};
@@ -55,7 +56,7 @@ fn answered(session: &mut Session<'_>, read: &str) -> String {
 
 #[test]
 fn every_read_path_answers_the_record_before_its_instant_and_none_after_it() {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = opened(&store);
     run(&mut session, SCHEMA);
     let before_version = store.committed_version().unwrap();
@@ -104,7 +105,7 @@ fn every_read_path_answers_the_record_before_its_instant_and_none_after_it() {
 
 #[test]
 fn an_index_and_a_scan_answer_the_same_records_after_the_instant() {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = opened(&store);
     run(&mut session, SCHEMA);
     thread::sleep(PAST_SHORT);
@@ -124,14 +125,15 @@ fn an_index_and_a_scan_answer_the_same_records_after_the_instant() {
 
 #[test]
 fn a_follower_holds_the_leaders_instant_and_hides_the_record_after_it() {
-    let leader = Store::open(Arc::new(MemoryBackend::new())).unwrap();
-    let follower = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let leader = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
+    let follower = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = opened(&leader);
     run(&mut session, SCHEMA);
     for log in leader.logs().unwrap() {
         for (sequence, record) in leader.log_records(log, Sequence::ZERO, 4096).unwrap() {
             follower
                 .apply_record(log.writer, sequence, &record)
+                .now()
                 .unwrap();
         }
     }
@@ -155,15 +157,15 @@ fn a_follower_holds_the_leaders_instant_and_hides_the_record_after_it() {
 
 #[test]
 fn the_removal_pass_removes_expired_table_records_and_says_how_many() {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = opened(&store);
     run(&mut session, SCHEMA);
     thread::sleep(PAST_SHORT);
-    let lapsed = store.remove_expired().unwrap();
+    let lapsed = store.remove_expired().now().unwrap();
     assert_eq!(lapsed.records, 1, "{lapsed:?}");
     assert_eq!(lapsed.stale, 0, "{lapsed:?}");
     assert_eq!(
-        store.remove_expired().unwrap().records,
+        store.remove_expired().now().unwrap().records,
         0,
         "nothing is left to remove"
     );

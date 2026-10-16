@@ -68,6 +68,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_encoding::{
@@ -112,7 +113,7 @@ const RANKED: &str = "SELECT * FROM notes ORDER BY search::score(body, 'alpha be
 fn open(path: &std::path::Path) -> (Arc<dyn KvBackend>, Store) {
     let backend = LsmBackend::open(path, StoreConfig::new(Durability::PowerLossSafe)).unwrap();
     let backend = Arc::new(backend) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     (backend, store)
 }
 

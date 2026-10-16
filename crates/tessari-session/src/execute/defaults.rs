@@ -34,7 +34,7 @@ impl Session<'_> {
     /// the same reason the rest of the set is: they were produced here, not read
     /// back out of the store, so they are plaintext by construction rather than
     /// by inspection.
-    pub(super) fn defaults_over(
+    pub(super) async fn defaults_over(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
@@ -45,7 +45,7 @@ impl Session<'_> {
             (Some(_), Value::Object(fields)) => fields.keys().cloned().collect(),
             _ => Vec::new(),
         };
-        let payload = self.with_defaults(transaction, table, payload)?;
+        let payload = self.with_defaults(transaction, table, payload).await?;
         let Some(mut edit) = partial else {
             return Ok((payload, None));
         };
@@ -59,7 +59,7 @@ impl Session<'_> {
         Ok((payload, Some(edit)))
     }
 
-    pub(super) fn with_defaults(
+    pub(super) async fn with_defaults(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
@@ -68,7 +68,7 @@ impl Session<'_> {
         let Value::Object(mut fields) = payload else {
             return Ok(payload);
         };
-        let declared = Catalog::new(transaction).declared_fields(table)?;
+        let declared = Catalog::new(transaction).declared_fields(table).await?;
         for field in declared {
             let Some(written) = field.default else {
                 continue;
@@ -77,20 +77,21 @@ impl Session<'_> {
                 continue;
             }
             let expression = tessari_ql::parse_expression(&written)?;
-            let value = self.evaluate(transaction, &expression)?;
+            let value = self.evaluate(transaction, &expression).await?;
             fields.insert(field.name, value);
         }
         Ok(Value::Object(fields))
     }
 
-    pub(super) fn field_named(
+    pub(super) async fn field_named(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
         name: &Name,
     ) -> Result<FieldId> {
         Catalog::new(transaction)
-            .declared_fields(table)?
+            .declared_fields(table)
+            .await?
             .into_iter()
             .find(|field| field.name == name.text)
             .map(|field| field.id)
@@ -107,14 +108,15 @@ impl Session<'_> {
     /// id can take it — and the one caller that wants the whole thing would
     /// otherwise have to look it up twice and handle a second absence that
     /// cannot happen.
-    pub(super) fn index_named(
+    pub(super) async fn index_named(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
         name: &Name,
     ) -> Result<IndexDefinition> {
         Catalog::new(transaction)
-            .field_indexes_on(table)?
+            .field_indexes_on(table)
+            .await?
             .into_iter()
             .find(|index| index.name == name.text)
             .ok_or_else(|| Error::Unknown {

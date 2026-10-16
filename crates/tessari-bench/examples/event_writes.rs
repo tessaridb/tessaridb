@@ -11,6 +11,7 @@
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -22,7 +23,7 @@ const ROUNDS: u32 = 7;
 
 fn round(table: &str) -> Result<(f64, usize), Box<dyn Error>> {
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
-    let store = Store::open(backend)?;
+    let store = Store::open(backend).now()?;
     let mut session = Session::new(&store);
     session.run_now(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench; DEFINE DATABASE e; USE DATABASE e; \

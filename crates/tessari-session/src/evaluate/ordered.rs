@@ -50,15 +50,16 @@ impl Session<'_> {
     ///
     /// The last `None` is the index running out before the bound was filled,
     /// which is the answer needing records the index does not hold.
-    pub(super) fn walk_in_order(
+    pub(super) async fn walk_in_order(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
         table: TableId,
         wanted: &plan::Bounded<'_>,
     ) -> Result<Walked> {
-        let Some((index, visible)) =
-            self.index_serving_order(transaction, context, table, wanted.path, wanted.descending)?
+        let Some((index, visible)) = self
+            .index_serving_order(transaction, context, table, wanted.path, wanted.descending)
+            .await?
         else {
             return Ok(Walked::NotServed);
         };
@@ -70,16 +71,17 @@ impl Session<'_> {
         // index that runs out has answered the whole table and a short answer is
         // a complete one.
         let found = if wanted.descending {
-            match transaction.records_in_descending_order(
-                &index,
-                ORDERED_LEADING_FIELDS,
-                wanted.wanted,
-            )? {
+            match transaction
+                .records_in_descending_order(&index, ORDERED_LEADING_FIELDS, wanted.wanted)
+                .await?
+            {
                 Some(found) => found,
                 None => return Ok(Walked::Declined),
             }
         } else {
-            transaction.records_in_ascending_order(&index, ORDERED_LEADING_FIELDS, wanted.wanted)?
+            transaction
+                .records_in_ascending_order(&index, ORDERED_LEADING_FIELDS, wanted.wanted)
+                .await?
         };
         Ok(Walked::Served {
             found: self.records_of(found, &visible)?,
@@ -145,7 +147,7 @@ impl Session<'_> {
     /// The answer may be **longer** than the bound, which is correct and
     /// deliberate: it is in order, and `shape::bounded` takes the window the
     /// statement asked for, as it does for every other path.
-    pub(super) fn walk_matching(
+    pub(super) async fn walk_matching(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
@@ -154,8 +156,9 @@ impl Session<'_> {
         condition: &Expr,
         scope: Scope<'_>,
     ) -> Result<Walked> {
-        let Some((index, visible)) =
-            self.index_serving_order(transaction, context, table, wanted.path, wanted.descending)?
+        let Some((index, visible)) = self
+            .index_serving_order(transaction, context, table, wanted.path, wanted.descending)
+            .await?
         else {
             return Ok(Walked::NotServed);
         };
@@ -169,27 +172,25 @@ impl Session<'_> {
             // is the end of the table rather than a hole in the answer, and a
             // walk shorter than it asked for says so.
             let (found, exhausted) = if wanted.descending {
-                let Some(found) = transaction.records_in_descending_order(
-                    &index,
-                    ORDERED_LEADING_FIELDS,
-                    asking,
-                )?
+                let Some(found) = transaction
+                    .records_in_descending_order(&index, ORDERED_LEADING_FIELDS, asking)
+                    .await?
                 else {
                     return Ok(Walked::Declined);
                 };
                 (found, false)
             } else {
-                let found = transaction.records_in_ascending_order(
-                    &index,
-                    ORDERED_LEADING_FIELDS,
-                    asking,
-                )?;
+                let found = transaction
+                    .records_in_ascending_order(&index, ORDERED_LEADING_FIELDS, asking)
+                    .await?;
                 let exhausted = found.len() < asking;
                 (found, exhausted)
             };
             let mut matched = Vec::new();
             for (id, record) in self.records_of(found, &visible)? {
-                let held = self.evaluate_in(transaction, condition, scope.with(&id, &record))?;
+                let held = self
+                    .evaluate_in(transaction, condition, scope.with(&id, &record))
+                    .await?;
                 if boolean(&held, condition.span)? {
                     matched.push((id, record));
                 }
@@ -219,7 +220,7 @@ impl Session<'_> {
     ///
     /// The visible set travels back rather than being read again: it is a
     /// catalog read per statement, and the read that follows needs the same one.
-    pub(crate) fn index_serving_order(
+    pub(crate) async fn index_serving_order(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
@@ -227,7 +228,10 @@ impl Session<'_> {
         path: &tessari_types::Path,
         descending: bool,
     ) -> Result<Option<(tessari_storage::IndexDefinition, crate::redact::Visible)>> {
-        let Some(index) = self.index_ordering_on_path(transaction, table, path)? else {
+        let Some(index) = self
+            .index_ordering_on_path(transaction, table, path)
+            .await?
+        else {
             return Ok(None);
         };
         if !index.is_ordered() {
@@ -242,10 +246,10 @@ impl Session<'_> {
         // Asked here rather than at each call site, so the executor and
         // `EXPLAIN` cannot come to disagree about which reads are servable —
         // the same reason the other four refusals below live here.
-        if !descending && !self.every_record_has(transaction, table, path)? {
+        if !descending && !self.every_record_has(transaction, table, path).await? {
             return Ok(None);
         }
-        let visible = self.visible_in(transaction, table)?;
+        let visible = self.visible_in(transaction, table).await?;
         if visible
             .as_ref()
             .is_some_and(|fields| !fields.contains(path.root()))
@@ -273,7 +277,7 @@ impl Session<'_> {
     /// # Errors
     ///
     /// Returns an error when the catalog cannot be read.
-    pub(super) fn every_record_has(
+    pub(super) async fn every_record_has(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
@@ -283,7 +287,8 @@ impl Session<'_> {
             return Ok(false);
         }
         Ok(Catalog::new(transaction)
-            .declared_fields(table)?
+            .declared_fields(table)
+            .await?
             .iter()
             .any(|field| field.name == path.root() && field.required))
     }
@@ -301,7 +306,7 @@ impl Session<'_> {
     /// them with a different analyzer than the query was built with would make
     /// the two halves of one read disagree. It is passed rather than looked up
     /// again for exactly that reason.
-    pub(super) fn serve(
+    pub(super) async fn serve(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
@@ -310,15 +315,23 @@ impl Session<'_> {
         analyzer: Option<&tessari_types::Analyzer>,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
         match &chosen.served {
-            plan::Served::Equality(values) => transaction.records_by_index(&chosen.index, values),
+            plan::Served::Equality(values) => {
+                transaction.records_by_index(&chosen.index, values).await
+            }
             plan::Served::Prefix(prefix) => {
-                transaction.records_with_string_prefix(&chosen.index, prefix)
+                transaction
+                    .records_with_string_prefix(&chosen.index, prefix)
+                    .await
             }
             plan::Served::Range {
                 fixed,
                 lower,
                 upper,
-            } => transaction.records_in_range(&chosen.index, fixed, lower.as_ref(), upper.as_ref()),
+            } => {
+                transaction
+                    .records_in_range(&chosen.index, fixed, lower.as_ref(), upper.as_ref())
+                    .await
+            }
             plan::Served::Region {
                 cells,
                 bounds,
@@ -337,18 +350,22 @@ impl Session<'_> {
                 // when an analysing `EXPLAIN` exists to carry them.
                 transaction
                     .records_in_region(&chosen.index, cells, *bounds, *relation)
+                    .await
                     .map(|region| region.rows)
             }
             // Candidates too, and re-tested above for the same reason: a path
             // forgets where in an array a leaf was (ADR-0116 D4).
             plan::Served::Containment(pairs) => {
-                transaction.records_containing(&chosen.index, pairs)
+                transaction.records_containing(&chosen.index, pairs).await
             }
             plan::Served::Terms(terms) => {
                 let mut rows = Vec::new();
-                for id in transaction.records_by_terms(&chosen.index, analyzer, terms)? {
+                for id in transaction
+                    .records_by_terms(&chosen.index, analyzer, terms)
+                    .await?
+                {
                     let at = RecordAddress::new(context.namespace, context.database, table, id);
-                    if let Some(payload) = transaction.get(&at)? {
+                    if let Some(payload) = transaction.get(&at).await? {
                         rows.push((at.id, payload));
                     }
                 }
@@ -367,9 +384,12 @@ impl Session<'_> {
                 slop,
             } => {
                 let mut rows = Vec::new();
-                for id in transaction.records_by_expansions(&chosen.index, analyzer, groups)? {
+                for id in transaction
+                    .records_by_expansions(&chosen.index, analyzer, groups)
+                    .await?
+                {
                     let at = RecordAddress::new(context.namespace, context.database, table, id);
-                    let Some(payload) = transaction.get(&at)? else {
+                    let Some(payload) = transaction.get(&at).await? else {
                         continue;
                     };
                     let asked = (groups.as_slice(), words.as_slice(), *slop);
@@ -391,9 +411,12 @@ impl Session<'_> {
             | plan::Served::InfixTerms(expansions)
             | plan::Served::AnyTerms(expansions) => {
                 let mut rows = Vec::new();
-                for id in transaction.records_by_expansions(&chosen.index, analyzer, expansions)? {
+                for id in transaction
+                    .records_by_expansions(&chosen.index, analyzer, expansions)
+                    .await?
+                {
                     let at = RecordAddress::new(context.namespace, context.database, table, id);
-                    if let Some(payload) = transaction.get(&at)? {
+                    if let Some(payload) = transaction.get(&at).await? {
                         rows.push((at.id, payload));
                     }
                 }

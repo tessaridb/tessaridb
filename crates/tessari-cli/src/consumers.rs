@@ -59,7 +59,9 @@ pub type Running = Option<std::convert::Infallible>;
 #[cfg(feature = "kafka")]
 pub async fn start(db: Arc<Db>) -> Running {
     let broker: Arc<dyn tessari_ingest::Broker> = Arc::new(tessari_ingest::Kafka);
-    match tessari_ingest::Runner::start(db.store(), broker, &tokio::runtime::Handle::current()) {
+    match tessari_ingest::Runner::start(db.store(), broker, &tokio::runtime::Handle::current())
+        .await
+    {
         Ok(started) => {
             if started.threads() > 0 {
                 tracing::info!(consumers = started.threads(), "stream consumers running");

@@ -9,6 +9,7 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
+use tessari_session::Now;
 use tessari_session::RunNow;
 use tessaridb::{
     AccessPath, Change, ChangeKind, Db, Exactness, Reach, RecordId, Sequence, Value, Watch,
@@ -43,7 +44,7 @@ fn name_of(record: &Value) -> Option<&str> {
 
 #[test]
 fn opening_a_database_takes_one_line_and_names_nothing_internal() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let mut session = db.session();
     session.run_now(READY).unwrap();
     session
@@ -71,13 +72,13 @@ fn the_two_ways_to_open_run_the_same_script_to_the_same_result() {
                   DEFINE INDEX by_name ON users FIELDS name;\
                   SELECT * FROM users WHERE name = 'grace';";
 
-    let memory = Db::in_memory().unwrap();
+    let memory = Db::in_memory().now().unwrap();
     let mut session = memory.session();
     session.run_now(READY).unwrap();
     let from_memory = session.run_now(script).unwrap();
 
     let root = tempfile::tempdir().unwrap();
-    let persistent = Db::open(root.path().join("store")).unwrap();
+    let persistent = Db::open(root.path().join("store")).now().unwrap();
     let mut session = persistent.session();
     session.run_now(READY).unwrap();
     let from_disk = session.run_now(script).unwrap();
@@ -92,7 +93,7 @@ fn a_database_opened_at_a_path_remembers_what_was_written_to_it() {
     let path = root.path().join("store");
 
     {
-        let db = Db::open(&path).unwrap();
+        let db = Db::open(&path).now().unwrap();
         let mut session = db.session();
         session.run_now(READY).unwrap();
         session
@@ -100,7 +101,7 @@ fn a_database_opened_at_a_path_remembers_what_was_written_to_it() {
             .unwrap();
     }
 
-    let reopened = Db::open(&path).unwrap();
+    let reopened = Db::open(&path).now().unwrap();
     let mut session = reopened.session();
     session
         .run_now("USE NAMESPACE prod DATABASE orders;")
@@ -111,7 +112,7 @@ fn a_database_opened_at_a_path_remembers_what_was_written_to_it() {
 
 #[test]
 fn two_sessions_on_one_database_are_two_conversations() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let mut first = db.session();
     first.run_now(READY).unwrap();
     first.run_now("CREATE users:1 = { name: 'ada' };").unwrap();
@@ -134,7 +135,7 @@ fn two_sessions_on_one_database_are_two_conversations() {
 
 #[test]
 fn the_change_feed_reaches_the_surface() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let mut session = db.session();
     session.run_now(READY).unwrap();
     session
@@ -157,7 +158,7 @@ fn the_change_feed_reaches_the_surface() {
 
 #[test]
 fn a_subscription_is_a_value_the_caller_keeps() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let mut session = db.session();
     session.run_now(READY).unwrap();
 

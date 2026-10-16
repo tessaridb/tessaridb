@@ -31,7 +31,7 @@ pub(crate) async fn answer(
     tokens: &Tokens,
     presented: &Presented,
 ) -> Answer {
-    let mut session = match session_for(db, tokens, presented) {
+    let mut session = match session_for(db, tokens, presented).await {
         Ok(session) => session,
         Err(refused) => return refused,
     };

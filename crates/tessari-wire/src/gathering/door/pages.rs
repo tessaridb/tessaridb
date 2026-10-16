@@ -1,9 +1,9 @@
 use super::*;
 
-#[test]
-fn a_peer_holding_part_of_the_table_is_given_another_shard_page_by_page() {
+#[tokio::test]
+async fn a_peer_holding_part_of_the_table_is_given_another_shard_page_by_page() {
     let authority = Authority::new();
-    let (db, table) = leader();
+    let (db, table) = leader().await;
     // A budget of one byte: every page carries exactly one record.
     let (address, handle) = door(&authority, &db, Some(shard(table, 2)), 1, 3);
     let mut gather = asking(table, 1);
@@ -33,14 +33,14 @@ fn a_peer_holding_part_of_the_table_is_given_another_shard_page_by_page() {
     handle.join().unwrap();
 }
 
-#[test]
-fn an_ordered_ask_is_answered_with_the_shards_first_records_page_by_page() {
+#[tokio::test]
+async fn an_ordered_ask_is_answered_with_the_shards_first_records_page_by_page() {
     // ADR-0102: shard 1 holds a (1), b (2) and c (3); its first two by `n`
     // descending are c and b, sent in identity order. A budget of one byte
     // puts each on its own page, so the second page is ranked again and
     // begins past the first.
     let authority = Authority::new();
-    let (db, table) = leader();
+    let (db, table) = leader().await;
     let (address, handle) = door(&authority, &db, Some(shard(table, 2)), 1, 2);
     let mut gather = Gather {
         ordered: Some(super::super::tests::by_n(true, 2)),
@@ -58,10 +58,10 @@ fn an_ordered_ask_is_answered_with_the_shards_first_records_page_by_page() {
     assert!(!second.more);
 }
 
-#[test]
-fn a_window_is_answered_inside_the_shard_and_never_past_it() {
+#[tokio::test]
+async fn a_window_is_answered_inside_the_shard_and_never_past_it() {
     let authority = Authority::new();
-    let (db, table) = leader();
+    let (db, table) = leader().await;
     let (address, handle) = door(&authority, &db, Some(shard(table, 2)), 1 << 20, 1);
     let gather = Gather {
         from: Some(RecordId::from("b")),
@@ -75,10 +75,10 @@ fn a_window_is_answered_inside_the_shard_and_never_past_it() {
     assert!(!page.more);
 }
 
-#[test]
-fn a_peer_holding_nothing_of_the_table_is_refused_by_name() {
+#[tokio::test]
+async fn a_peer_holding_nothing_of_the_table_is_refused_by_name() {
     let authority = Authority::new();
-    let (db, table) = leader();
+    let (db, table) = leader().await;
     let (address, handle) = door(
         &authority,
         &db,
@@ -94,10 +94,10 @@ fn a_peer_holding_nothing_of_the_table_is_refused_by_name() {
     );
 }
 
-#[test]
-fn a_holder_lacking_the_shard_or_the_table_says_which() {
+#[tokio::test]
+async fn a_holder_lacking_the_shard_or_the_table_says_which() {
     let authority = Authority::new();
-    let (db, table) = leader();
+    let (db, table) = leader().await;
     db.store().record_served(shard(table, 2)).unwrap();
     let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 2);
     let not_held = ask(&authority, address, &asking(table, 1));
@@ -113,15 +113,16 @@ fn a_holder_lacking_the_shard_or_the_table_says_which() {
     );
 }
 
-#[test]
-fn a_shard_the_answerers_map_has_moved_past_is_refused_as_moved() {
+#[tokio::test]
+async fn a_shard_the_answerers_map_has_moved_past_is_refused_as_moved() {
     // ADR-0095 D4: an asker holding an older map names a shard the answerer
     // has retired. *No such table* would send it looking for a table; the
     // repair is to read the map again, so the refusal says the map moved.
     let authority = Authority::new();
-    let (db, table) = leader();
+    let (db, table) = leader().await;
     db.session()
-        .run_now("USE NAMESPACE prod; USE DATABASE shop; ALTER TABLE ledger SPLIT AT 'c';")
+        .run("USE NAMESPACE prod; USE DATABASE shop; ALTER TABLE ledger SPLIT AT 'c';")
+        .await
         .unwrap();
     let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 1);
     let retired = ask(&authority, address, &asking(table, 1));

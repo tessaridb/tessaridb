@@ -12,6 +12,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -21,7 +22,7 @@ use tessari_types::{RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Two users and three orders, one of the orders for nobody.
@@ -226,7 +227,7 @@ fn a_join_cannot_reach_a_table_outside_the_session_users_tenancy() {
     // Signed in first: the store is closed the moment it has a user, so even a
     // `USE` needs an identity.
     let mut scoped = Session::new(&store);
-    scoped.sign_in("ada", "correct horse").unwrap();
+    scoped.sign_in("ada", "correct horse").now().unwrap();
     scoped
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();

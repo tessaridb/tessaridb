@@ -25,6 +25,7 @@
 
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -35,7 +36,7 @@ const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// A store with a tenancy, a store owner, an editor and a viewer.
@@ -61,7 +62,7 @@ fn peopled(store: &Store) {
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
@@ -76,7 +77,7 @@ fn ticket_for(store: &Store, name: &str) -> Ticket {
 /// A session that took `ticket` up, selected onto the tenancy.
 fn resumed<'a>(store: &'a Store, ticket: &Ticket) -> Session<'a> {
     let mut session = Session::new(store);
-    session.resume(ticket).unwrap();
+    session.resume(ticket).now().unwrap();
     session
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
@@ -133,7 +134,7 @@ fn a_password_change_kills_the_ticket() {
 
     let ticket = ticket_for(&store, "ada");
     // It works before, so the refusal below is the change and not the setup.
-    assert!(Session::new(&store).resume(&ticket).is_ok());
+    assert!(Session::new(&store).resume(&ticket).now().is_ok());
 
     let mut root = signed_in(&store, "root");
     root.run_now("ALTER USER ada SET PASSWORD 'a different horse entirely';")
@@ -142,7 +143,7 @@ fn a_password_change_kills_the_ticket() {
     // Rotating a password that somebody else may have learned is worthless if
     // a token minted with the old one keeps working.
     assert!(
-        Session::new(&store).resume(&ticket).is_err(),
+        Session::new(&store).resume(&ticket).now().is_err(),
         "a rotated password must not leave a live token behind"
     );
 }
@@ -153,7 +154,7 @@ fn a_role_change_kills_the_ticket() {
     peopled(&store);
 
     let ticket = ticket_for(&store, "ada");
-    assert!(Session::new(&store).resume(&ticket).is_ok());
+    assert!(Session::new(&store).resume(&ticket).now().is_ok());
 
     let mut root = signed_in(&store, "root");
     root.run_now("ALTER USER ada SET ROLE viewer;").unwrap();
@@ -161,7 +162,7 @@ fn a_role_change_kills_the_ticket() {
     // Demoting somebody who holds a token has to take effect, or the demotion
     // is a note in the catalog rather than a change in what they may do.
     assert!(
-        Session::new(&store).resume(&ticket).is_err(),
+        Session::new(&store).resume(&ticket).now().is_err(),
         "a demotion must not leave the old authority reachable"
     );
 }
@@ -172,13 +173,13 @@ fn removing_the_user_kills_the_ticket() {
     peopled(&store);
 
     let ticket = ticket_for(&store, "ada");
-    assert!(Session::new(&store).resume(&ticket).is_ok());
+    assert!(Session::new(&store).resume(&ticket).now().is_ok());
 
     let mut root = signed_in(&store, "root");
     root.run_now("DROP USER ada;").unwrap();
 
     assert!(
-        Session::new(&store).resume(&ticket).is_err(),
+        Session::new(&store).resume(&ticket).now().is_err(),
         "a removed user must not be reachable through a token"
     );
 }
@@ -231,11 +232,11 @@ fn taking_a_ticket_up_does_not_pay_for_a_password() {
     let ticket = ticket_for(&store, "ada");
 
     let signing = Instant::now();
-    Session::new(&store).sign_in("ada", PASSWORD).unwrap();
+    Session::new(&store).sign_in("ada", PASSWORD).now().unwrap();
     let signing = signing.elapsed();
 
     let taking = Instant::now();
-    Session::new(&store).resume(&ticket).unwrap();
+    Session::new(&store).resume(&ticket).now().unwrap();
     let taking = taking.elapsed();
 
     // This is the whole reason the type exists, so it is asserted rather than

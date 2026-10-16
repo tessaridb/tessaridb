@@ -9,6 +9,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -20,12 +21,15 @@ const PASSWORD: &str = "correct horse battery";
 const PLANTED: &str = "a-planted-password-7c41";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// The trail's administration entries, as `(actor, statement, subject)`.
 fn administered(store: &Store) -> Vec<(String, String, String)> {
     tessari_storage::audit_entries(store)
+        .now()
         .unwrap()
         .into_iter()
         .filter_map(|entry| {
@@ -54,7 +58,7 @@ fn owned(store: &Store) -> Session<'_> {
         ))
         .unwrap();
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now("USE NAMESPACE prod; USE DATABASE work;")
         .unwrap();
     root
@@ -146,7 +150,10 @@ fn the_entry_names_the_change_and_never_carries_the_password() {
          ALTER USER ada SET PASSWORD '{PLANTED}';"
     ))
     .unwrap();
-    let trail = format!("{:?}", tessari_storage::audit_entries(&store).unwrap());
+    let trail = format!(
+        "{:?}",
+        tessari_storage::audit_entries(&store).now().unwrap()
+    );
     // The control: the trail holds the change, so a search that finds nothing
     // is a search that looked at something.
     assert!(trail.contains("ALTER USER"), "{trail}");

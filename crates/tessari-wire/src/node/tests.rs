@@ -2,6 +2,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_encoding::{NODE_ID_LEN, NodeVersion, Roles};
@@ -55,7 +56,7 @@ fn a_node_whose_peer_claims(roles: Roles) -> String {
         Instant::now(),
     );
 
-    let db = Db::in_memory().expect("an in-memory store");
+    let db = Db::in_memory().now().expect("an in-memory store");
     {
         // Schema first, role second: a node that may not write cannot define
         // a collection either. Holding somebody else's writes is what puts
@@ -189,7 +190,7 @@ fn a_node_on_one_worker_answers_while_a_slow_statement_runs() {
     // hold it, and nothing else on the node could even be read until the
     // hash was done.
     const PASSWORD: &str = "correct horse battery";
-    let db = Arc::new(Db::in_memory().expect("an in-memory store"));
+    let db = Arc::new(Db::in_memory().now().expect("an in-memory store"));
     db.session()
         .run_now(&format!(
             "DEFINE USER root ROLE owner PASSWORD '{PASSWORD}';"
@@ -249,7 +250,7 @@ fn a_node_on_one_worker_answers_while_a_slow_statement_runs() {
 
 #[test]
 fn a_statement_refused_as_busy_keeps_the_session_it_arrived_in() {
-    let db = Arc::new(Db::in_memory().expect("an in-memory store"));
+    let db = Arc::new(Db::in_memory().now().expect("an in-memory store"));
     let mut node = Node::bind(db, "127.0.0.1:0").expect("a loopback port");
     // One slot, so the test can take the whole bridge by holding it — the
     // resource is taken, not raced for.

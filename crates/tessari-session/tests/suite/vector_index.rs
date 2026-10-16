@@ -17,6 +17,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -26,7 +27,7 @@ use tessari_types::RecordId;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
@@ -336,7 +337,7 @@ fn a_graph_written_in_one_transaction_is_the_graph_written_one_record_at_a_time(
     };
     let one_at_a_time = {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        let store = Store::open(Arc::clone(&backend)).unwrap();
+        let store = Store::open(Arc::clone(&backend)).now().unwrap();
         let mut session = ready(&store);
         session
             .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
@@ -348,7 +349,7 @@ fn a_graph_written_in_one_transaction_is_the_graph_written_one_record_at_a_time(
     };
     let together = {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        let store = Store::open(Arc::clone(&backend)).unwrap();
+        let store = Store::open(Arc::clone(&backend)).now().unwrap();
         let mut session = ready(&store);
         session
             .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")

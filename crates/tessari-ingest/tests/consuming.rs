@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_ingest::{Broker, Message, Runner, Source, SourceError};
@@ -45,7 +46,7 @@ fn declared(policy: &str, parallelism: &str) -> Store {
 
 /// The same, on a backend the caller keeps — so it can be reopened.
 fn declared_on(backend: &Arc<dyn KvBackend>, policy: &str, parallelism: &str) -> Store {
-    let store = Store::open(Arc::clone(backend)).unwrap();
+    let store = Store::open(Arc::clone(backend)).now().unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(
@@ -175,7 +176,9 @@ fn consumer_runtime() -> tokio::runtime::Runtime {
 /// whole point is timing.
 fn until(store: &Store, broker: Arc<dyn Broker>, settled: impl Fn(&Store) -> bool) {
     let runtime = consumer_runtime();
-    let mut started = Runner::start(store, Arc::clone(&broker), runtime.handle()).unwrap();
+    let mut started = Runner::start(store, Arc::clone(&broker), runtime.handle())
+        .now()
+        .unwrap();
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(5))
         .unwrap_or_else(Instant::now);
@@ -299,7 +302,9 @@ fn stop_halts_this_consumer_and_says_why() {
         handed: Arc::new(AtomicBool::new(false)),
     });
     let runtime = consumer_runtime();
-    let mut started = Runner::start(&store, Arc::clone(&broker), runtime.handle()).unwrap();
+    let mut started = Runner::start(&store, Arc::clone(&broker), runtime.handle())
+        .now()
+        .unwrap();
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(5))
         .unwrap_or_else(Instant::now);
@@ -375,7 +380,9 @@ fn parallelism_runs_more_than_one_consumer_at_a_time() {
     });
     let began = Instant::now();
     let runtime = consumer_runtime();
-    let mut started = Runner::start(&store, Arc::clone(&broker), runtime.handle()).unwrap();
+    let mut started = Runner::start(&store, Arc::clone(&broker), runtime.handle())
+        .now()
+        .unwrap();
     assert_eq!(started.threads(), 4, "four consumers were not started");
 
     // Wait until at least four polls have happened.
@@ -415,7 +422,9 @@ fn a_consumer_that_was_started_reports_what_it_has_applied() {
         handed: Arc::new(AtomicBool::new(false)),
     });
     let runtime = consumer_runtime();
-    let mut started = Runner::start(&store, Arc::clone(&broker), runtime.handle()).unwrap();
+    let mut started = Runner::start(&store, Arc::clone(&broker), runtime.handle())
+        .now()
+        .unwrap();
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(5))
         .unwrap_or_else(Instant::now);
@@ -452,7 +461,9 @@ fn stopping_joins_the_threads_rather_than_abandoning_them() {
         handed: Arc::new(AtomicBool::new(false)),
     });
     let runtime = consumer_runtime();
-    let mut started = Runner::start(&store, Arc::clone(&broker), runtime.handle()).unwrap();
+    let mut started = Runner::start(&store, Arc::clone(&broker), runtime.handle())
+        .now()
+        .unwrap();
     assert_eq!(started.threads(), 2);
     started.stop();
     assert_eq!(started.threads(), 0, "stop() left threads behind");
@@ -480,7 +491,9 @@ fn a_declaration_whose_destination_has_gone_is_skipped_rather_than_fatal() {
         handed: Arc::new(AtomicBool::new(false)),
     });
     let runtime = consumer_runtime();
-    let mut started = Runner::start(&store, Arc::clone(&broker), runtime.handle()).unwrap();
+    let mut started = Runner::start(&store, Arc::clone(&broker), runtime.handle())
+        .now()
+        .unwrap();
     assert_eq!(
         started.threads(),
         0,
@@ -492,7 +505,7 @@ fn a_declaration_whose_destination_has_gone_is_skipped_rather_than_fatal() {
 #[test]
 fn a_store_with_nothing_declared_starts_nothing() {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(backend).unwrap();
+    let store = Store::open(backend).now().unwrap();
     let broker: Arc<dyn Broker> = Arc::new(Handing {
         messages: Vec::new(),
         commit_fails: false,
@@ -501,7 +514,9 @@ fn a_store_with_nothing_declared_starts_nothing() {
         handed: Arc::new(AtomicBool::new(false)),
     });
     let runtime = consumer_runtime();
-    let mut started = Runner::start(&store, Arc::clone(&broker), runtime.handle()).unwrap();
+    let mut started = Runner::start(&store, Arc::clone(&broker), runtime.handle())
+        .now()
+        .unwrap();
     assert_eq!(started.threads(), 0);
     started.stop();
 }
@@ -530,7 +545,9 @@ fn stopping_finishes_the_batch_in_flight_rather_than_abandoning_it() {
     });
 
     let runtime = consumer_runtime();
-    let mut started = Runner::start(&store, Arc::clone(&broker), runtime.handle()).unwrap();
+    let mut started = Runner::start(&store, Arc::clone(&broker), runtime.handle())
+        .now()
+        .unwrap();
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(5))
         .unwrap_or_else(Instant::now);
@@ -576,7 +593,7 @@ fn a_restarted_node_starts_what_the_catalog_declares() {
         assert!(first.running().progress("orders_in").is_none());
     }
 
-    let reopened = Store::open(Arc::clone(&backend)).unwrap();
+    let reopened = Store::open(Arc::clone(&backend)).now().unwrap();
     assert!(
         reopened.running().progress("orders_in").is_none(),
         "a reopened store claims to be running a consumer it has not started"
@@ -619,11 +636,16 @@ fn a_quarantined_message_is_found_through_the_language_after_a_restart() {
     });
     until(&store, broker, |store| {
         let transaction = store.begin().unwrap();
-        !landed(store).is_empty() && !transaction.quarantined(1).unwrap_or_default().is_empty()
+        !landed(store).is_empty()
+            && !transaction
+                .quarantined(1)
+                .now()
+                .unwrap_or_default()
+                .is_empty()
     });
     drop(store);
 
-    let reopened = Store::open(Arc::clone(&backend)).unwrap();
+    let reopened = Store::open(Arc::clone(&backend)).now().unwrap();
     let mut session = Session::new(&reopened);
     let answered = session
         .run_now("USE NAMESPACE prod; USE DATABASE shop; INFO FOR KAFKA CONSUMER orders_in;")
@@ -658,6 +680,7 @@ fn a_quarantined_message_is_found_through_the_language_after_a_restart() {
 #[cfg(feature = "kafka")]
 mod broker {
     use std::time::{Duration, Instant};
+    use tessari_session::Now;
 
     use rdkafka::config::ClientConfig;
     use rdkafka::producer::{BaseProducer, BaseRecord, Producer as _};
@@ -700,7 +723,9 @@ mod broker {
             .unwrap()
             .as_millis();
         let topic = format!("orders-{run}");
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let mut session = Session::new(&store);
         session
             .run_now(&format!(
@@ -717,7 +742,9 @@ mod broker {
         // oldest message, not at the end.
         publish(&brokers, &topic, "1", r#"{"order_id": 1, "amount": 10}"#);
         let runtime = consumer_runtime();
-        let mut started = Runner::start(&store, Arc::clone(&client), runtime.handle()).unwrap();
+        let mut started = Runner::start(&store, Arc::clone(&client), runtime.handle())
+            .now()
+            .unwrap();
         assert!(
             until_settled(&store, |store| landed(store).len() == 1),
             "the first message did not land: {:?}",
@@ -729,10 +756,12 @@ mod broker {
         publish(&brokers, &topic, "2", r#"{"order_id": 2, "amount": 20}"#);
         publish(&brokers, &topic, "3", "{ this is not json");
         let runtime = consumer_runtime();
-        let mut restarted = Runner::start(&store, Arc::clone(&client), runtime.handle()).unwrap();
+        let mut restarted = Runner::start(&store, Arc::clone(&client), runtime.handle())
+            .now()
+            .unwrap();
         let parked = |store: &Store| {
             let transaction = store.begin().unwrap();
-            transaction.quarantined(1).unwrap_or_default().len()
+            transaction.quarantined(1).now().unwrap_or_default().len()
         };
         assert!(
             until_settled(&store, |store| landed(store).len() == 2

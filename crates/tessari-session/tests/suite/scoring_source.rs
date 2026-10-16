@@ -30,6 +30,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_encoding::{Posting, PostingKey, StoreKey, StoreValue};
@@ -134,7 +135,9 @@ fn body(n: u32, filler: usize) -> String {
 /// A populated, indexed table, and the backend that watched it being read.
 fn corpus(filler: usize) -> (Arc<Counting>, Store) {
     let counting = Counting::new();
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(

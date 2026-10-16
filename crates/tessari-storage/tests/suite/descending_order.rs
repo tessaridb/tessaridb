@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_encoding::encode_payload;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -25,13 +26,14 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        let store = Store::open(backend).unwrap();
+        let store = Store::open(backend).now().unwrap();
         let mut transaction = store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("prod").unwrap();
-        let database = catalog.create_database(namespace.id, "shop").unwrap();
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog.create_database(namespace.id, "shop").now().unwrap();
         let table = catalog
             .create_table(namespace.id, database.id, "users", TableShape::default())
+            .now()
             .unwrap();
         let index = catalog
             .create_index(
@@ -48,8 +50,9 @@ impl Fixture {
                     costs: tessari_storage::SearchCosts::default(),
                 },
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         Self {
             store,
             namespace: namespace.id,
@@ -68,7 +71,7 @@ impl Fixture {
         let mut transaction = self.store.begin().unwrap();
         let record = Value::Object(BTreeMap::from([("joined".to_owned(), Value::from(joined))]));
         transaction.put(self.at(id), encode_payload(&record).into_bytes());
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     /// The identities a bounded descending read produces, in the order it
@@ -77,6 +80,7 @@ impl Fixture {
         let transaction = self.store.begin().unwrap();
         let found = transaction
             .records_in_descending_order(&self.index, 1, wanted)
+            .now()
             .unwrap();
         let answer = found.map(|rows| rows.into_iter().map(|(id, _)| id).collect());
         transaction.rollback();
@@ -146,6 +150,7 @@ fn at_an_older_snapshot_the_entries_no_longer_describe_the_records() {
     // At this snapshot record 1 still holds 1990, and it is the greatest.
     assert_eq!(
         held.records_in_descending_order(&fixture.index, 1, 2)
+            .now()
             .unwrap()
             .unwrap()
             .first()
@@ -165,6 +170,7 @@ fn at_an_older_snapshot_the_entries_no_longer_describe_the_records() {
     // the snapshot and not on the count.
     assert_eq!(
         held.records_in_descending_order(&fixture.index, 1, 2)
+            .now()
             .unwrap()
             .unwrap()
             .into_iter()

@@ -11,8 +11,8 @@
 mod acknowledging;
 mod across;
 pub use across::{
-    AcrossAnswer, AcrossAsk, AcrossRefusal, PartRefused, Participants, Recovery, RefusalKind,
-    across_lapse_millis, recover_staging,
+    AcrossAnswer, AcrossAsk, AcrossRefusal, Asking, PartRefused, Participants, Recovery,
+    RefusalKind, across_lapse_millis, recover_staging,
 };
 mod atomic;
 mod defaults;
@@ -316,7 +316,7 @@ impl<'a> Session<'a> {
         source: &str,
         parameters: &Parameters,
     ) -> Result<Vec<Outcome>> {
-        let script = self.bind_script(parse(source)?, parameters)?;
+        let script = self.bind_script(parse(source)?, parameters).await?;
         self.run_script(script).await
     }
 
@@ -352,8 +352,8 @@ const fn conflicting(refusal: &tessari_storage::Error) -> bool {
 /// one place a caller's write can be refused by the store, and therefore the one
 /// place worth teaching. It is deliberately not a second validation pass: the
 /// commit is unchanged and only its failure is read.
-fn settle(transaction: Transaction<'_>) -> Result<()> {
-    match transaction.commit() {
+async fn settle(transaction: Transaction<'_>) -> Result<()> {
+    match transaction.commit().await {
         Ok(_) => Ok(()),
         Err(refusal) => Err(advised(refusal)),
     }

@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{
@@ -22,7 +23,7 @@ use tessari_types::{RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// `posts` referring to `users`, with one post per interesting case.
@@ -432,7 +433,9 @@ fn a_fetch_costs_one_ask_however_many_references_it_follows() {
     // carry a fudge factor and stop meaning anything the day the catalog changed
     // shape.
     let counting = Counting::new();
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = crowded(&store);
 
     counting.reset();

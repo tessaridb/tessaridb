@@ -70,14 +70,15 @@ impl Stamp {
 }
 
 /// The name a table is written back as, for a refusal.
-fn named(transaction: &mut Transaction<'_>, table: TableId) -> Result<String> {
+async fn named(transaction: &mut Transaction<'_>, table: TableId) -> Result<String> {
     Ok(Catalog::new(transaction)
-        .table(table)?
+        .table(table)
+        .await?
         .map_or_else(|| table.to_string(), |found| found.name))
 }
 
 /// The event time `payload` carries in `field`, as a stamp.
-fn stamp_of(
+async fn stamp_of(
     transaction: &mut Transaction<'_>,
     table: TableId,
     field: &str,
@@ -90,7 +91,7 @@ fn stamp_of(
     };
     let Some(Value::Datetime(at)) = found else {
         return Err(Error::SeriesTimeMissing {
-            table: named(transaction, table)?,
+            table: named(transaction, table).await?,
             field: field.to_owned(),
             found: found.map_or("absent", Value::type_name),
             span,
@@ -98,7 +99,7 @@ fn stamp_of(
     };
     let Some(stamp) = Stamp::of(*at) else {
         return Err(Error::SeriesTimeOutOfRange {
-            table: named(transaction, table)?,
+            table: named(transaction, table).await?,
             instant: at.to_string(),
             span,
         });
@@ -114,17 +115,17 @@ fn stamp_of(
 /// [`Error::SeriesTimeMissing`] and [`Error::SeriesTimeOutOfRange`] for a record
 /// whose time field cannot order it, and [`Error::IdentityUnavailable`] when the
 /// randomness below the time cannot be read.
-pub(crate) fn event_identity(
+pub(crate) async fn event_identity(
     transaction: &mut Transaction<'_>,
     namespace: NamespaceId,
     table: TableId,
     payload: &Value,
     span: Span,
 ) -> Result<Option<RecordId>> {
-    let Some(field) = transaction.series_time(namespace, table)? else {
+    let Some(field) = transaction.series_time(namespace, table).await? else {
         return Ok(None);
     };
-    let (stamp, _) = stamp_of(transaction, table, &field, payload, span)?;
+    let (stamp, _) = stamp_of(transaction, table, &field, payload, span).await?;
     Ok(Some(RecordId::Uuid(generate::uuid_v7_at(
         stamp.millis,
         stamp.fraction,
@@ -144,28 +145,31 @@ pub(crate) fn event_identity(
 /// [`Error::SeriesTimeFixed`] for an update that moved the time field,
 /// [`Error::BelowSeriesFloor`] for an event the table would never answer, and
 /// the refusals of [`event_identity`] for a time field that cannot order it.
-pub(crate) fn hold_event_time(
+pub(crate) async fn hold_event_time(
     transaction: &mut Transaction<'_>,
     address: &RecordAddress,
     payload: &Value,
     span: Span,
 ) -> Result<()> {
-    let Some(field) = transaction.series_time(address.namespace, address.table)? else {
+    let Some(field) = transaction
+        .series_time(address.namespace, address.table)
+        .await?
+    else {
         return Ok(());
     };
-    let (stamp, at) = stamp_of(transaction, address.table, &field, payload, span)?;
+    let (stamp, at) = stamp_of(transaction, address.table, &field, payload, span).await?;
     let carried = matches!(&address.id, RecordId::Uuid(bytes) if stamp.carried_by(bytes));
     if !carried {
-        let table = named(transaction, address.table)?;
-        return Err(if transaction.get(address)?.is_some() {
+        let table = named(transaction, address.table).await?;
+        return Err(if transaction.get(address).await?.is_some() {
             Error::SeriesTimeFixed { table, field, span }
         } else {
             Error::SeriesIdentityDerived { table, field, span }
         });
     }
-    if transaction.below_floor(address)? {
+    if transaction.below_floor(address).await? {
         return Err(Error::BelowSeriesFloor {
-            table: named(transaction, address.table)?,
+            table: named(transaction, address.table).await?,
             instant: at.to_string(),
             span,
         });

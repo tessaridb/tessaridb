@@ -12,6 +12,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -22,7 +23,7 @@ const PASSWORD: &str = "a long one";
 
 fn store(script: &str) -> Store {
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
-    let store = Store::open(backend).unwrap();
+    let store = Store::open(backend).now().unwrap();
     Session::new(&store)
         .run_now(&format!(
             "{script}
@@ -65,7 +66,7 @@ fn target() -> Store {
 
 fn signed_in<'a>(store: &'a Store, name: &str, folder: &Path) -> Session<'a> {
     let mut session = Session::new(store).backing_up_into(Arc::from(folder));
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
 }
 

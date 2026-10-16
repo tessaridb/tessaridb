@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -20,7 +21,9 @@ use tessari_types::{Number, Value};
 const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     Session::new(&store)
         .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
@@ -259,14 +262,14 @@ fn the_body_runs_with_the_writers_authority() {
         ))
         .unwrap();
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now(&format!(
         "DEFINE USER clerk ON prod.shop ROLE editor PASSWORD '{PASSWORD}'; \
          USE NAMESPACE prod; USE DATABASE shop; GRANT read, write ON orders TO clerk;"
     ))
     .unwrap();
     let mut clerk = Session::new(&store);
-    clerk.sign_in("clerk", PASSWORD).unwrap();
+    clerk.sign_in("clerk", PASSWORD).now().unwrap();
     clerk
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
@@ -499,7 +502,9 @@ fn a_script_backup_restores_an_event_without_running_it_twice() {
         panic!("BACKUP SCRIPT answered no text");
     };
     assert!(script.contains("DEFINE EVENT audit ON orders"), "{script}");
-    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     Session::new(&restored).run_now(&script).unwrap();
     let mut session = inside(&restored);
     assert_eq!(logged(&mut session), vec![("CREATE".to_owned(), -1, 1)]);
@@ -525,7 +530,7 @@ fn a_body_sees_only_the_fields_the_writer_may_read() {
         ))
         .unwrap();
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now(&format!(
         "DEFINE USER clerk ON prod.shop ROLE editor PASSWORD '{PASSWORD}'; \
          USE NAMESPACE prod; USE DATABASE shop; \
@@ -533,7 +538,7 @@ fn a_body_sees_only_the_fields_the_writer_may_read() {
     ))
     .unwrap();
     let mut clerk = Session::new(&store);
-    clerk.sign_in("clerk", PASSWORD).unwrap();
+    clerk.sign_in("clerk", PASSWORD).now().unwrap();
     clerk
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();

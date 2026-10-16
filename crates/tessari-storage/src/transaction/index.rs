@@ -100,7 +100,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn records_in_range(
+    pub async fn records_in_range(
         &self,
         index: &IndexDefinition,
         fixed: &[Value],
@@ -144,7 +144,7 @@ impl Transaction<'_> {
             .map(|id| RecordAddress::new(index.namespace, index.database, index.table, id))
             .collect();
         if !retired.is_empty() {
-            for (address, payload) in retired.iter().zip(self.get_each(&retired)?) {
+            for (address, payload) in retired.iter().zip(self.get_each(&retired).await?) {
                 if let Some(payload) = payload {
                     found.insert(address.id.clone(), payload);
                 }
@@ -178,7 +178,7 @@ impl Transaction<'_> {
                     id,
                 ));
             }
-            for (address, payload) in addresses.iter().zip(self.get_each(&addresses)?) {
+            for (address, payload) in addresses.iter().zip(self.get_each(&addresses).await?) {
                 if let Some(payload) = payload {
                     found.insert(address.id.clone(), payload);
                 }
@@ -389,7 +389,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails, an entry cannot be decoded, or
     /// `hand` returns one.
-    pub fn walk_records_in_range<F, E>(
+    pub async fn walk_records_in_range<F, E>(
         &mut self,
         index: &IndexDefinition,
         fixed: &[Value],
@@ -398,7 +398,7 @@ impl Transaction<'_> {
         mut hand: F,
     ) -> std::result::Result<(), E>
     where
-        F: FnMut(&mut Self, RecordId, Vec<u8>) -> std::result::Result<ControlFlow<()>, E>,
+        F: AsyncFnMut(&mut Self, RecordId, Vec<u8>) -> std::result::Result<ControlFlow<()>, E>,
         E: From<crate::error::Error>,
     {
         // A complete value of a secondary index is the one run whose entries are
@@ -414,7 +414,7 @@ impl Transaction<'_> {
             && fixed.len() == index.fields.len()
             && !self.reads_retired_entries()
         {
-            return self.walk_complete_equality(index, fixed, hand);
+            return self.walk_complete_equality(index, fixed, hand).await;
         }
         let ids = self.ids_in_range(index, fixed, lower, upper)?;
         // Copied out before the walk rather than read in step with it: `hand`
@@ -448,12 +448,12 @@ impl Transaction<'_> {
                     RecordAddress::new(index.namespace, index.database, index.table, id.clone())
                 })
                 .collect::<Vec<_>>();
-            let payloads = self.get_each(&addresses)?;
+            let payloads = self.get_each(&addresses).await?;
             for (address, stored) in addresses.into_iter().zip(payloads) {
                 let Some(payload) = pending.get(&address.id).cloned().or(stored) else {
                     continue;
                 };
-                if hand(self, address.id, payload)?.is_break() {
+                if hand(self, address.id, payload).await?.is_break() {
                     return Ok(());
                 }
             }

@@ -68,18 +68,18 @@ impl<'a> Embedded<'a> {
         credentials: Option<&(String, String)>,
         parameters: Parameters,
     ) -> Result<Self, String> {
-        let mut session = db.session();
-        if let Some((name, password)) = credentials {
-            session
-                .sign_in(name, password)
-                .map_err(|held| held.to_string())?;
-        }
         // bgv-allow(current-thread): a prompt, a file or a pipe runs one
         // statement at a time and nothing else, so one thread drives them all.
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|why| format!("the runtime would not start: {why}"))?;
+        let mut session = db.session();
+        if let Some((name, password)) = credentials {
+            runtime
+                .block_on(session.sign_in(name, password))
+                .map_err(|held| held.to_string())?;
+        }
         Ok(Self {
             db,
             session,
@@ -95,15 +95,17 @@ impl Store for Embedded<'_> {
             .runtime
             .block_on(self.session.run_with(script, &self.parameters))
             .map_err(|held| held.to_string())?;
-        Ok(outcomes
-            .iter()
-            .map(|outcome| {
-                // The catalog walk happens only when the answer holds a
-                // reference, which `names_in` decides by walking the values
-                // first. The node does exactly this before encoding.
-                into_answer(outcome, tessari_wire::names_for(self.db, outcome))
-            })
-            .collect())
+        let mut answers = Vec::with_capacity(outcomes.len());
+        for outcome in &outcomes {
+            // The catalog walk happens only when the answer holds a
+            // reference, which `names_in` decides by walking the values
+            // first. The node does exactly this before encoding.
+            let names = self
+                .runtime
+                .block_on(tessari_wire::names_for(self.db, outcome));
+            answers.push(into_answer(outcome, names));
+        }
+        Ok(answers)
     }
 }
 

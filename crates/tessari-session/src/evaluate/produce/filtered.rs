@@ -8,13 +8,13 @@ use super::*;
 impl Session<'_> {
     /// The records a table read under a condition produces: an index that
     /// holds the order, then one that serves the condition, then the scan.
-    pub(super) fn produce_filtered(
+    pub(super) async fn produce_filtered(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
         (context, id, condition): (Context, TableId, &Expr),
         searched: &Searched,
-        consumer: &mut dyn Consumer,
+        consumer: &mut impl Consumer,
         reporting: Reporting<'_>,
     ) -> Result<Plan> {
         let named = table_named(&select.from);
@@ -42,17 +42,19 @@ impl Session<'_> {
         let mut gave_up = false;
         let mut reached_early = None;
         if let Some(walk) = plan::nearest(select) {
-            let reached = self.candidates(
-                transaction,
-                id,
-                context,
-                condition,
-                searched,
-                Asked {
-                    named,
-                    lift_scan_guard: select.lift_scan_guard,
-                },
-            )?;
+            let reached = self
+                .candidates(
+                    transaction,
+                    id,
+                    context,
+                    condition,
+                    searched,
+                    Asked {
+                        named,
+                        lift_scan_guard: select.lift_scan_guard,
+                    },
+                )
+                .await?;
             let ceiling = tessari_storage::filtered_ceiling(walk.wanted, walk.effort);
             // Decided from the plan the condition's index carries — the
             // same question `EXPLAIN` asks — and a range is counted up
@@ -87,10 +89,13 @@ impl Session<'_> {
                     searched,
                     noticed: reporting.noticed,
                 };
-                match self.walk_admitted(transaction, context, id, &walk, testing)? {
+                match self
+                    .walk_admitted(transaction, context, id, &walk, testing)
+                    .await?
+                {
                     Walked::Served { found, index } => {
                         reporting.collected.push(Note::Approximate);
-                        hand_over(found, transaction, consumer)?;
+                        hand_over(found, transaction, consumer).await?;
                         return Ok(Plan {
                             index: Some(index),
                             ..over(AccessPath::Approximate)
@@ -107,16 +112,19 @@ impl Session<'_> {
         // condition: the spatial walk tests the whole condition on each
         // record it takes and measures it exactly (G058 C1).
         if let Some(closest) = plan::closest(select) {
-            match self.walk_to_place(
-                transaction,
-                context,
-                id,
-                &closest,
-                Some(condition),
-                Scope::over(searched, reporting.noticed),
-            )? {
+            match self
+                .walk_to_place(
+                    transaction,
+                    context,
+                    id,
+                    &closest,
+                    Some(condition),
+                    Scope::over(searched, reporting.noticed),
+                )
+                .await?
+            {
                 Walked::Served { found, index } => {
-                    hand_over(found, transaction, consumer)?;
+                    hand_over(found, transaction, consumer).await?;
                     return Ok(Plan {
                         shape: Some("nearest"),
                         index: Some(index),
@@ -128,16 +136,19 @@ impl Session<'_> {
             }
         }
         if let Some(bound) = plan::ordered(select) {
-            match self.walk_matching(
-                transaction,
-                context,
-                id,
-                &bound,
-                condition,
-                Scope::over(searched, reporting.noticed),
-            )? {
+            match self
+                .walk_matching(
+                    transaction,
+                    context,
+                    id,
+                    &bound,
+                    condition,
+                    Scope::over(searched, reporting.noticed),
+                )
+                .await?
+            {
                 Walked::Served { found, index } => {
-                    hand_over(found, transaction, consumer)?;
+                    hand_over(found, transaction, consumer).await?;
                     return Ok(Plan {
                         index: Some(index),
                         ..over(AccessPath::Ordered)
@@ -149,17 +160,20 @@ impl Session<'_> {
         }
         let reached = match reached_early {
             Some(reached) => reached,
-            None => self.candidates(
-                transaction,
-                id,
-                context,
-                condition,
-                searched,
-                Asked {
-                    named,
-                    lift_scan_guard: select.lift_scan_guard,
-                },
-            )?,
+            None => {
+                self.candidates(
+                    transaction,
+                    id,
+                    context,
+                    condition,
+                    searched,
+                    Asked {
+                        named,
+                        lift_scan_guard: select.lift_scan_guard,
+                    },
+                )
+                .await?
+            }
         };
         let Some(Reached {
             records: candidates,
@@ -202,7 +216,8 @@ impl Session<'_> {
                     noticed: reporting.noticed,
                 },
                 consumer,
-            )?;
+            )
+            .await?;
             return Ok(plan);
         };
         if declined {
@@ -247,18 +262,20 @@ impl Session<'_> {
             Candidates::Held(held) => {
                 for (id, record) in held {
                     if !answered {
-                        let passed = self.evaluate_in(
-                            transaction,
-                            condition,
-                            Scope::searching(&record, searched)
-                                .identified(&id)
-                                .noticing(reporting.noticed),
-                        )?;
+                        let passed = self
+                            .evaluate_in(
+                                transaction,
+                                condition,
+                                Scope::searching(&record, searched)
+                                    .identified(&id)
+                                    .noticing(reporting.noticed),
+                            )
+                            .await?;
                         if !boolean(&passed, condition.span)? {
                             continue;
                         }
                     }
-                    if consumer.take(transaction, id, record)?.is_break() {
+                    if consumer.take(transaction, id, record).await?.is_break() {
                         break;
                     }
                 }
@@ -276,29 +293,33 @@ impl Session<'_> {
                 lower,
                 upper,
             } => {
-                let visible = self.visible_in(transaction, id)?;
-                transaction.walk_records_in_range(
-                    &index,
-                    &fixed,
-                    lower.as_ref(),
-                    upper.as_ref(),
-                    |transaction, id, payload| {
-                        let record = self.record_of(&payload, &visible)?;
-                        if !answered {
-                            let passed = self.evaluate_in(
-                                transaction,
-                                condition,
-                                Scope::searching(&record, searched)
-                                    .identified(&id)
-                                    .noticing(reporting.noticed),
-                            )?;
-                            if !boolean(&passed, condition.span)? {
-                                return Ok(ControlFlow::Continue(()));
+                let visible = self.visible_in(transaction, id).await?;
+                transaction
+                    .walk_records_in_range(
+                        &index,
+                        &fixed,
+                        lower.as_ref(),
+                        upper.as_ref(),
+                        async |transaction, id, payload| {
+                            let record = self.record_of(&payload, &visible)?;
+                            if !answered {
+                                let passed = self
+                                    .evaluate_in(
+                                        transaction,
+                                        condition,
+                                        Scope::searching(&record, searched)
+                                            .identified(&id)
+                                            .noticing(reporting.noticed),
+                                    )
+                                    .await?;
+                                if !boolean(&passed, condition.span)? {
+                                    return Ok(ControlFlow::Continue(()));
+                                }
                             }
-                        }
-                        consumer.take(transaction, id, record)
-                    },
-                )?;
+                            consumer.take(transaction, id, record).await
+                        },
+                    )
+                    .await?;
             }
         }
         Ok(plan)

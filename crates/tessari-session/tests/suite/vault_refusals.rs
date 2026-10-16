@@ -22,6 +22,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -37,7 +38,9 @@ const PASSPHRASE: &str = "an operator passphrase";
 const USING: &str = "USE NAMESPACE prod; USE DATABASE work;";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// Tenancy, an unsealed store, two vaults and one record holding the secret.
@@ -153,7 +156,7 @@ fn no_refusal_of_a_read_quotes_the_secret_it_withheld() {
         ))
         .unwrap();
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now(&format!(
         "{USING}
          DEFINE USER ada ON prod.work ROLE editor PASSWORD '{PASSWORD}';
@@ -161,7 +164,7 @@ fn no_refusal_of_a_read_quotes_the_secret_it_withheld() {
     ))
     .unwrap();
     let mut ada = Session::new(&store);
-    ada.sign_in("ada", PASSWORD).unwrap();
+    ada.sign_in("ada", PASSWORD).now().unwrap();
     ada.run_now(USING).unwrap();
     withholds(&refusal(&mut ada, revealed), revealed);
 }

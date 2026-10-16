@@ -51,7 +51,7 @@ impl Session<'_> {
                     "{name} is not a script this node reads: {failure}"
                 ))
             })?;
-        let (script, created) = vetted(self, script, &text)?;
+        let (script, created) = vetted(self, script, &text).await?;
         let statements = script.statements.len();
         let (places, body): (Vec<_>, Vec<_>) =
             script.statements.into_iter().partition(|statement| {
@@ -203,7 +203,11 @@ const fn placed(kind: &StatementKind) -> bool {
 
 /// The script with the definitions of namespaces that already exist taken out,
 /// and the databases it creates — or the refusal that says why it may not run.
-fn vetted(session: &Session<'_>, script: Script, text: &str) -> Result<(Script, Vec<String>)> {
+async fn vetted(
+    session: &Session<'_>,
+    script: Script,
+    text: &str,
+) -> Result<(Script, Vec<String>)> {
     let mut view = session.store.begin()?;
     let catalog = Catalog::new(&mut view);
     let mut namespaces = BTreeSet::new();
@@ -215,7 +219,7 @@ fn vetted(session: &Session<'_>, script: Script, text: &str) -> Result<(Script, 
         match &statement.kind {
             StatementKind::DefineNamespace { name, .. } => {
                 namespaces.insert(name.text.clone());
-                if catalog.namespace_id(&name.text)?.is_some() {
+                if catalog.namespace_id(&name.text).await?.is_some() {
                     continue;
                 }
             }
@@ -226,8 +230,8 @@ fn vetted(session: &Session<'_>, script: Script, text: &str) -> Result<(Script, 
                         named(text, &statement)
                     )));
                 };
-                let exists = match catalog.namespace_id(within)? {
-                    Some(id) => catalog.database_id(id, &name.text)?.is_some(),
+                let exists = match catalog.namespace_id(within).await? {
+                    Some(id) => catalog.database_id(id, &name.text).await?.is_some(),
                     None => false,
                 };
                 if exists {

@@ -38,26 +38,25 @@ impl Session<'_> {
     /// anyone who wants that, the same way it would on any other collection.
     ///
     /// [`qualify`]: tessari_storage::Catalog
-    pub(crate) fn define_graph(
+    pub(crate) async fn define_graph(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         if_not_exists: bool,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         if if_not_exists
             && Catalog::new(transaction)
-                .graph_id(context.namespace, context.database, &name.text)?
+                .graph_id(context.namespace, context.database, &name.text)
+                .await?
                 .is_some()
         {
             return Ok(Outcome::Done);
         }
-        let graph = Catalog::new(transaction).create_graph(
-            context.namespace,
-            context.database,
-            &name.text,
-        )?;
+        let graph = Catalog::new(transaction)
+            .create_graph(context.namespace, context.database, &name.text)
+            .await?;
         self.define_table(
             transaction,
             name,
@@ -73,7 +72,8 @@ impl Session<'_> {
             },
             if_not_exists,
             span,
-        )?;
+        )
+        .await?;
         Ok(Outcome::Done)
     }
 
@@ -84,15 +84,16 @@ impl Session<'_> {
     /// to refuse with. Dropping anyway would leave every member table pointing
     /// at an id nothing resolves, and the symptom would surface later as a walk
     /// that finds no graph rather than now as the drop that caused it.
-    pub(crate) fn drop_graph(
+    pub(crate) async fn drop_graph(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         let id = Catalog::new(transaction)
-            .graph_id(context.namespace, context.database, &name.text)?
+            .graph_id(context.namespace, context.database, &name.text)
+            .await?
             .ok_or_else(|| Error::Unknown {
                 entity: "graph",
                 name: name.text.clone(),
@@ -105,7 +106,8 @@ impl Session<'_> {
         // caller never declared and cannot name. That is the companion-table
         // shape the bucket already found once; see `StatementKind::DropTable`.
         let (own, attached): (Vec<_>, Vec<_>) = Catalog::new(transaction)
-            .tables_in(context.namespace, context.database)?
+            .tables_in(context.namespace, context.database)
+            .await?
             .into_iter()
             .filter(|table| table.graph == Some(id))
             .partition(|table| table.name == name.text);
@@ -119,7 +121,8 @@ impl Session<'_> {
             });
         }
         let kinds: Vec<_> = Catalog::new(transaction)
-            .edge_kinds_in(context.namespace, context.database)?
+            .edge_kinds_in(context.namespace, context.database)
+            .await?
             .into_iter()
             .filter(|kind| kind.graph == id)
             .collect();
@@ -133,9 +136,9 @@ impl Session<'_> {
             });
         }
         for table in own {
-            Catalog::new(transaction).drop_table(table.id)?;
+            Catalog::new(transaction).drop_table(table.id).await?;
         }
-        Catalog::new(transaction).drop_graph(id)?;
+        Catalog::new(transaction).drop_graph(id).await?;
         Ok(Outcome::Done)
     }
 
@@ -144,7 +147,7 @@ impl Session<'_> {
     /// Everything is resolved before anything is written, so a declaration that
     /// names a graph or a table that is not there leaves the store exactly as it
     /// found it — the same ordering the membership clause keeps.
-    pub(crate) fn define_edge(
+    pub(crate) async fn define_edge(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
@@ -153,34 +156,37 @@ impl Session<'_> {
         if_not_exists: bool,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         if if_not_exists
             && Catalog::new(transaction)
-                .edge_kind_id(context.namespace, context.database, &name.text)?
+                .edge_kind_id(context.namespace, context.database, &name.text)
+                .await?
                 .is_some()
         {
             return Ok(Outcome::Done);
         }
         let graph_id = Catalog::new(transaction)
-            .graph_id(context.namespace, context.database, &graph.text)?
+            .graph_id(context.namespace, context.database, &graph.text)
+            .await?
             .ok_or_else(|| Error::Unknown {
                 entity: "graph",
                 name: graph.text.clone(),
                 span,
             })?;
-        let declared =
-            Catalog::new(transaction)
-                .graph(graph_id)?
-                .ok_or_else(|| Error::Unknown {
-                    entity: "graph",
-                    name: graph.text.clone(),
-                    span,
-                })?;
+        let declared = Catalog::new(transaction)
+            .graph(graph_id)
+            .await?
+            .ok_or_else(|| Error::Unknown {
+                entity: "graph",
+                name: graph.text.clone(),
+                span,
+            })?;
 
         let mut endpoints = Vec::with_capacity(2);
         for endpoint in [from, to] {
             let id = Catalog::new(transaction)
-                .table_id(context.namespace, context.database, &endpoint.text)?
+                .table_id(context.namespace, context.database, &endpoint.text)
+                .await?
                 .ok_or_else(|| Error::Unknown {
                     entity: "table",
                     name: endpoint.text.clone(),
@@ -190,7 +196,8 @@ impl Session<'_> {
             // bounds a walk: a far side outside the structure would let a
             // traversal leave it and still answer.
             let member = Catalog::new(transaction)
-                .table(id)?
+                .table(id)
+                .await?
                 .is_some_and(|table| table.graph == Some(graph_id));
             if !member {
                 return Err(Error::EndpointOutsideGraph {
@@ -205,19 +212,17 @@ impl Session<'_> {
         // The companion table holds the edges as ordinary records, which is what
         // carries them — and the adjacency derived from them — through the log to
         // every replica. Nothing can name it.
-        let edges = Catalog::new(transaction).create_table(
-            context.namespace,
-            context.database,
-            &Catalog::edges_named(&name.text),
-            TableShape::default(),
-        )?;
-        Catalog::new(transaction).create_edge_kind(
-            &declared,
-            &name.text,
-            endpoints[0],
-            endpoints[1],
-            edges.id,
-        )?;
+        let edges = Catalog::new(transaction)
+            .create_table(
+                context.namespace,
+                context.database,
+                &Catalog::edges_named(&name.text),
+                TableShape::default(),
+            )
+            .await?;
+        Catalog::new(transaction)
+            .create_edge_kind(&declared, &name.text, endpoints[0], endpoints[1], edges.id)
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -228,22 +233,24 @@ impl Session<'_> {
     /// record, and the adjacency derived from it is removed in the batch that
     /// carries the deletion. A second, parallel way to remove an entry is how one
     /// of the two ends up forgotten.
-    pub(crate) fn drop_edge(
+    pub(crate) async fn drop_edge(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         let id = Catalog::new(transaction)
-            .edge_kind_id(context.namespace, context.database, &name.text)?
+            .edge_kind_id(context.namespace, context.database, &name.text)
+            .await?
             .ok_or_else(|| Error::Unknown {
                 entity: "edge kind",
                 name: name.text.clone(),
                 span,
             })?;
         let kind = Catalog::new(transaction)
-            .edge_kind(id)?
+            .edge_kind(id)
+            .await?
             .ok_or_else(|| Error::Unknown {
                 entity: "edge kind",
                 name: name.text.clone(),
@@ -251,7 +258,8 @@ impl Session<'_> {
             })?;
 
         let edges: Vec<_> = transaction
-            .scan_table(context.namespace, context.database, kind.edges)?
+            .scan_table(context.namespace, context.database, kind.edges)
+            .await?
             .into_iter()
             .map(|(id, _)| id)
             .collect();
@@ -263,8 +271,8 @@ impl Session<'_> {
                 id,
             ));
         }
-        Catalog::new(transaction).drop_table(kind.edges)?;
-        Catalog::new(transaction).drop_edge_kind(id)?;
+        Catalog::new(transaction).drop_table(kind.edges).await?;
+        Catalog::new(transaction).drop_edge_kind(id).await?;
         Ok(Outcome::Done)
     }
 }

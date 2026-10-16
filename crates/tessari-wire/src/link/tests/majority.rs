@@ -1,4 +1,5 @@
 use super::*;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 #[test]
@@ -126,7 +127,7 @@ fn a_candidate_partitioned_from_the_majority_holds_nothing() {
 #[test]
 fn a_leader_that_could_not_renew_refuses_writes_before_its_lease_expires() {
     let authority = Authority::new();
-    let store = tessaridb::Db::in_memory().expect("a store");
+    let store = tessaridb::Db::in_memory().now().expect("a store");
     store
         .session()
         .run_now(
@@ -242,7 +243,7 @@ fn the_lease_a_round_won_is_the_lease_the_node_holds() {
     // would spend it a second time out of the VOTERS' window instead of this
     // node's — which is the split-brain the dating rule exists to prevent,
     // reached through the seam rather than through the rule.
-    let store = tessaridb::Db::in_memory().expect("a store");
+    let store = tessaridb::Db::in_memory().now().expect("a store");
     store
         .session()
         .run_now(
@@ -262,7 +263,7 @@ fn the_lease_a_round_won_is_the_lease_the_node_holds() {
             },
         )
         .expect("one of one carries it");
-    store.hold(won.epoch, won.lease());
+    store.hold(won.epoch, won.lease()).now();
     store
         .session()
         .run_now("USE NAMESPACE prod; USE DATABASE orders; CREATE users:1 = { name: 'ada' };")
@@ -281,7 +282,7 @@ fn the_lease_a_round_won_is_the_lease_the_node_holds() {
             },
         )
         .expect("one of one carries it");
-    store.hold(won.epoch, won.lease());
+    store.hold(won.epoch, won.lease()).now();
     let refused = store
         .session()
         .run_now("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")

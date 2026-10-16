@@ -39,11 +39,11 @@ pub enum Recovery {
 /// Recover `record`, which stages, asking each participant range's leader
 /// through `ask` — every part but those the record already knows landed.
 /// `prevent` bars a part that has not landed rather than only reporting it.
-pub fn recover_staging(
+pub async fn recover_staging(
     transaction: TransactionId,
     record: &TransactionRecord,
     prevent: bool,
-    mut ask: impl FnMut(Reach, &AcrossAsk) -> Result<AcrossAnswer, String>,
+    mut ask: impl AsyncFnMut(Reach, &AcrossAsk) -> Result<AcrossAnswer, String>,
 ) -> Recovery {
     let mut committed = TransactionRecord {
         decision: Decision::Committed,
@@ -58,7 +58,7 @@ pub fn recover_staging(
             range: participant.range,
             prevent,
         };
-        match ask(participant.range, &asked) {
+        match ask(participant.range, &asked).await {
             Ok(AcrossAnswer::Landed(Some(at))) => participant.prepared_at = Some(at),
             Ok(AcrossAnswer::Landed(None)) if prevent => {
                 return Recovery::Barred(participant.range);

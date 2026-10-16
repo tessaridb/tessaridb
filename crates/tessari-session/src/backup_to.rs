@@ -41,15 +41,16 @@ impl Session<'_> {
         // so the node's memory does not grow with the store (ADR-0094 D6). The
         // other forms are answered whole and written as they were answered.
         let size = if form == BackupForm::State {
-            let within = self.state_scope(of)?;
-            self.refuse_a_partial_snapshot(within)?;
-            settle(&target, form, self.at_rest.as_deref(), |file| {
+            let within = self.state_scope(of).await?;
+            self.refuse_a_partial_snapshot(within).await?;
+            settle(&target, form, self.at_rest.as_deref(), async |file| {
                 let out = std::io::BufWriter::new(file);
                 match &self.at_rest {
                     Some(key) => {
                         let mut sealing =
                             key.seal_into(out).map_err(|failure| failure.to_string())?;
                         tessari_backup::write_state_within(self.store, within, &mut sealing)
+                            .await
                             .map_err(|failure| failure.to_string())?;
                         sealing
                             .finish()
@@ -59,11 +60,13 @@ impl Session<'_> {
                     None => {
                         let mut out = out;
                         tessari_backup::write_state_within(self.store, within, &mut out)
+                            .await
                             .map_err(|failure| failure.to_string())?;
                         out.flush().map_err(|failure| failure.to_string())
                     }
                 }
-            })?
+            })
+            .await?
         } else {
             let bytes = match self.backup(from, form, of).await? {
                 Outcome::Value(Value::Bytes(bytes)) => bytes,
@@ -74,10 +77,11 @@ impl Session<'_> {
                     });
                 }
             };
-            settle(&target, form, self.at_rest.as_deref(), |file| {
+            settle(&target, form, self.at_rest.as_deref(), async |file| {
                 file.write_all(&bytes)
                     .map_err(|failure| failure.to_string())
-            })?
+            })
+            .await?
         };
         let mut answer = std::collections::BTreeMap::new();
         answer.insert(
@@ -107,7 +111,10 @@ impl Session<'_> {
     /// The refusal is the one a read gets, naming a table this node lacks and,
     /// where the table is split, the shards it lacks — which are named first,
     /// since they say where the rest of the table is.
-    pub(crate) fn refuse_a_partial_snapshot(&self, within: tessari_types::Reach) -> Result<()> {
+    pub(crate) async fn refuse_a_partial_snapshot(
+        &self,
+        within: tessari_types::Reach,
+    ) -> Result<()> {
         if self.store.served().is_none() {
             return Ok(());
         }
@@ -115,19 +122,20 @@ impl Session<'_> {
         let mut tables = Vec::new();
         {
             let catalog = tessari_storage::Catalog::new(&mut transaction);
-            for namespace in catalog.namespaces()? {
-                for database in catalog.databases_in(namespace.id)? {
+            for namespace in catalog.namespaces().await? {
+                for database in catalog.databases_in(namespace.id).await? {
                     let place = tessari_types::Reach::Database(namespace.id, database.id);
                     if within.contains(place) {
-                        tables.extend(catalog.tables_in(namespace.id, database.id)?);
+                        tables.extend(catalog.tables_in(namespace.id, database.id).await?);
                     }
                 }
             }
         }
         let mut lacking = Vec::new();
         for table in tables {
-            if let Some(missing) =
-                self.missing(&mut transaction, table.id, crate::evaluate::Part::Whole)?
+            if let Some(missing) = self
+                .missing(&mut transaction, table.id, crate::evaluate::Part::Whole)
+                .await?
             {
                 lacking.push(missing.refusal(None));
             }
@@ -263,16 +271,16 @@ pub(crate) fn readable(folder: &Path, name: &str) -> Result<PathBuf> {
 
 /// Write `bytes` beside `target`, read them back where they landed, and only
 /// then put them at `target`.
-fn settle(
+async fn settle(
     target: &Path,
     form: BackupForm,
     key: Option<&tessari_vault::AtRestKey>,
-    write: impl FnOnce(&mut fs::File) -> std::result::Result<(), String>,
+    write: impl AsyncFnOnce(&mut fs::File) -> std::result::Result<(), String>,
 ) -> Result<u64> {
     let mut partial = target.as_os_str().to_owned();
     partial.push(".partial");
     let partial = PathBuf::from(partial);
-    let written = write_new(&partial, write).and_then(|size| {
+    let written = write_new(&partial, write).await.and_then(|size| {
         check(&partial, form, key)?;
         fs::rename(&partial, target).map_err(|failure| failure.to_string())?;
         Ok(size)
@@ -299,16 +307,16 @@ fn settle(
 
 /// Create `path` — never open one that exists — write into it, sync it, and
 /// answer its size.
-fn write_new(
+async fn write_new(
     path: &Path,
-    write: impl FnOnce(&mut fs::File) -> std::result::Result<(), String>,
+    write: impl AsyncFnOnce(&mut fs::File) -> std::result::Result<(), String>,
 ) -> std::result::Result<u64, String> {
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .map_err(|failure| failure.to_string())?;
-    write(&mut file)?;
+    write(&mut file).await?;
     file.sync_all().map_err(|failure| failure.to_string())?;
     file.metadata()
         .map(|held| held.len())

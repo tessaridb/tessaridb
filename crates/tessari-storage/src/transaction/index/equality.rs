@@ -46,14 +46,14 @@ use crate::catalog::IndexDefinition;
 impl Transaction<'_> {
     /// The records holding exactly `values` in a secondary index, handed over in
     /// record order until `hand` says to stop.
-    pub(super) fn walk_complete_equality<F, E>(
+    pub(super) async fn walk_complete_equality<F, E>(
         &mut self,
         index: &IndexDefinition,
         values: &[Value],
         mut hand: F,
     ) -> std::result::Result<(), E>
     where
-        F: FnMut(&mut Self, RecordId, Vec<u8>) -> std::result::Result<ControlFlow<()>, E>,
+        F: AsyncFnMut(&mut Self, RecordId, Vec<u8>) -> std::result::Result<ControlFlow<()>, E>,
         E: From<crate::error::Error>,
     {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
@@ -127,7 +127,7 @@ impl Transaction<'_> {
             let mut fetched = stored
                 .iter()
                 .map(|at| at.id.clone())
-                .zip(self.get_each(&stored)?)
+                .zip(self.get_each(&stored).await?)
                 .collect::<BTreeMap<_, _>>();
             for (id, written) in round {
                 let payload = match written {
@@ -137,7 +137,7 @@ impl Transaction<'_> {
                 let Some(payload) = payload else {
                     continue;
                 };
-                if hand(self, id, payload)?.is_break() {
+                if hand(self, id, payload).await?.is_break() {
                     return Ok(());
                 }
             }

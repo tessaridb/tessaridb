@@ -23,7 +23,9 @@ const RECOMPUTED: &str = "SELECT sensor, time::bucket(at, 1h) AS window, count(*
      GROUP BY sensor, time::bucket(at, 1h);";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn opened(store: &Store) -> Session<'_> {
@@ -272,10 +274,11 @@ fn dropping_a_rollup_takes_its_exact_sums() {
     let rollup = {
         let mut transaction = store.begin().unwrap();
         let catalog = tessari_storage::Catalog::new(&mut transaction);
-        let namespace = catalog.namespace_id("t").unwrap().unwrap();
-        let database = catalog.database_id(namespace, "d").unwrap().unwrap();
+        let namespace = catalog.namespace_id("t").now().unwrap().unwrap();
+        let database = catalog.database_id(namespace, "d").now().unwrap().unwrap();
         let rollup = catalog
             .table_id(namespace, database, "hourly")
+            .now()
             .unwrap()
             .unwrap();
         transaction.rollback();
@@ -285,7 +288,7 @@ fn dropping_a_rollup_takes_its_exact_sums() {
     let key = Sha256::digest(tessari_encoding::encode_payload(&Value::from("s0")).into_bytes());
     let kept = |store: &Store| {
         let transaction = store.begin().unwrap();
-        transaction.rollup_state(rollup, &key[..16]).unwrap()
+        transaction.rollup_state(rollup, &key[..16]).now().unwrap()
     };
     // Pinned before the drop, so the absence after it is not vacuous.
     assert!(kept(&store).is_some());

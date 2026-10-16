@@ -3,6 +3,7 @@
 //! Each module is one item the S3 server worked around on 0.33.2: the form it
 //! had to use is the control, and the form it wanted is the assertion.
 
+use tessari_session::Now;
 use tessari_session::RunNow;
 mod bound_counts;
 mod classes;
@@ -25,7 +26,9 @@ use tessari_types::Value;
 
 /// A store holding `prod`/`app`.
 fn store() -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     Session::new(&store)
         .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE app; USE DATABASE app;",

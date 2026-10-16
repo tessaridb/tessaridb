@@ -53,7 +53,7 @@ impl<'a> Session<'a> {
                 },
             );
         }
-        let script = self.bind_script(script, parameters)?;
+        let script = self.bind_script(script, parameters).await?;
         let ran = self.run_script(script).await?;
         // The built `USE` answered too; the caller sent none and is owed none.
         Ok(if namespace.is_some() || database.is_some() {

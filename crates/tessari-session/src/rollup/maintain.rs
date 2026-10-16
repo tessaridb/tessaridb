@@ -193,16 +193,19 @@ impl Session<'_> {
     /// # Errors
     ///
     /// [`Error::RollupIsDerived`] for a rollup's own table.
-    pub(crate) fn rollups_before(
+    pub(crate) async fn rollups_before(
         &self,
         transaction: &mut Transaction<'_>,
         address: &RecordAddress,
         span: Span,
     ) -> Result<Option<Held>> {
-        let Some(time) = transaction.series_time(address.namespace, address.table)? else {
+        let Some(time) = transaction
+            .series_time(address.namespace, address.table)
+            .await?
+        else {
             return Ok(None);
         };
-        let Some(definition) = Catalog::new(transaction).table(address.table)? else {
+        let Some(definition) = Catalog::new(transaction).table(address.table).await? else {
             return Ok(None);
         };
         let TableKind::Series(series) = definition.kind else {
@@ -218,7 +221,7 @@ impl Session<'_> {
         if series.rollups.is_empty() {
             return Ok(None);
         }
-        let old = match transaction.get(address)? {
+        let old = match transaction.get(address).await? {
             Some(bytes) => Some(decode_payload(&bytes).map_err(tessari_storage::Error::from)?),
             None => None,
         };
@@ -235,7 +238,7 @@ impl Session<'_> {
     ///
     /// [`Error::RollupKeyCollision`] when two keys share a row identity, and
     /// whatever reading the raw window or a fold refuses.
-    pub(crate) fn rollups_after(
+    pub(crate) async fn rollups_after(
         &self,
         transaction: &mut Transaction<'_>,
         address: &RecordAddress,
@@ -255,36 +258,42 @@ impl Session<'_> {
                     let Some((window, key)) = place(rollup, &held.time, record) else {
                         continue;
                     };
-                    let row =
-                        match self.stored_row(transaction, &rows, rollup, window, &key, span)? {
-                            None => Some(Row::new(rollup, window, key.clone())),
-                            // A sum is folded into from its exact state, never from
-                            // the rounded total the row shows (Q-927), and a sketch
-                            // from the state kept beside the row, never from its
-                            // estimate (ADR-0122 C5).
-                            Some(mut existing) => {
-                                let sums = !exact::has_sums(rollup) || {
-                                    let kept = transaction
-                                        .rollup_state(rollup.table, &exact::state_key(&key))?;
-                                    existing.take_sums(rollup, kept.as_ref())?
-                                };
-                                (sums && existing.take_sketches(transaction, rollup)?)
-                                    .then_some(existing)
-                            }
-                        };
+                    let row = match self
+                        .stored_row(transaction, &rows, rollup, window, &key, span)
+                        .await?
+                    {
+                        None => Some(Row::new(rollup, window, key.clone())),
+                        // A sum is folded into from its exact state, never from
+                        // the rounded total the row shows (Q-927), and a sketch
+                        // from the state kept beside the row, never from its
+                        // estimate (ADR-0122 C5).
+                        Some(mut existing) => {
+                            let sums = !exact::has_sums(rollup) || {
+                                let kept = transaction
+                                    .rollup_state(rollup.table, &exact::state_key(&key))
+                                    .await?;
+                                existing.take_sums(rollup, kept.as_ref())?
+                            };
+                            (sums && existing.take_sketches(transaction, rollup).await?)
+                                .then_some(existing)
+                        }
+                    };
                     match row {
                         Some(mut row) => {
                             row.offer(rollup, record)?;
-                            self.keep_row(transaction, &rows, rollup, row, span)?;
+                            self.keep_row(transaction, &rows, rollup, row, span).await?;
                         }
-                        None => self.recompute_row(
-                            transaction,
-                            (address, &rows),
-                            rollup,
-                            &held.time,
-                            (window, key),
-                            span,
-                        )?,
+                        None => {
+                            self.recompute_row(
+                                transaction,
+                                (address, &rows),
+                                rollup,
+                                &held.time,
+                                (window, key),
+                                span,
+                            )
+                            .await?
+                        }
                     }
                 }
                 (old, new) => {
@@ -302,7 +311,8 @@ impl Session<'_> {
                             &held.time,
                             (window, key),
                             span,
-                        )?;
+                        )
+                        .await?;
                     }
                 }
             }
@@ -311,7 +321,7 @@ impl Session<'_> {
     }
 
     /// The row as stored, rebuilt for folding into, or `None` when there is none.
-    fn stored_row(
+    async fn stored_row(
         &self,
         transaction: &mut Transaction<'_>,
         rows: &RecordAddress,
@@ -326,7 +336,7 @@ impl Session<'_> {
             rows.table,
             row_identity(window, key),
         );
-        let Some(bytes) = transaction.get(&at)? else {
+        let Some(bytes) = transaction.get(&at).await? else {
             return Ok(None);
         };
         let Value::Object(fields) = decode_payload(&bytes).map_err(tessari_storage::Error::from)?
@@ -368,7 +378,7 @@ impl Session<'_> {
     }
 
     /// Rebuild one row from the raw window it summarises, or remove it.
-    fn recompute_row(
+    async fn recompute_row(
         &self,
         transaction: &mut Transaction<'_>,
         (raw, rows): (&RecordAddress, &RecordAddress),
@@ -379,17 +389,19 @@ impl Session<'_> {
     ) -> Result<()> {
         let from = first_identity(window);
         let to = first_identity(window.saturating_add(rollup.window.seconds()));
-        let found = transaction.records_between(
-            raw.namespace,
-            raw.database,
-            raw.table,
-            Window {
-                from: Some(&from),
-                to: Some((&to, false)),
-            },
-            None,
-            usize::MAX,
-        )?;
+        let found = transaction
+            .records_between(
+                raw.namespace,
+                raw.database,
+                raw.table,
+                Window {
+                    from: Some(&from),
+                    to: Some((&to, false)),
+                },
+                None,
+                usize::MAX,
+            )
+            .await?;
         let mut records = Vec::with_capacity(found.len());
         for (_, bytes) in found {
             let record = decode_payload(&bytes).map_err(tessari_storage::Error::from)?;
@@ -404,7 +416,7 @@ impl Session<'_> {
             row_identity(window, &key),
         );
         match fold_rows(rollup, time, &records)?.remove(&(window, key.clone())) {
-            Some(row) => self.keep_row(transaction, rows, rollup, row, span),
+            Some(row) => self.keep_row(transaction, rows, rollup, row, span).await,
             None => {
                 transaction.delete(at);
                 sketches::forget_sketches(transaction, rollup, window, &key);
@@ -428,13 +440,14 @@ impl Session<'_> {
     ) -> Result<()> {
         // Events see the record that was there, and run after it is gone
         // (ADR-0110).
-        let events = self.events_before(transaction, &address)?;
+        let events = self.events_before(transaction, &address).await?;
         let evented = events.as_ref().map(|_| address.clone());
-        match self.rollups_before(transaction, &address, span)? {
+        match self.rollups_before(transaction, &address, span).await? {
             None => transaction.delete(address),
             Some(held) => {
                 transaction.delete(address.clone());
-                self.rollups_after(transaction, &address, held, None, span)?;
+                self.rollups_after(transaction, &address, held, None, span)
+                    .await?;
             }
         }
         if let (Some(pending), Some(at)) = (events, evented) {
@@ -445,7 +458,7 @@ impl Session<'_> {
 
     /// Write a row whole, as the engine rather than as a caller — with what is
     /// kept beside it, so the backfill and the writes leave one shape.
-    pub(super) fn keep_row(
+    pub(super) async fn keep_row(
         &self,
         transaction: &mut Transaction<'_>,
         rows: &RecordAddress,
@@ -468,5 +481,6 @@ impl Session<'_> {
         }
         row.keep_sketches(transaction, rollup);
         self.put_engine_record(transaction, at, row_value(row, rollup), span)
+            .await
     }
 }

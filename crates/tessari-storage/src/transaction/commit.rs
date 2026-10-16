@@ -240,7 +240,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails, stored bytes cannot be
     /// decoded, or the catalog cannot be read.
-    pub fn expires(&mut self, address: &RecordAddress) -> Result<Option<u64>> {
+    pub async fn expires(&mut self, address: &RecordAddress) -> Result<Option<u64>> {
         let now = self.reading_at();
         if let Some(buffered) = self.writes.get(address) {
             if !matches!(buffered, RecordValue::Present(_)) {
@@ -250,10 +250,11 @@ impl Transaction<'_> {
                 return Ok(Some(*at));
             }
             let lifetime = self.lifetimes.get(address).copied();
-            return crate::lifetime::pending(self, address, lifetime, now);
+            return crate::lifetime::pending(self, address, lifetime, now).await;
         }
         Ok(self
-            .read_stamped_at(address)?
+            .read_stamped_at(address)
+            .await?
             .and_then(|stamped| stamped.expires().filter(|at| *at > now)))
     }
 
@@ -286,10 +287,10 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// A substrate failure reading what the records were before.
-    pub fn home(&self) -> Result<Reach> {
+    pub async fn home(&self) -> Result<Reach> {
         let identity = self.store.node_identity()?;
-        let placement = self.placement()?;
-        let record = self.log_record(identity.id, &placement)?;
+        let placement = self.placement().await?;
+        let record = self.log_record(identity.id, &placement).await?;
         crate::catalog::home_of(&record)
     }
 
@@ -308,8 +309,9 @@ impl Transaction<'_> {
     /// Returns [`Error::Conflict`] when another transaction committed to a
     /// record this one wrote, [`Error::CommitContention`] when every attempt
     /// lost the race for the committed tail, or a substrate error.
-    pub fn commit(self) -> Result<Sequence> {
+    pub async fn commit(self) -> Result<Sequence> {
         self.settle(Settle::Apply)
+            .await
             .map(|committed| committed.sequence)
     }
 
@@ -323,8 +325,8 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// The same as [`commit`](Self::commit).
-    pub fn commit_placed(self) -> Result<Committed> {
-        self.settle(Settle::Apply)
+    pub async fn commit_placed(self) -> Result<Committed> {
+        self.settle(Settle::Apply).await
     }
 
     /// Run every check a commit runs, then discard the work.
@@ -349,8 +351,8 @@ impl Transaction<'_> {
     ///
     /// Every failure [`commit`](Self::commit) can return except those the write
     /// itself would raise: nothing is applied, so the substrate is not asked to.
-    pub fn dry_run(self) -> Result<()> {
-        self.settle(Settle::Discard).map(|_| ())
+    pub async fn dry_run(self) -> Result<()> {
+        self.settle(Settle::Discard).await.map(|_| ())
     }
 
     /// Everything this transaction changed, as the log will carry it.
@@ -380,7 +382,7 @@ impl Transaction<'_> {
     /// cannot hold two until the engine decides what a write meeting a
     /// concurrency does, which is S3's question and not this criterion's
     /// (Q-645).
-    pub(super) fn log_record(
+    pub(super) async fn log_record(
         &self,
         node: [u8; tessari_encoding::NODE_ID_LEN],
         placement: &Placement,
@@ -388,7 +390,8 @@ impl Transaction<'_> {
         let mut mutations = Vec::with_capacity(self.writes.len());
         for (address, value) in &self.writes {
             let mut stamp = self
-                .read_newest_stamped(address)?
+                .read_newest_stamped(address)
+                .await?
                 .map_or_else(CausalStamp::new, |(_, stamped)| stamped.stamp().clone());
             stamp.advance(node);
             mutations.push(Mutation {

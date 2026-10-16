@@ -23,9 +23,10 @@ impl Fixture {
         }
     }
 
-    fn begin(&mut self) -> Result<()> {
+    async fn begin(&mut self) -> Result<()> {
         let intent = self.write(self.new_value(true));
         self.apply(Part::Begin(self.decided(Decision::Staging)), vec![intent])
+            .await
     }
 
     /// Whether this node marks the coordinator's own part landed.
@@ -42,11 +43,11 @@ impl Fixture {
     }
 }
 
-#[test]
-fn a_begin_lands_the_staging_record_and_its_intents_together() -> Result<()> {
-    let mut fixture = Fixture::new()?;
+#[tokio::test]
+async fn a_begin_lands_the_staging_record_and_its_intents_together() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
     let before = fixture.index_entries()?;
-    fixture.begin()?;
+    fixture.begin().await?;
     assert_eq!(
         record_of(&fixture.store)?,
         Some(fixture.decided(Decision::Staging))
@@ -57,7 +58,7 @@ fn a_begin_lands_the_staging_record_and_its_intents_together() -> Result<()> {
         "where the part landed is marked (D6a)"
     );
     assert_eq!(
-        fixture.read()?,
+        fixture.read().await?,
         Some(doc("old")),
         "an intent is not a value"
     );
@@ -69,13 +70,15 @@ fn a_begin_lands_the_staging_record_and_its_intents_together() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn a_begin_finding_its_record_already_aborted_lands_nothing() -> Result<()> {
-    let mut fixture = Fixture::new()?;
+#[tokio::test]
+async fn a_begin_finding_its_record_already_aborted_lands_nothing() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
     // A participant holding a prepare that outran the begin found the record
     // absent and aborted it (D7).
-    fixture.apply(Part::Decide(fixture.decided(Decision::Aborted)), vec![])?;
-    let refused = fixture.begin();
+    fixture
+        .apply(Part::Decide(fixture.decided(Decision::Aborted)), vec![])
+        .await?;
+    let refused = fixture.begin().await;
     assert!(
         matches!(refused, Err(Error::AcrossDecided { decided: "aborted" })),
         "{refused:?}"
@@ -89,13 +92,15 @@ fn a_begin_finding_its_record_already_aborted_lands_nothing() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn a_begin_carrying_a_plain_write_is_refused() -> Result<()> {
-    let mut fixture = Fixture::new()?;
+#[tokio::test]
+async fn a_begin_carrying_a_plain_write_is_refused() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
     let plain = fixture.write(tessari_encoding::StampedValue::new(
         tessari_encoding::RecordValue::Present(doc("new")),
     ));
-    let refused = fixture.apply(Part::Begin(fixture.decided(Decision::Staging)), vec![plain]);
+    let refused = fixture
+        .apply(Part::Begin(fixture.decided(Decision::Staging)), vec![plain])
+        .await;
     assert!(
         matches!(refused, Err(Error::AcrossMalformed { part: "begin", .. })),
         "{refused:?}"
@@ -104,16 +109,18 @@ fn a_begin_carrying_a_plain_write_is_refused() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn a_begin_that_does_not_stage_is_refused() -> Result<()> {
+#[tokio::test]
+async fn a_begin_that_does_not_stage_is_refused() -> Result<()> {
     // A begin is the parallel commit's first record (ADR-0112 D14a): a record
     // begun undecided in any other way would never commit implicitly.
-    let mut fixture = Fixture::new()?;
+    let mut fixture = Fixture::new().await?;
     let intent = fixture.write(fixture.new_value(true));
-    let refused = fixture.apply(
-        Part::Begin(fixture.decided(Decision::Pending)),
-        vec![intent],
-    );
+    let refused = fixture
+        .apply(
+            Part::Begin(fixture.decided(Decision::Pending)),
+            vec![intent],
+        )
+        .await;
     assert!(
         matches!(refused, Err(Error::AcrossMalformed { part: "begin", .. })),
         "{refused:?}"
@@ -123,21 +130,23 @@ fn a_begin_that_does_not_stage_is_refused() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn a_conclude_commits_the_record_and_its_intents_in_one_record() -> Result<()> {
-    let mut fixture = Fixture::new()?;
+#[tokio::test]
+async fn a_conclude_commits_the_record_and_its_intents_in_one_record() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
     let before = fixture.index_entries()?;
-    fixture.begin()?;
+    fixture.begin().await?;
     let resolved = fixture.write(fixture.new_value(false));
-    fixture.apply(
-        Part::Conclude(fixture.decided(Decision::Committed)),
-        vec![resolved],
-    )?;
+    fixture
+        .apply(
+            Part::Conclude(fixture.decided(Decision::Committed)),
+            vec![resolved],
+        )
+        .await?;
     assert_eq!(
         record_of(&fixture.store)?,
         Some(fixture.decided(Decision::Committed))
     );
-    assert_eq!(fixture.read()?, Some(doc("new")));
+    assert_eq!(fixture.read().await?, Some(doc("new")));
     assert!(!fixture.intent_left()?, "the resolution removes its intent");
     assert_ne!(
         fixture.index_entries()?,
@@ -147,41 +156,47 @@ fn a_conclude_commits_the_record_and_its_intents_in_one_record() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn a_conclude_that_aborts_drops_the_intents() -> Result<()> {
-    let mut fixture = Fixture::new()?;
+#[tokio::test]
+async fn a_conclude_that_aborts_drops_the_intents() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
     let before = fixture.index_entries()?;
-    fixture.begin()?;
+    fixture.begin().await?;
     let named = fixture.write(fixture.new_value(true));
-    fixture.apply(
-        Part::Conclude(fixture.decided(Decision::Aborted)),
-        vec![named],
-    )?;
+    fixture
+        .apply(
+            Part::Conclude(fixture.decided(Decision::Aborted)),
+            vec![named],
+        )
+        .await?;
     assert_eq!(
         record_of(&fixture.store)?,
         Some(fixture.decided(Decision::Aborted))
     );
-    assert_eq!(fixture.read()?, Some(doc("old")));
+    assert_eq!(fixture.read().await?, Some(doc("old")));
     assert!(!fixture.intent_left()?);
     assert_eq!(fixture.index_entries()?, before);
     Ok(())
 }
 
-#[test]
-fn a_conclude_against_a_lapsed_record_resolves_nothing() -> Result<()> {
-    let mut fixture = Fixture::new()?;
-    fixture.begin()?;
-    fixture.apply(Part::Decide(fixture.decided(Decision::Aborted)), vec![])?;
+#[tokio::test]
+async fn a_conclude_against_a_lapsed_record_resolves_nothing() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
+    fixture.begin().await?;
+    fixture
+        .apply(Part::Decide(fixture.decided(Decision::Aborted)), vec![])
+        .await?;
     let resolved = fixture.write(fixture.new_value(false));
-    let refused = fixture.apply(
-        Part::Conclude(fixture.decided(Decision::Committed)),
-        vec![resolved],
-    );
+    let refused = fixture
+        .apply(
+            Part::Conclude(fixture.decided(Decision::Committed)),
+            vec![resolved],
+        )
+        .await;
     assert!(
         matches!(refused, Err(Error::AcrossDecided { decided: "aborted" })),
         "{refused:?}"
     );
-    assert_eq!(fixture.read()?, Some(doc("old")));
+    assert_eq!(fixture.read().await?, Some(doc("old")));
     assert!(
         fixture.intent_left()?,
         "the abort's own resolution drops it"
@@ -189,13 +204,15 @@ fn a_conclude_against_a_lapsed_record_resolves_nothing() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn a_staging_record_is_never_reopened_as_pending() -> Result<()> {
+#[tokio::test]
+async fn a_staging_record_is_never_reopened_as_pending() -> Result<()> {
     // A staging record may be committed implicitly already (ADR-0112 D14a):
     // reopened as PENDING, a lapse could abort what was committed.
-    let mut fixture = Fixture::new()?;
-    fixture.begin()?;
-    let refused = fixture.apply(Part::Decide(fixture.decided(Decision::Pending)), vec![]);
+    let mut fixture = Fixture::new().await?;
+    fixture.begin().await?;
+    let refused = fixture
+        .apply(Part::Decide(fixture.decided(Decision::Pending)), vec![])
+        .await;
     assert!(
         matches!(refused, Err(Error::AcrossDecided { decided: "staging" })),
         "{refused:?}"

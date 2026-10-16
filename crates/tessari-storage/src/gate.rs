@@ -266,6 +266,7 @@ impl WriteGate {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use crate::now::Now;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -285,7 +286,7 @@ mod tests {
             ),
             b"{}".to_vec(),
         );
-        transaction.commit().map(|_| ())
+        transaction.commit().now().map(|_| ())
     }
 
     /// Hold the turn, let a writer queue on it, run `meanwhile`, then let it go.
@@ -304,7 +305,9 @@ mod tests {
 
     #[test]
     fn a_commit_that_waited_for_its_turn_writes_when_the_fence_is_still_open() {
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         store.hold_lease(Duration::from_secs(60));
         queued_behind(&store, || {}).expect("the wait alone refuses nothing");
     }
@@ -314,7 +317,9 @@ mod tests {
         // Admitted under a live lease, then queued while the fence shut: a
         // write landing now could land after another node was granted the
         // leadership, which is what the fence exists to prevent.
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         store.hold_lease(Duration::from_secs(60));
         let refused = queued_behind(&store, || store.hold_lease(Duration::ZERO));
         assert!(

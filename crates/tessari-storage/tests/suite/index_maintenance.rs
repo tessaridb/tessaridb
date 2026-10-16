@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_encoding::{
     IndexAddress, KeyKind, StoreKey, StoreValue, UniqueIndexKey, encode_payload,
@@ -35,14 +36,18 @@ impl Fixture {
     /// the same shape the other way round.
     fn new(unique: bool) -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        let store = Store::open(Arc::clone(&backend)).unwrap();
+        let store = Store::open(Arc::clone(&backend)).now().unwrap();
 
         let mut transaction = store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("prod").unwrap();
-        let database = catalog.create_database(namespace.id, "orders").unwrap();
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog
+            .create_database(namespace.id, "orders")
+            .now()
+            .unwrap();
         let table = catalog
             .create_table(namespace.id, database.id, "users", TableShape::default())
+            .now()
             .unwrap();
         let index = catalog
             .create_index(
@@ -59,8 +64,9 @@ impl Fixture {
                     costs: tessari_storage::SearchCosts::default(),
                 },
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
 
         Self {
             backend,
@@ -95,13 +101,13 @@ impl Fixture {
             self.at(id),
             encode_payload(&Self::record(email)).into_bytes(),
         );
-        transaction.commit()
+        transaction.commit().now()
     }
 
     fn delete(&self, id: &str) {
         let mut transaction = self.store.begin().unwrap();
         transaction.delete(self.at(id));
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     fn address(&self) -> IndexAddress {
@@ -245,7 +251,7 @@ fn two_records_claiming_one_unique_value_in_one_transaction_are_refused() {
     transaction.put(fixture.at("u1"), payload.clone());
     transaction.put(fixture.at("u2"), payload);
 
-    let error = transaction.commit().unwrap_err();
+    let error = transaction.commit().now().unwrap_err();
     assert!(matches!(error, Error::UniqueViolation { .. }), "{error}");
     assert!(fixture.entries().is_empty(), "nothing was written");
 }
@@ -284,7 +290,7 @@ fn a_replica_derives_the_same_entries_from_the_same_log() {
         .unwrap();
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    let replica = Store::open(Arc::clone(&replica_backend)).now().unwrap();
     crate::replay(&source.store, &replica);
 
     let mirrored = Fixture {
@@ -308,7 +314,7 @@ fn a_replica_builds_the_same_entries_for_an_index_defined_over_existing_rows() {
     assert_eq!(source.entries().len(), 2);
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    let replica = Store::open(Arc::clone(&replica_backend)).now().unwrap();
     crate::replay(&source.store, &replica);
 
     let mirrored = Fixture {
@@ -335,6 +341,7 @@ fn a_unique_lookup_returns_the_record_that_holds_the_value() {
     let transaction = fixture.store.begin().unwrap();
     let found = transaction
         .records_by_index(&fixture.index, &[Value::from("ada@example.com")])
+        .now()
         .unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].0, RecordId::from("u1"));
@@ -342,6 +349,7 @@ fn a_unique_lookup_returns_the_record_that_holds_the_value() {
     assert!(
         transaction
             .records_by_index(&fixture.index, &[Value::from("nobody@example.com")])
+            .now()
             .unwrap()
             .is_empty()
     );
@@ -363,6 +371,7 @@ fn a_non_unique_lookup_returns_every_record_holding_the_value() {
     let transaction = fixture.store.begin().unwrap();
     let found = transaction
         .records_by_index(&fixture.index, &[Value::from("shared@example.com")])
+        .now()
         .unwrap();
     let ids: Vec<String> = found.iter().map(|(id, _)| id.to_string()).collect();
     assert_eq!(ids, vec!["u1".to_owned(), "u2".to_owned()]);
@@ -385,6 +394,7 @@ fn a_lookup_never_returns_a_record_that_no_longer_holds_the_value() {
 
     let wrong = reader
         .records_by_index(&fixture.index, &[Value::from("new@example.com")])
+        .now()
         .unwrap();
     assert!(
         wrong.is_empty(),
@@ -395,6 +405,7 @@ fn a_lookup_never_returns_a_record_that_no_longer_holds_the_value() {
     // nothing either. Sound, not complete.
     let missed = reader
         .records_by_index(&fixture.index, &[Value::from("old@example.com")])
+        .now()
         .unwrap();
     assert!(missed.is_empty(), "the entry for the old value was removed");
 
@@ -402,6 +413,7 @@ fn a_lookup_never_returns_a_record_that_no_longer_holds_the_value() {
     let current = fixture.store.begin().unwrap();
     let found = current
         .records_by_index(&fixture.index, &[Value::from("new@example.com")])
+        .now()
         .unwrap();
     assert_eq!(found.len(), 1);
 }
@@ -429,6 +441,7 @@ fn a_reader_behind_the_tail_finds_the_value_through_retired_entries() {
     );
     let found = reader
         .records_by_index(&fixture.index, &[Value::from("old@example.com")])
+        .now()
         .unwrap();
     assert_eq!(
         found.len(),
@@ -437,6 +450,7 @@ fn a_reader_behind_the_tail_finds_the_value_through_retired_entries() {
     );
     let wrong = reader
         .records_by_index(&fixture.index, &[Value::from("new@example.com")])
+        .now()
         .unwrap();
     assert!(
         wrong.is_empty(),
@@ -466,6 +480,7 @@ fn a_lookup_sees_this_transactions_own_uncommitted_writes() {
 
     let found = transaction
         .records_by_index(&fixture.index, &[Value::from("shared@example.com")])
+        .now()
         .unwrap();
     let ids: Vec<String> = found.iter().map(|(id, _)| id.to_string()).collect();
     assert_eq!(ids, vec!["u2".to_owned()]);
@@ -483,6 +498,7 @@ fn a_deleted_record_is_not_returned_by_a_lookup() {
     assert!(
         transaction
             .records_by_index(&fixture.index, &[Value::from("ada@example.com")])
+            .now()
             .unwrap()
             .is_empty()
     );
@@ -494,16 +510,20 @@ fn a_deleted_record_is_not_returned_by_a_lookup() {
 /// before then.
 fn table_with_rows(unique: bool) -> Fixture {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
 
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("prod").unwrap();
-    let database = catalog.create_database(namespace.id, "orders").unwrap();
+    let namespace = catalog.create_namespace("prod").now().unwrap();
+    let database = catalog
+        .create_database(namespace.id, "orders")
+        .now()
+        .unwrap();
     let table = catalog
         .create_table(namespace.id, database.id, "users", TableShape::default())
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let bare = Fixture {
         backend: Arc::clone(&backend),
@@ -558,8 +578,9 @@ fn indexed_after_the_fact(unique: bool) -> Fixture {
                 costs: tessari_storage::SearchCosts::default(),
             },
         )
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     Fixture { index, ..populated }
 }
@@ -580,6 +601,7 @@ fn an_index_declared_after_the_rows_indexes_them_in_the_same_commit() {
     let transaction = fixture.store.begin().unwrap();
     let found = transaction
         .records_by_index(&fixture.index, &[Value::from("ada@example.com")])
+        .now()
         .unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].0, RecordId::from("u1"));
@@ -613,6 +635,7 @@ fn rows_written_in_the_transaction_that_defines_the_index_are_indexed_too() {
             vec![Path::field("email")],
             IndexShape::default(),
         )
+        .now()
         .unwrap();
     transaction.put(
         RecordAddress::new(
@@ -623,7 +646,7 @@ fn rows_written_in_the_transaction_that_defines_the_index_are_indexed_too() {
         ),
         encode_payload(&Fixture::record(Some(Value::from("new@example.com")))).into_bytes(),
     );
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let built = Fixture { index, ..fixture };
     assert_eq!(
@@ -658,8 +681,9 @@ fn defining_a_unique_index_over_rows_that_already_violate_it_is_refused() {
                 costs: tessari_storage::SearchCosts::default(),
             },
         )
+        .now()
         .unwrap();
-    let error = transaction.commit().unwrap_err();
+    let error = transaction.commit().now().unwrap_err();
     assert!(matches!(error, Error::UniqueViolation { .. }), "{error}");
 
     let refused = Fixture { index, ..fixture };
@@ -671,6 +695,7 @@ fn defining_a_unique_index_over_rows_that_already_violate_it_is_refused() {
     assert!(
         Catalog::new(&mut transaction)
             .indexes_on(refused.namespace, refused.database, refused.table)
+            .now()
             .unwrap()
             .is_empty(),
         "and the definition itself does not land either"
@@ -697,16 +722,20 @@ fn a_replica_builds_the_same_entries_for_an_index_on_a_nested_value() {
     // is new code on the apply path, and apply is where a wrong answer becomes
     // permanent rather than merely slow.
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
 
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("prod").unwrap();
-    let database = catalog.create_database(namespace.id, "orders").unwrap();
+    let namespace = catalog.create_namespace("prod").now().unwrap();
+    let database = catalog
+        .create_database(namespace.id, "orders")
+        .now()
+        .unwrap();
     let table = catalog
         .create_table(namespace.id, database.id, "people", TableShape::default())
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let address =
         |id: &str| RecordAddress::new(namespace.id, database.id, table.id, RecordId::from(id));
@@ -729,7 +758,7 @@ fn a_replica_builds_the_same_entries_for_an_index_on_a_nested_value() {
         )])))
         .into_bytes(),
     );
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let mut transaction = store.begin().unwrap();
     let index = Catalog::new(&mut transaction)
@@ -739,8 +768,9 @@ fn a_replica_builds_the_same_entries_for_an_index_on_a_nested_value() {
             vec![Path::parse("address.city").unwrap()],
             IndexShape::default(),
         )
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let source = Fixture {
         backend,
@@ -754,7 +784,7 @@ fn a_replica_builds_the_same_entries_for_an_index_on_a_nested_value() {
     assert_eq!(source.entries().len(), 1);
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    let replica = Store::open(Arc::clone(&replica_backend)).now().unwrap();
     crate::replay(&source.store, &replica);
 
     let mirrored = Fixture {

@@ -111,17 +111,17 @@ impl<'a> Transaction<'a> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn get(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
+    pub async fn get(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
         // A series table's floor is applied here rather than in each read that
         // ends in a record, because this is where every one of them ends: a
         // point read, an index-served read, a search, a nearest-first walk and a
         // graph hop all resolve their identities through this method. Gating
         // them one by one is the enforcement-coverage failure where the path
         // added next month is the one nobody remembers.
-        if self.below_series_floor(address)? {
+        if self.below_series_floor(address).await? {
             return Ok(None);
         }
-        self.get_uncovered(address)
+        self.get_uncovered(address).await
     }
 
     /// A record as it is **held**, an expired version included (G035).
@@ -138,8 +138,8 @@ impl<'a> Transaction<'a> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn get_held(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
-        if self.below_series_floor(address)? {
+    pub async fn get_held(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
+        if self.below_series_floor(address).await? {
             return Ok(None);
         }
         if let Some(pending) = self.writes.get(address) {
@@ -149,7 +149,11 @@ impl<'a> Transaction<'a> {
             });
         }
         Ok(
-            match self.read_stamped_at(address)?.map(StampedValue::into_value) {
+            match self
+                .read_stamped_at(address)
+                .await?
+                .map(StampedValue::into_value)
+            {
                 Some(RecordValue::Present(payload)) => Some(payload),
                 Some(RecordValue::Tombstone) | None => None,
             },
@@ -186,14 +190,14 @@ impl<'a> Transaction<'a> {
     ///
     /// Reserved for the catalog, which must be able to read the declaration that
     /// says where the floor is.
-    pub(super) fn get_uncovered(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
+    pub(super) async fn get_uncovered(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
         if let Some(pending) = self.writes.get(address) {
             return Ok(match pending {
                 RecordValue::Present(payload) => Some(payload.clone()),
                 RecordValue::Tombstone => None,
             });
         }
-        let found = self.read_at(address, self.snapshot)?;
+        let found = self.read_at(address, self.snapshot).await?;
         Ok(match found {
             Some((_, RecordValue::Present(payload))) => Some(payload),
             Some((_, RecordValue::Tombstone)) | None => None,
@@ -217,13 +221,13 @@ impl<'a> Transaction<'a> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn get_each(&self, addresses: &[RecordAddress]) -> Result<Vec<Option<Vec<u8>>>> {
+    pub async fn get_each(&self, addresses: &[RecordAddress]) -> Result<Vec<Option<Vec<u8>>>> {
         let mut answers: Vec<Option<Vec<u8>>> = vec![None; addresses.len()];
         // Tested before anything is asked of the backend, so a batch of
         // identities entirely below the floor costs no read at all.
         let mut covered = vec![false; addresses.len()];
         for (index, address) in addresses.iter().enumerate() {
-            covered[index] = self.below_series_floor(address)?;
+            covered[index] = self.below_series_floor(address).await?;
         }
         let mut ranges = Vec::new();
         let mut asked = Vec::new();
@@ -252,10 +256,10 @@ impl<'a> Transaction<'a> {
         for (index, pair) in asked.into_iter().zip(found) {
             let Some((_, value)) = pair else { continue };
             let mut stored = StampedValue::decode(value.as_slice())?;
-            if self.passes_over(&stored)? {
+            if self.passes_over(&stored).await? {
                 // The rare record a transaction across leaders wrote that this
                 // one does not see: read the version under, one at a time.
-                let Some(under) = self.read_stamped_at(&addresses[index])? else {
+                let Some(under) = self.read_stamped_at(&addresses[index]).await? else {
                     continue;
                 };
                 stored = under;

@@ -57,6 +57,8 @@ mod lines;
 mod log;
 mod log_holds;
 mod node;
+#[cfg(feature = "test-support")]
+mod now;
 mod ordering;
 mod pruning;
 mod quarantine;
@@ -104,7 +106,7 @@ pub use catalog::VaultRoot;
 pub use catalog::system::ALL as SYSTEM_TABLES;
 pub use collections::{Collection, Collections, Currency, Upstream, UpstreamReport};
 pub use covering::MEASURED_RELATION;
-pub use decisions::Decisions;
+pub use decisions::{Deciding, Decisions};
 pub use expiry::Expired;
 pub use lapse::Lapsed;
 pub use log_holds::LogHold;
@@ -123,6 +125,8 @@ pub use feed::{Change, ChangeKind, Changes, History, Merged, Subject, Subscripti
 pub use followers::FollowerLag;
 pub use graph::{Graph as VectorGraph, Matched, filtered_ceiling, vector_of};
 pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};
+#[cfg(feature = "test-support")]
+pub use now::{Now, now};
 pub use ordering::{Horizon, MergedHistory, Page, in_writer_order};
 pub use pruning::{Pruned, Trimmed};
 pub use reclaim::Reclaimed;

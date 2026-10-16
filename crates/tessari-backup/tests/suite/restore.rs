@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_encoding::{
     CausalStamp, LogId, LogRecord, Mutation, NODE_ID_LEN, RecordKey, RecordValue, StampedValue,
@@ -125,7 +126,7 @@ pub(crate) const INTERROGATION: &[&str] = &[
 
 pub(crate) fn store() -> (Arc<dyn KvBackend>, Store) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     (backend, store)
 }
 
@@ -184,7 +185,7 @@ pub(crate) fn signed_in(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     // The last statement of the fixture declares a user, which closes the store,
     // so anything reading it afterwards has to say who it is.
-    session.sign_in("root", "a long one").ok();
+    session.sign_in("root", "a long one").now().ok();
     session
         .run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
@@ -225,7 +226,9 @@ pub(crate) fn original() -> (Arc<dyn KvBackend>, Store, Vec<u8>) {
 fn a_restored_store_answers_exactly_what_the_original_did() {
     let (_, source, taken) = original();
     let (_, restored) = store();
-    let outcome = tessari_backup::read(&restored, &mut taken.as_slice()).unwrap();
+    let outcome = tessari_backup::read(&restored, &mut taken.as_slice())
+        .now()
+        .unwrap();
     assert!(!outcome.truncated);
     // Every log the source holds, at the sequence the source holds it — the
     // restored store's own answer, not the file's claim about itself.
@@ -283,7 +286,9 @@ fn the_record_counter_survives_a_restore_rather_than_starting_again() {
     tessari_backup::write(&source, &mut taken).unwrap();
 
     let (_, restored) = store();
-    tessari_backup::read(&restored, &mut taken.as_slice()).unwrap();
+    tessari_backup::read(&restored, &mut taken.as_slice())
+        .now()
+        .unwrap();
 
     let mut there = Session::new(&restored);
     there
@@ -338,12 +343,15 @@ fn a_stamped_record_survives_a_backup_and_a_restore() {
     );
     source
         .apply_record(source.writer().unwrap(), Sequence::new(1), &record)
+        .now()
         .unwrap();
 
     let mut taken = Vec::new();
     tessari_backup::write(&source, &mut taken).unwrap();
     let (target_backend, restored) = store();
-    tessari_backup::read(&restored, &mut taken.as_slice()).unwrap();
+    tessari_backup::read(&restored, &mut taken.as_slice())
+        .now()
+        .unwrap();
 
     // Byte-for-byte, the way W283 compared `meta`, `index` and `log`: one record
     // applied into one log leaves one version, so the version stamp the other
@@ -397,7 +405,9 @@ fn every_derived_byte_is_identical_because_it_was_derived() {
     // — and the node identity is the one thing that is outside it **on purpose**.
     let (source, _held, taken) = original();
     let (target, restored) = store();
-    tessari_backup::read(&restored, &mut taken.as_slice()).unwrap();
+    tessari_backup::read(&restored, &mut taken.as_slice())
+        .now()
+        .unwrap();
 
     for keyspace in Keyspace::ALL.iter().copied() {
         let expected = derived(&source, keyspace);
@@ -490,13 +500,15 @@ fn a_restore_carries_the_peer_list_and_not_the_identity() {
     // them rather than two tests that could be deleted independently.
     let (_, source, taken) = original();
     let (target, restored) = store();
-    tessari_backup::read(&restored, &mut taken.as_slice()).unwrap();
+    tessari_backup::read(&restored, &mut taken.as_slice())
+        .now()
+        .unwrap();
 
     // The topology half: a peer is a catalog record, so it is in the log and it
     // arrives. Read back through the statement rather than off the keyspace,
     // because what a second node needs is the *answer*, not the bytes.
     let mut asking = Session::new(&restored);
-    asking.sign_in("root", "a long one").unwrap();
+    asking.sign_in("root", "a long one").now().unwrap();
     let reported = asking.run_now("INFO FOR NODE;").unwrap();
     let described = format!("{reported:?}");
     assert!(
@@ -519,7 +531,7 @@ fn a_restore_carries_the_peer_list_and_not_the_identity() {
     // happens to be implemented today.
     drop(asking);
     drop(restored);
-    let reopened = Store::open(Arc::clone(&target)).unwrap();
+    let reopened = Store::open(Arc::clone(&target)).now().unwrap();
     let inherited = reopened.node_identity().unwrap();
     assert_ne!(
         source.node_identity().unwrap().id,
@@ -564,7 +576,9 @@ fn a_restore_into_a_store_that_holds_something_is_refused() {
     }
     let before = dump(&target, Keyspace::LOG);
 
-    let refused = tessari_backup::read(&occupied, &mut taken.as_slice()).unwrap_err();
+    let refused = tessari_backup::read(&occupied, &mut taken.as_slice())
+        .now()
+        .unwrap_err();
     assert!(matches!(refused, tessari_backup::Error::WrongBase { .. }));
     // And nothing was written on the way to refusing.
     assert_eq!(dump(&target, Keyspace::LOG), before);
@@ -578,7 +592,9 @@ fn a_file_that_is_not_one_is_refused_before_anything_is_applied() {
         Vec::new(),
         b"TESSALO".to_vec(),
     ] {
-        let refused = tessari_backup::read(&restored, &mut bytes.as_slice()).unwrap_err();
+        let refused = tessari_backup::read(&restored, &mut bytes.as_slice())
+            .now()
+            .unwrap_err();
         assert!(
             matches!(refused, tessari_backup::Error::NotABackup),
             "{refused}"
@@ -594,7 +610,9 @@ fn a_version_this_build_does_not_read_is_refused_rather_than_guessed_at() {
         let mut damaged = taken.clone();
         damaged[position] = 99;
         let (_, restored) = store();
-        let refused = tessari_backup::read(&restored, &mut damaged.as_slice()).unwrap_err();
+        let refused = tessari_backup::read(&restored, &mut damaged.as_slice())
+            .now()
+            .unwrap_err();
         match refused {
             tessari_backup::Error::Unsupported { what: named, .. } => assert_eq!(named, what),
             other => panic!("wrong refusal for {what}: {other}"),
@@ -614,7 +632,9 @@ fn a_truncated_backup_restores_what_it_holds_and_says_so() {
     const HEADER: usize = HEADER_LEN + SECTION_LEN;
     for cut in (HEADER..taken.len()).step_by(7) {
         let (_, restored) = store();
-        let outcome = tessari_backup::read(&restored, &mut &taken[..cut]).unwrap();
+        let outcome = tessari_backup::read(&restored, &mut &taken[..cut])
+            .now()
+            .unwrap();
         assert!(outcome.truncated, "a cut at {cut} was not noticed");
         assert!(
             outcome.records <= u64::try_from(taken.len()).unwrap(),
@@ -637,7 +657,9 @@ fn a_file_cut_inside_its_own_header_is_not_a_backup_at_all() {
     let (_, _held, taken) = original();
     for cut in 0..HEADER_LEN {
         let (_, restored) = store();
-        let refused = tessari_backup::read(&restored, &mut &taken[..cut]).unwrap_err();
+        let refused = tessari_backup::read(&restored, &mut &taken[..cut])
+            .now()
+            .unwrap_err();
         assert!(
             matches!(refused, tessari_backup::Error::NotABackup),
             "a cut at {cut} gave {refused}"
@@ -649,7 +671,9 @@ fn a_file_cut_inside_its_own_header_is_not_a_backup_at_all() {
     // expect and none of them arrived whole.
     for cut in HEADER_LEN..HEADER_LEN + SECTION_LEN {
         let (_, restored) = store();
-        let outcome = tessari_backup::read(&restored, &mut &taken[..cut]).unwrap();
+        let outcome = tessari_backup::read(&restored, &mut &taken[..cut])
+            .now()
+            .unwrap();
         assert!(outcome.truncated, "a cut at {cut} went unnoticed");
         assert_eq!(outcome.records, 0, "a cut at {cut} applied something");
     }
@@ -672,7 +696,9 @@ fn a_cut_exactly_between_two_records_is_still_noticed() {
     .unwrap();
     let boundary = at + FRAME_LEN + length;
     let (_, restored) = store();
-    let outcome = tessari_backup::read(&restored, &mut &taken[..boundary]).unwrap();
+    let outcome = tessari_backup::read(&restored, &mut &taken[..boundary])
+        .now()
+        .unwrap();
     assert_eq!(outcome.records, 1);
     assert!(
         outcome.truncated,
@@ -684,7 +710,9 @@ fn a_cut_exactly_between_two_records_is_still_noticed() {
 fn a_whole_backup_is_not_reported_as_truncated() {
     let (_, _held, taken) = original();
     let (_, restored) = store();
-    let outcome = tessari_backup::read(&restored, &mut taken.as_slice()).unwrap();
+    let outcome = tessari_backup::read(&restored, &mut taken.as_slice())
+        .now()
+        .unwrap();
     assert!(!outcome.truncated);
 }
 
@@ -697,7 +725,9 @@ fn an_empty_store_backs_up_and_restores_to_an_empty_store() {
     assert_eq!(written.records, 0);
 
     let (_, restored) = store();
-    let outcome = tessari_backup::read(&restored, &mut taken.as_slice()).unwrap();
+    let outcome = tessari_backup::read(&restored, &mut taken.as_slice())
+        .now()
+        .unwrap();
     assert_eq!(outcome.records, 0);
     assert!(!outcome.truncated);
     assert_eq!(crate::records_held(&restored), 0);
@@ -709,7 +739,9 @@ fn a_restored_store_can_be_written_to_and_backed_up_again() {
     // above. The sequence has to continue from where the log left off.
     let (_, _held, taken) = original();
     let (_, restored) = store();
-    let first = tessari_backup::read(&restored, &mut taken.as_slice()).unwrap();
+    let first = tessari_backup::read(&restored, &mut taken.as_slice())
+        .now()
+        .unwrap();
 
     {
         let mut session = signed_in(&restored);
@@ -772,7 +804,9 @@ fn a_record_whose_bytes_changed_is_refused_before_it_is_applied() {
     // And a restore refuses it too, rather than leaving the check to whoever
     // remembered to verify.
     let (_, restored) = store();
-    let refused = tessari_backup::read(&restored, &mut damaged.as_slice()).unwrap_err();
+    let refused = tessari_backup::read(&restored, &mut damaged.as_slice())
+        .now()
+        .unwrap_err();
     assert!(
         matches!(refused, tessari_backup::Error::Damaged { .. }),
         "{refused}"
@@ -818,8 +852,12 @@ fn an_incremental_backup_plus_its_base_is_the_whole_store() {
 
     // Restore the base, then the increment onto it.
     let (_, rebuilt) = store();
-    tessari_backup::read(&rebuilt, &mut base.as_slice()).unwrap();
-    tessari_backup::read(&rebuilt, &mut increment.as_slice()).unwrap();
+    tessari_backup::read(&rebuilt, &mut base.as_slice())
+        .now()
+        .unwrap();
+    tessari_backup::read(&rebuilt, &mut increment.as_slice())
+        .now()
+        .unwrap();
     assert_eq!(crate::tails(&rebuilt), crate::tails(&held));
 
     // And it answers what the original answers.
@@ -857,7 +895,9 @@ fn an_increment_refuses_a_store_that_is_not_where_it_continues_from() {
 
     // Onto an empty store, which is not where it continues from.
     let (_, empty) = store();
-    let refused = tessari_backup::read(&empty, &mut increment.as_slice()).unwrap_err();
+    let refused = tessari_backup::read(&empty, &mut increment.as_slice())
+        .now()
+        .unwrap_err();
     assert!(
         matches!(refused, tessari_backup::Error::WrongBase { .. }),
         "{refused}"
@@ -881,8 +921,9 @@ fn a_restore_can_stop_at_a_chosen_point() {
     );
 
     let (_, rebuilt) = store();
-    let outcome =
-        tessari_backup::read_until(&rebuilt, &mut taken.as_slice(), Some(midpoint)).unwrap();
+    let outcome = tessari_backup::read_until(&rebuilt, &mut taken.as_slice(), Some(midpoint))
+        .now()
+        .unwrap();
     assert_eq!(
         // The log the FILE holds, which is the one it was restored into: a
         // record is filed under the writer that wrote it, never under the one
@@ -900,7 +941,9 @@ fn a_restore_can_stop_at_a_chosen_point() {
     // And what it holds is what the original held at that sequence, which is
     // asserted by taking the original's own backup to the same point.
     let (_, twin) = store();
-    tessari_backup::read_until(&twin, &mut taken.as_slice(), Some(midpoint)).unwrap();
+    tessari_backup::read_until(&twin, &mut taken.as_slice(), Some(midpoint))
+        .now()
+        .unwrap();
     assert_eq!(crate::tails(&twin), crate::tails(&rebuilt));
 }
 
@@ -914,6 +957,7 @@ fn a_point_in_time_restore_of_a_file_holding_several_logs_is_refused() {
     let (_, rebuilt) = store();
     let refused =
         tessari_backup::read_until(&rebuilt, &mut taken.as_slice(), Some(Sequence::new(3)))
+            .now()
             .unwrap_err();
     assert!(
         matches!(refused, tessari_backup::Error::ManyLogs { .. }),

@@ -6,6 +6,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -17,7 +18,9 @@ use tessari_types::{Number, Value};
 const SAMPLES: [(u32, &str); 5] = [(30, "8"), (0, "10"), (40, "20"), (20, "3"), (10, "15")];
 
 fn answered(numbers: &str) -> Value {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(
@@ -74,7 +77,9 @@ fn a_float_sample_turns_the_fold_to_floats() {
 
 #[test]
 fn one_sample_is_not_a_change_and_the_instant_is_required() {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(

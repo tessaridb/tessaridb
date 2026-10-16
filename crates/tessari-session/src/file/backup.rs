@@ -48,16 +48,16 @@ impl Session<'_> {
             }));
         }
         if form == tessari_ql::BackupForm::State {
-            let within = self.state_scope(of)?;
-            self.refuse_a_partial_snapshot(within)?;
+            let within = self.state_scope(of).await?;
+            self.refuse_a_partial_snapshot(within).await?;
             if let Some(out) = self.sink.take() {
-                return self.snapshot_streamed(within, out);
+                return self.snapshot_streamed(within, out).await;
             }
-            tessari_backup::write_state_within(self.store, within, &mut held).map_err(|error| {
-                Error::BackupFailed {
+            tessari_backup::write_state_within(self.store, within, &mut held)
+                .await
+                .map_err(|error| Error::BackupFailed {
                     reason: error.to_string(),
-                }
-            })?;
+                })?;
             return Ok(Outcome::Value(Value::Bytes(self.sealed(held)?)));
         }
         // No `FROM` backs up the store, which is every log it holds. A `FROM`
@@ -104,7 +104,7 @@ impl Session<'_> {
 
     /// Write the snapshot of `within` into the caller's sink, and answer what
     /// it holds rather than its bytes.
-    fn snapshot_streamed(
+    async fn snapshot_streamed(
         &self,
         within: tessari_types::Reach,
         out: Box<dyn std::io::Write + Send>,
@@ -116,6 +116,7 @@ impl Session<'_> {
                     .seal_into(out)
                     .map_err(|error| failed(error.to_string()))?;
                 let taken = tessari_backup::write_state_within(self.store, within, &mut sealing)
+                    .await
                     .map_err(|error| failed(error.to_string()))?;
                 sealing
                     .finish()
@@ -125,6 +126,7 @@ impl Session<'_> {
             None => {
                 let mut out = out;
                 let taken = tessari_backup::write_state_within(self.store, within, &mut out)
+                    .await
                     .map_err(|error| failed(error.to_string()))?;
                 out.flush().map_err(|error| failed(error.to_string()))?;
                 taken

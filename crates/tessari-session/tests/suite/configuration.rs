@@ -27,6 +27,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -42,7 +43,7 @@ fn backend() -> Arc<dyn KvBackend> {
 
 /// A store closed by an owner, so that permission is actually being tested.
 fn closed(backend: &Arc<dyn KvBackend>) -> Store {
-    let store = Store::open(Arc::clone(backend)).unwrap();
+    let store = Store::open(Arc::clone(backend)).now().unwrap();
     {
         let mut session = Session::new(&store);
         session
@@ -69,7 +70,7 @@ fn closed(backend: &Arc<dyn KvBackend>) -> Store {
 fn signed_in<'store>(store: &'store Store, name: &str) -> Session<'store> {
     let mut session = Session::new(store);
     for _ in 0..1_000 {
-        match session.sign_in(name, PASSWORD) {
+        match session.sign_in(name, PASSWORD).now() {
             Ok(()) => return session,
             // A place is held for as long as a hash takes, so yielding would
             // spin a thousand times inside one of them and learn nothing.
@@ -241,10 +242,12 @@ fn a_node_reports_the_leadership_it_writes_under_beside_the_time_left_on_it() {
     );
 
     // And a granted one carries both across the seam together.
-    store.hold(
-        tessari_types::Epoch::new(6),
-        tessari_storage::Lease::taken(Duration::from_secs(120)),
-    );
+    store
+        .hold(
+            tessari_types::Epoch::new(6),
+            tessari_storage::Lease::taken(Duration::from_secs(120)),
+        )
+        .now();
     assert_eq!(epoch(&reported(&store)), Some(Value::from(6_i64)));
 }
 
@@ -340,7 +343,7 @@ fn what_the_statement_sets_survives_a_restart() {
         .unwrap();
     drop(store);
 
-    let reopened = Store::open(Arc::clone(&held)).unwrap();
+    let reopened = Store::open(Arc::clone(&held)).now().unwrap();
     let report = reported(&reopened);
     assert_eq!(
         report.get("roles"),
@@ -654,7 +657,7 @@ fn reopening_the_store_converges_the_effective_role_on_the_desired_one() {
         .unwrap();
     drop(store);
 
-    let reopened = Store::open(Arc::clone(&held)).unwrap();
+    let reopened = Store::open(Arc::clone(&held)).now().unwrap();
     let report = reported(&reopened);
     assert_eq!(
         effective(&report),
@@ -688,7 +691,7 @@ fn a_row_bound_to_another_node_moves_nothing_here() {
         .unwrap();
     drop(store);
 
-    let reopened = Store::open(Arc::clone(&held)).unwrap();
+    let reopened = Store::open(Arc::clone(&held)).now().unwrap();
     let report = reported(&reopened);
     assert_eq!(
         desired(&report),
@@ -730,7 +733,7 @@ fn a_bound_row_that_names_no_roles_drains_the_node() {
         .unwrap();
     drop(store);
 
-    let reopened = Store::open(Arc::clone(&held)).unwrap();
+    let reopened = Store::open(Arc::clone(&held)).now().unwrap();
     let report = reported(&reopened);
     assert!(
         effective(&report).is_empty(),
@@ -1600,7 +1603,7 @@ fn a_node_reports_who_the_log_says_leads_each_range() {
     let other = [7_u8; 16];
     let mut transaction = store.begin().unwrap();
     let mut catalog = tessari_storage::Catalog::new(&mut transaction);
-    let prod = catalog.namespace_id("prod").unwrap().expect("prod");
+    let prod = catalog.namespace_id("prod").now().unwrap().expect("prod");
     catalog
         .record_leadership(
             tessari_storage::Reach::Store,
@@ -1615,7 +1618,7 @@ fn a_node_reports_who_the_log_says_leads_each_range() {
             tessari_types::Epoch::new(5),
         )
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let report = reported(&store);
     let Some(Value::Object(cluster)) = report.get("cluster") else {

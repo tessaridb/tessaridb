@@ -31,6 +31,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -48,7 +49,9 @@ DEFINE DATABASE shop; USE DATABASE shop;
 /// observable: a write naming an undeclared field is refused, so "the refusal
 /// wrote nothing" is a behaviour rather than an introspection detail.
 fn ready() -> Store {
-    let held = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let held = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&held);
     session
         .run_now(&format!(

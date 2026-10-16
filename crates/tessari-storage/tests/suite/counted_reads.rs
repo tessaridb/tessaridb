@@ -41,6 +41,7 @@ use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tessari_storage::Now;
 
 use tessari_constants::{ORDERED_SCAN_BATCH_ENTRIES, RANGE_SCAN_BATCH_ENTRIES};
 use tessari_encoding::Direction;
@@ -204,13 +205,16 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let counting = Counting::new();
-        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let mut transaction = store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("prod").unwrap();
-        let database = catalog.create_database(namespace.id, "shop").unwrap();
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog.create_database(namespace.id, "shop").now().unwrap();
         let table = catalog
             .create_table(namespace.id, database.id, "users", TableShape::default())
+            .now()
             .unwrap();
         let index = catalog
             .create_index(
@@ -227,8 +231,9 @@ impl Fixture {
                     costs: tessari_storage::SearchCosts::default(),
                 },
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         Self {
             counting,
             store,
@@ -252,7 +257,7 @@ impl Fixture {
             fields.insert("joined".to_owned(), Value::from(joined));
             transaction.put(at, encode_payload(&Value::Object(fields)).into_bytes());
         }
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     /// `count` records, each holding a distinct `joined` value.
@@ -265,7 +270,7 @@ impl Fixture {
             fields.insert("joined".to_owned(), Value::Number(n.into()));
             transaction.put(at, encode_payload(&Value::Object(fields)).into_bytes());
         }
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 }
 
@@ -301,6 +306,7 @@ fn a_bounded_descending_read_examines_its_bound_and_not_the_table() {
     fixture.counting.reset();
     let found = transaction
         .records_in_descending_order(&fixture.index, 1, WANTED)
+        .now()
         .unwrap()
         .expect("the index holds enough records to fill the bound");
     assert_eq!(found.len(), WANTED);
@@ -335,6 +341,7 @@ fn doubling_the_bound_does_not_double_the_table_read() {
         fixture.counting.reset();
         transaction
             .records_in_descending_order(&fixture.index, 1, wanted)
+            .now()
             .unwrap()
             .expect("the index holds enough");
         measured.push(fixture.counting.entries());
@@ -378,6 +385,7 @@ fn resolving_a_range_costs_round_trips_per_batch_and_not_per_record() {
     fixture.counting.reset();
     let found = transaction
         .records_in_range(&fixture.index, &[], None, None)
+        .now()
         .unwrap();
     let records = usize::try_from(IN_RANGE).unwrap();
     assert_eq!(found.len(), records);
@@ -429,6 +437,7 @@ fn a_bounded_descending_read_costs_two_asks_and_not_one_per_record() {
     fixture.counting.reset();
     let found = transaction
         .records_in_descending_order(&fixture.index, 1, WANTED)
+        .now()
         .unwrap()
         .expect("the index holds enough records to fill the bound");
     assert_eq!(found.len(), WANTED);
@@ -456,6 +465,7 @@ fn doubling_the_bound_does_not_double_the_asks() {
         fixture.counting.reset();
         transaction
             .records_in_descending_order(&fixture.index, 1, wanted)
+            .now()
             .unwrap()
             .expect("the index holds enough");
         measured.push(fixture.counting.round_trips());
@@ -486,6 +496,7 @@ fn an_equality_lookup_never_holds_more_than_one_batch_of_entries() {
     fixture.counting.reset();
     let found = transaction
         .records_by_index(&fixture.index, &[Value::from(7_i64)])
+        .now()
         .unwrap();
     assert_eq!(found.len(), sharing, "the lookup lost records");
 
@@ -524,7 +535,7 @@ fn a_complete_equality_the_caller_stops_examines_its_bound_and_not_every_entry()
             &[Value::from(7_i64)],
             None,
             None,
-            |_, id, _| {
+            async |_, id, _| {
                 handed.push(id);
                 Ok::<_, tessari_storage::Error>(if handed.len() == WANTED {
                     ControlFlow::Break(())
@@ -533,6 +544,7 @@ fn a_complete_equality_the_caller_stops_examines_its_bound_and_not_every_entry()
                 })
             },
         )
+        .now()
         .unwrap();
     let expected: Vec<RecordId> = (0..WANTED)
         .map(|n| RecordId::from(format!("u{n:06}").as_str()))
@@ -588,13 +600,16 @@ struct SearchFixture {
 impl SearchFixture {
     fn new() -> Self {
         let counting = Counting::new();
-        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let mut transaction = store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("prod").unwrap();
-        let database = catalog.create_database(namespace.id, "shop").unwrap();
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog.create_database(namespace.id, "shop").now().unwrap();
         let table = catalog
             .create_table(namespace.id, database.id, "notes", TableShape::default())
+            .now()
             .unwrap();
         // The analyzer is bound to the **field**, not to the index — so a search
         // index over a field that declares none posts no terms at all, silently.
@@ -602,6 +617,7 @@ impl SearchFixture {
         // it is there rather than trusted.
         catalog
             .create_analyzer("plain", Analyzer::new(vec![Filter::Lowercase]))
+            .now()
             .unwrap();
         catalog
             .create_field(
@@ -616,6 +632,7 @@ impl SearchFixture {
                     assert: None,
                 },
             )
+            .now()
             .unwrap();
         let index = catalog
             .create_index(
@@ -632,8 +649,9 @@ impl SearchFixture {
                     costs: tessari_storage::SearchCosts::default(),
                 },
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         Self {
             counting,
             store,
@@ -654,7 +672,7 @@ impl SearchFixture {
             fields.insert("body".to_owned(), Value::from("lock contention"));
             transaction.put(at, encode_payload(&Value::Object(fields)).into_bytes());
         }
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 }
 
@@ -678,24 +696,33 @@ impl Hub {
     /// A hub joined to `degree` other records by edges of one kind.
     fn of_degree(degree: usize) -> Self {
         let counting = Counting::new();
-        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let mut transaction = store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("prod").unwrap();
-        let database = catalog.create_database(namespace.id, "social").unwrap();
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog
+            .create_database(namespace.id, "social")
+            .now()
+            .unwrap();
         let people = catalog
             .create_table(namespace.id, database.id, "person", TableShape::default())
+            .now()
             .unwrap();
         let edges = catalog
             .create_table(namespace.id, database.id, "knows", TableShape::default())
+            .now()
             .unwrap();
         let graph = catalog
             .create_graph(namespace.id, database.id, "social")
+            .now()
             .unwrap();
         let kind = catalog
             .create_edge_kind(&graph, "knows", people.id, people.id, edges.id)
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
 
         let hub = RecordId::from("hub");
         let mut transaction = store.begin().unwrap();
@@ -720,7 +747,7 @@ impl Hub {
                 encode_payload(&Value::Object(fields)).into_bytes(),
             );
         }
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
 
         Self {
             counting,
@@ -832,7 +859,7 @@ fn a_walk_the_caller_stops_examines_a_batch_and_not_the_table() {
             fixture.namespace,
             fixture.database,
             fixture.table,
-            |_, _, _| {
+            async |_, _, _| {
                 handed += 1;
                 Ok::<_, tessari_storage::Error>(if handed == WANTED {
                     ControlFlow::Break(())
@@ -841,6 +868,7 @@ fn a_walk_the_caller_stops_examines_a_batch_and_not_the_table() {
                 })
             },
         )
+        .now()
         .unwrap();
     assert_eq!(handed, WANTED);
 
@@ -878,11 +906,12 @@ fn a_walk_over_the_whole_table_holds_one_batch_at_a_time() {
             fixture.namespace,
             fixture.database,
             fixture.table,
-            |_, _, _| {
+            async |_, _, _| {
                 handed += 1;
                 Ok::<_, tessari_storage::Error>(ControlFlow::Continue(()))
             },
         )
+        .now()
         .unwrap();
     assert_eq!(handed, usize::try_from(RECORDS).unwrap());
     assert!(
@@ -917,7 +946,9 @@ fn a_walk_over_the_whole_table_holds_one_batch_at_a_time() {
 #[test]
 fn the_admission_predicate_costs_a_leader_nothing_and_a_follower_a_bounded_read() {
     let counting = Counting::new();
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let at = |id: &str| {
         RecordAddress::new(
             NamespaceId::new(1),
@@ -929,7 +960,7 @@ fn the_admission_predicate_costs_a_leader_nothing_and_a_follower_a_bounded_read(
     let write = |id: &str| {
         let mut transaction = store.begin().unwrap();
         transaction.put(at(id), b"{}".to_vec());
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     };
 
     // Warm: the first commit of a store's life pays for metadata every later
@@ -940,10 +971,12 @@ fn the_admission_predicate_costs_a_leader_nothing_and_a_follower_a_bounded_read(
     write("without-a-lease");
     let without = counting.round_trips();
 
-    store.hold(
-        tessari_types::Epoch::new(1),
-        tessari_storage::Lease::taken_at(std::time::Instant::now(), tessari_storage::LEASE_TTL),
-    );
+    store
+        .hold(
+            tessari_types::Epoch::new(1),
+            tessari_storage::Lease::taken_at(std::time::Instant::now(), tessari_storage::LEASE_TTL),
+        )
+        .now();
     counting.reset();
     write("holding-a-lease");
     let with = counting.round_trips();
@@ -1012,22 +1045,24 @@ fn the_range_gate_costs_a_commit_the_same_on_a_large_store_as_on_a_small_one() {
 
     let measure = |filled: usize| {
         let counting = Counting::new();
-        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let me = store.node_identity().unwrap().id;
         let mut transaction = store.begin().unwrap();
         Catalog::new(&mut transaction)
             .record_leadership(Reach::Store, me, tessari_types::Epoch::new(1))
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         for nth in 0..filled {
             let mut transaction = store.begin().unwrap();
             transaction.put(at(1, &format!("filler-{nth}")), b"{}".to_vec());
-            transaction.commit().unwrap();
+            transaction.commit().now().unwrap();
         }
         counting.reset();
         let mut transaction = store.begin().unwrap();
         transaction.put(at(1, "measured"), b"{}".to_vec());
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         counting.round_trips()
     };
 
@@ -1064,16 +1099,18 @@ fn a_commit_rewriting_a_record_reads_the_same_after_ten_rewrites_as_after_a_thou
     );
     let measure = |rewrites: usize| {
         let counting = Counting::new();
-        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         for nth in 0..rewrites {
             let mut transaction = store.begin().unwrap();
             transaction.put(address.clone(), format!("{{\"n\":{nth}}}").into_bytes());
-            transaction.commit().unwrap();
+            transaction.commit().now().unwrap();
         }
         counting.reset();
         let mut transaction = store.begin().unwrap();
         transaction.put(address.clone(), b"{}".to_vec());
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         counting.entries()
     };
 
@@ -1096,8 +1133,8 @@ fn a_commit_rewriting_a_record_reads_the_same_after_ten_rewrites_as_after_a_thou
 fn declare_elsewhere(store: &Store, tables: usize) -> usize {
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("elsewhere").unwrap();
-    let database = catalog.create_database(namespace.id, "d").unwrap();
+    let namespace = catalog.create_namespace("elsewhere").now().unwrap();
+    let database = catalog.create_database(namespace.id, "d").now().unwrap();
     let mut declared = Vec::new();
     for nth in 0..tables {
         let table = catalog
@@ -1107,6 +1144,7 @@ fn declare_elsewhere(store: &Store, tables: usize) -> usize {
                 &format!("t{nth}"),
                 TableShape::default(),
             )
+            .now()
             .unwrap();
         catalog
             .create_index(
@@ -1115,19 +1153,21 @@ fn declare_elsewhere(store: &Store, tables: usize) -> usize {
                 vec![Path::field("a")],
                 IndexShape::default(),
             )
+            .now()
             .unwrap();
         catalog
             .create_field(table.id, "a", FieldKind::Any, FieldShape::default())
+            .now()
             .unwrap();
         declared.push(table.id);
     }
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     for table in declared.iter().step_by(2) {
-        catalog.drop_table(*table).unwrap();
+        catalog.drop_table(*table).now().unwrap();
     }
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     let mut transaction = store.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
     declared
@@ -1135,6 +1175,7 @@ fn declare_elsewhere(store: &Store, tables: usize) -> usize {
         .map(|table| {
             catalog
                 .indexes_on(namespace.id, database.id, *table)
+                .now()
                 .unwrap()
                 .len()
         })
@@ -1194,6 +1235,7 @@ fn a_definition_reads_no_more_after_other_tables_were_declared_and_dropped() {
                 "orders",
                 TableShape::default(),
             )
+            .now()
             .unwrap();
         catalog
             .create_index(
@@ -1202,8 +1244,9 @@ fn a_definition_reads_no_more_after_other_tables_were_declared_and_dropped() {
                 vec![Path::field("a")],
                 IndexShape::default(),
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         (held, fixture.counting.entries())
     };
 
@@ -1250,7 +1293,7 @@ fn a_definition_reads_no_more_beside_dropped_tables_once_a_record_has_expired() 
             encode_payload(&Value::Object(BTreeMap::new())).into_bytes(),
         );
         transaction.expire_pending(&at, instant);
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         fixture.counting.reset();
         let mut transaction = fixture.store.begin().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
@@ -1261,6 +1304,7 @@ fn a_definition_reads_no_more_beside_dropped_tables_once_a_record_has_expired() 
                 "orders",
                 TableShape::default(),
             )
+            .now()
             .unwrap();
         catalog
             .create_index(
@@ -1269,8 +1313,9 @@ fn a_definition_reads_no_more_beside_dropped_tables_once_a_record_has_expired() 
                 vec![Path::field("a")],
                 IndexShape::default(),
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         (held, fixture.counting.entries())
     };
 
@@ -1305,6 +1350,7 @@ fn listing_a_databases_tables_reads_no_more_beside_other_databases() {
         let mut transaction = fixture.store.begin().unwrap();
         let listed = Catalog::new(&mut transaction)
             .tables_in(fixture.namespace, fixture.database)
+            .now()
             .unwrap();
         assert_eq!(listed.len(), 1, "the fixture's one table");
         (held, fixture.counting.entries())
@@ -1331,13 +1377,16 @@ fn listing_a_databases_tables_reads_no_more_beside_other_databases() {
 /// has read them (Q-G071-2).
 fn definition_reads_with(declared: usize) -> (usize, usize) {
     let counting = Counting::new();
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("prod").unwrap();
-    let database = catalog.create_database(namespace.id, "shop").unwrap();
+    let namespace = catalog.create_namespace("prod").now().unwrap();
+    let database = catalog.create_database(namespace.id, "shop").now().unwrap();
     let table = catalog
         .create_table(namespace.id, database.id, "users", TableShape::default())
+        .now()
         .unwrap();
     for nth in 0..declared {
         let field = format!("f{nth}");
@@ -1348,12 +1397,14 @@ fn definition_reads_with(declared: usize) -> (usize, usize) {
                 vec![Path::field(&field)],
                 IndexShape::default(),
             )
+            .now()
             .unwrap();
         catalog
             .create_field(table.id, &field, FieldKind::Any, FieldShape::default())
+            .now()
             .unwrap();
     }
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     let write = |nth: usize| {
         let mut transaction = store.begin().unwrap();
         let id = RecordId::from(format!("u{nth:06}"));
@@ -1362,7 +1413,7 @@ fn definition_reads_with(declared: usize) -> (usize, usize) {
             at,
             encode_payload(&Value::Object(BTreeMap::new())).into_bytes(),
         );
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     };
     counting.reset();
     write(0);

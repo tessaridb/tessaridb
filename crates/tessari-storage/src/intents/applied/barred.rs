@@ -16,9 +16,9 @@ impl Fixture {
         Reach::Database(self.namespace, self.database)
     }
 
-    fn bar(&mut self) -> Result<()> {
+    async fn bar(&mut self) -> Result<()> {
         let range = self.participant();
-        self.apply(Part::Prevent { range }, vec![])
+        self.apply(Part::Prevent { range }, vec![]).await
     }
 
     fn barred_here(&self) -> Result<bool> {
@@ -34,29 +34,29 @@ impl Fixture {
     }
 }
 
-#[test]
-fn a_barred_part_refuses_its_prepare_for_good() -> Result<()> {
-    let mut fixture = Fixture::new()?;
-    fixture.bar()?;
+#[tokio::test]
+async fn a_barred_part_refuses_its_prepare_for_good() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
+    fixture.bar().await?;
     assert!(fixture.barred_here()?, "the bar is marked");
-    let refused = fixture.prepare();
+    let refused = fixture.prepare().await;
     assert!(
         matches!(refused, Err(Error::AcrossDecided { decided: "barred" })),
         "{refused:?}"
     );
     assert!(!fixture.intent_left()?, "a refused prepare holds nothing");
-    assert_eq!(fixture.read()?, Some(doc("old")));
+    assert_eq!(fixture.read().await?, Some(doc("old")));
     // Asked again — a recovery retried — the bar stands as it was.
-    fixture.bar()?;
+    fixture.bar().await?;
     assert!(fixture.barred_here()?);
     Ok(())
 }
 
-#[test]
-fn a_part_that_landed_cannot_be_barred() -> Result<()> {
-    let mut fixture = Fixture::new()?;
-    fixture.prepare()?;
-    let refused = fixture.bar();
+#[tokio::test]
+async fn a_part_that_landed_cannot_be_barred() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
+    fixture.prepare().await?;
+    let refused = fixture.bar().await;
     assert!(
         matches!(
             refused,
@@ -71,12 +71,12 @@ fn a_part_that_landed_cannot_be_barred() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn a_bar_carrying_writes_is_refused() -> Result<()> {
-    let mut fixture = Fixture::new()?;
+#[tokio::test]
+async fn a_bar_carrying_writes_is_refused() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
     let range = fixture.participant();
     let write = fixture.write(fixture.new_value(true));
-    let refused = fixture.apply(Part::Prevent { range }, vec![write]);
+    let refused = fixture.apply(Part::Prevent { range }, vec![write]).await;
     assert!(
         matches!(
             refused,
@@ -98,26 +98,27 @@ impl Fixture {
     }
 
     /// An ordinary record after the bar, so the log has a tail to prune under.
-    fn write_on(&mut self) -> Result<()> {
+    async fn write_on(&mut self) -> Result<()> {
         let plain = self.write(StampedValue::new(RecordValue::Present(doc("later"))));
         let record = LogRecord::new(vec![plain]);
         let at = self.at.saturating_add(1);
         self.store
-            .apply_record_in(self.log, Sequence::new(at), &record)?;
+            .apply_record_in(self.log, Sequence::new(at), &record)
+            .await?;
         self.at = at;
         Ok(())
     }
 }
 
-#[test]
-fn a_bar_ends_when_its_log_is_pruned_past_the_record_that_wrote_it() -> Result<()> {
+#[tokio::test]
+async fn a_bar_ends_when_its_log_is_pruned_past_the_record_that_wrote_it() -> Result<()> {
     // ADR-0119: past that record the log no longer reaches back to anything
     // the transaction read, so its prepare is refused as too old (D3a).
-    let mut fixture = Fixture::new()?;
-    fixture.bar()?;
+    let mut fixture = Fixture::new().await?;
+    fixture.bar().await?;
     let barred_at = Sequence::new(fixture.at);
-    fixture.write_on()?;
-    fixture.write_on()?;
+    fixture.write_on().await?;
+    fixture.write_on().await?;
     assert_eq!(fixture.bars()?, 1);
     fixture.store.prune_log(fixture.log, barred_at)?;
     assert_eq!(fixture.bars()?, 0, "the bar went with its record");
@@ -125,13 +126,13 @@ fn a_bar_ends_when_its_log_is_pruned_past_the_record_that_wrote_it() -> Result<(
     Ok(())
 }
 
-#[test]
-fn a_prune_short_of_the_bar_keeps_it() -> Result<()> {
-    let mut fixture = Fixture::new()?;
-    fixture.write_on()?;
+#[tokio::test]
+async fn a_prune_short_of_the_bar_keeps_it() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
+    fixture.write_on().await?;
     let before = Sequence::new(fixture.at);
-    fixture.bar()?;
-    fixture.write_on()?;
+    fixture.bar().await?;
+    fixture.write_on().await?;
     fixture.store.prune_log(fixture.log, before)?;
     assert_eq!(
         fixture.bars()?,
@@ -142,21 +143,20 @@ fn a_prune_short_of_the_bar_keeps_it() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn a_prune_of_another_log_keeps_the_bar() -> Result<()> {
-    let mut fixture = Fixture::new()?;
-    fixture.bar()?;
+#[tokio::test]
+async fn a_prune_of_another_log_keeps_the_bar() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
+    fixture.bar().await?;
     let barred_at = Sequence::new(fixture.at);
-    fixture.write_on()?;
-    fixture.write_on()?;
+    fixture.write_on().await?;
+    fixture.write_on().await?;
     let elsewhere = LogId::line(Reach::Namespace(NamespaceId::new(78)));
     for at in 1..=3 {
         let plain = fixture.write(StampedValue::new(RecordValue::Present(doc("other"))));
-        fixture.store.apply_record_in(
-            elsewhere,
-            Sequence::new(at),
-            &LogRecord::new(vec![plain]),
-        )?;
+        fixture
+            .store
+            .apply_record_in(elsewhere, Sequence::new(at), &LogRecord::new(vec![plain]))
+            .await?;
     }
     fixture.store.prune_log(elsewhere, barred_at)?;
     assert_eq!(
@@ -167,17 +167,17 @@ fn a_prune_of_another_log_keeps_the_bar() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn each_copy_drops_its_bar_when_its_own_log_is_pruned() -> Result<()> {
+#[tokio::test]
+async fn each_copy_drops_its_bar_when_its_own_log_is_pruned() -> Result<()> {
     // Leader and follower apply the same records and prune on their own
     // schedules: a copy keeps its bar until its own log no longer holds the
     // record, whatever the other copy did.
-    let mut leader = Fixture::new()?;
-    let mut follower = Fixture::new()?;
+    let mut leader = Fixture::new().await?;
+    let mut follower = Fixture::new().await?;
     for copy in [&mut leader, &mut follower] {
-        copy.bar()?;
-        copy.write_on()?;
-        copy.write_on()?;
+        copy.bar().await?;
+        copy.write_on().await?;
+        copy.write_on().await?;
     }
     let barred_at = Sequence::new(1);
     leader.store.prune_log(leader.log, barred_at)?;

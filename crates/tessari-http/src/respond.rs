@@ -152,8 +152,8 @@ impl Answer {
 ///
 /// The body names the complaint, because a page that says only "unhealthy"
 /// sends somebody to read code at three in the morning.
-pub(crate) fn health(db: &Db) -> Answer {
-    let held = match db.store().health() {
+pub(crate) async fn health(db: &Db) -> Answer {
+    let held = match db.store().health().await {
         Ok(held) => held,
         Err(error) => return failure(&tessaridb::Error::from(error)),
     };
@@ -190,9 +190,9 @@ pub(crate) fn health(db: &Db) -> Answer {
 ///
 /// So when nothing is leaving, this answers exactly what `/health` answers. The
 /// routes differ only where they are meant to.
-pub(crate) fn ready(db: &Db, willing: bool) -> Answer {
+pub(crate) async fn ready(db: &Db, willing: bool) -> Answer {
     if willing {
-        health(db)
+        health(db).await
     } else {
         Answer::new(503, r#"{"status":"leaving"}"#.to_owned())
     }
@@ -215,7 +215,7 @@ pub(crate) fn ready(db: &Db, willing: bool) -> Answer {
 /// A request against an open store may present nothing, which is what keeps an
 /// empty store usable; one against a closed store that presents nothing is
 /// answered `401` by the session's own refusal, not by a second rule here.
-pub(crate) fn session_for<'a>(
+pub(crate) async fn session_for<'a>(
     db: &'a Db,
     tokens: &Tokens,
     presented: &Presented,
@@ -224,7 +224,10 @@ pub(crate) fn session_for<'a>(
     match presented {
         Presented::Nobody => {}
         Presented::Password(credentials) => {
-            if let Err(error) = session.sign_in(&credentials.name, &credentials.password) {
+            if let Err(error) = session
+                .sign_in(&credentials.name, &credentials.password)
+                .await
+            {
                 return Err(failure(&error));
             }
         }
@@ -236,7 +239,7 @@ pub(crate) fn session_for<'a>(
             let Some(ticket) = tokens.holder(bearer) else {
                 return Err(failure(&Error::TicketStale));
             };
-            if let Err(error) = session.resume(&ticket) {
+            if let Err(error) = session.resume(&ticket).await {
                 // Dropped rather than left to expire. It can never work again —
                 // the record it stands for has moved — so keeping it is holding
                 // a row that exists only to be refused.
@@ -258,7 +261,7 @@ pub(crate) fn session_for<'a>(
 /// another one would make the first one's expiry meaningless — a holder could
 /// roll it forward for as long as they kept asking, and the account would never
 /// come back under the control of whoever owns the password.
-pub(crate) fn open_session(db: &Db, presented: &Presented, tokens: &Tokens) -> Answer {
+pub(crate) async fn open_session(db: &Db, presented: &Presented, tokens: &Tokens) -> Answer {
     let Presented::Password(credentials) = presented else {
         return Answer::new(
             401,
@@ -266,7 +269,10 @@ pub(crate) fn open_session(db: &Db, presented: &Presented, tokens: &Tokens) -> A
         );
     };
     let mut session = db.session();
-    if let Err(error) = session.sign_in(&credentials.name, &credentials.password) {
+    if let Err(error) = session
+        .sign_in(&credentials.name, &credentials.password)
+        .await
+    {
         return failure(&error);
     }
     // An open store signs anybody in as nobody, and a token for nobody would
@@ -303,7 +309,7 @@ pub(crate) fn open_session(db: &Db, presented: &Presented, tokens: &Tokens) -> A
 /// The body is the new password and nothing else. It is not a script, so it
 /// carries no grammar a value could be read as, and it is the same shape as
 /// every other route here that takes one thing.
-pub(crate) fn change_password(db: &Db, presented: &Presented, body: &str) -> Answer {
+pub(crate) async fn change_password(db: &Db, presented: &Presented, body: &str) -> Answer {
     let Presented::Password(credentials) = presented else {
         return Answer::new(
             401,
@@ -311,10 +317,13 @@ pub(crate) fn change_password(db: &Db, presented: &Presented, body: &str) -> Ans
         );
     };
     let mut session = db.session();
-    if let Err(error) = session.sign_in(&credentials.name, &credentials.password) {
+    if let Err(error) = session
+        .sign_in(&credentials.name, &credentials.password)
+        .await
+    {
         return failure(&error);
     }
-    match session.change_password(&credentials.password, body) {
+    match session.change_password(&credentials.password, body).await {
         Ok(()) => {
             // Every token this user held stopped working the moment the record
             // changed, so a client holding one has to sign in again — and is
@@ -373,7 +382,7 @@ pub(crate) async fn backup(
             }
         },
     };
-    let mut session = match session_for(db, tokens, presented) {
+    let mut session = match session_for(db, tokens, presented).await {
         Ok(session) => session,
         Err(answer) => return answer,
     };

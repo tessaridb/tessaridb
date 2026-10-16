@@ -33,7 +33,7 @@ impl Session<'_> {
     /// Finish a parallel commit whose prepare round has answered: `record`
     /// stages and names where each part it heard land landed; `refused` is the
     /// first part that did not answer *prepared*.
-    pub(super) fn finish_parallel(
+    pub(super) async fn finish_parallel(
         &mut self,
         store: &Store,
         carrying: std::sync::Arc<dyn Participants>,
@@ -76,7 +76,7 @@ impl Session<'_> {
                     coordinator: first.home,
                 }
             };
-            match self.ask_one(carrier, first.leader, user, &asked) {
+            match self.ask_one(carrier, first.leader, user, &asked).await {
                 Ok(AcrossAnswer::Outcome(standing)) => match standing.decision {
                     Decision::Staging => {}
                     Decision::Aborted => {
@@ -108,15 +108,17 @@ impl Session<'_> {
                 }
             }
         }
-        let recovered = recover_staging(id, &record, true, |range, asked| {
+        let recovered = recover_staging(id, &record, true, async |range, asked| {
             let leader = parts
                 .iter()
                 .find(|part| part.home == range)
                 .map(|part| part.leader)
                 .ok_or_else(|| format!("{range:?} is not a part of this transaction"))?;
             self.ask_one(carrier, leader, user, asked)
+                .await
                 .map_err(|why| why.to_string())
-        });
+        })
+        .await;
         match recovered {
             Recovery::Committed(committed) => {
                 behind(store, carrying, user, concluding(parts, id, &committed));
@@ -133,7 +135,7 @@ impl Session<'_> {
                 // A part is barred, so the transaction can never commit: the
                 // abort is the outcome whether or not this decision is
                 // confirmed, and its intents can go.
-                if let Err(why) = self.ask_one(carrier, first.leader, user, &aborted) {
+                if let Err(why) = self.ask_one(carrier, first.leader, user, &aborted).await {
                     tracing::info!(
                         error = %why,
                         "a barred cross-leader transaction's abort was not confirmed"
@@ -201,6 +203,9 @@ fn aborting(parts: &[AcrossPart], id: TransactionId) -> Vec<Behind> {
 /// node leads straight into the store, the others asked of their leaders. A
 /// record that does not land is the transaction's record to finish — status
 /// recovery re-derives the outcome from the parts (D14c).
+///
+/// Called from inside a runtime, whose handle drives this node's own writes on
+/// that thread; outside one, [`tokio::runtime::Handle::current`] panics.
 fn behind(
     store: &Store,
     carrying: std::sync::Arc<dyn Participants>,
@@ -208,17 +213,21 @@ fn behind(
     records: Vec<Behind>,
 ) {
     let (store, carrier, user) = (store.clone(), carrying, user.cloned());
+    // The thread is not the runtime's, so a write here is driven through the
+    // caller's runtime handle; a caller always runs inside one.
+    let runtime = tokio::runtime::Handle::current();
     let spawned = std::thread::Builder::new()
         .name("across-behind".to_owned())
         .spawn(move || {
             std::thread::scope(|scope| {
                 for (leader, asked) in &records {
                     let (store, carrier, user) = (&store, &carrier, user.as_ref());
+                    let runtime = &runtime;
                     scope.spawn(move || {
                         let landed = match leader {
-                            None => here(store, asked),
-                            Some(node) => carrier
-                                .ask(*node, user, asked)
+                            None => runtime.block_on(here(store, asked)),
+                            Some(node) => runtime
+                                .block_on(carrier.ask(*node, user, asked))
                                 .map(drop)
                                 .map_err(|why| why.reason),
                         };
@@ -238,27 +247,31 @@ fn behind(
 }
 
 /// Write one record behind the answer on this node, which leads its range.
-fn here(store: &Store, asked: &AcrossAsk) -> std::result::Result<(), String> {
+async fn here(store: &Store, asked: &AcrossAsk) -> std::result::Result<(), String> {
     let written = match asked {
         AcrossAsk::Conclude {
             transaction,
             record,
             records,
-        } => store
-            .begin()
-            .and_then(|writing| writing.conclude_across(*transaction, record.clone(), records))
-            .map(drop),
+        } => match store.begin() {
+            Ok(writing) => writing
+                .conclude_across(*transaction, record.clone(), records)
+                .await
+                .map(drop),
+            Err(failure) => Err(failure),
+        },
         AcrossAsk::Resolve {
             transaction,
             committed,
             records,
             participants,
-        } => store
-            .begin()
-            .and_then(|writing| {
-                writing.resolve_across(*transaction, *committed, records, participants)
-            })
-            .map(drop),
+        } => match store.begin() {
+            Ok(writing) => writing
+                .resolve_across(*transaction, *committed, records, participants)
+                .await
+                .map(drop),
+            Err(failure) => Err(failure),
+        },
         other => return Err(format!("{other:?} is not written behind an answer")),
     };
     written.map_err(|why| why.to_string())

@@ -146,7 +146,7 @@ impl Peers {
     /// [`Error::ClaimsOurOwnIdentity`] when the peer arrives under this node's
     /// own id, and whatever `mine` returns when this node cannot state what it
     /// holds.
-    pub fn greet(
+    pub async fn greet(
         &self,
         mine: impl FnOnce() -> Result<Hello>,
         me: &[u8; NODE_ID_LEN],
@@ -192,14 +192,18 @@ impl Peers {
             // A copy is the one follow-up answered by more than one frame
             // (ADR-0094 D3), so it is written here rather than by `answering`.
             Some((tag, _)) if tag == PeerFrame::State.tag() => {
-                log.copied(said.node, &mut |tag, body| {
-                    frame::write_tagged(&mut link, tag, &body)
-                })
-                .or_else(|why| refusal_frame(&mut link, why))?;
+                let copied = log
+                    .copied(said.node, &mut |tag, body| {
+                        Box::pin(std::future::ready(frame::write_tagged(
+                            &mut link, tag, &body,
+                        )))
+                    })
+                    .await;
+                copied.or_else(|why| refusal_frame(&mut link, why))?;
                 None
             }
             Some((tag, body)) => {
-                let (tag, reply, voted) = answering(tag, &body, &said, &mine, voter, log)?;
+                let (tag, reply, voted) = answering(tag, &body, &said, &mine, voter, log).await?;
                 frame::write_tagged(&mut link, tag, &reply)?;
                 voted
             }
@@ -235,7 +239,7 @@ pub(crate) fn refusal_frame(link: &mut impl std::io::Write, why: Error) -> Resul
 /// proved peer, [`Error::OutOfTurn`] or [`Error::UnknownFrame`] for anything
 /// that is not a follow-up, a malformed body, and a store failure other than the
 /// refusals that cross the wire as frames.
-pub(crate) fn answering(
+pub(crate) async fn answering(
     tag: u8,
     body: &[u8],
     said: &Hello,
@@ -250,7 +254,7 @@ pub(crate) fn answering(
             // never by one it writes into a frame — so a peer cannot
             // record somebody else's progress, and the per-follower lag
             // report stays per follower.
-            match log.collected(said.node, asked) {
+            match log.collected(said.node, asked).await {
                 Ok(collected) => Ok((PeerFrame::Collected.tag(), collected.encode(), None)),
                 // A refusal crosses the wire as the refusal it was. The
                 // alternative is closing the socket, which reaches the
@@ -273,7 +277,7 @@ pub(crate) fn answering(
         // collection's two do.
         Some(PeerFrame::Gather) => {
             let asked = Gather::decode(body)?;
-            match log.gathered(said.node, &asked) {
+            match log.gathered(said.node, &asked).await {
                 Ok(page) => Ok((PeerFrame::Gathered.tag(), page.encode(), None)),
                 Err(Error::NotGathered(why)) => {
                     Ok((PeerFrame::NotGathered.tag(), vec![why.byte()], None))
@@ -293,7 +297,7 @@ pub(crate) fn answering(
         // frame names, so a member cannot spend a token for somebody else.
         Some(PeerFrame::Join) => {
             let token = <[u8; 32]>::try_from(body).map_err(|_| Error::Malformed)?;
-            let bound = log.joined(said.node, &token)?;
+            let bound = log.joined(said.node, &token).await?;
             Ok((PeerFrame::Joined.tag(), vec![u8::from(bound)], None))
         }
         Some(PeerFrame::Ballot) => {
@@ -315,7 +319,9 @@ pub(crate) fn answering(
             // ADR-0098. A placed range's ballot is granted only to a node
             // this catalog places on it, so a node a placement was taken
             // from cannot renew there once this voter has applied the move.
-            if asked.range != tessari_types::Reach::Store && !log.places(said.node, asked.range) {
+            if asked.range != tessari_types::Reach::Store
+                && !log.places(said.node, asked.range).await
+            {
                 let vote = Vote::Refused(Refused::NotPlaced);
                 return Ok((PeerFrame::Vote.tag(), vote.encode(), Some(vote)));
             }
@@ -325,7 +331,7 @@ pub(crate) fn answering(
             // greeting it proved, which describes the range it stands for;
             // this voter's from what it holds of that line, which its own
             // greeting may not describe at all (Q-884).
-            let held = log.reached_on(asked.range)?;
+            let held = log.reached_on(asked.range).await?;
             let vote = voter.asked(
                 &asked,
                 std::time::Instant::now(),

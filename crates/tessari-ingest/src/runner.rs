@@ -160,12 +160,12 @@ impl Runner {
     /// Each consumer runs on a thread of its own, outside `runtime`'s workers;
     /// it writes each batch through the store's asynchronous entry points,
     /// driven to their end on that thread by `runtime`.
-    pub fn start(
+    pub async fn start(
         store: &Store,
         broker: Arc<dyn Broker>,
         runtime: &tokio::runtime::Handle,
     ) -> Result<Started, tessari_storage::Error> {
-        let declared = declarations(store)?;
+        let declared = declarations(store).await?;
         let stopping = Arc::new(AtomicBool::new(false));
         let mut threads = Vec::new();
         for (definition, table) in declared {
@@ -417,7 +417,7 @@ impl Consuming {
             // outage delivered as a migration — and `INFO FOR KAFKA CONSUMER` reports
             // the absence so an operator can find it and redeclare.
             if let Some(declarer) = self.definition.declarer
-                && let Err(refused) = session.acting_as(declarer)
+                && let Err(refused) = self.runtime.block_on(session.acting_as(declarer))
             {
                 // A deleted declarer. Reported and retried rather than swallowed,
                 // because the batch is not written and a consumer that silently
@@ -432,7 +432,8 @@ impl Consuming {
                     work.run_with(&script, &parameters).await?;
                 }
                 for (at, record) in parked_at.iter().zip(parked) {
-                    work.keep_quarantined(self.definition.id, *at, record)?;
+                    work.keep_quarantined(self.definition.id, *at, record)
+                        .await?;
                 }
                 Ok::<(), tessari_session::Error>(())
             }));

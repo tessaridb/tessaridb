@@ -419,13 +419,13 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns [`Error::NameTaken`] when the name is already declared.
-    pub fn create_consumer(
+    pub async fn create_consumer(
         &mut self,
         definition: &ConsumerDefinition,
     ) -> Result<ConsumerDefinition> {
         let qualified = qualify(Level::Consumer, &[], &definition.name);
-        self.reserve_name(&qualified)?;
-        let id = self.allocate(Level::Consumer)?;
+        self.reserve_name(&qualified).await?;
+        let id = self.allocate(Level::Consumer).await?;
         let stored = ConsumerDefinition {
             id,
             ..definition.clone()
@@ -440,7 +440,7 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the substrate fails.
-    pub fn drop_consumer(&mut self, consumer: &ConsumerDefinition) -> Result<()> {
+    pub async fn drop_consumer(&mut self, consumer: &ConsumerDefinition) -> Result<()> {
         let qualified = qualify(Level::Consumer, &[], &consumer.name);
         self.transaction.delete(system::address(
             system::CONSUMERS,
@@ -449,7 +449,7 @@ impl Catalog<'_, '_> {
         self.transaction
             .delete(system::address(system::NAMES, RecordId::from(qualified)));
         // The messages it parked go with it (Q-708).
-        self.transaction.forget_quarantined(consumer.id)
+        self.transaction.forget_quarantined(consumer.id).await
     }
 
     /// Every declared consumer, in name order.
@@ -461,13 +461,17 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn consumers(&self) -> Result<Vec<ConsumerDefinition>> {
+    pub async fn consumers(&self) -> Result<Vec<ConsumerDefinition>> {
         let mut found = Vec::new();
-        for (_, payload) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::CONSUMERS,
-        )? {
+        for (_, payload) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::CONSUMERS,
+            )
+            .await?
+        {
             found.push(ConsumerDefinition::from_value(&decode_payload(&payload)?)?);
         }
         found.sort_by(|left, right| left.name.cmp(&right.name));

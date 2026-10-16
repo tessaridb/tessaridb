@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tessari_storage::Now;
 
 use tessari_encoding::{LogRecord, Mutation, RecordValue, StampedValue};
 use tessari_kv::{Key, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value, WriteBatch};
@@ -21,6 +22,8 @@ struct Counted {
     synced: AtomicUsize,
     unsynced: AtomicUsize,
     syncs: AtomicUsize,
+    /// Writes landed unsynced since the last sync: what a power loss would take.
+    exposed: AtomicUsize,
 }
 
 impl KvBackend for Counted {
@@ -43,11 +46,13 @@ impl KvBackend for Counted {
 
     fn apply_unsynced(&self, batch: WriteBatch) -> tessari_kv::Result<()> {
         self.unsynced.fetch_add(1, Ordering::Relaxed);
+        self.exposed.fetch_add(1, Ordering::Relaxed);
         self.inner.apply(batch)
     }
 
     fn sync_applied(&self) -> tessari_kv::Result<()> {
         self.syncs.fetch_add(1, Ordering::Relaxed);
+        self.exposed.store(0, Ordering::Relaxed);
         Ok(())
     }
 
@@ -99,8 +104,11 @@ fn opened() -> (Arc<Counted>, Store) {
         synced: AtomicUsize::new(0),
         unsynced: AtomicUsize::new(0),
         syncs: AtomicUsize::new(0),
+        exposed: AtomicUsize::new(0),
     });
-    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     (backend, store)
 }
 
@@ -120,7 +128,10 @@ fn a_round_of_records_lands_each_unsynced_and_syncs_once() {
     let (synced, unsynced, syncs) = backend.landed();
     let sent = records(&[1, 2, 3, 4, 5]);
 
-    let reached = store.apply_in_writer_order(&[page(&store, &sent)]).unwrap();
+    let reached = store
+        .apply_in_writer_order(&[page(&store, &sent)])
+        .now()
+        .unwrap();
 
     assert_eq!(reached, vec![Some(Sequence::new(5))]);
     let (synced_after, unsynced_after, syncs_after) = backend.landed();
@@ -134,6 +145,11 @@ fn a_round_of_records_lands_each_unsynced_and_syncs_once() {
         syncs + 1,
         "the round did not sync exactly once"
     );
+    assert_eq!(
+        backend.exposed.load(Ordering::Relaxed),
+        0,
+        "the round answered with records not yet durable"
+    );
 }
 
 #[test]
@@ -143,7 +159,7 @@ fn a_round_refused_part_way_still_syncs_what_it_applied() {
     // Position 4 after 2 is a gap: the first two apply, the third is refused.
     let sent = records(&[1, 2, 4]);
 
-    let refused = store.apply_in_writer_order(&[page(&store, &sent)]);
+    let refused = store.apply_in_writer_order(&[page(&store, &sent)]).now();
 
     assert!(matches!(refused, Err(Error::LogGap { .. })), "{refused:?}");
     let log = store.own_log(crate::FIXTURE_HOME).unwrap();
@@ -152,5 +168,10 @@ fn a_round_refused_part_way_still_syncs_what_it_applied() {
         backend.landed().2,
         syncs + 1,
         "the records applied before the refusal were left unsynced"
+    );
+    assert_eq!(
+        backend.exposed.load(Ordering::Relaxed),
+        0,
+        "the refusal answered with records not yet durable"
     );
 }

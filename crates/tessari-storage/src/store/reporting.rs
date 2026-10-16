@@ -45,10 +45,10 @@ impl Store {
     /// # Errors
     ///
     /// Returns the backend's failure when the counts cannot be read.
-    pub fn health(&self) -> Result<Health> {
+    pub async fn health(&self) -> Result<Health> {
         // The log this node's history on the line is in (ADR-0107): the line's
         // once a leadership has written it, its own on a store standing alone.
-        let own = self.history_log(UNPARTITIONED_REPORT_HOME)?;
+        let own = self.history_log(UNPARTITIONED_REPORT_HOME).await?;
         let (across_committed, across_aborted, across_in_doubt) = self.tally.outcomes();
         let (across_pending, across_with_intents) = self.tally.standing();
         Ok(Health {
@@ -232,7 +232,7 @@ impl Store {
     /// # Errors
     ///
     /// Returns the backend's failure when the committed tail cannot be read.
-    pub fn follower_lag(&self) -> Result<Vec<FollowerLag>> {
+    pub async fn follower_lag(&self) -> Result<Vec<FollowerLag>> {
         let mut rows = Vec::new();
         for (node, held) in self.followers.seen() {
             // The tail of the follower's OWN log. Reading one log's tail against
@@ -240,7 +240,7 @@ impl Store {
             // counters are unrelated and the subtraction is meaningless (Q-622).
             // The log this leader serves, which is the one the position was
             // taken in (ADR-0107).
-            let tail = self.committed_tail(self.history_log(held.home)?)?;
+            let tail = self.committed_tail(self.history_log(held.home).await?)?;
             rows.push(FollowerLag {
                 node,
                 home: held.home,
@@ -273,12 +273,12 @@ impl Store {
     /// # Errors
     ///
     /// Returns the backend's failure when the committed tail cannot be read.
-    pub fn mark_tail(&self, home: Reach) -> Result<()> {
+    pub async fn mark_tail(&self, home: Reach) -> Result<()> {
         // This node's OWN log for the home, which is what a diagnostic asking
         // *how far is this range* has always meant here. A home with two
         // writers has a second tail this mark does not carry, and reporting it
         // is Q-622's, not this diagnostic's.
-        let log = self.history_log(home)?;
+        let log = self.history_log(home).await?;
         self.tailmarks.mark(home, self.committed_tail(log)?);
         Ok(())
     }

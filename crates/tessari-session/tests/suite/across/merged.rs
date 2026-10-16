@@ -3,6 +3,7 @@
 //! a decision — each judged as the user the asking node verified.
 
 use tessari_encoding::Decision;
+use tessari_session::Now;
 use tessari_session::{AcrossAnswer, AcrossAsk, Error};
 use tessari_storage::{Reach, RecordAddress};
 use tessari_types::{RecordId, Value};
@@ -49,7 +50,7 @@ fn conclude(store: &tessari_storage::Store, decision: Decision) -> AcrossAsk {
 fn a_begun_write_is_the_value_only_once_concluded() {
     let store = store();
     let mut owner = signed_in(&store, "root");
-    let begun = owner.answer_across(&begin(&store, "notes")).unwrap();
+    let begun = owner.answer_across(&begin(&store, "notes")).now().unwrap();
     assert!(matches!(begun, AcrossAnswer::Prepared(_)), "{begun:?}");
     assert_eq!(note(&store), Value::from("old"), "an intent is not a value");
     assert_eq!(
@@ -61,6 +62,7 @@ fn a_begun_write_is_the_value_only_once_concluded() {
     );
     let concluded = owner
         .answer_across(&conclude(&store, Decision::Committed))
+        .now()
         .unwrap();
     assert!(
         matches!(concluded, AcrossAnswer::Decided(_)),
@@ -73,7 +75,9 @@ fn a_begun_write_is_the_value_only_once_concluded() {
 #[test]
 fn a_user_without_the_write_grant_cannot_begin() {
     let store = store();
-    let refused = signed_in(&store, "reader").answer_across(&begin(&store, "notes"));
+    let refused = signed_in(&store, "reader")
+        .answer_across(&begin(&store, "notes"))
+        .now();
     assert!(
         matches!(refused, Err(Error::NotGranted { .. })),
         "{refused:?}"
@@ -93,8 +97,9 @@ fn a_begin_whose_record_a_participant_aborted_is_refused() {
             transaction: TRANSACTION,
             coordinator: Reach::Database(namespace, database),
         })
+        .now()
         .unwrap();
-    let refused = owner.answer_across(&begin(&store, "notes"));
+    let refused = owner.answer_across(&begin(&store, "notes")).now();
     assert!(
         matches!(
             &refused,
@@ -114,7 +119,7 @@ fn a_staging_record_is_answered_as_it_stands_and_never_aborted() {
     // lookup, however late (ADR-0112 D14c, D14e).
     let store = store();
     let mut owner = signed_in(&store, "root");
-    owner.answer_across(&begin(&store, "notes")).unwrap();
+    owner.answer_across(&begin(&store, "notes")).now().unwrap();
     let (namespace, database, _) = ids(&store, "notes");
     let coordinator = Reach::Database(namespace, database);
     for asked in [
@@ -127,7 +132,7 @@ fn a_staging_record_is_answered_as_it_stands_and_never_aborted() {
             coordinator,
         },
     ] {
-        let answered = owner.answer_across(&asked).unwrap();
+        let answered = owner.answer_across(&asked).now().unwrap();
         assert!(
             matches!(&answered, AcrossAnswer::Outcome(standing) if standing.decision == Decision::Staging),
             "{asked:?} → {answered:?}"
@@ -155,18 +160,19 @@ fn a_part_is_reported_where_it_landed_and_barred_where_it_did_not() {
     };
     // Only asked: reported missing, and nothing barred.
     assert_eq!(
-        owner.answer_across(&bar(false)).unwrap(),
+        owner.answer_across(&bar(false)).now().unwrap(),
         AcrossAnswer::Landed(None)
     );
     let prepared = owner
         .answer_across(&super::prepare(&store, "notes"))
+        .now()
         .unwrap();
     let AcrossAnswer::Prepared(at) = prepared else {
         panic!("{prepared:?}");
     };
     assert!(
         matches!(
-            owner.answer_across(&bar(true)).unwrap(),
+            owner.answer_across(&bar(true)).now().unwrap(),
             AcrossAnswer::Landed(Some(_))
         ),
         "a landed part cannot be barred"
@@ -189,9 +195,10 @@ fn a_barred_part_refuses_the_prepare_that_arrives_after_it() {
             range: Reach::Database(namespace, database),
             prevent: true,
         })
+        .now()
         .unwrap();
     assert_eq!(barred, AcrossAnswer::Landed(None));
-    let refused = owner.answer_across(&super::prepare(&store, "notes"));
+    let refused = owner.answer_across(&super::prepare(&store, "notes")).now();
     assert!(
         matches!(
             &refused,

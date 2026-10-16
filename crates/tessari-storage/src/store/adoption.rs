@@ -34,11 +34,11 @@ impl Store {
     ///
     /// Returns the substrate's failure, and a decoding failure for a log key
     /// that does not hold a position.
-    pub(crate) fn adopt_own_history(&self) -> Result<usize> {
+    pub(crate) async fn adopt_own_history(&self) -> Result<usize> {
         let own = self.writer()?;
         let mut moved = 0_usize;
         for log in self.logs()? {
-            if log.writer == own && self.adopt_into_line(log)? {
+            if log.writer == own && self.adopt_into_line(log).await? {
                 moved = moved.saturating_add(1);
             }
         }
@@ -56,7 +56,7 @@ impl Store {
     /// # Errors
     ///
     /// The same as [`Self::adopt_own_history`].
-    pub fn adopt_into_line(&self, log: LogId) -> Result<bool> {
+    pub async fn adopt_into_line(&self, log: LogId) -> Result<bool> {
         let line = LogId::line(log.home);
         if log == line {
             return Ok(false);
@@ -69,7 +69,7 @@ impl Store {
         }
         // Last, because it is the one question that costs a catalog read: a
         // range that admits two writers keeps one log per writer.
-        if self.admits_two_writers(log.home)? {
+        if self.admits_two_writers(log.home).await? {
             return Ok(false);
         }
         self.backend.apply(self.renamed(log, line, tail)?)?;

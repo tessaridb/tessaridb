@@ -95,99 +95,127 @@ impl Origin for Serving<'_> {
 
     // The line's one history as this store holds it (ADR-0107): its tail and
     // the leadership that wrote it, the pair a greeting carries for its own line.
-    fn reached_on(&self, range: Reach) -> Result<Option<crate::grant::Reached>> {
-        let refused = |why: tessari_storage::Error| Error::Refused {
-            message: why.to_string(),
-            class: None,
-        };
-        let log = self.log.history_log(range).map_err(refused)?;
-        Ok(Some(crate::grant::Reached {
-            leadership: self.log.tail_leadership(log).map_err(refused)?,
-            tail: self.log.committed_tail(log).map_err(refused)?,
-        }))
+    fn reached_on(&self, range: Reach) -> Answering<'_, Result<Option<crate::grant::Reached>>> {
+        Box::pin(async move {
+            let refused = |why: tessari_storage::Error| Error::Refused {
+                message: why.to_string(),
+                class: None,
+            };
+            let log = self.log.history_log(range).await.map_err(refused)?;
+            Ok(Some(crate::grant::Reached {
+                leadership: self.log.tail_leadership(log).map_err(refused)?,
+                tail: self.log.committed_tail(log).map_err(refused)?,
+            }))
+        })
     }
 
     // The rule a candidate stands by (`campaign_line`), read from this node's
     // own catalog — and for a range being given back to the store line, the
     // store line's leader as this catalog records it (ADR-0098 D3). A catalog
     // that cannot be read vouches for nothing.
-    fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> bool {
-        let Ok(mut transaction) = self.log.begin() else {
-            return false;
-        };
-        let catalog = Catalog::new(&mut transaction);
-        let read = catalog
-            .replicas()
-            .and_then(|declared| Ok((declared, catalog.leader_of(Reach::Store)?)));
-        transaction.rollback();
-        read.is_ok_and(|(declared, store)| {
-            let leads_the_store = store.is_some_and(|leader| leader.node == candidate);
-            crate::campaign_line(&declared, &candidate, leads_the_store) == Some(range)
+    fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> Answering<'_, bool> {
+        Box::pin(async move {
+            let Ok(mut transaction) = self.log.begin() else {
+                return false;
+            };
+            let catalog = Catalog::new(&mut transaction);
+            let read = match catalog.replicas().await {
+                Ok(declared) => match catalog.leader_of(Reach::Store).await {
+                    Ok(store) => Ok((declared, store)),
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            };
+            transaction.rollback();
+            read.is_ok_and(|(declared, store)| {
+                let leads_the_store = store.is_some_and(|leader| leader.node == candidate);
+                crate::campaign_line(&declared, &candidate, leads_the_store) == Some(range)
+            })
         })
     }
 
-    fn gathered(&self, asker: [u8; NODE_ID_LEN], asked: &Gather) -> Result<Page> {
-        crate::gathering::serve(
-            self.log,
-            self.granted,
-            asker,
-            asked,
-            (self.budget, self.fold_records),
-        )
+    fn gathered<'a>(
+        &'a self,
+        asker: [u8; NODE_ID_LEN],
+        asked: &'a Gather,
+    ) -> Answering<'a, Result<Page>> {
+        Box::pin(async move {
+            crate::gathering::serve(
+                self.log,
+                self.granted,
+                asker,
+                asked,
+                (self.budget, self.fold_records),
+            )
+            .await
+        })
     }
 
-    fn copied(
+    fn copied<'a>(
+        &'a self,
+        follower: [u8; NODE_ID_LEN],
+        write: &'a mut dyn FnMut(u8, Vec<u8>) -> Answering<'static, Result<()>>,
+    ) -> Answering<'a, Result<()>> {
+        Box::pin(async move {
+            let Some(over) = self.granted.granted(follower).await? else {
+                return Err(Error::Unsubscribed);
+            };
+            crate::copying::serve(self.log, over, write).await
+        })
+    }
+
+    fn collected(
         &self,
         follower: [u8; NODE_ID_LEN],
-        write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
-    ) -> Result<()> {
-        let Some(over) = self.granted.granted(follower)? else {
-            return Err(Error::Unsubscribed);
-        };
-        crate::copying::serve(self.log, over, write)
+        asked: Collect,
+    ) -> Answering<'_, Result<Collected>> {
+        Box::pin(async move { self.collecting(follower, asked, true).await })
     }
 
-    fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
-        self.collecting(follower, asked, true)
-    }
-
-    fn collected_pushed(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
-        self.collecting(follower, asked, false)
+    fn collected_pushed(
+        &self,
+        follower: [u8; NODE_ID_LEN],
+        asked: Collect,
+    ) -> Answering<'_, Result<Collected>> {
+        Box::pin(async move { self.collecting(follower, asked, false).await })
     }
 
     // ADR-0120 D2: what an ask used to vouch for, said on its own. Counted only
     // as far as this leader sent it, like an ask — so a report naming a log
     // this follower was never sent counts for nothing.
-    fn held(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<()> {
-        if self.granted.granted(follower)?.is_none() {
-            return Err(Error::Unsubscribed);
-        }
-        let served = self
-            .log
-            .history_log(asked.home)
-            .map_err(|why| Error::Refused {
-                message: why.to_string(),
-                class: None,
-            })?;
-        self.log.follower_asked(
-            follower,
-            served,
-            Sequence::new(asked.from.get().saturating_sub(1)),
-        );
-        Ok(())
+    fn held(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Answering<'_, Result<()>> {
+        Box::pin(async move {
+            if self.granted.granted(follower).await?.is_none() {
+                return Err(Error::Unsubscribed);
+            }
+            let served = self
+                .log
+                .history_log(asked.home)
+                .await
+                .map_err(|why| Error::Refused {
+                    message: why.to_string(),
+                    class: None,
+                })?;
+            self.log.follower_asked(
+                follower,
+                served,
+                Sequence::new(asked.from.get().saturating_sub(1)),
+            );
+            Ok(())
+        })
     }
 }
 
 impl Serving<'_> {
     /// Answer a collection ask, counting it as the follower's acknowledgement
     /// when `acknowledges` — a plain ask does, a pushed round does not (ADR-0120).
-    fn collecting(
+    async fn collecting(
         &self,
         follower: [u8; NODE_ID_LEN],
         asked: Collect,
         acknowledges: bool,
     ) -> Result<Collected> {
-        let Some(over) = self.granted.granted(follower)? else {
+        let Some(over) = self.granted.granted(follower).await? else {
             // Not `Uncollectable`: *you may not ask* and *I cannot state what
             // precedes your position* send an operator to two different people,
             // one holding a `DEFINE REPLICA` and the other a backup.
@@ -221,6 +249,7 @@ impl Serving<'_> {
         let served = self
             .log
             .history_log(asked.home)
+            .await
             .map_err(|why| Error::Refused {
                 message: why.to_string(),
                 class: None,
@@ -253,7 +282,7 @@ impl Serving<'_> {
         // stated only by a node that leads the line, since only a leader's next
         // commit is ordered by its own counter; one that leads nothing commits
         // nothing here, and says so by stating no leadership.
-        let epoch = self.log.writing_epoch(asked.home).map_err(refused)?;
+        let epoch = self.log.writing_epoch(asked.home).await.map_err(refused)?;
         let epoch = (epoch > Epoch::ZERO).then_some(epoch);
         let (records, stopped_early) = self.fill(over, served, asked.from, limit)?;
         // What the follower now holds: the last position it was handed, or —

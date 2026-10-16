@@ -83,7 +83,7 @@ pub(crate) async fn metrics(
 
     // The store's own numbers, from the same call `/health` makes. A second way
     // to ask would be a second answer to drift from.
-    if let Ok(held) = db.store().health() {
+    if let Ok(held) = db.store().health().await {
         out.push_str(
             "# HELP tessari_committed_sequence The last sequence the log has committed.\n",
         );
@@ -211,8 +211,8 @@ pub(crate) async fn metrics(
     }
 
     if cluster {
-        replication(&mut out, db);
-        balancing(&mut out, db);
+        replication(&mut out, db).await;
+        balancing(&mut out, db).await;
         if let Some(census) = census {
             expiries(&mut out, census);
         }
@@ -264,7 +264,7 @@ pub(crate) async fn metrics(
 /// who may see the topology. An open store answers yes to everyone, as it does
 /// to every statement.
 async fn sees_the_cluster(db: &Db, tokens: &Tokens, presented: &Presented) -> bool {
-    match super::session_for(db, tokens, presented) {
+    match super::session_for(db, tokens, presented).await {
         Ok(mut session) => session.run("INFO FOR NODE;").await.is_ok(),
         Err(_) => false,
     }
@@ -281,7 +281,7 @@ async fn sees_the_cluster(db: &Db, tokens: &Tokens, presented: &Presented) -> bo
 /// shards as the last pass counted them — only on the node that counts — and
 /// the placements it moved. Read from what the pass published, never counted
 /// here: a walk per scrape would grow with the table.
-fn balancing(out: &mut String, db: &Db) {
+async fn balancing(out: &mut String, db: &Db) {
     let store = db.store();
     let sampled = store.sampled_shards();
     if !sampled.is_empty() {
@@ -301,7 +301,7 @@ fn balancing(out: &mut String, db: &Db) {
             }
         }
     }
-    if let Ok(held) = store.health() {
+    if let Ok(held) = store.health().await {
         out.push_str(
             "# HELP tessari_balancer_moves_total Placements the leadership balancer moved.\n",
         );
@@ -313,7 +313,7 @@ fn balancing(out: &mut String, db: &Db) {
     }
 }
 
-fn replication(out: &mut String, db: &Db) {
+async fn replication(out: &mut String, db: &Db) {
     let store = db.store();
     if let Some(held) = store.upstream() {
         out.push_str(
@@ -338,7 +338,7 @@ fn replication(out: &mut String, db: &Db) {
             held.copied_records
         ));
     }
-    let Ok(followers) = store.follower_lag() else {
+    let Ok(followers) = store.follower_lag().await else {
         return;
     };
     if followers.is_empty() {

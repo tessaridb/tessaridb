@@ -53,7 +53,7 @@ impl Session<'_> {
     /// Fewer candidates than the read wants means the answer is filled out with
     /// records that hold none of the query's words. Their order among themselves
     /// is the scan's, so the scan is the read that can produce it.
-    pub(super) fn walk_scored(
+    pub(super) async fn walk_scored(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
@@ -75,7 +75,9 @@ impl Session<'_> {
         if ranked.index.needs_rebuild() {
             return Ok(Walked::NotServed);
         }
-        let Some(visible) = self.index_serving_score(transaction, context, table, wanted.field)?
+        let Some(visible) = self
+            .index_serving_score(transaction, context, table, wanted.field)
+            .await?
         else {
             return Ok(Walked::NotServed);
         };
@@ -96,10 +98,10 @@ impl Session<'_> {
         let ceiling = match wanted.after {
             None => None,
             Some(anchor) => {
-                let (_, address) = self.address(transaction, anchor)?;
+                let (_, address) = self.address(transaction, anchor).await?;
                 // An anchor in another table, or gone, is the scan's to judge:
                 // it raises the refusal that says so.
-                if address.table != table || transaction.get(&address)?.is_none() {
+                if address.table != table || transaction.get(&address).await?.is_none() {
                     return Ok(Walked::NotServed);
                 }
                 let Some(held) =
@@ -151,9 +153,9 @@ impl Session<'_> {
             if best.len() >= wanted.wanted && suffix[at] < best[0] {
                 break;
             }
-            for id in transaction.records_with_term(&ranked.index, term)? {
+            for id in transaction.records_with_term(&ranked.index, term).await? {
                 let address = RecordAddress::new(context.namespace, context.database, table, id);
-                let Some(payload) = transaction.get(&address)? else {
+                let Some(payload) = transaction.get(&address).await? else {
                     continue;
                 };
                 if candidates.insert(address.id.clone(), payload).is_some() {
@@ -227,14 +229,14 @@ impl Session<'_> {
     /// # Errors
     ///
     /// Returns an error when the catalog cannot be read.
-    pub(crate) fn index_serving_score(
+    pub(crate) async fn index_serving_score(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
         table: TableId,
         path: &tessari_types::Path,
     ) -> Result<Option<crate::redact::Visible>> {
-        let visible = self.visible_in(transaction, table)?;
+        let visible = self.visible_in(transaction, table).await?;
         if visible
             .as_ref()
             .is_some_and(|fields| !fields.contains(path.root()))
@@ -269,7 +271,7 @@ impl Session<'_> {
     /// # Errors
     ///
     /// Returns an error when the catalog cannot be read.
-    pub(crate) fn index_serving_place(
+    pub(crate) async fn index_serving_place(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
@@ -277,13 +279,14 @@ impl Session<'_> {
         path: &tessari_types::Path,
     ) -> Result<Option<(tessari_storage::IndexDefinition, crate::redact::Visible)>> {
         let Some(index) = Catalog::new(transaction)
-            .field_indexes_on(table)?
+            .field_indexes_on(table)
+            .await?
             .into_iter()
             .find(|index| index.spatial && index.fields.first() == Some(path))
         else {
             return Ok(None);
         };
-        let visible = self.visible_in(transaction, table)?;
+        let visible = self.visible_in(transaction, table).await?;
         if visible
             .as_ref()
             .is_some_and(|fields| !fields.contains(path.root()))

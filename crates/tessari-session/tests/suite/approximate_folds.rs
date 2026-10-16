@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -24,7 +25,7 @@ use crate::gathered_reads::{answer, follower_of_the_middle_of, leader, pair_of, 
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// `obs` holding `n` = 1 to 1000 as integers in group `all`; then, in group

@@ -32,6 +32,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{
@@ -183,7 +184,9 @@ const DESCENDING: &str = "SELECT * FROM events ORDER BY at DESC LIMIT 10;";
 
 #[test]
 fn a_composite_index_is_offered_for_an_order_on_its_leading_field() {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, COMPOSITE);
     for read in [ASCENDING, DESCENDING] {
         assert_eq!(plan(&mut session, read, "access"), r#"String("ordered")"#);
@@ -206,7 +209,9 @@ fn the_tie_group_at_the_bound_is_drained_and_not_cut() {
     // entries run by `tag`, which this fixture makes the reverse of identity —
     // so a walk that stopped at the bound would answer with the group's largest
     // identities. The answer wants its smallest.
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, COMPOSITE);
 
     let (ids, path) = answered(&mut session, ASCENDING);
@@ -220,9 +225,13 @@ fn the_tie_group_at_the_bound_is_drained_and_not_cut() {
 
 #[test]
 fn both_directions_answer_what_the_scan_answers_in_the_same_order() {
-    let served = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let served = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut with = ready(&served, COMPOSITE);
-    let scanned = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let scanned = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut without = ready(&scanned, "");
 
     for read in [ASCENDING, DESCENDING] {
@@ -241,7 +250,9 @@ fn both_directions_answer_what_the_scan_answers_in_the_same_order() {
 #[test]
 fn a_served_composite_order_reads_its_group_and_not_the_table() {
     let counting = Counting::new();
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, COMPOSITE);
 
     counting.reset();
@@ -269,7 +280,9 @@ fn an_order_on_a_later_field_of_the_composite_is_refused() {
     // `tag`'s entries are grouped inside each `at`, so reading them in key order
     // yields `tag` restarted once per group — not that field's order at any
     // point, and not an approximation of it either.
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, COMPOSITE);
     for read in [
         "SELECT * FROM events ORDER BY tag LIMIT 10;",
@@ -290,7 +303,9 @@ fn a_single_field_index_is_preferred_to_a_composite_holding_the_same_order() {
     // keeps every read this store already served on the path it already took —
     // which is why widening the candidate set had to be additive rather than a
     // change of ranking.
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, COMPOSITE);
     session
         .run_now("DEFINE INDEX by_at ON events FIELDS at;")
@@ -307,7 +322,9 @@ fn an_ascending_composite_order_is_still_refused_over_an_optional_leading_field(
     // The previous wave's admission rule, inherited unchanged: a record with no
     // `at` has no entry in any index leading with `at`, and ascending those
     // records come first. Being composite changes nothing about that.
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(

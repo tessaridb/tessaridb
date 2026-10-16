@@ -20,6 +20,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -30,7 +31,7 @@ const PASSWORD: &str = "correct horse battery staple";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// One table the caller may read and one they may not.
@@ -46,7 +47,7 @@ fn ready(store: &Store) {
         )
         .unwrap();
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
          DEFINE USER spy ON prod.shop ROLE viewer PASSWORD 'correct horse battery staple';\n\
@@ -59,7 +60,7 @@ fn ready(store: &Store) {
 
 fn spy(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.sign_in("spy", PASSWORD).unwrap();
+    session.sign_in("spy", PASSWORD).now().unwrap();
     session
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
@@ -77,7 +78,7 @@ fn refused(store: &Store, script: &str) {
 /// role check refuses first and the grant this file is about is never reached.
 fn refused_as(store: &Store, who: &str, script: &str) {
     let mut session = Session::new(store);
-    session.sign_in(who, PASSWORD).unwrap();
+    session.sign_in(who, PASSWORD).now().unwrap();
     session
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();

@@ -14,7 +14,7 @@ use crate::frame;
 /// A page whose groups would pass the byte budget declines rather than being
 /// cut, because a group cut in two would be two partials the asker cannot tell
 /// from two groups; the asker then gathers the records, which page by bytes.
-pub(super) fn folded(
+pub(super) async fn folded(
     store: &Store,
     reduce: &tessari_session::Reduce,
     (found, more): (Vec<(RecordId, Vec<u8>)>, bool),
@@ -28,8 +28,9 @@ pub(super) fn folded(
         reduced: Some(tessari_session::Reduced::Declined),
         counted: None,
     };
-    let Some(partials) =
-        tessari_session::reducing(store, reduce, found).map_err(|why| Error::Refused {
+    let Some(partials) = tessari_session::reducing(store, reduce, found)
+        .await
+        .map_err(|why| Error::Refused {
             message: why.to_string(),
             class: None,
         })?

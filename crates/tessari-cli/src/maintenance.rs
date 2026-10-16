@@ -10,8 +10,12 @@ use tessaridb::Db;
 ///
 /// The whole store, because state is a pure function of the log — so this is a
 /// complete backup and not a partial one, and restoring it is a replay.
-pub(crate) fn backup(db: &Db, path: &std::path::Path, from: Option<u64>) -> Result<(), String> {
-    let written = aside(path, db.at_rest(), |mut out| {
+pub(crate) async fn backup(
+    db: &Db,
+    path: &std::path::Path,
+    from: Option<u64>,
+) -> Result<(), String> {
+    let written = aside(path, db.at_rest(), async |mut out| {
         // No `FROM` is the whole store, and the whole store is every log it holds.
         // A `FROM` names one sequence, which counts in one log — so it is the
         // incremental path, and a store holding several logs refuses it rather than
@@ -36,7 +40,8 @@ pub(crate) fn backup(db: &Db, path: &std::path::Path, from: Option<u64>) -> Resu
             }
             other => other.to_string(),
         })
-    })?;
+    })
+    .await?;
     println!("{} record(s) to {}", written.records, path.display());
     for log in &written.logs {
         println!(
@@ -53,10 +58,13 @@ pub(crate) fn backup(db: &Db, path: &std::path::Path, from: Option<u64>) -> Resu
 ///
 /// Sized by what the store holds rather than by its history, and the one whole
 /// backup a pruned store can still take.
-pub(crate) fn snapshot(db: &Db, path: &std::path::Path) -> Result<(), String> {
-    let taken = aside(path, db.at_rest(), |mut out| {
-        tessari_backup::write_state(db.store(), &mut out).map_err(|failure| failure.to_string())
-    })?;
+pub(crate) async fn snapshot(db: &Db, path: &std::path::Path) -> Result<(), String> {
+    let taken = aside(path, db.at_rest(), async |mut out| {
+        tessari_backup::write_state(db.store(), &mut out)
+            .await
+            .map_err(|failure| failure.to_string())
+    })
+    .await?;
     println!(
         "{} record(s) at version {} to {}",
         taken.records,
@@ -82,7 +90,13 @@ pub(crate) fn snapshot_from(
         .as_ref()
         .map(|(name, password)| (name.as_str(), password.as_str()));
     let client = &mut remote.client;
-    let summary = aside(path, None, |out| {
+    // bgv-allow(current-thread): one command writing one file; the file is
+    // written the way every backup is, and that way awaits.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|why| format!("the runtime would not start: {why}"))?;
+    let summary = runtime.block_on(aside(path, None, async |out| {
         let answers = client
             .run_streaming(
                 "BACKUP STATE;",
@@ -98,7 +112,7 @@ pub(crate) fn snapshot_from(
             }) => Ok(summary),
             other => Err(format!("the node answered a backup with {other:?}")),
         }
-    })?;
+    }))?;
     let shown = |field: &str| {
         summary
             .get(field)
@@ -116,21 +130,16 @@ pub(crate) fn snapshot_from(
 /// Write the store's current state as TessariQL that rebuilds it (ADR-0091).
 ///
 /// The parts it does not carry are named in the file's own header, and here.
-pub(crate) fn dump(db: &Db, path: &std::path::Path) -> Result<(), String> {
-    // bgv-allow(current-thread): one command writing one script, and nothing
-    // else running beside it.
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|why| format!("the runtime would not start: {why}"))?;
-    let taken = aside(path, db.at_rest(), |out| {
-        let taken = runtime
-            .block_on(tessari_session::write_script(db.store()))
+pub(crate) async fn dump(db: &Db, path: &std::path::Path) -> Result<(), String> {
+    let taken = aside(path, db.at_rest(), async |out| {
+        let taken = tessari_session::write_script(db.store())
+            .await
             .map_err(|failure| failure.to_string())?;
         std::io::Write::write_all(out, taken.text.as_bytes())
             .map_err(|failure| failure.to_string())?;
         Ok(taken)
-    })?;
+    })
+    .await?;
     println!(
         "{} record(s) as statements to {}",
         taken.records,
@@ -151,39 +160,44 @@ pub(crate) fn dump(db: &Db, path: &std::path::Path) -> Result<(), String> {
 /// So the bytes go to `<path>.partial`, are flushed and synced, and a rename puts
 /// them where they were asked for; any failure removes the partial file instead
 /// (ADR-0091 §8).
-fn aside<T>(
+async fn aside<T>(
     path: &std::path::Path,
     key: Option<&tessaridb::AtRestKey>,
-    write: impl FnOnce(&mut dyn std::io::Write) -> Result<T, String>,
+    write: impl AsyncFnOnce(&mut dyn std::io::Write) -> Result<T, String>,
 ) -> Result<T, String> {
     let mut partial = path.as_os_str().to_owned();
     partial.push(".partial");
     let partial = std::path::PathBuf::from(partial);
-    let written = fs::File::create(&partial)
-        .map_err(|failure| failure.to_string())
-        .and_then(|file| {
+    let written = match fs::File::create(&partial).map_err(|failure| failure.to_string()) {
+        Ok(file) => {
             let mut out = std::io::BufWriter::new(file);
             // Sealed under the store's key when it has one (ADR-0108 D7): a
             // backup of an encrypted store is no less private than the store.
-            let written = match key {
-                Some(key) => {
-                    let mut sealing = key.seal_into(out).map_err(|failure| failure.to_string())?;
-                    let written = write(&mut sealing)?;
-                    out = sealing.finish().map_err(|failure| failure.to_string())?;
-                    written
-                }
-                None => write(&mut out)?,
-            };
-            let file = out
-                .into_inner()
-                .map_err(|failure| failure.error().to_string())?;
-            file.sync_all().map_err(|failure| failure.to_string())?;
-            Ok(written)
-        })
-        .and_then(|written| {
-            fs::rename(&partial, path).map_err(|failure| failure.to_string())?;
-            Ok(written)
-        });
+            async {
+                let written = match key {
+                    Some(key) => {
+                        let mut sealing =
+                            key.seal_into(out).map_err(|failure| failure.to_string())?;
+                        let written = write(&mut sealing).await?;
+                        out = sealing.finish().map_err(|failure| failure.to_string())?;
+                        written
+                    }
+                    None => write(&mut out).await?,
+                };
+                let file = out
+                    .into_inner()
+                    .map_err(|failure| failure.error().to_string())?;
+                file.sync_all().map_err(|failure| failure.to_string())?;
+                Ok(written)
+            }
+            .await
+        }
+        Err(why) => Err(why),
+    }
+    .and_then(|written| {
+        fs::rename(&partial, path).map_err(|failure| failure.to_string())?;
+        Ok(written)
+    });
     match written {
         Ok(written) => {
             // The rename is durable only once the directory holding it is.
@@ -231,7 +245,7 @@ fn holds_a_state(
 }
 
 /// Replay a file into an empty store, or write a snapshot's state into one.
-pub(crate) fn restore(
+pub(crate) async fn restore(
     db: &Db,
     path: &std::path::Path,
     upto: Option<u64>,
@@ -248,6 +262,7 @@ pub(crate) fn restore(
             ));
         }
         let taken = tessari_backup::read_state(db.store(), || opened(path, key))
+            .await
             .map_err(|failure| format!("{}: {failure}", path.display()))?;
         println!(
             "{} record(s) at version {} from {}",
@@ -264,6 +279,7 @@ pub(crate) fn restore(
         opened(path, key).map_err(|failure| format!("{}: {failure}", path.display()))?;
     let upto = upto.map(tessaridb::Sequence::new);
     let held = tessari_backup::read_until(db.store(), &mut input, upto)
+        .await
         .map_err(|failure| format!("{}: {failure}", path.display()))?;
     println!("{} record(s) from {}", held.records, path.display());
     for log in &held.logs {
@@ -367,8 +383,12 @@ pub(crate) fn verify(
 /// no server — which is exactly the situation somebody is in when they are
 /// wondering whether it is still keeping their data. Exits non-zero when it is
 /// not, so a cron line needs no parsing.
-pub(crate) fn health(db: &Db) -> Result<Ended, String> {
-    let held = db.store().health().map_err(|failure| failure.to_string())?;
+pub(crate) async fn health(db: &Db) -> Result<Ended, String> {
+    let held = db
+        .store()
+        .health()
+        .await
+        .map_err(|failure| failure.to_string())?;
     match held.complaint() {
         None => {
             // "this node" rather than the bare number, and the second clause

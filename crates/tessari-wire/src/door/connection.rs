@@ -27,8 +27,10 @@ impl<H: Holding> Connection<H> {
             Ok(None) => Ended::Served,
             Ok(Some(met)) => {
                 let holding = Arc::clone(&self.holding);
-                if let Bridged::Busy(()) | Bridged::Panicked =
-                    self.bridge.call((), move |()| holding.met(&met)).await
+                if let Bridged::Busy(()) | Bridged::Panicked = self
+                    .bridge
+                    .call_async((), move |()| async move { holding.met(&met).await })
+                    .await
                 {
                     tracing::warn!("a peer was served but could not be recorded");
                 }
@@ -64,7 +66,9 @@ impl<H: Holding> Connection<H> {
 
         // Read now, after the peer proved itself, for the reason `greet` gives.
         let holding = Arc::clone(&self.holding);
-        let mine = self.store(move || holding.hello()).await?;
+        let mine = self
+            .store_async(move || async move { holding.hello().await })
+            .await?;
         bounded(frame_async::write_tagged(
             &mut link,
             PeerFrame::Hello.tag(),
@@ -91,8 +95,10 @@ impl<H: Holding> Connection<H> {
                     voted: None,
                     presented: shown.as_ref().map_or([0; 32], credential::digest),
                 };
-                if let Bridged::Busy(()) | Bridged::Panicked =
-                    self.bridge.call((), move |()| holding.met(&met)).await
+                if let Bridged::Busy(()) | Bridged::Panicked = self
+                    .bridge
+                    .call_async((), move |()| async move { holding.met(&met).await })
+                    .await
                 {
                     tracing::warn!("a peer opened a stream but could not be recorded");
                 }
@@ -115,12 +121,22 @@ impl<H: Holding> Connection<H> {
                 let holding = Arc::clone(&self.holding);
                 let node = said.node;
                 let (sender, receiver) = tokio::sync::mpsc::channel::<(u8, Vec<u8>)>(4);
-                let copying = self.store(move || {
-                    holding.copied(node, &mut |tag, body| {
-                        sender.blocking_send((tag, body)).map_err(|_| {
-                            Error::Transport("the follower stopped reading the copy".to_owned())
+                // The store side awaits each send, so the bounded channel is the
+                // backpressure; a blocking send would panic inside the bridge,
+                // which drives this future within the runtime's context.
+                let copying = self.store_async(move || async move {
+                    holding
+                        .copied(node, &mut |tag, body| {
+                            let sender = sender.clone();
+                            Box::pin(async move {
+                                sender.send((tag, body)).await.map_err(|_| {
+                                    Error::Transport(
+                                        "the follower stopped reading the copy".to_owned(),
+                                    )
+                                })
+                            })
                         })
-                    })
+                        .await
                 });
                 let forwarding = async {
                     let mut receiver = receiver;
@@ -216,7 +232,9 @@ impl<H: Holding> Connection<H> {
                 let holding = Arc::clone(&self.holding);
                 let voter = Arc::clone(&self.voter);
                 let (tag, reply, voted) = self
-                    .store(move || answering(tag, &body, &said, &mine, &voter, &*holding))
+                    .store_async(move || async move {
+                        answering(tag, &body, &said, &mine, &voter, &*holding).await
+                    })
                     .await?;
                 bounded(frame_async::write_tagged(&mut link, tag, &reply)).await??;
                 voted
@@ -269,7 +287,9 @@ impl<H: Holding> Connection<H> {
                 let holding = Arc::clone(&self.holding);
                 let from = said.node;
                 let answered = self
-                    .store(move || Ok(holding.across(from, &assertion, &carried.asked)))
+                    .store_async(move || async move {
+                        Ok(holding.across(from, &assertion, &carried.asked).await)
+                    })
                     .await?;
                 match answered {
                     Ok(answer) => (PeerFrame::AcrossDone.tag(), answer),
@@ -365,7 +385,9 @@ impl<H: Holding> Connection<H> {
                 let holding = Arc::clone(&self.holding);
                 let ask = asked.clone();
                 let answered = self
-                    .store(move || stream_answer(&*holding, follower, &ask))
+                    .store_async(
+                        move || async move { stream_answer(&*holding, follower, &ask).await },
+                    )
                     .await;
                 let round = match answered {
                     Ok(round) => round,
@@ -449,16 +471,9 @@ impl<H: Holding> Connection<H> {
         }
     }
 
-    /// Run a store call on the bridge, and read a refusal as the error it is.
-    async fn store<T: Send + 'static>(
-        &self,
-        work: impl FnOnce() -> Result<T> + Send + 'static,
-    ) -> Result<T> {
-        self.store_async(move || std::future::ready(work())).await
-    }
-
-    /// [`Self::store`] for work that is a future, driven to its end on the
-    /// blocking pool ([`tessari_serve::Bridge::call_async`]).
+    /// Run a store call on the bridge, driven to its end on the blocking pool
+    /// ([`tessari_serve::Bridge::call_async`]), and read a refusal as the error it
+    /// is.
     async fn store_async<T: Send + 'static, W: Future<Output = Result<T>>>(
         &self,
         work: impl FnOnce() -> W + Send + 'static,

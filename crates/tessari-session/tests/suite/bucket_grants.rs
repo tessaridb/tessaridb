@@ -15,6 +15,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -26,7 +27,7 @@ const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// A bucket with a file in it, a table beside it, and two users.
@@ -44,7 +45,7 @@ fn ready(store: &Store) {
         .unwrap();
 
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now(
         "USE NAMESPACE prod; USE DATABASE library;\n\
          DEFINE USER reader ON prod.library ROLE editor PASSWORD 'correct horse battery';\n\
@@ -57,7 +58,7 @@ fn ready(store: &Store) {
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
         .run_now("USE NAMESPACE prod; USE DATABASE library;")
         .unwrap();
@@ -141,7 +142,7 @@ fn a_field_grant_hides_metadata_and_says_nothing_about_the_bytes() {
     let store = store();
     ready(&store);
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     root.run_now(
         "USE NAMESPACE prod; USE DATABASE library; GRANT read ON media FIELDS chunks TO reader;",
     )

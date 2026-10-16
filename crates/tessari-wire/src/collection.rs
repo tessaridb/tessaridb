@@ -278,6 +278,10 @@ impl Collected {
     }
 }
 
+/// What a door's question answers with: answering reads the store, and the
+/// door holds its origin as an object, so the future is boxed.
+pub type Answering<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
+
 /// What a peer door may do to the log it serves from.
 ///
 /// One method, and that is the point. The door is handed this rather than a
@@ -297,7 +301,11 @@ pub trait Origin {
     /// Returns [`Error::Uncollectable`] when the leadership before `asked.from`
     /// cannot be stated, and [`Error::Refused`] carrying the store's own words
     /// when the log cannot be read.
-    fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected>;
+    fn collected(
+        &self,
+        follower: [u8; NODE_ID_LEN],
+        asked: Collect,
+    ) -> Answering<'_, Result<Collected>>;
 
     /// [`Self::collected`] for a round the leader pushes (ADR-0120 D1): the
     /// same answer, recorded as sent and never as held.
@@ -309,8 +317,12 @@ pub trait Origin {
     /// # Errors
     ///
     /// As [`Self::collected`].
-    fn collected_pushed(&self, _follower: [u8; NODE_ID_LEN], _asked: Collect) -> Result<Collected> {
-        Err(Error::Unsubscribed)
+    fn collected_pushed(
+        &self,
+        _follower: [u8; NODE_ID_LEN],
+        _asked: Collect,
+    ) -> Answering<'_, Result<Collected>> {
+        Box::pin(async move { Err(Error::Unsubscribed) })
     }
 
     /// Record that `follower` holds `asked.home` durably up to just before
@@ -322,8 +334,8 @@ pub trait Origin {
     /// # Errors
     ///
     /// A store failure.
-    fn held(&self, _follower: [u8; NODE_ID_LEN], _asked: Collect) -> Result<()> {
-        Ok(())
+    fn held(&self, _follower: [u8; NODE_ID_LEN], _asked: Collect) -> Answering<'_, Result<()>> {
+        Box::pin(async move { Ok(()) })
     }
 
     /// Answer a gather of one shard's records for the peer that asked (G033).
@@ -335,7 +347,11 @@ pub trait Origin {
     ///
     /// Returns [`Error::NotGathered`] with the reason when the peer may not have
     /// the shard or this node cannot give it.
-    fn gathered(&self, asker: [u8; NODE_ID_LEN], asked: &Gather) -> Result<Page>;
+    fn gathered<'a>(
+        &'a self,
+        asker: [u8; NODE_ID_LEN],
+        asked: &'a Gather,
+    ) -> Answering<'a, Result<Page>>;
 
     /// Stream this node's state, as the follower's subscription is given it,
     /// through `write` — a head, the chunks, an end (ADR-0094 D3).
@@ -348,18 +364,18 @@ pub trait Origin {
     ///
     /// Returns [`Error::Unsubscribed`] when nothing grants the follower a reach,
     /// the store's own failure, and whatever `write` returns.
-    fn copied(
-        &self,
+    fn copied<'a>(
+        &'a self,
         follower: [u8; NODE_ID_LEN],
-        write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
-    ) -> Result<()>;
+        write: &'a mut dyn FnMut(u8, Vec<u8>) -> Answering<'static, Result<()>>,
+    ) -> Answering<'a, Result<()>>;
 
     /// Whether this node's catalog places `candidate` on `range` — what a
     /// voter asks before granting a ballot on a placed range's line (ADR-0098).
     ///
     /// No default, for [`Self::copied`]'s reason: a door that forgot it would
     /// grant every range ballot.
-    fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> bool;
+    fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> Answering<'_, bool>;
 
     /// Bind `node` to the row waiting on the join token `token`, and answer
     /// whether a row is now bound to it (ADR-0108 D9).
@@ -370,8 +386,12 @@ pub trait Origin {
     /// # Errors
     ///
     /// A store failure.
-    fn joined(&self, _node: [u8; NODE_ID_LEN], _token: &[u8; 32]) -> Result<bool> {
-        Ok(false)
+    fn joined<'a>(
+        &'a self,
+        _node: [u8; NODE_ID_LEN],
+        _token: &'a [u8; 32],
+    ) -> Answering<'a, Result<bool>> {
+        Box::pin(std::future::ready(Ok(false)))
     }
 
     /// Where this node's own copy of `range`'s line reaches, read from what it
@@ -390,8 +410,8 @@ pub trait Origin {
     /// # Errors
     ///
     /// A store failure, which refuses the vote rather than guessing a position.
-    fn reached_on(&self, _range: Reach) -> Result<Option<crate::grant::Reached>> {
-        Ok(None)
+    fn reached_on(&self, _range: Reach) -> Answering<'_, Result<Option<crate::grant::Reached>>> {
+        Box::pin(async move { Ok(None) })
     }
 
     /// Answer a peer's sign-in try from this store's failure table — the
@@ -432,30 +452,40 @@ pub trait Origin {
 pub struct NoLog;
 
 impl Origin for NoLog {
-    fn collected(&self, _follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
-        Err(Error::Uncollectable {
-            from: asked.from.get(),
+    fn collected(
+        &self,
+        _follower: [u8; NODE_ID_LEN],
+        asked: Collect,
+    ) -> Answering<'_, Result<Collected>> {
+        Box::pin(async move {
+            Err(Error::Uncollectable {
+                from: asked.from.get(),
+            })
         })
     }
 
-    fn gathered(&self, _asker: [u8; NODE_ID_LEN], _asked: &Gather) -> Result<Page> {
-        Err(Error::NotGathered(Ungathered::NotHeld))
+    fn gathered<'a>(
+        &'a self,
+        _asker: [u8; NODE_ID_LEN],
+        _asked: &'a Gather,
+    ) -> Answering<'a, Result<Page>> {
+        Box::pin(async move { Err(Error::NotGathered(Ungathered::NotHeld)) })
     }
 
     // A door with no catalog cannot vouch for any placement, so it grants no
     // range ballot.
-    fn places(&self, _candidate: [u8; NODE_ID_LEN], _range: Reach) -> bool {
-        false
+    fn places(&self, _candidate: [u8; NODE_ID_LEN], _range: Reach) -> Answering<'_, bool> {
+        Box::pin(async move { false })
     }
 
     // A door with no log has no state to give, which is the refusal a node
     // nobody subscribed gets.
-    fn copied(
-        &self,
+    fn copied<'a>(
+        &'a self,
         _follower: [u8; NODE_ID_LEN],
-        _write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
-    ) -> Result<()> {
-        Err(Error::Unsubscribed)
+        _write: &'a mut dyn FnMut(u8, Vec<u8>) -> Answering<'static, Result<()>>,
+    ) -> Answering<'a, Result<()>> {
+        Box::pin(async move { Err(Error::Unsubscribed) })
     }
 }
 
@@ -476,7 +506,7 @@ pub trait Subscriptions: core::fmt::Debug {
     /// # Errors
     ///
     /// Returns [`Error::Refused`] when the answer cannot be read.
-    fn granted(&self, follower: [u8; NODE_ID_LEN]) -> Result<Option<Reach>>;
+    fn granted(&self, follower: [u8; NODE_ID_LEN]) -> Answering<'_, Result<Option<Reach>>>;
 }
 
 /// The catalog's answer, which is the only one that governs.
@@ -487,15 +517,17 @@ pub trait Subscriptions: core::fmt::Debug {
 /// with no `NODE` therefore matches nobody, which is what makes every peer
 /// declaration written before this existed grant nothing.
 impl Subscriptions for Store {
-    fn granted(&self, follower: [u8; NODE_ID_LEN]) -> Result<Option<Reach>> {
-        let mut transaction = self.begin().map_err(refused)?;
-        let declared = Catalog::new(&mut transaction).replicas();
-        transaction.rollback();
-        Ok(declared
-            .map_err(refused)?
-            .into_iter()
-            .find(|row| row.node == Some(follower))
-            .and_then(|row| row.replicates))
+    fn granted(&self, follower: [u8; NODE_ID_LEN]) -> Answering<'_, Result<Option<Reach>>> {
+        Box::pin(async move {
+            let mut transaction = self.begin().map_err(refused)?;
+            let declared = Catalog::new(&mut transaction).replicas().await;
+            transaction.rollback();
+            Ok(declared
+                .map_err(refused)?
+                .into_iter()
+                .find(|row| row.node == Some(follower))
+                .and_then(|row| row.replicates))
+        })
     }
 }
 

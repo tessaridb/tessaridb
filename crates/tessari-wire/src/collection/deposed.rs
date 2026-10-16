@@ -62,6 +62,7 @@ pub(super) fn refused(into: &Store, fetched: Vec<Result<Collected>>) -> Vec<Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tessari_session::Now;
     use tessari_session::RunNow;
     use tessari_storage::{LEASE_TTL, Lease, LogId};
     use tessari_types::{Epoch, Sequence};
@@ -96,8 +97,10 @@ mod tests {
         // superseded — what it serves may be records leadership 5 never held. An
         // answer stating 5 or more is the line's current leader, and one stating
         // nothing leads no line governing that home and is not judged here.
-        let db = Db::in_memory().expect("an in-memory store");
-        db.store().hold(Epoch::new(5), Lease::taken(LEASE_TTL));
+        let db = Db::in_memory().now().expect("an in-memory store");
+        db.store()
+            .hold(Epoch::new(5), Lease::taken(LEASE_TTL))
+            .now();
         let line = written(&db, "DEFINE NAMESPACE led");
         assert_eq!(
             db.store().tail_leadership(line).expect("its tail"),
@@ -131,7 +134,7 @@ mod tests {
         // written under a leadership, so an answer stating 6 is applied —
         // whatever ballots this node was shown at 7, nothing at 7 has written,
         // and nothing says leadership 6 is over.
-        let db = Db::in_memory().expect("an in-memory store");
+        let db = Db::in_memory().now().expect("an in-memory store");
         let own = written(&db, "DEFINE NAMESPACE own");
         let judged = refused(db.store(), vec![stating(own, Some(6))]);
         assert!(judged[0].is_ok(), "{judged:?}");
@@ -142,8 +145,10 @@ mod tests {
         // DB-15: records written by the store line's leader under leadership 3
         // stay in the range's own log, so the line that takes the range over
         // has to stand above 3 or every follower reads its answers as deposed.
-        let db = Db::in_memory().expect("an in-memory store");
-        db.store().hold(Epoch::new(3), Lease::taken(LEASE_TTL));
+        let db = Db::in_memory().now().expect("an in-memory store");
+        db.store()
+            .hold(Epoch::new(3), Lease::taken(LEASE_TTL))
+            .now();
         db.session()
             .run_now("DEFINE NAMESPACE s3; USE NAMESPACE s3; DEFINE DATABASE us; USE DATABASE us; DEFINE TABLE o SCHEMALESS; CREATE o:1 = { a: 1 };")
             .expect("the writes commit");

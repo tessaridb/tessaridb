@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::MemoryBackend;
@@ -30,7 +31,7 @@ fn node(hex: &str) -> [u8; tessari_storage::NODE_ID_LEN] {
 /// A store whose namespace `prod` says `acknowledge`, declaring two voters
 /// that replicate `replicates`, and holding a leadership so it may write.
 fn clustered(acknowledge: &str, replicates: &str) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(&format!(
@@ -46,7 +47,9 @@ fn clustered(acknowledge: &str, replicates: &str) -> Store {
              COMMIT;"
         ))
         .unwrap();
-    store.hold(Epoch::new(1), Lease::taken(Duration::from_secs(60)));
+    store
+        .hold(Epoch::new(1), Lease::taken(Duration::from_secs(60)))
+        .now();
     store
 }
 
@@ -70,10 +73,15 @@ fn held(session: &mut Session<'_>) -> usize {
 fn acknowledged_by(store: &Store, peer: &str) {
     let mut transaction = store.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "app").unwrap().unwrap();
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "app")
+        .now()
+        .unwrap()
+        .unwrap();
     let log = store
         .line_log(Reach::Database(namespace, database))
+        .now()
         .unwrap();
     store.follower_sent(node(peer), log, Sequence::new(1_000_000));
     store.follower_asked(node(peer), log, Sequence::new(1_000_000));
@@ -81,7 +89,7 @@ fn acknowledged_by(store: &Store, peer: &str) {
 
 #[test]
 fn a_single_node_is_its_own_majority_and_waits_for_nobody() {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(
@@ -97,7 +105,7 @@ fn a_single_node_is_its_own_majority_and_waits_for_nobody() {
         "it waited for nobody"
     );
     assert_eq!(
-        store.health().unwrap().acknowledgement_waits,
+        store.health().now().unwrap().acknowledgement_waits,
         0,
         "and counted none"
     );
@@ -111,7 +119,7 @@ fn a_single_node_is_its_own_majority_and_waits_for_nobody() {
 /// where the stronger one was accepted.
 #[test]
 fn a_single_node_is_its_own_region_and_meets_a_local_majority() {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = Session::new(&store);
     session
         .run_now(
@@ -128,7 +136,7 @@ fn a_single_node_is_its_own_region_and_meets_a_local_majority() {
         .unwrap();
     assert_eq!(held(&mut session), 2);
     assert_eq!(
-        store.health().unwrap().acknowledgement_waits,
+        store.health().now().unwrap().acknowledgement_waits,
         0,
         "it waited for nobody"
     );
@@ -143,7 +151,7 @@ fn a_write_held_by_a_majority_is_acknowledged() {
         .run_now("CREATE t:1 = { a: 1 };")
         .unwrap_or_else(|why| panic!("one voter of two besides this node is a majority: {why}"));
     // G053 C6: the wait is counted once, and it did not time out.
-    let health = store.health().unwrap();
+    let health = store.health().now().unwrap();
     assert_eq!(
         (
             health.acknowledgement_waits,
@@ -172,7 +180,7 @@ fn a_write_no_voter_acknowledges_is_committed_and_said_so() {
     );
     // G053 C6: a timeout is a wait that ran out — counted as both, with the
     // round it spent in the total.
-    let health = store.health().unwrap();
+    let health = store.health().now().unwrap();
     assert_eq!(
         (
             health.acknowledgement_waits,
@@ -282,7 +290,7 @@ fn a_read_waits_for_no_copies() {
 /// A store in region `eu` whose namespace `prod` says `acknowledge`, beside one
 /// voter in `eu` and one in `us`, both replicating `prod` (G057 C3).
 fn regional(acknowledge: &str, mine: &str) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let me: String = store
         .node_identity()
         .unwrap()
@@ -306,7 +314,9 @@ fn regional(acknowledge: &str, mine: &str) -> Store {
              COMMIT;"
         ))
         .unwrap();
-    store.hold(Epoch::new(1), Lease::taken(Duration::from_secs(60)));
+    store
+        .hold(Epoch::new(1), Lease::taken(Duration::from_secs(60)))
+        .now();
     store
 }
 
@@ -405,8 +415,12 @@ fn a_new_leader_says_intents_are_gone_only_once_its_own_entry_is_held() {
     let range = {
         let mut transaction = store.begin().unwrap();
         let catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-        let database = catalog.database_id(namespace, "app").unwrap().unwrap();
+        let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+        let database = catalog
+            .database_id(namespace, "app")
+            .now()
+            .unwrap()
+            .unwrap();
         Reach::Database(namespace, database)
     };
     let holds = tessari_session::AcrossAsk::Holds {
@@ -416,8 +430,10 @@ fn a_new_leader_says_intents_are_gone_only_once_its_own_entry_is_held() {
         range,
     };
     // Re-elected at epoch 2, its tail still written at epoch 1.
-    store.hold(Epoch::new(2), Lease::taken(Duration::from_secs(60)));
-    let refused = session.answer_across(&holds);
+    store
+        .hold(Epoch::new(2), Lease::taken(Duration::from_secs(60)))
+        .now();
+    let refused = session.answer_across(&holds).now();
     assert!(
         matches!(
             &refused,
@@ -430,7 +446,7 @@ fn a_new_leader_says_intents_are_gone_only_once_its_own_entry_is_held() {
     // Its own first entry, held by a majority: now it may answer.
     session.run_now("CREATE t:2 = { n: 2 };").unwrap();
     assert_eq!(
-        session.answer_across(&holds).unwrap(),
+        session.answer_across(&holds).now().unwrap(),
         tessari_session::AcrossAnswer::Holding(false)
     );
 }

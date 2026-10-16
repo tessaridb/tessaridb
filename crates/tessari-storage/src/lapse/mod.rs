@@ -64,7 +64,7 @@ impl Expiring {
 }
 
 /// Add the expiry-index writes a log record implies to `batch`.
-pub(crate) fn maintain(
+pub(crate) async fn maintain(
     store: &Store,
     record: &LogRecord,
     mut batch: WriteBatch,
@@ -86,7 +86,8 @@ pub(crate) fn maintain(
             mutation.id.clone(),
         );
         let previous = view
-            .read_stamped_at(&address)?
+            .read_stamped_at(&address)
+            .await?
             .and_then(|stamped| stamped.expires());
         if previous == next {
             continue;

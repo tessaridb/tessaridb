@@ -3,6 +3,7 @@
 use super::{DIMENSIONS, Failable, QUERIES, RECORDS, SECRETS, embedding, ids, prepared};
 use crate::samples::{Report, Samples};
 use std::time::Instant;
+use tessari_session::Now;
 use tessari_session::RunNow;
 use tessaridb::Db;
 
@@ -38,11 +39,11 @@ pub(crate) fn restore(db: &Db) -> Failable<Vec<Report>> {
     ));
 
     // Into a fresh store, because a restore into anything else is refused.
-    let target = Db::in_memory()?;
+    let target = Db::in_memory().now()?;
     let mut replayed = Samples::with_capacity(1);
     let outcome = timed!(
         replayed,
-        tessari_backup::read(target.store(), &mut held.as_slice())
+        tessari_backup::read(target.store(), &mut held.as_slice()).now()
     )?;
     reports.push(replayed.summarise("restore"));
     reports.push(Report::measurement(

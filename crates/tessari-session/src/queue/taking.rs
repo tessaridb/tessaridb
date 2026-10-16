@@ -28,7 +28,7 @@ pub(super) struct Taking<'a> {
 impl Session<'_> {
     /// One record offered to an arrival-ordered claim, by the walk or by the
     /// index that served its condition: taken, buried, or passed over.
-    pub(super) fn offer(
+    pub(super) async fn offer(
         &self,
         transaction: &mut Transaction<'_>,
         taking: &mut Taking<'_>,
@@ -54,7 +54,9 @@ impl Session<'_> {
             return Ok(ControlFlow::Continue(()));
         }
         if !claimable(&fields, now, taking.declared)
-            || !self.matches(transaction, taking.matching, &record, &fields)?
+            || !self
+                .matches(transaction, taking.matching, &record, &fields)
+                .await?
         {
             return Ok(ControlFlow::Continue(()));
         }

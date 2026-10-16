@@ -8,6 +8,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -19,7 +20,7 @@ const PASSWORD: &str = "a long one";
 
 fn empty() -> Store {
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn store() -> Store {
@@ -53,7 +54,7 @@ fn store() -> Store {
 
 fn owner(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.sign_in("root", PASSWORD).unwrap();
+    session.sign_in("root", PASSWORD).now().unwrap();
     session
 }
 

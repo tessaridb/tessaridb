@@ -7,6 +7,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -15,7 +16,9 @@ use tessari_storage::Store;
 use tessari_types::{RecordId, Value};
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// A tenancy holding `customers`, partitioned by `region` and split at 'de', 'fr'.
@@ -154,7 +157,9 @@ fn the_report_names_the_partition_and_its_definition_re_creates_it() {
     let Some(Value::String(script)) = fields.get("definition") else {
         panic!("{described:?}");
     };
-    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut again = Session::new(&restored);
     again
         .run_now(&format!(

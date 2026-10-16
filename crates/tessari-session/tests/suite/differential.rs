@@ -34,6 +34,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -308,7 +309,7 @@ fn document_allows(who: &Identity, demand: &Demand) -> bool {
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Two namespaces, a table with a record in each, and a store owner.
@@ -372,14 +373,14 @@ fn the_store_and_the_document_agree_about_every_generated_identity() {
         let store = store();
         peopled(&store);
         let mut root = Session::new(&store);
-        root.sign_in("root", PASSWORD).unwrap();
+        root.sign_in("root", PASSWORD).now().unwrap();
         let mut rolling = Rolling(seed);
 
         for ordinal in 0..IDENTITIES {
             let who = declare(&mut root, &mut rolling, ordinal);
             for demand in &SAMPLE {
                 let mut session = Session::new(&store);
-                session.sign_in(&who.name, PASSWORD).unwrap();
+                session.sign_in(&who.name, PASSWORD).now().unwrap();
                 let unique = format!("{seed}x{ordinal}");
                 let script = format!(
                     "USE NAMESPACE prod; USE DATABASE shop; {}",

@@ -9,7 +9,7 @@ impl Session<'_> {
     /// Every refusal a write would meet here — tenancy, authority, grants, the
     /// fence, a conflict — plus `AcrossKind` for a table whose engine has a
     /// write path of its own, and the storage refusals of ADR-0112.
-    pub fn answer_across(&mut self, asked: &AcrossAsk) -> Result<AcrossAnswer> {
+    pub async fn answer_across(&mut self, asked: &AcrossAsk) -> Result<AcrossAnswer> {
         let span = Span::new(0, 0);
         let store = self.store;
         match asked {
@@ -19,17 +19,15 @@ impl Session<'_> {
                 seen,
                 writes,
             } => {
-                self.may_write_records(store, writes, span)?;
+                self.may_write_records(store, writes, span).await?;
                 let mut buffered = store.begin()?;
                 buffer(&mut buffered, writes);
-                let waiting = self.acknowledgement_in(
-                    &mut buffered,
-                    None,
-                    Some(Acknowledge::Majority),
-                    span,
-                )?;
+                let waiting = self
+                    .acknowledgement_in(&mut buffered, None, Some(Acknowledge::Majority), span)
+                    .await?;
                 let committed = buffered
                     .prepare_across(*transaction, *coordinator, *seen)
+                    .await
                     .map_err(advised)?;
                 Self::await_acknowledged(store, committed, waiting, span)?;
                 Ok(AcrossAnswer::Prepared(committed.sequence))
@@ -47,14 +45,17 @@ impl Session<'_> {
                         problem: "a record that names no participant",
                     }))?;
                 let mut deciding = store.begin()?;
-                let waiting = self.acknowledgement_in(
-                    &mut deciding,
-                    Some(home),
-                    Some(Acknowledge::Majority),
-                    span,
-                )?;
+                let waiting = self
+                    .acknowledgement_in(
+                        &mut deciding,
+                        Some(home),
+                        Some(Acknowledge::Majority),
+                        span,
+                    )
+                    .await?;
                 let committed = deciding
                     .decide_across(*transaction, record.clone())
+                    .await
                     .map_err(advised)?;
                 Self::await_acknowledged(store, committed, waiting, span)?;
                 Ok(AcrossAnswer::Decided(committed.sequence))
@@ -65,17 +66,15 @@ impl Session<'_> {
                 seen,
                 writes,
             } => {
-                self.may_write_records(store, writes, span)?;
+                self.may_write_records(store, writes, span).await?;
                 let mut buffered = store.begin()?;
                 buffer(&mut buffered, writes);
-                let waiting = self.acknowledgement_in(
-                    &mut buffered,
-                    None,
-                    Some(Acknowledge::Majority),
-                    span,
-                )?;
+                let waiting = self
+                    .acknowledgement_in(&mut buffered, None, Some(Acknowledge::Majority), span)
+                    .await?;
                 let committed = buffered
                     .begin_across(*transaction, record.clone(), *seen)
+                    .await
                     .map_err(advised)?;
                 Self::await_acknowledged(store, committed, waiting, span)?;
                 Ok(AcrossAnswer::Prepared(committed.sequence))
@@ -94,14 +93,17 @@ impl Session<'_> {
                         problem: "a record that names no participant",
                     }))?;
                 let mut concluding = store.begin()?;
-                let waiting = self.acknowledgement_in(
-                    &mut concluding,
-                    Some(home),
-                    Some(Acknowledge::Majority),
-                    span,
-                )?;
+                let waiting = self
+                    .acknowledgement_in(
+                        &mut concluding,
+                        Some(home),
+                        Some(Acknowledge::Majority),
+                        span,
+                    )
+                    .await?;
                 let committed = concluding
                     .conclude_across(*transaction, record.clone(), records)
+                    .await
                     .map_err(advised)?;
                 Self::await_acknowledged(store, committed, waiting, span)?;
                 Ok(AcrossAnswer::Decided(committed.sequence))
@@ -109,32 +111,35 @@ impl Session<'_> {
             AcrossAsk::Settle {
                 transaction,
                 coordinator,
-            } => self.settle_across(*transaction, *coordinator),
+            } => self.settle_across(*transaction, *coordinator).await,
             AcrossAsk::Lookup {
                 transaction,
                 coordinator,
-            } => self.lookup_across(*transaction, *coordinator),
+            } => self.lookup_across(*transaction, *coordinator).await,
             AcrossAsk::Holds { transaction, range } => {
-                self.holds_across(*transaction, *range, span)
+                self.holds_across(*transaction, *range, span).await
             }
             AcrossAsk::Bar {
                 transaction,
                 range,
                 prevent,
-            } => self.bar_across(*transaction, *range, *prevent, span),
+            } => self.bar_across(*transaction, *range, *prevent, span).await,
             AcrossAsk::Forget {
                 transaction,
                 coordinator,
             } => {
                 let mut forgetting = store.begin()?;
-                let waiting = self.acknowledgement_in(
-                    &mut forgetting,
-                    Some(*coordinator),
-                    Some(Acknowledge::Majority),
-                    span,
-                )?;
+                let waiting = self
+                    .acknowledgement_in(
+                        &mut forgetting,
+                        Some(*coordinator),
+                        Some(Acknowledge::Majority),
+                        span,
+                    )
+                    .await?;
                 let committed = forgetting
                     .forget_across(*transaction, *coordinator)
+                    .await
                     .map_err(advised)?;
                 Self::await_acknowledged(store, committed, waiting, span)?;
                 Ok(AcrossAnswer::Forgotten(committed.sequence))
@@ -148,6 +153,7 @@ impl Session<'_> {
                 let resolved = store
                     .begin()?
                     .resolve_across(*transaction, *committed, records, participants)
+                    .await
                     .map_err(advised)?;
                 Ok(AcrossAnswer::Resolved(
                     resolved.map(|landed| landed.sequence),

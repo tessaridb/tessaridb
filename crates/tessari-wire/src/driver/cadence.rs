@@ -95,8 +95,9 @@ pub fn due_in(
 /// none, and it ends the wait between passes the moment it is cancelled — a
 /// cadence holds nothing a stop would have to wait for.
 ///
-/// Each pass runs on the runtime's blocking pool, because a pass is store work
-/// and a TLS call, both synchronous. The closure is moved there and back, so a
+/// Each pass runs on the runtime's blocking pool, because its TLS calls block;
+/// its store work is awaited there through the runtime's handle. The closure is
+/// moved there and back, so a
 /// pass keeps what it learned between rounds, and one cadence's passes never
 /// overlap: the campaign's ballots stay one after another. A pass that panics
 /// is re-raised on this task, where the supervisor that started it sees it.
@@ -117,7 +118,7 @@ pub async fn every<P>(
     stop: &CancellationToken,
     mut pass: P,
 ) where
-    P: FnMut(Instant) -> Result<(), PassFailed> + Send + 'static,
+    P: AsyncFnMut(Instant) -> Result<(), PassFailed> + Send + 'static,
 {
     while !stop.is_cancelled() {
         let ran_at = Instant::now();
@@ -156,7 +157,7 @@ pub async fn every_paced<P>(
     first: Duration,
     mut pass: P,
 ) where
-    P: FnMut(Instant) -> Result<Duration, PassFailed> + Send + 'static,
+    P: AsyncFnMut(Instant) -> Result<Duration, PassFailed> + Send + 'static,
 {
     let mut period = first;
     while !stop.is_cancelled() {
@@ -191,13 +192,16 @@ async fn run_pass<P, T>(
     mut pass: P,
 ) -> Option<(P, Option<T>)>
 where
-    P: FnMut(Instant) -> Result<T, PassFailed> + Send + 'static,
+    P: AsyncFnMut(Instant) -> Result<T, PassFailed> + Send + 'static,
     T: Send + 'static,
 {
     let span = tracing::info_span!("cadence", cadence);
     let inside = span.clone();
+    // A blocking-pool thread is outside the runtime's workers, which is where
+    // `Handle::block_on` may drive the pass's store calls.
+    let runtime = tokio::runtime::Handle::current();
     let mut running = tokio::task::spawn_blocking(move || {
-        let ran = inside.in_scope(|| pass(ran_at));
+        let ran = inside.in_scope(|| runtime.block_on(pass(ran_at)));
         (pass, ran)
     });
     let joined = match tokio::time::timeout(budget, &mut running).await {

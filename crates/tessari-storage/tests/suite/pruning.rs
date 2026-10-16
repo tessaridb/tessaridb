@@ -3,6 +3,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_encoding::{LogId, encode_payload};
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -15,19 +16,23 @@ use crate::{FIXTURE_HOME, fixture_log};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// A namespace, database and table, committed, and the address to write at.
 fn tree(store: &Store) -> RecordAddress {
     let mut transaction = store.begin().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("prod").unwrap();
-    let database = catalog.create_database(namespace.id, "orders").unwrap();
+    let namespace = catalog.create_namespace("prod").now().unwrap();
+    let database = catalog
+        .create_database(namespace.id, "orders")
+        .now()
+        .unwrap();
     let table = catalog
         .create_table(namespace.id, database.id, "users", TableShape::default())
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     RecordAddress {
         namespace: namespace.id,
         database: database.id,
@@ -45,7 +50,7 @@ fn write(store: &Store, at: &RecordAddress, name: &str) {
         at.clone(),
         encode_payload(&Value::Object(object)).into_bytes(),
     );
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 }
 
 /// A store holding `records` writes in its fixture log, and that log.

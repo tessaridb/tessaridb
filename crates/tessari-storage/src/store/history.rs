@@ -23,13 +23,13 @@ impl Store {
     /// [`Error::VersionReclaimed`] when `at` is below the reclaim floor, so the
     /// version that answered is gone and the answer would be a guess; a backend
     /// or decoding failure otherwise.
-    pub fn held_at(
+    pub async fn held_at(
         &self,
         at: Sequence,
         address: &crate::RecordAddress,
     ) -> Result<Option<tessari_types::Value>> {
         let transaction = self.begin_at(at)?;
-        let held = transaction.get_held(address)?;
+        let held = transaction.get_held(address).await?;
         transaction.rollback();
         Ok(match held {
             Some(payload) => Some(tessari_encoding::decode_payload(&payload)?),

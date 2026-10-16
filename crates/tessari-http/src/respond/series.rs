@@ -71,7 +71,7 @@ pub(crate) async fn append(
             "the body is one TessariQL array of objects, every value in it a literal",
         );
     };
-    let mut session = match session_for(db, tokens, presented) {
+    let mut session = match session_for(db, tokens, presented).await {
         Ok(session) => session,
         Err(answer) => return answer,
     };
@@ -84,7 +84,10 @@ pub(crate) async fn append(
     {
         return failure(&error);
     }
-    match db.is_series(aimed.namespace, aimed.database, aimed.series) {
+    match db
+        .is_series(aimed.namespace, aimed.database, aimed.series)
+        .await
+    {
         Ok(true) => {}
         Ok(false) => {
             return Answer::new(

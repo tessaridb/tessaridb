@@ -1,4 +1,5 @@
 use super::*;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 #[test]
@@ -12,7 +13,7 @@ fn a_subscriber_receives_its_namespace_and_not_the_one_beside_it() {
     // it goes: the store's own first, then the namespace that arrived in it.
     let (address, door) = declaring_for(&authority, &leader, ROUNDS);
 
-    let follower = Db::in_memory().expect("an in-memory store");
+    let follower = Db::in_memory().now().expect("an in-memory store");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
     let collector = collector(&mine, &said, &address, 1024);
@@ -23,7 +24,9 @@ fn a_subscriber_receives_its_namespace_and_not_the_one_beside_it() {
     let mut reached = Sequence::ZERO;
     let mut asked: Vec<Reach> = Vec::new();
     for _ in 0..ROUNDS {
-        let logs = logs_to_collect(follower.store()).expect("this node's own logs");
+        let logs = logs_to_collect(follower.store())
+            .now()
+            .expect("this node's own logs");
         // The next log this node has not asked for, or the store's own
         // again. Never a `break`: the door accepts exactly `ROUNDS`
         // connections, and stopping short leaves it waiting on one that
@@ -40,6 +43,7 @@ fn a_subscriber_receives_its_namespace_and_not_the_one_beside_it() {
         // either, and `enforcement.rs` is right to say so.
         reached = collector
             .collect(follower.store(), home, Sequence::new(1))
+            .now()
             .expect("a subscribed peer collects");
     }
     door.join().expect("the door's thread");
@@ -111,10 +115,11 @@ fn a_follower_below_a_pruned_log_copies_the_state_and_then_collects() {
         "a position below the leader's log start asks for a copy: {refused:?}"
     );
 
-    let follower = Db::in_memory().expect("an in-memory store");
+    let follower = Db::in_memory().now().expect("an in-memory store");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
     let copied = crate::copy(&address.to_string(), &mine, LEADER, &said, follower.store())
+        .now()
         .expect("the copy lands");
     assert!(matches!(copied.over, Reach::Namespace(_)), "{copied:?}");
 
@@ -155,6 +160,7 @@ fn a_follower_below_a_pruned_log_copies_the_state_and_then_collects() {
             log.home,
             Sequence::new(at.get().saturating_add(1)),
         )
+        .now()
         .expect("the follower follows on from the copy");
     assert_eq!(reached, at, "nothing was written after the copy");
     door.join().expect("the door's thread");
@@ -172,7 +178,7 @@ fn a_record_read_out_of_one_log_is_applied_into_that_same_log() {
     let leader = granting(" REPLICATES NAMESPACE prod");
     let (address, door) = declaring_for(&authority, &leader, ROUNDS);
 
-    let follower = Db::in_memory().expect("an in-memory store");
+    let follower = Db::in_memory().now().expect("an in-memory store");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
     let collector = collector(&mine, &said, &address, 1024);
@@ -193,6 +199,7 @@ fn a_record_read_out_of_one_log_is_applied_into_that_same_log() {
     for home in [Reach::Store, inside.home] {
         collector
             .collect(follower.store(), home, Sequence::new(1))
+            .now()
             .expect("a subscribed peer collects");
     }
     door.join().expect("the door's thread");
@@ -237,6 +244,7 @@ fn a_log_no_subscription_reaches_is_refused_rather_than_served() {
     let (address, door) = declaring(&authority, &leader);
 
     let beside = logs_to_collect(leader.store())
+        .now()
         .expect("the leader's own logs")
         .into_iter()
         .rfind(|home| matches!(home, Reach::Namespace(_)))
@@ -271,7 +279,7 @@ fn a_bounded_read_this_node_could_not_answer_becomes_answerable_once_it_collects
     let leader = granting(" REPLICATES STORE");
     let (address, door) = declaring(&authority, &leader);
 
-    let follower = Db::in_memory().expect("an in-memory store");
+    let follower = Db::in_memory().now().expect("an in-memory store");
     // First, and it is not interchangeable with the lines that follow: a
     // node that may not write may not define anything either, so the role
     // has to be taken before there is a schema — which here there never is,
@@ -284,6 +292,7 @@ fn a_bounded_read_this_node_could_not_answer_becomes_answerable_once_it_collects
         follower
             .store()
             .current_as_of()
+            .now()
             .expect("a store can say how old its copy is"),
         None,
         "a node that has collected nothing has no known age, which is \
@@ -294,6 +303,7 @@ fn a_bounded_read_this_node_could_not_answer_becomes_answerable_once_it_collects
     let said = hello(THERE);
     let reached = collector(&mine, &said, &address, 1024)
         .collect(follower.store(), Reach::Store, Sequence::new(1))
+        .now()
         .expect("a subscribed peer collects");
     door.join().expect("the door's thread");
     assert!(reached.get() > 1, "the leader had a log to hand over");
@@ -303,6 +313,7 @@ fn a_bounded_read_this_node_could_not_answer_becomes_answerable_once_it_collects
     let age = follower
         .store()
         .current_as_of()
+        .now()
         .expect("a store can say how old its copy is")
         .expect("a follower that collected to the end knows how old it is");
     assert!(
@@ -329,11 +340,12 @@ fn a_follower_that_collects_applies_what_it_was_given() {
     let leader = logged(&[1, 1, 1]);
     let (address, door) = serving(&authority, &leader, 1);
 
-    let follower = Db::in_memory().expect("an in-memory store");
+    let follower = Db::in_memory().now().expect("an in-memory store");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
     let reached = collector(&mine, &said, &address, 64)
         .collect(follower.store(), Reach::Store, Sequence::new(1))
+        .now()
         .expect("a collection applies");
     door.join().expect("the door's thread");
 
@@ -360,11 +372,12 @@ fn a_batch_is_applied_against_the_record_before_each_one() {
     let leader = logged(&[1, 2, 3]);
     let (address, door) = serving(&authority, &leader, 1);
 
-    let follower = Db::in_memory().expect("an in-memory store");
+    let follower = Db::in_memory().now().expect("an in-memory store");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
     let reached = collector(&mine, &said, &address, 64)
         .collect(follower.store(), Reach::Store, Sequence::new(1))
+        .now()
         .expect("a batch of three leaderships applies");
     door.join().expect("the door's thread");
 
@@ -387,11 +400,9 @@ fn a_collection_whose_predecessor_disagrees_is_refused() {
     let follower = logged_as(store_log(&leader).writer, &[1, 1]);
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let refused = collector(&mine, &said, &address, 64).collect(
-        follower.store(),
-        Reach::Store,
-        Sequence::new(3),
-    );
+    let refused = collector(&mine, &said, &address, 64)
+        .collect(follower.store(), Reach::Store, Sequence::new(3))
+        .now();
     door.join().expect("the door's thread");
 
     // Named as a fork, not as any refusal: retrying meets the same record
@@ -437,11 +448,9 @@ fn a_level_answer_whose_predecessor_disagrees_is_refused() {
     let follower = logged_as(store_log(&leader).writer, &[1, 1, 1]);
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let refused = collector(&mine, &said, &address, 64).collect(
-        follower.store(),
-        Reach::Store,
-        Sequence::new(4),
-    );
+    let refused = collector(&mine, &said, &address, 64)
+        .collect(follower.store(), Reach::Store, Sequence::new(4))
+        .now();
     door.join().expect("the door's thread");
 
     assert!(
@@ -456,7 +465,7 @@ fn a_short_answer_tells_the_follower_how_old_its_copy_is() {
     let leader = logged(&[1, 1, 1]);
     let (address, door) = serving(&authority, &leader, 2);
 
-    let follower = Db::in_memory().expect("an in-memory store");
+    let follower = Db::in_memory().now().expect("an in-memory store");
     // A node that may not write: the half of `current_as_of` this wave is
     // about. A writable node answers zero by identity and would prove
     // nothing here.
@@ -468,11 +477,13 @@ fn a_short_answer_tells_the_follower_how_old_its_copy_is() {
     // the follower asked and did not arrive.
     collector(&mine, &said, &address, 2)
         .collect(follower.store(), Reach::Store, Sequence::new(1))
+        .now()
         .expect("the first collection");
     assert_eq!(
         follower
             .store()
             .current_as_of()
+            .now()
             .expect("a store can be asked"),
         None,
         "a full answer is contact, not arrival"
@@ -481,12 +492,14 @@ fn a_short_answer_tells_the_follower_how_old_its_copy_is() {
     // The rest arrives inside the bound, so the peer had no more.
     collector(&mine, &said, &address, 2)
         .collect(follower.store(), Reach::Store, Sequence::new(3))
+        .now()
         .expect("the second collection");
     door.join().expect("the door's thread");
     assert!(
         follower
             .store()
             .current_as_of()
+            .now()
             .expect("a store can be asked")
             .is_some(),
         "a short answer is the peer saying it had no more"

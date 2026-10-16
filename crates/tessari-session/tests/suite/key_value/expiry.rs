@@ -7,6 +7,7 @@
 //! that never answered would pass the "after" half on its own.
 
 use std::thread;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_encoding::KeyKind;
@@ -289,7 +290,7 @@ fn an_expiry_survives_the_store_being_closed_and_opened_again() {
             )
             .unwrap(),
         ) as std::sync::Arc<dyn tessari_kv::KvBackend>;
-        tessari_storage::Store::open(raw).unwrap()
+        tessari_storage::Store::open(raw).now().unwrap()
     };
     {
         let store = open();

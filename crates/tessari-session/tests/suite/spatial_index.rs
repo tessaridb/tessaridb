@@ -15,6 +15,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_encoding::{
@@ -25,7 +26,7 @@ use tessari_session::Session;
 use tessari_storage::{Catalog, Store};
 
 fn store() -> Store {
-    Store::open(backend()).unwrap()
+    Store::open(backend()).now().unwrap()
 }
 
 fn backend() -> Arc<dyn KvBackend> {
@@ -54,13 +55,21 @@ fn a_spatial_index_is_defined_and_reads_back_as_one() {
 
     let mut transaction = store.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("atlas").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "world").unwrap().unwrap();
-    let table = catalog
-        .table_id(namespace, database, "places")
+    let namespace = catalog.namespace_id("atlas").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "world")
+        .now()
         .unwrap()
         .unwrap();
-    let defined = catalog.indexes_on(namespace, database, table).unwrap();
+    let table = catalog
+        .table_id(namespace, database, "places")
+        .now()
+        .unwrap()
+        .unwrap();
+    let defined = catalog
+        .indexes_on(namespace, database, table)
+        .now()
+        .unwrap();
     let held = defined
         .iter()
         .find(|index| index.name == "by_where")
@@ -78,7 +87,7 @@ fn the_index_is_built_over_rows_that_are_already_there() {
     // checking that the statement returned without an error, which a definition
     // that built nothing at all would also do.
     let held = backend();
-    let store = Store::open(Arc::clone(&held)).unwrap();
+    let store = Store::open(Arc::clone(&held)).now().unwrap();
     let mut session = ready(&store);
     session
         .run_now(
@@ -93,14 +102,20 @@ fn the_index_is_built_over_rows_that_are_already_there() {
 
     let mut transaction = store.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("atlas").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "world").unwrap().unwrap();
+    let namespace = catalog.namespace_id("atlas").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "world")
+        .now()
+        .unwrap()
+        .unwrap();
     let table = catalog
         .table_id(namespace, database, "places")
+        .now()
         .unwrap()
         .unwrap();
     let index = catalog
         .indexes_on(namespace, database, table)
+        .now()
         .unwrap()
         .into_iter()
         .find(|index| index.name == "by_where")
@@ -177,7 +192,7 @@ fn a_rebuild_removes_an_entry_the_rows_do_not_imply() {
     // clear that skipped this key kind would otherwise leave every such entry in
     // place and nothing would ever say so.
     let held = backend();
-    let store = Store::open(Arc::clone(&held)).unwrap();
+    let store = Store::open(Arc::clone(&held)).now().unwrap();
     let mut session = ready(&store);
     session
         .run_now(
@@ -222,14 +237,20 @@ fn a_rebuild_removes_an_entry_the_rows_do_not_imply() {
 fn index_address(store: &Store) -> IndexAddress {
     let mut transaction = store.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("atlas").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "world").unwrap().unwrap();
+    let namespace = catalog.namespace_id("atlas").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "world")
+        .now()
+        .unwrap()
+        .unwrap();
     let table = catalog
         .table_id(namespace, database, "places")
+        .now()
         .unwrap()
         .unwrap();
     let index = catalog
         .indexes_on(namespace, database, table)
+        .now()
         .unwrap()
         .into_iter()
         .find(|index| index.name == "by_where")

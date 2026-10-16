@@ -70,7 +70,7 @@ pub(crate) fn listed(kinds: &BTreeSet<&'static str>) -> String {
     }
 }
 
-pub(crate) fn ordered_index_on(
+pub(crate) async fn ordered_index_on(
     transaction: &mut Transaction<'_>,
     table: TableId,
     key: &tessari_ql::FieldPath,
@@ -79,7 +79,8 @@ pub(crate) fn ordered_index_on(
         return Ok(None);
     }
     Ok(Catalog::new(transaction)
-        .field_indexes_on(table)?
+        .field_indexes_on(table)
+        .await?
         .into_iter()
         .find(|held| {
             held.is_ordered() && held.fields.len() == 1 && held.fields.first() == Some(&key.path)
@@ -88,12 +89,12 @@ pub(crate) fn ordered_index_on(
 
 impl Session<'_> {
     /// Where a record lives, once its table name is resolved.
-    pub(crate) fn address(
+    pub(crate) async fn address(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
     ) -> Result<(crate::context::Context, RecordAddress)> {
-        let (context, table) = self.resolve_table(transaction, &target.table)?;
+        let (context, table) = self.resolve_table(transaction, &target.table).await?;
         Ok((
             context,
             RecordAddress::new(
@@ -106,14 +107,14 @@ impl Session<'_> {
     }
 
     /// The value under a key, or [`Value::None`] when there is nothing there.
-    pub(crate) fn read_key(
+    pub(crate) async fn read_key(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
     ) -> Result<Value> {
-        let (_, address) = self.address(transaction, target)?;
-        let visible = self.visible_in(transaction, address.table)?;
-        match transaction.get(&address)? {
+        let (_, address) = self.address(transaction, target).await?;
+        let visible = self.visible_in(transaction, address.table).await?;
+        match transaction.get(&address).await? {
             Some(payload) => self.record_of(&payload, &visible),
             None => Ok(Value::None),
         }
@@ -124,7 +125,7 @@ impl Session<'_> {
     /// One record answers with its own value; a read of several answers with an
     /// array, so that the shape of the answer follows the shape of the question
     /// rather than the number of rows that happened to match.
-    pub(super) fn read_as_value(
+    pub(super) async fn read_as_value(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
@@ -142,8 +143,9 @@ impl Session<'_> {
         // position that most needs it: the answer is a `Value` built whole, so an
         // unbounded read is an unbounded array, and there is no note channel a
         // truncating default could have reported through.
-        let Answered { records, .. } =
-            self.read(transaction, select, None, Ceiling::over(select))?;
+        let Answered { records, .. } = self
+            .read(transaction, select, None, Ceiling::over(select))
+            .await?;
         // `$node` alongside `Source::Record` because it is one record too: a
         // read of one answers with its own value, and wrapping it in an array of
         // one would make the shape of the answer follow the source rather than
