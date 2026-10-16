@@ -1289,8 +1289,12 @@ impl Session<'_> {
             ),
             StatementKind::DropEvent { name, table } => self.drop_event(transaction, name, table),
             StatementKind::Claim {
-                table, count, span, ..
-            } => self.claim(transaction, table, *count, *span),
+                table,
+                count,
+                condition,
+                span,
+                ..
+            } => self.claim(transaction, table, *count, condition.as_deref(), *span),
             StatementKind::ClaimRecord { target, span } => {
                 self.claim_record(transaction, target, *span)
             }

@@ -270,9 +270,17 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // statement and the table it names is the only table it reaches.
         StatementKind::DeleteSpan { table, .. } => vec![table],
 
-        // A claim names one table and takes no condition, so nothing can hide a
-        // read of a second one inside it.
-        StatementKind::Claim { table, .. } => vec![table],
+        // A claim's condition is walked as a delete's is: a subquery inside it
+        // reaches a table the claim does not name.
+        StatementKind::Claim {
+            table, condition, ..
+        } => {
+            let mut found = vec![table];
+            if let Some(condition) = condition {
+                found.extend(in_expr(condition));
+            }
+            found
+        }
 
         StatementKind::Keys { space, .. } => vec![space],
 

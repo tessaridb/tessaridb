@@ -1360,6 +1360,9 @@ pub enum StatementKind {
         /// `CLAIM $n FROM q`, until binding writes the number into
         /// [`Self::Claim::count`] (ADR-0124 D5).
         count_parameter: Option<crate::ast::CountParameter>,
+        /// `WHERE <condition>`: only the claimable records that also satisfy
+        /// it are taken, in the queue's own order (ADR-0126 D1).
+        condition: Option<Box<Expr>>,
         /// Where the statement sits.
         span: Span,
     },

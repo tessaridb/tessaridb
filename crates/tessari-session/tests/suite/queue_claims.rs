@@ -1301,3 +1301,85 @@ fn a_queue_record_is_a_schedule_that_fires_once_per_period_and_survives_its_work
     assert_eq!(claimed(&run(&mut session, "CLAIM FROM brief;")), ["1"]);
     assert_eq!(claimed(&run(&mut session, "CLAIM FROM brief;")), ["1"]);
 }
+
+// --------------------------------------------------------------- ADR-0126 D1
+
+/// A queue of mixed work: two video tasks and two image tasks, interleaved.
+fn mixed<'a>(store: &'a Store, declaration: &str) -> Session<'a> {
+    let mut session = Session::new(store);
+    session
+        .run(&format!(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE QUEUE media {declaration};\n\
+             CREATE media:1 = {{ kind: 'video', weight: 1 }};\n\
+             CREATE media:2 = {{ kind: 'image', weight: 1 }};\n\
+             CREATE media:3 = {{ kind: 'video', weight: 9 }};\n\
+             CREATE media:4 = {{ kind: 'image', weight: 5 }};"
+        ))
+        .unwrap();
+    session
+}
+
+/// A worker that can do only some of the work takes only that work, in the
+/// queue's own order, and leaves the rest for the workers that can.
+#[test]
+fn a_claim_with_a_condition_takes_only_the_work_that_matches_it() {
+    let store = store();
+    let mut session = mixed(&store, "TIMEOUT 1m");
+    assert_eq!(
+        claimed(&run(&mut session, "CLAIM FROM media WHERE kind = 'image';")),
+        vec!["2"]
+    );
+    assert_eq!(
+        claimed(&run(
+            &mut session,
+            "CLAIM 5 FROM media WHERE kind = 'image';"
+        )),
+        vec!["4"],
+        "a second claim takes the next matching record and passes over the held one"
+    );
+    assert_eq!(
+        claimed(&run(&mut session, "CLAIM 5 FROM media;")),
+        vec!["1", "3"],
+        "the work the condition passed over is still there for anybody"
+    );
+}
+
+/// The queue's order still decides among the records that match.
+#[test]
+fn a_condition_keeps_the_order_priority_by_gives() {
+    let store = store();
+    let mut session = mixed(&store, "TIMEOUT 1m PRIORITY BY weight");
+    assert_eq!(
+        claimed(&run(
+            &mut session,
+            "CLAIM 2 FROM media WHERE kind = 'video';"
+        )),
+        vec!["3", "1"]
+    );
+}
+
+/// A condition binds its values like any other; one that is not a question is
+/// refused naming what it found rather than answering nothing.
+#[test]
+fn a_claims_condition_binds_its_values_and_must_be_a_question() {
+    let store = store();
+    let mut session = mixed(&store, "TIMEOUT 1m");
+    let mut supplied = tessari_session::Parameters::new();
+    supplied.insert("kind".to_owned(), Value::String("video".to_owned()));
+    let outcome = session
+        .run_with("CLAIM FROM media WHERE kind = $kind;", &supplied)
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(claimed(&outcome), vec!["1"]);
+    let refused = session.run("CLAIM FROM media WHERE kind;");
+    assert!(
+        matches!(
+            refused,
+            Err(tessari_session::Error::ConditionNotBoolean { .. })
+        ),
+        "a bare path was taken as a condition: {refused:?}"
+    );
+}

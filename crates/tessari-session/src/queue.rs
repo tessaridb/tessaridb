@@ -63,7 +63,7 @@ use std::ops::ControlFlow;
 
 use tessari_constants::MAX_CLAIM_RECORDS;
 use tessari_encoding::decode_payload;
-use tessari_ql::{RecordTarget, Span, TableRef};
+use tessari_ql::{Expr, RecordTarget, Span, TableRef};
 use tessari_storage::{
     QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, RecordAddress, Transaction,
 };
@@ -96,6 +96,7 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         table: &TableRef,
         count: u64,
+        condition: Option<&Expr>,
         span: Span,
     ) -> Result<Outcome> {
         if count > MAX_CLAIM_RECORDS {
@@ -107,6 +108,15 @@ impl Session<'_> {
         }
         let (context, id) = self.resolve_table(transaction, table)?;
         let declared = queue_declaration(transaction, id, &table.name.text, table.span)?;
+        // Tested against the record as this session may see it, so a condition
+        // cannot ask about a field a grant hides from the caller.
+        let matching = match condition {
+            Some(condition) => Some(Matching {
+                condition,
+                visible: self.visible_in(transaction, id)?,
+            }),
+            None => None,
+        };
         // Read once, here, for the whole statement. Every record this claim
         // touches carries the same deadline, so two records claimed together
         // lapse together — and the instant that reaches the log is a value
@@ -125,6 +135,7 @@ impl Session<'_> {
                 &declared,
                 &field,
                 (limit, now, until),
+                matching.as_ref(),
                 span,
             );
         }
@@ -135,7 +146,7 @@ impl Session<'_> {
             context.namespace,
             context.database,
             id,
-            |_, record, bytes| -> Result<ControlFlow<()>> {
+            |walking, record, bytes| -> Result<ControlFlow<()>> {
                 if taken.len() >= limit {
                     return Ok(ControlFlow::Break(()));
                 }
@@ -145,7 +156,9 @@ impl Session<'_> {
                     // record must not stop every worker on the table.
                     return Ok(ControlFlow::Continue(()));
                 };
-                if !claimable(&fields, now, &declared) {
+                if !claimable(&fields, now, &declared)
+                    || !self.matches(walking, matching.as_ref(), &record, &fields)?
+                {
                     return Ok(ControlFlow::Continue(()));
                 }
                 fields.insert(QUEUE_CLAIMED_UNTIL.to_owned(), Value::Datetime(until));
@@ -489,5 +502,34 @@ fn attempts_of(fields: &BTreeMap<String, Value>) -> i64 {
     match fields.get(QUEUE_ATTEMPTS) {
         Some(Value::Number(Number::Integer(held))) => *held,
         _ => 0,
+    }
+}
+
+/// A claim's `WHERE`, and what of each record the session may test it on
+/// (ADR-0126 D1).
+pub(crate) struct Matching<'c> {
+    condition: &'c Expr,
+    visible: crate::redact::Visible,
+}
+
+impl Session<'_> {
+    /// Whether a claimable record also satisfies the claim's condition — every
+    /// record does when the claim states none.
+    pub(crate) fn matches(
+        &self,
+        transaction: &mut Transaction<'_>,
+        matching: Option<&Matching<'_>>,
+        id: &RecordId,
+        fields: &BTreeMap<String, Value>,
+    ) -> Result<bool> {
+        match matching {
+            None => Ok(true),
+            Some(matching) => self.holds_for(
+                transaction,
+                matching.condition,
+                (id, Value::Object(fields.clone())),
+                &matching.visible,
+            ),
+        }
     }
 }

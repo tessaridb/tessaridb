@@ -92,6 +92,7 @@ impl Parser<'_> {
                 table,
                 count,
                 count_parameter: None,
+                condition: self.claim_condition()?,
                 span: start.to(self.span_behind()),
             });
         }
@@ -109,6 +110,7 @@ impl Parser<'_> {
                 table,
                 count: 1,
                 count_parameter: Some(parameter),
+                condition: self.claim_condition()?,
                 span: start.to(self.span_behind()),
             });
         }
@@ -118,6 +120,7 @@ impl Parser<'_> {
                 table,
                 count: 1,
                 count_parameter: None,
+                condition: self.claim_condition()?,
                 span: start.to(self.span_behind()),
             });
         }
@@ -138,6 +141,14 @@ impl Parser<'_> {
             target,
             span: start.to(self.span_behind()),
         })
+    }
+
+    /// `WHERE <condition>` after a claim's queue, when there is one.
+    fn claim_condition(&mut self) -> Result<Option<Box<crate::ast::Expr>>> {
+        if self.eat_keyword(Keyword::Where) {
+            return Ok(Some(Box::new(self.condition()?)));
+        }
+        Ok(None)
     }
 
     /// The whole number after `CLAIM`.

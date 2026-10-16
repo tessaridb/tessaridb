@@ -103,6 +103,7 @@ impl Session<'_> {
         declared: &QueueDeclaration,
         field: &str,
         (limit, now): (usize, Datetime),
+        matching: Option<&super::Matching<'_>>,
     ) -> Result<Head> {
         if limit == 0 {
             return Ok((Vec::new(), None));
@@ -116,7 +117,9 @@ impl Session<'_> {
             while let Some(found) = transaction.records_in_descending_order(&index, 1, wanted)? {
                 let mut taken = Vec::new();
                 for (id, bytes) in &found {
-                    if let Some(candidate) = ranked(id.clone(), bytes, now, declared, field)? {
+                    if let Some(candidate) = ranked(id.clone(), bytes, now, declared, field)?
+                        && self.matches(transaction, matching, &candidate.id, &candidate.fields)?
+                    {
                         taken.push(candidate);
                     }
                 }
@@ -144,8 +147,10 @@ impl Session<'_> {
             context.namespace,
             context.database,
             table,
-            |_, id, bytes| -> Result<ControlFlow<()>> {
-                if let Some(candidate) = ranked(id, &bytes, now, declared, field)? {
+            |walking, id, bytes| -> Result<ControlFlow<()>> {
+                if let Some(candidate) = ranked(id, &bytes, now, declared, field)?
+                    && self.matches(walking, matching, &candidate.id, &candidate.fields)?
+                {
                     if kept.len() < limit {
                         kept.push(Reverse(candidate));
                     } else if kept.peek().is_some_and(|Reverse(worst)| candidate > *worst) {
@@ -183,10 +188,18 @@ impl Session<'_> {
         declared: &QueueDeclaration,
         field: &str,
         (limit, now, until): (usize, Datetime, Datetime),
+        matching: Option<&super::Matching<'_>>,
         span: tessari_ql::Span,
     ) -> Result<crate::outcome::Outcome> {
-        let (head, index) =
-            self.priority_head(transaction, context, table, declared, field, (limit, now))?;
+        let (head, index) = self.priority_head(
+            transaction,
+            context,
+            table,
+            declared,
+            field,
+            (limit, now),
+            matching,
+        )?;
         let mut taken = Vec::with_capacity(head.len());
         for (id, mut fields) in head {
             super::hold(&mut fields, until, self.consumer.as_ref());
