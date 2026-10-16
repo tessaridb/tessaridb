@@ -25,6 +25,8 @@ compares carries no pre-release suffix.
 
 - **A member row's `AT` may name a host.** The cluster rounds dialled only a literal address and left a peer declared
   by name unasked, so a cluster declared by names elected nobody; each round now resolves the name when it dials.
+- **A lease holds across about 90 ms between voters.** A peer call sends its ask with its greeting, one round trip
+  sooner, so a renewal no longer lands after the fence at 80 ms (it lapsed there on 0.35.2).
 - **A store with no other voter meets `ACKNOWLEDGE LOCAL MAJORITY`** as it meets `MAJORITY`; it was refused
   `LocalMajorityWithoutRegion`.
 

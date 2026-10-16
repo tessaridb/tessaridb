@@ -9907,6 +9907,12 @@ the direction named** rather than accepted:
 - `LEASE` is greater than the write fence plus twice `ROUND`;
 - `COLLECTION` is less than twice `AWARENESS`.
 
+**Voters far apart.** A renewal opens when two `ROUND`s of the lease are left
+and costs about three round trips between voters, so the defaults hold a lease
+up to about 90 ms apart (measured: held at 80 ms, lapsed at 100 ms). Further
+apart, keep `ROUND` above 2.2 round trips and `LEASE` above the write fence plus
+seven — at 150 ms, `ROUND 400ms CAMPAIGN 200ms LEASE 1500ms`.
+
 The lease guard is deliberately **not** settable. It is the margin between the
 moment this node stops writing and the moment the cluster may hand the leadership
 to somebody else, and a fence an operator can set to zero is a fence somebody

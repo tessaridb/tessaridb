@@ -274,3 +274,51 @@ fn a_peer_that_never_answers_the_connect_costs_the_deadline_and_no_more() {
         "a black-holed peer held the connect for {waited:?}; the deadline is {bound:?}"
     );
 }
+
+/// G075 C3: the ask travels with the greeting, so a call costs one round trip
+/// less. Proved against a door that reads the ask BEFORE it greets back — a
+/// caller that waited for the door's greeting before asking would wait on a
+/// door waiting on it, and fail at its bound.
+///
+/// Red on 0.35.2: the caller said its greeting, then waited to hear the door's.
+#[test]
+fn the_ask_goes_out_with_the_greeting_and_not_a_round_trip_after_it() {
+    let authority = Authority::new();
+    let (peers, mine) = door(&authority);
+    let address = peers.address().expect("the door's address");
+    let answering = std::thread::spawn(move || -> Result<u8> {
+        let (mut socket, _) = peers.listener.accept()?;
+        socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let mut session = rustls::ServerConnection::new(Arc::clone(&peers.settings))
+            .map_err(|why| Error::Transport(why.to_string()))?;
+        session
+            .complete_io(&mut socket)
+            .map_err(|why| Error::Transport(why.to_string()))?;
+        let mut link = rustls::Stream::new(&mut session, &mut socket);
+        crate::link::hear(&mut link)?;
+        let (asked, _) = crate::frame::read_tagged(&mut link)?.ok_or(Error::Truncated)?;
+        crate::link::say(&mut link, &mine)?;
+        crate::frame::write_tagged(&mut link, crate::peer::PeerFrame::Joined.tag(), &[1])?;
+        Ok(asked)
+    });
+
+    let token = [7_u8; 32];
+    let keys = authority.keys(THERE, Purpose::Peer);
+    let answered = crate::link::call_within(
+        address,
+        (&keys, keys.duplicate()),
+        HERE,
+        &hello(THERE),
+        Ask::Join(&token),
+        Duration::from_secs(1),
+    );
+    let asked = answering.join().expect("the door's thread");
+    assert!(
+        matches!(answered, Ok((_, Answered::Joined(true)))),
+        "the caller waited for a greeting before asking: {answered:?}"
+    );
+    assert_eq!(
+        asked.expect("the door read the ask before it greeted"),
+        crate::peer::PeerFrame::Join.tag()
+    );
+}
