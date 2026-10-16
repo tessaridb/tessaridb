@@ -26,6 +26,7 @@
 //! stopped using one entry has not made a mistake this store can see, and
 //! refusing it would break every caller who reuses one map across two scripts.
 
+mod consumer;
 mod nested;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -269,6 +270,7 @@ impl Statement {
 /// an expression will not compile until it is named here, which is the only way
 /// this stays complete as the language grows.
 fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()> {
+    consumer::bind_consumer_names(kind, binding)?;
     match kind {
         // A generated identity holds no parameter to replace: the statement
         // never wrote an id, so there is no position for one to have stood in.
@@ -488,10 +490,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // Everything else names things and holds no values: the definitions, the
         // drops, the grants, the tenancy statements, the point reads and the
         // transaction words.
-        // A consumer name is a literal the statement wrote, never a
-        // parameter: it selects for the session rather than naming data, and a
-        // caller that could bind it could change who a session is from outside
-        // the script that declared it.
+        // A consumer or group name is bound before this match (ADR-0127).
         StatementKind::Use { .. }
         | StatementKind::DefineNamespace { .. }
         | StatementKind::DefineDatabase { .. }

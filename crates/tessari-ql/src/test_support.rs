@@ -75,12 +75,16 @@ fn erase_statement(statement: &mut Statement) {
         StatementKind::Use {
             namespace,
             database,
-            // A consumer name is a literal and carries no span of its own, so
-            // there is nothing here to normalise.
+            // A consumer name is a literal and carries no span of its own; the
+            // parameter written in its place does (ADR-0127).
             consumer: _,
+            consumer_parameter,
         } => {
             erase_optional_name(namespace.as_mut());
             erase_optional_name(database.as_mut());
+            if let Some(parameter) = consumer_parameter {
+                parameter.span = CANONICAL;
+            }
         }
         StatementKind::DefineNamespace { name, .. }
         | StatementKind::DefineDatabase { name, .. }

@@ -30,6 +30,7 @@ impl<'a> Session<'a> {
                 namespace,
                 database,
                 consumer,
+                consumer_parameter: _,
             } => {
                 // Recorded, not resolved: the namespace this names may be
                 // defined by a later statement of the same transaction.

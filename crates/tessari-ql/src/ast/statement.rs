@@ -37,6 +37,9 @@ pub enum StatementKind {
         /// the point, and the identity that must not collide is the instance the
         /// engine mints beside this, never this.
         consumer: Option<String>,
+        /// The parameter the name is bound from, until binding writes it
+        /// (ADR-0127).
+        consumer_parameter: Option<crate::ast::ParameterSlot>,
     },
     /// `DEFINE NAMESPACE prod REPLICATION FACTOR 3`
     DefineNamespace {
@@ -216,6 +219,9 @@ pub enum StatementKind {
         topic: TableRef,
         /// The reader whose stored position the read starts after and advances.
         consumer: Option<String>,
+        /// The parameter the name is bound from, until binding writes it
+        /// (ADR-0127).
+        consumer_parameter: Option<crate::ast::ParameterSlot>,
         /// The position to read after, instead of the stored one.
         after: Option<Expr>,
         /// The most messages to answer.
@@ -227,6 +233,9 @@ pub enum StatementKind {
     DefineGroup {
         /// The name its readers read under, as `FOR CONSUMER` spells it.
         name: String,
+        /// The parameter the name is bound from, until binding writes it
+        /// (ADR-0127).
+        name_parameter: Option<crate::ast::ParameterSlot>,
         /// The topic it reads.
         topic: TableRef,
         /// Whether re-defining an existing group is accepted.
@@ -239,6 +248,9 @@ pub enum StatementKind {
     DropGroup {
         /// The group.
         name: String,
+        /// The parameter the name is bound from, until binding writes it
+        /// (ADR-0127).
+        name_parameter: Option<crate::ast::ParameterSlot>,
         /// Its topic.
         topic: TableRef,
     },
@@ -248,6 +260,9 @@ pub enum StatementKind {
     AlterGroup {
         /// The group.
         name: String,
+        /// The parameter the name is bound from, until binding writes it
+        /// (ADR-0127).
+        name_parameter: Option<crate::ast::ParameterSlot>,
         /// Its topic.
         topic: TableRef,
         /// The position it is to have been given everything up to.
@@ -259,6 +274,9 @@ pub enum StatementKind {
         topic: TableRef,
         /// The group the messages were handed out by.
         consumer: String,
+        /// The parameter the name is bound from, until binding writes it
+        /// (ADR-0127).
+        consumer_parameter: Option<crate::ast::ParameterSlot>,
         /// The positions acknowledged.
         positions: Vec<Expr>,
     },
@@ -269,6 +287,9 @@ pub enum StatementKind {
         topic: TableRef,
         /// The group the messages were handed out by.
         consumer: String,
+        /// The parameter the name is bound from, until binding writes it
+        /// (ADR-0127).
+        consumer_parameter: Option<crate::ast::ParameterSlot>,
         /// The positions given back.
         positions: Vec<Expr>,
         /// How long before they may be handed out again.
@@ -1363,7 +1384,7 @@ pub enum StatementKind {
         count: u64,
         /// `CLAIM $n FROM q`, until binding writes the number into
         /// [`Self::Claim::count`] (ADR-0124 D5).
-        count_parameter: Option<crate::ast::CountParameter>,
+        count_parameter: Option<crate::ast::ParameterSlot>,
         /// `WHERE <condition>`: only the claimable records that also satisfy
         /// it are taken, in the queue's own order (ADR-0126 D1).
         condition: Option<Box<Expr>>,
@@ -1426,6 +1447,9 @@ pub enum StatementKind {
         target: RecordTarget,
         /// The group whose hold to clear, when the statement named one.
         consumer: Option<String>,
+        /// The parameter the name is bound from, until binding writes it
+        /// (ADR-0127).
+        consumer_parameter: Option<crate::ast::ParameterSlot>,
         /// `NOT BEFORE`: an instant, or a span from now, written into the
         /// queue's declared `NOT BEFORE` field in the same write (ADR-0124 D6).
         not_before: Option<Expr>,
@@ -1460,6 +1484,9 @@ pub enum StatementKind {
         table: TableRef,
         /// Whose holds to drop, or this session's instance when absent.
         consumer: Option<String>,
+        /// The parameter the name is bound from, until binding writes it
+        /// (ADR-0127).
+        consumer_parameter: Option<crate::ast::ParameterSlot>,
         /// `NOT BEFORE`: an instant, or a span from now, written into the
         /// queue's declared `NOT BEFORE` field in the same write (ADR-0124 D6).
         not_before: Option<Expr>,

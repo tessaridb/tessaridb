@@ -45,6 +45,7 @@ impl<'a> Session<'a> {
                         namespace: named(namespace),
                         database: named(database),
                         consumer: None,
+                        consumer_parameter: None,
                     },
                     span,
                     acknowledge: None,

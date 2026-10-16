@@ -103,7 +103,7 @@ impl Parser<'_> {
     pub(super) fn read_topic(&mut self) -> Result<StatementKind> {
         self.expect_keyword(Keyword::From, "`FROM` and the topic")?;
         let topic = self.table_ref()?;
-        let consumer = self.for_consumer()?;
+        let (consumer, consumer_parameter) = self.for_consumer()?;
         let after = if self.eat_word("after") {
             Some(self.expression()?)
         } else {
@@ -117,6 +117,7 @@ impl Parser<'_> {
         Ok(StatementKind::ReadTopic {
             topic,
             consumer,
+            consumer_parameter,
             after,
             limit,
         })

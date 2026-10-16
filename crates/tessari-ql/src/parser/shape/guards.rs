@@ -13,7 +13,7 @@ impl Parser<'_> {
     pub(crate) fn bound_count(
         &mut self,
         word: &str,
-    ) -> Result<(Option<u64>, Option<crate::ast::CountParameter>)> {
+    ) -> Result<(Option<u64>, Option<crate::ast::ParameterSlot>)> {
         if let Some(Token::Parameter(name)) = self.peek_ahead(1)
             && self.peek_word(word)
         {
@@ -21,7 +21,7 @@ impl Parser<'_> {
             self.advance();
             let span = self.span_here();
             self.advance();
-            return Ok((None, Some(crate::ast::CountParameter { name, span })));
+            return Ok((None, Some(crate::ast::ParameterSlot { name, span })));
         }
         Ok((self.bound(word)?, None))
     }

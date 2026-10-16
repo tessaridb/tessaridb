@@ -182,6 +182,7 @@ pub(crate) fn script_kind(error: &tessari_ql::Error) -> &'static str {
         tessari_ql::Error::InvalidDuration { .. } => "InvalidDuration",
         tessari_ql::Error::UnexpectedToken { .. } => "UnexpectedToken",
         tessari_ql::Error::CountNotAWholeNumber { .. } => "CountNotAWholeNumber",
+        tessari_ql::Error::NotAConsumerName { .. } => "NotAConsumerName",
         tessari_ql::Error::UnexpectedEnd { .. } => "UnexpectedEnd",
         tessari_ql::Error::Unsupported { .. } => "Unsupported",
         tessari_ql::Error::NgramFilter { .. } => "NgramFilter",

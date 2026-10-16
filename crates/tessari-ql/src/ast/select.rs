@@ -173,9 +173,9 @@ pub struct Select {
     /// How many to answer with at most.
     pub limit: Option<u64>,
     /// `START $n`, until binding writes the number into [`Self::start`].
-    pub start_parameter: Option<CountParameter>,
+    pub start_parameter: Option<ParameterSlot>,
     /// `LIMIT $n`, until binding writes the number into [`Self::limit`].
-    pub limit_parameter: Option<CountParameter>,
+    pub limit_parameter: Option<ParameterSlot>,
     /// What the author expects the read to have done, when they said.
     ///
     /// `None` is the ordinary case: the statement asks a question and the store
@@ -484,11 +484,13 @@ pub struct Projected {
     pub name: Name,
 }
 
-/// A count written as a parameter — `LIMIT $n`, `START $n`, `CLAIM $n FROM q` —
-/// which binding replaces with the number it holds, so that everything after
-/// binding sees exactly what a literal would have given it (ADR-0124 D5).
+/// A parameter written where a literal stands — a count (`LIMIT $n`,
+/// `START $n`, `CLAIM $n FROM q`, ADR-0124 D5) or a consumer or group name
+/// (`USE CONSUMER $w`, ADR-0127) — which binding replaces with the value it
+/// holds, so that everything after binding sees exactly what a literal would
+/// have given it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CountParameter {
+pub struct ParameterSlot {
     /// The parameter's name, without its marker.
     pub name: String,
     /// Where it was written.

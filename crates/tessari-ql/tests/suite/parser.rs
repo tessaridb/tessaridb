@@ -62,7 +62,8 @@ fn the_session_statement_takes_either_half_or_both() {
         StatementKind::Use {
             namespace: Some(_),
             database: None,
-            consumer: None
+            consumer: None,
+            consumer_parameter: None,
         }
     ));
     assert!(matches!(
@@ -70,13 +71,15 @@ fn the_session_statement_takes_either_half_or_both() {
         StatementKind::Use {
             namespace: None,
             database: Some(_),
-            consumer: None
+            consumer: None,
+            consumer_parameter: None,
         }
     ));
     let StatementKind::Use {
         namespace: Some(namespace),
         database: Some(database),
         consumer: None,
+        consumer_parameter: None,
     } = one("USE NAMESPACE prod DATABASE orders;")
     else {
         panic!("expected both halves");

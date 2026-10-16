@@ -10,6 +10,7 @@
 //! under it.
 
 use super::Parser;
+use super::statement::NamedConsumer;
 use crate::ast::{GroupClauses, StatementKind, TableRef};
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
@@ -32,7 +33,7 @@ impl Parser<'_> {
     /// where it was written: nothing would ever be sent to it.
     pub(super) fn define_group(&mut self) -> Result<StatementKind> {
         let if_not_exists = self.eat_if_not_exists()?;
-        let (name, topic) = self.group_on_topic()?;
+        let ((name, name_parameter), topic) = self.group_on_topic()?;
         self.expect_word(
             "ack",
             "`ACK DEADLINE d` — how long a reader has before its message is handed out again",
@@ -74,6 +75,7 @@ impl Parser<'_> {
         }
         Ok(StatementKind::DefineGroup {
             name,
+            name_parameter,
             topic,
             if_not_exists,
             clauses,
@@ -82,14 +84,18 @@ impl Parser<'_> {
 
     /// `DROP GROUP '<name>' ON TOPIC <topic>`, the words `DROP GROUP` consumed.
     pub(super) fn drop_group(&mut self) -> Result<StatementKind> {
-        let (name, topic) = self.group_on_topic()?;
-        Ok(StatementKind::DropGroup { name, topic })
+        let ((name, name_parameter), topic) = self.group_on_topic()?;
+        Ok(StatementKind::DropGroup {
+            name,
+            name_parameter,
+            topic,
+        })
     }
 
     /// `ALTER GROUP '<name>' ON TOPIC <topic> START AT <expr>`, the words
     /// `ALTER GROUP` consumed.
     pub(super) fn alter_group(&mut self) -> Result<StatementKind> {
-        let (name, topic) = self.group_on_topic()?;
+        let ((name, name_parameter), topic) = self.group_on_topic()?;
         self.expect_word(
             "start",
             "`START AT n` — the position the group has been given up to",
@@ -97,6 +103,7 @@ impl Parser<'_> {
         self.expect_word("at", "`AT` and a position")?;
         Ok(StatementKind::AlterGroup {
             name,
+            name_parameter,
             topic,
             start_at: self.expression()?,
         })
@@ -105,10 +112,11 @@ impl Parser<'_> {
     /// `ACK <topic> FOR CONSUMER '<name>' AT <expr>[, <expr>…]`, `ACK`
     /// consumed.
     pub(super) fn ack_statement(&mut self) -> Result<StatementKind> {
-        let (topic, consumer, positions) = self.settlement()?;
+        let (topic, (consumer, consumer_parameter), positions) = self.settlement()?;
         Ok(StatementKind::AckTopic {
             topic,
             consumer,
+            consumer_parameter,
             positions,
         })
     }
@@ -116,7 +124,7 @@ impl Parser<'_> {
     /// `NACK <topic> FOR CONSUMER '<name>' AT <expr>[, <expr>…] [DELAY d]`,
     /// `NACK` consumed.
     pub(super) fn nack_statement(&mut self) -> Result<StatementKind> {
-        let (topic, consumer, positions) = self.settlement()?;
+        let (topic, (consumer, consumer_parameter), positions) = self.settlement()?;
         let delay = if self.eat_word("delay") {
             Some(self.positive_duration(
                 "a duration above zero, like `5s` — how long before the message is handed out again",
@@ -127,6 +135,7 @@ impl Parser<'_> {
         Ok(StatementKind::NackTopic {
             topic,
             consumer,
+            consumer_parameter,
             positions,
             delay,
         })
@@ -150,7 +159,7 @@ impl Parser<'_> {
     }
 
     /// `'<name>' ON TOPIC <topic>`.
-    fn group_on_topic(&mut self) -> Result<(String, TableRef)> {
+    fn group_on_topic(&mut self) -> Result<(NamedConsumer, TableRef)> {
         let name = self.consumer_name()?;
         self.expect_keyword(Keyword::On, "`ON TOPIC` and the topic the group reads")?;
         self.expect_word("topic", "`TOPIC` and the topic the group reads")?;
@@ -158,9 +167,9 @@ impl Parser<'_> {
     }
 
     /// `<topic> FOR CONSUMER '<name>' AT <expr>[, <expr>…]`.
-    fn settlement(&mut self) -> Result<(TableRef, String, Vec<crate::ast::Expr>)> {
+    fn settlement(&mut self) -> Result<(TableRef, NamedConsumer, Vec<crate::ast::Expr>)> {
         let topic = self.table_ref()?;
-        let Some(consumer) = self.for_consumer()? else {
+        let (Some(consumer), parameter) = self.for_consumer()? else {
             return Err(
                 self.error_here("`FOR CONSUMER '<name>'` — the group that handed the messages out")
             );
@@ -170,6 +179,6 @@ impl Parser<'_> {
         while self.eat_punct(Punct::Comma) {
             positions.push(self.expression()?);
         }
-        Ok((topic, consumer, positions))
+        Ok((topic, (consumer, parameter), positions))
     }
 }

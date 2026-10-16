@@ -188,10 +188,11 @@ impl Parser<'_> {
         // Contextual like every other subject word in this file: `consumer` is
         // a perfectly ordinary column name in an application that has
         // customers, and reserving it here would reserve it everywhere.
-        let consumer = if self.eat_word("consumer") {
-            Some(self.consumer_name()?)
+        let (consumer, consumer_parameter) = if self.eat_word("consumer") {
+            let (name, parameter) = self.consumer_name()?;
+            (Some(name), parameter)
         } else {
-            None
+            (None, None)
         };
         if namespace.is_none() && database.is_none() && consumer.is_none() {
             return Err(self.error_here("`NAMESPACE`, `DATABASE` or `CONSUMER` after `USE`"));
@@ -200,6 +201,7 @@ impl Parser<'_> {
             namespace,
             database,
             consumer,
+            consumer_parameter,
         })
     }
 

@@ -49,28 +49,38 @@ pub(crate) fn bind_identity(id: &mut Identity, at: Span, binding: &Binding<'_>) 
     Ok(())
 }
 
+/// The value a parameter slot is bound to, or `None` when it is to be left
+/// standing: no slot, a name a `LET` binds later, or a lenient walk.
+pub(super) fn slot_value<'w, 'b>(
+    parameter: Option<&'w crate::ast::ParameterSlot>,
+    binding: &'b Binding<'_>,
+) -> Result<Option<(&'w crate::ast::ParameterSlot, &'b Value)>> {
+    let Some(written) = parameter else {
+        return Ok(None);
+    };
+    if binding.deferred.contains(written.name.as_str()) {
+        return Ok(None);
+    }
+    match binding.supplied.get(written.name.as_str()) {
+        Some(value) => Ok(Some((written, value))),
+        None if !binding.strict => Ok(None),
+        None => Err(Error::UnboundParameter {
+            name: written.name.clone(),
+            span: written.span,
+        }),
+    }
+}
+
 /// The number a count parameter is bound to, written where a literal would
 /// have put it (ADR-0124 D5). Left standing for a `LET` that has not run.
 pub(crate) fn bind_count(
-    parameter: &mut Option<crate::ast::CountParameter>,
+    parameter: &mut Option<crate::ast::ParameterSlot>,
     count: &mut Option<u64>,
     above_zero: bool,
     binding: &Binding<'_>,
 ) -> Result<()> {
-    let Some(written) = parameter.as_ref() else {
+    let Some((written, value)) = slot_value(parameter.as_ref(), binding)? else {
         return Ok(());
-    };
-    if binding.deferred.contains(written.name.as_str()) {
-        return Ok(());
-    }
-    let Some(value) = binding.supplied.get(written.name.as_str()) else {
-        if !binding.strict {
-            return Ok(());
-        }
-        return Err(Error::UnboundParameter {
-            name: written.name.clone(),
-            span: written.span,
-        });
     };
     let held = match value {
         Value::Number(Number::Integer(held)) => u64::try_from(*held)

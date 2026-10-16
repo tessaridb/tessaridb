@@ -32,6 +32,7 @@ mod backup_to;
 mod bindings;
 mod boolean;
 mod boost;
+mod bound_consumer_names;
 mod bounded_index_reads;
 mod bounded_reads;
 mod bucket_ceiling;

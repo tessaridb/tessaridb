@@ -786,6 +786,21 @@ pub enum Error {
         span: Span,
     },
 
+    /// A consumer or group name bound to something that is not a string with
+    /// something in it (ADR-0127). Refused where it was bound, for the reason
+    /// the literal `''` is: an empty name would read as *nobody said*.
+    #[error(
+        "`${name}` is bound to {found}, and a consumer name is a string with something in it (at {span})"
+    )]
+    NotAConsumerName {
+        /// The parameter's name, without its marker.
+        name: String,
+        /// What it held — its type, or `an empty string`.
+        found: String,
+        /// Where the name was written.
+        span: Span,
+    },
+
     /// A statement [`crate::render`] does not write back out as text.
     ///
     /// The renderer covers `SELECT` at this milestone. Every other form names
@@ -910,6 +925,7 @@ impl Error {
             | Self::JoinKeyIsNotAField { span, .. }
             | Self::UnboundParameter { span, .. }
             | Self::CountNotAWholeNumber { span, .. }
+            | Self::NotAConsumerName { span, .. }
             | Self::BoundTwice { span, .. }
             | Self::BindingCollidesWithParameter { span, .. }
             | Self::ReturnedTwice { span }

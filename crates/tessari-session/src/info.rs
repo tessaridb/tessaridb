@@ -190,6 +190,7 @@ fn selecting(namespace: Option<&str>, database: Option<&str>, span: Span) -> Sta
         // Synthesised to re-select tenancy and nothing else; a report never
         // declares a claimant.
         consumer: None,
+        consumer_parameter: None,
     }
 }
 

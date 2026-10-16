@@ -5289,7 +5289,9 @@ number is written in when the script is bound, so every rule a written number
 meets — the ceilings, the bound handed to the source — is met by the bound one,
 and a value that is not a whole number is refused naming the parameter
 (`CountNotAWholeNumber`). `CLAIM $n FROM jobs` takes one the same way and keeps
-its ceiling of 500.
+its ceiling of 500. A consumer or group name takes one too (`USE CONSUMER $w`,
+§6c); a table, a topic or a field never does, because a name in the catalog is
+grammar.
 
 ### Resuming a page from a record
 
@@ -7217,6 +7219,11 @@ they divide the work between them and none displaces another. Only the
 session that declares a name, so two workers cannot collide however they are
 configured.
 
+**The name may be a bound parameter** — `USE CONSUMER $worker`, `RELEASE jobs:7
+FOR CONSUMER $worker` — because it is a string you chose, not a name in the
+catalog. The value must be a string with something in it; anything else is
+refused naming the parameter (`NotAConsumerName`).
+
 **`RELEASE ALL FROM jobs` reaches this session's own holds**, and answers the
 records it freed rather than a count. That is the safe form, and it is the one a
 worker uses when it is shutting down.
@@ -7697,6 +7704,9 @@ NACK events FOR CONSUMER 'billing' AT 43 DELAY 10s;
 ALTER GROUP 'billing' ON TOPIC events START AT 40;
 DROP GROUP 'billing' ON TOPIC events;
 ```
+
+A group's name, like a consumer's, may be a bound parameter: `DEFINE GROUP $group
+ON TOPIC events …`, `ACK events FOR CONSUMER $group AT $positions`.
 
 Once a group is declared under a name, `READ FROM … FOR CONSUMER` that name
 **hands the messages out** instead of moving a position: each one is held in

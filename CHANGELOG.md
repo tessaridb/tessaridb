@@ -20,6 +20,8 @@ compares carries no pre-release suffix.
 - **A name declared twice is refused by kind and name** — `a topic named events already exists` — rather than by the
   catalog's internal key.
 - **`string::concat` takes two or more strings** and joins them in order.
+- **A consumer or group name may be a bound parameter** — `USE CONSUMER $worker`, `DEFINE GROUP $group ON TOPIC
+  events …`, `ACK events FOR CONSUMER $group AT …`. A value that is not a non-empty string is `NotAConsumerName`.
 - **1611 conformance cases** define the language and run in the build.
 
 ## 0.35.1 — 2026-10-16

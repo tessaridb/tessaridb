@@ -14,6 +14,7 @@ mod context;
 mod define;
 mod fields;
 mod queues;
+pub(in crate::parser) use queues::NamedConsumer;
 mod relations;
 mod select;
 mod topic_consumer;
