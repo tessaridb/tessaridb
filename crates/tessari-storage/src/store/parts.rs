@@ -261,6 +261,11 @@ impl Store {
         &self.snapshots
     }
 
+    /// The records open claims are taking (ADR-0126 D5).
+    pub(crate) fn claiming(&self) -> &crate::claiming::Claiming {
+        &self.claiming
+    }
+
     /// Record that a declared last-writer-wins discarded writes.
     ///
     /// Called from the commit path and by nothing else. A store method rather

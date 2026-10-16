@@ -416,12 +416,15 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         StatementKind::Claim {
             count,
             count_parameter,
+            condition,
             ..
         } => {
             let mut bound = Some(*count);
             nested::bind_count(count_parameter, &mut bound, true, binding)?;
             *count = bound.unwrap_or(*count);
-            Ok(())
+            condition
+                .as_mut()
+                .map_or(Ok(()), |condition| bind_expr(condition, binding))
         }
         StatementKind::ReleaseAll { not_before, .. } => not_before
             .as_mut()

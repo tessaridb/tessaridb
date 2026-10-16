@@ -18,11 +18,11 @@
 //! costs and never which records it takes.
 
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::ops::ControlFlow;
 
 use tessari_encoding::decode_payload;
-use tessari_storage::{QueueDeclaration, Transaction};
+use tessari_storage::{QueueDeclaration, RecordAddress, Transaction};
 use tessari_types::{Datetime, Path, RecordId, Value};
 
 use super::claimable;
@@ -30,10 +30,12 @@ use crate::context::Context;
 use crate::error::Result;
 use crate::session::Session;
 
-/// The head a claim takes, best first, and the index that found it.
+/// The head a claim takes, best first, the index that found it, and the spent
+/// records met on the way (ADR-0126 D2).
 type Head = (
     Vec<(RecordId, std::collections::BTreeMap<String, Value>)>,
     Option<String>,
+    Vec<super::dead::Spent>,
 );
 
 /// Where a record stands: its priority (absent lowest), then arrival.
@@ -63,17 +65,26 @@ impl Ord for Candidate {
     }
 }
 
-/// The record's rank, when it can be claimed now.
+/// Where a queued record lives.
+fn address(context: Context, table: tessari_types::TableId, id: &RecordId) -> RecordAddress {
+    RecordAddress::new(context.namespace, context.database, table, id.clone())
+}
+
+/// The record's rank, when it can be claimed now; a spent one goes to `dead`
+/// when the queue has a dead letter, keyed so a re-read of the index keeps one.
 fn ranked(
     id: RecordId,
     bytes: &[u8],
-    now: Datetime,
-    declared: &QueueDeclaration,
-    field: &str,
+    (now, declared, field): (Datetime, &QueueDeclaration, &str),
+    dead: &mut BTreeMap<RecordId, BTreeMap<String, Value>>,
 ) -> Result<Option<Candidate>> {
     let Value::Object(fields) = decode_payload(bytes)? else {
         return Ok(None);
     };
+    if declared.dead_letter.is_some() && super::dead::spent(&fields, now, declared) {
+        dead.insert(id, fields);
+        return Ok(None);
+    }
     if !claimable(&fields, now, declared) {
         return Ok(None);
     }
@@ -100,13 +111,14 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         context: Context,
         table: tessari_types::TableId,
-        declared: &QueueDeclaration,
-        field: &str,
+        (declared, field): (&QueueDeclaration, &str),
         (limit, now): (usize, Datetime),
+        matching: Option<&super::Matching<'_>>,
     ) -> Result<Head> {
         if limit == 0 {
-            return Ok((Vec::new(), None));
+            return Ok((Vec::new(), None, Vec::new()));
         }
+        let mut dead = BTreeMap::new();
         if let Some((index, _)) =
             self.index_serving_order(transaction, context, table, &Path::field(field), true)?
         {
@@ -116,7 +128,11 @@ impl Session<'_> {
             while let Some(found) = transaction.records_in_descending_order(&index, 1, wanted)? {
                 let mut taken = Vec::new();
                 for (id, bytes) in &found {
-                    if let Some(candidate) = ranked(id.clone(), bytes, now, declared, field)? {
+                    if let Some(candidate) =
+                        ranked(id.clone(), bytes, (now, declared, field), &mut dead)?
+                        && self.matches(transaction, matching, &candidate.id, &candidate.fields)?
+                        && !transaction.claimed_elsewhere(&address(context, table, &candidate.id))
+                    {
                         taken.push(candidate);
                     }
                 }
@@ -129,6 +145,7 @@ impl Session<'_> {
                             .map(|held| (held.id, held.fields))
                             .collect(),
                         Some(index.name),
+                        dead.into_iter().collect(),
                     ));
                 }
                 let Some(more) = wanted.checked_mul(2) else {
@@ -144,8 +161,11 @@ impl Session<'_> {
             context.namespace,
             context.database,
             table,
-            |_, id, bytes| -> Result<ControlFlow<()>> {
-                if let Some(candidate) = ranked(id, &bytes, now, declared, field)? {
+            |walking, id, bytes| -> Result<ControlFlow<()>> {
+                if let Some(candidate) = ranked(id, &bytes, (now, declared, field), &mut dead)?
+                    && self.matches(walking, matching, &candidate.id, &candidate.fields)?
+                    && !walking.claimed_elsewhere(&address(context, table, &candidate.id))
+                {
                     if kept.len() < limit {
                         kept.push(Reverse(candidate));
                     } else if kept.peek().is_some_and(|Reverse(worst)| candidate > *worst) {
@@ -164,6 +184,7 @@ impl Session<'_> {
                 .map(|held| (held.id, held.fields))
                 .collect(),
             None,
+            dead.into_iter().collect(),
         ))
     }
 }
@@ -180,26 +201,34 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         (context, table, named): (Context, tessari_types::TableId, &tessari_ql::TableRef),
-        declared: &QueueDeclaration,
-        field: &str,
+        (declared, field): (&QueueDeclaration, &str),
         (limit, now, until): (usize, Datetime, Datetime),
+        matching: Option<&super::Matching<'_>>,
         span: tessari_ql::Span,
     ) -> Result<crate::outcome::Outcome> {
-        let (head, index) =
-            self.priority_head(transaction, context, table, declared, field, (limit, now))?;
+        let (head, index, buried) = self.priority_head(
+            transaction,
+            context,
+            table,
+            (declared, field),
+            (limit, now),
+            matching,
+        )?;
         let mut taken = Vec::with_capacity(head.len());
         for (id, mut fields) in head {
+            let address = address(context, table, &id);
+            // Taken here rather than while the head was ranked, so a record
+            // ranked and then displaced is never held back from another claim;
+            // one taken since by another claim is passed over (ADR-0126 D5).
+            if !transaction.take_for_claim(&address) {
+                continue;
+            }
             super::hold(&mut fields, until, self.consumer.as_ref());
             let payload = Value::Object(fields);
-            let address = tessari_storage::RecordAddress::new(
-                context.namespace,
-                context.database,
-                table,
-                id.clone(),
-            );
             self.put_engine_record(transaction, address, payload.clone(), span)?;
             taken.push((id, payload));
         }
+        self.bury(transaction, (context, table, named), declared, buried, span)?;
         let plan = match index {
             Some(index) => crate::plan::Plan {
                 index: Some(index),

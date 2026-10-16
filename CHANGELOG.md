@@ -13,6 +13,20 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.35.0 — 2026-10-16
+
+### Added
+
+- **`CLAIM [n] FROM q WHERE <condition>`** takes only the claimable records that match, in the queue's order.
+- **`DEFINE QUEUE … ATTEMPTS n DEAD LETTER TO <topic>`** moves a record whose attempts are spent to that topic as
+  `{ queue, id, attempts, value }`, in the claim that meets it. `INFO FOR TABLE` reports `dead_letter`.
+- **`ACK` and `NACK … AT $positions`** take one bound array of positions.
+
+### Changed
+
+- **Concurrent claims take different records.** A claim passes over records another unfinished claim is taking,
+  instead of both taking one and the later commit being refused.
+
 ## 0.34.4 — 2026-10-16
 
 The first version without a pre-release label; still before 1.0.

@@ -1301,3 +1301,284 @@ fn a_queue_record_is_a_schedule_that_fires_once_per_period_and_survives_its_work
     assert_eq!(claimed(&run(&mut session, "CLAIM FROM brief;")), ["1"]);
     assert_eq!(claimed(&run(&mut session, "CLAIM FROM brief;")), ["1"]);
 }
+
+// --------------------------------------------------------------- ADR-0126 D1
+
+/// A queue of mixed work: two video tasks and two image tasks, interleaved.
+fn mixed<'a>(store: &'a Store, declaration: &str) -> Session<'a> {
+    let mut session = Session::new(store);
+    session
+        .run(&format!(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE QUEUE media {declaration};\n\
+             CREATE media:1 = {{ kind: 'video', weight: 1 }};\n\
+             CREATE media:2 = {{ kind: 'image', weight: 1 }};\n\
+             CREATE media:3 = {{ kind: 'video', weight: 9 }};\n\
+             CREATE media:4 = {{ kind: 'image', weight: 5 }};"
+        ))
+        .unwrap();
+    session
+}
+
+/// A worker that can do only some of the work takes only that work, in the
+/// queue's own order, and leaves the rest for the workers that can.
+#[test]
+fn a_claim_with_a_condition_takes_only_the_work_that_matches_it() {
+    let store = store();
+    let mut session = mixed(&store, "TIMEOUT 1m");
+    assert_eq!(
+        claimed(&run(&mut session, "CLAIM FROM media WHERE kind = 'image';")),
+        vec!["2"]
+    );
+    assert_eq!(
+        claimed(&run(
+            &mut session,
+            "CLAIM 5 FROM media WHERE kind = 'image';"
+        )),
+        vec!["4"],
+        "a second claim takes the next matching record and passes over the held one"
+    );
+    assert_eq!(
+        claimed(&run(&mut session, "CLAIM 5 FROM media;")),
+        vec!["1", "3"],
+        "the work the condition passed over is still there for anybody"
+    );
+}
+
+/// The queue's order still decides among the records that match.
+#[test]
+fn a_condition_keeps_the_order_priority_by_gives() {
+    let store = store();
+    let mut session = mixed(&store, "TIMEOUT 1m PRIORITY BY weight");
+    assert_eq!(
+        claimed(&run(
+            &mut session,
+            "CLAIM 2 FROM media WHERE kind = 'video';"
+        )),
+        vec!["3", "1"]
+    );
+}
+
+/// A condition binds its values like any other; one that is not a question is
+/// refused naming what it found rather than answering nothing.
+#[test]
+fn a_claims_condition_binds_its_values_and_must_be_a_question() {
+    let store = store();
+    let mut session = mixed(&store, "TIMEOUT 1m");
+    let mut supplied = tessari_session::Parameters::new();
+    supplied.insert("kind".to_owned(), Value::String("video".to_owned()));
+    let outcome = session
+        .run_with("CLAIM FROM media WHERE kind = $kind;", &supplied)
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(claimed(&outcome), vec!["1"]);
+    let refused = session.run("CLAIM FROM media WHERE kind;");
+    assert!(
+        matches!(
+            refused,
+            Err(tessari_session::Error::ConditionNotBoolean { .. })
+        ),
+        "a bare path was taken as a condition: {refused:?}"
+    );
+}
+
+/// A queue with a dead letter, three records and one held past its last attempt.
+fn lettered<'a>(store: &'a Store, declaration: &str) -> Session<'a> {
+    let mut session = Session::new(store);
+    session
+        .run(&format!(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE TOPIC dead;\n\
+             DEFINE QUEUE jobs {declaration};\n\
+             CREATE jobs:1 = {{ url: 'a' }};\n\
+             CREATE jobs:2 = {{ url: 'b' }};\n\
+             CREATE jobs:3 = {{ url: 'c' }};"
+        ))
+        .unwrap();
+    session
+}
+
+/// The letters the dead letter holds, oldest first: each message's value.
+fn letters(session: &mut Session<'_>) -> Vec<Value> {
+    match run(session, "READ FROM dead;") {
+        Outcome::Records { records, .. } => records
+            .into_iter()
+            .map(|(_, message)| match message {
+                Value::Object(mut fields) => fields.remove("value").unwrap(),
+                other => panic!("not a message: {other:?}"),
+            })
+            .collect(),
+        other => panic!("expected records, got {other:?}"),
+    }
+}
+
+/// A record whose attempts are spent, met by a claim's walk, leaves the queue
+/// for the declared topic in that claim's transaction — so it stops costing
+/// every later claim a read — and the letter says where it came from.
+#[test]
+fn a_spent_record_moves_to_the_dead_letter_with_the_claim_that_meets_it() {
+    let store = store();
+    let mut session = lettered(&store, "TIMEOUT 1ns ATTEMPTS 2 DEAD LETTER TO dead");
+    assert_eq!(claimed(&run(&mut session, "CLAIM FROM jobs;")), vec!["1"]);
+    assert_eq!(claimed(&run(&mut session, "CLAIM FROM jobs;")), vec!["1"]);
+    // Nothing is moved while the record still had an attempt in hand.
+    assert!(letters(&mut session).is_empty());
+
+    assert_eq!(claimed(&run(&mut session, "CLAIM FROM jobs;")), vec!["2"]);
+    let Outcome::Records { records, .. } = run(&mut session, "SELECT * FROM jobs:1;") else {
+        panic!("expected records");
+    };
+    assert!(records.is_empty(), "the spent record is still queued");
+    let moved = letters(&mut session);
+    assert_eq!(moved.len(), 1, "{moved:?}");
+    let Value::Object(letter) = &moved[0] else {
+        panic!("{moved:?}");
+    };
+    assert_eq!(letter.get("queue"), Some(&Value::from("jobs")));
+    assert_eq!(letter.get("id"), Some(&Value::from(1_i64)));
+    assert_eq!(letter.get("attempts"), Some(&Value::from(2_i64)));
+    let Some(Value::Object(value)) = letter.get("value") else {
+        panic!("{letter:?}");
+    };
+    assert_eq!(value.get("url"), Some(&Value::from("a")));
+    // The engine's own fields stay behind: the letter's value is the work.
+    assert!(!value.contains_key("attempts") && !value.contains_key("claimed_until"));
+}
+
+/// Without the clause a spent record stays where it is, as before.
+#[test]
+fn without_a_dead_letter_a_spent_record_stays_in_the_queue() {
+    let store = store();
+    let mut session = lettered(&store, "TIMEOUT 1ns ATTEMPTS 1");
+    run(&mut session, "CLAIM FROM jobs;");
+    assert_eq!(claimed(&run(&mut session, "CLAIM FROM jobs;")), vec!["2"]);
+    let Outcome::Records { records, .. } = run(&mut session, "SELECT * FROM jobs:1;") else {
+        panic!("expected records");
+    };
+    assert_eq!(records.len(), 1);
+    assert!(letters(&mut session).is_empty());
+}
+
+/// The priority claim meets spent records too, and moves them the same way.
+#[test]
+fn a_priority_claim_moves_a_spent_record_too() {
+    let store = store();
+    let mut session = lettered(
+        &store,
+        "TIMEOUT 1ns ATTEMPTS 1 PRIORITY BY p DEAD LETTER TO dead",
+    );
+    run(&mut session, "CLAIM FROM jobs;");
+    run(&mut session, "CLAIM FROM jobs;");
+    assert_eq!(letters(&mut session).len(), 1);
+}
+
+/// A dead letter names a topic, and says after how many attempts.
+#[test]
+fn a_dead_letter_needs_attempts_and_a_topic() {
+    let store = store();
+    let mut session = lettered(&store, "TIMEOUT 1m");
+    let refused = session.run("DEFINE QUEUE other TIMEOUT 1m DEAD LETTER TO dead;");
+    assert!(
+        matches!(&refused, Err(tessari_session::Error::Script(found)) if found.to_string().contains("ATTEMPTS")),
+        "{refused:?}"
+    );
+    let refused = session.run("DEFINE QUEUE other TIMEOUT 1m ATTEMPTS 2 DEAD LETTER TO jobs;");
+    assert!(
+        matches!(refused, Err(tessari_session::Error::NotATopic { .. })),
+        "{refused:?}"
+    );
+}
+
+/// The report names the dead letter, and a declaration that could not name it
+/// says so rather than restoring a queue whose spent work stays put.
+#[test]
+fn a_queue_reports_its_dead_letter_by_name() {
+    let store = store();
+    let mut session = lettered(&store, "TIMEOUT 30s ATTEMPTS 3 DEAD LETTER TO dead");
+    let described = format!("{:?}", run(&mut session, "INFO FOR TABLE jobs;"));
+    assert!(
+        described.contains("\"dead_letter\": String(\"dead\")"),
+        "{described}"
+    );
+    assert!(
+        described.contains("names a dead letter this writer cannot name"),
+        "{described}"
+    );
+}
+
+/// A second session in the database `ready` and `mixed` declare.
+fn worker(store: &Store) -> Session<'_> {
+    let mut session = Session::new(store);
+    session
+        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    session
+}
+
+/// The identities a claim run inside an open transaction answered with.
+fn claimed_in(open: &mut tessari_session::Atomic<'_, '_>, script: &str) -> Vec<String> {
+    claimed(
+        &open
+            .run_with(script, &tessari_session::Parameters::new())
+            .unwrap()
+            .pop()
+            .unwrap(),
+    )
+}
+
+/// Two workers on one queue at once take different records: a claim passes
+/// over a record another unfinished transaction is claiming, rather than both
+/// taking it and the later commit being refused (ADR-0126 D5).
+#[test]
+fn a_claim_passes_over_a_record_another_claim_is_taking() {
+    let store = store();
+    let mut first = ready(&store, "TIMEOUT 1m");
+    let mut second = worker(&store);
+    first
+        .atomically(|open| -> Result<(), tessari_session::Error> {
+            assert_eq!(claimed_in(open, "CLAIM FROM jobs;"), vec!["1"]);
+            assert_eq!(
+                claimed(&run(&mut second, "CLAIM FROM jobs;")),
+                vec!["2"],
+                "the record the open transaction is taking was handed out again"
+            );
+            Ok(())
+        })
+        .unwrap();
+    // Once the first transaction has ended, nothing it took is held back.
+    assert_eq!(claimed(&run(&mut second, "CLAIM FROM jobs;")), vec!["3"]);
+}
+
+/// A transaction that ends without committing gives back what it was taking.
+#[test]
+fn a_cancelled_claim_gives_its_records_back() {
+    let store = store();
+    let mut first = ready(&store, "TIMEOUT 1m");
+    let mut second = worker(&store);
+    let cancelled = first.atomically(|open| -> Result<(), tessari_session::Error> {
+        claimed_in(open, "CLAIM FROM jobs;");
+        Err(tessari_session::Error::UnclosedTransaction {
+            span: tessari_ql::Span::new(0, 0),
+        })
+    });
+    assert!(cancelled.is_err());
+    assert_eq!(claimed(&run(&mut second, "CLAIM FROM jobs;")), vec!["1"]);
+}
+
+/// A priority claim passes over a record another claim is taking too.
+#[test]
+fn a_priority_claim_passes_over_a_record_another_claim_is_taking() {
+    let store = store();
+    let mut first = mixed(&store, "TIMEOUT 1m PRIORITY BY weight");
+    let mut second = worker(&store);
+    first
+        .atomically(|open| -> Result<(), tessari_session::Error> {
+            assert_eq!(claimed_in(open, "CLAIM FROM media;"), vec!["3"]);
+            assert_eq!(claimed(&run(&mut second, "CLAIM FROM media;")), vec!["4"]);
+            Ok(())
+        })
+        .unwrap();
+}

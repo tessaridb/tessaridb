@@ -41,6 +41,14 @@
 //! — but a worker loop has to ask again, and a caller that treats a refusal as a
 //! fault will stop on a healthy queue.
 //!
+//! **Since ADR-0126 D5 the walk passes over a record another open claim is
+//! taking**, through the store's claim register, so the race above is the rare
+//! case rather than the steady state: the same harness measured 2487-2616
+//! refusals a run with the register ignored and 0-1 with it. What is left is a
+//! snapshot taken before a rival committed and walked after it let go, and the
+//! commit still decides it — refused, as above. `CLAIM q:id` does not consult
+//! the register: naming a record is asking for that one.
+//!
 //! # What this does not do
 //!
 //! Nothing happens when a claimant dies. There is no liveness detection, no
@@ -56,6 +64,7 @@
 //! neither is discovered.
 
 mod claims;
+mod dead;
 mod delay;
 mod priority;
 use std::collections::BTreeMap;
@@ -63,7 +72,7 @@ use std::ops::ControlFlow;
 
 use tessari_constants::MAX_CLAIM_RECORDS;
 use tessari_encoding::decode_payload;
-use tessari_ql::{RecordTarget, Span, TableRef};
+use tessari_ql::{Expr, RecordTarget, Span, TableRef};
 use tessari_storage::{
     QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, RecordAddress, Transaction,
 };
@@ -96,6 +105,7 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         table: &TableRef,
         count: u64,
+        condition: Option<&Expr>,
         span: Span,
     ) -> Result<Outcome> {
         if count > MAX_CLAIM_RECORDS {
@@ -107,6 +117,15 @@ impl Session<'_> {
         }
         let (context, id) = self.resolve_table(transaction, table)?;
         let declared = queue_declaration(transaction, id, &table.name.text, table.span)?;
+        // Tested against the record as this session may see it, so a condition
+        // cannot ask about a field a grant hides from the caller.
+        let matching = match condition {
+            Some(condition) => Some(Matching {
+                condition,
+                visible: self.visible_in(transaction, id)?,
+            }),
+            None => None,
+        };
         // Read once, here, for the whole statement. Every record this claim
         // touches carries the same deadline, so two records claimed together
         // lapse together — and the instant that reaches the log is a value
@@ -122,20 +141,21 @@ impl Session<'_> {
             return self.claim_by_priority(
                 transaction,
                 (context, id, table),
-                &declared,
-                &field,
+                (&declared, &field),
                 (limit, now, until),
+                matching.as_ref(),
                 span,
             );
         }
 
         let mut taken: Vec<(RecordId, Value)> = Vec::new();
         let mut writes: Vec<(RecordId, Value)> = Vec::new();
+        let mut buried: Vec<dead::Spent> = Vec::new();
         transaction.walk_table(
             context.namespace,
             context.database,
             id,
-            |_, record, bytes| -> Result<ControlFlow<()>> {
+            |walking, record, bytes| -> Result<ControlFlow<()>> {
                 if taken.len() >= limit {
                     return Ok(ControlFlow::Break(()));
                 }
@@ -145,7 +165,23 @@ impl Session<'_> {
                     // record must not stop every worker on the table.
                     return Ok(ControlFlow::Continue(()));
                 };
-                if !claimable(&fields, now, &declared) {
+                // Met by the walk whatever the condition asks, because a spent
+                // record is nobody's work any more (ADR-0126 D2).
+                if declared.dead_letter.is_some() && dead::spent(&fields, now, &declared) {
+                    buried.push((record, fields));
+                    return Ok(ControlFlow::Continue(()));
+                }
+                if !claimable(&fields, now, &declared)
+                    || !self.matches(walking, matching.as_ref(), &record, &fields)?
+                {
+                    return Ok(ControlFlow::Continue(()));
+                }
+                // Another open claim is taking it: passed over, so this claim
+                // takes the next record rather than racing for this one
+                // (ADR-0126 D5).
+                let address =
+                    RecordAddress::new(context.namespace, context.database, id, record.clone());
+                if !walking.take_for_claim(&address) {
                     return Ok(ControlFlow::Continue(()));
                 }
                 fields.insert(QUEUE_CLAIMED_UNTIL.to_owned(), Value::Datetime(until));
@@ -170,6 +206,7 @@ impl Session<'_> {
             let address = RecordAddress::new(context.namespace, context.database, id, record);
             self.put_engine_record(transaction, address, payload, span)?;
         }
+        self.bury(transaction, (context, id, table), &declared, buried, span)?;
 
         Ok(Outcome::Records {
             records: taken,
@@ -489,5 +526,34 @@ fn attempts_of(fields: &BTreeMap<String, Value>) -> i64 {
     match fields.get(QUEUE_ATTEMPTS) {
         Some(Value::Number(Number::Integer(held))) => *held,
         _ => 0,
+    }
+}
+
+/// A claim's `WHERE`, and what of each record the session may test it on
+/// (ADR-0126 D1).
+pub(crate) struct Matching<'c> {
+    condition: &'c Expr,
+    visible: crate::redact::Visible,
+}
+
+impl Session<'_> {
+    /// Whether a claimable record also satisfies the claim's condition — every
+    /// record does when the claim states none.
+    pub(crate) fn matches(
+        &self,
+        transaction: &mut Transaction<'_>,
+        matching: Option<&Matching<'_>>,
+        id: &RecordId,
+        fields: &BTreeMap<String, Value>,
+    ) -> Result<bool> {
+        match matching {
+            None => Ok(true),
+            Some(matching) => self.holds_for(
+                transaction,
+                matching.condition,
+                (id, Value::Object(fields.clone())),
+                &matching.visible,
+            ),
+        }
     }
 }

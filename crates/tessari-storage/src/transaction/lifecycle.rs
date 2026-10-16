@@ -40,7 +40,38 @@ impl<'a> Transaction<'a> {
             decided: std::cell::RefCell::new(BTreeMap::new()),
             asks_leaders: true,
             retired_reads: std::cell::Cell::new(false),
+            claim_token: std::cell::Cell::new(0),
+            claiming: std::cell::RefCell::new(Vec::new()),
         }
+    }
+
+    /// This transaction's token in the claim register, issued on first use.
+    fn claim_token(&self) -> u64 {
+        if self.claim_token.get() == 0 {
+            self.claim_token.set(self.store.claiming().token());
+        }
+        self.claim_token.get()
+    }
+
+    /// Whether another open transaction is claiming `address` (ADR-0126 D5).
+    #[must_use]
+    pub fn claimed_elsewhere(&self, address: &RecordAddress) -> bool {
+        self.store
+            .claiming()
+            .taken_elsewhere(address, self.claim_token())
+    }
+
+    /// Take `address` for this transaction's claim until it ends, answering
+    /// whether it is this transaction's — `false` when another open
+    /// transaction took it first (ADR-0126 D5).
+    #[must_use]
+    pub fn take_for_claim(&self, address: &RecordAddress) -> bool {
+        let token = self.claim_token();
+        if !self.store.claiming().take(address, token) {
+            return false;
+        }
+        self.claiming.borrow_mut().push(address.clone());
+        true
     }
 
     /// A view that decides every intent from this node's own copy and never

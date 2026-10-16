@@ -1144,6 +1144,10 @@ pub enum StatementKind {
         /// `DEDUPLICATE 5m`: a `CREATE` of an identity first written less than
         /// the window ago writes nothing (ADR-0124 D8).
         deduplicate: Option<Duration>,
+        /// `DEAD LETTER TO t`: the topic a record whose attempts are spent is
+        /// moved to by the claim that meets it (ADR-0126 D2). Requires
+        /// `ATTEMPTS`, as a group's dead letter requires `DELIVERIES`.
+        dead_letter: Option<TableRef>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -1360,6 +1364,9 @@ pub enum StatementKind {
         /// `CLAIM $n FROM q`, until binding writes the number into
         /// [`Self::Claim::count`] (ADR-0124 D5).
         count_parameter: Option<crate::ast::CountParameter>,
+        /// `WHERE <condition>`: only the claimable records that also satisfy
+        /// it are taken, in the queue's own order (ADR-0126 D1).
+        condition: Option<Box<Expr>>,
         /// Where the statement sits.
         span: Span,
     },

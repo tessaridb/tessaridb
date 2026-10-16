@@ -88,6 +88,7 @@ const FIELD_ATTEMPTS: &str = "attempts";
 const FIELD_PRIORITY: &str = "priority";
 const FIELD_NOT_BEFORE: &str = "not_before";
 const FIELD_DEDUPLICATE: &str = "deduplicate";
+const FIELD_DEAD_LETTER: &str = "dead_letter";
 const FIELD_SERIES: &str = "series";
 /// A space's declaration: present (possibly empty) exactly when the table is one.
 const FIELD_SPACE: &str = "space";

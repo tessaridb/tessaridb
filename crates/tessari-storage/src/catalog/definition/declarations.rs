@@ -3,10 +3,10 @@
 mod vaults;
 
 use super::{
-    FIELD_ATTEMPTS, FIELD_DEDUPLICATE, FIELD_DESCENDING, FIELD_DIMENSION, FIELD_DISTANCE,
-    FIELD_EVENT_TIME, FIELD_FROM, FIELD_KEY_ID, FIELD_MATERIALIZED, FIELD_NOT_BEFORE, FIELD_ORDER,
-    FIELD_PRIORITY, FIELD_READ, FIELD_RETAIN, FIELD_TIMEOUT, FIELD_TO, FIELD_WRAPPED,
-    VectorDistance, field_id, flag, number, object,
+    FIELD_ATTEMPTS, FIELD_DEAD_LETTER, FIELD_DEDUPLICATE, FIELD_DESCENDING, FIELD_DIMENSION,
+    FIELD_DISTANCE, FIELD_EVENT_TIME, FIELD_FROM, FIELD_KEY_ID, FIELD_MATERIALIZED,
+    FIELD_NOT_BEFORE, FIELD_ORDER, FIELD_PRIORITY, FIELD_READ, FIELD_RETAIN, FIELD_TIMEOUT,
+    FIELD_TO, FIELD_WRAPPED, VectorDistance, field_id, flag, number, object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -277,8 +277,8 @@ pub struct QueueDeclaration {
     ///
     /// `None` is unlimited, which is a legitimate choice for a queue whose work
     /// cannot poison and a visible one, because it is what leaving the clause
-    /// out says. A record that reaches the ceiling stops being claimable and
-    /// stays where it is: the dead letter is a predicate, not a second table.
+    /// out says. A record that reaches the ceiling stops being claimable and,
+    /// unless a dead letter is declared, stays where it is.
     pub attempts: Option<u32>,
     /// The field a claim orders by, greatest first, when one was named
     /// (G055 C8); written only when present.
@@ -289,6 +289,9 @@ pub struct QueueDeclaration {
     /// How long a written identity is remembered, so a `CREATE` of it inside
     /// the window writes nothing (ADR-0124 D8); written only when present.
     pub deduplicate: Option<Duration>,
+    /// The topic a spent record is moved to by the claim that meets it, when
+    /// one was named (ADR-0126 D2); written only when present.
+    pub dead_letter: Option<TableId>,
 }
 
 impl QueueDeclaration {
@@ -315,6 +318,9 @@ impl QueueDeclaration {
         }
         if let Some(window) = self.deduplicate {
             fields.insert(FIELD_DEDUPLICATE.to_owned(), Value::Duration(window));
+        }
+        if let Some(letters) = self.dead_letter {
+            fields.insert(FIELD_DEAD_LETTER.to_owned(), number(letters.get()));
         }
         Value::Object(fields)
     }
@@ -355,6 +361,10 @@ impl QueueDeclaration {
                         found: other.type_name(),
                     });
                 }
+            },
+            dead_letter: match fields.get(FIELD_DEAD_LETTER) {
+                Some(_) => Some(TableId::new(field_id(fields, FIELD_DEAD_LETTER, ENTITY)?)),
+                None => None,
             },
         })
     }

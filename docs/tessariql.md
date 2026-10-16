@@ -7035,6 +7035,7 @@ CREATE jobs = { url: 'https://example.test/report' };
 
 CLAIM FROM jobs;
 CLAIM 10 FROM jobs;
+CLAIM 10 FROM jobs WHERE kind = 'image';
 CLAIM jobs:7;
 
 DELETE jobs:7;
@@ -7074,6 +7075,13 @@ order — both identity kinds this store issues are time-ordered, so the queue i
 first-in-first-out with no ordering state of its own. It answers with the records
 so the worker can do the work, and **an empty queue answers no records rather
 than failing**: a worker polls, and being caught up is the ordinary case.
+
+**`CLAIM … WHERE` takes only the work that matches.** The condition is the
+language's ordinary condition, bound like any other, and a record it does not
+match is passed over as a held one is — so the claim takes the first claimable
+records, in the queue's own order, that also satisfy it. A worker that handles
+only images says so in the claim rather than in a second queue, and two worker
+kinds share one queue without taking each other's work.
 
 **`CLAIM jobs:7` holds the record you name**, for a caller that has already
 chosen its work rather than asking for whatever is next. It is the same write —
@@ -7251,22 +7259,22 @@ a crash      — nothing written past the last commit; the deadline passes; rede
 `DELETE` has its record handed out again. Exactly-once would need the work and
 its acknowledgement in one transaction, and the work is outside this store.
 
-**Exclusivity is at most one claimant at a time**, and it needs no machinery of
-its own: two workers that pick one record both *write* that record, which the
-store's snapshot isolation already resolves — the first committer wins and the
-loser writes nothing at all. **The loser is refused, and asking again is the
-worker's job**: it receives a write-conflict refusal naming the record it lost,
-and the store does not quietly re-select the next one on its behalf. So a worker
-loop treats a refusal the way it treats an empty answer — ask again — and the
-cost of contention is one refused statement per losing worker per hand-out,
-which is why a worker with steady work should claim a **batch**: the contention
-amortises over the batch and the ordering does not change.
+**Exclusivity is at most one claimant at a time.** **A claim passes over a
+record another claim is taking**: the node that runs claims keeps a register of
+the records unfinished claims are handing out, so a second claim walking the
+queue meanwhile takes the next record instead of the same one. The register is
+released when the claiming transaction ends, committed or not. `CLAIM jobs:7`
+does not consult it — a caller that names a record asked for that record.
 
-**Bound those retries.** A refusal says why in its message and carries nothing a
-program can branch on, so a worker cannot tell a lost race from a permission
-failure or a mistyped statement — and a loop that re-asks on every refusal
-retries the ones that will never succeed, forever. Cap the attempts and let the
-last one out. A worker
+Snapshot isolation still decides what the register cannot see — a claim that
+races a leadership change, or a named claim against a walking one: both write
+the record, the first committer wins, and **the loser is refused** with a
+refusal of the `retry` class naming the record it lost. The store does not
+quietly re-select on its behalf, so a worker loop treats that refusal the way
+it treats an empty answer — ask again — and treats every other class as a
+failure, because a permission refusal or a mistyped statement will never
+succeed however often it is asked. A worker with steady work still claims a
+**batch**: one statement, one commit, and the ordering does not change. A worker
 that **overruns** its deadline is not stopped, because nothing here can stop it,
 so the whole sentence is: *at most one claimant at a time; a worker that exceeds
 its timeout may find its work handed to somebody else.*
@@ -7360,22 +7368,41 @@ user identity and nothing finer, and every worker in a deployment signs in as on
 user — so a field claiming to name the holder would name the wrong thing exactly
 when somebody is debugging.
 
-### Retry, and the dead letter that is not a second table
+### Retry, and the dead letter
+
+```tessariql
+DEFINE TOPIC jobs_dead RETAIN 7d;
+DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 5 DEAD LETTER TO jobs_dead;
+READ FROM jobs_dead FOR CONSUMER 'ops';
+```
 
 `ATTEMPTS n` is the ceiling on hand-outs. The count is taken at the **claim**,
 because how many times a record was handed out is a fact the store can observe
 while how many times the work failed is a fact only the worker holds.
 
-A record that reaches the ceiling stops being handed out and **stays where it
-is**, keeping its payload and its count:
+A record that reaches the ceiling stops being handed out. **Without `DEAD
+LETTER TO` it stays where it is**, keeping its payload and its count:
 
 ```tessariql
 SELECT * FROM jobs WHERE attempts >= 5;
 ```
 
-That is the dead letter. Moving it would need a destination table, a schema for
-it, a rule for when it does not exist and a permission story — all to answer a
-question a `WHERE` already answers. Reviving one is `DELETE` then `CREATE`: a
+**With `DEAD LETTER TO t` it moves.** The first claim that meets a record whose
+attempts are spent and whose last hold has lapsed appends it to the topic `t` as
+`{ queue, id, attempts, value }` — `value` without the three fields the store
+writes — and deletes it from the queue, in that claim's own transaction. The
+move happens whatever the claim's `WHERE` asks, because a spent record is
+nobody's work any more. It uses the words a topic group already uses, and the
+dead letters are read the way any topic is read: a position, a group, a
+`READ FROM`.
+
+The clause needs `ATTEMPTS` — a queue with no ceiling has no record to give up
+on — and the target is a bare name that must be a topic in the queue's own
+database (`NotATopic` otherwise). A topic dropped since the declaration moves
+nothing; the spent records stay where they are, as they would without the
+clause. `INFO FOR TABLE` reports `dead_letter` by name.
+
+Reviving a record is `CREATE` again, from the topic or from the `SELECT`: a
 record that exhausted its declared budget and is being put back is new work, and
 it goes to the back of the queue.
 
@@ -7389,9 +7416,10 @@ this out* is the one somebody writes by accident.
 `CLAIM` walks the table from the head, so it steps over records that are held —
 and over records whose attempts are spent, which never become claimable again.
 The held half heals itself when the deadlines pass; the dead half does not, so a
-queue that accumulates dead records pays for them on every claim. The retention
-statement is the answer, and it is the same one every growing table here already
-needs:
+queue that accumulates dead records pays for them on every claim. `DEAD LETTER
+TO` is one answer: the claim that meets a dead record moves it, so it is paid
+for once. Without it the retention statement is the answer, and it is the same
+one every growing table here already needs:
 
 ```tessariql
 DELETE FROM jobs WHERE attempts >= 5 LIMIT ALL;
@@ -7669,10 +7697,12 @@ flight for the group with a deadline, and answers as `{ position, value,
 deliveries }`. Then:
 
 - `ACK … AT p, …` — those messages are done and are never handed out to the
-  group again. It answers how many were in flight; acknowledging one that is
+  group again. `AT $positions` takes one bound array of positions instead of
+  a list, for a worker that settles a batch it read. It answers how many were in flight; acknowledging one that is
   not counts nothing and refuses nothing, so an acknowledgement retried after a
   lost answer is harmless.
-- `NACK … AT p, … [DELAY d]` — hand them out again now, or after the delay.
+- `NACK … AT p, … [DELAY d]` — hand them out again now, or after the delay;
+  `AT $positions` as for `ACK`.
 - No answer at all — when `ACK DEADLINE` passes, the next read hands the message
   out again. Nothing sweeps: the deadline is written in the group's record and
   the next read compares it with the clock, as a queue's hold is.
@@ -10159,7 +10189,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.34.4", "build": "0.34.4", "endpoints": ["db-1.internal:9000"],
+ "version": "0.35.0", "build": "0.35.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

@@ -114,6 +114,11 @@ pub struct Transaction<'a> {
     /// `crate::retired`). Set once, by the question that decides it, so a read
     /// at the tail asks the store nothing extra.
     pub(crate) retired_reads: std::cell::Cell<bool>,
+    /// This transaction's token in the store's claim register and the records
+    /// it took there, given back when it ends (ADR-0126 D5). Zero until a
+    /// claim takes one.
+    claim_token: Cell<u64>,
+    claiming: RefCell<Vec<RecordAddress>>,
 }
 
 /// What a write said about a record's expiry that its buffered value does not
