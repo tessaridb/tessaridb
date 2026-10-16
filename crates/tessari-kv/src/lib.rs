@@ -24,6 +24,9 @@
 pub mod conformance;
 
 mod backend;
+mod backend_async;
+#[cfg(test)]
+mod backend_async_tests;
 mod batch;
 mod error;
 mod key;
@@ -31,6 +34,7 @@ mod keyspace;
 mod memory;
 
 pub use backend::{KvBackend, ScanDirection, ScanRequest, delete_range_by_scanning};
+pub use backend_async::{AsyncKvBackend, KvFuture};
 pub use batch::{Precondition, WriteBatch, WriteOp};
 pub use error::{Error, ErrorCategory, Result};
 pub use key::{Key, KeyRange, Value};
