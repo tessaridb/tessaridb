@@ -31,8 +31,8 @@
   function setValue(id, text) {
     control(id).value = text;
   }
-  function write(id, words4) {
-    at(id).textContent = words4;
+  function write(id, words6) {
+    at(id).textContent = words6;
   }
   function clear(id) {
     at(id).textContent = "";
@@ -48,22 +48,22 @@
     }
     throw new Error(`#${id} cannot be disabled`);
   }
-  function say(id, words4, failed2) {
+  function say(id, words6, failed2) {
     const line = at(id);
-    line.textContent = words4;
+    line.textContent = words6;
     line.classList.toggle("failed", failed2 === true);
     line.setAttribute("aria-live", failed2 === true ? "assertive" : "polite");
   }
   function made(tag, className) {
-    const element = document.createElement(tag);
+    const element2 = document.createElement(tag);
     if (className !== void 0) {
-      element.className = className;
+      element2.className = className;
     }
-    return element;
+    return element2;
   }
-  function trailer(words4) {
+  function trailer(words6) {
     const line = made("p", "trailer");
-    line.textContent = words4;
+    line.textContent = words6;
     return line;
   }
   function shown(value2) {
@@ -80,17 +80,24 @@
   //! each other in words.
   var tabs = () => all('[role="tab"]');
   function here() {
-    const chosen2 = tabs().find((tab) => tab.getAttribute("aria-selected") === "true");
-    return chosen2 === void 0 ? "" : chosen2.id.replace("tab-", "");
+    const chosen3 = tabs().find((tab) => tab.getAttribute("aria-selected") === "true");
+    return chosen3 === void 0 ? "" : chosen3.id.replace("tab-", "");
   }
   var arrivals = [];
-  function onArrival(names, todo) {
-    arrivals.push({ names, todo });
-    if (names.includes(here())) {
+  var held = true;
+  function hold(holding) {
+    held = holding;
+  }
+  function onArrival(names2, todo) {
+    arrivals.push({ names: names2, todo });
+    if (!held && names2.includes(here())) {
       todo();
     }
   }
   function hereAgain() {
+    if (held) {
+      return;
+    }
     for (const arrival of arrivals) {
       if (arrival.names.includes(here())) {
         arrival.todo();
@@ -107,11 +114,11 @@
   function show(name) {
     const wanted2 = tabs().some((tab) => tab.id === "tab-" + name) ? name : "run";
     for (const tab of tabs()) {
-      const chosen2 = tab.id === "tab-" + wanted2;
-      tab.setAttribute("aria-selected", String(chosen2));
-      tab.tabIndex = chosen2 ? 0 : -1;
-      pane(tab).hidden = !chosen2;
-      if (chosen2) {
+      const chosen3 = tab.id === "tab-" + wanted2;
+      tab.setAttribute("aria-selected", String(chosen3));
+      tab.tabIndex = chosen3 ? 0 : -1;
+      pane(tab).hidden = !chosen3;
+      if (chosen3) {
         at("view-title").textContent = tab.textContent?.trim() ?? "";
       }
     }
@@ -119,6 +126,9 @@
       window.location.hash = wanted2;
     }
     requestAnimationFrame(() => window.scrollTo(0, 0));
+    if (held) {
+      return;
+    }
     for (const arrival of arrivals) {
       if (arrival.names.includes(wanted2)) {
         arrival.todo();
@@ -188,9 +198,9 @@
     if (clipboard === void 0) {
       const range = document.createRange();
       range.selectNodeContents(where3);
-      const selection = window.getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(range);
+      const selection2 = window.getSelection();
+      selection2?.removeAllRanges();
+      selection2?.addRange(range);
       said3.textContent = "selected — ⌘C or Ctrl-C";
       return;
     }
@@ -229,11 +239,11 @@
     copied2.type = "button";
     copied2.textContent = "Copy";
     copied2.addEventListener("click", () => copy(one2.what, what, told3));
-    const opened = made("button", "quiet");
-    opened.type = "button";
-    opened.textContent = "Open in Run";
-    opened.addEventListener("click", () => reopen(one2.what));
-    actions.append(copied2, opened, told3);
+    const opened2 = made("button", "quiet");
+    opened2.type = "button";
+    opened2.textContent = "Open in Run";
+    opened2.addEventListener("click", () => reopen(one2.what));
+    actions.append(copied2, opened2, told3);
     row.append(head, what, said3, why, actions);
     return row;
   }
@@ -280,8 +290,17 @@
   //! is ONE bundle: two bundles would each inline a copy of this module, so there
   //! would be two tokens, and signing in on one section would silently not sign
   //! in the other.
-  var held = null;
-  var token = () => held;
+  var held2 = null;
+  var token = () => held2;
+  var listeners = [];
+  function onIdentityChange(listener) {
+    listeners.push(listener);
+  }
+  function changed() {
+    for (const listener of listeners) {
+      listener();
+    }
+  }
   function typed() {
     const user = value("user");
     const password = value("password");
@@ -295,32 +314,33 @@
     return btoa(String.fromCharCode(...bytes));
   }
   function credential() {
-    if (held !== null) {
-      return "Bearer " + held;
+    if (held2 !== null) {
+      return "Bearer " + held2;
     }
     return typed();
   }
   function signedIn() {
     const user = value("user");
-    if (held !== null && user !== "") {
+    if (held2 !== null && user !== "") {
       write("signed-in", user);
       return;
     }
     write("signed-in", user === "" ? "not signed in" : user + " — not yet");
   }
   function ended() {
-    held = null;
+    held2 = null;
     signedIn();
     say("identity-status", "this session ended — sign in again", true);
     hereAgain();
+    changed();
   }
   function reason(text) {
     try {
       const body = JSON.parse(text);
       if (typeof body === "object" && body !== null && "error" in body) {
-        const held5 = body.error;
-        if (typeof held5 === "string") {
-          return held5;
+        const held6 = body.error;
+        if (typeof held6 === "string") {
+          return held6;
         }
       }
       return text;
@@ -374,35 +394,18 @@
           say("identity-status", reason(text), true);
           return;
         }
-        held = JSON.parse(text).token;
+        held2 = JSON.parse(text).token;
         setValue("password", "");
         say("identity-status", "");
         signedIn();
         identity.open = false;
         hereAgain();
+        changed();
       } catch (failure) {
         say("identity-status", "the node did not answer: " + told(failure), true);
       }
     });
-    at("sign-out").addEventListener("click", async () => {
-      if (held !== null) {
-        try {
-          await fetch("/session", {
-            method: "DELETE",
-            headers: { Authorization: "Bearer " + held },
-            credentials: "omit"
-          });
-        } catch {
-        }
-      }
-      held = null;
-      setValue("user", "");
-      setValue("password", "");
-      say("identity-status", "");
-      signedIn();
-      identity.open = false;
-      hereAgain();
-    });
+    at("sign-out").addEventListener("click", () => void signOut(""));
     identity.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         identity.open = false;
@@ -415,6 +418,26 @@
       }
     });
     signedIn();
+  }
+  async function signOut(words6) {
+    if (held2 !== null) {
+      try {
+        await fetch("/session", {
+          method: "DELETE",
+          headers: { Authorization: "Bearer " + held2 },
+          credentials: "omit"
+        });
+      } catch {
+      }
+    }
+    held2 = null;
+    setValue("user", "");
+    setValue("password", "");
+    say("identity-status", words6);
+    signedIn();
+    sheet().open = false;
+    hereAgain();
+    changed();
   }
   function told(failure) {
     return failure instanceof Error ? failure.message : String(failure);
@@ -442,8 +465,8 @@
     try {
       body = JSON.parse(text);
     } catch {
-      const words4 = text.trim();
-      return { said: words4 === "" ? `${status}` : words4, failed: status >= 400 };
+      const words6 = text.trim();
+      return { said: words6 === "" ? `${status}` : words6, failed: status >= 400 };
     }
     if (typeof body.error === "string") {
       return { said: body.error, failed: true, refusal: typeof body.code === "string" ? body.code : void 0 };
@@ -516,7 +539,7 @@
     const answered2 = body.results[body.results.length - 1];
     return answered2 === void 0 ? null : answered2;
   }
-  function held2(answered2) {
+  function held3(answered2) {
     if (answered2 === null || answered2.kind !== "value" || typeof answered2.value !== "object" || answered2.value === null) {
       return null;
     }
@@ -568,20 +591,80 @@
     }
   }
 
+  // src/dialog.ts
+  //! Opening and closing the console's dialogs.
+  //!
+  //! The markup is `ui.dialog`; this is the behaviour the browser does not supply.
+  //! Escape, the inert page behind and the focus trap are the native `<dialog>`'s
+  //! own. What is added here is the rest of the modal contract: the control that
+  //! opened a dialog gets focus back when it closes, and a click on the backdrop
+  //! closes it as Escape would.
+  var openers = /* @__PURE__ */ new Map();
+  function element(id) {
+    const found = at(id);
+    if (!(found instanceof HTMLDialogElement)) {
+      throw new Error(`#${id} is not a dialog`);
+    }
+    return found;
+  }
+  function openDialog(id) {
+    const shown3 = element(id);
+    const from = document.activeElement;
+    if (from instanceof HTMLElement) {
+      openers.set(id, from);
+    }
+    if (!shown3.open) {
+      shown3.showModal();
+    }
+    const first = Array.from(
+      shown3.querySelectorAll(
+        ".dialog-body input:not([readonly]), .dialog-body select, .dialog-body textarea, .dialog-body button"
+      )
+    ).find((candidate) => candidate.offsetParent !== null);
+    first?.focus();
+  }
+  function closeDialog(id) {
+    const shown3 = element(id);
+    if (shown3.open) {
+      shown3.close();
+    }
+  }
+  function wire4() {
+    for (const shown3 of Array.from(document.querySelectorAll("dialog"))) {
+      shown3.addEventListener("close", () => {
+        const back = openers.get(shown3.id);
+        openers.delete(shown3.id);
+        if (back !== void 0 && back.isConnected && back.offsetParent !== null) {
+          back.focus();
+        } else {
+          at("view-title").focus();
+        }
+      });
+      shown3.addEventListener("click", (event) => {
+        if (event.target === shown3) {
+          shown3.close();
+        }
+      });
+      for (const closer of Array.from(shown3.querySelectorAll("[data-close]"))) {
+        closer.addEventListener("click", () => shown3.close());
+      }
+    }
+  }
+
   // src/watch.ts
   //! Following a table as it changes.
   var following = null;
   var toldWhy = false;
   var isFollowing = () => following !== null;
-  function stop(words4) {
+  function stop(words6) {
     if (following !== null) {
       following.close();
       following = null;
     }
     disable("follow", false);
     disable("stop", true);
-    if (words4 !== void 0) {
-      say("watch-status", words4);
+    if (words6 !== void 0) {
+      say("watch-status", words6);
     }
   }
   function change(what) {
@@ -622,11 +705,11 @@
       return "the values are an object of names to TessariQL literals";
     }
     const values = {};
-    for (const [name, held5] of Object.entries(read)) {
-      if (typeof held5 !== "string") {
+    for (const [name, held6] of Object.entries(read)) {
+      if (typeof held6 !== "string") {
         return `each value is a TessariQL literal written as a string, such as "'a'" or "3"`;
       }
-      values[name] = held5;
+      values[name] = held6;
     }
     return values;
   }
@@ -667,15 +750,17 @@
     }
     return wanted2;
   }
-  function wire4() {
+  function wire5() {
     at("follow").addEventListener("click", () => {
       stop();
       clear("changes");
       const values = boundValues();
       if (typeof values === "string") {
-        say("watch-status", values, true);
+        say("follow-dialog-status", values, true);
         return;
       }
+      say("follow-dialog-status", "");
+      closeDialog("follow-dialog");
       const socket = new WebSocket(where());
       following = socket;
       toldWhy = false;
@@ -718,6 +803,7 @@
       });
     });
     at("stop").addEventListener("click", () => stop("stopped"));
+    at("open-follow").addEventListener("click", () => openDialog("follow-dialog"));
   }
 
   // src/context.ts
@@ -755,14 +841,11 @@
   var FOLLOWING = "#following";
   var REMEMBERED = [
     "script",
-    "lookup-name",
+    // The account dialogs are filled from the row they were opened on, so what
+    // they held last time is not this time's work and is not restored into them.
     "user-filter",
     "new-name",
     "new-scope",
-    "change-name",
-    "remove-name",
-    "remove-why",
-    "change-why",
     "namespace",
     "database",
     "table",
@@ -773,7 +856,7 @@
     const control2 = at(id);
     return !(control2 instanceof HTMLInputElement && control2.type === "password");
   }
-  function held3() {
+  function held4() {
     try {
       const found = window.sessionStorage.getItem(KEY);
       return found === null ? {} : JSON.parse(found);
@@ -801,7 +884,7 @@
     }
   }
   function restore() {
-    const kept2 = held3();
+    const kept2 = held4();
     for (const id of REMEMBERED) {
       const value2 = kept2[id];
       if (value2 === void 0 || !mayKeep(id)) {
@@ -813,7 +896,7 @@
       at("watch-status").textContent = "the follow stopped at the reload — sign in and press Follow to resume it";
     }
   }
-  function wire5() {
+  function wire6() {
     restore();
     for (const id of REMEMBERED) {
       at(id).addEventListener("input", keep);
@@ -879,15 +962,11 @@
     });
     return table;
   }
-  function put(where3, value2) {
-    clear(where3);
-    at(where3).appendChild(shown(value2));
-  }
-  function facts(where3, held5) {
+  function facts(where3, held6) {
     clear(where3);
     const table = made("table");
     const body = table.createTBody();
-    for (const [name, value2] of Object.entries(held5)) {
+    for (const [name, value2] of Object.entries(held6)) {
       const row = body.insertRow();
       const label = made("th");
       label.textContent = name;
@@ -899,6 +978,621 @@
       }
     }
     at(where3).appendChild(table);
+  }
+
+  // src/states.ts
+  //! The four things a screen can be, said as four things.
+  //!
+  //! `say(id, words, failed?)` carries one string and one boolean, so the five
+  //! situations an operator actually meets render as two. The two that collapse
+  //! are the expensive ones: **nothing here** and **some of it** look identical,
+  //! and an operator who reads a bounded page as the whole list concludes an
+  //! account does not exist when it is simply not on screen.
+  //!
+  //! # Each state names a NEXT ACTION, and that is the half worth guarding
+  //!
+  //! "No users" is a state. "No users — this store is open to anybody, and the
+  //! first `DEFINE USER` closes it" is a state that tells the reader what to do
+  //! about it. A screen full of correct nouns and no verbs is a screen that makes
+  //! the operator go and ask somebody.
+  //!
+  //! # Why not simply widen `say`
+  //!
+  //! Because a wider `say` would let a screen render a partial state by passing
+  //! the wrong argument, and nothing would say so. Four named calls make the wrong
+  //! one a thing you have to type on purpose. `say` keeps its two-state job for
+  //! the many places that genuinely have two — this is not a rewrite of all
+  //! sixty-six of its call sites, and it must not become one.
+  function state(id, kind3, words6) {
+    const line = at(id);
+    line.textContent = words6;
+    for (const other of ["waiting", "empty", "partial", "wrong"]) {
+      line.classList.toggle(`is-${other}`, other === kind3);
+    }
+    line.classList.toggle("failed", kind3 === "wrong");
+    line.setAttribute("aria-live", kind3 === "wrong" ? "assertive" : "polite");
+  }
+  function settled(id) {
+    const line = at(id);
+    line.textContent = "";
+    for (const other of ["waiting", "empty", "partial", "wrong"]) {
+      line.classList.remove(`is-${other}`);
+    }
+    line.classList.remove("failed");
+  }
+
+  // src/topic-info.ts
+  //! What the node says about a topic, checked before anything draws it.
+  //!
+  //! `INFO FOR TOPIC` is a body this page did not construct, so each field is
+  //! narrowed here once and the screens after this point trust the shape.
+  var whole = (value2) => typeof value2 === "number" && Number.isInteger(value2) && value2 >= 0 ? value2 : null;
+  var fieldsOf = (value2) => typeof value2 === "object" && value2 !== null && !Array.isArray(value2) ? value2 : null;
+  function reader(value2) {
+    const fields = fieldsOf(value2);
+    const position = whole(fields?.["position"]);
+    const lag = whole(fields?.["lag"]);
+    return position === null || lag === null ? null : { position, lag };
+  }
+  function group(value2) {
+    const fields = fieldsOf(value2);
+    const at2 = (name) => whole(fields?.[name]);
+    const position = at2("position");
+    const committed = at2("committed");
+    const lag = at2("lag");
+    const inFlight = at2("in_flight");
+    const redelivered = at2("redelivered");
+    const deadLettered = at2("dead_lettered");
+    const width = at2("width");
+    const deadline = fields?.["deadline"];
+    if (position === null || committed === null || lag === null || inFlight === null || redelivered === null || deadLettered === null || width === null || typeof deadline !== "string") {
+      return null;
+    }
+    return {
+      position,
+      committed,
+      lag,
+      in_flight: inFlight,
+      redelivered,
+      dead_lettered: deadLettered,
+      deadline,
+      width
+    };
+  }
+  function ingest(value2) {
+    const fields = fieldsOf(value2);
+    const group2 = fields?.["group"];
+    const into = fields?.["into"];
+    const running = fields?.["running"];
+    return typeof group2 === "string" && typeof into === "string" && typeof running === "boolean" ? { group: group2, into, running } : null;
+  }
+  function entries(value2, narrow) {
+    const found = /* @__PURE__ */ new Map();
+    for (const [name, each] of Object.entries(fieldsOf(value2) ?? {})) {
+      const narrowed = narrow(each);
+      if (narrowed !== null) {
+        found.set(name, narrowed);
+      }
+    }
+    return found;
+  }
+  function topic(value2) {
+    const fields = fieldsOf(value2);
+    const name = fields?.["name"];
+    const last = whole(fields?.["last"]);
+    if (fields === null || typeof name !== "string" || last === null) {
+      return null;
+    }
+    const retain = fields["retain"];
+    const window2 = fields["deduplicate"];
+    const key = fields["deduplicate_on"];
+    return {
+      name,
+      first: whole(fields["first"]),
+      last,
+      retain: typeof retain === "string" ? retain : null,
+      retainBytes: whole(fields["retain_bytes"]),
+      bytes: whole(fields["bytes"]),
+      maxBytes: whole(fields["max_bytes"]),
+      repeats: typeof window2 === "string" && typeof key === "string" ? { key, window: window2 } : null,
+      readers: entries(fields["consumers"], reader),
+      groups: entries(fields["groups"], group),
+      ingestedBy: entries(fields["ingested_by"], ingest)
+    };
+  }
+  function keeps(topic2) {
+    const limits = [
+      ...topic2.retain === null ? [] : [topic2.retain],
+      ...topic2.retainBytes === null ? [] : [`${topic2.retainBytes} bytes`]
+    ];
+    return limits.length === 0 ? "everything" : limits.join(", ");
+  }
+  function repeats(topic2) {
+    return topic2.repeats === null ? "kept" : `dropped within ${topic2.repeats.window} by ${topic2.repeats.key}`;
+  }
+  var held5 = (topic2) => topic2.first === null || topic2.last < topic2.first ? 0 : topic2.last - topic2.first + 1;
+  function behind(topic2) {
+    const lags = [...topic2.readers.values(), ...topic2.groups.values()].map((each) => each.lag);
+    return lags.length === 0 ? 0 : Math.max(...lags);
+  }
+
+  // src/topic-names.ts
+  //! What the Topics screen may write into a statement.
+  //!
+  //! A topic, a group, a namespace and a database are grammar: the node cannot take
+  //! them as parameters, so this screen writes them into the text. That is safe
+  //! only behind a check narrower than the node's own lexer, and these are the same
+  //! two patterns every client applies (consumer contract 1.0, section 3). A name
+  //! that fails is refused here, before anything is sent, rather than quoted.
+  //!
+  //! Numbers and durations are grammar too — `AFTER 40`, `ACK DEADLINE 30s` — and
+  //! are checked for the same reason.
+  var NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  var GROUP = /^[A-Za-z0-9_.:-]{1,128}$/;
+  var DURATION = /^[0-9]{1,9}(ms|s|m|h|d|w)$/;
+  var WHOLE = /^[0-9]{1,15}$/;
+  var aName = (text) => NAME.test(text) ? text : null;
+  var aGroup = (text) => GROUP.test(text) ? text : null;
+  var aDuration = (text) => DURATION.test(text) ? text : null;
+  function aWhole(text) {
+    return WHOLE.test(text) ? Number(text) : null;
+  }
+  var tenancy = (namespace, database) => `USE NAMESPACE ${namespace}; USE DATABASE ${database}; `;
+
+  // src/topic-list.ts
+  //! The Topics screen's reading: where, which topics, the chosen one, its messages.
+  //!
+  //! Everything here reads. Nothing moves a position — the message browser uses
+  //! `READ FROM … AFTER n` with no consumer, which is a look and nothing more.
+  var SCREEN = "Topics";
+  var TOPICS_SHOWN = 200;
+  function where2() {
+    const namespace = aName(value("topics-namespace"));
+    const database = aName(value("topics-database"));
+    return namespace === null || database === null ? null : { namespace, database };
+  }
+  var topics = [];
+  var chosenName = null;
+  var listeners2 = [];
+  var chosen = () => topics.find((each) => each.name === chosenName) ?? null;
+  function whenChosen(todo) {
+    listeners2.push(todo);
+  }
+  var words = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
+  async function results(source) {
+    const { text } = await ask(source, SCREEN);
+    const body = JSON.parse(text);
+    if (!Array.isArray(body.results)) {
+      throw new Error(typeof body.error === "string" ? body.error : text);
+    }
+    return body.results;
+  }
+  function strings(answered2, field) {
+    const list = held3(answered2)?.[field];
+    return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
+  }
+  function offer(id, names2) {
+    const select = at(id);
+    const kept2 = value(id);
+    clear(id);
+    for (const name of names2) {
+      const option = made("option");
+      option.value = name;
+      option.textContent = name;
+      select.appendChild(option);
+    }
+    if (names2.includes(kept2)) {
+      setValue(id, kept2);
+    }
+  }
+  async function readNamespaces() {
+    state("topics-status", "waiting", "asking…");
+    try {
+      offer("topics-namespace", strings(await valueOf("INFO FOR STORE;", SCREEN), "namespaces"));
+    } catch (failure) {
+      state("topics-status", "wrong", words(failure));
+      return;
+    }
+    await readDatabases();
+  }
+  async function readDatabases() {
+    const namespace = aName(value("topics-namespace"));
+    if (namespace === null) {
+      offer("topics-database", []);
+      draw2([]);
+      state("topics-status", "empty", "No namespace here — declare one on Run with DEFINE NAMESPACE.");
+      return;
+    }
+    try {
+      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN);
+      offer("topics-database", strings(answered2, "databases"));
+    } catch (failure) {
+      state("topics-status", "wrong", words(failure));
+      return;
+    }
+    await readTopics();
+  }
+  async function readTopics() {
+    const place2 = where2();
+    if (place2 === null) {
+      draw2([]);
+      state("topics-status", "empty", "Choose a namespace and a database that exist.");
+      return;
+    }
+    const start = tenancy(place2.namespace, place2.database);
+    state("topics-status", "waiting", "asking…");
+    try {
+      const listed2 = strings(await valueOf(start + "INFO FOR DATABASE;", SCREEN), "topics");
+      const names2 = listed2.filter((name) => aName(name) !== null);
+      const shown3 = names2.slice(0, TOPICS_SHOWN);
+      const asked2 = shown3.map((name) => `INFO FOR TOPIC ${name};`).join(" ");
+      const answered2 = shown3.length === 0 ? [] : await results(start + asked2);
+      const read = answered2.map((each) => topic(each.value)).filter((each) => each !== null);
+      draw2(read);
+      if (names2.length === 0) {
+        const here2 = `${place2.namespace}.${place2.database}`;
+        state("topics-status", "empty", `${here2} holds no topics — create one below.`);
+      } else if (names2.length > shown3.length) {
+        state("topics-status", "partial", `showing ${shown3.length} of ${names2.length} topics`);
+      } else {
+        settled("topics-status");
+      }
+    } catch (failure) {
+      draw2([]);
+      state("topics-status", "wrong", words(failure));
+    }
+  }
+  function numberCell(row, figure2) {
+    const box2 = row.insertCell();
+    box2.textContent = String(figure2);
+    box2.classList.add("number");
+  }
+  function headed(names2) {
+    const table = made("table");
+    const head = table.createTHead().insertRow();
+    for (const name of names2) {
+      const column = made("th");
+      column.textContent = name;
+      head.appendChild(column);
+    }
+    return table;
+  }
+  function draw2(read) {
+    topics = read;
+    if (chosen() === null) {
+      chosenName = null;
+    }
+    clear("topics-list");
+    if (read.length > 0) {
+      const table = headed(["topic", "held", "last", "keeps", "repeats", "readers", "groups", "most behind"]);
+      const body = table.createTBody();
+      for (const each of read) {
+        const row = body.insertRow();
+        const pick = made("button", each.name === chosenName ? "quiet chosen" : "quiet");
+        pick.type = "button";
+        pick.textContent = each.name;
+        pick.setAttribute("aria-pressed", String(each.name === chosenName));
+        pick.addEventListener("click", () => choose(each.name));
+        row.insertCell().appendChild(pick);
+        numberCell(row, held5(each));
+        numberCell(row, each.last);
+        row.insertCell().textContent = keeps(each);
+        row.insertCell().textContent = repeats(each);
+        numberCell(row, each.readers.size);
+        numberCell(row, each.groups.size);
+        numberCell(row, behind(each));
+      }
+      at("topics-list").appendChild(table);
+    }
+    drawChosen();
+  }
+  function choose(name) {
+    chosenName = name;
+    const found = chosen();
+    setValue("browse-after", String(found === null || found.first === null ? 0 : found.first - 1));
+    clear("browse-list");
+    settled("browse-status");
+    draw2(topics);
+  }
+  function drawChosen() {
+    const found = chosen();
+    at("topic-chosen").textContent = found?.name ?? "none chosen";
+    for (const id of ["topic-facts", "topic-readers", "topic-groups", "topic-ingested"]) {
+      clear(id);
+    }
+    disable("browse-read", found === null);
+    disable("browse-next", found === null);
+    if (found !== null) {
+      facts("topic-facts", {
+        held: held5(found),
+        first: found.first ?? "none held",
+        last: found.last,
+        keeps: keeps(found),
+        "bytes held": found.bytes === null ? "not counted" : `${found.bytes} bytes`,
+        "largest message": found.maxBytes === null ? "any size" : `${found.maxBytes} bytes`
+      });
+      const readers = headed(["reader", "position", "lag"]);
+      const readerRows = readers.createTBody();
+      for (const [name, each] of found.readers) {
+        const row = readerRows.insertRow();
+        row.insertCell().textContent = name;
+        numberCell(row, each.position);
+        numberCell(row, each.lag);
+      }
+      at("topic-readers").appendChild(found.readers.size > 0 ? readers : note("nobody reads under a name"));
+      const groups = headed([
+        "group",
+        "handed out",
+        "committed",
+        "lag",
+        "in flight",
+        "width",
+        "redelivered",
+        "dead letters",
+        "deadline"
+      ]);
+      const groupRows = groups.createTBody();
+      for (const [name, each] of found.groups) {
+        const row = groupRows.insertRow();
+        row.insertCell().textContent = name;
+        const figures = [
+          each.position,
+          each.committed,
+          each.lag,
+          each.in_flight,
+          each.width,
+          each.redelivered,
+          each.dead_lettered
+        ];
+        for (const figure2 of figures) {
+          numberCell(row, figure2);
+        }
+        row.insertCell().textContent = each.deadline;
+      }
+      at("topic-groups").appendChild(found.groups.size > 0 ? groups : note("no group settles this topic"));
+      const ingested = headed(["consumer", "group", "into", "here"]);
+      const ingestedRows = ingested.createTBody();
+      for (const [name, each] of found.ingestedBy) {
+        const row = ingestedRows.insertRow();
+        for (const cell2 of [name, each.group, each.into, each.running ? "running" : "not running"]) {
+          row.insertCell().textContent = cell2;
+        }
+      }
+      at("topic-ingested").appendChild(
+        found.ingestedBy.size > 0 ? ingested : note("no topic consumer reads this topic")
+      );
+    }
+    for (const todo of listeners2) {
+      todo();
+    }
+  }
+  function note(words6) {
+    const line = made("p", "empty");
+    line.textContent = words6;
+    return line;
+  }
+  async function browse() {
+    const place2 = where2();
+    const found = chosen();
+    const after2 = aWhole(trimmed("browse-after"));
+    const count2 = aWhole(trimmed("browse-count"));
+    if (place2 === null || found === null || after2 === null || count2 === null || count2 < 1 || count2 > 100) {
+      say("browse-status", "a position from 0 and a count from 1 to 100", true);
+      return;
+    }
+    state("browse-status", "waiting", "reading…");
+    try {
+      const answered2 = await valueOf(
+        tenancy(place2.namespace, place2.database) + `READ FROM ${found.name} AFTER ${after2} LIMIT ${count2};`,
+        SCREEN
+      );
+      const records = answered2?.records ?? [];
+      clear("browse-list");
+      const table = headed(["position", "message"]);
+      const body = table.createTBody();
+      let last = after2;
+      for (const record2 of records) {
+        const inside = fieldsOf(record2.value) ?? {};
+        const position = typeof inside["position"] === "number" ? inside["position"] : last;
+        last = Math.max(last, position);
+        const row = body.insertRow();
+        numberCell(row, position);
+        row.insertCell().textContent = JSON.stringify(inside["value"] ?? null);
+      }
+      at("browse-list").appendChild(table);
+      at("browse-next").dataset["after"] = String(last);
+      const said3 = (answered2?.notes ?? []).map((each) => each.message).join(" · ");
+      const also = said3 === "" ? "" : ` — ${said3}`;
+      if (records.length === 0) {
+        state("browse-status", "empty", `nothing after position ${after2}${also}`);
+      } else {
+        say("browse-status", `${records.length} from position ${after2 + 1}${also}`);
+      }
+    } catch (failure) {
+      state("browse-status", "wrong", words(failure));
+    }
+  }
+  function wire7() {
+    at("topics-namespace").addEventListener("change", () => void readDatabases());
+    at("topics-database").addEventListener("change", () => void readTopics());
+    at("topics-refresh").addEventListener("click", () => void readNamespaces());
+    at("browse-read").addEventListener("click", () => void browse());
+    at("browse-next").addEventListener("click", () => {
+      setValue("browse-after", at("browse-next").dataset["after"] ?? trimmed("browse-after"));
+      void browse();
+    });
+    onArrival(["topics"], () => void readNamespaces());
+  }
+
+  // src/data-list.ts
+  //! Reading what the store holds, for the Data screen.
+  //!
+  //! Three questions, each one statement: `INFO FOR STORE` for the namespaces,
+  //! `INFO FOR NAMESPACE` for its databases, and every table of the chosen
+  //! database described in ONE script of `INFO FOR TABLE` — a request per table
+  //! would make a database of two hundred tables two hundred round trips.
+  var SCREEN2 = "Data";
+  var opened = null;
+  var words2 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
+  var names = (answered2, field) => {
+    const list = held3(answered2)?.[field];
+    return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
+  };
+  function kind(about) {
+    for (const flag of ["collection", "vault", "bucket", "edge"]) {
+      if (about[flag] === true) return flag;
+    }
+    const definition2 = about["definition"];
+    for (const declared of ["series", "space", "queue"]) {
+      if (typeof definition2 === "string" && definition2.startsWith(`DEFINE ${declared.toUpperCase()} `)) {
+        return declared;
+      }
+    }
+    return about["schemafull"] === true ? "table" : "table, schemaless";
+  }
+  var count = (about, field) => {
+    const list = about[field];
+    return Array.isArray(list) ? String(list.length) : "";
+  };
+  function selection() {
+    const namespace = aName(value("data-namespace"));
+    const database = aName(value("data-database"));
+    return namespace === null || database === null ? null : `USE NAMESPACE ${namespace}; USE DATABASE ${database}; `;
+  }
+  var listeners3 = [];
+  function onChosen(listener) {
+    listeners3.push(listener);
+  }
+  var chosen2 = () => {
+    for (const listener of listeners3) listener();
+  };
+  async function readNamespaces2() {
+    state("data-status", "waiting", "asking…");
+    try {
+      offer("data-namespace", names(await valueOf("INFO FOR STORE;", SCREEN2), "namespaces"));
+    } catch (failure) {
+      state("data-status", "wrong", words2(failure));
+      return;
+    }
+    await readDatabases2();
+  }
+  async function readDatabases2() {
+    const namespace = aName(value("data-namespace"));
+    if (namespace === null) {
+      offer("data-database", []);
+      draw3([]);
+      chosen2();
+      state("data-status", "empty", "No namespace here — declare one on Run with DEFINE NAMESPACE.");
+      return;
+    }
+    try {
+      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN2);
+      offer("data-database", names(answered2, "databases"));
+    } catch (failure) {
+      state("data-status", "wrong", words2(failure));
+      return;
+    }
+    await readTables();
+  }
+  async function readTables() {
+    chosen2();
+    const selecting = selection();
+    if (selecting === null) {
+      draw3([]);
+      state("data-status", "empty", "This namespace holds no database yet.");
+      return;
+    }
+    try {
+      const tables = names(await valueOf(selecting + "INFO FOR DATABASE;", SCREEN2), "tables").filter((name) => aName(name) !== null);
+      if (tables.length === 0) {
+        draw3([]);
+        state("data-status", "empty", "This database holds no table yet — define one on Run.");
+        return;
+      }
+      const { text } = await ask(
+        selecting + tables.map((name) => `INFO FOR TABLE ${name};`).join(" "),
+        SCREEN2
+      );
+      const body = JSON.parse(text);
+      if (!Array.isArray(body.results)) {
+        throw new Error(typeof body.error === "string" ? body.error : text);
+      }
+      const answers = body.results.slice(2);
+      draw3(tables.map((name, at_) => ({ name, about: held3(answers[at_] ?? null) ?? {} })));
+      settled("data-status");
+    } catch (failure) {
+      state("data-status", "wrong", words2(failure));
+    }
+  }
+  function draw3(read) {
+    clear("data-list");
+    if (read.length === 0) return;
+    const table = made("table");
+    const head = table.createTHead().insertRow();
+    for (const column of ["table", "kind", "fields", "indexes", ""]) {
+      const cell2 = made("th");
+      cell2.textContent = column;
+      head.appendChild(cell2);
+    }
+    const body = table.createTBody();
+    for (const each of read) {
+      const row = body.insertRow();
+      const name = made("button", "link");
+      name.type = "button";
+      name.textContent = each.name;
+      name.addEventListener("click", () => openTable(each));
+      row.insertCell().appendChild(name);
+      row.insertCell().textContent = kind(each.about);
+      row.insertCell().textContent = count(each.about, "fields");
+      row.insertCell().textContent = count(each.about, "indexes");
+      const actions = row.insertCell();
+      actions.className = "actions";
+      const browse2 = made("button", "quiet small");
+      browse2.type = "button";
+      browse2.textContent = "Open on Run";
+      browse2.setAttribute("aria-label", `Open ${each.name} on Run`);
+      browse2.addEventListener("click", () => browseOnRun(each));
+      actions.appendChild(browse2);
+    }
+    at("data-list").appendChild(table);
+  }
+  function openTable(one2) {
+    opened = one2;
+    write("table-dialog-title", one2.name);
+    say("table-status", kind(one2.about));
+    const named = (field) => {
+      const list = one2.about[field];
+      return Array.isArray(list) ? list.map(
+        (each) => typeof each === "object" && each !== null && "name" in each ? String(each.name) : String(each)
+      ).join(", ") : "";
+    };
+    facts("table-facts", {
+      identity: one2.about["identity"] ?? "",
+      fields: named("fields") || "none declared",
+      indexes: named("indexes") || "none",
+      events: named("events") || "none"
+    });
+    write("table-definition", typeof one2.about["definition"] === "string" ? one2.about["definition"] : "");
+    openDialog("table-dialog");
+  }
+  function browseOnRun(one2) {
+    const selecting = selection();
+    if (selecting === null) return;
+    setValue("script", `${selecting}SELECT * FROM ${one2.name} LIMIT 50;`);
+    show("run");
+    at("run-script").click();
+  }
+  function wire8() {
+    at("data-namespace").addEventListener("change", () => void readDatabases2());
+    at("data-database").addEventListener("change", () => void readTables());
+    at("data-refresh").addEventListener("click", () => void readNamespaces2());
+    at("table-browse").addEventListener("click", () => {
+      const one2 = opened;
+      const shown3 = at("table-dialog");
+      if (shown3 instanceof HTMLDialogElement) shown3.close();
+      if (one2 !== null) browseOnRun(one2);
+    });
+    onArrival(["data"], () => void readNamespaces2());
   }
 
   // src/detail.ts
@@ -936,10 +1630,10 @@
   //! short at the log's walk budget are three different facts. Rendering any two
   //! of them the same way is the failure this console has refused by name three
   //! times: an absence that looks like a measurement.
-  function timeline(kind2, history) {
+  function timeline(kind3, history) {
     clear("detail-history");
     const line = made("p", "note");
-    if (kind2 !== "record") {
+    if (kind3 !== "record") {
       line.textContent = "Only a record has a history: a catalog row is kept out of the log’s change projection, so there is nothing recorded to draw for this.";
       at("detail-history").appendChild(line);
       return;
@@ -971,8 +1665,8 @@
       at("detail-history").appendChild(cut);
     }
   }
-  function show2(kind2, name, answered2, history = null) {
-    at("detail-kind").textContent = kind2;
+  function show2(kind3, name, answered2, history = null) {
+    at("detail-kind").textContent = kind3;
     at("detail-name").textContent = name;
     clear("detail-facts");
     if (Array.isArray(answered2?.records)) {
@@ -999,7 +1693,7 @@
       nothing.textContent = "The node answered, and the answer carries no fields.";
       at("detail-facts").appendChild(nothing);
     }
-    timeline(kind2, history);
+    timeline(kind3, history);
     at("detail-sheet").hidden = false;
     at("detail-close").focus();
   }
@@ -1007,7 +1701,7 @@
     at("detail-sheet").hidden = true;
   }
   var hide2 = closeIt2;
-  function wire6() {
+  function wire9() {
     at("detail-close").addEventListener("click", closeIt2);
     document.addEventListener("keydown", (pressed) => {
       if (pressed.key === "Escape" && !at("detail-sheet").hidden) {
@@ -1015,29 +1709,6 @@
       }
     });
   }
-
-  // src/topic-names.ts
-  //! What the Topics screen may write into a statement.
-  //!
-  //! A topic, a group, a namespace and a database are grammar: the node cannot take
-  //! them as parameters, so this screen writes them into the text. That is safe
-  //! only behind a check narrower than the node's own lexer, and these are the same
-  //! two patterns every client applies (consumer contract 1.0, section 3). A name
-  //! that fails is refused here, before anything is sent, rather than quoted.
-  //!
-  //! Numbers and durations are grammar too — `AFTER 40`, `ACK DEADLINE 30s` — and
-  //! are checked for the same reason.
-  var NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-  var GROUP = /^[A-Za-z0-9_.:-]{1,128}$/;
-  var DURATION = /^[0-9]{1,9}(ms|s|m|h|d|w)$/;
-  var WHOLE = /^[0-9]{1,15}$/;
-  var aName = (text) => NAME.test(text) ? text : null;
-  var aGroup = (text) => GROUP.test(text) ? text : null;
-  var aDuration = (text) => DURATION.test(text) ? text : null;
-  function aWhole(text) {
-    return WHOLE.test(text) ? Number(text) : null;
-  }
-  var tenancy = (namespace, database) => `USE NAMESPACE ${namespace}; USE DATABASE ${database}; `;
 
   // src/drawer.ts
   //! One node, over the map.
@@ -1167,7 +1838,7 @@
     hide("drawer", true);
     open = null;
   }
-  function wire7() {
+  function wire10() {
     for (const bit of BITS) {
       at(`drawer-${bit}`).addEventListener("change", preview);
     }
@@ -1227,7 +1898,7 @@
   //! above it says when the fingerprint is this node's own — revoking that cuts
   //! this node off from its own cluster, which is a thing to be told before, not
   //! after.
-  var SCREEN = "Cluster · trust";
+  var SCREEN3 = "Cluster · trust";
   var FINGERPRINT = /^[0-9a-f]{64}$/;
   var DAY_MS = 864e5;
   var PERIODS = ["awareness", "collection", "round", "campaign", "lease"];
@@ -1284,11 +1955,11 @@
   function drawJoin() {
     const select = at("join-row");
     clear("join-row");
-    const open2 = rows.filter((row) => (row.node ?? null) === null && typeof row.name === "string");
-    if (open2.length === 0) {
+    const open3 = rows.filter((row) => (row.node ?? null) === null && typeof row.name === "string");
+    if (open3.length === 0) {
       hide("join-token", true);
     }
-    for (const row of open2) {
+    for (const row of open3) {
       const option = made("option");
       option.value = row.name ?? "";
       const until = row.join_expires_ms;
@@ -1297,15 +1968,15 @@
     }
     shapeJoin();
   }
-  function drawFailover(held5) {
+  function drawFailover(held6) {
     write(
       "failover-held",
-      held5 === null || held5 === void 0 ? "Nobody has set a policy: every node runs the built-in periods shown as placeholders." : "Set: " + PERIODS.map((clause) => `${clause.toUpperCase()} ${told(held5[clause])}`).join(", ") + (held5["balance_leaderships"] === true ? ", BALANCE LEADERSHIPS" : "") + ` (epoch ${told(held5["epoch"])}, version ${told(held5["version"])}).`
+      held6 === null || held6 === void 0 ? "Nobody has set a policy: every node runs the built-in periods shown as placeholders." : "Set: " + PERIODS.map((clause) => `${clause.toUpperCase()} ${told(held6[clause])}`).join(", ") + (held6["balance_leaderships"] === true ? ", BALANCE LEADERSHIPS" : "") + ` (epoch ${told(held6["epoch"])}, version ${told(held6["version"])}).`
     );
-    at("failover-balance").checked = held5?.["balance_leaderships"] === true;
+    at("failover-balance").checked = held6?.["balance_leaderships"] === true;
     shapeFailover();
   }
-  function draw2(seen) {
+  function draw4(seen) {
     mine = seen.certificates ?? [];
     rows = seen.cluster?.peers ?? [];
     drawMine();
@@ -1369,7 +2040,7 @@
   async function send(statement2, status, why) {
     say(status, "sending…");
     try {
-      const answered2 = await valueOf(statement2, SCREEN, why);
+      const answered2 = await valueOf(statement2, SCREEN3, why);
       say(status, "done");
       return answered2 !== null;
     } catch (failure) {
@@ -1377,7 +2048,14 @@
       return false;
     }
   }
-  function wire8() {
+  function wire11() {
+    at("open-revoke").addEventListener("click", () => openDialog("revoke-dialog"));
+    at("open-join").addEventListener("click", () => {
+      hide("join-token", true);
+      say("join-status", "");
+      openDialog("join-dialog");
+    });
+    at("open-failover").addEventListener("click", () => openDialog("failover-dialog"));
     for (const id of ["revoke-fingerprint", "revoke-confirm"]) {
       at(id).addEventListener("input", shapeRevoke);
     }
@@ -1396,6 +2074,7 @@
       if (await send(composed.statement, "revoke-status", trimmed("revoke-why") || void 0)) {
         setValue("revoke-confirm", "");
         setValue("revoke-fingerprint", "");
+        closeDialog("revoke-dialog");
         hereAgain();
       }
     });
@@ -1408,7 +2087,7 @@
       say("join-status", "sending…");
       hide("join-token", true);
       try {
-        const answered2 = await valueOf(`CREATE JOIN TOKEN FOR REPLICA ${name} EXPIRES ${life};`, SCREEN);
+        const answered2 = await valueOf(`CREATE JOIN TOKEN FOR REPLICA ${name} EXPIRES ${life};`, SCREEN3);
         const token2 = answered2 !== null && answered2.kind === "value" ? answered2.value : null;
         if (typeof token2 !== "string") {
           say("join-status", "the node answered without a token", true);
@@ -1427,6 +2106,7 @@ Shown once. The node keeps only its digest.`);
     at("failover-apply").addEventListener("click", async () => {
       const composed = policy();
       if ("statement" in composed && await send(composed.statement, "failover-status")) {
+        closeDialog("failover-dialog");
         hereAgain();
       }
     });
@@ -1536,8 +2216,8 @@ Shown once. The node keeps only its digest.`);
     return space === "" ? null : space;
   }
   function role() {
-    const chosen2 = value("new-role");
-    return chosen2 === "other" ? trimmed("new-role-other") : chosen2;
+    const chosen3 = value("new-role");
+    return chosen3 === "other" ? trimmed("new-role-other") : chosen3;
   }
   function definition() {
     const name = trimmed("new-name");
@@ -1572,8 +2252,8 @@ Shown once. The node keeps only its digest.`);
     preview2();
   }
   function changedRole() {
-    const chosen2 = value("change-role");
-    return chosen2 === "other" ? trimmed("change-role-other") : chosen2;
+    const chosen3 = value("change-role");
+    return chosen3 === "other" ? trimmed("change-role-other") : chosen3;
   }
   function alteration() {
     const name = trimmed("change-name");
@@ -1627,7 +2307,7 @@ Shown once. The node keeps only its digest.`);
     );
     write("remove-preview", statement2 ?? "");
   }
-  function wire9() {
+  function wire12() {
     for (const field of [
       "new-name",
       "new-scope",
@@ -1775,7 +2455,7 @@ Shown once. The node keeps only its digest.`);
     block.textContent = rows2.length === 0 || incomplete(rows2) !== null ? "" : formation(rows2);
     at("form-statement").appendChild(block);
   }
-  function changed() {
+  function changed2() {
     preview3();
     showStatement();
   }
@@ -1786,7 +2466,7 @@ Shown once. The node keeps only its digest.`);
     const endpoint = Array.isArray(endpoints) && typeof endpoints[0] === "string" ? endpoints[0] : "";
     thisNode = { id, endpoint };
     if (peers > 0 || IDENTIFYING.some((part) => trimmed(`peer-0-${part}`) !== "")) {
-      changed();
+      changed2();
       return;
     }
     setValue("peer-0-name", "this_node");
@@ -1795,15 +2475,27 @@ Shown once. The node keeps only its digest.`);
     for (const bit of BITS2) {
       at(`peer-0-${bit}`).checked = true;
     }
-    changed();
+    changed2();
   }
-  function wire10() {
+  function wire13() {
     for (let index = 0; index < ROWS; index += 1) {
       for (const part of [...TEXTS, ...BITS2]) {
-        at(`peer-${index}-${part}`).addEventListener("input", changed);
-        at(`peer-${index}-${part}`).addEventListener("change", changed);
+        at(`peer-${index}-${part}`).addEventListener("input", changed2);
+        at(`peer-${index}-${part}`).addEventListener("change", changed2);
       }
     }
+    at("open-form").addEventListener("click", () => openDialog("form-dialog"));
+    at("add-peer").addEventListener("click", () => {
+      for (let index = 1; index < ROWS; index += 1) {
+        const row = at(`peer-row-${index}`);
+        if (row.hidden) {
+          row.hidden = false;
+          at(`peer-${index}-name`).focus();
+          break;
+        }
+      }
+      at("add-peer").hidden = !at(`peer-row-${ROWS - 1}`).hidden;
+    });
     at("form-cluster").addEventListener("click", async () => {
       const rows2 = intended();
       if (rows2.length === 0) {
@@ -1829,15 +2521,86 @@ Shown once. The node keeps only its digest.`);
             for (const bit of BITS2) {
               at(`peer-${index}-${bit}`).checked = false;
             }
+            at(`peer-row-${index}`).hidden = index > 0;
           }
-          changed();
+          at("add-peer").hidden = false;
+          changed2();
+          closeDialog("form-dialog");
           hereAgain();
         }
       } catch (failure) {
         say("form-status", told(failure), true);
       }
     });
-    changed();
+    changed2();
+  }
+
+  // src/gate.ts
+  //! Whether this page shows the console or the sign-in page.
+  //!
+  //! The node decides, not this module. A store that has declared a user refuses
+  //! an unsigned script with `401`; one that has not answers it. So the gate asks
+  //! exactly that — one `RETURN 1;` through the console's one path to the node —
+  //! and draws what the answer means. Hiding the console is a courtesy: every
+  //! route behind it refuses an unsigned request on its own, and nothing here is
+  //! what keeps the data in.
+  var open2 = false;
+  var storeIsOpen = () => open2;
+  function showGate(words6, failed2) {
+    hold(true);
+    hide("shell", true);
+    hide("gate", false);
+    if (words6 !== "") {
+      say("identity-status", words6, failed2);
+    }
+    at("user").focus();
+  }
+  function showConsole() {
+    hide("gate", true);
+    hide("shell", false);
+    hide("open-banner", !open2);
+    const holding = token() !== null;
+    hide("mine-open", !holding);
+    hide("sign-out", !holding);
+    if (open2) {
+      write("signed-in", "open store — no users");
+    } else {
+      signedIn();
+    }
+    hold(false);
+    hereAgain();
+  }
+  async function decide() {
+    if (token() !== null) {
+      open2 = false;
+      showConsole();
+      return;
+    }
+    try {
+      const { reply } = await ask("RETURN 1;", "Sign-in · does this store need one");
+      if (reply.status === 401) {
+        open2 = false;
+        showGate("", false);
+        return;
+      }
+      if (reply.status >= 400) {
+        showGate(`the node answered ${reply.status} — try again in a moment`, true);
+        return;
+      }
+      open2 = true;
+      showConsole();
+    } catch (failure) {
+      showGate(
+        failure instanceof Unreachable ? `the node did not answer: ${told(failure)}` : told(failure),
+        true
+      );
+    }
+  }
+  function wire14() {
+    write("gate-where", window.location.host);
+    at("gate-form").addEventListener("submit", (event) => event.preventDefault());
+    onIdentityChange(() => void decide());
+    void decide();
   }
 
   // src/grants.ts
@@ -1868,6 +2631,24 @@ Shown once. The node keeps only its digest.`);
   //! language keeps them as separate statements for that reason. This screen keeps
   //! them as one control with a reach chooser, because to the operator they are
   //! one decision — who may do what, and how far.
+  var landed = () => {
+  };
+  function afterApplied(listener) {
+    landed = listener;
+  }
+  function offer2(fill) {
+    const direction = fill.direction ?? "give";
+    setValue("grant-who", fill.who);
+    setValue("grant-direction", direction);
+    setValue("grant-reach", fill.reach ?? "table");
+    setValue("grant-name", fill.name ?? "");
+    setValue("grant-what", fill.what ?? "");
+    setValue("grant-why", "");
+    say("grant-status", "");
+    shape2();
+    write("grant-dialog-title", direction === "take" ? `Take away from ${fill.who}` : `Give ${fill.who}`);
+    openDialog("grant-dialog");
+  }
   var reachOf = () => value("grant-reach");
   function statement() {
     const who = trimmed("grant-who");
@@ -1884,8 +2665,8 @@ Shown once. The node keeps only its digest.`);
         return null;
       }
       const [namespaceOf, databaseOf, table] = parts;
-      const act2 = giving ? `GRANT ${what} ON ${table} TO ${who};` : `REVOKE ${what} ON ${table} FROM ${who};`;
-      return `USE NAMESPACE ${namespaceOf}; USE DATABASE ${databaseOf}; ${act2}`;
+      const act3 = giving ? `GRANT ${what} ON ${table} TO ${who};` : `REVOKE ${what} ON ${table} FROM ${who};`;
+      return `USE NAMESPACE ${namespaceOf}; USE DATABASE ${databaseOf}; ${act3}`;
     }
     const target = reach3 === "store" ? "STORE" : `${reach3 === "namespace" ? "NAMESPACE" : "DATABASE"} ${name}`;
     return giving ? `GRANT ${what} ON ${target} TO ${who};` : `REVOKE ${what} ON ${target} FROM ${who};`;
@@ -1922,7 +2703,7 @@ Shown once. The node keeps only its digest.`);
     hide("grant-name-field", reachOf() === "store");
     say("grant-says", statement() === null ? missing2() : says());
   }
-  function wire11() {
+  function wire15() {
     for (const field of [
       "grant-who",
       "grant-what",
@@ -1949,6 +2730,8 @@ Shown once. The node keeps only its digest.`);
       try {
         const answered2 = await valueOf(sending, "Access · grant", why);
         say("grant-status", answered2 !== null && answered2.kind === "done" ? "done" : "");
+        closeDialog("grant-dialog");
+        landed();
       } catch (failure) {
         say("grant-status", told(failure), true);
       }
@@ -1970,6 +2753,7 @@ Shown once. The node keeps only its digest.`);
   var ring = (cx, cy, r) => `M${cx - r} ${cy}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 -${2 * r} 0`;
   var SHAPES = {
     run: [box(3, 4, 18, 16, 2), "M7 9l3 3-3 3", "M12.5 15H17"],
+    data: ["M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z", "M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6", "M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"],
     topics: ["M4 6h16", "M4 12h10", "M4 18h13", "M19 10.5l2 1.5-2 1.5"],
     cluster: [ring(6, 7, 2.5), ring(18, 7, 2.5), ring(12, 18, 2.5), "M8.5 7h7", "M7.3 9.2l3.4 6.6", "M16.7 9.2l-3.4 6.6"],
     access: [ring(8, 15, 4), "M10.8 12.2L20 3", "M16 7l3 3", "M18.5 4.5l2 2"],
@@ -2002,7 +2786,7 @@ Shown once. The node keeps only its digest.`);
     }
     return svg;
   }
-  function wire12() {
+  function wire16() {
     for (const item of all("[data-destination]")) {
       const name = item.dataset["destination"] ?? "";
       if (isIcon(name)) {
@@ -2075,12 +2859,12 @@ Shown once. The node keeps only its digest.`);
   function lamps(has, wanted2) {
     const row = made("div", "lamps");
     for (const bit of BITS3) {
-      const held5 = has.includes(bit.name);
+      const held6 = has.includes(bit.name);
       const asked2 = wanted2 !== null && wanted2.includes(bit.name);
       row.appendChild(
         lamp(
           bit.letter,
-          held5 ? "held" : asked2 ? "wanted" : "off",
+          held6 ? "held" : asked2 ? "wanted" : "off",
           bit.means
         )
       );
@@ -2100,19 +2884,19 @@ Shown once. The node keeps only its digest.`);
     return line;
   }
   var told2 = (value2) => value2 === void 0 || value2 === null ? null : String(value2);
-  function lease(held5) {
-    if (held5 === void 0 || held5 === null) {
+  function lease(held6) {
+    if (held6 === void 0 || held6 === null) {
       return null;
     }
     const badge = made("div", "lease");
-    const held_ = held5;
-    const until = told2(held_.until ?? held_.expires ?? held5);
+    const held_ = held6;
+    const until = told2(held_.until ?? held_.expires ?? held6);
     badge.textContent = until === null ? "holds the lease" : `holds the lease until ${until}`;
     return badge;
   }
   var drained = (has) => has.length === 0;
-  function figure(title, has, wanted2, facts2, kind2, subject) {
-    const box2 = made("article", "node " + kind2);
+  function figure(title, has, wanted2, facts2, kind3, subject) {
+    const box2 = made("article", "node " + kind3);
     box2.tabIndex = 0;
     box2.setAttribute("role", "button");
     box2.setAttribute("aria-label", `${title} — open its drawer`);
@@ -2130,10 +2914,10 @@ Shown once. The node keeps only its digest.`);
     box2.appendChild(head);
     if (drained(has)) {
       const note2 = made("p", "note warn");
-      note2.textContent = kind2 === "self" ? "Drained — it holds its data and answers nothing." : "Declared with no roles — drained.";
+      note2.textContent = kind3 === "self" ? "Drained — it holds its data and answers nothing." : "Declared with no roles — drained.";
       box2.appendChild(note2);
     }
-    if (kind2 === "peer") {
+    if (kind3 === "peer") {
       const note2 = made("p", "faint");
       note2.textContent = "lamps as declared here; this node has not asked it";
       box2.appendChild(note2);
@@ -2186,8 +2970,8 @@ Shown once. The node keeps only its digest.`);
   function balancedTables(balanced) {
     const each = (balanced ?? []).map((one2) => {
       const shards = (one2.shards ?? []).map((shard) => `${shard.complete === false ? "≥" : ""}${told2(shard.records) ?? "?"}`).join(" / ");
-      const act2 = told2(one2.last_act);
-      return `${told2(one2.table) ?? "?"}: ${shards}${act2 === null ? "" : ` (last: ${act2})`}`;
+      const act3 = told2(one2.last_act);
+      return `${told2(one2.table) ?? "?"}: ${shards}${act3 === null ? "" : ` (last: ${act3})`}`;
     });
     return each.length === 0 ? null : each.join("; ");
   }
@@ -2203,7 +2987,7 @@ Shown once. The node keeps only its digest.`);
     }
     return `${told2(upstream.copied_records)} record(s) in ${upstream.copies} cop${upstream.copies === 1 ? "y" : "ies"}`;
   }
-  function draw3(into, seen) {
+  function draw5(into, seen) {
     const cluster = seen.cluster ?? {};
     const mine2 = seen.roles ?? [];
     const wanted2 = cluster.desired ?? null;
@@ -2287,47 +3071,6 @@ Shown once. The node keeps only its digest.`);
     }
   }
 
-  // src/states.ts
-  //! The four things a screen can be, said as four things.
-  //!
-  //! `say(id, words, failed?)` carries one string and one boolean, so the five
-  //! situations an operator actually meets render as two. The two that collapse
-  //! are the expensive ones: **nothing here** and **some of it** look identical,
-  //! and an operator who reads a bounded page as the whole list concludes an
-  //! account does not exist when it is simply not on screen.
-  //!
-  //! # Each state names a NEXT ACTION, and that is the half worth guarding
-  //!
-  //! "No users" is a state. "No users — this store is open to anybody, and the
-  //! first `DEFINE USER` closes it" is a state that tells the reader what to do
-  //! about it. A screen full of correct nouns and no verbs is a screen that makes
-  //! the operator go and ask somebody.
-  //!
-  //! # Why not simply widen `say`
-  //!
-  //! Because a wider `say` would let a screen render a partial state by passing
-  //! the wrong argument, and nothing would say so. Four named calls make the wrong
-  //! one a thing you have to type on purpose. `say` keeps its two-state job for
-  //! the many places that genuinely have two — this is not a rewrite of all
-  //! sixty-six of its call sites, and it must not become one.
-  function state(id, kind2, words4) {
-    const line = at(id);
-    line.textContent = words4;
-    for (const other of ["waiting", "empty", "partial", "wrong"]) {
-      line.classList.toggle(`is-${other}`, other === kind2);
-    }
-    line.classList.toggle("failed", kind2 === "wrong");
-    line.setAttribute("aria-live", kind2 === "wrong" ? "assertive" : "polite");
-  }
-  function settled(id) {
-    const line = at(id);
-    line.textContent = "";
-    for (const other of ["waiting", "empty", "partial", "wrong"]) {
-      line.classList.remove(`is-${other}`);
-    }
-    line.classList.remove("failed");
-  }
-
   // src/node.ts
   //! This machine, and what the cluster tab can say about it today.
   //!
@@ -2351,21 +3094,21 @@ Shown once. The node keeps only its digest.`);
   }
   function answer(scraped) {
     const body = scraped.body;
-    const words4 = typeof body === "object" && body !== null ? Object.entries(body).map(([name, value2]) => name + " " + String(value2)).join(", ") : String(body).trim();
-    return scraped.status + " " + words4;
+    const words6 = typeof body === "object" && body !== null ? Object.entries(body).map(([name, value2]) => name + " " + String(value2)).join(", ") : String(body).trim();
+    return scraped.status + " " + words6;
   }
   async function readNode() {
     say("node-status", "asking…");
     try {
-      const answered2 = held2(await valueOf("INFO FOR NODE;", "Node"));
+      const answered2 = held3(await valueOf("INFO FOR NODE;", "Node"));
       const all2 = answered2 ?? {};
       const { cluster, ...mine2 } = all2;
-      const store = held2(await valueOf("INFO FOR STORE;", "Node")) ?? {};
+      const store = held3(await valueOf("INFO FOR STORE;", "Node")) ?? {};
       facts("node-facts", { ...mine2, format: store["format"], writes: store["writes"] });
       const peers = typeof cluster === "object" && cluster !== null ? cluster.peers : void 0;
       clear("cluster-map");
-      draw3(at("cluster-map"), all2);
-      draw2(all2);
+      draw5(at("cluster-map"), all2);
+      draw4(all2);
       know(all2["id"], all2["endpoints"], Array.isArray(peers) ? peers.length : 0);
       facts("cluster-facts", {
         roles: all2["roles"],
@@ -2380,7 +3123,7 @@ Shown once. The node keeps only its digest.`);
         state(
           "cluster-status",
           "empty",
-          joining ? "This node holds a peer certificate and names nobody yet. To join through its seed, open This node above and set its roles to serving: a writable node stays its own authority and collects from nobody. To found a cluster here, declare the membership below." : "No peers — this node holds everything itself. Declare the membership below to add them, all at once."
+          joining ? "This node holds a peer certificate and names nobody yet. To join through its seed, open This node above and set its roles to serving: a writable node stays its own authority and collects from nobody. To found a cluster here, use Form the cluster." : "No peers — this node holds everything itself. Form the cluster to add them, all at once."
         );
       } else {
         settled("cluster-status");
@@ -2405,7 +3148,7 @@ Shown once. The node keeps only its digest.`);
     );
     say("node-status", "");
   }
-  function wire13() {
+  function wire17() {
     at("node-refresh").addEventListener("click", readNode);
     onArrival(["cluster", "this-node"], () => void readNode());
   }
@@ -2420,7 +3163,14 @@ Shown once. The node keeps only its digest.`);
     const differ = fresh !== "" && again !== "" && fresh !== again;
     say("mine-status", differ ? "the two new ones differ" : "", differ);
   }
-  function wire14() {
+  function wire18() {
+    at("mine-open").addEventListener("click", () => {
+      const menu = at("mine-open").closest("details");
+      if (menu !== null) {
+        menu.open = false;
+      }
+      openDialog("mine-dialog");
+    });
     for (const field of ["mine-current", "mine-new", "mine-again"]) {
       at(field).addEventListener("input", shapeMine);
     }
@@ -2455,8 +3205,8 @@ Shown once. The node keeps only its digest.`);
           setValue(field, "");
         }
         shapeMine();
-        at("sign-out").click();
-        say("identity-status", "password changed — sign in with the new one", false);
+        closeDialog("mine-dialog");
+        await signOut("password changed — sign in with the new one");
       } catch (failure) {
         say("mine-status", "the node did not answer: " + told(failure), true);
       }
@@ -2525,7 +3275,7 @@ Shown once. The node keeps only its digest.`);
       say("script-status", "the node did not answer: " + told(failure), true);
     }
   }
-  function wire15() {
+  function wire19() {
     for (const button of all("[data-shape]")) {
       button.addEventListener("click", () => {
         drawing = button.dataset["shape"] ?? "auto";
@@ -2542,6 +3292,143 @@ Shown once. The node keeps only its digest.`);
         void run();
       }
     });
+  }
+
+  // src/user-detail.ts
+  //! One account, looked at: what it is, what it holds, and taking any of it away.
+  //!
+  //! `INFO FOR USER` answers the role and tenancy, every table grant and every
+  //! authority. Each grant and authority is drawn with a Revoke beside it, which
+  //! opens the same give-or-take dialog every grant goes through — so a revoke
+  //! still shows what it will do and still asks why before anything is sent.
+  var showing = null;
+  var words3 = (value2) => Array.isArray(value2) ? value2.map(String).join(", ") : typeof value2 === "string" ? value2 : "";
+  function holdings(one2) {
+    const namespace = typeof one2["namespace"] === "string" ? one2["namespace"] : null;
+    const database = typeof one2["database"] === "string" ? one2["database"] : null;
+    const out = [];
+    for (const grant of Array.isArray(one2["grants"]) ? one2["grants"] : []) {
+      if (typeof grant !== "object" || grant === null) continue;
+      const fields = grant;
+      const table = typeof fields["table"] === "string" ? fields["table"] : "a dropped table";
+      const full = namespace !== null && database !== null ? `${namespace}.${database}.${table}` : table;
+      out.push({ kind: "table grant", what: words3(fields["verbs"]), on: full, reach: "table" });
+    }
+    for (const authority of Array.isArray(one2["authorities"]) ? one2["authorities"] : []) {
+      if (typeof authority !== "object" || authority === null) continue;
+      const fields = authority;
+      const where3 = words3(fields["reach"]);
+      const reach3 = where3 === "store" ? "store" : where3.includes(".") ? "database" : "namespace";
+      out.push({ kind: "authority", what: words3(fields["authority"]), on: where3, reach: reach3 });
+    }
+    return out;
+  }
+  function drawHoldings(name, list) {
+    clear("user-holds");
+    if (list.length === 0) {
+      const none = made("p", "note");
+      none.textContent = "Holds what its role gives, and nothing granted besides.";
+      at("user-holds").appendChild(none);
+      return;
+    }
+    const table = made("table");
+    const head = table.createTHead().insertRow();
+    for (const column of ["holds", "what", "on", ""]) {
+      const cell2 = made("th");
+      cell2.textContent = column;
+      head.appendChild(cell2);
+    }
+    const body = table.createTBody();
+    for (const one2 of list) {
+      const row = body.insertRow();
+      row.insertCell().textContent = one2.kind;
+      row.insertCell().textContent = one2.what;
+      row.insertCell().textContent = one2.on === "store" ? "the whole store" : one2.on;
+      const cell2 = row.insertCell();
+      cell2.className = "actions";
+      const revoke = made("button", "quiet small danger");
+      revoke.type = "button";
+      revoke.textContent = "Revoke…";
+      revoke.setAttribute("aria-label", `Revoke ${one2.what} on ${one2.on} — ${name}`);
+      revoke.addEventListener(
+        "click",
+        () => offer2({
+          who: name,
+          direction: "take",
+          reach: one2.reach,
+          name: one2.reach === "store" ? "" : one2.on,
+          what: one2.what
+        })
+      );
+      cell2.appendChild(revoke);
+    }
+    at("user-holds").appendChild(table);
+  }
+  function act(kind3, name) {
+    if (kind3 === "detail") {
+      void showUser(name);
+      return;
+    }
+    if (kind3 === "grant") {
+      offer2({ who: name });
+      return;
+    }
+    if (kind3 === "remove") {
+      setValue("remove-name", name);
+      setValue("remove-confirm", "");
+      setValue("remove-why", "");
+      shapeTheRemoval();
+      write("remove-dialog-title", `Remove ${name}`);
+      openDialog("remove-dialog");
+      return;
+    }
+    setValue("change-name", name);
+    setValue("change-what", kind3);
+    setValue("change-password", "");
+    setValue("change-why", "");
+    shapeTheChange();
+    write("change-dialog-title", kind3 === "password" ? `New password for ${name}` : `Role of ${name}`);
+    openDialog("change-dialog");
+  }
+  async function showUser(name) {
+    showing = name;
+    write("user-dialog-title", name);
+    clear("user-answer");
+    clear("user-holds");
+    openDialog("user-dialog");
+    say("user-detail-status", "asking…");
+    try {
+      const one2 = held3(await valueOf("INFO FOR USER " + name + ";", "Users · detail"));
+      if (one2 === null) {
+        say("user-detail-status", "the node answered with nothing to show", true);
+        return;
+      }
+      const rest = { ...one2 };
+      delete rest["grants"];
+      delete rest["authorities"];
+      facts("user-answer", rest);
+      drawHoldings(name, holdings(one2));
+      say("user-detail-status", "");
+    } catch (failure) {
+      say("user-detail-status", told(failure), true);
+    }
+  }
+  function refreshShown() {
+    const dialog = at("user-dialog");
+    if (showing !== null && dialog instanceof HTMLDialogElement && dialog.open) {
+      void showUser(showing);
+    }
+  }
+  function wire20() {
+    const from = (kind3) => () => {
+      if (showing === null) return;
+      if (kind3 !== "grant") closeDialog("user-dialog");
+      act(kind3, showing);
+    };
+    at("user-grant").addEventListener("click", from("grant"));
+    at("user-password").addEventListener("click", from("password"));
+    at("user-role").addEventListener("click", from("role"));
+    at("user-remove").addEventListener("click", from("remove"));
   }
 
   // src/search.ts
@@ -2576,7 +3463,7 @@ Shown once. The node keeps only its digest.`);
   //! listing that database's tables. A wrong answer, under a name nothing is
   //! called, reported as success. The record key had already been fixed this way
   //! four lines above; the table had not.
-  var inDetail = (kind2, name) => (answered2) => show2(kind2, name, answered2);
+  var inDetail = (kind3, name) => (answered2) => show2(kind3, name, answered2);
   function splitAt(text, separator) {
     const at2 = text.indexOf(separator);
     return at2 < 0 ? [text, ""] : [text.slice(0, at2), text.slice(at2 + separator.length)];
@@ -2638,8 +3525,7 @@ Shown once. The node keeps only its digest.`);
         // for the account in order to do.
         land: () => {
           show("access");
-          setValue("lookup-name", text);
-          at("lookup").click();
+          void showUser(text);
         }
       });
       out.push({
@@ -2672,7 +3558,7 @@ Shown once. The node keeps only its digest.`);
       text.includes(":") ? "nothing here answers to that — name a record in full, as namespace.database.table:key" : text.includes(".") ? "nothing here answers to that name" : "nothing here answers to that name — a table is named in full, as namespace.database.table"
     );
   }
-  function wire16() {
+  function wire21() {
     at("search").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -2712,7 +3598,7 @@ Shown once. The node keeps only its digest.`);
   var KEYS = [
     { press: "/", does: "find an account, a table, a namespace or a record" },
     { press: "⌘K  ·  Ctrl-K", does: "the same, from inside a field" },
-    { press: "⌘1 … ⌘7", does: "Run, Topics, Cluster, Access, This node, Backup, Vault" },
+    { press: "⌘1 … ⌘8", does: "Run, Data, Topics, Cluster, Access, This node, Backup, Vault" },
     { press: "⌘↵  ·  Ctrl-↵", does: "run what is in the script box" },
     { press: "?", does: "this list" },
     { press: "Esc", does: "close the log, the drawer, or this list" }
@@ -2721,7 +3607,7 @@ Shown once. The node keeps only its digest.`);
     const focused = document.activeElement;
     return focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || focused instanceof HTMLSelectElement;
   }
-  function draw4() {
+  function draw6() {
     clear("keys-list");
     const list = made("dl", "keys");
     for (const key of KEYS) {
@@ -2736,9 +3622,9 @@ Shown once. The node keeps only its digest.`);
   function closeIt4() {
     at("keys-sheet").hidden = true;
   }
-  var DESTINATIONS = ["run", "topics", "cluster", "access", "this-node", "backup", "vault"];
-  function wire17() {
-    draw4();
+  var DESTINATIONS = ["run", "data", "topics", "cluster", "access", "this-node", "backup", "vault"];
+  function wire22() {
+    draw6();
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !at("keys-sheet").hidden) {
         closeIt4();
@@ -2788,7 +3674,7 @@ Shown once. The node keeps only its digest.`);
     }
   }
   var current = () => remembered() ?? (darkQuery.matches ? "dark" : "light");
-  function wire18() {
+  function wire23() {
     const button = at("theme");
     const show4 = () => {
       const theme = current();
@@ -2810,386 +3696,6 @@ Shown once. The node keeps only its digest.`);
     show4();
   }
 
-  // src/topic-info.ts
-  //! What the node says about a topic, checked before anything draws it.
-  //!
-  //! `INFO FOR TOPIC` is a body this page did not construct, so each field is
-  //! narrowed here once and the screens after this point trust the shape.
-  var whole = (value2) => typeof value2 === "number" && Number.isInteger(value2) && value2 >= 0 ? value2 : null;
-  var fieldsOf = (value2) => typeof value2 === "object" && value2 !== null && !Array.isArray(value2) ? value2 : null;
-  function reader(value2) {
-    const fields = fieldsOf(value2);
-    const position = whole(fields?.["position"]);
-    const lag = whole(fields?.["lag"]);
-    return position === null || lag === null ? null : { position, lag };
-  }
-  function group(value2) {
-    const fields = fieldsOf(value2);
-    const at2 = (name) => whole(fields?.[name]);
-    const position = at2("position");
-    const committed = at2("committed");
-    const lag = at2("lag");
-    const inFlight = at2("in_flight");
-    const redelivered = at2("redelivered");
-    const deadLettered = at2("dead_lettered");
-    const width = at2("width");
-    const deadline = fields?.["deadline"];
-    if (position === null || committed === null || lag === null || inFlight === null || redelivered === null || deadLettered === null || width === null || typeof deadline !== "string") {
-      return null;
-    }
-    return {
-      position,
-      committed,
-      lag,
-      in_flight: inFlight,
-      redelivered,
-      dead_lettered: deadLettered,
-      deadline,
-      width
-    };
-  }
-  function ingest(value2) {
-    const fields = fieldsOf(value2);
-    const group2 = fields?.["group"];
-    const into = fields?.["into"];
-    const running = fields?.["running"];
-    return typeof group2 === "string" && typeof into === "string" && typeof running === "boolean" ? { group: group2, into, running } : null;
-  }
-  function entries(value2, narrow) {
-    const found = /* @__PURE__ */ new Map();
-    for (const [name, each] of Object.entries(fieldsOf(value2) ?? {})) {
-      const narrowed = narrow(each);
-      if (narrowed !== null) {
-        found.set(name, narrowed);
-      }
-    }
-    return found;
-  }
-  function topic(value2) {
-    const fields = fieldsOf(value2);
-    const name = fields?.["name"];
-    const last = whole(fields?.["last"]);
-    if (fields === null || typeof name !== "string" || last === null) {
-      return null;
-    }
-    const retain = fields["retain"];
-    const window2 = fields["deduplicate"];
-    const key = fields["deduplicate_on"];
-    return {
-      name,
-      first: whole(fields["first"]),
-      last,
-      retain: typeof retain === "string" ? retain : null,
-      retainBytes: whole(fields["retain_bytes"]),
-      bytes: whole(fields["bytes"]),
-      maxBytes: whole(fields["max_bytes"]),
-      repeats: typeof window2 === "string" && typeof key === "string" ? { key, window: window2 } : null,
-      readers: entries(fields["consumers"], reader),
-      groups: entries(fields["groups"], group),
-      ingestedBy: entries(fields["ingested_by"], ingest)
-    };
-  }
-  function keeps(topic2) {
-    const limits = [
-      ...topic2.retain === null ? [] : [topic2.retain],
-      ...topic2.retainBytes === null ? [] : [`${topic2.retainBytes} bytes`]
-    ];
-    return limits.length === 0 ? "everything" : limits.join(", ");
-  }
-  function repeats(topic2) {
-    return topic2.repeats === null ? "kept" : `dropped within ${topic2.repeats.window} by ${topic2.repeats.key}`;
-  }
-  var held4 = (topic2) => topic2.first === null || topic2.last < topic2.first ? 0 : topic2.last - topic2.first + 1;
-  function behind(topic2) {
-    const lags = [...topic2.readers.values(), ...topic2.groups.values()].map((each) => each.lag);
-    return lags.length === 0 ? 0 : Math.max(...lags);
-  }
-
-  // src/topic-list.ts
-  //! The Topics screen's reading: where, which topics, the chosen one, its messages.
-  //!
-  //! Everything here reads. Nothing moves a position — the message browser uses
-  //! `READ FROM … AFTER n` with no consumer, which is a look and nothing more.
-  var SCREEN2 = "Topics";
-  var TOPICS_SHOWN = 200;
-  function where2() {
-    const namespace = aName(value("topics-namespace"));
-    const database = aName(value("topics-database"));
-    return namespace === null || database === null ? null : { namespace, database };
-  }
-  var topics = [];
-  var chosenName = null;
-  var listeners = [];
-  var chosen = () => topics.find((each) => each.name === chosenName) ?? null;
-  function whenChosen(todo) {
-    listeners.push(todo);
-  }
-  var words = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
-  async function results(source) {
-    const { text } = await ask(source, SCREEN2);
-    const body = JSON.parse(text);
-    if (!Array.isArray(body.results)) {
-      throw new Error(typeof body.error === "string" ? body.error : text);
-    }
-    return body.results;
-  }
-  function strings(answered2, field) {
-    const list = held2(answered2)?.[field];
-    return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
-  }
-  function offer(id, names) {
-    const select = at(id);
-    const kept2 = value(id);
-    clear(id);
-    for (const name of names) {
-      const option = made("option");
-      option.value = name;
-      option.textContent = name;
-      select.appendChild(option);
-    }
-    if (names.includes(kept2)) {
-      setValue(id, kept2);
-    }
-  }
-  async function readNamespaces() {
-    state("topics-status", "waiting", "asking…");
-    try {
-      offer("topics-namespace", strings(await valueOf("INFO FOR STORE;", SCREEN2), "namespaces"));
-    } catch (failure) {
-      state("topics-status", "wrong", words(failure));
-      return;
-    }
-    await readDatabases();
-  }
-  async function readDatabases() {
-    const namespace = aName(value("topics-namespace"));
-    if (namespace === null) {
-      offer("topics-database", []);
-      draw5([]);
-      state("topics-status", "empty", "No namespace here — declare one on Run with DEFINE NAMESPACE.");
-      return;
-    }
-    try {
-      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN2);
-      offer("topics-database", strings(answered2, "databases"));
-    } catch (failure) {
-      state("topics-status", "wrong", words(failure));
-      return;
-    }
-    await readTopics();
-  }
-  async function readTopics() {
-    const place2 = where2();
-    if (place2 === null) {
-      draw5([]);
-      state("topics-status", "empty", "Choose a namespace and a database that exist.");
-      return;
-    }
-    const start = tenancy(place2.namespace, place2.database);
-    state("topics-status", "waiting", "asking…");
-    try {
-      const listed2 = strings(await valueOf(start + "INFO FOR DATABASE;", SCREEN2), "topics");
-      const names = listed2.filter((name) => aName(name) !== null);
-      const shown3 = names.slice(0, TOPICS_SHOWN);
-      const asked2 = shown3.map((name) => `INFO FOR TOPIC ${name};`).join(" ");
-      const answered2 = shown3.length === 0 ? [] : await results(start + asked2);
-      const read = answered2.map((each) => topic(each.value)).filter((each) => each !== null);
-      draw5(read);
-      if (names.length === 0) {
-        const here2 = `${place2.namespace}.${place2.database}`;
-        state("topics-status", "empty", `${here2} holds no topics — create one below.`);
-      } else if (names.length > shown3.length) {
-        state("topics-status", "partial", `showing ${shown3.length} of ${names.length} topics`);
-      } else {
-        settled("topics-status");
-      }
-    } catch (failure) {
-      draw5([]);
-      state("topics-status", "wrong", words(failure));
-    }
-  }
-  function numberCell(row, figure2) {
-    const box2 = row.insertCell();
-    box2.textContent = String(figure2);
-    box2.classList.add("number");
-  }
-  function headed(names) {
-    const table = made("table");
-    const head = table.createTHead().insertRow();
-    for (const name of names) {
-      const column = made("th");
-      column.textContent = name;
-      head.appendChild(column);
-    }
-    return table;
-  }
-  function draw5(read) {
-    topics = read;
-    if (chosen() === null) {
-      chosenName = null;
-    }
-    clear("topics-list");
-    if (read.length > 0) {
-      const table = headed(["topic", "held", "last", "keeps", "repeats", "readers", "groups", "most behind"]);
-      const body = table.createTBody();
-      for (const each of read) {
-        const row = body.insertRow();
-        const pick2 = made("button", each.name === chosenName ? "quiet chosen" : "quiet");
-        pick2.type = "button";
-        pick2.textContent = each.name;
-        pick2.setAttribute("aria-pressed", String(each.name === chosenName));
-        pick2.addEventListener("click", () => choose(each.name));
-        row.insertCell().appendChild(pick2);
-        numberCell(row, held4(each));
-        numberCell(row, each.last);
-        row.insertCell().textContent = keeps(each);
-        row.insertCell().textContent = repeats(each);
-        numberCell(row, each.readers.size);
-        numberCell(row, each.groups.size);
-        numberCell(row, behind(each));
-      }
-      at("topics-list").appendChild(table);
-    }
-    drawChosen();
-  }
-  function choose(name) {
-    chosenName = name;
-    const found = chosen();
-    setValue("browse-after", String(found === null || found.first === null ? 0 : found.first - 1));
-    clear("browse-list");
-    settled("browse-status");
-    draw5(topics);
-  }
-  function drawChosen() {
-    const found = chosen();
-    at("topic-chosen").textContent = found?.name ?? "none chosen";
-    for (const id of ["topic-facts", "topic-readers", "topic-groups", "topic-ingested"]) {
-      clear(id);
-    }
-    disable("browse-read", found === null);
-    disable("browse-next", found === null);
-    if (found !== null) {
-      facts("topic-facts", {
-        held: held4(found),
-        first: found.first ?? "none held",
-        last: found.last,
-        keeps: keeps(found),
-        "bytes held": found.bytes === null ? "not counted" : `${found.bytes} bytes`,
-        "largest message": found.maxBytes === null ? "any size" : `${found.maxBytes} bytes`
-      });
-      const readers = headed(["reader", "position", "lag"]);
-      const readerRows = readers.createTBody();
-      for (const [name, each] of found.readers) {
-        const row = readerRows.insertRow();
-        row.insertCell().textContent = name;
-        numberCell(row, each.position);
-        numberCell(row, each.lag);
-      }
-      at("topic-readers").appendChild(found.readers.size > 0 ? readers : note("nobody reads under a name"));
-      const groups = headed([
-        "group",
-        "handed out",
-        "committed",
-        "lag",
-        "in flight",
-        "width",
-        "redelivered",
-        "dead letters",
-        "deadline"
-      ]);
-      const groupRows = groups.createTBody();
-      for (const [name, each] of found.groups) {
-        const row = groupRows.insertRow();
-        row.insertCell().textContent = name;
-        const figures = [
-          each.position,
-          each.committed,
-          each.lag,
-          each.in_flight,
-          each.width,
-          each.redelivered,
-          each.dead_lettered
-        ];
-        for (const figure2 of figures) {
-          numberCell(row, figure2);
-        }
-        row.insertCell().textContent = each.deadline;
-      }
-      at("topic-groups").appendChild(found.groups.size > 0 ? groups : note("no group settles this topic"));
-      const ingested = headed(["consumer", "group", "into", "here"]);
-      const ingestedRows = ingested.createTBody();
-      for (const [name, each] of found.ingestedBy) {
-        const row = ingestedRows.insertRow();
-        for (const cell2 of [name, each.group, each.into, each.running ? "running" : "not running"]) {
-          row.insertCell().textContent = cell2;
-        }
-      }
-      at("topic-ingested").appendChild(
-        found.ingestedBy.size > 0 ? ingested : note("no topic consumer reads this topic")
-      );
-    }
-    for (const todo of listeners) {
-      todo();
-    }
-  }
-  function note(words4) {
-    const line = made("p", "empty");
-    line.textContent = words4;
-    return line;
-  }
-  async function browse() {
-    const place2 = where2();
-    const found = chosen();
-    const after2 = aWhole(trimmed("browse-after"));
-    const count = aWhole(trimmed("browse-count"));
-    if (place2 === null || found === null || after2 === null || count === null || count < 1 || count > 100) {
-      say("browse-status", "a position from 0 and a count from 1 to 100", true);
-      return;
-    }
-    state("browse-status", "waiting", "reading…");
-    try {
-      const answered2 = await valueOf(
-        tenancy(place2.namespace, place2.database) + `READ FROM ${found.name} AFTER ${after2} LIMIT ${count};`,
-        SCREEN2
-      );
-      const records = answered2?.records ?? [];
-      clear("browse-list");
-      const table = headed(["position", "message"]);
-      const body = table.createTBody();
-      let last = after2;
-      for (const record2 of records) {
-        const inside = fieldsOf(record2.value) ?? {};
-        const position = typeof inside["position"] === "number" ? inside["position"] : last;
-        last = Math.max(last, position);
-        const row = body.insertRow();
-        numberCell(row, position);
-        row.insertCell().textContent = JSON.stringify(inside["value"] ?? null);
-      }
-      at("browse-list").appendChild(table);
-      at("browse-next").dataset["after"] = String(last);
-      const said3 = (answered2?.notes ?? []).map((each) => each.message).join(" · ");
-      const also = said3 === "" ? "" : ` — ${said3}`;
-      if (records.length === 0) {
-        state("browse-status", "empty", `nothing after position ${after2}${also}`);
-      } else {
-        say("browse-status", `${records.length} from position ${after2 + 1}${also}`);
-      }
-    } catch (failure) {
-      state("browse-status", "wrong", words(failure));
-    }
-  }
-  function wire19() {
-    at("topics-namespace").addEventListener("change", () => void readDatabases());
-    at("topics-database").addEventListener("change", () => void readTopics());
-    at("topics-refresh").addEventListener("click", () => void readNamespaces());
-    at("browse-read").addEventListener("click", () => void browse());
-    at("browse-next").addEventListener("click", () => {
-      setValue("browse-after", at("browse-next").dataset["after"] ?? trimmed("browse-after"));
-      void browse();
-    });
-    onArrival(["topics"], () => void readNamespaces());
-  }
-
   // src/topic-forms.ts
   //! The Topics screen's changes: a topic made or removed, a group made, moved or removed.
   //!
@@ -3198,13 +3704,13 @@ Shown once. The node keeps only its digest.`);
   //! node's last answer about the chosen topic, so the reader sees the blast
   //! radius before the button is live. The three that lose something (removing a
   //! topic, removing a group, moving a group) ask for the name to be typed again.
-  var SCREEN3 = "Topics";
+  var SCREEN4 = "Topics";
   var MAX_IN_FLIGHT = 1e4;
   var PLACE = "choose a namespace and a database first";
   var TOPIC = "choose a topic in the list first";
   var DURATION2 = "a number and a unit: 500ms, 30s, 15m, 12h, 7d";
   var PLURAL = new Intl.PluralRules("en");
-  var counted = (count, one2, many) => `${count} ${PLURAL.select(count) === "one" ? one2 : many}`;
+  var counted = (count2, one2, many) => `${count2} ${PLURAL.select(count2) === "one" ? one2 : many}`;
   function optional(id, check) {
     const text = trimmed(id);
     return text === "" ? void 0 : check(text);
@@ -3232,7 +3738,7 @@ Shown once. The node keeps only its digest.`);
     if (trimmed("drop-topic-confirm") !== topic2.name) return { missing: `type ${topic2.name} to confirm` };
     return {
       statement: `DROP TOPIC ${topic2.name};`,
-      says: `Removes ${topic2.name} with ${counted(held4(topic2), "message", "messages")} it holds, ${counted(topic2.readers.size, "reader position", "reader positions")} and ${counted(topic2.groups.size, "group", "groups")}. Those messages are gone for every reader.`
+      says: `Removes ${topic2.name} with ${counted(held5(topic2), "message", "messages")} it holds, ${counted(topic2.readers.size, "reader position", "reader positions")} and ${counted(topic2.groups.size, "group", "groups")}. Those messages are gone for every reader.`
     };
   }
   function newGroup() {
@@ -3287,6 +3793,8 @@ Shown once. The node keeps only its digest.`);
       says: "new-topic-says",
       status: "new-topic-status",
       compose: newTopic,
+      dialog: "new-topic-dialog",
+      opener: "open-new-topic",
       fields: ["new-topic-name", "new-topic-retain", "new-topic-kept", "new-topic-bytes"]
     },
     {
@@ -3294,6 +3802,8 @@ Shown once. The node keeps only its digest.`);
       says: "drop-topic-says",
       status: "drop-topic-status",
       compose: dropTopic,
+      dialog: "drop-topic-dialog",
+      opener: "open-drop-topic",
       fields: ["drop-topic-confirm", "drop-topic-why"],
       why: "drop-topic-why"
     },
@@ -3302,6 +3812,8 @@ Shown once. The node keeps only its digest.`);
       says: "new-group-says",
       status: "new-group-status",
       compose: newGroup,
+      dialog: "new-group-dialog",
+      opener: "open-new-group",
       fields: ["new-group-name", "new-group-deadline", "new-group-width", "new-group-deliveries", "new-group-dead"]
     },
     {
@@ -3309,6 +3821,8 @@ Shown once. The node keeps only its digest.`);
       says: "group-says",
       status: "group-status",
       compose: changeGroup,
+      dialog: "group-dialog",
+      opener: "open-group",
       fields: ["group-which", "group-action", "group-start", "group-confirm", "group-why"],
       why: "group-why"
     }
@@ -3328,8 +3842,9 @@ Shown once. The node keeps only its digest.`);
     say(form.status, "sending…");
     try {
       const why = form.why === void 0 ? void 0 : trimmed(form.why) || void 0;
-      await valueOf(tenancy(place2.namespace, place2.database) + composed.statement, SCREEN3, why);
-      say(form.status, "done");
+      await valueOf(tenancy(place2.namespace, place2.database) + composed.statement, SCREEN4, why);
+      say(form.status, "");
+      closeDialog(form.dialog);
       for (const field of form.fields) {
         if (at(field) instanceof HTMLInputElement) {
           setValue(field, field === "group-start" ? "0" : "");
@@ -3337,21 +3852,29 @@ Shown once. The node keeps only its digest.`);
       }
       await readTopics();
     } catch (failure) {
-      const words4 = told(failure);
-      say(form.status, failure instanceof Unreachable ? "the node did not answer — " + words4 : words4, true);
+      const words6 = told(failure);
+      say(form.status, failure instanceof Unreachable ? "the node did not answer — " + words6 : words6, true);
     }
     shape3(form);
   }
-  function wire20() {
+  function wire24() {
     for (const form of FORMS) {
       for (const field of form.fields) {
         at(field).addEventListener("input", () => shape3(form));
         at(field).addEventListener("change", () => shape3(form));
       }
       at(form.button).addEventListener("click", () => void send2(form));
+      at(form.opener).addEventListener("click", () => {
+        say(form.status, "");
+        shape3(form);
+        openDialog(form.dialog);
+      });
     }
     whenChosen(() => {
       offer("group-which", [...chosen()?.groups.keys() ?? []].filter((name) => aGroup(name) !== null));
+      for (const opener of ["open-new-group", "open-group", "open-drop-topic"]) {
+        disable(opener, chosen() === null);
+      }
       for (const form of FORMS) {
         shape3(form);
       }
@@ -3369,7 +3892,7 @@ Shown once. The node keeps only its digest.`);
   //! first and a name that fails is refused here, before anything is sent. Whether
   //! a name stays inside the backup folder, and whether a restore may land, is the
   //! node's decision, and its refusal is shown in its own words.
-  var SCREEN4 = "Backup";
+  var SCREEN5 = "Backup";
   var WHAT = {
     state: {
       statement: "BACKUP STATE",
@@ -3475,12 +3998,12 @@ Shown once. The node keeps only its digest.`);
     say(status, "working…");
     write(answer2, "");
     try {
-      write(answer2, shown3(held2(await valueOf(composed.statement, SCREEN4))));
+      write(answer2, shown3(held3(await valueOf(composed.statement, SCREEN5))));
       say(status, "done");
       return true;
     } catch (failure) {
-      const words4 = told(failure);
-      say(status, failure instanceof Unreachable ? "the node did not answer — " + words4 : words4, true);
+      const words6 = told(failure);
+      say(status, failure instanceof Unreachable ? "the node did not answer — " + words6 : words6, true);
       return false;
     } finally {
       shape4();
@@ -3506,7 +4029,9 @@ ${bytes.toLocaleString("en")} bytes`;
       return `${databases.join(", ") || "no database"} created · ${statements.toLocaleString("en")} statements`;
     });
   }
-  function wire21() {
+  function wire25() {
+    at("open-backup").addEventListener("click", () => openDialog("backup-dialog"));
+    at("open-restore").addEventListener("click", () => openDialog("restore-dialog"));
     setValue("backup-name", suggested(chosenForm()));
     for (const id of ["backup-form", "backup-part"]) {
       at(id).addEventListener("change", () => {
@@ -3538,7 +4063,7 @@ ${bytes.toLocaleString("en")} bytes`;
   //! parameters, which is what keeps a written secret out of it. Revealed values
   //! live in one element on this page and nowhere else — no storage, no log line —
   //! and are removed by Hide, by the next reveal, and by listing again.
-  var SCREEN5 = "Vault";
+  var SCREEN6 = "Vault";
   var PAGE = 50;
   var after = null;
   function place(needsVault) {
@@ -3557,8 +4082,8 @@ ${bytes.toLocaleString("en")} bytes`;
     return null;
   }
   function failed(failure) {
-    const words4 = told(failure);
-    say("vault-rec-status", failure instanceof Unreachable ? "the node did not answer — " + words4 : words4, true);
+    const words6 = told(failure);
+    say("vault-rec-status", failure instanceof Unreachable ? "the node did not answer — " + words6 : words6, true);
   }
   function hideRevealed() {
     clear("vault-rec-shown");
@@ -3569,25 +4094,25 @@ ${bytes.toLocaleString("en")} bytes`;
     if ("missing" in where3) return say("vault-rec-status", where3.missing, true);
     clear("vault-rec-vaults");
     try {
-      const report = held2(await valueOf(`${where3.tenancy}INFO FOR DATABASE;`, SCREEN5));
-      const names = Array.isArray(report?.vaults) ? report.vaults : [];
+      const report = held3(await valueOf(`${where3.tenancy}INFO FOR DATABASE;`, SCREEN6));
+      const names2 = Array.isArray(report?.vaults) ? report.vaults : [];
       const list = made("ul");
-      for (const each of names) {
+      for (const each of names2) {
         const name = typeof each === "string" ? each : each?.name;
         if (typeof name !== "string") continue;
-        const pick2 = made("button", "quiet");
-        pick2.type = "button";
-        pick2.textContent = name;
-        pick2.addEventListener("click", () => {
+        const pick = made("button", "quiet");
+        pick.type = "button";
+        pick.textContent = name;
+        pick.addEventListener("click", () => {
           setValue("vault-rec-name", name);
           void listRecords(true);
         });
         const item = made("li");
-        item.appendChild(pick2);
+        item.appendChild(pick);
         list.appendChild(item);
       }
       at("vault-rec-vaults").appendChild(list);
-      say("vault-rec-status", names.length === 0 ? "this database holds no vault" : `${names.length} vault(s)`);
+      say("vault-rec-status", names2.length === 0 ? "this database holds no vault" : `${names2.length} vault(s)`);
     } catch (failure) {
       failed(failure);
     }
@@ -3603,8 +4128,8 @@ ${bytes.toLocaleString("en")} bytes`;
     const from = after === null ? "" : ` AFTER ${vault}:$after`;
     const bound = after === null ? void 0 : { after };
     try {
-      const report = held2(
-        await valueOf(`${where3.tenancy}INFO FOR VAULT ${vault} RECORDS${from} LIMIT ${PAGE};`, SCREEN5, void 0, bound)
+      const report = held3(
+        await valueOf(`${where3.tenancy}INFO FOR VAULT ${vault} RECORDS${from} LIMIT ${PAGE};`, SCREEN6, void 0, bound)
       );
       const ids = Array.isArray(report?.records) ? report.records : [];
       clear("vault-rec-ids");
@@ -3612,12 +4137,12 @@ ${bytes.toLocaleString("en")} bytes`;
       for (const id of ids) {
         const item = made("li");
         const bindable = literal(id);
-        const open2 = made("button", "quiet");
-        open2.type = "button";
-        open2.textContent = typeof id === "string" ? id : JSON.stringify(id);
-        open2.disabled = bindable === null;
-        if (bindable !== null) open2.addEventListener("click", () => void reveal(where3.tenancy, vault, bindable));
-        item.appendChild(open2);
+        const open3 = made("button", "quiet");
+        open3.type = "button";
+        open3.textContent = typeof id === "string" ? id : JSON.stringify(id);
+        open3.disabled = bindable === null;
+        if (bindable !== null) open3.addEventListener("click", () => void reveal(where3.tenancy, vault, bindable));
+        item.appendChild(open3);
         list.appendChild(item);
       }
       at("vault-rec-ids").appendChild(list);
@@ -3632,8 +4157,8 @@ ${bytes.toLocaleString("en")} bytes`;
   async function reveal(where3, vault, id) {
     hideRevealed();
     try {
-      const opened = held2(await valueOf(`${where3}REVEAL * FROM ${vault}:$id;`, SCREEN5, void 0, { id }));
-      at("vault-rec-shown").appendChild(shown(opened ?? {}));
+      const opened2 = held3(await valueOf(`${where3}REVEAL * FROM ${vault}:$id;`, SCREEN6, void 0, { id }));
+      at("vault-rec-shown").appendChild(shown(opened2 ?? {}));
       disable("vault-rec-hide", false);
       say("vault-rec-status", "revealed — the store recorded this read");
     } catch (failure) {
@@ -3655,7 +4180,7 @@ ${bytes.toLocaleString("en")} bytes`;
     try {
       await valueOf(
         `${where3.tenancy}UPSERT ${where3.vault}:$id MERGE { '${field}': $value };`,
-        SCREEN5,
+        SCREEN6,
         void 0,
         { id: quoted(id), value: quoted(secret) }
       );
@@ -3673,7 +4198,7 @@ ${bytes.toLocaleString("en")} bytes`;
     clear("vault-rec-trail");
     try {
       const by = actor === null ? "" : ` BY ${actor}`;
-      const report = held2(await valueOf(`${where3.tenancy}INFO FOR AUDIT${by};`, SCREEN5));
+      const report = held3(await valueOf(`${where3.tenancy}INFO FOR AUDIT${by};`, SCREEN6));
       at("vault-rec-trail").appendChild(shown(report?.audit ?? []));
       say("vault-rec-status", "the audit trail, oldest first");
     } catch (failure) {
@@ -3691,7 +4216,10 @@ ${bytes.toLocaleString("en")} bytes`;
     at("vault-rec-records").addEventListener("click", () => void listRecords(true));
     at("vault-rec-more").addEventListener("click", () => void listRecords(false));
     at("vault-rec-hide").addEventListener("click", hideRevealed);
-    at("vault-rec-write").addEventListener("click", () => void writeField());
+    at("vault-rec-write").addEventListener("click", () => {
+      void writeField();
+      closeDialog("vault-rec-write-dialog");
+    });
     at("vault-rec-audit").addEventListener("click", () => void auditTrail());
     for (const id of ["vault-rec-id", "vault-rec-field", "vault-rec-value"]) {
       at(id).addEventListener("input", shape5);
@@ -3709,7 +4237,7 @@ ${bytes.toLocaleString("en")} bytes`;
   //! emptied as soon as its request has gone. A vault's three names are grammar
   //! in the path, so each passes `aName()` first and a name that fails is refused
   //! here, before anything is sent.
-  var SCREEN6 = "Vault";
+  var SCREEN7 = "Vault";
   function shown2(body) {
     if (typeof body !== "object" || body === null) return "";
     const answered2 = body;
@@ -3731,40 +4259,40 @@ ${bytes.toLocaleString("en")} bytes`;
     }
     return typeof body === "string" && body !== "" ? body : "refused";
   }
-  async function act(method, path, statusId, answerId, body) {
+  async function act2(method, path, statusId, answerId, body) {
     say(statusId, "working…");
     try {
-      const answered2 = await route(method, path, SCREEN6, body);
+      const answered2 = await route(method, path, SCREEN7, body);
       if (answered2.status === 200) {
         write(answerId, shown2(answered2.body));
         say(statusId, "done");
       } else {
-        const words4 = answered2.status === 429 ? "too many wrong passphrases — wait and try again" : refusal(answered2.body);
-        say(statusId, words4, true);
+        const words6 = answered2.status === 429 ? "too many wrong passphrases — wait and try again" : refusal(answered2.body);
+        say(statusId, words6, true);
       }
     } catch (failure) {
-      const words4 = told(failure);
-      say(statusId, failure instanceof Unreachable ? "the node did not answer — " + words4 : words4, true);
+      const words6 = told(failure);
+      say(statusId, failure instanceof Unreachable ? "the node did not answer — " + words6 : words6, true);
     }
   }
   function spent(id) {
-    const held5 = value(id);
+    const held6 = value(id);
     setValue(id, "");
-    return held5;
+    return held6;
   }
   var change3 = (current2, next) => JSON.stringify({ current: current2, new: next });
   function onePath() {
-    const names = [
+    const names2 = [
       ["namespace", trimmed("vault-one-namespace")],
       ["database", trimmed("vault-one-database")],
       ["vault", trimmed("vault-one-name")]
     ];
     const checked = [];
-    for (const [what, name] of names) {
+    for (const [what, name] of names2) {
       if (name === "") return { missing: `name the ${what}` };
-      const held5 = aName(name);
-      if (held5 === null) return { missing: `${name} is not a ${what} name` };
-      checked.push(held5);
+      const held6 = aName(name);
+      if (held6 === null) return { missing: `${name} is not a ${what} name` };
+      checked.push(held6);
     }
     return { path: `/vault/${checked.join("/")}` };
   }
@@ -3775,6 +4303,8 @@ ${bytes.toLocaleString("en")} bytes`;
     write("vault-one-says", "path" in one2 ? `Acts on ${one2.path}.` : one2.missing);
     const named = !("path" in one2);
     disable("vault-one-show", named);
+    disable("open-vault-one-unseal", named);
+    disable("open-vault-one-change", named);
     disable("vault-one-seal", named);
     disable("vault-one-unseal", named || value("vault-one-passphrase") === "");
     disable("vault-one-change", named || value("vault-one-current") === "" || value("vault-one-new") === "");
@@ -3784,31 +4314,43 @@ ${bytes.toLocaleString("en")} bytes`;
     if ("path" in one2) await act_(one2.path);
     shape6();
   }
-  function wire22() {
-    const store = (method, path, body) => act(method, path, "vault-store-status", "vault-store-answer", body).finally(shape6);
-    const one2 = (method, path, body) => act(method, path, "vault-one-status", "vault-one-answer", body);
+  function wire26() {
+    const store = (method, path, body) => act2(method, path, "vault-store-status", "vault-store-answer", body).finally(shape6);
+    const one2 = (method, path, body) => act2(method, path, "vault-one-status", "vault-one-answer", body);
     at("vault-store-refresh").addEventListener("click", () => void store("GET", "/vault"));
     at("vault-store-seal").addEventListener("click", () => void store("POST", "/vault/seal"));
-    at("vault-store-unseal").addEventListener(
-      "click",
-      () => void store("POST", "/vault/unseal", spent("vault-store-passphrase"))
-    );
-    at("vault-store-change").addEventListener(
-      "click",
-      () => void store("POST", "/vault/passphrase", change3(spent("vault-store-current"), spent("vault-store-new")))
-    );
+    const opens = [
+      ["open-vault-store-unseal", "vault-store-unseal-dialog"],
+      ["open-vault-store-change", "vault-store-change-dialog"],
+      ["open-vault-one-unseal", "vault-one-unseal-dialog"],
+      ["open-vault-one-change", "vault-one-change-dialog"],
+      ["open-vault-rec-write", "vault-rec-write-dialog"]
+    ];
+    for (const [opener, shown3] of opens) {
+      at(opener).addEventListener("click", () => openDialog(shown3));
+    }
+    at("vault-store-unseal").addEventListener("click", () => {
+      const passphrase = spent("vault-store-passphrase");
+      closeDialog("vault-store-unseal-dialog");
+      void store("POST", "/vault/unseal", passphrase);
+    });
+    at("vault-store-change").addEventListener("click", () => {
+      const body = change3(spent("vault-store-current"), spent("vault-store-new"));
+      closeDialog("vault-store-change-dialog");
+      void store("POST", "/vault/passphrase", body);
+    });
     at("vault-one-show").addEventListener("click", () => void onOne((path) => one2("GET", path)));
     at("vault-one-seal").addEventListener("click", () => void onOne((path) => one2("POST", `${path}/seal`)));
-    at("vault-one-unseal").addEventListener(
-      "click",
-      () => void onOne((path) => one2("POST", `${path}/unseal`, spent("vault-one-passphrase")))
-    );
-    at("vault-one-change").addEventListener(
-      "click",
-      () => void onOne(
+    at("vault-one-unseal").addEventListener("click", () => {
+      closeDialog("vault-one-unseal-dialog");
+      void onOne((path) => one2("POST", `${path}/unseal`, spent("vault-one-passphrase")));
+    });
+    at("vault-one-change").addEventListener("click", () => {
+      closeDialog("vault-one-change-dialog");
+      void onOne(
         (path) => one2("POST", `${path}/passphrase`, change3(spent("vault-one-current"), spent("vault-one-new")))
-      )
-    );
+      );
+    });
     for (const id of [
       "vault-store-passphrase",
       "vault-store-current",
@@ -3834,12 +4376,12 @@ ${bytes.toLocaleString("en")} bytes`;
   //! writes back the statement that made it. The keys and the value come from the
   //! `/kv` routes, so what the pane shows is what any HTTP caller of those routes
   //! would be answered.
-  var SCREEN7 = "Run";
+  var SCREEN8 = "Data";
   var TABLES_ASKED = 200;
   var KEYS_SHOWN = 100;
-  var words2 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
+  var words4 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
   function strings2(answered2, field) {
-    const list = held2(answered2)?.[field];
+    const list = held3(answered2)?.[field];
     return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
   }
   function isSpace(result) {
@@ -3848,36 +4390,9 @@ ${bytes.toLocaleString("en")} bytes`;
     const definition2 = fields?.["definition"];
     return typeof name === "string" && typeof definition2 === "string" && definition2.startsWith("DEFINE SPACE ") ? name : null;
   }
-  async function readNamespaces2() {
-    state("kv-status", "waiting", "asking…");
-    try {
-      offer("kv-namespace", strings2(await valueOf("INFO FOR STORE;", SCREEN7), "namespaces"));
-    } catch (failure) {
-      state("kv-status", "wrong", words2(failure));
-      return;
-    }
-    await readDatabases2();
-  }
-  async function readDatabases2() {
-    const namespace = aName(value("kv-namespace"));
-    if (namespace === null) {
-      offer("kv-database", []);
-      offer("kv-space", []);
-      state("kv-status", "empty", "No namespace here — declare one with DEFINE NAMESPACE.");
-      return;
-    }
-    try {
-      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN7);
-      offer("kv-database", strings2(answered2, "databases"));
-    } catch (failure) {
-      state("kv-status", "wrong", words2(failure));
-      return;
-    }
-    await readSpaces();
-  }
   async function readSpaces() {
-    const namespace = aName(value("kv-namespace"));
-    const database = aName(value("kv-database"));
+    const namespace = aName(value("data-namespace"));
+    const database = aName(value("data-database"));
     clear("kv-list");
     clear("kv-value");
     if (namespace === null || database === null) {
@@ -3888,10 +4403,10 @@ ${bytes.toLocaleString("en")} bytes`;
     const start = tenancy(namespace, database);
     state("kv-status", "waiting", "asking…");
     try {
-      const tables = strings2(await valueOf(start + "INFO FOR DATABASE;", SCREEN7), "tables").filter((name) => aName(name) !== null).slice(0, TABLES_ASKED);
+      const tables = strings2(await valueOf(start + "INFO FOR DATABASE;", SCREEN8), "tables").filter((name) => aName(name) !== null).slice(0, TABLES_ASKED);
       let answered2 = [];
       if (tables.length > 0) {
-        const { text } = await ask(start + tables.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN7);
+        const { text } = await ask(start + tables.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN8);
         const body = JSON.parse(text);
         if (!Array.isArray(body.results)) {
           throw new Error(typeof body.error === "string" ? body.error : text);
@@ -3905,14 +4420,14 @@ ${bytes.toLocaleString("en")} bytes`;
         return;
       }
     } catch (failure) {
-      state("kv-status", "wrong", words2(failure));
+      state("kv-status", "wrong", words4(failure));
       return;
     }
     await listKeys();
   }
   function base() {
-    const namespace = aName(value("kv-namespace"));
-    const database = aName(value("kv-database"));
+    const namespace = aName(value("data-namespace"));
+    const database = aName(value("data-database"));
     const space = aName(value("kv-space"));
     return namespace === null || database === null || space === null ? null : `/kv/${namespace}/${database}/${space}`;
   }
@@ -3930,7 +4445,7 @@ ${bytes.toLocaleString("en")} bytes`;
     const query = `?limit=${KEYS_SHOWN}` + (prefix === "" ? "" : `&prefix=${encodeURIComponent(prefix)}`);
     state("kv-status", "waiting", "asking…");
     try {
-      const { status, body } = await route("GET", where3 + query, SCREEN7);
+      const { status, body } = await route("GET", where3 + query, SCREEN8);
       if (mine2 !== listing) {
         return;
       }
@@ -3949,18 +4464,18 @@ ${bytes.toLocaleString("en")} bytes`;
         settled("kv-status");
       }
     } catch (failure) {
-      state("kv-status", "wrong", words2(failure));
+      state("kv-status", "wrong", words4(failure));
     }
   }
   function drawKeys(keys) {
     const list = made("ul");
     for (const key of keys) {
       const item = made("li");
-      const open2 = made("button");
-      open2.className = "quiet";
-      open2.textContent = key;
-      open2.addEventListener("click", () => void readKey(key));
-      item.appendChild(open2);
+      const open3 = made("button");
+      open3.className = "quiet";
+      open3.textContent = key;
+      open3.addEventListener("click", () => void readKey(key));
+      item.appendChild(open3);
       list.appendChild(item);
     }
     at("kv-list").appendChild(list);
@@ -3972,28 +4487,26 @@ ${bytes.toLocaleString("en")} bytes`;
       return;
     }
     try {
-      const { status, body } = await route("GET", `${where3}/key/${encodeURIComponent(key)}`, SCREEN7);
+      const { status, body } = await route("GET", `${where3}/key/${encodeURIComponent(key)}`, SCREEN8);
       const shown3 = made("pre");
       if (status === 404) {
         shown3.textContent = `${key}: no such key — it may have expired`;
       } else {
-        const { value: held5, ttl } = body;
+        const { value: held6, ttl } = body;
         const left = typeof ttl === "string" ? `expires in ${ttl}` : "never expires";
         shown3.textContent = `${key} — ${left}
-${JSON.stringify(held5, null, 2)}`;
+${JSON.stringify(held6, null, 2)}`;
       }
       at("kv-value").appendChild(shown3);
     } catch (failure) {
-      state("kv-status", "wrong", words2(failure));
+      state("kv-status", "wrong", words4(failure));
     }
   }
-  function wire23() {
-    at("kv-namespace").addEventListener("change", () => void readDatabases2());
-    at("kv-database").addEventListener("change", () => void readSpaces());
+  function wire27() {
     at("kv-space").addEventListener("change", () => void listKeys());
     at("kv-list-them").addEventListener("click", () => void listKeys());
-    at("kv-refresh").addEventListener("click", () => void readNamespaces2());
-    onArrival(["run"], () => void readNamespaces2());
+    at("kv-refresh").addEventListener("click", () => void readSpaces());
+    onChosen(() => void readSpaces());
   }
 
   // src/series-list.ts
@@ -4002,10 +4515,10 @@ ${JSON.stringify(held5, null, 2)}`;
   //! Everything here reads. A table's kind is not a field of `INFO FOR DATABASE`,
   //! so each table is asked for `INFO FOR TABLE`: a series writes back the
   //! `DEFINE SERIES` statement that made it, and a rollup says it is one.
-  var SCREEN8 = "Run";
+  var SCREEN9 = "Data";
   var TABLES_ASKED2 = 200;
   var DECLARED = /^DEFINE SERIES \S+ RETAIN (\S+?)(?: TIME (\S+?))?;/;
-  function kind(value2) {
+  function kind2(value2) {
     const fields = fieldsOf(value2);
     const name = fields?.["table"];
     if (typeof name !== "string") {
@@ -4022,62 +4535,35 @@ ${JSON.stringify(held5, null, 2)}`;
     }
     return { name, rollup: false, time: declared[2] ?? null, retain: declared[1] ?? "" };
   }
-  var words3 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
+  var words5 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
   function strings3(answered2, field) {
-    const list = held2(answered2)?.[field];
+    const list = held3(answered2)?.[field];
     return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
   }
-  async function readNamespaces3() {
-    state("series-status", "waiting", "asking…");
-    try {
-      offer("series-namespace", strings3(await valueOf("INFO FOR STORE;", SCREEN8), "namespaces"));
-    } catch (failure) {
-      state("series-status", "wrong", words3(failure));
-      return;
-    }
-    await readDatabases3();
-  }
-  async function readDatabases3() {
-    const namespace = aName(value("series-namespace"));
-    if (namespace === null) {
-      offer("series-database", []);
-      draw6([]);
-      state("series-status", "empty", "No namespace here — declare one with DEFINE NAMESPACE.");
-      return;
-    }
-    try {
-      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN8);
-      offer("series-database", strings3(answered2, "databases"));
-    } catch (failure) {
-      state("series-status", "wrong", words3(failure));
-      return;
-    }
-    await readSeries();
-  }
   async function readSeries() {
-    const namespace = aName(value("series-namespace"));
-    const database = aName(value("series-database"));
+    const namespace = aName(value("data-namespace"));
+    const database = aName(value("data-database"));
     if (namespace === null || database === null) {
-      draw6([]);
+      draw7([]);
       state("series-status", "empty", "Choose a namespace and a database that exist.");
       return;
     }
     const start = tenancy(namespace, database);
     state("series-status", "waiting", "asking…");
     try {
-      const tables = strings3(await valueOf(start + "INFO FOR DATABASE;", SCREEN8), "tables").filter((name) => aName(name) !== null);
+      const tables = strings3(await valueOf(start + "INFO FOR DATABASE;", SCREEN9), "tables").filter((name) => aName(name) !== null);
       const asked2 = tables.slice(0, TABLES_ASKED2);
       let answered2 = [];
       if (asked2.length > 0) {
-        const { text } = await ask(start + asked2.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN8);
+        const { text } = await ask(start + asked2.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN9);
         const body = JSON.parse(text);
         if (!Array.isArray(body.results)) {
           throw new Error(typeof body.error === "string" ? body.error : text);
         }
         answered2 = body.results;
       }
-      const found = answered2.map((each) => kind(each.value)).filter((each) => each !== null);
-      draw6(found);
+      const found = answered2.map((each) => kind2(each.value)).filter((each) => each !== null);
+      draw7(found);
       if (found.length === 0) {
         state("series-status", "empty", `${namespace}.${database} holds no series — DEFINE SERIES declares one.`);
       } else if (tables.length > asked2.length) {
@@ -4086,11 +4572,11 @@ ${JSON.stringify(held5, null, 2)}`;
         settled("series-status");
       }
     } catch (failure) {
-      draw6([]);
-      state("series-status", "wrong", words3(failure));
+      draw7([]);
+      state("series-status", "wrong", words5(failure));
     }
   }
-  function draw6(found) {
+  function draw7(found) {
     clear("series-list");
     if (found.length === 0) {
       return;
@@ -4112,15 +4598,13 @@ ${JSON.stringify(held5, null, 2)}`;
     }
     at("series-list").appendChild(table);
   }
-  function wire24() {
-    at("series-namespace").addEventListener("change", () => void readDatabases3());
-    at("series-database").addEventListener("change", () => void readSeries());
-    at("series-refresh").addEventListener("click", () => void readNamespaces3());
-    onArrival(["run"], () => void readNamespaces3());
+  function wire28() {
+    at("series-refresh").addEventListener("click", () => void readSeries());
+    onChosen(() => void readSeries());
   }
 
   // src/users.ts
-  //! Who exists, and the buttons that change that.
+  //! Who exists, and what may be done to each of them, beside them.
   //!
   //! Everything here goes through a statement over `POST /script`. There is no
   //! request on this page that a `curl` could not make, which is what keeps a
@@ -4143,14 +4627,12 @@ ${JSON.stringify(held5, null, 2)}`;
   //! work, and it is recorded as Q-678 rather than left to be noticed.
   var SHOWN = 200;
   var everybody = [];
-  function pick(name) {
-    setValue("lookup-name", name);
-    setValue("change-name", name);
-    setValue("remove-name", name);
-    shapeTheChange();
-    shapeTheRemoval();
-    at("lookup").click();
-  }
+  var ACTIONS = [
+    { kind: "password", label: "Password…" },
+    { kind: "role", label: "Role…" },
+    { kind: "grant", label: "Give…" },
+    { kind: "remove", label: "Remove…" }
+  ];
   var wanted = () => trimmed("user-filter").toLowerCase();
   function matching() {
     const needle = wanted();
@@ -4160,17 +4642,17 @@ ${JSON.stringify(held5, null, 2)}`;
     return everybody.filter((one2) => (one2.user ?? "").toLowerCase().includes(needle));
   }
   function tally(matched) {
-    const held5 = everybody.length;
+    const held6 = everybody.length;
     const filtered = wanted() !== "";
     if (matched.length <= SHOWN) {
-      return filtered ? `${matched.length} of ${held5}` : `${held5}`;
+      return filtered ? `${matched.length} of ${held6}` : `${held6}`;
     }
     return `showing ${SHOWN} of ${matched.length}${filtered ? "" : ` — type a name to narrow`}`;
   }
   function listing2(rows2) {
     const table = made("table");
     const head = table.createTHead().insertRow();
-    for (const column of ["user", "role", "reach"]) {
+    for (const column of ["user", "role", "reach", ""]) {
       const cell2 = made("th");
       cell2.textContent = column;
       head.appendChild(cell2);
@@ -4179,10 +4661,23 @@ ${JSON.stringify(held5, null, 2)}`;
     for (const one2 of rows2) {
       const row = body.insertRow();
       const name = one2.user ?? "";
-      row.insertCell().textContent = name;
+      const opener = made("button", "link");
+      opener.type = "button";
+      opener.textContent = name;
+      opener.addEventListener("click", () => act("detail", name));
+      row.insertCell().appendChild(opener);
       row.insertCell().textContent = said2(one2);
       row.insertCell().textContent = reach2(one2);
-      row.addEventListener("click", () => pick(name));
+      const actions = row.insertCell();
+      actions.className = "actions";
+      for (const action of ACTIONS) {
+        const pressed = made("button", action.kind === "remove" ? "quiet small danger" : "quiet small");
+        pressed.type = "button";
+        pressed.textContent = action.label;
+        pressed.setAttribute("aria-label", `${action.label.replace("…", "")} — ${name}`);
+        pressed.addEventListener("click", () => act(action.kind, name));
+        actions.appendChild(pressed);
+      }
     }
     return table;
   }
@@ -4191,7 +4686,7 @@ ${JSON.stringify(held5, null, 2)}`;
   async function listUsers() {
     state("user-status", "waiting", "asking the node who it knows about…");
     try {
-      const answer2 = held2(await valueOf("INFO FOR USERS;", "Users · list"));
+      const answer2 = held3(await valueOf("INFO FOR USERS;", "Users · list"));
       const listed2 = answer2 === null ? [] : answer2["users"];
       everybody = Array.isArray(listed2) ? listed2 : [];
       forget();
@@ -4234,31 +4729,31 @@ ${JSON.stringify(held5, null, 2)}`;
     }
     write("user-count", tally(matched));
   }
-  function wire25() {
+  function wire29() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     onArrival(["access"], () => void listUsers());
-    at("lookup").addEventListener("click", async () => {
-      const name = trimmed("lookup-name");
-      if (name === "") {
-        say("user-status", "a name is needed — there is no listing to pick from", true);
-        return;
-      }
-      say("user-status", "asking…");
-      try {
-        const answered2 = await valueOf("INFO FOR USER " + name + ";", "Users · detail");
-        const one2 = held2(answered2);
-        if (one2 !== null) {
-          facts("user-answer", one2);
-        } else {
-          put("user-answer", answered2);
-        }
-        say("user-status", "");
-      } catch (failure) {
-        clear("user-answer");
-        say("user-status", told(failure), true);
-      }
+    at("new-user").addEventListener("click", () => {
+      write("define-dialog-title", "New user");
+      openDialog("define-dialog");
     });
+    at("define-owner").addEventListener("click", () => {
+      setValue("new-reach", "node");
+      setValue("new-role", "owner");
+      shapeTheForm();
+      write("define-dialog-title", "Define the owner");
+      openDialog("define-dialog");
+    });
+  }
+
+  // src/user-actions.ts
+  //! Running the three account dialogs: create, change, remove.
+  //!
+  //! The statements are composed in `user-forms.ts`; this is the button that sends
+  //! one, refuses the click that would send it without a reason, and redraws the
+  //! list after. Each closes its dialog only on success, so a refusal stays on
+  //! screen beside the form that caused it.
+  function wire30() {
     at("define").addEventListener("click", async () => {
       const statement2 = definition();
       if (statement2 === null) {
@@ -4268,11 +4763,21 @@ ${JSON.stringify(held5, null, 2)}`;
       say("define-status", "running…");
       try {
         const answered2 = await valueOf(statement2, "Users · define");
-        const finished = answered2 !== null && answered2.kind === "done";
-        say("define-status", finished ? "ok" : "");
-        if (!finished) {
-          put("user-answer", answered2);
+        if (answered2 === null || answered2.kind !== "done") {
+          say("define-status", "the node answered with something other than done — the log in the tray has it", true);
+          return;
         }
+        say("define-status", "");
+        setValue("new-name", "");
+        setValue("new-password", "");
+        shapeTheForm();
+        closeDialog("define-dialog");
+        if (storeIsOpen()) {
+          await decide();
+          say("identity-status", "the store is closed now — sign in as the user you defined");
+          return;
+        }
+        await listUsers();
       } catch (failure) {
         say("define-status", told(failure), true);
       }
@@ -4290,8 +4795,10 @@ ${JSON.stringify(held5, null, 2)}`;
       }
       say("change-status", "running…");
       try {
-        const answered2 = await valueOf(statement2, "Users · change", why);
-        say("change-status", answered2 !== null && answered2.kind === "done" ? "ok" : "");
+        await valueOf(statement2, "Users · change", why);
+        say("change-status", "");
+        setValue("change-password", "");
+        closeDialog("change-dialog");
         await listUsers();
       } catch (failure) {
         say("change-status", told(failure), true);
@@ -4310,12 +4817,13 @@ ${JSON.stringify(held5, null, 2)}`;
       }
       say("remove-status", "running…");
       try {
-        const answered2 = await valueOf(statement2, "Users · remove", why);
-        say("remove-status", answered2 !== null && answered2.kind === "done" ? "removed" : "");
+        await valueOf(statement2, "Users · remove", why);
+        say("remove-status", "");
         setValue("remove-name", "");
         setValue("remove-confirm", "");
         setValue("remove-why", "");
         shapeTheRemoval();
+        closeDialog("remove-dialog");
         await listUsers();
       } catch (failure) {
         say("remove-status", told(failure), true);
@@ -4342,33 +4850,39 @@ ${JSON.stringify(held5, null, 2)}`;
   //! graph first reaches it, which makes the order of everything on this page an
   //! accident of who imports whom. One list is cheaper to read and cannot drift.
   write("where", "served by " + window.location.host);
-  wire12();
-  wire18();
+  wire16();
+  wire23();
   at("skip").addEventListener("click", (event) => {
     event.preventDefault();
     at("view").focus();
   });
   wire2();
+  wire4();
   wire();
   wire3();
-  wire15();
-  wire16();
-  wire17();
-  wire10();
-  wire8();
-  wire11();
-  wire7();
-  wire6();
-  wire5();
-  wire4();
-  wire9();
-  wire25();
-  wire13();
-  wire14();
   wire19();
-  wire20();
   wire21();
   wire22();
+  wire13();
+  wire11();
+  wire15();
+  wire10();
+  wire9();
+  wire6();
+  wire5();
+  wire12();
+  wire29();
+  wire30();
+  wire20();
+  afterApplied(refreshShown);
+  wire17();
+  wire18();
+  wire7();
   wire24();
-  wire23();
+  wire25();
+  wire26();
+  wire28();
+  wire27();
+  wire8();
+  wire14();
 })();

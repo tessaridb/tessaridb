@@ -1,9 +1,8 @@
 //! Spaces — what a space holds: its keys by prefix, and one key's value and how
 //! long it has left (ADR-0090, G046).
 //!
-//! The markup only; the reading lives in `spaces-list.ts`. It sits on Run beside
-//! Series, for the reason Series gives: a space is data you query there, and the
-//! destinations are capped at five.
+//! The markup only; the reading lives in `spaces-list.ts`. It sits on Data beside
+//! Series, for the reason Series gives.
 
 import { type Node } from "./html.js";
 import { answer, button, choose, field, note, pane, paneHead, row, status, text } from "./ui.js";
@@ -20,8 +19,6 @@ export const spaces = (): Node =>
     ),
     row(
       "default",
-      field("Namespace", choose("kv-namespace", [])),
-      field("Database", choose("kv-database", [])),
       field("Space", choose("kv-space", [])),
     ),
     row(

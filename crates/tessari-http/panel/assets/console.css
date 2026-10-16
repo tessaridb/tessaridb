@@ -132,6 +132,7 @@
   --bad: var(--red-600);
   --shadow: 0 1px 2px oklch(0.13 0.009 286 / 0.06);
   --shadow-sheet: 0 12px 32px oklch(0.13 0.009 286 / 0.14);
+  --scrim: oklch(0.13 0.009 286 / 0.45);
 }
 
 /* Dark — the product's own surfaces. Written twice (system preference, explicit
@@ -1575,5 +1576,189 @@ details.tucked > summary {
   .lamp,
   .tabs [role="tab"][aria-selected="true"] {
     border: 1px solid CanvasText;
+  }
+}
+
+/* ──────────────────────────────────────────────────────── the sign-in page ── */
+
+/* What a visitor meets before the console: one card in the middle of the
+   screen and nothing behind it. The console is not drawn underneath — the gate
+   is the page until the node says otherwise. */
+.shell[hidden],
+.gate[hidden],
+.banner[hidden] {
+  display: none;
+}
+
+.gate {
+  display: grid;
+  place-items: center;
+  min-block-size: 100dvh;
+  padding: var(--s-5) var(--s-4);
+  background: var(--surface);
+}
+
+.gate-card {
+  display: grid;
+  gap: var(--s-4);
+  inline-size: min(24rem, 100%);
+  padding: var(--s-6);
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  box-shadow: var(--shadow-sheet);
+}
+
+.gate-card > label {
+  display: grid;
+  gap: var(--s-1);
+}
+
+.gate-card > button {
+  inline-size: 100%;
+}
+
+.gate-brand {
+  display: grid;
+  justify-items: center;
+  gap: var(--s-2);
+  text-align: center;
+}
+
+.gate-brand h1 {
+  font-size: var(--t-28);
+}
+
+/* The open store says what it means above every screen, with its one way out. */
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  margin-block-end: var(--stack);
+}
+
+.banner > .note {
+  flex: 1 1 20rem;
+  margin: 0;
+}
+
+/* ────────────────────────────────────────────────────────────── dialogs ── */
+
+/* One action, in a window of its own. The native element brings the modal
+   contract — the inert page, the focus trap, Escape — and this brings the look:
+   the same raised card as every sheet, centred, over a dimmed page. */
+dialog.dialog {
+  inline-size: min(36rem, calc(100vw - var(--s-6)));
+  max-block-size: calc(100dvh - var(--s-6));
+  padding: 0;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--card-radius);
+  box-shadow: var(--shadow-sheet);
+  opacity: 1;
+  transform: scale(1);
+  transition:
+    opacity var(--motion-fast) var(--ease),
+    transform var(--motion-fast) var(--ease);
+}
+
+@starting-style {
+  dialog.dialog[open] {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+dialog.dialog::backdrop {
+  background: var(--scrim);
+}
+
+/* Five peers of nine fields each: the one dialog that needs the width. */
+#form-dialog {
+  inline-size: min(72rem, calc(100vw - var(--s-6)));
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: var(--s-4) var(--card-inset) 0;
+}
+
+/* A dialog's title is a heading people read, not a pane's small caps label. */
+.dialog-head h2 {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: var(--t-16);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* The name an action is about came from its row: shown, not a field to type in. */
+.dialog-body input[readonly] {
+  background: transparent;
+  border-color: transparent;
+  padding-inline: 0;
+  font-weight: 600;
+}
+
+#user-list table,
+#data-list table {
+  inline-size: 100%;
+}
+
+/* The account menu is two choices, so it is the width of two choices. */
+.identity > .sheet {
+  inline-size: max-content;
+}
+
+.dialog-body {
+  display: grid;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--card-inset) var(--card-inset);
+}
+
+/* ────────────────────────────────────────────────────── actions in a row ── */
+
+/* The actions sit at the end of the row they act on, small and quiet, so a
+   list of forty accounts reads as a list and not as a wall of buttons. */
+td.actions {
+  white-space: nowrap;
+  text-align: end;
+}
+
+button.small {
+  min-block-size: 1.75rem;
+  padding: 0 var(--s-3);
+  font-size: var(--t-13);
+}
+
+button.danger {
+  color: var(--bad);
+}
+
+/* The name that opens an account looks like what it is: a link to it. */
+button.link {
+  min-block-size: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+  font-weight: 550;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  button.link:hover:not(:disabled) {
+    background: transparent;
+    color: var(--text);
+  }
+
+  button.danger:hover:not(:disabled) {
+    color: var(--bad);
   }
 }

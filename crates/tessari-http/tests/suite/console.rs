@@ -110,7 +110,7 @@ fn dechunked(body: &str) -> String {
 
 /// Post a script and answer with the status and the body.
 #[cfg(feature = "console")]
-fn script(address: &str, source: &str) -> (u16, String) {
+pub(crate) fn script(address: &str, source: &str) -> (u16, String) {
     let mut stream = TcpStream::connect(address).unwrap();
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -973,7 +973,7 @@ fn every_sentence_that_denies_a_capability_is_on_the_record() {
 /// directory is the loud one — a wrong path finds nothing — and the assertions
 /// below turn that into a failure instead of a pass.
 #[cfg(feature = "console")]
-fn panel_sources() -> Vec<(String, String)> {
+pub(crate) fn panel_sources() -> Vec<(String, String)> {
     let directory = concat!(env!("CARGO_MANIFEST_DIR"), "/panel/src");
     let mut found = Vec::new();
     for entry in std::fs::read_dir(directory).expect("the panel's source directory") {
@@ -1156,7 +1156,7 @@ fn no_screen_but_run_asks_the_operator_to_read_a_statement() {
 
 #[cfg(feature = "console")]
 #[test]
-fn the_seven_destinations_are_named_for_the_jobs_and_there_are_seven() {
+fn the_eight_destinations_are_named_for_the_jobs_and_there_are_eight() {
     // S3.2's own measurement. Renaming the destinations passed every test this
     // suite had, because they all assert that a tab and a pane AGREE — which
     // stays true whatever the tab is called. The labels are the criterion, so
@@ -1167,7 +1167,8 @@ fn the_seven_destinations_are_named_for_the_jobs_and_there_are_seven() {
     // let one arrive silently beside them. The fifth, Topics, was that trade —
     // asked for by the owner for G042 and recorded in `destinations.ts` — and the
     // sixth, Backup, was the same trade asked for again (2026-09-30), and the
-    // seventh, Vault, once more (G048, 2026-09-30).
+    // seventh, Vault, once more (G048, 2026-09-30). The eighth, Data, is the trade
+    // made on the owner's G071 request for a page of databases and tables.
     let (_node, address) = node();
     let (status, _, page) = get(&address, "/");
     assert_eq!(status, 200, "the console's page is not served");
@@ -1186,6 +1187,7 @@ fn the_seven_destinations_are_named_for_the_jobs_and_there_are_seven() {
         labels,
         vec![
             "Run",
+            "Data",
             "Topics",
             "Cluster",
             "Access",
@@ -1193,7 +1195,7 @@ fn the_seven_destinations_are_named_for_the_jobs_and_there_are_seven() {
             "Backup",
             "Vault"
         ],
-        "the destinations no longer name the jobs, or an eighth has arrived"
+        "the destinations no longer name the jobs, or a ninth has arrived"
     );
 }
 

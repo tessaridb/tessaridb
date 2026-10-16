@@ -33,8 +33,9 @@
 
 import { valueOf, type Result } from "./api.js";
 import { hide as hideDetail, show as showDetail } from "./detail.js";
-import { at, setValue, trimmed, write } from "./dom.js";
+import { at, trimmed, write } from "./dom.js";
 import { show } from "./tabs.js";
+import { showUser } from "./user-detail.js";
 
 /** One thing the field might mean, and what to ask the node about it. */
 interface Candidate {
@@ -153,8 +154,7 @@ function candidates(text: string): readonly Candidate[] {
       // for the account in order to do.
       land: () => {
         show("access");
-        setValue("lookup-name", text);
-        at("lookup").click();
+        void showUser(text);
       },
     });
     out.push({

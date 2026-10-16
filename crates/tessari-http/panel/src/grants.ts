@@ -27,9 +27,46 @@
 //! one decision — who may do what, and how far.
 
 import { valueOf } from "./api.js";
-import { at, hide, say, trimmed, value } from "./dom.js";
+import { closeDialog, openDialog } from "./dialog.js";
+import { at, hide, say, setValue, trimmed, value, write } from "./dom.js";
 import { lookup } from "./roster.js";
 import { told } from "./session.js";
+
+/** Where a grant reaches: a table grant, or an authority over a namespace, a database or the store. */
+export type Reach = "table" | "namespace" | "database" | "store";
+
+/** Who is told when a grant lands — the account's own dialog, which redraws. */
+let landed: () => void = () => {};
+
+export function afterApplied(listener: () => void): void {
+  landed = listener;
+}
+
+/**
+ * Open the dialog for one account, filled in as far as the caller knows.
+ *
+ * A revoke arrives with everything but the reason; a new grant with only the
+ * account. Either way the dialog says what will happen before it is pressed.
+ */
+export function offer(fill: {
+  readonly who: string;
+  readonly direction?: "give" | "take";
+  readonly reach?: Reach;
+  readonly name?: string;
+  readonly what?: string;
+}): void {
+  const direction = fill.direction ?? "give";
+  setValue("grant-who", fill.who);
+  setValue("grant-direction", direction);
+  setValue("grant-reach", fill.reach ?? "table");
+  setValue("grant-name", fill.name ?? "");
+  setValue("grant-what", fill.what ?? "");
+  setValue("grant-why", "");
+  say("grant-status", "");
+  shape();
+  write("grant-dialog-title", direction === "take" ? `Take away from ${fill.who}` : `Give ${fill.who}`);
+  openDialog("grant-dialog");
+}
 
 /** Where a grant reaches. `table` is the narrowing kind; the rest are authorities. */
 const reachOf = (): string => value("grant-reach");
@@ -151,6 +188,8 @@ export function wire(): void {
     try {
       const answered = await valueOf(sending, "Access · grant", why);
       say("grant-status", answered !== null && answered.kind === "done" ? "done" : "");
+      closeDialog("grant-dialog");
+      landed();
     } catch (failure) {
       // The node's own words. The refusal on a last-grant revoke explains the
       // widening, and paraphrasing it would lose the remedy it names.

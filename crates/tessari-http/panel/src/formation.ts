@@ -43,6 +43,7 @@
 
 
 import { valueOf } from "./api.js";
+import { closeDialog, openDialog } from "./dialog.js";
 import { at, clear, made, say, setValue, trimmed } from "./dom.js";
 import { told } from "./session.js";
 import { hereAgain } from "./tabs.js";
@@ -231,6 +232,21 @@ export function wire(): void {
     }
   }
 
+  at("open-form").addEventListener("click", () => openDialog("form-dialog"));
+
+  // The next hidden row, until there are none left to add.
+  at("add-peer").addEventListener("click", () => {
+    for (let index = 1; index < ROWS; index += 1) {
+      const row = at(`peer-row-${index}`);
+      if (row.hidden) {
+        row.hidden = false;
+        at(`peer-${index}-name`).focus();
+        break;
+      }
+    }
+    at("add-peer").hidden = !at(`peer-row-${ROWS - 1}`).hidden;
+  });
+
   at("form-cluster").addEventListener("click", async () => {
     const rows = intended();
     if (rows.length === 0) {
@@ -257,8 +273,11 @@ export function wire(): void {
           for (const bit of BITS) {
             (at(`peer-${index}-${bit}`) as HTMLInputElement).checked = false;
           }
+          at(`peer-row-${index}`).hidden = index > 0;
         }
+        at("add-peer").hidden = false;
         changed();
+        closeDialog("form-dialog");
         // The map is two inches above this button and was drawn before the
         // membership that now exists. W319 fixed exactly this for the drawer
         // and did not reach the form; W320 declared a peer here, read

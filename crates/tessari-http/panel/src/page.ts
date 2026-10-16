@@ -10,17 +10,17 @@
 //! claim into the product that nobody decided.
 
 import { document, el, type Node } from "./html.js";
-import { access } from "./access.js";
+import { access, accessDialogs } from "./access.js";
+import { gate, identity, mineDialog } from "./account.js";
 import { cluster } from "./cluster.js";
-import { spaces } from "./spaces.js";
-import { series } from "./series.js";
+import { data } from "./data.js";
 import { topics } from "./topics.js";
 import { backup } from "./backup-pane.js";
 import { vault } from "./vault-pane.js";
 import { DESTINATIONS, to } from "./destinations.js";
 import {
-  answer, behindDisclosure, button, field, note, number, pane, paneHead, panel,
-  row, says, secret, split, status, tabs, text, warning,
+  answer, behindDisclosure, button, dialog, field, note, number, pane, paneHead, panel,
+  row, split, status, tabs, text, warning,
 } from "./ui.js";
 
 
@@ -34,49 +34,6 @@ const head = (): Node =>
     el("title", {}, "TessariDB console"),
     el("link", { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" }),
     el("link", { rel: "stylesheet", href: "/console.css" }),
-  );
-
-const identity = (): Node =>
-  el(
-    "details",
-    { class: "identity" },
-    el("summary", {}, el("span", { id: "signed-in" }, "not signed in")),
-    el(
-      "div",
-      { class: "sheet" },
-      note(
-        "Leave both empty against a store that has no users yet. The first ",
-        el("code", {}, "DEFINE USER"),
-        " closes it, and everything after that needs a name.",
-      ),
-      row(
-        "default",
-        field("User", el("input", { id: "user", type: "text", autocomplete: "username" })),
-        field("Password", secret("password", "current-password")),
-      ),
-      note(
-        "The password is checked once. What this page keeps afterwards is a token, " +
-          "held for as long as the tab is open and no longer — so the password is " +
-          "cleared from the field above, and closing the tab ends the session.",
-      ),
-      // Rewritten on load from how this page arrived: a node given a client
-      // certificate serves the console over TLS, and one that was not still
-      // sends the password as it was typed.
-      el(
-        "p",
-        { id: "transport-says", class: "note warn" },
-        "Credentials travel as typed unless this page arrived over https.",
-      ),
-      row(
-        "spread",
-        row(
-          "tight",
-          button("sign-in", "Sign in", "primary"),
-          button("sign-out", "Forget", "quiet"),
-        ),
-        status("identity-status"),
-      ),
-    ),
   );
 
 /**
@@ -161,7 +118,20 @@ const query = (): Node =>
       ),
     ),
     pane(
-      paneHead("Follow a table", status("watch-status")),
+      paneHead(
+        "Changes",
+        row(
+          "tight",
+          status("watch-status"),
+          button("open-follow", "Follow a table…", "quiet"),
+          button("stop", "Stop", "quiet", { disabled: true }),
+        ),
+      ),
+      el("ol", { id: "changes", class: "changes", reversed: true }),
+    ),
+    dialog(
+      "follow-dialog",
+      "Follow a table",
       note(
         el("code", {}, "from"),
         " is a position in the log rather than a moment in time, so ",
@@ -176,6 +146,9 @@ const query = (): Node =>
         field("Namespace", text("namespace", { value: "prod" })),
         field("Database", text("database", { value: "library" })),
         field("Table", text("table", { placeholder: "every table" })),
+      ),
+      row(
+        "default",
         field("From", number("from", { value: 0, min: 0 })),
         field("Cursor", text("cursor", { placeholder: "split tables only" })),
       ),
@@ -184,15 +157,8 @@ const query = (): Node =>
         field("Condition", text("condition", { placeholder: "chat = $chat" })),
         field("Values", text("condition-values", { placeholder: "{\"chat\": \"'a'\"}" })),
       ),
-      row(
-        "default",
-        button("follow", "Follow"),
-        button("stop", "Stop", "quiet", { disabled: true }),
-      ),
-      el("ol", { id: "changes", class: "changes", reversed: true }),
+      row("spread", button("follow", "Follow", "primary"), status("follow-dialog-status")),
     ),
-    series(),
-    spaces(),
   );
 
 
@@ -337,9 +303,10 @@ export const index = (): string =>
         "body",
         {},
         el("a", { id: "skip", class: "skip", href: "#view" }, "Skip to content"),
+        gate(),
         el(
           "div",
-          { class: "shell" },
+          { class: "shell", id: "shell", hidden: true },
           side(),
           el(
             "div",
@@ -359,16 +326,29 @@ export const index = (): string =>
                 el("code", {}, "--tls-key"),
                 ", or reach it over an SSH tunnel to localhost.",
               ),
+              // An open store has nobody to sign in as, so the console is shown —
+              // and says, before anything else, what that means and how to end it.
+              el(
+                "div",
+                { id: "open-banner", class: "banner", hidden: true },
+                warning(
+                  "This store has no users: anybody who reaches this node may read and " +
+                    "write everything. The first user closes it.",
+                ),
+                button("define-owner", "Define the owner…", "primary"),
+              ),
               pageHead(),
               // In the menu's own order, so the reading order of the page and the
               // order of the controls beside it are one thing rather than two.
-              query(), topics(), cluster(), access(), node(), backup(), vault(),
+              query(), data(), topics(), cluster(), access(), node(), backup(), vault(),
             ),
             // In the column and not under the whole page, so it never covers the
             // sidebar's foot while it stays pinned to the bottom of the screen.
             tray(),
           ),
         ),
+        mineDialog(),
+        ...accessDialogs(),
         logSheet(),
         keysSheet(),
         detailSheet(),

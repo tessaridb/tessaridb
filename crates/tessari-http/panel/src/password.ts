@@ -2,7 +2,8 @@
 
 import { at, disable, say, setValue, trimmed, value } from "./dom.js";
 import { record } from "./log.js";
-import { basic, reason, told } from "./session.js";
+import { closeDialog, openDialog } from "./dialog.js";
+import { basic, reason, signOut, told } from "./session.js";
 
 /**
  * Keep the button honest about whether the three fields agree.
@@ -21,6 +22,16 @@ export function shapeMine(): void {
 }
 
 export function wire(): void {
+  at("mine-open").addEventListener("click", () => {
+    // The account menu closes behind the dialog it opened, so Escape on the
+    // dialog does not land the reader back in a menu they have finished with.
+    const menu = at("mine-open").closest("details");
+    if (menu !== null) {
+      menu.open = false;
+    }
+    openDialog("mine-dialog");
+  });
+
   for (const field of ["mine-current", "mine-new", "mine-again"]) {
     at(field).addEventListener("input", shapeMine);
   }
@@ -65,8 +76,8 @@ export function wire(): void {
         setValue(field, "");
       }
       shapeMine();
-      at("sign-out").click();
-      say("identity-status", "password changed — sign in with the new one", false);
+      closeDialog("mine-dialog");
+      await signOut("password changed — sign in with the new one");
     } catch (failure) {
       say("mine-status", "the node did not answer: " + told(failure), true);
     }

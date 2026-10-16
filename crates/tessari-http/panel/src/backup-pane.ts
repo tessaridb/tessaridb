@@ -4,14 +4,28 @@
 
 import { el, type Node } from "./html.js";
 import { to } from "./destinations.js";
-import { answer, button, choose, field, note, pane, paneHead, panel, row, says, status, text } from "./ui.js";
+import { answer, button, choose, dialog, field, note, pane, paneHead, panel, row, says, status, text } from "./ui.js";
 
 export const backup = (): Node =>
   panel(
     to("backup"),
     false,
-    paneHead("Backup", status("backup-status")),
+    paneHead(
+      "Backup",
+      row(
+        "tight",
+        button("open-backup", "Back up…", "primary"),
+        button("open-restore", "Restore a script…", "quiet"),
+      ),
+    ),
     pane(
+      note(
+        "Each runs in its own dialog, and the node answers there: the file it wrote, or what it ran.",
+      ),
+    ),
+    dialog(
+      "backup-dialog",
+      "Back up",
       note(
         "The node writes the file into its backup folder (",
         el("code", {}, "--backup-dir"),
@@ -47,18 +61,19 @@ export const backup = (): Node =>
         ),
       ),
       says("backup-says"),
-      row("default", button("backup-run", "Back up", "primary", { disabled: true })),
+      row("spread", button("backup-run", "Back up", "primary", { disabled: true }), status("backup-status")),
       answer("backup-answer", "small"),
     ),
-    pane(
-      paneHead("Restore a script", status("restore-status")),
+    dialog(
+      "restore-dialog",
+      "Restore a script",
       note(
         "Runs a script from the same folder beside what the store holds: it creates the databases " +
           "it carries and is refused, with nothing written, when one of them already exists.",
       ),
       row("default", field("File name", text("restore-name", { spellcheck: false, autocomplete: "off" }))),
       says("restore-says"),
-      row("default", button("restore-run", "Restore", "default", { disabled: true })),
+      row("spread", button("restore-run", "Restore", "default", { disabled: true }), status("restore-status")),
       answer("restore-answer", "small"),
     ),
   );

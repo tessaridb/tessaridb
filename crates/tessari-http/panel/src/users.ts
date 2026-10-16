@@ -1,4 +1,4 @@
-//! Who exists, and the buttons that change that.
+//! Who exists, and what may be done to each of them, beside them.
 //!
 //! Everything here goes through a statement over `POST /script`. There is no
 //! request on this page that a `curl` could not make, which is what keeps a
@@ -21,23 +21,14 @@
 //! work, and it is recorded as Q-678 rather than left to be noticed.
 
 import { held, Unreachable, valueOf } from "./api.js";
-import { at, clear, made, say, setValue, trailer, trimmed, write } from "./dom.js";
-import { facts, put } from "./draw.js";
+import { openDialog } from "./dialog.js";
+import { at, clear, made, setValue, trailer, trimmed, write } from "./dom.js";
 import { forget, remember } from "./roster.js";
 import { told } from "./session.js";
 import { settled, state } from "./states.js";
 import { onArrival } from "./tabs.js";
-import {
-  alteration,
-  changeMissing,
-  changeWhy,
-  definition,
-  missing,
-  removal,
-  removeWhy,
-  shapeTheChange,
-  shapeTheRemoval,
-} from "./user-forms.js";
+import { act, type Act } from "./user-detail.js";
+import { shapeTheForm } from "./user-forms.js";
 
 /** One row of `INFO FOR USERS`. */
 interface Listed {
@@ -59,20 +50,13 @@ const SHOWN = 200;
 /** The whole answer, held unrendered so the filter does not re-ask the node. */
 let everybody: readonly Listed[] = [];
 
-/** Fill both name fields from a listing row, and reshape what depends on them. */
-function pick(name: string): void {
-  setValue("lookup-name", name);
-  // Both forms, because a name picked out of a listing is picked in order to do
-  // something to it, and which of the two comes next is not knowable from the
-  // click.
-  setValue("change-name", name);
-  setValue("remove-name", name);
-  shapeTheChange();
-  // Deliberately NOT the confirmation field: a click that filled both would arm
-  // the destructive button by itself.
-  shapeTheRemoval();
-  at("lookup").click();
-}
+/** The small buttons beside a row, each opening one action. */
+const ACTIONS: readonly { readonly kind: Act; readonly label: string }[] = [
+  { kind: "password", label: "Password…" },
+  { kind: "role", label: "Role…" },
+  { kind: "grant", label: "Give…" },
+  { kind: "remove", label: "Remove…" },
+];
 
 /** What the reader typed into the filter, folded so case is not a trap. */
 const wanted = (): string => trimmed("user-filter").toLowerCase();
@@ -114,7 +98,7 @@ function tally(matched: readonly Listed[]): string {
 function listing(rows: readonly Listed[]): HTMLTableElement {
   const table = made("table");
   const head = table.createTHead().insertRow();
-  for (const column of ["user", "role", "reach"]) {
+  for (const column of ["user", "role", "reach", ""]) {
     const cell = made("th");
     cell.textContent = column;
     head.appendChild(cell);
@@ -123,12 +107,24 @@ function listing(rows: readonly Listed[]): HTMLTableElement {
   for (const one of rows) {
     const row = body.insertRow();
     const name = one.user ?? "";
-    row.insertCell().textContent = name;
+    // The name opens the account; the buttons at the end of the row act on it.
+    const opener = made("button", "link");
+    opener.type = "button";
+    opener.textContent = name;
+    opener.addEventListener("click", () => act("detail", name));
+    row.insertCell().appendChild(opener);
     row.insertCell().textContent = said(one);
     row.insertCell().textContent = reach(one);
-    // A name in a listing is there to be clicked; typing it again is the kind
-    // of small tax that makes an operator go back to `curl`.
-    row.addEventListener("click", () => pick(name));
+    const actions = row.insertCell();
+    actions.className = "actions";
+    for (const action of ACTIONS) {
+      const pressed = made("button", action.kind === "remove" ? "quiet small danger" : "quiet small");
+      pressed.type = "button";
+      pressed.textContent = action.label;
+      pressed.setAttribute("aria-label", `${action.label.replace("…", "")} — ${name}`);
+      pressed.addEventListener("click", () => act(action.kind, name));
+      actions.appendChild(pressed);
+    }
   }
   return table;
 }
@@ -243,99 +239,19 @@ export function wire(): void {
   // identity nobody holds any more.
   onArrival(["access"], () => void listUsers());
 
-  at("lookup").addEventListener("click", async () => {
-    const name = trimmed("lookup-name");
-    if (name === "") {
-      say("user-status", "a name is needed — there is no listing to pick from", true);
-      return;
-    }
-    say("user-status", "asking…");
-    try {
-      const answered = await valueOf("INFO FOR USER " + name + ";", "Users · detail");
-      const one = held(answered);
-      if (one !== null) {
-        facts("user-answer", one);
-      } else {
-        put("user-answer", answered);
-      }
-      say("user-status", "");
-    } catch (failure) {
-      clear("user-answer");
-      say("user-status", told(failure), true);
-    }
+  at("new-user").addEventListener("click", () => {
+    write("define-dialog-title", "New user");
+    openDialog("define-dialog");
   });
 
-  at("define").addEventListener("click", async () => {
-    const statement = definition();
-    if (statement === null) {
-      say("define-status", missing(), true);
-      return;
-    }
-    say("define-status", "running…");
-    try {
-      const answered = await valueOf(statement, "Users · define");
-      const finished = answered !== null && answered.kind === "done";
-      say("define-status", finished ? "ok" : "");
-      if (!finished) {
-        put("user-answer", answered);
-      }
-    } catch (failure) {
-      say("define-status", told(failure), true);
-    }
-  });
-
-  at("change").addEventListener("click", async () => {
-    const statement = alteration();
-    if (statement === null) {
-      say("change-status", changeMissing(), true);
-      return;
-    }
-    // Refused here rather than by a dead button: a control that will not press
-    // and says nothing leaves the operator looking for the field that is wrong,
-    // and the whole point of the reason is that somebody articulates one.
-    const why = changeWhy();
-    if (why === "") {
-      say("change-status", "say why — this ends their session and they sign in again", true);
-      return;
-    }
-    say("change-status", "running…");
-    try {
-      const answered = await valueOf(statement, "Users · change", why);
-      say("change-status", answered !== null && answered.kind === "done" ? "ok" : "");
-      // The listing carries the role, so a role change that is not redrawn
-      // leaves the old one on screen looking current.
-      await listUsers();
-    } catch (failure) {
-      say("change-status", told(failure), true);
-    }
-  });
-
-  at("remove").addEventListener("click", async () => {
-    const statement = removal();
-    if (statement === null) {
-      say("remove-status", "the two names do not match", true);
-      return;
-    }
-    const why = removeWhy();
-    if (why === "") {
-      say("remove-status", "say why — this does not come back", true);
-      return;
-    }
-    say("remove-status", "running…");
-    try {
-      const answered = await valueOf(statement, "Users · remove", why);
-      say("remove-status", answered !== null && answered.kind === "done" ? "removed" : "");
-      // Cleared only on success, so a refusal leaves the name on screen to be
-      // read — and never leaves a confirmed form one click from firing again.
-      setValue("remove-name", "");
-      setValue("remove-confirm", "");
-      setValue("remove-why", "");
-      shapeTheRemoval();
-      await listUsers();
-    } catch (failure) {
-      // The node's own words. A refusal here is the permission system working,
-      // and paraphrasing it would hide which of the several reasons it was.
-      say("remove-status", told(failure), true);
-    }
+  // An open store's one way out, offered from its banner on any screen: an
+  // administrator of the whole node, which is the user the first DEFINE USER
+  // has to be for anybody to administer it afterwards.
+  at("define-owner").addEventListener("click", () => {
+    setValue("new-reach", "node");
+    setValue("new-role", "owner");
+    shapeTheForm();
+    write("define-dialog-title", "Define the owner");
+    openDialog("define-dialog");
   });
 }

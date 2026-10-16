@@ -5,11 +5,12 @@
 
 import { el, type Node } from "./html.js";
 import { to } from "./destinations.js";
-import { trustPanes } from "./trust-panes.js";
+import { trustDialogs, trustPanes } from "./trust-panes.js";
 import {
     answer,
     behindDisclosure,
     button,
+    dialog,
     field,
     note,
     pane,
@@ -28,8 +29,17 @@ export const cluster = (): Node =>
         pane(
             paneHead(
                 "The cluster, as this node sees it",
-                status("cluster-status"),
+                // Each act on the cluster is its own dialog, opened from here,
+                // over the map it changes.
+                row(
+                    "tight",
+                    button("open-form", "Form the cluster…", "primary"),
+                    button("open-join", "Approve a join…", "quiet"),
+                    button("open-revoke", "Revoke a certificate…", "quiet"),
+                    button("open-failover", "Failover…", "quiet"),
+                ),
             ),
+            status("cluster-status"),
             // The map, and the raw answer under it. Both, because the map is a
             // reading of the answer and an operator who doubts the reading needs the
             // thing it was read from — that is the same rule the statement log
@@ -98,16 +108,20 @@ export const cluster = (): Node =>
                 answer("cluster-facts", "small"),
             ),
         ),
-        pane(
-            paneHead("Declare the membership", status("form-status")),
+        dialog(
+            "form-dialog",
+            "Form the cluster",
             note(
                 "Every member at once, this node included, in one transaction: the first " +
                     "declaration clusters this node and costs it the authority to accept a " +
                     "second. A row with neither id nor fingerprint waits for a join token.",
             ),
+            // One row to start, this node's; the rest arrive one at a time with
+            // Add a member, so the dialog is as long as the cluster being formed.
             ...Array.from({ length: 5 }, (_, at) =>
-                row(
-                    "default",
+                el(
+                    "div",
+                    { id: `peer-row-${at}`, class: "row", hidden: at > 0 },
                     field(
                         "Name",
                         text(`peer-${at}-name`, { placeholder: "warsaw" }),
@@ -148,14 +162,20 @@ export const cluster = (): Node =>
                     ),
                 ),
             ),
+            row("default", button("add-peer", "Add a member", "quiet")),
             says("form-says"),
             behindDisclosure(
                 "The transaction this will send",
                 el("div", { id: "form-statement", class: "answer small" }),
             ),
-            row("default", button("form-cluster", "Declare it", "primary")),
+            row(
+                "spread",
+                button("form-cluster", "Declare it", "primary"),
+                status("form-status"),
+            ),
         ),
         ...trustPanes(),
+        ...trustDialogs(),
         pane(
             paneHead("What is here, and what is not"),
             note(

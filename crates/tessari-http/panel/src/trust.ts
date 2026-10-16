@@ -13,6 +13,7 @@
 //! after.
 
 import { valueOf } from "./api.js";
+import { closeDialog, openDialog } from "./dialog.js";
 import { at, clear, disable, hide, made, say, setValue, trimmed, write } from "./dom.js";
 import { told } from "./session.js";
 import { hereAgain } from "./tabs.js";
@@ -240,6 +241,15 @@ async function send(statement: string, status: string, why?: string): Promise<bo
 }
 
 export function wire(): void {
+  at("open-revoke").addEventListener("click", () => openDialog("revoke-dialog"));
+  at("open-join").addEventListener("click", () => {
+    // A token from the last time is a secret nobody asked to see again.
+    hide("join-token", true);
+    say("join-status", "");
+    openDialog("join-dialog");
+  });
+  at("open-failover").addEventListener("click", () => openDialog("failover-dialog"));
+
   for (const id of ["revoke-fingerprint", "revoke-confirm"]) {
     at(id).addEventListener("input", shapeRevoke);
   }
@@ -259,6 +269,7 @@ export function wire(): void {
     if (await send(composed.statement, "revoke-status", trimmed("revoke-why") || undefined)) {
       setValue("revoke-confirm", "");
       setValue("revoke-fingerprint", "");
+      closeDialog("revoke-dialog");
       hereAgain();
     }
   });
@@ -291,6 +302,7 @@ export function wire(): void {
   at("failover-apply").addEventListener("click", async () => {
     const composed = policy();
     if ("statement" in composed && (await send(composed.statement, "failover-status"))) {
+      closeDialog("failover-dialog");
       hereAgain();
     }
   });

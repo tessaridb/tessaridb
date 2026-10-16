@@ -54,14 +54,11 @@ const FOLLOWING = "#following";
  */
 const REMEMBERED: readonly string[] = [
   "script",
-  "lookup-name",
+  // The account dialogs are filled from the row they were opened on, so what
+  // they held last time is not this time's work and is not restored into them.
   "user-filter",
   "new-name",
   "new-scope",
-  "change-name",
-  "remove-name",
-  "remove-why",
-  "change-why",
   "namespace",
   "database",
   "table",

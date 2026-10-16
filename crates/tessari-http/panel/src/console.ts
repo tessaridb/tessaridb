@@ -18,9 +18,12 @@
 
 import { at, write } from "./dom.js";
 import * as context from "./context.js";
+import * as dataList from "./data-list.js";
 import * as detail from "./detail.js";
+import * as dialog from "./dialog.js";
 import * as drawer from "./drawer.js";
 import * as formation from "./formation.js";
+import * as gate from "./gate.js";
 import * as grants from "./grants.js";
 import * as icons from "./icons.js";
 import * as log from "./log.js";
@@ -39,6 +42,8 @@ import * as vault from "./vault.js";
 import * as spacesList from "./spaces-list.js";
 import * as seriesList from "./series-list.js";
 import * as topicList from "./topic-list.js";
+import * as userActions from "./user-actions.js";
+import * as userDetail from "./user-detail.js";
 import * as userForms from "./user-forms.js";
 import * as users from "./users.js";
 import * as watch from "./watch.js";
@@ -60,6 +65,7 @@ at("skip").addEventListener("click", (event) => {
 // The log first, so the count in the tray reads zero before anything can add
 // to it — and so a statement sent during start-up has somewhere to land.
 log.wire();
+dialog.wire();
 tabs.wire();
 session.wire();
 query.wire();
@@ -77,6 +83,9 @@ context.wire();
 watch.wire();
 userForms.wire();
 users.wire();
+userActions.wire();
+userDetail.wire();
+grants.afterApplied(userDetail.refreshShown);
 node.wire();
 password.wire();
 topicList.wire();
@@ -85,3 +94,9 @@ backup.wire();
 vault.wire();
 seriesList.wire();
 spacesList.wire();
+dataList.wire();
+
+// Last of all: the gate decides which of the two pages is shown, and showing
+// the console reads the screen in front of the reader — whose modules have to
+// be wired before anything asks them to draw.
+gate.wire();

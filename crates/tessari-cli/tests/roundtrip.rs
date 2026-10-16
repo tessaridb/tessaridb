@@ -144,6 +144,7 @@ const RELEASED: &[&str] = &[
     "0.33.4-beta",
     "0.34.0-beta",
     "0.34.1-beta",
+    "0.34.2-beta",
 ];
 
 /// The binary this crate builds, which is the one an operator upgrades to.

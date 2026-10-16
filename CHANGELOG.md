@@ -13,6 +13,17 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.34.3-beta — 2026-10-16
+
+### Changed
+
+- **The console opens on a sign-in page** when the store has users, and shows nothing behind it until you sign in.
+  An open store shows the console with a warning and a button to define the owner.
+- **Every action is its own dialog:** accounts (create, password, role, grant, remove), the cluster (form, join,
+  revoke, failover), topics, backup and restore, vault unseal and passphrase, following a table.
+- **Access is a list of users** with the actions beside each one; a name opens the account.
+- **A Data page** lists namespaces, databases and tables with their kind; Series and Spaces moved there from Run.
+
 ## 0.34.2-beta — 2026-10-16
 
 ### Fixed

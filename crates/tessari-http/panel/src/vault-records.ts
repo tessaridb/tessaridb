@@ -10,6 +10,7 @@
 //! and are removed by Hide, by the next reveal, and by listing again.
 
 import { held, Unreachable, valueOf } from "./api.js";
+import { closeDialog } from "./dialog.js";
 import { at, clear, disable, made, say, setValue, shown, trimmed, value } from "./dom.js";
 import { told } from "./session.js";
 import { aName, tenancy } from "./topic-names.js";
@@ -189,7 +190,12 @@ export function wireRecords(): void {
   at("vault-rec-records").addEventListener("click", () => void listRecords(true));
   at("vault-rec-more").addEventListener("click", () => void listRecords(false));
   at("vault-rec-hide").addEventListener("click", hideRevealed);
-  at("vault-rec-write").addEventListener("click", () => void writeField());
+  at("vault-rec-write").addEventListener("click", () => {
+    // The value is read out of its field before the first await, so closing the
+    // dialog here takes nothing from the write; its answer lands on the pane.
+    void writeField();
+    closeDialog("vault-rec-write-dialog");
+  });
   at("vault-rec-audit").addEventListener("click", () => void auditTrail());
   for (const id of ["vault-rec-id", "vault-rec-field", "vault-rec-value"]) {
     at(id).addEventListener("input", shape);
