@@ -67,6 +67,8 @@ mod claims;
 mod dead;
 mod delay;
 mod priority;
+mod served;
+mod taking;
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 
@@ -87,6 +89,7 @@ pub(crate) use claims::{
     queue_declaration,
 };
 use delay::delay_field;
+use taking::Taking;
 
 impl Session<'_> {
     /// `CLAIM 10 FROM jobs`
@@ -148,54 +151,54 @@ impl Session<'_> {
             );
         }
 
-        let mut taken: Vec<(RecordId, Value)> = Vec::new();
-        let mut writes: Vec<(RecordId, Value)> = Vec::new();
-        let mut buried: Vec<dead::Spent> = Vec::new();
-        transaction.walk_table(
-            context.namespace,
-            context.database,
-            id,
-            |walking, record, bytes| -> Result<ControlFlow<()>> {
-                if taken.len() >= limit {
-                    return Ok(ControlFlow::Break(()));
+        let mut taking = Taking {
+            declared: &declared,
+            matching: matching.as_ref(),
+            claimant: claimant.as_ref(),
+            moment: (now, until),
+            limit,
+            place: (context, id),
+            taken: Vec::new(),
+            writes: Vec::new(),
+            buried: Vec::new(),
+        };
+        // A condition an index covers is served by it (G073 C1): the candidates
+        // in identity order — the order the walk meets them in — each then
+        // judged exactly as the walk judges it.
+        let served = match condition {
+            Some(condition) => {
+                self.served_candidates(transaction, (context, id), table, condition)?
+            }
+            None => None,
+        };
+        let plan = match served {
+            Some((candidates, plan)) => {
+                for (record, bytes) in candidates {
+                    if self
+                        .offer(transaction, &mut taking, record, &bytes)?
+                        .is_break()
+                    {
+                        break;
+                    }
                 }
-                let Value::Object(mut fields) = decode_payload(&bytes)? else {
-                    // A queue record that is not an object cannot carry a hold,
-                    // so it is passed over rather than refused: one malformed
-                    // record must not stop every worker on the table.
-                    return Ok(ControlFlow::Continue(()));
-                };
-                // Met by the walk whatever the condition asks, because a spent
-                // record is nobody's work any more (ADR-0126 D2).
-                if declared.dead_letter.is_some() && dead::spent(&fields, now, &declared) {
-                    buried.push((record, fields));
-                    return Ok(ControlFlow::Continue(()));
-                }
-                if !claimable(&fields, now, &declared)
-                    || !self.matches(walking, matching.as_ref(), &record, &fields)?
-                {
-                    return Ok(ControlFlow::Continue(()));
-                }
-                // Another open claim is taking it: passed over, so this claim
-                // takes the next record rather than racing for this one
-                // (ADR-0126 D5).
-                let address =
-                    RecordAddress::new(context.namespace, context.database, id, record.clone());
-                if !walking.take_for_claim(&address) {
-                    return Ok(ControlFlow::Continue(()));
-                }
-                fields.insert(QUEUE_CLAIMED_UNTIL.to_owned(), Value::Datetime(until));
-                fields.insert(
-                    QUEUE_ATTEMPTS.to_owned(),
-                    Value::Number(Number::Integer(attempts_of(&fields).saturating_add(1))),
-                );
-                mark_claimant(&mut fields, claimant.as_ref());
-                let payload = Value::Object(fields);
-                taken.push((record.clone(), payload.clone()));
-                writes.push((record, payload));
-                Ok(ControlFlow::Continue(()))
-            },
-        )?;
+                plan
+            }
+            None => {
+                transaction.walk_table(
+                    context.namespace,
+                    context.database,
+                    id,
+                    |walking, record, bytes| self.offer(walking, &mut taking, record, &bytes),
+                )?;
+                Plan::new(AccessPath::Scan).on(&table.name.text)
+            }
+        };
+        let Taking {
+            taken,
+            writes,
+            buried,
+            ..
+        } = taking;
 
         // Written after the walk rather than inside it. The walk copies this
         // transaction's pending writes out before it starts, so a record written
@@ -210,7 +213,7 @@ impl Session<'_> {
 
         Ok(Outcome::Records {
             records: taken,
-            plan: Plan::new(AccessPath::Scan).on(&table.name.text),
+            plan,
             notes: Vec::new(),
             suggestion: None,
             only: false,

@@ -1321,6 +1321,54 @@ fn mixed<'a>(store: &'a Store, declaration: &str) -> Session<'a> {
     session
 }
 
+/// A condition an index covers is served by it (G073 C1): the same records, in
+/// the queue's own order, and the claim reports the index that reached them —
+/// including a record this transaction wrote and the index has not settled.
+#[test]
+fn a_claims_condition_an_index_covers_is_served_by_the_index() {
+    let store = store();
+    let mut session = mixed(&store, "TIMEOUT 1m");
+    run(&mut session, "DEFINE INDEX by_kind ON media FIELDS kind;");
+    let first = run(&mut session, "CLAIM FROM media WHERE kind = 'image';");
+    assert_eq!(claimed(&first), vec!["2"]);
+    assert_eq!(path_of(&first), "Index");
+    match &first {
+        Outcome::Records { plan, .. } => assert_eq!(plan.index.as_deref(), Some("by_kind")),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        claimed(&run(
+            &mut session,
+            "CLAIM 5 FROM media WHERE kind = 'image';"
+        )),
+        vec!["4"],
+        "the held record is passed over, as the scan passes over it"
+    );
+    let own = session
+        .run("BEGIN; CREATE media:0 = { kind: 'image' }; CLAIM FROM media WHERE kind = 'image'; COMMIT;")
+        .unwrap();
+    assert_eq!(
+        claimed(&own[2]),
+        vec!["0"],
+        "the transaction's own write is a candidate"
+    );
+}
+
+/// An index whose order is not arrival order still hands out arrival order: a
+/// range over `weight` meets 1, 2, 4, 3 and the claim takes 1, 2, 3.
+#[test]
+fn an_index_served_claim_takes_arrival_order_not_index_order() {
+    let store = store();
+    let mut session = mixed(&store, "TIMEOUT 1m");
+    run(
+        &mut session,
+        "DEFINE INDEX by_weight ON media FIELDS weight;",
+    );
+    let taken = run(&mut session, "CLAIM 3 FROM media WHERE weight >= 1;");
+    assert_eq!(path_of(&taken), "Index");
+    assert_eq!(claimed(&taken), vec!["1", "2", "3"]);
+}
+
 /// A worker that can do only some of the work takes only that work, in the
 /// queue's own order, and leaves the rest for the workers that can.
 #[test]

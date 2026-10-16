@@ -13,6 +13,14 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.35.1 — 2026-10-16
+
+### Changed
+
+- **`CLAIM … WHERE` is served by an index that covers the condition**, as a `SELECT` with the same `WHERE` is: the
+  same records in the same order, at the cost of the matching records rather than the queue. The claim reports the
+  index.
+
 ## 0.35.0 — 2026-10-16
 
 ### Added
