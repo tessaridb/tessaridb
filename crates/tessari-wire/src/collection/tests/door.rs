@@ -120,7 +120,7 @@ fn a_peer_nobody_subscribed_is_refused_by_name_by_the_door_on_the_runtime() {
             .await
     }));
 
-    let refused = collect(&authority, address, 1, 64)
+    let refused = collect(&authority, &address.to_string(), 1, 64)
         .expect_err("a peer nobody subscribed may not take the log");
     stop.cancel();
     assert!(
@@ -164,7 +164,7 @@ fn a_held_stream_is_sent_a_commit_the_moment_it_lands() {
     }));
 
     let mut following = super::super::Following::open(
-        (LEADER, address),
+        (LEADER, address.to_string().as_str()),
         &authority.keys(THERE, Purpose::Peer),
         &hello(THERE),
         Duration::from_secs(5),
@@ -352,7 +352,7 @@ fn a_pushed_round_is_held_only_once_the_follower_says_so() {
     let leader = granting(" REPLICATES STORE");
     let (authority, address, stop, _runtime) = a_pushing_door(&leader);
     let mut following = super::super::Following::open(
-        (LEADER, address),
+        (LEADER, address.to_string().as_str()),
         &authority.keys(THERE, Purpose::Peer),
         &hello(THERE),
         Duration::from_secs(5),
@@ -410,7 +410,7 @@ fn a_restart_is_marked_and_sends_from_where_it_names() {
     let leader = granting(" REPLICATES STORE");
     let (authority, address, stop, _runtime) = a_pushing_door(&leader);
     let mut following = super::super::Following::open(
-        (LEADER, address),
+        (LEADER, address.to_string().as_str()),
         &authority.keys(THERE, Purpose::Peer),
         &hello(THERE),
         Duration::from_secs(5),

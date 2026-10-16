@@ -128,9 +128,10 @@ fn a_follower_collects_the_records_it_does_not_have() {
     let leader = logged(&[1, 1, 1]);
     let (address, door) = serving(&authority, &leader, 1);
 
-    let collected =
-        served(collect(&authority, address, 1, 64).expect("a peer that proved itself may collect"))
-            .expect("a collection came back");
+    let collected = served(
+        collect(&authority, &address, 1, 64).expect("a peer that proved itself may collect"),
+    )
+    .expect("a collection came back");
     door.join().expect("the door's thread");
 
     assert_eq!(
@@ -158,7 +159,7 @@ fn a_collection_states_the_epoch_that_precedes_it() {
     let (address, door) = serving(&authority, &leader, 1);
 
     let collected =
-        served(collect(&authority, address, 3, 64).expect("the door is up and answering"))
+        served(collect(&authority, &address, 3, 64).expect("the door is up and answering"))
             .expect("a collection came back");
     door.join().expect("the door's thread");
 
@@ -192,7 +193,7 @@ fn an_ask_tells_the_leader_what_the_follower_holds() {
     };
 
     drop(served(
-        collect(&authority, address, 3, 64).expect("a follower may collect"),
+        collect(&authority, &address, 3, 64).expect("a follower may collect"),
     ));
     assert!(
         held(2).is_empty(),
@@ -200,10 +201,10 @@ fn an_ask_tells_the_leader_what_the_follower_holds() {
     );
 
     drop(served(
-        collect(&authority, address, 1, 64).expect("sent from the start"),
+        collect(&authority, &address, 1, 64).expect("sent from the start"),
     ));
     drop(served(
-        collect(&authority, address, 4, 64).expect("and asked past it"),
+        collect(&authority, &address, 4, 64).expect("and asked past it"),
     ));
     door.join().expect("the door's thread");
     assert_eq!(
@@ -227,12 +228,12 @@ fn a_follower_that_asks_beyond_the_leaders_log_is_refused() {
     // from 4, the leader holds 3, and the honest answer is an EMPTY
     // collection — which is what makes the refusal below about the
     // position rather than about emptiness.
-    let level = served(collect(&authority, address, 4, 64).expect("a level follower may ask"))
+    let level = served(collect(&authority, &address, 4, 64).expect("a level follower may ask"))
         .expect("a collection came back");
     assert!(level.records.is_empty(), "{:?}", level.records);
     assert_eq!(level.previous, Epoch::new(1), "the leadership at the tail");
 
-    let refused = collect(&authority, address, 9, 64);
+    let refused = collect(&authority, &address, 9, 64);
     door.join().expect("the door's thread");
 
     // And it crossed the wire as the refusal it was, not as a closed
@@ -249,7 +250,7 @@ fn a_limit_bounds_one_collection_and_the_next_asks_from_where_it_stopped() {
     let leader = logged(&[1, 1, 1]);
     let (address, door) = serving(&authority, &leader, 2);
 
-    let first = served(collect(&authority, address, 1, 2).expect("the first collection"))
+    let first = served(collect(&authority, &address, 1, 2).expect("the first collection"))
         .expect("a collection came back");
     assert_eq!(
         first
@@ -263,7 +264,7 @@ fn a_limit_bounds_one_collection_and_the_next_asks_from_where_it_stopped() {
 
     // No continuation state on the leader: the follower's cursor is the
     // position it reached, and the next ask is an ordinary one.
-    let next = served(collect(&authority, address, 3, 2).expect("the second collection"))
+    let next = served(collect(&authority, &address, 3, 2).expect("the second collection"))
         .expect("a collection came back");
     door.join().expect("the door's thread");
     assert_eq!(
@@ -291,7 +292,7 @@ fn a_collection_is_recorded_on_the_leader() {
         "nothing has collected yet"
     );
 
-    drop(collect(&authority, address, 1, 2).expect("a collection"));
+    drop(collect(&authority, &address, 1, 2).expect("a collection"));
     door.join().expect("the door's thread");
 
     let lag = leader

@@ -13,6 +13,13 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.35.3 — unreleased
+
+### Fixed
+
+- **A member row's `AT` may name a host.** The cluster rounds dialled only a literal address and left a peer declared
+  by name unasked, so a cluster declared by names elected nobody; each round now resolves the name when it dials.
+
 ## 0.35.2 — 2026-10-16
 
 ### Security

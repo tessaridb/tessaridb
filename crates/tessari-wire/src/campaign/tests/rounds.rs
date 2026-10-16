@@ -28,7 +28,7 @@ async fn a_lost_round_reports_the_highest_epoch_a_voter_said_it_had_granted() {
 
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let peers = [(voter, address)];
+    let peers = [(voter, address.to_string())];
     let standing = standing(&mine, &said, &peers);
 
     assert_eq!(
@@ -61,7 +61,7 @@ async fn a_leader_with_margin_left_asks_nobody() {
 
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let peers = [(voter, address)];
+    let peers = [(voter, address.to_string())];
     let standing = standing(&mine, &said, &peers);
 
     let now = Instant::now();
@@ -110,7 +110,7 @@ async fn a_leader_stands_early_enough_to_lose_a_round_and_still_renew() {
 
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let peers = [(voter, address)];
+    let peers = [(voter, address.to_string())];
     let standing = standing(&mine, &said, &peers);
 
     let now = Instant::now();
@@ -143,7 +143,7 @@ async fn a_leader_at_its_fence_wins_the_next_epoch() {
         .collect();
     let peers: Vec<_> = doors
         .iter()
-        .map(|(id, (address, _))| (*id, *address))
+        .map(|(id, (address, _))| (*id, address.to_string()))
         .collect();
 
     let mine = authority.keys(THERE, Purpose::Peer);
@@ -205,8 +205,12 @@ async fn a_peer_that_is_gone_does_not_cost_the_round_its_majority() {
         .into_iter()
         .map(|id| (id, voting(&authority, id, settled())))
         .collect();
-    let mut peers = vec![(gone, absent)];
-    peers.extend(doors.iter().map(|(id, (address, _))| (*id, *address)));
+    let mut peers = vec![(gone, absent.to_string())];
+    peers.extend(
+        doors
+            .iter()
+            .map(|(id, (address, _))| (*id, address.to_string())),
+    );
 
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
@@ -259,7 +263,7 @@ async fn a_cluster_of_three_carries_a_round_with_one_member_down() {
 
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let peers = [(gone, absent), (alive, address)];
+    let peers = [(gone, absent.to_string()), (alive, address.to_string())];
     let standing = standing(&mine, &said, &peers);
 
     let now = Instant::now();

@@ -56,14 +56,6 @@ pub(crate) fn collect_placed_ranges(
         if node == me {
             continue;
         }
-        let Ok(address) = endpoint.parse() else {
-            tracing::warn!(
-                range = ?range,
-                endpoint = %endpoint,
-                "a range's leader has an endpoint that is not an address"
-            );
-            continue;
-        };
         // A live stream carries this range; the round stays out of it, and a
         // stream that ended leaves the cursors to start again from the store.
         if streams.following((node, Some(range))) {
@@ -73,7 +65,7 @@ pub(crate) fn collect_placed_ranges(
         let collector = tessari_wire::Collector {
             keys,
             said: &said,
-            peer: (node, address),
+            peer: (node, endpoint.as_str()),
             limit: tessari_constants::COLLECTION_RECORDS,
         };
         let collecting = by_leader.entry(node).or_default();
@@ -115,7 +107,7 @@ pub(crate) fn collect_placed_ranges(
         // gone nothing else will ever bring it level.
         if !clean && !below && tessari_wire::stands_for(declared, &me) == Some(range) {
             for (holder, at) in holders_of(range, declared, (me, node)) {
-                catch_up_from(store, (keys, &said), (holder, &at), range, &logs);
+                catch_up_from(store, (keys, &said), (holder, at.as_str()), range, &logs);
             }
         }
         if below {
@@ -159,7 +151,7 @@ pub(crate) fn collect_placed_ranges(
             streams.start(
                 std::sync::Arc::clone(&handle),
                 keys.clone(),
-                ((node, Some(range)), address),
+                ((node, Some(range)), endpoint.clone()),
                 (homes, still),
                 (stop.clone(), std::sync::Arc::clone(&wakes)),
             );

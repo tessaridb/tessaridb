@@ -9129,6 +9129,12 @@ DEFINE REPLICA second AT 'db-2.internal:9000' ROLES serving, writable;
 INFO FOR NODE;
 ```
 
+**`AT` may name a host or an address.** A name is resolved each time it is
+dialled and every address it answers is tried in turn, so a peer that moves keeps
+its row. A name that does not resolve is a failed dial: the member gives no vote
+and the node's log names the endpoint. A literal address costs no lookup;
+declare addresses where a slow resolver could delay a lease renewal.
+
 **Say where clients reach each member, beside where peers do.** `AT` is the
 address other nodes dial — in a cluster run with peer credentials it is the peer
 door, which a client cannot speak to. A redirect names a node to go to, and it
@@ -10217,7 +10223,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.35.2", "build": "0.35.2", "endpoints": ["db-1.internal:9000"],
+ "version": "0.35.3", "build": "0.35.3", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

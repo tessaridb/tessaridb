@@ -17,7 +17,7 @@ async fn a_round_the_peers_carried_is_recorded_in_the_winners_own_memory() {
         .collect();
     let peers: Vec<_> = doors
         .iter()
-        .map(|(id, (address, _, _))| (*id, *address))
+        .map(|(id, (address, _, _))| (*id, address.to_string()))
         .collect();
 
     let mine = authority.keys(THERE, Purpose::Peer);
@@ -96,7 +96,7 @@ async fn a_round_carried_at_the_epoch_this_node_granted_a_rival_is_recorded() {
         .collect();
     let peers: Vec<_> = doors
         .iter()
-        .map(|(id, (address, _, _))| (*id, *address))
+        .map(|(id, (address, _, _))| (*id, address.to_string()))
         .collect();
 
     let mine = authority.keys(THERE, Purpose::Peer);
@@ -154,7 +154,7 @@ async fn a_round_carried_below_an_epoch_this_node_already_granted_is_not_taken()
         .collect();
     let peers: Vec<_> = doors
         .iter()
-        .map(|(id, (address, _, _))| (*id, *address))
+        .map(|(id, (address, _, _))| (*id, address.to_string()))
         .collect();
 
     let mine = authority.keys(THERE, Purpose::Peer);

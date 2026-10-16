@@ -18,7 +18,7 @@ async fn a_renewal_reaches_every_voter_and_not_only_a_majority() {
         .collect();
     let peers: Vec<_> = doors
         .iter()
-        .map(|(id, (address, _, _))| (*id, *address))
+        .map(|(id, (address, _, _))| (*id, address.to_string()))
         .collect();
 
     let mine = authority.keys(THERE, Purpose::Peer);
@@ -66,7 +66,10 @@ async fn a_peer_that_never_answers_costs_the_round_at_most_its_deadline() {
 
     let alive = [81_u8; NODE_ID_LEN];
     let (address, deciding, answering) = kept_voting(&authority, alive);
-    let peers = [([80_u8; NODE_ID_LEN], quiet), (alive, address)];
+    let peers = [
+        ([80_u8; NODE_ID_LEN], quiet.to_string()),
+        (alive, address.to_string()),
+    ];
 
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
@@ -106,7 +109,7 @@ async fn a_node_that_voted_for_itself_refuses_that_epoch_to_a_rival() {
 
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let peers = [(voter, address)];
+    let peers = [(voter, address.to_string())];
     let standing = standing(&mine, &said, &peers);
 
     let now = Instant::now();
@@ -161,7 +164,7 @@ async fn a_node_that_will_not_vote_for_itself_does_not_count_itself() {
 
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let peers = [(voter, address)];
+    let peers = [(voter, address.to_string())];
     let standing = standing(&mine, &said, &peers);
 
     let now = Instant::now();

@@ -14,7 +14,7 @@ fn a_subscriber_receives_its_namespace_and_not_the_one_beside_it() {
     let follower = Db::in_memory().expect("an in-memory store");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let collector = collector(&mine, &said, address, 1024);
+    let collector = collector(&mine, &said, &address, 1024);
 
     // The chain, walked the way the node's own loop walks it: collect a
     // log, then re-derive the set, because the namespace whose log is worth
@@ -104,7 +104,7 @@ fn a_follower_below_a_pruned_log_copies_the_state_and_then_collects() {
 
     // Three connections: the refused collect, the copy, the collect after.
     let (address, door) = declaring_for(&authority, &leader, 3);
-    let refused = collect(&authority, address, 1, 1024);
+    let refused = collect(&authority, &address, 1, 1024);
     assert!(
         matches!(refused, Err(Error::Uncollectable { .. })),
         "a position below the leader's log start asks for a copy: {refused:?}"
@@ -147,7 +147,7 @@ fn a_follower_below_a_pruned_log_copies_the_state_and_then_collects() {
         .iter()
         .find(|(log, _)| log.home != Reach::Store)
         .expect("a log below the store's was copied");
-    let collector = collector(&mine, &said, address, 1024);
+    let collector = collector(&mine, &said, &address, 1024);
     let reached = collector
         .collect(
             follower.store(),
@@ -174,7 +174,7 @@ fn a_record_read_out_of_one_log_is_applied_into_that_same_log() {
     let follower = Db::in_memory().expect("an in-memory store");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let collector = collector(&mine, &said, address, 1024);
+    let collector = collector(&mine, &said, &address, 1024);
 
     // The log the subscribed namespace's records actually live in. It is
     // the DATABASE's and not the namespace's: a record homes at the join of
@@ -240,7 +240,7 @@ fn a_log_no_subscription_reaches_is_refused_rather_than_served() {
         .into_iter()
         .rfind(|home| matches!(home, Reach::Namespace(_)))
         .expect("the fixture declares two namespaces");
-    let refused = collect_from(&authority, address, beside, 1, 64)
+    let refused = collect_from(&authority, &address, beside, 1, 64)
         .expect_err("a namespace this peer is not subscribed to");
     door.join().expect("the door's thread");
 
@@ -291,7 +291,7 @@ fn a_bounded_read_this_node_could_not_answer_becomes_answerable_once_it_collects
 
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let reached = collector(&mine, &said, address, 1024)
+    let reached = collector(&mine, &said, &address, 1024)
         .collect(follower.store(), Reach::Store, Sequence::new(1))
         .expect("a subscribed peer collects");
     door.join().expect("the door's thread");
@@ -331,7 +331,7 @@ fn a_follower_that_collects_applies_what_it_was_given() {
     let follower = Db::in_memory().expect("an in-memory store");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let reached = collector(&mine, &said, address, 64)
+    let reached = collector(&mine, &said, &address, 64)
         .collect(follower.store(), Reach::Store, Sequence::new(1))
         .expect("a collection applies");
     door.join().expect("the door's thread");
@@ -362,7 +362,7 @@ fn a_batch_is_applied_against_the_record_before_each_one() {
     let follower = Db::in_memory().expect("an in-memory store");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let reached = collector(&mine, &said, address, 64)
+    let reached = collector(&mine, &said, &address, 64)
         .collect(follower.store(), Reach::Store, Sequence::new(1))
         .expect("a batch of three leaderships applies");
     door.join().expect("the door's thread");
@@ -386,7 +386,7 @@ fn a_collection_whose_predecessor_disagrees_is_refused() {
     let follower = logged_as(store_log(&leader).writer, &[1, 1]);
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let refused = collector(&mine, &said, address, 64).collect(
+    let refused = collector(&mine, &said, &address, 64).collect(
         follower.store(),
         Reach::Store,
         Sequence::new(3),
@@ -436,7 +436,7 @@ fn a_level_answer_whose_predecessor_disagrees_is_refused() {
     let follower = logged_as(store_log(&leader).writer, &[1, 1, 1]);
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let refused = collector(&mine, &said, address, 64).collect(
+    let refused = collector(&mine, &said, &address, 64).collect(
         follower.store(),
         Reach::Store,
         Sequence::new(4),
@@ -465,7 +465,7 @@ fn a_short_answer_tells_the_follower_how_old_its_copy_is() {
 
     // Bound of two against a log of three: the answer fills the bound, so
     // the follower asked and did not arrive.
-    collector(&mine, &said, address, 2)
+    collector(&mine, &said, &address, 2)
         .collect(follower.store(), Reach::Store, Sequence::new(1))
         .expect("the first collection");
     assert_eq!(
@@ -478,7 +478,7 @@ fn a_short_answer_tells_the_follower_how_old_its_copy_is() {
     );
 
     // The rest arrives inside the bound, so the peer had no more.
-    collector(&mine, &said, address, 2)
+    collector(&mine, &said, &address, 2)
         .collect(follower.store(), Reach::Store, Sequence::new(3))
         .expect("the second collection");
     door.join().expect("the door's thread");

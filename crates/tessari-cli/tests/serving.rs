@@ -2080,14 +2080,21 @@ fn a_cluster_declared(band: &Band, preamble: &str, leads: [&str; 3]) -> Three {
 /// shard is a row that is not `REPLICATES STORE`). Each node declares its own
 /// roles as its row states them.
 fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
-    a_cluster_of_rows_by(None, band, preamble, rows)
+    a_cluster_of_rows_by(None, band, as_listening, preamble, rows)
+}
+
+/// A member row's `AT` written as the address the node listens on.
+fn as_listening(peer: &str) -> String {
+    peer.to_owned()
 }
 
 /// [`a_cluster_of_rows`] run by `binary` when one is named — an older release,
-/// for a rolling upgrade (G053 SG8).
+/// for a rolling upgrade (G053 SG8) — with each member row's `AT` written by
+/// `declared_at` from the address its node listens on.
 fn a_cluster_of_rows_by(
     binary: Option<&std::ffi::OsStr>,
     band: &Band,
+    declared_at: fn(&str) -> String,
     preamble: &str,
     rows: [String; 3],
 ) -> Three {
@@ -2185,7 +2192,8 @@ fn a_cluster_of_rows_by(
             let named = tessari_types::RecordId::Uuid(ids[other]).to_string();
             script.push_str(&format!(
                 " DEFINE REPLICA n{other} AT '{}' NODE '{named}' {};",
-                band[other].1, rows[other]
+                declared_at(band[other].1),
+                rows[other]
             ));
         }
         let own = rows[index]
@@ -4240,6 +4248,7 @@ fn a_rolling_upgrade_across_one_minor_version_keeps_every_record() {
     let mut cluster = a_cluster_of_rows_by(
         Some(&from),
         &UPGRADING,
+        as_listening,
         "",
         [every.to_owned(), every.to_owned(), every.to_owned()],
     );
@@ -6893,6 +6902,48 @@ fn misses_spread_over_nodes_are_counted_once() {
         "a node that never saw a miss let the next try in: {answered:?}{}",
         what_the_nodes_said(&BUDGETED, &logs)
     );
+}
+
+/// The cluster declared by name — 47936-47939 and 47946-47947, a band of its own.
+const BY_NAME: Band = [
+    ("127.0.0.1:47936", "127.0.0.1:47937"),
+    ("127.0.0.1:47938", "127.0.0.1:47939"),
+    ("127.0.0.1:47946", "127.0.0.1:47947"),
+];
+
+/// A member row's `AT` written with the host's name instead of its address.
+fn by_name(peer: &str) -> String {
+    peer.replacen("127.0.0.1", "localhost", 1)
+}
+
+/// G075 C1: a cluster whose member rows name each peer by HOST NAME elects a
+/// leader and replicates, because each round resolves the name it dials.
+///
+/// Red on 0.35.2: every round parsed a member's `AT` as a literal address and
+/// dropped a peer whose `AT` was a name, so nobody was ever asked for a vote.
+#[test]
+#[ignore = "three spawned processes, an election and a replication wait; G075 C1's \
+            own validation, run explicitly: cargo test -p tessari-cli --test serving \
+            a_cluster_named_by_host -- --ignored"]
+fn a_cluster_named_by_host_elects_and_replicates() {
+    let every = "ROLES serving, writable, coordinating REPLICATES STORE";
+    let cluster = a_cluster_of_rows_by(
+        None,
+        &BY_NAME,
+        by_name,
+        "",
+        [every.to_owned(), every.to_owned(), every.to_owned()],
+    );
+    let logs = cluster.logs.clone();
+    let leader = the_node_a_majority_granted(&BY_NAME);
+    let patience = Duration::from_secs(60);
+    for follower in (0..BY_NAME.len()).filter(|node| *node != leader) {
+        assert!(
+            until(patience, || counted(BY_NAME[follower].0) == Ok(1)),
+            "node {follower} never held the leader's record{}",
+            what_the_nodes_said(&BY_NAME, &logs)
+        );
+    }
 }
 
 // ---- G054 C5: a peer certificate rotated and revoked on a live cluster ------

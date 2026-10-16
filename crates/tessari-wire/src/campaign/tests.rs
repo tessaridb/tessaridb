@@ -29,7 +29,7 @@ const LEVEL: crate::grant::Reached = crate::grant::Reached {
 fn standing<'a>(
     keys: &'a PeerKeys,
     said: &'a Hello,
-    peers: &'a [([u8; NODE_ID_LEN], SocketAddr)],
+    peers: &'a [([u8; NODE_ID_LEN], String)],
 ) -> Standing<'a> {
     Standing {
         candidate: THERE,
