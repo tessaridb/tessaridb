@@ -149,11 +149,21 @@ impl Needs {
 
     /// Whether this demand is satisfied by reading alone.
     ///
-    /// The one question the table-grant loop asks of it: a grant is a verb on a
-    /// table, and there are two verbs. Everything that is not purely a read
-    /// needs the write, which is the mapping this had before the kinds existed.
-    pub(crate) const fn only_reads(self) -> bool {
-        matches!(self.kinds, [Kind::Read])
+    /// The grant verbs it needs on every table it names: a grant is a verb on
+    /// a table and there are two verbs, so `read` when the statement reads and
+    /// `write` when it does anything else — **both** for a write that also
+    /// reads, as its authority is (ADR-0128). Collapsing that to the write
+    /// alone let a write-only grant answer whole records through `RETURN
+    /// BEFORE` that its own `SELECT` was refused.
+    pub(crate) fn grant_verbs(self) -> impl Iterator<Item = tessari_storage::Verb> {
+        let reads = self.kinds.contains(&Kind::Read);
+        let writes = !matches!(self.kinds, [Kind::Read]);
+        [
+            reads.then_some(tessari_storage::Verb::Read),
+            writes.then_some(tessari_storage::Verb::Write),
+        ]
+        .into_iter()
+        .flatten()
     }
 
     /// The first demanded kind this user holds nowhere at all.

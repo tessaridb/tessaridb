@@ -458,6 +458,9 @@ fn a_write_only_identity_can_write_and_can_learn_nothing() {
     for statement in [
         "CREATE orders:2 = { total: 5 };",
         "UPDATE orders:1 = { total: 6 };",
+        // Silent writes until they answer: then they return the record (ADR-0128).
+        "DELETE orders:1 RETURN BEFORE;",
+        "UPSERT orders:1 = { total: 7 } RETURN BEFORE;",
     ] {
         let refusal = refused(&mut ingest, statement);
         assert!(

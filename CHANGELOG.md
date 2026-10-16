@@ -15,6 +15,12 @@ compares carries no pre-release suffix.
 
 ## 0.35.2 — unreleased
 
+### Security
+
+- **A write that answers a record needs `read` as well as `write`.** A write-only identity or table grant could read
+  a record through `DELETE … RETURN BEFORE` or `UPSERT … RETURN …`, and a table grant asked only `write` of a write
+  that also reads (`UPDATE`, `DELETE FROM … WHERE`); both now ask for both.
+
 ### Changed
 
 - **A name declared twice is refused by kind and name** — `a topic named events already exists` — rather than by the

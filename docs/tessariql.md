@@ -676,6 +676,12 @@ DEFINE USER nadia ON NAMESPACE prod AUTHORITIES manage PASSWORD 'a long one';
 cannot define a table there. `nadia` creates and drops databases in `prod` and
 reads nothing in them — the headline rule, said in one statement.
 
+**A write that answers a record also needs `read`.** `ingest` may `UPSERT` and
+`DELETE`, but `DELETE orders:1 RETURN BEFORE` hands back the record as it stood,
+so it asks for `read` as well — as `CREATE` at a chosen identity, `UPDATE` and
+`DELETE FROM … WHERE` already do. A table grant follows the same rule: a write
+that reads needs both `read` and `write` on the table.
+
 `replicate` is the one kind nothing else implies, and the reason is what the log
 holds. It is not the records: it carries the definitions too, and the users,
 credentials and grants that a subscriber needs in order to admit anybody. So a

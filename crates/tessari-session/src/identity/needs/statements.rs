@@ -417,6 +417,18 @@ impl Needs {
             // family is how the next member added gets mis-permissioned.
             | StatementKind::Release { .. }
             | StatementKind::ReleaseAll { .. } => Self::READ_WRITE,
+            // A silent write stops being silent the moment it answers a record:
+            // `RETURN BEFORE` is the record as it stood — a read — and an
+            // `UPSERT`'s `RETURN AFTER` carries the fields it kept. Classified on
+            // the answer rather than on the verb, so a write-only identity is
+            // refused the read it would otherwise take (ADR-0128).
+            StatementKind::Upsert { answer, .. }
+            | StatementKind::Delete { answer, .. }
+            | StatementKind::DeleteEdge { answer, .. }
+                if *answer != tessari_ql::Answer::Nothing =>
+            {
+                Self::READ_WRITE
+            }
             // **The six that are measurably silent about prior state.** Every
             // one of them answers `ok` against an absent or conflicting record,
             // so a holder of `write` alone can run them and learn nothing —
