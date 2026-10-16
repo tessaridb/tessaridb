@@ -348,7 +348,7 @@ pub(crate) fn close_session(presented: &Presented, tokens: &Tokens) -> Answer {
 /// permission of its own and must not — a backup is every table at once, and an
 /// endpoint that decided that for itself would be a second answer to a question
 /// the language already answers.
-pub(crate) fn backup(
+pub(crate) async fn backup(
     db: &Db,
     query: Option<&str>,
     tokens: &Tokens,
@@ -377,7 +377,7 @@ pub(crate) fn backup(
         Ok(session) => session,
         Err(answer) => return answer,
     };
-    match session.run(&script) {
+    match session.run(&script).await {
         Ok(outcomes) => match outcomes.last() {
             Some(Outcome::Value(tessaridb::Value::Bytes(bytes))) => {
                 Answer::octets(200, bytes.clone())

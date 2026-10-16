@@ -135,7 +135,7 @@ async fn follow(mut socket: WebSocket, node: &Shared, presented: Presented, body
     // the bridge like any request.
     let opened = node
         .bridge
-        .call((claimed, asked), move |(claimed, asked)| {
+        .call_async((claimed, asked), move |(claimed, asked)| async move {
             let mut session = crate::respond::session_for(&db, &tokens, &claimed)
                 .map_err(|answer| String::from_utf8_lossy(&answer.body).into_owned())?;
             if !crate::object::is_identifier(&asked.namespace)
@@ -147,7 +147,10 @@ async fn follow(mut socket: WebSocket, node: &Shared, presented: Presented, body
                 "USE NAMESPACE {} DATABASE {};",
                 asked.namespace, asked.database
             );
-            session.run(&selecting).map_err(|error| error.to_string())?;
+            session
+                .run(&selecting)
+                .await
+                .map_err(|error| error.to_string())?;
             let following = Following {
                 from: Sequence::new(asked.from),
                 table: asked.table.as_deref(),

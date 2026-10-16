@@ -33,6 +33,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KeyRange, Keyspace, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
 use tessari_session::{Outcome, Session};
@@ -99,9 +100,9 @@ fn planted() -> (Arc<dyn KvBackend>, Store) {
     let store = Store::open(Arc::clone(&backend)).unwrap();
     {
         let mut session = Session::new(&store);
-        session.run(SETUP).unwrap();
+        session.run_now(SETUP).unwrap();
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE team:'github' = {{ login: '{CONTROL}', \
                  notes: 'the {CONTROL} account', token: '{PLANTED}' }};"
             ))
@@ -130,8 +131,8 @@ fn the_secret_is_in_no_keyspace_the_backend_has() {
 fn the_secret_is_not_in_a_backup_artifact() {
     let (_backend, store) = planted();
     let mut session = Session::new(&store);
-    session.run(USE).unwrap();
-    let Outcome::Value(Value::Bytes(artifact)) = session.run("BACKUP;").unwrap().pop().unwrap()
+    session.run_now(USE).unwrap();
+    let Outcome::Value(Value::Bytes(artifact)) = session.run_now("BACKUP;").unwrap().pop().unwrap()
     else {
         panic!("BACKUP answers with bytes")
     };
@@ -155,13 +156,13 @@ fn the_secret_is_not_in_a_backup_artifact() {
 fn a_search_over_the_whole_store_cannot_find_the_secret() {
     let (_backend, store) = planted();
     let mut session = Session::new(&store);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     // The indexed field is analysed and searchable; the sealed one is bytes and
     // was never offered to the analyzer. Asked as a query rather than by reading
     // the index, because what matters is the answer a caller can obtain.
     let found = session
-        .run(&format!(
+        .run_now(&format!(
             "SELECT id FROM team WHERE notes MATCHES '{PLANTED}';"
         ))
         .unwrap_err()
@@ -183,12 +184,12 @@ fn the_secret_is_not_in_the_change_feed() {
     assert!(!holds(&stored, PLANTED));
 
     let mut session = Session::new(&store);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
     session
-        .run("DEFINE FIELD extra ON team TYPE string;")
+        .run_now("DEFINE FIELD extra ON team TYPE string;")
         .unwrap();
     session
-        .run(&format!(
+        .run_now(&format!(
             "UPDATE team:'github' = {{ login: '{CONTROL}', token: '{PLANTED}' }};"
         ))
         .unwrap();
@@ -208,16 +209,18 @@ fn the_secret_is_not_in_the_change_feed() {
 fn the_secret_survives_a_seal_and_comes_back_after_unsealing() {
     let (_backend, store) = planted();
     let mut session = Session::new(&store);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
-    session.run("SEAL VAULT;").unwrap();
-    session.run("REVEAL token FROM team:'github';").unwrap_err();
+    session.run_now("SEAL VAULT;").unwrap();
+    session
+        .run_now("REVEAL token FROM team:'github';")
+        .unwrap_err();
 
     session
-        .run("UNSEAL VAULT WITH 'an operator passphrase';")
+        .run_now("UNSEAL VAULT WITH 'an operator passphrase';")
         .unwrap();
     let Outcome::Value(Value::Object(opened)) = session
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .unwrap()
         .pop()
         .unwrap()
@@ -252,11 +255,11 @@ fn a_field_nobody_declared_does_not_land_in_a_vault_in_the_clear() {
     let (backend, store) = planted();
     {
         let mut session = Session::new(&store);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
         // `recovery` is not declared on `team`. A caller writing it is doing the
         // most ordinary thing in a schemaless store, and believes it is inside a
         // vault because the record is.
-        let written = session.run(&format!(
+        let written = session.run_now(&format!(
             "CREATE team:'gitlab' = {{ login: '{CONTROL}', recovery: '{UNDECLARED}' }};"
         ));
 
@@ -312,7 +315,7 @@ fn a_traversal_and_a_fetch_reach_a_vault_record_and_still_carry_only_ciphertext(
     let (_backend, store) = planted();
     let mut session = Session::new(&store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{USE}
              DEFINE TABLE users SCHEMALESS;
              DEFINE TABLE owns EDGE;
@@ -330,7 +333,7 @@ fn a_traversal_and_a_fetch_reach_a_vault_record_and_still_carry_only_ciphertext(
         let answered = format!(
             "{:?}",
             session
-                .run(&format!("{USE} {statement}"))
+                .run_now(&format!("{USE} {statement}"))
                 .unwrap_or_else(|refusal| panic!("{shape} was refused: {refusal}"))
         );
 
@@ -375,7 +378,7 @@ fn neither_path_hands_back_the_stores_own_wrapped_key_map() {
     let (_backend, store) = planted();
     let mut session = Session::new(&store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{USE}
              DEFINE TABLE users SCHEMALESS;
              DEFINE TABLE owns EDGE;
@@ -392,7 +395,7 @@ fn neither_path_hands_back_the_stores_own_wrapped_key_map() {
         let answered = format!(
             "{:?}",
             session
-                .run(&format!("{USE} {statement}"))
+                .run_now(&format!("{USE} {statement}"))
                 .unwrap_or_else(|refusal| panic!("{shape} was refused: {refusal}"))
         );
 

@@ -79,7 +79,7 @@ fn a_page_that_keeps_nothing_it_read_says_where_it_got_to() {
     for n in 0..1100 {
         script.push_str(&format!(" CREATE ledger:'a{n:04}' = {{ n: {n} }};"));
     }
-    db.session().run(&script).unwrap();
+    db.session().run_now(&script).unwrap();
     let table = {
         let mut transaction = db.store().begin().unwrap();
         Catalog::new(&mut transaction)

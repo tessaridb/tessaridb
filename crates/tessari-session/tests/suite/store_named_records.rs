@@ -18,6 +18,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -31,7 +32,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;
 DEFINE DATABASE shop; USE DATABASE shop;
@@ -46,7 +47,7 @@ DEFINE COLLECTION sessions IDENTITY uuid;
 
 fn run(session: &mut Session<'_>, script: &str) -> Outcome {
     session
-        .run(script)
+        .run_now(script)
         .unwrap_or_else(|error| panic!("{script}: {error}"))
         .pop()
         .expect("one outcome")
@@ -254,7 +255,7 @@ fn the_counter_walks_past_a_named_identity_instead_of_getting_stuck_on_it() {
     let mut session = ready(&store);
 
     session
-        .run("CREATE users:1 = { name: 'one' }; CREATE users:2 = { name: 'two' };")
+        .run_now("CREATE users:1 = { name: 'one' }; CREATE users:2 = { name: 'two' };")
         .unwrap();
 
     // Not a refusal, and not `1`.
@@ -293,7 +294,7 @@ fn naming_an_identity_the_store_produced_is_still_refused() {
         RecordId::Int(1)
     );
     let refused = session
-        .run("CREATE users:1 = { name: 'someone else' };")
+        .run_now("CREATE users:1 = { name: 'someone else' };")
         .unwrap_err()
         .to_string();
     assert!(
@@ -312,10 +313,10 @@ fn naming_an_identity_the_store_produced_is_still_refused() {
 fn a_bucket_still_refuses_a_record_written_by_hand() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE BUCKET media;").unwrap();
+    session.run_now("DEFINE BUCKET media;").unwrap();
 
     let refused = session
-        .run("CREATE media = { size: 1 };")
+        .run_now("CREATE media = { size: 1 };")
         .unwrap_err()
         .to_string();
     assert!(
@@ -342,7 +343,7 @@ fn a_second_session_continues_the_count_rather_than_restarting_it() {
     }
     let mut session = Session::new(&store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     assert_eq!(
         key(&mut session, "CREATE users = { name: 'grace' };"),

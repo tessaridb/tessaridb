@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Outcome, Session};
@@ -20,14 +21,14 @@ fn store() -> Store {
 fn opened(store: &Store, index: bool) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE t; USE NAMESPACE t; DEFINE DATABASE d; USE DATABASE d; \
              DEFINE SERIES readings RETAIN 36500d TIME at;",
         )
         .unwrap();
     if index {
         session
-            .run("DEFINE INDEX by_sensor ON readings FIELDS sensor;")
+            .run_now("DEFINE INDEX by_sensor ON readings FIELDS sensor;")
             .unwrap();
     }
     session
@@ -55,13 +56,14 @@ fn write(session: &mut Session<'_>, keys: u32, each: u32) -> BTreeMap<String, i6
         }
     }
     script.push_str(" COMMIT;");
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     expected
 }
 
 /// The newest `v` per sensor the read answered, and the path it took.
 fn latest(session: &mut Session<'_>, read: &str) -> (BTreeMap<String, i64>, AccessPath) {
-    let Outcome::Records { records, plan, .. } = session.run(read).unwrap().pop().unwrap() else {
+    let Outcome::Records { records, plan, .. } = session.run_now(read).unwrap().pop().unwrap()
+    else {
         panic!("a read answers with records");
     };
     let count = records.len();
@@ -128,9 +130,9 @@ fn a_condition_chooses_among_the_records_it_admits() {
 fn latest_is_refused_where_newest_has_no_meaning() {
     let store = store();
     let mut session = opened(&store, false);
-    session.run("DEFINE COLLECTION plain;").unwrap();
+    session.run_now("DEFINE COLLECTION plain;").unwrap();
     let refused =
-        |session: &mut Session<'_>, read: &str| session.run(read).unwrap_err().to_string();
+        |session: &mut Session<'_>, read: &str| session.run_now(read).unwrap_err().to_string();
     let plain = refused(&mut session, "SELECT * FROM plain LATEST BY sensor;");
     assert!(plain.contains("only a series"), "{plain}");
     let grouped = refused(

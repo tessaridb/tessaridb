@@ -1,4 +1,5 @@
 use super::*;
+use tessari_session::RunNow;
 
 #[test]
 fn a_collection_stops_at_the_byte_budget_and_says_that_it_did() {
@@ -139,7 +140,7 @@ fn a_node_holding_a_tenancy_of_its_own_is_refused_until_it_removes_it() {
     let follower = Db::in_memory().expect("an in-memory store");
     follower
         .session()
-        .run("DEFINE NAMESPACE research;")
+        .run_now("DEFINE NAMESPACE research;")
         .expect("a node that holds something of its own");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
@@ -173,7 +174,7 @@ fn a_node_holding_a_tenancy_of_its_own_is_refused_until_it_removes_it() {
     // the joiner's behalf and nothing outlives it.
     follower
         .session()
-        .run("DROP NAMESPACE research;")
+        .run_now("DROP NAMESPACE research;")
         .expect("the operator removes their own tenancy");
     collector
         .collect(follower.store(), Reach::Store, Sequence::new(1))

@@ -11,6 +11,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_http::Node;
 use tessaridb::Db;
@@ -475,7 +476,7 @@ fn a_change_committed_past_the_node_arrives_on_its_feed() {
         br#"{"namespace":"prod","database":"library","from":0,"table":"users"}"#,
     );
     db.session()
-        .run("USE NAMESPACE prod; USE DATABASE library; CREATE users:1 = { name: 'ada' };")
+        .run_now("USE NAMESPACE prod; USE DATABASE library; CREATE users:1 = { name: 'ada' };")
         .unwrap();
 
     let (_, opcode, payload) = receive(&mut stream);

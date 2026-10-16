@@ -21,6 +21,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Outcome, Session};
@@ -39,7 +40,7 @@ const INDEX: &str = "DEFINE INDEX by_joined ON users FIELDS joined;";
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION users;\n\
@@ -62,7 +63,7 @@ fn ready(store: &Store) -> Session<'_> {
 /// sorted the answer could not see the one thing this file exists to check.
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
     session
-        .run(read)
+        .run_now(read)
         .unwrap()
         .last()
         .unwrap()
@@ -74,7 +75,7 @@ fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
 }
 
 fn path(session: &mut Session<'_>, read: &str) -> AccessPath {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -82,7 +83,7 @@ fn path(session: &mut Session<'_>, read: &str) -> AccessPath {
 }
 
 fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
-    let outcomes = session.run(&format!("EXPLAIN {read}")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read}")).unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("a plan answered with {:?}", outcomes.last());
     };
@@ -96,7 +97,7 @@ fn a_bounded_descending_read_is_taken_from_the_index() {
     let store = store();
     let mut session = ready(&store);
     assert_eq!(path(&mut session, READ), AccessPath::Scan);
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
     assert_eq!(path(&mut session, READ), AccessPath::Ordered);
     assert_eq!(plan(&mut session, READ, "access"), r#"String("ordered")"#);
     assert_eq!(plan(&mut session, READ, "index"), r#"String("by_joined")"#);
@@ -122,7 +123,7 @@ fn the_answers_are_the_ones_a_scan_gives() {
     let mut without = ready(&unindexed);
     let indexed = store();
     let mut with = ready(&indexed);
-    with.run(INDEX).unwrap();
+    with.run_now(INDEX).unwrap();
 
     for read in reads {
         assert_eq!(ids(&mut with, read), ids(&mut without, read), "{read}");
@@ -158,11 +159,11 @@ fn a_tie_group_straddling_the_bound_resolves_by_identity_ascending() {
                   CREATE users:6 = { joined: 2000 };";
     let unindexed = store();
     let mut without = Session::new(&unindexed);
-    without.run(script).unwrap();
+    without.run_now(script).unwrap();
     let indexed = store();
     let mut with = Session::new(&indexed);
-    with.run(script).unwrap();
-    with.run(INDEX).unwrap();
+    with.run_now(script).unwrap();
+    with.run_now(INDEX).unwrap();
 
     let read = "SELECT * FROM users ORDER BY joined DESC LIMIT 3;";
     assert_eq!(path(&mut with, read), AccessPath::Ordered);
@@ -204,11 +205,11 @@ fn a_record_with_no_value_sorts_last_and_the_index_gives_the_read_up() {
                   CREATE users:4 = { name: 'also nobody' };";
     let unindexed = store();
     let mut without = Session::new(&unindexed);
-    without.run(script).unwrap();
+    without.run_now(script).unwrap();
     let indexed = store();
     let mut with = Session::new(&indexed);
-    with.run(script).unwrap();
-    with.run(INDEX).unwrap();
+    with.run_now(script).unwrap();
+    with.run_now(INDEX).unwrap();
 
     // Two entries, and a bound of two: the index fills it.
     let short = "SELECT * FROM users ORDER BY joined DESC LIMIT 2;";
@@ -256,7 +257,7 @@ fn every_other_shape_is_a_scan_and_answers_the_same() {
     let mut without = ready(&unindexed);
     let indexed = store();
     let mut with = ready(&indexed);
-    with.run(INDEX).unwrap();
+    with.run_now(INDEX).unwrap();
 
     for read in refused {
         assert_ne!(path(&mut with, read), AccessPath::Ordered, "{read}");
@@ -276,7 +277,7 @@ fn a_composite_index_serves_an_order_on_its_leading_field_and_not_on_a_later_one
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE INDEX by_joined_name ON users FIELDS joined, name;")
+        .run_now("DEFINE INDEX by_joined_name ON users FIELDS joined, name;")
         .unwrap();
 
     // `joined` is the leading field, so the entries are stored in exactly the
@@ -298,7 +299,7 @@ fn a_search_index_does_not_serve_an_order() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE INDEX by_name ON users FIELDS name SEARCH;")
+        .run_now("DEFINE INDEX by_name ON users FIELDS name SEARCH;")
         .unwrap();
     let read = "SELECT * FROM users ORDER BY name DESC LIMIT 3;";
     assert_eq!(path(&mut session, read), AccessPath::Scan);
@@ -314,7 +315,7 @@ fn the_order_does_not_disclose_a_field_the_caller_cannot_read() {
     let store = store();
     let mut opening = Session::new(&store);
     opening
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION staff;\n\
@@ -327,7 +328,7 @@ fn the_order_does_not_disclose_a_field_the_caller_cannot_read() {
         .unwrap();
     let mut root = Session::new(&store);
     root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
               DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
               GRANT read ON staff FIELDS name TO ada;",
@@ -336,7 +337,8 @@ fn the_order_does_not_disclose_a_field_the_caller_cannot_read() {
 
     let mut ada = Session::new(&store);
     ada.sign_in("ada", PASSWORD).unwrap();
-    ada.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+    ada.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
 
     let read = "SELECT * FROM staff ORDER BY salary DESC LIMIT 2;";
     assert_eq!(
@@ -360,9 +362,9 @@ fn a_write_in_the_same_transaction_gives_the_read_up() {
     // record is placed by the sort, which needs no index to know where it goes.
     let store = store();
     let mut session = ready(&store);
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
     let outcomes = session
-        .run(
+        .run_now(
             "BEGIN;\n\
              CREATE users:9 = { name: 'later', joined: 2020 };\n\
              SELECT * FROM users ORDER BY joined DESC LIMIT 2;\n\

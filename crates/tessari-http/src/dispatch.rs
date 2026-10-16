@@ -87,7 +87,9 @@ pub(super) async fn handle(
     let routing = Arc::clone(&node);
     let bridged = node
         .bridge
-        .call(incoming, move |incoming| answer(id, &routing, incoming))
+        .call_async(incoming, move |incoming| async move {
+            answer(id, &routing, incoming).await
+        })
         .await;
     drop(place);
     drop(busy);
@@ -129,7 +131,7 @@ fn refused_at_the_door() -> Response {
 /// Route one request and say what to answer.
 ///
 /// Runs on the blocking pool: every route here is synchronous.
-pub(super) fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
+pub(super) async fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
     let db = node.db.as_ref();
     let tokens = node.tokens.as_ref();
     let stopping = node.stopping.as_ref();
@@ -151,16 +153,21 @@ pub(super) fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
         // is operational — an uptime, a sequence, some counts — with no user
         // data and no schema in it. A scraper that does present one is also
         // given each topic it may read, by name (G042).
-        (Method::GET, "/metrics") => respond::metrics(db, census, stopping, tokens, &presented),
+        (Method::GET, "/metrics") => {
+            respond::metrics(db, census, stopping, tokens, &presented).await
+        }
         // Split on `?` here rather than reaching for a URL parser: this route
         // takes one optional parameter and a dependency to read it would be a
         // poor trade.
-        (Method::GET, url) if url == "/backup" || url.starts_with("/backup?") => respond::backup(
-            db,
-            url.split_once('?').map(|(_, query)| query),
-            tokens,
-            &presented,
-        ),
+        (Method::GET, url) if url == "/backup" || url.starts_with("/backup?") => {
+            respond::backup(
+                db,
+                url.split_once('?').map(|(_, query)| query),
+                tokens,
+                &presented,
+            )
+            .await
+        }
         // Where a password is spent, once, for a token that stands in for it
         // afterwards. Both halves are here rather than only the first: a
         // credential a client cannot hand back is one it holds until it exits.
@@ -228,11 +235,12 @@ pub(super) fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
             match body::text(&mut request) {
                 Err(refused) => refused,
                 Ok(body) if !json => {
-                    respond::script(db, &body, &Default::default(), tokens, &presented)
+                    respond::script(db, &body, &Default::default(), tokens, &presented).await
                 }
                 Ok(body) => match request::envelope(&body) {
                     Ok(read) => {
                         respond::script(db, &read.script, &read.parameters, tokens, &presented)
+                            .await
                     }
                     Err(reason) => Answer::bad_request(&reason),
                 },
@@ -248,14 +256,14 @@ pub(super) fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
         // A batch of events for one series, in one transaction (G044 C12).
         (Method::POST, url) if url.starts_with("/series/") => match respond::series::target(url) {
             Some(aimed) => match body::text(&mut request) {
-                Ok(body) => respond::series::append(db, &aimed, &body, tokens, &presented),
+                Ok(body) => respond::series::append(db, &aimed, &body, tokens, &presented).await,
                 Err(refused) => refused,
             },
             None => Answer::new(404, r#"{"error":"no such route"}"#.to_owned()),
         },
         (method, url) if url.starts_with("/kv/") => match kv::target(url) {
             Some(aimed) => match body::text(&mut request) {
-                Ok(text) => kv::answer(db, &method, &aimed, &text, tokens, &presented),
+                Ok(text) => kv::answer(db, &method, &aimed, &text, tokens, &presented).await,
                 Err(refused) => refused,
             },
             None => Answer::new(404, r#"{"error":"no such route"}"#.to_owned()),
@@ -277,11 +285,11 @@ pub(super) fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
         (method, url) => match object::target(url) {
             Some(aimed) => match method {
                 Method::PUT | Method::POST => match body::bytes(&mut request) {
-                    Ok(body) => object::put(db, &aimed, body, tokens, &presented),
+                    Ok(body) => object::put(db, &aimed, body, tokens, &presented).await,
                     Err(refused) => refused,
                 },
-                Method::GET | Method::HEAD => object::get(db, &aimed, tokens, &presented),
-                Method::DELETE => object::delete(db, &aimed, tokens, &presented),
+                Method::GET | Method::HEAD => object::get(db, &aimed, tokens, &presented).await,
+                Method::DELETE => object::delete(db, &aimed, tokens, &presented).await,
                 _ => Answer::new(
                     405,
                     r#"{"error":"that route takes another method"}"#.to_owned(),

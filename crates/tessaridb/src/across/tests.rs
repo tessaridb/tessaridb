@@ -4,6 +4,7 @@ use tessari_encoding::{
     Mutation, Participant, RecordValue, StampedValue, TRANSACTION_ID_LEN, TransactionId,
     TransactionRecord, decode_payload, encode_payload,
 };
+use tessari_session::RunNow;
 use tessari_session::{AcrossAnswer, AcrossAsk, Session};
 use tessari_storage::{Catalog, Decision, RecordAddress};
 use tessari_types::{Reach, RecordId, Value};
@@ -18,7 +19,7 @@ const TRANSACTION: TransactionId = TransactionId::new([5; TRANSACTION_ID_LEN]);
 fn left_behind(decisions: &[Decision]) -> (Db, RecordAddress) {
     let db = Db::in_memory().unwrap();
     db.session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
              USE DATABASE shop; DEFINE COLLECTION notes; CREATE notes:1 = 'old';",
         )
@@ -186,7 +187,7 @@ fn a_pass_publishes_what_it_left_standing_and_nothing_before_the_first() {
 /// One figure of `INFO FOR NODE`'s `cluster.across` group — `NONE` when the
 /// report, the group or the figure is missing, which no assertion here expects.
 fn reported(db: &Db, figure: &str) -> Value {
-    let outcomes = db.session().run("INFO FOR NODE;").unwrap();
+    let outcomes = db.session().run_now("INFO FOR NODE;").unwrap();
     let object = |value: Option<&Value>| match value {
         Some(Value::Object(fields)) => Some(fields.clone()),
         _ => None,
@@ -241,7 +242,7 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
     // for good: it resolves what it leads, and the copy follows its leader.
     let db = Db::in_memory().unwrap();
     db.session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
              USE DATABASE shop; DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT 'g';",
         )
@@ -309,7 +310,7 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
     let me = store.node_identity().unwrap().id;
     let other = [0x9f; tessari_storage::NODE_ID_LEN];
     session
-        .run(&format!(
+        .run_now(&format!(
             "USE NAMESPACE prod; USE DATABASE shop; \
              DEFINE REPLICA b AT 'b:9001' NODE '{}' LEADS SHARD prod.shop.orders 2;",
             other

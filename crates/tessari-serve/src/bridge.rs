@@ -67,6 +67,27 @@ impl Bridge {
         S: Send + 'static,
         T: Send + 'static,
     {
+        self.call_async(state, move |state| std::future::ready(work(state)))
+            .await
+    }
+
+    /// [`Bridge::call`] for work that is a future: admitted by the same slots,
+    /// run on the blocking pool, and driven there to its end.
+    ///
+    /// Transitional, while the store's entry points are asynchronous over a
+    /// synchronous body: the future still blocks the thread that polls it, so it
+    /// is polled on a blocking-pool thread rather than on a worker. It is built
+    /// and polled on that one thread, so it need not be `Send`. Goes away once
+    /// the store awaits its engine instead of blocking on it.
+    ///
+    /// Must be awaited inside a Tokio runtime.
+    pub async fn call_async<S, T, F, W>(&self, state: S, work: F) -> Bridged<T, S>
+    where
+        F: FnOnce(S) -> W + Send + 'static,
+        W: Future<Output = T>,
+        S: Send + 'static,
+        T: Send + 'static,
+    {
         let Ok(slot) = Arc::clone(&self.slots).try_acquire_owned() else {
             self.refused.fetch_add(1, Ordering::Relaxed);
             return Bridged::Busy(state);
@@ -75,9 +96,12 @@ impl Bridge {
         // span; the caller's — the connection, the request — goes with it, so
         // what the work reports says whose work it was.
         let span = tracing::Span::current();
+        let runtime = tokio::runtime::Handle::current();
         let ran = tokio::task::spawn_blocking(move || {
             let _inside = span.enter();
-            let answer = work(state);
+            // A blocking-pool thread is outside the runtime's workers, which is
+            // where `Handle::block_on` may drive a future.
+            let answer = runtime.block_on(work(state));
             drop(slot);
             answer
         })
@@ -132,6 +156,18 @@ mod tests {
         let bridge = Bridge::new(1);
         let answer = runtime().block_on(bridge.call((), |()| Ok::<_, String>(41 + 1)));
         assert!(matches!(answer, Bridged::Answered(Ok(42))));
+    }
+
+    #[test]
+    fn asynchronous_work_is_awaited_to_its_end_and_answers_untouched() {
+        let bridge = Bridge::new(1);
+        let answer = runtime().block_on(bridge.call_async(40_u8, |state| async move {
+            // A suspension the work comes back from: the answer is what the
+            // future ends with, not what it held when first polled.
+            tokio::task::yield_now().await;
+            state + 2
+        }));
+        assert!(matches!(answer, Bridged::Answered(42)));
     }
 
     #[test]

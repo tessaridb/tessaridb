@@ -19,6 +19,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Parameters, Session};
@@ -38,7 +39,7 @@ fn store() -> Store {
 fn schemaless(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE maps; USE NAMESPACE maps;\n\
              DEFINE DATABASE world; USE DATABASE world;\n\
              DEFINE COLLECTION places;",
@@ -74,7 +75,7 @@ fn write(session: &mut Session<'_>, shape: Geometry) -> Result<(), String> {
 /// The same, into a record of the caller's choosing.
 fn write_to(session: &mut Session<'_>, id: u32, shape: Geometry) -> Result<(), String> {
     session
-        .run_with(
+        .run_with_now(
             &format!("CREATE places:{id} = {{ name: 'somewhere', where: $shape }};"),
             &bound("shape", Value::Geometry(shape)),
         )
@@ -84,7 +85,7 @@ fn write_to(session: &mut Session<'_>, id: u32, shape: Geometry) -> Result<(), S
 
 /// The shape stored at `places:1`.
 fn stored(session: &mut Session<'_>) -> Geometry {
-    let outcomes = session.run("SELECT * FROM places;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM places;").unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a select answers with records")
     };
@@ -134,7 +135,7 @@ fn reading_and_writing_the_same_record_back_moves_nothing() {
     // The cycle a caller performs without thinking about it: read a record,
     // change something else, write it back.
     session
-        .run_with(
+        .run_with_now(
             "UPDATE places:1 = { name: 'somewhere else', where: $shape };",
             &bound("shape", Value::Geometry(once.clone())),
         )
@@ -158,7 +159,7 @@ fn the_gate_fires_on_a_table_that_declares_nothing() {
         .expect_err("181 is not a longitude, declared or not");
     assert!(refusal.contains("longitude"), "{refusal}");
 
-    let outcomes = session.run("SELECT * FROM places;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM places;").unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a select answers with records")
     };
@@ -260,7 +261,7 @@ fn a_shape_nested_in_an_array_in_a_field_is_reached_too() {
     let mut session = schemaless(&store);
 
     let refusal = session
-        .run_with(
+        .run_with_now(
             "CREATE places:1 = { route: [ { stop: $bad } ] };",
             &bound("bad", Value::Geometry(Geometry::Point(at(0.0, 91.0)))),
         )
@@ -273,7 +274,7 @@ fn a_key_value_write_goes_through_the_same_door() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE maps; USE NAMESPACE maps;\n\
              DEFINE DATABASE world; USE DATABASE world;\n\
              DEFINE SPACE marks;",
@@ -281,7 +282,7 @@ fn a_key_value_write_goes_through_the_same_door() {
         .unwrap();
 
     let refusal = session
-        .run_with(
+        .run_with_now(
             "SET marks:'here' = $bad;",
             &bound("bad", Value::Geometry(Geometry::Point(at(0.0, 91.0)))),
         )
@@ -294,7 +295,7 @@ fn an_edge_carrying_a_shape_goes_through_it_as_well() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE maps; USE NAMESPACE maps;\n\
              DEFINE DATABASE world; USE DATABASE world;\n\
              DEFINE COLLECTION places;\n\
@@ -305,7 +306,7 @@ fn an_edge_carrying_a_shape_goes_through_it_as_well() {
         .unwrap();
 
     let refusal = session
-        .run_with(
+        .run_with_now(
             "RELATE places:1 -> roads -> places:2 = { via: $bad };",
             &bound("bad", Value::Geometry(Geometry::Point(at(0.0, 91.0)))),
         )

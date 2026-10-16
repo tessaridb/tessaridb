@@ -3,6 +3,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_ql::Parameters;
@@ -14,7 +15,7 @@ const PASSWORD: &str = "correct horse battery";
 fn store() -> Store {
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     Session::new(&store)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE work; USE DATABASE work;
              DEFINE COLLECTION t; CREATE t:1 = {{ n: 1 }};
              DEFINE NAMESPACE other; USE NAMESPACE other; DEFINE DATABASE work;
@@ -45,7 +46,7 @@ fn a_carried_script_runs_in_the_selection_its_caller_had() {
     assert_eq!(ran.len(), 2, "{ran:?}");
     assert_eq!(root.namespace(), Some("prod"));
     assert!(
-        format!("{:?}", root.run("SELECT * FROM t:2;").unwrap()).contains("2"),
+        format!("{:?}", root.run_now("SELECT * FROM t:2;").unwrap()).contains("2"),
         "the carried write did not land"
     );
 }
@@ -78,7 +79,7 @@ fn a_carried_script_that_changes_authority_or_membership_is_refused_whole() {
         assert!(
             !format!(
                 "{:?}",
-                root.run("USE NAMESPACE prod; USE DATABASE work; SELECT * FROM t;")
+                root.run_now("USE NAMESPACE prod; USE DATABASE work; SELECT * FROM t;")
                     .unwrap()
             )
             .contains("9"),
@@ -103,7 +104,7 @@ fn the_selection_a_peer_sends_is_a_name_and_never_syntax() {
     );
     let held = format!(
         "{:?}",
-        root.run("USE NAMESPACE prod; USE DATABASE work; SELECT * FROM t;")
+        root.run_now("USE NAMESPACE prod; USE DATABASE work; SELECT * FROM t;")
             .unwrap()
     );
     // The control: the table answers, with the record the fixture wrote.
@@ -118,7 +119,7 @@ fn the_selection_a_peer_sends_is_a_name_and_never_syntax() {
 fn a_user_confined_elsewhere_is_stopped_at_the_selection() {
     let store = store();
     let mut root = acting(&store, "root");
-    root.run(&format!(
+    root.run_now(&format!(
         "DEFINE USER ada ON other.work ROLE owner PASSWORD '{PASSWORD}';"
     ))
     .unwrap();

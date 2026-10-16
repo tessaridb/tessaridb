@@ -262,7 +262,7 @@ mod tests {
     use std::sync::Arc;
 
     use tessari_kv::{KvBackend, MemoryBackend};
-    use tessari_session::{Outcome, Session};
+    use tessari_session::{Outcome, RunNow, Session};
     use tessari_storage::Store;
     use tessari_types::Value;
 
@@ -275,7 +275,7 @@ mod tests {
     fn shaped(policy: &str) -> Store {
         let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
         Session::new(&store)
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE NAMESPACE shop; USE NAMESPACE shop; DEFINE DATABASE live; \
                  USE DATABASE live; DEFINE TOPIC orders; DEFINE TOPIC orders_dead; \
                  DEFINE TABLE order_rows (total int); \
@@ -290,7 +290,7 @@ mod tests {
 
     fn publish(store: &Store, messages: &str) {
         Session::new(store)
-            .run(&format!(
+            .run_now(&format!(
                 "USE NAMESPACE shop; USE DATABASE live; {messages}"
             ))
             .unwrap();
@@ -304,7 +304,7 @@ mod tests {
 
     fn rows(store: &Store) -> Vec<(String, Value)> {
         let answered = Session::new(store)
-            .run("USE NAMESPACE shop; USE DATABASE live; SELECT * FROM order_rows;")
+            .run_now("USE NAMESPACE shop; USE DATABASE live; SELECT * FROM order_rows;")
             .unwrap();
         let Some(Outcome::Records { records, .. }) = answered.last() else {
             panic!("not records: {answered:?}");
@@ -318,7 +318,7 @@ mod tests {
     /// One field of the group's report in `INFO FOR TOPIC`, as text.
     fn group_field(store: &Store, field: &str) -> String {
         let answered = Session::new(store)
-            .run("USE NAMESPACE shop; USE DATABASE live; INFO FOR TOPIC orders;")
+            .run_now("USE NAMESPACE shop; USE DATABASE live; INFO FOR TOPIC orders;")
             .unwrap();
         let Some(Outcome::Value(Value::Object(report))) = answered.last() else {
             panic!("not a report: {answered:?}");
@@ -454,7 +454,7 @@ mod tests {
         let (mut definition, names) = the_consumer(&store);
 
         Session::new(&store)
-            .run("DEFINE NODE ROLES serving;")
+            .run_now("DEFINE NODE ROLES serving;")
             .unwrap();
         assert_eq!(
             run_batch(&store, &definition, &names, 500),
@@ -462,7 +462,7 @@ mod tests {
         );
         assert!(rows(&store).is_empty());
         Session::new(&store)
-            .run("DEFINE NODE ROLES serving, writable;")
+            .run_now("DEFINE NODE ROLES serving, writable;")
             .unwrap();
 
         definition.declarer = Some(9_999);

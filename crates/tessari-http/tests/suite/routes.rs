@@ -9,6 +9,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_constants::HTTP_MAX_BODY_BYTES;
 use tessari_http::Node;
@@ -233,8 +234,10 @@ fn the_wire_and_the_library_answer_the_same_script() {
 
     // The same database, reached the other way.
     let mut session = db.session();
-    session.run("USE NAMESPACE prod DATABASE orders;").unwrap();
-    let embedded = session.run("SELECT name FROM users:1;").unwrap();
+    session
+        .run_now("USE NAMESPACE prod DATABASE orders;")
+        .unwrap();
+    let embedded = session.run_now("SELECT name FROM users:1;").unwrap();
     assert_eq!(embedded[0].records().unwrap().len(), 1);
 
     let (status, body) = request(

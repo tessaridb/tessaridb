@@ -1,4 +1,5 @@
 use super::*;
+use tessari_session::RunNow;
 
 #[test]
 fn a_subscriber_receives_its_namespace_and_not_the_one_beside_it() {
@@ -58,12 +59,12 @@ fn a_subscriber_receives_its_namespace_and_not_the_one_beside_it() {
     // applied none of them.
     let mut session = follower.session();
     let held = session
-        .run("USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users;")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users;")
         .expect("the subscribed namespace arrived");
     assert_eq!(held.len(), 3, "three statements, three outcomes");
 
     let missing = session
-        .run("USE NAMESPACE other; USE DATABASE ledger; SELECT * FROM secrets;")
+        .run_now("USE NAMESPACE other; USE DATABASE ledger; SELECT * FROM secrets;")
         .expect_err("the namespace beside the subscription must not have arrived");
     assert!(
         missing.to_string().contains("no namespace named \"other\""),
@@ -90,7 +91,7 @@ fn a_follower_below_a_pruned_log_copies_the_state_and_then_collects() {
     let leader = granting(" REPLICATES NAMESPACE prod");
     leader
         .session()
-        .run(
+        .run_now(
             "USE NAMESPACE prod; USE DATABASE orders; \
                  CREATE users:2 = { name: 'grace' }; CREATE users:3 = { name: 'edith' }; \
                  DELETE users:1;",
@@ -119,7 +120,7 @@ fn a_follower_below_a_pruned_log_copies_the_state_and_then_collects() {
 
     let mut session = follower.session();
     let held = session
-        .run("USE NAMESPACE prod; USE DATABASE orders; SELECT name FROM users;")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders; SELECT name FROM users;")
         .expect("the subscribed namespace arrived");
     assert_eq!(
         format!("{:?}", held.last()),
@@ -127,7 +128,7 @@ fn a_follower_below_a_pruned_log_copies_the_state_and_then_collects() {
             "{:?}",
             leader
                 .session()
-                .run("USE NAMESPACE prod; USE DATABASE orders; SELECT name FROM users;")
+                .run_now("USE NAMESPACE prod; USE DATABASE orders; SELECT name FROM users;")
                 .expect("the leader answers")
                 .last()
         ),
@@ -135,7 +136,7 @@ fn a_follower_below_a_pruned_log_copies_the_state_and_then_collects() {
     );
     assert!(
         session
-            .run("USE NAMESPACE other; USE DATABASE ledger; SELECT * FROM secrets;")
+            .run_now("USE NAMESPACE other; USE DATABASE ledger; SELECT * FROM secrets;")
             .is_err(),
         "a copy carries the subscription and nothing beside it"
     );
@@ -277,7 +278,7 @@ fn a_bounded_read_this_node_could_not_answer_becomes_answerable_once_it_collects
     // because the schema arrives by collection.
     follower
         .session()
-        .run("DEFINE NODE ROLES serving;")
+        .run_now("DEFINE NODE ROLES serving;")
         .expect("a node may say what it is for");
     assert_eq!(
         follower
@@ -314,7 +315,7 @@ fn a_bounded_read_this_node_could_not_answer_becomes_answerable_once_it_collects
     // this node, without leaving it.
     let answered = follower
         .session()
-        .run(&format!(
+        .run_now(&format!(
             "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users STALENESS {}s;",
             tessari_constants::STALENESS_FLOOR_SECONDS
         ))

@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Session};
@@ -44,7 +45,7 @@ fn the_callers_value_and_a_let_are_closer_than_the_databases() {
     let mut session = inside(&store);
     run(&mut session, "DEFINE PARAM $grace VALUE 10m;");
     let bound = session
-        .run_with(
+        .run_with_now(
             "RETURN $grace;",
             &BTreeMap::from([("grace".to_owned(), int(1))]),
         )
@@ -192,7 +193,7 @@ fn a_param_travels_in_a_script_backup_and_a_snapshot() {
     };
     let from_script = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     Session::new(&from_script)
-        .run(&script)
+        .run_now(&script)
         .unwrap_or_else(|why| panic!("{why}\n{script}"));
     assert_eq!(
         value(&mut inside(&from_script), "RETURN $grace;"),

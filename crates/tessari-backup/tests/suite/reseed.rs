@@ -8,6 +8,7 @@
 //! leader's own — not merely that the copy ran.
 
 use tessari_kv::Keyspace;
+use tessari_session::RunNow;
 use tessari_storage::Store;
 use tessari_types::Reach;
 
@@ -44,7 +45,7 @@ fn a_follower_that_fell_behind_answers_what_its_leader_answers_after_a_copy() {
     let (_, source, _) = original();
     let (follower_backend, follower) = store();
     copied(&source, &follower, Reach::Store);
-    signed_in(&source).run(MOVED_ON).unwrap();
+    signed_in(&source).run_now(MOVED_ON).unwrap();
 
     let removed = copied(&source, &follower, Reach::Store);
     assert!(
@@ -61,8 +62,8 @@ fn a_follower_that_fell_behind_answers_what_its_leader_answers_after_a_copy() {
         .chain(["SELECT * FROM kept;", "INFO FOR DATABASE;"])
     {
         assert_eq!(
-            format!("{:?}", here.run(script).unwrap()),
-            format!("{:?}", there.run(script).unwrap()),
+            format!("{:?}", here.run_now(script).unwrap()),
+            format!("{:?}", there.run_now(script).unwrap()),
             "the follower and its leader disagree about {script}"
         );
     }

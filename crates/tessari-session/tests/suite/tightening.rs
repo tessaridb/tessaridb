@@ -25,6 +25,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -42,19 +43,19 @@ fn store() -> Store {
 
 fn opened(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.run(SCHEMA).unwrap();
+    session.run_now(SCHEMA).unwrap();
     session
 }
 
 fn ok(session: &mut Session<'_>, script: &str) {
     session
-        .run(script)
+        .run_now(script)
         .unwrap_or_else(|error| panic!("{script}: {error}"));
 }
 
 fn refusal(session: &mut Session<'_>, script: &str) -> String {
     session
-        .run(script)
+        .run_now(script)
         .err()
         .map(|error| error.to_string())
         .unwrap_or_else(|| panic!("{script}: answered instead of refusing"))
@@ -63,7 +64,7 @@ fn refusal(session: &mut Session<'_>, script: &str) -> String {
 /// The records a `CHECK TABLE` named, as `(record, rule)` pairs.
 fn checked(session: &mut Session<'_>, script: &str) -> Vec<(String, String)> {
     let outcome = session
-        .run(script)
+        .run_now(script)
         .unwrap_or_else(|error| panic!("{script}: {error}"))
         .pop()
         .expect("one outcome");
@@ -221,7 +222,7 @@ fn a_default_satisfies_a_requirement_and_an_explicit_null_does_not() {
     ok(&mut session, "CREATE d:2 = { rank: NONE };");
     for id in ["d:1", "d:2"] {
         let outcome = session
-            .run(&format!("RETURN (SELECT rank FROM {id});"))
+            .run_now(&format!("RETURN (SELECT rank FROM {id});"))
             .unwrap()
             .pop()
             .expect("one outcome");
@@ -250,7 +251,7 @@ fn clearing_a_required_field_is_refused_and_the_old_value_survives() {
     );
     refusal(&mut session, "UPDATE p:1 SET name = NONE;");
     let outcome = session
-        .run("RETURN (SELECT name FROM p:1);")
+        .run_now("RETURN (SELECT name FROM p:1);")
         .unwrap()
         .pop()
         .expect("one outcome");

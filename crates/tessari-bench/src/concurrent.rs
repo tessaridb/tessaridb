@@ -25,6 +25,7 @@
 
 use std::sync::Barrier;
 use std::time::{Duration, Instant};
+use tessari_session::RunNow;
 
 use tessaridb::Db;
 
@@ -41,7 +42,7 @@ const WRITERS: [u64; 5] = [1, 2, 4, 8, 16];
 pub(crate) fn concurrent(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     db.session()
-        .run("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION crowd;")?;
+        .run_now("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION crowd;")?;
 
     let mut reports = Vec::new();
     for writers in WRITERS {
@@ -106,7 +107,7 @@ type Share = (Vec<Duration>, u64, Option<String>);
 fn one_writer(db: &Db, writers: u64, writer: u64, start: &Barrier) -> Result<Share, String> {
     let mut session = db.session();
     session
-        .run("USE NAMESPACE bench; USE DATABASE bench;")
+        .run_now("USE NAMESPACE bench; USE DATABASE bench;")
         .map_err(|failure| failure.to_string())?;
     let mut taken = Vec::with_capacity(usize::try_from(PER_WRITER).unwrap_or(0));
     let mut lost = 0_u64;
@@ -120,7 +121,7 @@ fn one_writer(db: &Db, writers: u64, writer: u64, start: &Barrier) -> Result<Sha
     for n in 0..PER_WRITER {
         let id = first.saturating_add(n);
         let started = Instant::now();
-        let written = session.run(&format!(
+        let written = session.run_now(&format!(
             "CREATE crowd:{id} = {{ writer: {writer}, n: {n} }};"
         ));
         match written {

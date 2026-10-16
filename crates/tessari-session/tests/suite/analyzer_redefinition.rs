@@ -25,6 +25,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -46,7 +47,7 @@ fn stemming_store() -> Store {
     let held = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     let mut session = Session::new(&held);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
              DEFINE COLLECTION notes;\n\
@@ -61,7 +62,7 @@ fn stemming_store() -> Store {
 /// How many records `body MATCHES <query>` answers with.
 fn found(session: &mut Session<'_>, query: &str) -> usize {
     let read = format!("SELECT body FROM notes WHERE body MATCHES '{query}';");
-    let outcomes = session.run(&read).unwrap();
+    let outcomes = session.run_now(&read).unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -80,13 +81,13 @@ fn found(session: &mut Session<'_>, query: &str) -> usize {
 fn redefining_an_analyzer_over_a_populated_index_is_refused_and_changes_no_answer() {
     let held = stemming_store();
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     // Before: the stemmer is doing its job.
     assert_eq!(found(&mut session, "run"), 1);
 
     // A different chain under the same name — the stemmer dropped.
-    let refused = session.run("DEFINE ANALYZER english FILTERS lowercase;");
+    let refused = session.run_now("DEFINE ANALYZER english FILTERS lowercase;");
     let error = refused.expect_err("redefining a declared analyzer must not succeed");
 
     // It says which of the two branches happened, and it names the thing.
@@ -111,10 +112,10 @@ fn redefining_an_analyzer_over_a_populated_index_is_refused_and_changes_no_answe
 fn if_not_exists_keeps_the_declared_chain_rather_than_replacing_it() {
     let held = stemming_store();
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     session
-        .run("DEFINE ANALYZER IF NOT EXISTS english FILTERS lowercase;")
+        .run_now("DEFINE ANALYZER IF NOT EXISTS english FILTERS lowercase;")
         .unwrap();
 
     assert_eq!(
@@ -136,7 +137,7 @@ fn without_the_stemmer_the_same_query_reaches_nothing() {
     let held = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     let mut session = Session::new(&held);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}\
              DEFINE ANALYZER english FILTERS lowercase;\n\
              DEFINE COLLECTION notes;\n\
@@ -167,10 +168,10 @@ fn without_the_stemmer_the_same_query_reaches_nothing() {
 fn a_second_analyzer_under_a_new_name_is_not_a_redefinition() {
     let held = stemming_store();
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     session
-        .run("DEFINE ANALYZER plain FILTERS lowercase;")
+        .run_now("DEFINE ANALYZER plain FILTERS lowercase;")
         .unwrap();
 
     assert_eq!(found(&mut session, "run"), 1);
@@ -194,7 +195,7 @@ fn in_language(language: &str, indexed: bool, records: &[&str]) -> Store {
     if indexed {
         script.push_str("DEFINE INDEX by_body ON notes FIELDS body SEARCH;\n");
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     held
 }
 
@@ -220,7 +221,7 @@ fn a_stemmer_for_a_language_makes_its_inflections_meet() {
         for indexed in [false, true] {
             let held = in_language(language, indexed, &records);
             let mut session = Session::new(&held);
-            session.run(USE).unwrap();
+            session.run_now(USE).unwrap();
             assert_eq!(
                 found(&mut session, query),
                 1,
@@ -229,7 +230,7 @@ fn a_stemmer_for_a_language_makes_its_inflections_meet() {
         }
         let english = in_language("english", false, &records);
         let mut session = Session::new(&english);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
         assert_eq!(
             found(&mut session, query),
             0,
@@ -251,10 +252,10 @@ fn a_stemmers_language_is_declared_and_an_unknown_one_is_refused() {
     );
     let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     let mut session = Session::new(&restored);
-    session.run(&script).unwrap();
-    session.run(USE).unwrap();
+    session.run_now(&script).unwrap();
+    session.run_now(USE).unwrap();
     assert_eq!(found(&mut session, "важный"), 1);
-    match session.run("DEFINE ANALYZER other FILTERS lowercase, stemmer(klingon);") {
+    match session.run_now("DEFINE ANALYZER other FILTERS lowercase, stemmer(klingon);") {
         Err(tessari_session::Error::Script(why)) => {
             // The refusal points at the language and says which ones exist —
             // it used to point at the `;` after the call and ask for a filter
@@ -269,7 +270,7 @@ fn a_stemmers_language_is_declared_and_an_unknown_one_is_refused() {
         other => panic!("{other:?}"),
     }
     // A word that is no filter at all is pointed at, not the token after it.
-    match session.run("DEFINE ANALYZER third FILTERS lowercase, uppercase;") {
+    match session.run_now("DEFINE ANALYZER third FILTERS lowercase, uppercase;") {
         Err(tessari_session::Error::Script(why)) => {
             let why = why.to_string();
             assert!(why.contains("the name `uppercase`"), "{why}");

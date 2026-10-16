@@ -18,6 +18,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_encoding::NodeVersion;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -42,7 +43,7 @@ fn taken() -> Vec<u8> {
     {
         let mut session = Session::new(&store);
         session
-            .run(
+            .run_now(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
                  DEFINE DATABASE shop; USE DATABASE shop;\n\
                  DEFINE COLLECTION orders;\n\

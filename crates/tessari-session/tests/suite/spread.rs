@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
@@ -25,13 +26,15 @@ fn store() -> Store {
 fn tenancy(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;")
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;",
+        )
         .unwrap();
     session
 }
 
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
-    match session.run(read).unwrap().last() {
+    match session.run_now(read).unwrap().last() {
         Some(Outcome::Records { records, .. }) => {
             records.iter().map(|(id, _)| id.clone()).collect()
         }
@@ -63,9 +66,9 @@ fn per_shard(store: &Store, session: &mut Session<'_>) -> BTreeMap<u32, usize> {
 }
 
 fn written(session: &mut Session<'_>, declaration: &str) {
-    session.run(declaration).unwrap();
+    session.run_now(declaration).unwrap();
     let creates = "CREATE orders = { n: 1 };".repeat(RECORDS);
-    session.run(&creates).unwrap();
+    session.run_now(&creates).unwrap();
 }
 
 #[test]
@@ -114,7 +117,7 @@ fn a_region_spreads_within_itself() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE customers (region string) IDENTITY uuid SPREAD PARTITION BY region; \
              CREATE customers = { region: 'de' };",
         )
@@ -132,7 +135,7 @@ fn a_region_spreads_within_itself() {
 fn spread_needs_the_store_to_generate_a_uuid() {
     let store = store();
     let mut session = tenancy(&store);
-    match session.run("DEFINE TABLE orders (n int) IDENTITY int SPREAD;") {
+    match session.run_now("DEFINE TABLE orders (n int) IDENTITY int SPREAD;") {
         Err(Error::Store(tessari_storage::Error::SpreadNeedsGeneratedUuid { table })) => {
             assert_eq!(table.as_str(), "orders");
         }
@@ -145,9 +148,9 @@ fn the_report_says_spread_and_its_definition_re_creates_it() {
     let original = store();
     let mut session = tenancy(&original);
     session
-        .run("DEFINE TABLE orders (n int) IDENTITY uuid SPREAD;")
+        .run_now("DEFINE TABLE orders (n int) IDENTITY uuid SPREAD;")
         .unwrap();
-    let described = match session.run("INFO FOR TABLE orders;").unwrap().last() {
+    let described = match session.run_now("INFO FOR TABLE orders;").unwrap().last() {
         Some(Outcome::Value(value)) => value.clone(),
         other => panic!("{other:?}"),
     };
@@ -160,8 +163,8 @@ fn the_report_says_spread_and_its_definition_re_creates_it() {
     };
     let copy = store();
     let mut again = tenancy(&copy);
-    again.run(script).unwrap();
-    again.run("CREATE orders = { n: 1 };").unwrap();
+    again.run_now(script).unwrap();
+    again.run_now("CREATE orders = { n: 1 };").unwrap();
     let named = ids(&mut again, "SELECT * FROM orders;");
     assert!(
         matches!(named.as_slice(), [RecordId::Text(text)] if text.as_bytes().get(2) == Some(&b':')),

@@ -30,6 +30,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessari_encoding::{Posting, PostingKey, StoreKey, StoreValue};
 use tessari_kv::{
@@ -136,7 +137,7 @@ fn corpus(filler: usize) -> (Arc<Counting>, Store) {
     let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
@@ -146,14 +147,14 @@ fn corpus(filler: usize) -> (Arc<Counting>, Store) {
         .unwrap();
     for n in 0..RECORDS {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE notes:{n} = {{ body: '{}' }};",
                 body(n, filler)
             ))
             .unwrap();
     }
     session
-        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
         .unwrap();
     (counting, store)
 }
@@ -265,10 +266,10 @@ fn overstate(backend: &Arc<Counting>, wanted_id: &str, wanted_term: &str, times:
 fn scores_for(store: &Store, query: &str) -> Vec<(String, f64)> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     let outcomes = session
-        .run(&format!(
+        .run_now(&format!(
             "SELECT id, search::score(body, '{query}') AS relevance FROM notes;"
         ))
         .unwrap();

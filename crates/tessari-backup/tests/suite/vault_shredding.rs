@@ -29,6 +29,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -49,7 +50,7 @@ fn with_a_secret_and_its_backup() -> (Store, Vec<u8>) {
     {
         let mut session = Session::new(&store);
         session
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod;
                  DEFINE DATABASE work; USE DATABASE work;
                  UNSEAL VAULT WITH '{PASSPHRASE}';
@@ -70,11 +71,11 @@ fn a_backup_taken_before_the_drop_restores_a_vault_that_opens() {
 
     {
         let mut session = Session::new(&source);
-        session.run(USING).unwrap();
-        session.run("DROP VAULT team;").unwrap();
+        session.run_now(USING).unwrap();
+        session.run_now("DROP VAULT team;").unwrap();
         // Gone here, and gone for good: the key this store held is destroyed.
         session
-            .run("REVEAL token FROM team:'github';")
+            .run_now("REVEAL token FROM team:'github';")
             .expect_err("the dropped vault answered a read");
     }
 
@@ -83,12 +84,12 @@ fn a_backup_taken_before_the_drop_restores_a_vault_that_opens() {
     let restored = store();
     tessari_backup::bootstrap(&restored, &mut before_the_drop.as_slice()).unwrap();
     let mut session = Session::new(&restored);
-    session.run(USING).unwrap();
+    session.run_now(USING).unwrap();
     session
-        .run(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
         .unwrap();
     let opened = match session
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .unwrap()
         .pop()
         .unwrap()
@@ -113,8 +114,8 @@ fn a_backup_taken_after_the_drop_carries_nothing_that_opens() {
     let (source, _before) = with_a_secret_and_its_backup();
     {
         let mut session = Session::new(&source);
-        session.run(USING).unwrap();
-        session.run("DROP VAULT team;").unwrap();
+        session.run_now(USING).unwrap();
+        session.run_now("DROP VAULT team;").unwrap();
     }
 
     // The half of crypto-shredding that does hold, and the reason the claim is
@@ -126,11 +127,11 @@ fn a_backup_taken_after_the_drop_carries_nothing_that_opens() {
     let restored = store();
     tessari_backup::bootstrap(&restored, &mut after_the_drop.as_slice()).unwrap();
     let mut session = Session::new(&restored);
-    session.run(USING).unwrap();
+    session.run_now(USING).unwrap();
     session
-        .run(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
         .unwrap();
     session
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .expect_err("a backup taken after the drop restored an openable vault");
 }

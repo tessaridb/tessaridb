@@ -19,6 +19,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Session};
@@ -41,7 +42,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE social; USE DATABASE social;\n\
              DEFINE COLLECTION users;\n\
@@ -63,7 +64,7 @@ fn ready(store: &Store) -> Session<'_> {
 }
 
 fn ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let mut found: Vec<RecordId> = outcomes[0]
         .records()
         .unwrap()
@@ -151,7 +152,7 @@ fn a_chain_may_end_on_the_edges_rather_than_their_far_side() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT * FROM users:1->follows->users->follows;")
+        .run_now("SELECT * FROM users:1->follows->users->follows;")
         .unwrap();
     assert_eq!(outcomes[0].records().unwrap().len(), 3);
 }
@@ -163,7 +164,7 @@ fn a_dangling_endpoint_mid_chain_drops_its_path_and_fails_nothing() {
     // other way round the diamond.
     let store = store();
     let mut session = ready(&store);
-    session.run("DELETE users:3;").unwrap();
+    session.run_now("DELETE users:3;").unwrap();
     let found = ids(
         &mut session,
         "SELECT * FROM users:1->follows->users->follows->users;",
@@ -183,7 +184,7 @@ fn every_table_in_the_chain_is_asked_about_and_not_only_the_first() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION posts;\n\
              DEFINE TABLE wrote EDGE;\n\
              CREATE posts:1 = { title: 'notes on the engine' };\n\
@@ -195,7 +196,7 @@ fn every_table_in_the_chain_is_asked_about_and_not_only_the_first() {
     // the owner — the shape every store past its first day is in.
     let mut root = Session::new(&store);
     root.sign_in("root", "a long one").unwrap();
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE social;\n\
          DEFINE USER ada ON prod.social ROLE editor PASSWORD 'a long one';\n\
          GRANT read ON users TO ada;\n\
@@ -206,15 +207,19 @@ fn every_table_in_the_chain_is_asked_about_and_not_only_the_first() {
     let mut narrow = Session::new(&store);
     narrow.sign_in("ada", "a long one").unwrap();
     narrow
-        .run("USE NAMESPACE prod; USE DATABASE social;")
+        .run_now("USE NAMESPACE prod; USE DATABASE social;")
         .unwrap();
 
     // One hop is granted, so it answers.
-    assert!(narrow.run("SELECT * FROM users:1->follows->users;").is_ok());
+    assert!(
+        narrow
+            .run_now("SELECT * FROM users:1->follows->users;")
+            .is_ok()
+    );
 
     // The second hop leaves the granted tables, and is refused rather than
     // answered with the posts.
-    let refused = narrow.run("SELECT * FROM users:1->follows->users->wrote->posts;");
+    let refused = narrow.run_now("SELECT * FROM users:1->follows->users->wrote->posts;");
     assert!(
         matches!(refused, Err(Error::NotGranted { .. })),
         "a chain reached an ungranted table: {refused:?}"
@@ -228,7 +233,7 @@ fn the_arrows_of_a_chain_all_point_the_same_way() {
     // own rather than a rule quietly relaxed here.
     let store = store();
     let mut session = ready(&store);
-    let refused = session.run("SELECT * FROM users:1->follows->users<-follows<-users;");
+    let refused = session.run_now("SELECT * FROM users:1->follows->users<-follows<-users;");
     assert!(
         matches!(refused, Err(Error::Script(_))),
         "a mixed chain parsed: {refused:?}"
@@ -271,7 +276,7 @@ fn an_edge_written_in_this_transaction_is_followed_by_it() {
     let mut session = ready(&store);
 
     let outcomes = session
-        .run(
+        .run_now(
             "BEGIN;\n\
              RELATE users:5->follows->users:3;\n\
              SELECT * FROM users:5->follows->users;\n\

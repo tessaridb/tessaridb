@@ -13,6 +13,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Session};
@@ -27,7 +28,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;",
         )
@@ -53,12 +54,12 @@ fn both_ways(condition: &str, indexes: &str) -> (Vec<RecordId>, Vec<RecordId>, A
     let answer = |declare: bool| {
         let store = store();
         let mut session = ready(&store);
-        session.run(READINGS).unwrap();
+        session.run_now(READINGS).unwrap();
         if declare {
-            session.run(indexes).unwrap();
+            session.run_now(indexes).unwrap();
         }
         let outcomes = session
-            .run(&format!("SELECT * FROM readings WHERE {condition};"))
+            .run_now(&format!("SELECT * FROM readings WHERE {condition};"))
             .unwrap();
         let path = outcomes[0].path().unwrap();
         let ids: Vec<RecordId> = outcomes[0]
@@ -176,7 +177,7 @@ fn a_range_over_numbers_of_different_kinds_agrees_with_the_scan() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION mixed;\n\
              DEFINE INDEX by_size ON mixed FIELDS size;\n\
              CREATE mixed:1 = { size: 7 };\n\
@@ -187,7 +188,7 @@ fn a_range_over_numbers_of_different_kinds_agrees_with_the_scan() {
         .unwrap();
 
     let outcomes = session
-        .run("SELECT * FROM mixed WHERE size >= 7 AND size < 8;")
+        .run_now("SELECT * FROM mixed WHERE size >= 7 AND size < 8;")
         .unwrap();
     assert_eq!(outcomes[0].path(), Some(AccessPath::Index));
     assert_eq!(outcomes[0].records().unwrap().len(), 3);
@@ -200,7 +201,7 @@ fn a_bound_that_reads_the_record_is_not_a_bound() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION pairs;\n\
              DEFINE INDEX by_left ON pairs FIELDS left;\n\
              CREATE pairs:1 = { left: 5, right: 3 };\n\
@@ -209,7 +210,7 @@ fn a_bound_that_reads_the_record_is_not_a_bound() {
         .unwrap();
 
     let outcomes = session
-        .run("SELECT * FROM pairs WHERE left > right;")
+        .run_now("SELECT * FROM pairs WHERE left > right;")
         .unwrap();
     assert_eq!(outcomes[0].path(), Some(AccessPath::Scan));
     assert_eq!(outcomes[0].records().unwrap().len(), 1);
@@ -229,11 +230,11 @@ fn a_record_written_and_not_yet_committed_is_in_the_range() {
     // writer that cannot find what it just wrote is a store with two answers.
     let store = store();
     let mut session = ready(&store);
-    session.run(READINGS).unwrap();
-    session.run(BY_LEVEL).unwrap();
+    session.run_now(READINGS).unwrap();
+    session.run_now(BY_LEVEL).unwrap();
 
     let outcomes = session
-        .run(
+        .run_now(
             "BEGIN;\n\
              CREATE readings:11 = { level: 11, name: 'k' };\n\
              SELECT * FROM readings WHERE level > 9;\n\
@@ -256,16 +257,16 @@ fn a_range_and_an_equality_in_one_condition_let_the_planner_choose() {
     // decision about cost and, as ever, not about the answer.
     let store = store();
     let mut session = ready(&store);
-    session.run(READINGS).unwrap();
+    session.run_now(READINGS).unwrap();
     session
-        .run(
+        .run_now(
             "DEFINE INDEX by_level ON readings FIELDS level;\n\
              DEFINE INDEX by_name ON readings FIELDS name UNIQUE;",
         )
         .unwrap();
 
     let outcomes = session
-        .run("SELECT * FROM readings WHERE level > 1 AND name = 'e';")
+        .run_now("SELECT * FROM readings WHERE level > 1 AND name = 'e';")
         .unwrap();
     assert_eq!(outcomes[0].path(), Some(AccessPath::Index));
     let found: Vec<RecordId> = outcomes[0]

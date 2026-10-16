@@ -18,6 +18,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_encoding::LogId;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -71,7 +72,7 @@ fn in_memory() -> Store {
 fn session(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
     session
 }
@@ -81,7 +82,7 @@ fn leader() -> (Store, Vec<u8>) {
     let store = in_memory();
     {
         let mut opening = Session::new(&store);
-        opening.run(LEADER).unwrap();
+        opening.run_now(LEADER).unwrap();
     }
     let mut prefix = Vec::new();
     let written = tessari_backup::write(&store, &mut prefix).unwrap();
@@ -94,7 +95,7 @@ fn interrogate(store: &Store) -> Vec<String> {
     let mut session = session(store);
     INTERROGATION
         .iter()
-        .map(|script| format!("{:?}", session.run(script).unwrap()))
+        .map(|script| format!("{:?}", session.run_now(script).unwrap()))
         .collect()
 }
 
@@ -155,10 +156,10 @@ fn a_follower_that_was_down_catches_up_on_what_it_missed_without_replaying() {
     {
         let mut moving = session(&held);
         moving
-            .run("DEFINE FIELD city ON people TYPE string;")
+            .run_now("DEFINE FIELD city ON people TYPE string;")
             .unwrap();
         moving
-            .run("CREATE people:4 = { name: 'katherine', email: 'd@x', city: 'hampton' };")
+            .run_now("CREATE people:4 = { name: 'katherine', email: 'd@x', city: 'hampton' };")
             .unwrap();
     }
 

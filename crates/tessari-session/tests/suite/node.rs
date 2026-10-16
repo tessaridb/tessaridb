@@ -22,6 +22,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -38,7 +39,7 @@ fn backend() -> Arc<dyn KvBackend> {
 fn asked(store: &Store) -> (String, Value) {
     let mut session = Session::new(store);
     session.sign_in("root", PASSWORD).ok();
-    let outcomes = session.run("SELECT * FROM $node;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM $node;").unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.first() else {
         panic!("not a read: {outcomes:?}");
     };
@@ -52,7 +53,7 @@ fn closed(backend: &Arc<dyn KvBackend>) -> Store {
     {
         let mut session = Session::new(&store);
         session
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE USER root ROLE owner PASSWORD '{PASSWORD}';"
             ))
             .unwrap();
@@ -151,7 +152,7 @@ fn a_node_answers_without_a_namespace_or_a_database_selected() {
     session.sign_in("root", PASSWORD).ok();
     assert!(session.namespace().is_none());
     assert!(session.database().is_none());
-    assert!(session.run("SELECT * FROM $node;").is_ok());
+    assert!(session.run_now("SELECT * FROM $node;").is_ok());
 }
 
 #[test]
@@ -163,21 +164,24 @@ fn a_viewer_is_refused_rather_than_passed_over_by_an_empty_grant_check() {
         let mut owner = Session::new(&store);
         owner.sign_in("root", PASSWORD).unwrap();
         owner
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE USER ada ROLE viewer PASSWORD '{PASSWORD}';"
             ))
             .unwrap();
     }
     let mut viewer = Session::new(&store);
     viewer.sign_in("ada", PASSWORD).unwrap();
-    let refused = viewer.run("SELECT * FROM $node;").unwrap_err().to_string();
+    let refused = viewer
+        .run_now("SELECT * FROM $node;")
+        .unwrap_err()
+        .to_string();
     // Refused for what the statement *needs*, not for a table it failed to name
     // — which is the difference between a rule and an emptiness.
     assert!(refused.contains("operate"), "{refused}");
 
     // And the same refusal for the plan, which would otherwise report the
     // source through a statement the caller may not run.
-    assert!(viewer.run("EXPLAIN SELECT * FROM $node;").is_err());
+    assert!(viewer.run_now("EXPLAIN SELECT * FROM $node;").is_err());
 }
 
 #[test]
@@ -187,7 +191,7 @@ fn an_anonymous_session_reads_the_node_of_an_open_store() {
     // exception to that in either direction.
     let store = Store::open(backend()).unwrap();
     let mut session = Session::new(&store);
-    assert!(session.run("SELECT * FROM $node;").is_ok());
+    assert!(session.run_now("SELECT * FROM $node;").is_ok());
 }
 
 #[test]
@@ -199,7 +203,7 @@ fn a_parameter_called_node_is_still_the_callers_own() {
     let store = Store::open(backend()).unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION readings;\n\
@@ -208,7 +212,7 @@ fn a_parameter_called_node_is_still_the_callers_own() {
         )
         .unwrap();
     let outcomes = session
-        .run_with(
+        .run_with_now(
             "SELECT * FROM readings WHERE at = $node;",
             &tessari_ql::Parameters::from([("node".to_owned(), Value::from("hall"))]),
         )
@@ -225,7 +229,7 @@ fn the_plan_for_a_node_read_names_the_source_rather_than_a_table() {
     let store = closed(&backend());
     let mut session = Session::new(&store);
     session.sign_in("root", PASSWORD).ok();
-    let outcomes = session.run("EXPLAIN SELECT * FROM $node;").unwrap();
+    let outcomes = session.run_now("EXPLAIN SELECT * FROM $node;").unwrap();
     let Some(Outcome::Value(Value::Object(plan))) = outcomes.first() else {
         panic!("not a plan: {outcomes:?}");
     };
@@ -258,7 +262,7 @@ fn replication_turned_on_later_brings_the_whole_history_with_it() {
 
     let mut session = Session::new(&leader);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION orders;",
@@ -268,20 +272,20 @@ fn replication_turned_on_later_brings_the_whole_history_with_it() {
     // Written while the namespace said nothing about replication at all.
     for id in 1..=4 {
         session
-            .run(&format!("CREATE orders:{id} = {{ total: {id} }};"))
+            .run_now(&format!("CREATE orders:{id} = {{ total: {id} }};"))
             .unwrap();
     }
     session
-        .run("UPDATE orders:2 SET total = 99;\nDELETE orders:3;")
+        .run_now("UPDATE orders:2 SET total = 99;\nDELETE orders:3;")
         .unwrap();
 
     session
-        .run("ALTER NAMESPACE prod REPLICATION FACTOR 2;")
+        .run_now("ALTER NAMESPACE prod REPLICATION FACTOR 2;")
         .unwrap();
 
     // And written after it, so the replay has to cross the statement rather
     // than stop at it.
-    session.run("CREATE orders:5 = { total: 5 };").unwrap();
+    session.run_now("CREATE orders:5 = { total: 5 };").unwrap();
 
     // A follower that begins subscribing has nothing but the log.
     let follower_backend = backend();
@@ -315,7 +319,7 @@ fn replication_turned_on_later_brings_the_whole_history_with_it() {
     let orders = |store: &Store| {
         let mut session = Session::new(store);
         let outcomes = session
-            .run("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;")
+            .run_now("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;")
             .unwrap();
         let Some(Outcome::Records { records, .. }) = outcomes.last() else {
             panic!("not a read: {outcomes:?}");
@@ -338,7 +342,7 @@ fn replication_turned_on_later_brings_the_whole_history_with_it() {
     // catalog record and the catalog replicates through the same apply path.
     let mut reading = Session::new(&follower);
     let outcomes = reading
-        .run("USE NAMESPACE prod; INFO FOR NAMESPACE;")
+        .run_now("USE NAMESPACE prod; INFO FOR NAMESPACE;")
         .unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("expected a report: {outcomes:?}");

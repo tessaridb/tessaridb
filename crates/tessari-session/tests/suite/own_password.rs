@@ -23,6 +23,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -39,16 +40,16 @@ fn store() -> Store {
 fn peopled(store: &Store) {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop; DEFINE COLLECTION orders;",
         )
         .unwrap();
     session
-        .run("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
     let mut root = signed_in(store, "root", PASSWORD);
-    root.run(
+    root.run_now(
         "DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
          DEFINE USER vic ON prod.shop ROLE viewer PASSWORD 'correct horse battery';",
     )
@@ -95,7 +96,7 @@ fn an_editor_may_too_and_the_role_is_untouched() {
     // would assert the value that was just written and prove nothing about
     // whether it still works.
     let mut ada = signed_in(&store, "ada", ROTATED);
-    ada.run("USE NAMESPACE prod; USE DATABASE shop; CREATE orders:1 = { total: 5 };")
+    ada.run_now("USE NAMESPACE prod; USE DATABASE shop; CREATE orders:1 = { total: 5 };")
         .unwrap();
 }
 
@@ -153,7 +154,7 @@ fn a_user_removed_since_signing_in_cannot_rotate_anything() {
     // catalog no longer holds.
     let mut vic = signed_in(&store, "vic", PASSWORD);
     let mut root = signed_in(&store, "root", PASSWORD);
-    root.run("DROP USER vic;").unwrap();
+    root.run_now("DROP USER vic;").unwrap();
 
     assert!(vic.change_password(PASSWORD, ROTATED).is_err());
     assert!(!signs_in(&store, "vic", ROTATED));

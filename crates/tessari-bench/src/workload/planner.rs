@@ -17,6 +17,7 @@
 //! is what makes the same workload the baseline for the change it measures.
 
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessaridb::{Db, Outcome, Value};
 
@@ -45,7 +46,7 @@ const ESTIMATED: [&str; 6] = [
 pub(crate) fn planner(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run(
+    session.run_now(
         "USE NAMESPACE bench; USE DATABASE bench;\n\
          DEFINE COLLECTION people; DEFINE COLLECTION plain;",
     )?;
@@ -56,13 +57,13 @@ pub(crate) fn planner(db: &Db) -> Failable<Vec<Report>> {
         let body = format!("{{ band: {}, skew: {skew}, n: {n} }}", n % 10);
         timed!(
             written,
-            session.run(&format!(
+            session.run_now(&format!(
                 "CREATE people:{n} = {body}; CREATE plain:{n} = {body};"
             ))?
         );
     }
     let mut reports = vec![written.summarise("planner-write")];
-    session.run(
+    session.run_now(
         "DEFINE INDEX by_band ON people FIELDS band;\n\
          DEFINE INDEX by_skew ON people FIELDS skew;\n\
          DEFINE INDEX by_n ON people FIELDS n;",
@@ -90,16 +91,22 @@ pub(crate) fn planner(db: &Db) -> Failable<Vec<Report>> {
     // The guard, before any statistics: whatever the planner does without them.
     let mut probed = Samples::with_capacity(WIDE);
     for _ in 0..WIDE {
-        timed!(probed, session.run("SELECT * FROM people WHERE n > 0;")?);
+        timed!(
+            probed,
+            session.run_now("SELECT * FROM people WHERE n > 0;")?
+        );
     }
     reports.push(probed.summarise("guard-without-statistics"));
 
-    let analysed = session.run("ANALYZE TABLE people;").is_ok();
+    let analysed = session.run_now("ANALYZE TABLE people;").is_ok();
     if analysed {
         let mut estimated = Samples::with_capacity(WIDE);
         let mut path = "none";
         for _ in 0..WIDE {
-            let answered = timed!(estimated, session.run("SELECT * FROM people WHERE n > 0;")?);
+            let answered = timed!(
+                estimated,
+                session.run_now("SELECT * FROM people WHERE n > 0;")?
+            );
             path = served_by(&answered);
         }
         reports.push(estimated.summarise("guard-with-statistics"));
@@ -115,9 +122,10 @@ pub(crate) fn planner(db: &Db) -> Failable<Vec<Report>> {
     }
 
     for condition in ESTIMATED {
-        let explained = session.run(&format!("EXPLAIN SELECT * FROM people WHERE {condition};"))?;
+        let explained =
+            session.run_now(&format!("EXPLAIN SELECT * FROM people WHERE {condition};"))?;
         let actual = session
-            .run(&format!("SELECT * FROM plain WHERE {condition};"))?
+            .run_now(&format!("SELECT * FROM plain WHERE {condition};"))?
             .last()
             .map_or(0, |outcome| match outcome {
                 Outcome::Records { records, .. } => records.len(),
@@ -144,11 +152,11 @@ fn paired(session: &mut tessaridb::Session<'_>, rest: &str, times: usize) -> Fai
     for _ in 0..times {
         let one = timed!(
             indexed,
-            session.run(&format!("SELECT * FROM people {rest}"))?
+            session.run_now(&format!("SELECT * FROM people {rest}"))?
         );
         let other = timed!(
             scanned,
-            session.run(&format!("SELECT * FROM plain {rest}"))?
+            session.run_now(&format!("SELECT * FROM plain {rest}"))?
         );
         if identities(&one) != identities(&other) {
             return Err(format!("the two tables answered `{rest}` differently").into());

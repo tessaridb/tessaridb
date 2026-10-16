@@ -18,6 +18,7 @@
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::cell::Cell;
+use tessari_session::RunNow;
 
 use tessaridb::feed::{Commits, FeedRefused, Following, follow};
 use tessaridb::{Db, Sequence};
@@ -36,7 +37,7 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
     let db = Db::in_memory().unwrap();
     let mut owner = db.session();
     owner
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION orders;\n\
@@ -45,16 +46,18 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
         .unwrap();
     let mut root = db.session();
     root.sign_in("root", PASSWORD).unwrap();
-    root.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
-    root.run(
+    root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    root.run_now(
         "DEFINE USER kim ON NAMESPACE prod AUTHORITIES read PASSWORD 'correct horse battery';",
     )
     .unwrap();
-    root.run("CREATE orders:1 = { total: 5 };").unwrap();
+    root.run_now("CREATE orders:1 = { total: 5 };").unwrap();
 
     let mut kim = db.session();
     kim.sign_in("kim", PASSWORD).unwrap();
-    kim.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+    kim.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
 
     let rounds = Cell::new(0_u32);
     let delivered = Cell::new(0_u32);
@@ -84,7 +87,7 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
                 let mut taking = db.session();
                 taking.sign_in("root", PASSWORD).unwrap();
                 taking
-                    .run("USE NAMESPACE prod; USE DATABASE shop; REVOKE read ON NAMESPACE prod FROM kim;")
+                    .run_now("USE NAMESPACE prod; USE DATABASE shop; REVOKE read ON NAMESPACE prod FROM kim;")
                     .unwrap();
                 taken.set(Some(std::time::Instant::now()));
             }
@@ -133,7 +136,7 @@ fn a_subscription_is_never_told_about_a_tenancy_the_session_could_not_select() {
     let db = Db::in_memory().unwrap();
     let mut owner = db.session();
     owner
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION orders;\n\
@@ -142,12 +145,12 @@ fn a_subscription_is_never_told_about_a_tenancy_the_session_could_not_select() {
         .unwrap();
     let mut root = db.session();
     root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.run_now(
         "DEFINE NAMESPACE staging; USE NAMESPACE staging; DEFINE DATABASE shop; \
          USE DATABASE shop; DEFINE COLLECTION orders;",
     )
     .unwrap();
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop; \
          DEFINE USER nina ON prod.shop ROLE owner PASSWORD 'correct horse battery';",
     )
@@ -155,14 +158,15 @@ fn a_subscription_is_never_told_about_a_tenancy_the_session_could_not_select() {
 
     // One write in each tenancy, the other one first, so a feed that ignored
     // the tenancy would deliver it before the record nina is entitled to.
-    root.run("USE NAMESPACE staging; USE DATABASE shop; CREATE orders:1 = { total: 9 };")
+    root.run_now("USE NAMESPACE staging; USE DATABASE shop; CREATE orders:1 = { total: 9 };")
         .unwrap();
-    root.run("USE NAMESPACE prod; USE DATABASE shop; CREATE orders:1 = { total: 5 };")
+    root.run_now("USE NAMESPACE prod; USE DATABASE shop; CREATE orders:1 = { total: 5 };")
         .unwrap();
 
     let mut nina = db.session();
     nina.sign_in("nina", PASSWORD).unwrap();
-    nina.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+    nina.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
 
     let mine = db.tenancy_in("prod", "shop").unwrap().expect("her tenancy");
     let seen = Cell::new(Vec::new());
@@ -257,7 +261,7 @@ fn a_feed_over_a_split_table_merges_its_logs_in_commit_order_and_resumes_from_it
     let db = Db::in_memory().unwrap();
     let mut session = db.session();
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g';\n\
              DEFINE COLLECTION notes;\n\
@@ -297,7 +301,7 @@ fn a_feed_over_a_split_table_merges_its_logs_in_commit_order_and_resumes_from_it
     // after it arrives, once.
     let after = given[3].2.clone().unwrap();
     session
-        .run("CREATE orders:'b' = { total: 7 }; CREATE orders:'q' = { total: 8 };")
+        .run_now("CREATE orders:'b' = { total: 7 }; CREATE orders:'q' = { total: 8 };")
         .unwrap();
     let resumed = fed(&db, &mut session, 0, Some(&after), Some("orders")).unwrap();
     let ids: Vec<&str> = resumed.iter().map(|(id, _, _)| id.as_str()).collect();
@@ -328,7 +332,7 @@ fn a_feed_over_a_split_table_merges_its_logs_in_commit_order_and_resumes_from_it
     // A cursor is its own feed's. Sent to a feed over another split table, or to
     // one over an unsplit table, it is refused rather than resumed from a guess.
     session
-        .run("DEFINE TABLE lines (total int) IDENTITY uuid SPLIT AT 'm';")
+        .run_now("DEFINE TABLE lines (total int) IDENTITY uuid SPLIT AT 'm';")
         .unwrap();
     let refusal = fed(&db, &mut session, 0, Some(&after), Some("lines")).unwrap_err();
     assert!(
@@ -354,7 +358,7 @@ fn every_landing_is_announced_to_the_database_and_a_read_is_not() {
     let mut landed = db.commits().watching();
     let mut session = db.session();
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION orders;",
         )
@@ -362,7 +366,7 @@ fn every_landing_is_announced_to_the_database_and_a_read_is_not() {
     assert!(landed.has_changed().unwrap(), "a commit was not announced");
     landed.borrow_and_update();
 
-    session.run("SELECT * FROM orders;").unwrap();
+    session.run_now("SELECT * FROM orders;").unwrap();
     assert!(
         !landed.has_changed().unwrap(),
         "a read was announced as a landing"
@@ -392,7 +396,7 @@ fn a_split_feed_over_another_writers_log_is_refused_by_name() {
     let db = Db::in_memory().unwrap();
     let mut session = db.session();
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g';",
         )
@@ -426,7 +430,7 @@ fn a_feed_ends_when_a_split_table_appears_in_its_scope() {
     let db = Db::in_memory().unwrap();
     let mut session = db.session();
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION notes; CREATE notes:1 = { total: 5 };",
         )
@@ -451,7 +455,7 @@ fn a_feed_ends_when_a_split_table_appears_in_its_scope() {
             if delivered.replace(delivered.get().saturating_add(1)) == 0 {
                 let mut other = db.session();
                 other
-                    .run(
+                    .run_now(
                         "USE NAMESPACE prod; USE DATABASE shop;\n\
                          DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g';",
                     )

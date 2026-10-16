@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+use tessari_session::RunNow;
 
 use tessari_wire::{Answer, Client, Served};
 
@@ -749,7 +750,7 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
     // first-user bootstrap writes only when both environment variables are set —
     // so without this the greeting's tail could not tell what the store holds
     // apart from a constant somebody typed.
-    db.session().run("DEFINE NAMESPACE probe;").unwrap();
+    db.session().run_now("DEFINE NAMESPACE probe;").unwrap();
     drop(db);
     let (leaf, key, authority) = credentials(&minted, node, directory.path());
 
@@ -1356,7 +1357,7 @@ fn a_joiner_restarted_without_its_seed_still_finds_the_leader() {
         let joiner = tessari_types::RecordId::Uuid(ids[1]).to_string();
         let leader = tessari_types::RecordId::Uuid(ids[0]).to_string();
         db.session()
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE REPLICA joiner AT '{}' NODE '{joiner}' ROLES serving \
                  REPLICATES STORE; \
                  DEFINE REPLICA origin AT '{}' NODE '{leader}' ROLES serving, writable; \
@@ -1369,7 +1370,7 @@ fn a_joiner_restarted_without_its_seed_still_finds_the_leader() {
     {
         let db = tessaridb::Db::open(&stores[1]).unwrap();
         db.session()
-            .run("DEFINE NODE ROLES serving;")
+            .run_now("DEFINE NODE ROLES serving;")
             .expect("a node that knows it is not the cluster");
         drop(db);
     }
@@ -1586,7 +1587,7 @@ fn a_row_waiting_on_a_join_token_is_bound_by_the_node_that_offers_it() {
         let db = tessaridb::Db::open(&stores[0]).unwrap();
         let leader = tessari_types::RecordId::Uuid(ids[0]).to_string();
         db.session()
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE REPLICA joiner AT '{}' ROLES serving REPLICATES STORE; \
                  DEFINE REPLICA origin AT '{}' NODE '{leader}' ROLES serving, writable; \
                  {WRITTEN}",
@@ -1595,7 +1596,7 @@ fn a_row_waiting_on_a_join_token_is_bound_by_the_node_that_offers_it() {
             .expect("a leader that declared a peer it has not met");
         let answered = db
             .session()
-            .run("CREATE JOIN TOKEN FOR REPLICA joiner EXPIRES 10m;")
+            .run_now("CREATE JOIN TOKEN FOR REPLICA joiner EXPIRES 10m;")
             .expect("a join token");
         let Some(tessari_session::Outcome::Value(tessari_types::Value::String(token))) =
             answered.first()
@@ -1609,7 +1610,7 @@ fn a_row_waiting_on_a_join_token_is_bound_by_the_node_that_offers_it() {
     {
         let db = tessaridb::Db::open(&stores[1]).unwrap();
         db.session()
-            .run("DEFINE NODE ROLES serving;")
+            .run_now("DEFINE NODE ROLES serving;")
             .expect("a node that knows it is not the cluster");
         drop(db);
     }
@@ -1760,7 +1761,7 @@ fn a_node_dials_the_peer_its_catalog_declares() {
     // for the wrong reason — or rather, fail for the right one.
     let peer = tessari_types::RecordId::Uuid([9u8; 16]).to_string();
     db.session()
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE REPLICA watcher AT '{DIALLED}' NODE '{peer}' ROLES serving;"
         ))
         .expect("a declared peer with an id is the only diallable kind");
@@ -2202,7 +2203,7 @@ fn a_cluster_of_rows_by(
             .unwrap();
         script.push_str(&format!(" DEFINE NODE ROLES {own}; COMMIT;"));
         db.session()
-            .run(&script)
+            .run_now(&script)
             .expect("a cluster of three, declared");
         drop(db);
     }
@@ -2889,7 +2890,7 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
         let db = tessaridb::Db::open(&stores[0]).unwrap();
         let joiner = tessari_types::RecordId::Uuid(ids[1]).to_string();
         db.session()
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE REPLICA joiner AT '{}' NODE '{joiner}' ROLES serving \
                  REPLICATES STORE; {WRITTEN}",
                 JOIN[1].1
@@ -2906,7 +2907,7 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
     {
         let db = tessaridb::Db::open(&stores[1]).unwrap();
         db.session()
-            .run("DEFINE NODE ROLES serving;")
+            .run_now("DEFINE NODE ROLES serving;")
             .expect("a node that knows it is not the cluster");
         let peers = tessari_storage::Catalog::new(&mut db.store().begin().unwrap())
             .replicas()
@@ -3311,7 +3312,7 @@ fn a_join_that_would_reinterpret_a_tenancy_is_refused_until_the_operator_removes
         let db = tessaridb::Db::open(&stores[0]).unwrap();
         let joiner = tessari_types::RecordId::Uuid(ids[1]).to_string();
         db.session()
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE REPLICA joiner AT '{}' NODE '{joiner}' ROLES serving \
                  REPLICATES STORE; {WRITTEN}",
                 REFUSING[1].1
@@ -3322,7 +3323,7 @@ fn a_join_that_would_reinterpret_a_tenancy_is_refused_until_the_operator_removes
     {
         let db = tessaridb::Db::open(&stores[1]).unwrap();
         db.session()
-            .run(&format!("DEFINE NODE ROLES serving; {ITS_OWN}"))
+            .run_now(&format!("DEFINE NODE ROLES serving; {ITS_OWN}"))
             .expect("a node with a tenancy of its own");
         drop(db);
     }
@@ -3395,7 +3396,7 @@ fn a_join_that_would_reinterpret_a_tenancy_is_refused_until_the_operator_removes
         let db = tessaridb::Db::open(&stores[1]).unwrap();
         let answers = db
             .session()
-            .run("USE NAMESPACE research; USE DATABASE notebooks; SELECT * FROM note;")
+            .run_now("USE NAMESPACE research; USE DATABASE notebooks; SELECT * FROM note;")
             .expect("the joiner's own tenancy still reads");
         assert!(
             matches!(
@@ -3422,18 +3423,18 @@ fn a_join_that_would_reinterpret_a_tenancy_is_refused_until_the_operator_removes
         // is a detour rather than a dead end. The refusal says so in its own
         // words; this asserts the sequence it names actually runs.
         db.session()
-            .run("DEFINE NODE ROLES writable;")
+            .run_now("DEFINE NODE ROLES writable;")
             .expect("a serving node can always restore its own write authority");
         db.session()
-            .run("USE NAMESPACE research; USE DATABASE notebooks; DROP TABLE note;")
+            .run_now("USE NAMESPACE research; USE DATABASE notebooks; DROP TABLE note;")
             .expect("the operator drops their table");
         db.session()
-            .run("USE NAMESPACE research; DROP DATABASE notebooks;")
+            .run_now("USE NAMESPACE research; DROP DATABASE notebooks;")
             .expect("then the database");
         db.session()
-            .run("DROP NAMESPACE research;")
+            .run_now("DROP NAMESPACE research;")
             .expect("then the namespace the cluster's would have replaced");
-        db.session().run("DEFINE NODE ROLES serving;").expect(
+        db.session().run_now("DEFINE NODE ROLES serving;").expect(
             "and the role goes back, because a node that collects while \
                      it also writes is the divergence this design refuses",
         );
@@ -3774,7 +3775,7 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
     let source = read_at(ACROSS[2].0, read).unwrap();
     let outcomes = restored
         .session()
-        .run(&format!("USE NAMESPACE prod; USE DATABASE shop; {read}"))
+        .run_now(&format!("USE NAMESPACE prod; USE DATABASE shop; {read}"))
         .unwrap();
     let Some(tessari_session::Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a read answers records: {outcomes:?}");
@@ -5948,7 +5949,7 @@ fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() 
         .unwrap();
     let counted = restored
         .session()
-        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT count(*) AS n FROM item;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; SELECT count(*) AS n FROM item;")
         .unwrap();
     assert!(
         format!("{counted:?}").contains("Integer(62)"),
@@ -7119,7 +7120,7 @@ fn a_snapshot_above_one_frame_is_taken_from_a_running_node_with_at_and_backup() 
         let db = tessaridb::Db::open(&path).unwrap();
         let mut session = db.session();
         session
-            .run(
+            .run_now(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
                  USE DATABASE orders; DEFINE COLLECTION big;",
             )
@@ -7130,7 +7131,7 @@ fn a_snapshot_above_one_frame_is_taken_from_a_running_node_with_at_and_backup() 
             "CREATE big:1 = { body: $body };",
             "CREATE big:2 = { body: $body };",
         ] {
-            session.run_with(statement, &body).unwrap();
+            session.run_with_now(statement, &body).unwrap();
         }
     }
     let _node = Running(serving(&path, STREAMING_WIRE));

@@ -34,6 +34,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -44,7 +45,7 @@ use tessari_types::Value;
 fn constrained(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE band SCHEMALESS;\n\
@@ -61,7 +62,7 @@ fn store() -> Store {
 }
 
 fn refused(session: &mut Session<'_>, script: &str) -> String {
-    match session.run(script) {
+    match session.run_now(script) {
         Err(why) => why.to_string(),
         Ok(outcome) => panic!("expected a refusal, got {outcome:?}"),
     }
@@ -71,9 +72,10 @@ fn refused(session: &mut Session<'_>, script: &str) -> String {
 fn dropping_a_declaration_does_not_remove_the_value_the_assertion_reads() {
     let store = store();
     let mut session = constrained(&store);
-    session.run("DROP FIELD low ON band;").unwrap();
+    session.run_now("DROP FIELD low ON band;").unwrap();
 
-    let Some(Outcome::Records { records, .. }) = session.run("SELECT * FROM band;").unwrap().pop()
+    let Some(Outcome::Records { records, .. }) =
+        session.run_now("SELECT * FROM band;").unwrap().pop()
     else {
         panic!("expected records");
     };
@@ -95,7 +97,7 @@ fn dropping_a_declaration_does_not_remove_the_value_the_assertion_reads() {
 fn the_assertion_still_refuses_a_value_the_dropped_field_contradicts() {
     let store = store();
     let mut session = constrained(&store);
-    session.run("DROP FIELD low ON band;").unwrap();
+    session.run_now("DROP FIELD low ON band;").unwrap();
 
     // The distinguishing case. An accepted write proves nothing — it looks the
     // same whether the check ran and passed or never ran — so the test uses a
@@ -108,14 +110,14 @@ fn the_assertion_still_refuses_a_value_the_dropped_field_contradicts() {
 
     // And the acceptance Q-448 recorded, shown to be an acceptance on the
     // merits: `5 > 1` holds, so the write is right to land.
-    session.run("UPDATE band:1 SET high = 5;").unwrap();
+    session.run_now("UPDATE band:1 SET high = 5;").unwrap();
 }
 
 #[test]
 fn a_comparison_against_a_field_the_record_does_not_carry_is_false() {
     let store = store();
     let mut session = constrained(&store);
-    session.run("DROP FIELD low ON band;").unwrap();
+    session.run_now("DROP FIELD low ON band;").unwrap();
 
     // No `low` anywhere — not in the declarations and not in the record. An
     // ordered comparison against an absence is false, which is the answer
@@ -140,9 +142,10 @@ fn a_comparison_against_a_field_the_record_does_not_carry_is_false() {
 fn check_table_reports_nothing_because_nothing_violates() {
     let store = store();
     let mut session = constrained(&store);
-    session.run("DROP FIELD low ON band;").unwrap();
+    session.run_now("DROP FIELD low ON band;").unwrap();
 
-    let Some(Outcome::Value(Value::Array(rows))) = session.run("CHECK TABLE band;").unwrap().pop()
+    let Some(Outcome::Value(Value::Array(rows))) =
+        session.run_now("CHECK TABLE band;").unwrap().pop()
     else {
         panic!("expected a list");
     };
@@ -154,7 +157,7 @@ fn check_table_reports_nothing_because_nothing_violates() {
     // And the control that makes the empty answer mean something: a record that
     // *does* violate is reported, so `CHECK TABLE` is still looking.
     session
-        .run("DEFINE FIELD low ON band TYPE int; UPDATE band:1 = { low: 9, high: 5 };")
+        .run_now("DEFINE FIELD low ON band TYPE int; UPDATE band:1 = { low: 9, high: 5 };")
         .map_or_else(
             |_| {
                 // Refused at the write, which is the stronger answer: the store

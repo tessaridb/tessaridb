@@ -18,6 +18,7 @@
 //! supply), and the record that ARRIVED after it must not be.
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_encoding::KeyKind;
 use tessari_kv::{KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
@@ -58,7 +59,7 @@ CREATE t:4 = { k: 'c', code: 'x4' };
 fn session(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -83,11 +84,11 @@ CREATE other:1 = { note: 'an unrelated commit' };
 #[test]
 fn an_equality_answers_as_of_the_snapshot_through_the_index() {
     let store = store();
-    Session::new(&store).run(SCHEMA).unwrap();
+    Session::new(&store).run_now(SCHEMA).unwrap();
     let mut held = session(&store);
     let mut writer = session(&store);
     let read: tessari_session::Result<(Vec<String>, Vec<String>)> = held.atomically(|work| {
-        writer.run(MOVES)?;
+        writer.run_now(MOVES)?;
         let a = work.run_with(
             "SELECT * FROM t WHERE k = 'a' USING INDEX by_k;",
             &Parameters::new(),
@@ -109,11 +110,11 @@ fn an_equality_answers_as_of_the_snapshot_through_the_index() {
 #[test]
 fn a_range_answers_as_of_the_snapshot_through_the_index() {
     let store = store();
-    Session::new(&store).run(SCHEMA).unwrap();
+    Session::new(&store).run_now(SCHEMA).unwrap();
     let mut held = session(&store);
     let mut writer = session(&store);
     let read = held.atomically(|work| {
-        writer.run(MOVES)?;
+        writer.run_now(MOVES)?;
         work.run_with(
             "SELECT * FROM t WHERE k >= 'a' AND k <= 'c' USING INDEX by_k;",
             &Parameters::new(),
@@ -130,11 +131,11 @@ fn a_range_answers_as_of_the_snapshot_through_the_index() {
 #[test]
 fn the_same_read_at_the_tail_sees_the_moves() {
     let store = store();
-    Session::new(&store).run(SCHEMA).unwrap();
-    session(&store).run(MOVES).unwrap();
+    Session::new(&store).run_now(SCHEMA).unwrap();
+    session(&store).run_now(MOVES).unwrap();
     let mut reader = session(&store);
     let a = reader
-        .run("SELECT * FROM t WHERE k = 'a' USING INDEX by_k;")
+        .run_now("SELECT * FROM t WHERE k = 'a' USING INDEX by_k;")
         .unwrap();
     // The retired entry of `t:1` must not reach a reader that sees its move.
     assert_eq!(ids(&a), vec!["3".to_owned()]);
@@ -145,11 +146,11 @@ fn a_unique_index_is_still_withheld_behind_the_tail() {
     // A unique entry's key is the value it claims, so a removed claim cannot be
     // kept beside the live one; that index keeps the old guard.
     let store = store();
-    Session::new(&store).run(SCHEMA).unwrap();
+    Session::new(&store).run_now(SCHEMA).unwrap();
     let mut held = session(&store);
     let mut writer = session(&store);
     let read = held.atomically(|work| {
-        writer.run(MOVES)?;
+        writer.run_now(MOVES)?;
         work.run_with(
             "SELECT * FROM t WHERE code = 'x1' USING INDEX by_code;",
             &Parameters::new(),
@@ -177,13 +178,13 @@ fn a_new_store_keeps_retired_entries_from_its_first_version() {
 fn retired_entries_are_kept_while_a_reader_needs_them_and_reclaimed_after() {
     let backend = Arc::new(MemoryBackend::new());
     let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
-    Session::new(&store).run(SCHEMA).unwrap();
+    Session::new(&store).run_now(SCHEMA).unwrap();
     assert_eq!(retired(&backend), 0, "nothing has been removed yet");
 
     let mut held = session(&store);
     let mut writer = session(&store);
     held.atomically(|_| -> tessari_session::Result<()> {
-        writer.run(MOVES)?;
+        writer.run_now(MOVES)?;
         // `t:1` lost `a` and `t:4` lost `c`: two retired entries, and a reader
         // older than both is still open, so neither may go.
         assert_eq!(retired(&backend), 2);
@@ -202,9 +203,9 @@ fn retired_entries_are_kept_while_a_reader_needs_them_and_reclaimed_after() {
 fn an_update_that_keeps_its_value_retires_nothing() {
     let backend = Arc::new(MemoryBackend::new());
     let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
-    Session::new(&store).run(SCHEMA).unwrap();
+    Session::new(&store).run_now(SCHEMA).unwrap();
     session(&store)
-        .run("UPDATE t:1 MERGE { note: 'k is unchanged' };")
+        .run_now("UPDATE t:1 MERGE { note: 'k is unchanged' };")
         .unwrap();
     assert_eq!(retired(&backend), 0);
 }
@@ -215,14 +216,14 @@ fn a_historical_read_below_what_reclamation_removed_takes_the_scan_and_stays_exa
     // so such a read must not be served from what is left of them.
     let store = store();
     let mut session = Session::new(&store);
-    session.run(SCHEMA).unwrap();
+    session.run_now(SCHEMA).unwrap();
     let before = store.committed_version().unwrap().get();
-    session.run(MOVES).unwrap();
+    session.run_now(MOVES).unwrap();
     assert!(store.reclaim_retired_entries().unwrap() > 0);
 
     let read = format!("SELECT * FROM t WHERE k = 'a' VERSION {before};");
-    assert_eq!(ids(&session.run(&read).unwrap()), vec!["1".to_owned()]);
-    match session.run(&format!(
+    assert_eq!(ids(&session.run_now(&read).unwrap()), vec!["1".to_owned()]);
+    match session.run_now(&format!(
         "SELECT * FROM t WHERE k = 'a' USING INDEX by_k VERSION {before};"
     )) {
         Err(Error::IndexNotUsed { took, .. }) => assert_eq!(took, "no index"),
@@ -234,11 +235,11 @@ fn a_historical_read_below_what_reclamation_removed_takes_the_scan_and_stays_exa
 fn a_historical_read_above_it_is_served_by_the_index_and_exact() {
     let store = store();
     let mut session = Session::new(&store);
-    session.run(SCHEMA).unwrap();
+    session.run_now(SCHEMA).unwrap();
     let before = store.committed_version().unwrap().get();
-    session.run(MOVES).unwrap();
+    session.run_now(MOVES).unwrap();
     let outcomes = session
-        .run(&format!(
+        .run_now(&format!(
             "SELECT * FROM t WHERE k = 'a' USING INDEX by_k VERSION {before};"
         ))
         .unwrap();

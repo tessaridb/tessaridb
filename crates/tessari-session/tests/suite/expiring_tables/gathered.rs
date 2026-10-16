@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration as Wait;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -26,7 +27,7 @@ const PAST_SHORT: Wait = Wait::from_millis(450);
 fn leader() -> Arc<Store> {
     let leader = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     Session::new(&leader)
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE message (n int) IDENTITY uuid SPLIT AT 'g', 'p' EXPIRE AFTER 300ms;\n\
              CREATE message:'a' = { n: 1 }; CREATE message:'z' = { n: 1 };\n\
@@ -36,7 +37,7 @@ fn leader() -> Arc<Store> {
         )
         .unwrap();
     signed_in(&leader, "root")
-        .run(
+        .run_now(
             "DEFINE USER reader ON NAMESPACE prod AUTHORITIES read \
              PASSWORD 'correct horse battery';\n\
              DEFINE USER node AUTHORITIES replicate PASSWORD 'correct horse battery';",

@@ -27,6 +27,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{
     KeyRange, Keyspace, KvBackend, MemoryBackend, ScanDirection, ScanRequest, WriteBatch,
@@ -86,7 +87,7 @@ fn restore(backend: &Arc<dyn KvBackend>, taken: &[(Vec<u8>, Vec<u8>)]) {
 fn opened(session: &mut Session<'_>) -> String {
     format!(
         "{:?}",
-        session.run("REVEAL token FROM team:'github';").unwrap()
+        session.run_now("REVEAL token FROM team:'github';").unwrap()
     )
 }
 
@@ -95,9 +96,9 @@ fn an_older_sealed_payload_restored_under_a_rotated_record_opens() {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let store = Store::open(Arc::clone(&backend)).unwrap();
     let mut session = Session::new(&store);
-    session.run(SETUP).unwrap();
+    session.run_now(SETUP).unwrap();
     session
-        .run(&format!(
+        .run_now(&format!(
             "CREATE team:'github' = {{ token: '{ROTATED_OUT}' }};"
         ))
         .unwrap();
@@ -109,7 +110,7 @@ fn an_older_sealed_payload_restored_under_a_rotated_record_opens() {
     let backup = records(&backend);
     assert!(!backup.is_empty(), "nothing was captured to restore");
     session
-        .run(&format!(
+        .run_now(&format!(
             "UPDATE team:'github' = {{ token: '{ROTATED_IN}' }};"
         ))
         .unwrap();
@@ -128,7 +129,7 @@ fn an_older_sealed_payload_restored_under_a_rotated_record_opens() {
     // makes, and the rotated-out secret is live again with nothing anywhere in
     // an error state.
     let mut reader = Session::new(&store);
-    reader.run(USING).unwrap();
+    reader.run_now(USING).unwrap();
     let rolled = opened(&mut reader);
     assert!(
         rolled.contains(ROTATED_OUT),
@@ -142,22 +143,22 @@ fn a_version_kept_in_the_record_would_be_restored_with_it() {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let store = Store::open(Arc::clone(&backend)).unwrap();
     let mut session = Session::new(&store);
-    session.run(SETUP).unwrap();
+    session.run_now(SETUP).unwrap();
     // Sealed like the token, because a vault answers no `SELECT` — and because
     // that is where a version bound into the associated data would have to
     // live: on the record, readable by whoever opens it.
     session
-        .run("DEFINE FIELD seal_version ON team TYPE string SECRET;")
+        .run_now("DEFINE FIELD seal_version ON team TYPE string SECRET;")
         .unwrap();
 
     session
-        .run(&format!(
+        .run_now(&format!(
             "CREATE team:'github' = {{ token: '{ROTATED_OUT}', seal_version: 'v1' }};"
         ))
         .unwrap();
     let backup = records(&backend);
     session
-        .run(&format!(
+        .run_now(&format!(
             "UPDATE team:'github' = {{ token: '{ROTATED_IN}', seal_version: 'v2' }};"
         ))
         .unwrap();
@@ -168,7 +169,7 @@ fn a_version_kept_in_the_record_would_be_restored_with_it() {
     let current = format!(
         "{:?}",
         session
-            .run("REVEAL token, seal_version FROM team:'github';")
+            .run_now("REVEAL token, seal_version FROM team:'github';")
             .unwrap()
     );
     assert!(
@@ -179,11 +180,11 @@ fn a_version_kept_in_the_record_would_be_restored_with_it() {
     restore(&backend, &backup);
 
     let mut reader = Session::new(&store);
-    reader.run(USING).unwrap();
+    reader.run_now(USING).unwrap();
     let rolled = format!(
         "{:?}",
         reader
-            .run("REVEAL token, seal_version FROM team:'github';")
+            .run_now("REVEAL token, seal_version FROM team:'github';")
             .unwrap()
     );
 

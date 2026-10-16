@@ -12,7 +12,8 @@ publish.workspace = true
 [dependencies]
 tessari-kv.workspace = true
 tessari-ql.workspace = true
-tessari-session.workspace = true
+# The runner is a synchronous harness; `RunNow` drives the session's asynchronous entry points.
+tessari-session = { workspace = true, features = ["test-support"] }
 tessari-storage.workspace = true
 tessari-types.workspace = true
 

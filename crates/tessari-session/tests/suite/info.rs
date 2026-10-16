@@ -17,6 +17,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use std::collections::BTreeMap;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -36,7 +37,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE staff SCHEMAFULL;\n\
@@ -52,7 +53,7 @@ fn ready(store: &Store) -> Session<'_> {
 
 /// The report a script's last statement answered with.
 fn report(session: &mut Session<'_>, script: &str) -> Value {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     match outcomes.last() {
         Some(Outcome::Value(value)) => value.clone(),
         other => panic!("expected a report, got {other:?}"),
@@ -91,7 +92,7 @@ fn the_store_lists_its_namespaces_and_never_the_one_the_catalog_lives_in() {
     let listing = listed(&report(&mut session, "INFO FOR STORE;"), "namespaces");
     assert_eq!(listing, vec!["prod".to_owned()]);
 
-    session.run("DEFINE NAMESPACE staging;").unwrap();
+    session.run_now("DEFINE NAMESPACE staging;").unwrap();
     let after = listed(&report(&mut session, "INFO FOR STORE;"), "namespaces");
     assert_eq!(after, vec!["prod".to_owned(), "staging".to_owned()]);
 }
@@ -101,14 +102,14 @@ fn a_namespace_lists_its_own_databases_and_not_another_namespaces() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE NAMESPACE other; USE NAMESPACE other; DEFINE DATABASE elsewhere;")
+        .run_now("DEFINE NAMESPACE other; USE NAMESPACE other; DEFINE DATABASE elsewhere;")
         .unwrap();
-    session.run("USE NAMESPACE prod;").unwrap();
+    session.run_now("USE NAMESPACE prod;").unwrap();
 
     let listing = listed(&report(&mut session, "INFO FOR NAMESPACE;"), "databases");
     assert_eq!(listing, vec!["shop".to_owned()]);
 
-    session.run("DEFINE DATABASE warehouse;").unwrap();
+    session.run_now("DEFINE DATABASE warehouse;").unwrap();
     let after = listed(&report(&mut session, "INFO FOR NAMESPACE;"), "databases");
     assert_eq!(after, vec!["shop".to_owned(), "warehouse".to_owned()]);
 }
@@ -120,7 +121,7 @@ fn a_database_lists_its_tables_and_a_new_one_appears() {
     let listing = listed(&report(&mut session, "INFO FOR DATABASE;"), "tables");
     assert_eq!(listing, vec!["orders".to_owned(), "staff".to_owned()]);
 
-    session.run("DEFINE COLLECTION audit;").unwrap();
+    session.run_now("DEFINE COLLECTION audit;").unwrap();
     let after = listed(&report(&mut session, "INFO FOR DATABASE;"), "tables");
     assert!(after.contains(&"audit".to_owned()), "{after:?}");
 }
@@ -132,7 +133,7 @@ fn a_database_names_its_vaults_among_its_tables() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE VAULT team PASSPHRASE 'the team passphrase';")
+        .run_now("DEFINE VAULT team PASSPHRASE 'the team passphrase';")
         .unwrap();
     let answered = report(&mut session, "INFO FOR DATABASE;");
     assert_eq!(listed(&answered, "vaults"), vec!["team".to_owned()]);
@@ -147,7 +148,7 @@ fn a_buckets_chunk_table_is_not_listed_because_nothing_can_name_it() {
     // instead of resolving, so it is the one place that could undo it.
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE BUCKET media;").unwrap();
+    session.run_now("DEFINE BUCKET media;").unwrap();
     let listing = listed(&report(&mut session, "INFO FOR DATABASE;"), "tables");
     assert!(listing.contains(&"media".to_owned()), "{listing:?}");
     assert!(
@@ -179,7 +180,7 @@ fn a_table_reports_its_shape_its_fields_and_its_indexes() {
 
     // And it moves when the catalog does, which is the difference between
     // reading the catalog and rendering something kept beside it.
-    session.run("DROP INDEX by_salary ON staff;").unwrap();
+    session.run_now("DROP INDEX by_salary ON staff;").unwrap();
     let after = report(&mut session, "INFO FOR TABLE staff;");
     assert_eq!(listed(&after, "indexes"), vec!["by_name".to_owned()]);
 }
@@ -189,7 +190,7 @@ fn a_field_reports_what_was_declared_about_it() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE FIELD tier ON staff TYPE string ASSERT $value != 'x';")
+        .run_now("DEFINE FIELD tier ON staff TYPE string ASSERT $value != 'x';")
         .unwrap();
     let described = report(&mut session, "INFO FOR TABLE staff;");
     let Value::Object(fields) = &described else {
@@ -221,11 +222,11 @@ fn a_field_reports_what_was_declared_about_it() {
 fn governed(store: &Store) -> Session<'_> {
     let mut session = ready(store);
     session
-        .run("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
     let mut root = Session::new(store);
     root.sign_in("root", PASSWORD).unwrap();
-    root.run("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
+    root.run_now("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
         .unwrap();
     session
 }
@@ -234,7 +235,7 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session.sign_in(name, PASSWORD).unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -247,7 +248,7 @@ fn a_database_report_lists_only_the_tables_the_caller_was_granted() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run("GRANT read ON orders TO ada;")
+        .run_now("GRANT read ON orders TO ada;")
         .unwrap();
 
     let mut ada = signed_in(&store, "ada");
@@ -263,12 +264,12 @@ fn a_table_the_caller_was_not_granted_is_refused_and_not_merely_omitted() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run("GRANT read ON orders TO ada;")
+        .run_now("GRANT read ON orders TO ada;")
         .unwrap();
 
     let mut ada = signed_in(&store, "ada");
     let refused = ada
-        .run("INFO FOR TABLE staff;")
+        .run_now("INFO FOR TABLE staff;")
         .expect_err("staff was never granted");
     let said = refused.to_string();
     assert!(said.contains("ada"), "{said}");
@@ -285,7 +286,7 @@ fn a_field_grant_hides_the_declaration_and_the_index_that_names_it() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run("GRANT read ON staff FIELDS name TO ada;")
+        .run_now("GRANT read ON staff FIELDS name TO ada;")
         .unwrap();
 
     let mut ada = signed_in(&store, "ada");
@@ -299,8 +300,8 @@ fn a_scoped_user_sees_one_namespace_and_one_database() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run("DEFINE NAMESPACE other;").unwrap();
-    root.run("DEFINE DATABASE warehouse;").unwrap();
+    root.run_now("DEFINE NAMESPACE other;").unwrap();
+    root.run_now("DEFINE DATABASE warehouse;").unwrap();
 
     let mut ada = signed_in(&store, "ada");
     assert_eq!(
@@ -327,7 +328,7 @@ fn asking_about_a_user_needs_an_owner() {
     governed(&store);
     let mut ada = signed_in(&store, "ada");
     let refused = ada
-        .run("INFO FOR USER ada;")
+        .run_now("INFO FOR USER ada;")
         .expect_err("an editor may not read the permission system");
     assert!(refused.to_string().contains("govern"), "{refused}");
 }
@@ -342,7 +343,7 @@ fn listing_users_needs_an_owner_and_refuses_rather_than_narrowing() {
     governed(&store);
     let mut ada = signed_in(&store, "ada");
     let refused = ada
-        .run("INFO FOR USERS;")
+        .run_now("INFO FOR USERS;")
         .expect_err("an editor may not read the permission system");
     assert!(refused.to_string().contains("govern"), "{refused}");
 }
@@ -356,7 +357,7 @@ fn a_database_owner_is_listed_their_own_tenancy_and_not_the_store_owner() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run("DEFINE USER dbowner ON prod.shop ROLE owner PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER dbowner ON prod.shop ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
 
     let mut owner = signed_in(&store, "dbowner");
@@ -405,7 +406,7 @@ fn a_listing_carries_no_password_hash_and_no_grants() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run("GRANT read ON orders FIELDS total TO ada;")
+        .run_now("GRANT read ON orders FIELDS total TO ada;")
         .unwrap();
 
     let mut root = signed_in(&store, "root");
@@ -420,7 +421,7 @@ fn an_owner_reads_a_users_role_tenancy_and_grants() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run("GRANT read ON orders FIELDS total TO ada;")
+        .run_now("GRANT read ON orders FIELDS total TO ada;")
         .unwrap();
 
     let mut root = signed_in(&store, "root");
@@ -481,8 +482,8 @@ fn a_grant_outliving_the_table_it_names_reports_the_absence() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run("GRANT read ON orders TO ada;").unwrap();
-    root.run("DROP TABLE orders;").unwrap();
+    root.run_now("GRANT read ON orders TO ada;").unwrap();
+    root.run_now("DROP TABLE orders;").unwrap();
 
     let described = report(&mut root, "INFO FOR USER ada;");
     let Value::Object(fields) = &described else {
@@ -525,7 +526,9 @@ fn text(report: &Value, field: &str) -> Option<String> {
 fn elsewhere(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;")
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;",
+        )
         .unwrap();
     session
 }
@@ -538,7 +541,7 @@ fn a_definition_re_creates_the_table_it_describes() {
     // different branch and a script that carries four of five is the failure
     // this test exists to catch.
     session
-        .run(
+        .run_now(
             "DEFINE FIELD tier ON staff TYPE 'draft' | 'live' REQUIRED DEFAULT 'draft';\n\
              DEFINE FIELD level ON staff TYPE int ASSERT ($value > 0 AND $value < 150);\n\
              DEFINE FIELD note ON staff TYPE string ASSERT $value != 'it\\'s';\n\
@@ -554,7 +557,7 @@ fn a_definition_re_creates_the_table_it_describes() {
     let second = self::store();
     let mut fresh = elsewhere(&second);
     fresh
-        .run(&script)
+        .run_now(&script)
         .unwrap_or_else(|error| panic!("the definition did not run: {error}\n{script}"));
 
     let again = report(&mut fresh, "INFO FOR TABLE staff;");
@@ -586,7 +589,7 @@ fn a_collection_is_declared_back_as_a_collection_and_not_as_a_lenient_table() {
     // module rather than shadowed out of reach.
     let second = self::store();
     let mut fresh = elsewhere(&second);
-    fresh.run(&script).unwrap();
+    fresh.run_now(&script).unwrap();
     assert_eq!(described, report(&mut fresh, "INFO FOR TABLE orders;"));
 }
 
@@ -599,7 +602,7 @@ fn a_spatial_index_is_reported_and_declared_as_spatial() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE FIELD ground ON staff TYPE geometry;\n\
              DEFINE INDEX by_ground ON staff FIELDS ground SPATIAL;",
         )
@@ -613,7 +616,7 @@ fn a_spatial_index_is_reported_and_declared_as_spatial() {
     // module rather than shadowed out of reach.
     let second = self::store();
     let mut fresh = elsewhere(&second);
-    fresh.run(&script).unwrap();
+    fresh.run_now(&script).unwrap();
     assert_eq!(described, report(&mut fresh, "INFO FOR TABLE staff;"));
 }
 
@@ -627,7 +630,7 @@ fn a_caller_who_may_not_see_every_field_gets_no_definition_at_all() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run("GRANT read ON staff FIELDS name TO ada;")
+        .run_now("GRANT read ON staff FIELDS name TO ada;")
         .unwrap();
 
     let mut ada = signed_in(&store, "ada");
@@ -651,7 +654,7 @@ fn a_constraint_with_no_faithful_spelling_withholds_the_definition_and_names_the
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE FIELD wait ON staff TYPE duration ASSERT $value > 1h;")
+        .run_now("DEFINE FIELD wait ON staff TYPE duration ASSERT $value > 1h;")
         .unwrap();
 
     let described = report(&mut session, "INFO FOR TABLE staff;");
@@ -680,10 +683,12 @@ fn two_scopes(store: &Store) -> Session<'_> {
     let session = governed(store);
     let mut root = Session::new(store);
     root.sign_in("root", PASSWORD).unwrap();
-    root.run("DEFINE USER nina ON NAMESPACE prod ROLE editor PASSWORD 'correct horse battery';")
-        .unwrap();
-    root.run("DEFINE NAMESPACE other;").unwrap();
-    root.run("USE NAMESPACE prod; DEFINE DATABASE payroll;")
+    root.run_now(
+        "DEFINE USER nina ON NAMESPACE prod ROLE editor PASSWORD 'correct horse battery';",
+    )
+    .unwrap();
+    root.run_now("DEFINE NAMESPACE other;").unwrap();
+    root.run_now("USE NAMESPACE prod; DEFINE DATABASE payroll;")
         .unwrap();
     session
 }
@@ -823,11 +828,13 @@ fn every_part_of_a_field_that_is_shown_can_be_altered_and_the_report_follows() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE ANALYZER simple FILTERS lowercase;")
+        .run_now("DEFINE ANALYZER simple FILTERS lowercase;")
         .unwrap();
     // An empty table, because altering a declaration re-checks the rows already
     // stored and this test is about the catalog rather than about that check.
-    session.run("DEFINE TABLE shapes (label string);").unwrap();
+    session
+        .run_now("DEFINE TABLE shapes (label string);")
+        .unwrap();
 
     let described = report(&mut session, "INFO FOR TABLE shapes;");
     assert_eq!(
@@ -842,7 +849,7 @@ fn every_part_of_a_field_that_is_shown_can_be_altered_and_the_report_follows() {
     // Type, required, default, analyzer and assert, all five in the one
     // statement that replaces a declaration.
     session
-        .run(
+        .run_now(
             "ALTER TABLE shapes ALTER FIELD label TYPE 'round' | 'square' REQUIRED \
              DEFAULT 'round' ANALYZER simple ASSERT $value != 'oval';",
         )
@@ -868,13 +875,15 @@ fn every_part_of_a_field_that_is_shown_can_be_altered_and_the_report_follows() {
 
     // A field can be added and taken away, and the report follows both ways.
     session
-        .run("ALTER TABLE shapes ADD FIELD note TYPE string;")
+        .run_now("ALTER TABLE shapes ADD FIELD note TYPE string;")
         .unwrap();
     assert!(
         listed(&report(&mut session, "INFO FOR TABLE shapes;"), "fields")
             .contains(&"note".to_owned())
     );
-    session.run("ALTER TABLE shapes DROP FIELD note;").unwrap();
+    session
+        .run_now("ALTER TABLE shapes DROP FIELD note;")
+        .unwrap();
     assert!(
         !listed(&report(&mut session, "INFO FOR TABLE shapes;"), "fields")
             .contains(&"note".to_owned())
@@ -890,7 +899,7 @@ fn strictness_is_altered_in_both_directions_and_the_report_follows_each_way() {
         ("ALTER TABLE staff SET SCHEMALESS;", false),
         ("ALTER TABLE staff SET SCHEMAFULL;", true),
     ] {
-        session.run(statement).unwrap();
+        session.run_now(statement).unwrap();
         let Value::Object(fields) = report(&mut session, "INFO FOR TABLE staff;") else {
             panic!("expected an object");
         };
@@ -913,12 +922,12 @@ fn an_index_is_changed_by_replacing_it_and_the_table_is_never_dropped() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("INSERT INTO staff (name, salary) VALUES ('ada', 1), ('grace', 2);")
+        .run_now("INSERT INTO staff (name, salary) VALUES ('ada', 1), ('grace', 2);")
         .unwrap();
 
-    session.run("DROP INDEX by_name ON staff;").unwrap();
+    session.run_now("DROP INDEX by_name ON staff;").unwrap();
     session
-        .run("DEFINE INDEX by_name ON staff FIELDS name UNIQUE;")
+        .run_now("DEFINE INDEX by_name ON staff FIELDS name UNIQUE;")
         .unwrap();
 
     let after = report(&mut session, "INFO FOR TABLE staff;");
@@ -941,7 +950,7 @@ fn an_index_is_changed_by_replacing_it_and_the_table_is_never_dropped() {
 
     // The rows are still there, and the new index answers over them.
     let rows = session
-        .run("SELECT * FROM staff WHERE name = 'ada';")
+        .run_now("SELECT * FROM staff WHERE name = 'ada';")
         .unwrap();
     assert!(
         !rows.is_empty(),
@@ -962,12 +971,18 @@ fn the_word_a_table_was_declared_with_survives_every_alteration_there_is() {
     let mut session = ready(&store);
     let before = report(&mut session, "INFO FOR TABLE orders;");
 
-    session.run("ALTER TABLE orders SET SCHEMAFULL;").unwrap();
-    session.run("ALTER TABLE orders SET SCHEMALESS;").unwrap();
     session
-        .run("ALTER TABLE orders ADD FIELD code TYPE string;")
+        .run_now("ALTER TABLE orders SET SCHEMAFULL;")
         .unwrap();
-    session.run("ALTER TABLE orders DROP FIELD code;").unwrap();
+    session
+        .run_now("ALTER TABLE orders SET SCHEMALESS;")
+        .unwrap();
+    session
+        .run_now("ALTER TABLE orders ADD FIELD code TYPE string;")
+        .unwrap();
+    session
+        .run_now("ALTER TABLE orders DROP FIELD code;")
+        .unwrap();
 
     assert_eq!(
         before,
@@ -997,7 +1012,7 @@ fn a_table_reports_how_it_names_a_record_the_caller_did_not_name() {
     }
 
     session
-        .run("DEFINE TABLE sessions IDENTITY uuid SCHEMALESS;")
+        .run_now("DEFINE TABLE sessions IDENTITY uuid SCHEMALESS;")
         .unwrap();
     let described = report(&mut session, "INFO FOR TABLE sessions;");
     let Value::Object(fields) = &described else {
@@ -1016,7 +1031,7 @@ fn the_naming_scheme_survives_the_round_trip_through_the_definition() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE sessions IDENTITY uuid SCHEMALESS;\n\
              DEFINE COLLECTION invitations IDENTITY uuid;",
         )
@@ -1051,7 +1066,7 @@ fn a_definition_carrying_the_naming_scheme_can_be_replayed() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE sessions IDENTITY uuid SCHEMALESS;")
+        .run_now("DEFINE TABLE sessions IDENTITY uuid SCHEMALESS;")
         .unwrap();
     let script = text(
         &report(&mut session, "INFO FOR TABLE sessions;"),
@@ -1064,12 +1079,12 @@ fn a_definition_carrying_the_naming_scheme_can_be_replayed() {
     let elsewhere = self::store();
     let mut replayed = Session::new(&elsewhere);
     replayed
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;",
         )
         .unwrap();
-    replayed.run(&script).unwrap();
+    replayed.run_now(&script).unwrap();
 
     let described = report(&mut replayed, "INFO FOR TABLE sessions;");
     let Value::Object(fields) = &described else {
@@ -1092,7 +1107,9 @@ fn a_definition_carrying_the_naming_scheme_can_be_replayed() {
 fn a_bucket_reports_its_name_and_the_largest_file_it_takes() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE BUCKET avatars MAX 5242880;").unwrap();
+    session
+        .run_now("DEFINE BUCKET avatars MAX 5242880;")
+        .unwrap();
 
     let described = report(&mut session, "INFO FOR BUCKET avatars;");
     let Value::Object(fields) = &described else {
@@ -1111,7 +1128,7 @@ fn a_bucket_reports_its_name_and_the_largest_file_it_takes() {
 fn a_bucket_with_no_ceiling_says_so_rather_than_reporting_a_zero() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE BUCKET media;").unwrap();
+    session.run_now("DEFINE BUCKET media;").unwrap();
 
     let described = report(&mut session, "INFO FOR BUCKET media;");
     let Value::Object(fields) = &described else {
@@ -1132,7 +1149,7 @@ fn info_for_bucket_refuses_a_table_that_holds_no_files() {
     let store = store();
     let mut session = ready(&store);
 
-    let refused = session.run("INFO FOR BUCKET orders;");
+    let refused = session.run_now("INFO FOR BUCKET orders;");
     let error = refused.expect_err("a collection is not a bucket");
     let said = error.to_string();
     assert!(
@@ -1148,7 +1165,7 @@ fn info_for_bucket_refuses_a_name_nothing_declared() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("INFO FOR BUCKET absent;")
+        .run_now("INFO FOR BUCKET absent;")
         .expect_err("nothing declared that name");
 }
 
@@ -1169,7 +1186,7 @@ fn a_namespace_declares_its_replication_and_reads_it_back() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE archive REPLICATION FACTOR 3;\n\
              DEFINE NAMESPACE scratch REPLICATION NONE;\n\
              DEFINE NAMESPACE unsaid;",
@@ -1202,7 +1219,7 @@ fn replication_is_turned_on_after_the_fact_and_off_again() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod;")
+        .run_now("DEFINE NAMESPACE prod; USE NAMESPACE prod;")
         .unwrap();
 
     let policy = |session: &mut Session<'_>| {
@@ -1215,12 +1232,12 @@ fn replication_is_turned_on_after_the_fact_and_off_again() {
     assert_eq!(policy(&mut session), Value::None);
 
     session
-        .run("ALTER NAMESPACE prod REPLICATION FACTOR 2;")
+        .run_now("ALTER NAMESPACE prod REPLICATION FACTOR 2;")
         .unwrap();
     assert_eq!(policy(&mut session), Value::from(2_i64));
 
     session
-        .run("ALTER NAMESPACE prod REPLICATION NONE;")
+        .run_now("ALTER NAMESPACE prod REPLICATION NONE;")
         .unwrap();
     assert_eq!(
         policy(&mut session),
@@ -1229,7 +1246,7 @@ fn replication_is_turned_on_after_the_fact_and_off_again() {
     );
 
     session
-        .run("ALTER NAMESPACE prod REPLICATION FACTOR 5;")
+        .run_now("ALTER NAMESPACE prod REPLICATION FACTOR 5;")
         .unwrap();
     assert_eq!(policy(&mut session), Value::from(5_i64));
 }
@@ -1244,7 +1261,7 @@ fn a_definition_that_did_nothing_changes_no_policy() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod REPLICATION FACTOR 4;\n\
              DEFINE NAMESPACE IF NOT EXISTS prod REPLICATION FACTOR 1;\n\
              USE NAMESPACE prod;",
@@ -1281,7 +1298,7 @@ fn a_store_with_no_peers_still_defines_a_namespace_that_says_nothing() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run("DEFINE NAMESPACE solo; USE NAMESPACE solo;")
+        .run_now("DEFINE NAMESPACE solo; USE NAMESPACE solo;")
         .unwrap();
 
     let Value::Object(fields) = report(&mut session, "INFO FOR NAMESPACE;") else {
@@ -1304,11 +1321,11 @@ fn a_store_that_declares_a_peer_refuses_a_namespace_that_says_nothing() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run("DEFINE REPLICA second AT 'there:9001';")
+        .run_now("DEFINE REPLICA second AT 'there:9001';")
         .unwrap();
 
     let refusal = session
-        .run("DEFINE NAMESPACE prod;")
+        .run_now("DEFINE NAMESPACE prod;")
         .expect_err("a namespace that says nothing has become a decision nobody wrote down");
     let said = refusal.to_string();
 
@@ -1353,7 +1370,7 @@ fn a_store_with_a_peer_accepts_either_answer_including_the_refusal() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE REPLICA second AT 'there:9001';\n\
              DEFINE NAMESPACE archive REPLICATION FACTOR 3;\n\
              DEFINE NAMESPACE scratch REPLICATION NONE;",
@@ -1385,11 +1402,11 @@ fn an_idempotent_redefinition_is_not_refused_after_the_store_gains_a_peer() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run("DEFINE NAMESPACE prod; DEFINE REPLICA second AT 'there:9001';")
+        .run_now("DEFINE NAMESPACE prod; DEFINE REPLICA second AT 'there:9001';")
         .unwrap();
 
     session
-        .run("DEFINE NAMESPACE IF NOT EXISTS prod;")
+        .run_now("DEFINE NAMESPACE IF NOT EXISTS prod;")
         .expect("a statement that creates nothing leaves nothing unstated");
 
     // And it did not quietly acquire a policy on the way through.
@@ -1410,7 +1427,7 @@ fn a_namespace_defined_before_the_peer_is_still_altered_in_both_directions_after
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run("DEFINE NAMESPACE prod; DEFINE REPLICA second AT 'there:9001';")
+        .run_now("DEFINE NAMESPACE prod; DEFINE REPLICA second AT 'there:9001';")
         .unwrap();
 
     let policy = |session: &mut Session<'_>| {
@@ -1427,11 +1444,11 @@ fn a_namespace_defined_before_the_peer_is_still_altered_in_both_directions_after
         "it said nothing, and it was allowed to"
     );
     session
-        .run("ALTER NAMESPACE prod REPLICATION FACTOR 2;")
+        .run_now("ALTER NAMESPACE prod REPLICATION FACTOR 2;")
         .unwrap();
     assert_eq!(policy(&mut session), Value::from(2_i64));
     session
-        .run("ALTER NAMESPACE prod REPLICATION NONE;")
+        .run_now("ALTER NAMESPACE prod REPLICATION NONE;")
         .unwrap();
     assert_eq!(
         policy(&mut session),
@@ -1459,7 +1476,7 @@ fn a_namespace_declares_how_many_copies_acknowledge_a_write_and_reads_it_back() 
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE ledger ACKNOWLEDGE MAJORITY;\n\
              DEFINE NAMESPACE unsaid;\n\
              ALTER NAMESPACE unsaid ACKNOWLEDGE LEADER OR WEAKER;\n\
@@ -1486,7 +1503,7 @@ fn a_namespace_declares_how_many_writers_it_admits_and_reads_it_back() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE shared MULTI MASTER;\n\
              DEFINE NAMESPACE ledger SINGLE LEADER;\n\
              DEFINE NAMESPACE unsaid;",
@@ -1521,7 +1538,7 @@ fn a_table_reports_what_it_does_with_a_write_it_cannot_order() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE shared MULTI MASTER; USE NAMESPACE shared;\n\
              DEFINE DATABASE books; USE DATABASE books;\n\
              DEFINE TABLE takes SCHEMALESS LAST WRITER WINS;\n\
@@ -1569,7 +1586,7 @@ fn a_reported_declaration_rebuilds_the_policy_it_described() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE shared MULTI MASTER; USE NAMESPACE shared;\n\
              DEFINE DATABASE books; USE DATABASE books;\n\
              DEFINE TABLE takes SCHEMALESS LAST WRITER WINS;\n\
@@ -1612,7 +1629,7 @@ fn a_reported_declaration_rebuilds_the_policy_it_described() {
     // down is measuring one thing twice: the read-back and the rebuild are
     // separate claims and each needs an arm that can fail alone.
     let rebuilt = taking.replace("takes", "rebuilt");
-    session.run(&rebuilt).unwrap();
+    session.run_now(&rebuilt).unwrap();
     assert_eq!(
         described(&mut session, "rebuilt"),
         taking.replace("takes", "rebuilt"),
@@ -1633,7 +1650,7 @@ fn multi_master() -> (Store, Store, Store) {
         let store = store();
         let mut session = Session::new(&store);
         session
-            .run(
+            .run_now(
                 "DEFINE NAMESPACE shared MULTI MASTER; USE NAMESPACE shared;\n\
                  DEFINE DATABASE books; USE DATABASE books;\n\
                  DEFINE TABLE note SCHEMALESS;",
@@ -1660,7 +1677,7 @@ fn shared_range(store: &Store) -> Reach {
 fn write_note(store: &Store, id: &str, body: &str) {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "USE NAMESPACE shared; USE DATABASE books;\n\
              CREATE note:{id} = {{ body: '{body}' }};"
         ))
@@ -1671,7 +1688,7 @@ fn write_note(store: &Store, id: &str, body: &str) {
 fn rewrite_note(store: &Store, id: &str, body: &str) {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "USE NAMESPACE shared; USE DATABASE books;\n\
              UPDATE note:{id} = {{ body: '{body}' }};"
         ))
@@ -1923,7 +1940,7 @@ fn a_removal_is_the_newest_thing_in_the_history() {
     write_note(&store, "7", "here");
     let mut session = Session::new(&store);
     session
-        .run("USE NAMESPACE shared; USE DATABASE books; DELETE note:7;")
+        .run_now("USE NAMESPACE shared; USE DATABASE books; DELETE note:7;")
         .unwrap();
 
     let answer = history(&store, "note:7");
@@ -1945,14 +1962,14 @@ fn a_field_grant_hides_that_field_in_every_entry_of_a_history() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run("GRANT read ON staff FIELDS name TO ada;")
+        .run_now("GRANT read ON staff FIELDS name TO ada;")
         .unwrap();
     let mut root = signed_in(&store, "root");
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop; CREATE staff:1 = { name: 'ada', salary: 10 };",
     )
     .unwrap();
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop; UPDATE staff:1 = { name: 'ada', salary: 20 };",
     )
     .unwrap();

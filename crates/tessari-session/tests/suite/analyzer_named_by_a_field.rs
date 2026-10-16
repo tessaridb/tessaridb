@@ -31,6 +31,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -50,7 +51,7 @@ fn ready() -> Store {
     let held = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     let mut session = Session::new(&held);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}\
              DEFINE ANALYZER simple FILTERS lowercase;\n\
              DEFINE TABLE notes (title string);",
@@ -67,9 +68,9 @@ const USE: &str = "USE NAMESPACE prod; USE DATABASE shop;";
 fn a_field_naming_an_undeclared_analyzer_is_refused() {
     let held = ready();
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
-    let refused = session.run("DEFINE FIELD body ON notes TYPE string ANALYZER missing;");
+    let refused = session.run_now("DEFINE FIELD body ON notes TYPE string ANALYZER missing;");
     let error = refused.expect_err("a field may not name an analyzer that does not exist");
 
     let said = error.to_string();
@@ -92,16 +93,16 @@ fn a_field_naming_an_undeclared_analyzer_is_refused() {
 fn a_refused_declaration_writes_no_field() {
     let held = ready();
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     session
-        .run("DEFINE FIELD body ON notes TYPE string ANALYZER missing;")
+        .run_now("DEFINE FIELD body ON notes TYPE string ANALYZER missing;")
         .expect_err("the declaration must be refused");
 
     // The table is strict, so an undeclared field cannot be written. If the
     // refusal had created `body`, this would succeed.
     session
-        .run("CREATE notes:1 = { title: 'first', body: 'text' };")
+        .run_now("CREATE notes:1 = { title: 'first', body: 'text' };")
         .expect_err("`body` must not exist, so writing it must be refused");
 }
 
@@ -112,13 +113,13 @@ fn a_refused_declaration_writes_no_field() {
 fn a_field_naming_a_declared_analyzer_is_accepted() {
     let held = ready();
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     session
-        .run("DEFINE FIELD body ON notes TYPE string ANALYZER simple;")
+        .run_now("DEFINE FIELD body ON notes TYPE string ANALYZER simple;")
         .unwrap();
     session
-        .run("CREATE notes:1 = { title: 'first', body: 'text' };")
+        .run_now("CREATE notes:1 = { title: 'first', body: 'text' };")
         .unwrap();
 }
 
@@ -129,9 +130,9 @@ fn a_field_naming_a_declared_analyzer_is_accepted() {
 fn the_columnar_spelling_refuses_the_same_name() {
     let held = ready();
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
-    let refused = session.run("DEFINE TABLE drafts (body string ANALYZER missing);");
+    let refused = session.run_now("DEFINE TABLE drafts (body string ANALYZER missing);");
     let error = refused.expect_err("a column may not name an analyzer that does not exist");
     assert!(
         error.to_string().contains("missing"),
@@ -149,19 +150,19 @@ fn the_columnar_spelling_refuses_the_same_name() {
 fn a_refused_alteration_keeps_the_field_it_was_altering() {
     let held = ready();
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     session
-        .run("DEFINE FIELD body ON notes TYPE string ANALYZER simple;")
+        .run_now("DEFINE FIELD body ON notes TYPE string ANALYZER simple;")
         .unwrap();
 
     session
-        .run("ALTER TABLE notes ALTER FIELD body TYPE string ANALYZER missing;")
+        .run_now("ALTER TABLE notes ALTER FIELD body TYPE string ANALYZER missing;")
         .expect_err("the alteration must be refused");
 
     // The original declaration must still be in force: the field exists and the
     // strict table accepts a write naming it.
     session
-        .run("CREATE notes:1 = { title: 'first', body: 'text' };")
+        .run_now("CREATE notes:1 = { title: 'first', body: 'text' };")
         .unwrap();
 }

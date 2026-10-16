@@ -13,6 +13,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -28,7 +29,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION users;\n\
@@ -46,7 +47,7 @@ fn ready(store: &Store) -> Session<'_> {
 const COMPOSITE: &str = "DEFINE INDEX by_name ON users FIELDS last, first;";
 
 fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
-    let outcomes = session.run(&format!("EXPLAIN {read}")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read}")).unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("a plan answered with {:?}", outcomes.last());
     };
@@ -54,7 +55,7 @@ fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
 }
 
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let mut found: Vec<RecordId> = outcomes
         .last()
         .unwrap()
@@ -81,7 +82,7 @@ const READS: &[&str] = &[
 fn a_composite_index_serves_its_leading_field() {
     let store = store();
     let mut session = ready(&store);
-    session.run(COMPOSITE).unwrap();
+    session.run_now(COMPOSITE).unwrap();
     for read in READS {
         assert_eq!(
             plan(&mut session, read, "index"),
@@ -105,7 +106,7 @@ fn the_answers_are_the_ones_a_scan_gives() {
     let mut without = ready(&unindexed);
     let indexed = store();
     let mut with = ready(&indexed);
-    with.run(COMPOSITE).unwrap();
+    with.run_now(COMPOSITE).unwrap();
 
     for read in READS {
         assert_eq!(ids(&mut with, read), ids(&mut without, read), "{read}");
@@ -136,7 +137,7 @@ fn the_second_field_alone_is_still_a_scan() {
     // column.
     let store = store();
     let mut session = ready(&store);
-    session.run(COMPOSITE).unwrap();
+    session.run_now(COMPOSITE).unwrap();
     let read = "SELECT * FROM users WHERE first = 'ada';";
     assert_eq!(plan(&mut session, read, "access"), r#"String("scan")"#);
     assert_eq!(ids(&mut session, read), vec![RecordId::Int(1)]);
@@ -150,7 +151,7 @@ fn a_unique_composite_promises_no_ceiling() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE INDEX by_name ON users FIELDS last, first UNIQUE;")
+        .run_now("DEFINE INDEX by_name ON users FIELDS last, first UNIQUE;")
         .unwrap();
     let read = "SELECT * FROM users WHERE last = 'lovelace';";
     assert_eq!(plan(&mut session, read, "index"), r#"String("by_name")"#);
@@ -169,7 +170,7 @@ fn a_single_field_unique_index_still_promises_one() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE INDEX by_first ON users FIELDS first UNIQUE;")
+        .run_now("DEFINE INDEX by_first ON users FIELDS first UNIQUE;")
         .unwrap();
     let read = "SELECT * FROM users WHERE first = 'ada';";
     assert_eq!(plan(&mut session, read, "at_most"), "Number(Integer(1))");
@@ -182,8 +183,10 @@ fn a_write_keeps_the_composite_index_in_step() {
     // maintenance is worth asserting through a read for the first time.
     let store = store();
     let mut session = ready(&store);
-    session.run(COMPOSITE).unwrap();
-    session.run("UPDATE users:2 SET last = 'turing';").unwrap();
+    session.run_now(COMPOSITE).unwrap();
+    session
+        .run_now("UPDATE users:2 SET last = 'turing';")
+        .unwrap();
     assert_eq!(
         ids(&mut session, "SELECT * FROM users WHERE last = 'lovelace';"),
         vec![RecordId::Int(1), RecordId::Int(5)],
@@ -193,7 +196,7 @@ fn a_write_keeps_the_composite_index_in_step() {
         ids(&mut session, "SELECT * FROM users WHERE last = 'turing';"),
         vec![RecordId::Int(2), RecordId::Int(4)]
     );
-    session.run("DELETE users:1;").unwrap();
+    session.run_now("DELETE users:1;").unwrap();
     assert_eq!(
         ids(&mut session, "SELECT * FROM users WHERE last = 'lovelace';"),
         vec![RecordId::Int(5)]
@@ -208,7 +211,7 @@ fn a_leading_value_that_is_a_prefix_of_another_is_not_confused_with_it() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION t;\n\

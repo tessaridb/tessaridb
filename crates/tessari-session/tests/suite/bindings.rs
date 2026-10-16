@@ -16,6 +16,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Outcome, Parameters, Session};
@@ -31,7 +32,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION users;\n\
@@ -52,7 +53,7 @@ fn a_binding_reaches_the_statement_below_it() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("LET $city = 'london'; SELECT * FROM users WHERE city = $city;")
+        .run_now("LET $city = 'london'; SELECT * FROM users WHERE city = $city;")
         .unwrap();
     // The binding itself reports `Done`: its value is not the script's answer,
     // it is what the next statement was written against.
@@ -70,7 +71,7 @@ fn a_bound_value_still_reaches_an_index() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run(
+        .run_now(
             "DEFINE INDEX by_city ON users FIELDS city;\n\
              LET $city = 'london';\n\
              SELECT * FROM users WHERE city = $city;",
@@ -86,7 +87,7 @@ fn one_engines_answer_becomes_the_next_statements_question() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run(
+        .run_now(
             "LET $names = SELECT name FROM users WHERE city = 'london';\n\
              RETURN $names;",
         )
@@ -102,7 +103,7 @@ fn a_binding_composes_with_a_fold() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("LET $floor = 40; SELECT count(*) AS n FROM users WHERE age > $floor;")
+        .run_now("LET $floor = 40; SELECT count(*) AS n FROM users WHERE age > $floor;")
         .unwrap();
     let records = outcomes[1].records().unwrap();
     assert_eq!(records.len(), 1);
@@ -113,7 +114,7 @@ fn a_return_names_the_scripts_answer() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("LET $a = 6; LET $b = 7; RETURN $a * $b;")
+        .run_now("LET $a = 6; LET $b = 7; RETURN $a * $b;")
         .unwrap();
     assert_eq!(
         outcomes[2].value(),
@@ -128,7 +129,7 @@ fn a_binding_stands_where_a_record_identity_does() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("LET $who = 2; SELECT * FROM users:$who;")
+        .run_now("LET $who = 2; SELECT * FROM users:$who;")
         .unwrap();
     assert_eq!(rows(&outcomes[1]), 1);
 }
@@ -137,7 +138,7 @@ fn a_binding_stands_where_a_record_identity_does() {
 fn a_name_is_bound_once_in_a_script() {
     let store = store();
     let mut session = ready(&store);
-    let failed = session.run("LET $x = 1; LET $x = 2; RETURN $x;");
+    let failed = session.run_now("LET $x = 1; LET $x = 2; RETURN $x;");
     assert!(
         format!("{}", failed.unwrap_err()).contains("bound twice"),
         "a rebinding should be refused where it is written"
@@ -148,7 +149,7 @@ fn a_name_is_bound_once_in_a_script() {
 fn a_script_answers_with_one_value() {
     let store = store();
     let mut session = ready(&store);
-    let failed = session.run("RETURN 1; RETURN 2;");
+    let failed = session.run_now("RETURN 1; RETURN 2;");
     assert!(
         format!("{}", failed.unwrap_err()).contains("one value"),
         "two answers should be refused where they are written"
@@ -162,16 +163,16 @@ fn a_name_written_above_its_binding_is_refused_before_anything_runs() {
     // `LET`, so it fails before the write below it reaches the store.
     let store = store();
     let mut session = ready(&store);
-    let failed = session.run(
+    let failed = session.run_now(
         "CREATE users:9 = { name: $x };\n\
          LET $x = 'too late';",
     );
     assert!(failed.is_err(), "a forward reference should be refused");
     let mut session = Session::new(&store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
-    let outcomes = session.run("SELECT * FROM users:9;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM users:9;").unwrap();
     assert_eq!(rows(&outcomes[0]), 0, "nothing should have been written");
 }
 
@@ -183,7 +184,7 @@ fn a_caller_and_a_script_may_not_name_the_same_thing() {
     let mut session = ready(&store);
     let mut supplied = Parameters::new();
     supplied.insert("city".to_owned(), Value::String("london".to_owned()));
-    let failed = session.run_with(
+    let failed = session.run_with_now(
         "LET $city = 'cambridge'; SELECT * FROM users WHERE city = $city;",
         &supplied,
     );
@@ -200,7 +201,7 @@ fn a_binding_and_a_caller_value_compose() {
     let mut supplied = Parameters::new();
     supplied.insert("floor".to_owned(), Value::Number(Number::Integer(40)));
     let outcomes = session
-        .run_with(
+        .run_with_now(
             "LET $city = 'london'; SELECT * FROM users WHERE city = $city AND age > $floor;",
             &supplied,
         )
@@ -213,7 +214,7 @@ fn a_binding_survives_a_transaction() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run(
+        .run_now(
             "BEGIN;\n\
              LET $city = 'cambridge';\n\
              CREATE users:4 = { name: 'joan', city: $city, age: 29 };\n\

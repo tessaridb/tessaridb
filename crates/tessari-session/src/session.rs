@@ -290,8 +290,8 @@ impl<'a> Session<'a> {
     ///
     /// Returns the first failure. Work buffered in an uncommitted transaction is
     /// discarded — nothing reaches the store until `commit`.
-    pub fn run(&mut self, source: &str) -> Result<Vec<Outcome>> {
-        self.run_with(source, &Parameters::new())
+    pub async fn run(&mut self, source: &str) -> Result<Vec<Outcome>> {
+        self.run_blocking(source)
     }
 
     /// Read a script, give its parameters the values `parameters` binds, and run
@@ -311,7 +311,26 @@ impl<'a> Session<'a> {
     /// [`tessari_ql::Error::UnboundParameter`] when the script names a parameter
     /// this map has no value for, and nothing is written when it does. Otherwise
     /// as [`Session::run`].
-    pub fn run_with(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
+    pub async fn run_with(
+        &mut self,
+        source: &str,
+        parameters: &Parameters,
+    ) -> Result<Vec<Outcome>> {
+        self.run_with_blocking(source, parameters)
+    }
+
+    /// [`Session::run`] on the calling thread, which the store blocks until the script ends;
+    /// for the statements that run a script of their own on a second session.
+    pub(crate) fn run_blocking(&mut self, source: &str) -> Result<Vec<Outcome>> {
+        self.run_with_blocking(source, &Parameters::new())
+    }
+
+    /// [`Session::run_with`] on the calling thread, as [`Session::run_blocking`].
+    pub(crate) fn run_with_blocking(
+        &mut self,
+        source: &str,
+        parameters: &Parameters,
+    ) -> Result<Vec<Outcome>> {
         let script = self.bind_script(parse(source)?, parameters)?;
         self.run_script(script)
     }

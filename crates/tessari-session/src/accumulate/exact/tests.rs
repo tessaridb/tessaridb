@@ -11,6 +11,7 @@
     reason = "a unit test that cannot fail loudly is no test"
 )]
 
+use crate::run_now::RunNow;
 use proptest::prelude::*;
 
 use super::ExactSum;
@@ -268,7 +269,7 @@ fn measure_a_spread_inside_a_read() {
     .unwrap();
     let mut session = crate::Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; \
              DEFINE COLLECTION r;",
         )
@@ -282,7 +283,7 @@ fn measure_a_spread_inside_a_read() {
         ));
     }
     script.push_str("COMMIT;");
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     for read in [
         "SELECT count(x) AS n FROM r;",
         "SELECT sum(x) AS n FROM r;",
@@ -291,7 +292,7 @@ fn measure_a_spread_inside_a_read() {
         let mut best = f64::MAX;
         for _ in 0..5 {
             let started = std::time::Instant::now();
-            std::hint::black_box(session.run(read).unwrap());
+            std::hint::black_box(session.run_now(read).unwrap());
             best = best.min(started.elapsed().as_secs_f64());
         }
         println!("{read} {:.1} ns/record", best * 1e9 / 200_000.0);

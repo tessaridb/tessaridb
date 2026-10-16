@@ -10,6 +10,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use proptest::prelude::*;
+use tessari_session::RunNow;
 use tessari_session::maintain_views;
 use tessari_storage::{Catalog, RecordAddress, Store, Subject};
 use tessari_types::{RecordId, Value};
@@ -63,12 +64,12 @@ fn a_change_rewrites_only_the_groups_it_touches() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
+        .run_now(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
         .unwrap();
     let before = records(&mut session, "SELECT * FROM bands;");
     assert_eq!(before.len(), 4);
     // orders:1 is in band 1 and stays there.
-    session.run("UPDATE orders:1 SET total = 3;").unwrap();
+    session.run_now("UPDATE orders:1 SET total = 3;").unwrap();
     maintain_views(&store).unwrap();
     equals_its_read(&mut session, "bands", BANDS, false);
     for (id, row) in &before {
@@ -88,12 +89,12 @@ fn a_group_row_keeps_its_identity_when_another_group_arrives() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
+        .run_now(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
         .unwrap();
     let before = records(&mut session, "SELECT * FROM bands;");
     // A band that sorts before every other one.
     session
-        .run("CREATE orders:500 = { band: -1, total: 9, n: 500 };")
+        .run_now("CREATE orders:500 = { band: -1, total: 9, n: 500 };")
         .unwrap();
     maintain_views(&store).unwrap();
     equals_its_read(&mut session, "bands", BANDS, false);
@@ -162,14 +163,14 @@ proptest! {
         let store = store();
         let mut session = ready(&store);
         session
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE VIEW bands MATERIALIZED AS {BANDS};\n\
                  DEFINE VIEW pairs MATERIALIZED AS {PAIRS};"
             ))
             .unwrap();
         for batch in &batches {
             let script: String = batch.iter().map(statement).collect();
-            session.run(&script).unwrap();
+            session.run_now(&script).unwrap();
             maintain_views(&store).unwrap();
             equals_its_read(&mut session, "bands", BANDS, false);
             equals_its_read(&mut session, "pairs", PAIRS, false);
@@ -194,7 +195,7 @@ fn dropping_a_grouped_view_takes_its_membership_map() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
+        .run_now(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
         .unwrap();
     let view = {
         let mut transaction = store.begin().unwrap();
@@ -215,7 +216,7 @@ fn dropping_a_grouped_view_takes_its_membership_map() {
         transaction.rollback();
         view
     };
-    session.run("DROP VIEW bands;").unwrap();
+    session.run_now("DROP VIEW bands;").unwrap();
     let transaction = store.begin().unwrap();
     for n in 0..40 {
         assert_eq!(
@@ -230,7 +231,7 @@ fn a_grouped_view_kept_by_position_before_is_rebuilt_by_group_once() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
+        .run_now(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
         .unwrap();
     // Put the view back the way a build before group keys left it: rows under
     // their positions, no membership map, a state that does not say by group.
@@ -268,7 +269,7 @@ fn a_grouped_view_kept_by_position_before_is_rebuilt_by_group_once() {
     assert_eq!(rows.len(), 4);
     assert!(rows.iter().all(|(id, _)| matches!(id, RecordId::Bytes(_))));
     equals_its_read(&mut session, "bands", BANDS, false);
-    session.run("UPDATE orders:2 SET band = 0;").unwrap();
+    session.run_now("UPDATE orders:2 SET band = 0;").unwrap();
     maintain_views(&store).unwrap();
     assert_eq!(records(&mut session, "SELECT * FROM bands;").len(), 4);
     equals_its_read(&mut session, "bands", BANDS, false);

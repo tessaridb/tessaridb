@@ -57,7 +57,7 @@ pub(crate) fn listing(outcomes: &[Outcome]) -> Answer {
 /// users; --` is a string that says something alarming rather than a statement.
 /// A value that would not stand alone in a script is refused here, before
 /// anything runs.
-pub(crate) fn script(
+pub(crate) async fn script(
     db: &Db,
     source: &str,
     written: &BTreeMap<String, String>,
@@ -85,7 +85,7 @@ pub(crate) fn script(
         session.namespace().map(str::to_owned),
         session.database().map(str::to_owned),
     );
-    let ran = session.run_with(source, &given);
+    let ran = session.run_with(source, &given).await;
     // Coordinated (ADR-0108 D1): carried over the peer link to the node that
     // can answer it, as the caller this request proved, rather than answered
     // with a redirect an HTTP client may not follow.

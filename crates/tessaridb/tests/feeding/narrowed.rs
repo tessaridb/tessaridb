@@ -7,6 +7,7 @@
 //! how far it read, so resuming neither loses nor repeats.
 
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessaridb::feed::{Condition, Feed, FeedRefused, Following, PATIENCE_BETWEEN_ROUNDS, Round};
 use tessaridb::{ChangeKind, Db, Parameters, Sequence, Value};
@@ -23,7 +24,7 @@ fn chat(name: &str) -> Parameters {
 fn ready() -> Db {
     let db = Db::in_memory().unwrap();
     db.session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION msgs;",
         )
@@ -34,7 +35,7 @@ fn ready() -> Db {
 fn session(db: &Db) -> tessaridb::Session<'_> {
     let mut session = db.session();
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -89,7 +90,7 @@ fn a_narrowed_feed_delivers_the_matching_writes_and_nothing_else() {
     let db = ready();
     let mut writer = session(&db);
     writer
-        .run(
+        .run_now(
             "CREATE msgs:1 = { chat: 'a', text: 'hi' }; CREATE msgs:2 = { chat: 'b', text: 'no' };\n\
              CREATE msgs:3 = { chat: 'a', text: 'yo' };",
         )
@@ -109,7 +110,7 @@ fn a_record_that_leaves_the_condition_arrives_as_a_removal_and_only_once() {
     let db = ready();
     let mut writer = session(&db);
     writer
-        .run(
+        .run_now(
             "CREATE msgs:1 = { chat: 'a' }; UPDATE msgs:1 SET chat = 'b'; DELETE msgs:1;\n\
              CREATE msgs:2 = { chat: 'a' }; DELETE msgs:2;\n\
              CREATE msgs:3 = { chat: 'b' }; UPDATE msgs:3 SET chat = 'c'; DELETE msgs:3;",
@@ -138,7 +139,7 @@ fn a_narrowed_feed_says_how_far_it_read_and_resumes_without_loss_or_repeat() {
     let db = ready();
     let mut writer = session(&db);
     writer
-        .run("CREATE msgs:1 = { chat: 'a' }; CREATE msgs:2 = { chat: 'b' }; CREATE msgs:3 = { chat: 'b' };")
+        .run_now("CREATE msgs:1 = { chat: 'a' }; CREATE msgs:2 = { chat: 'b' }; CREATE msgs:3 = { chat: 'b' };")
         .unwrap();
     let mut reader = session(&db);
     let asked = chat("a");
@@ -155,7 +156,7 @@ fn a_narrowed_feed_says_how_far_it_read_and_resumes_without_loss_or_repeat() {
     assert!(none.is_empty() && again.is_none(), "{none:?} {again:?}");
 
     writer
-        .run("CREATE msgs:4 = { chat: 'a' }; CREATE msgs:5 = { chat: 'a' };")
+        .run_now("CREATE msgs:4 = { chat: 'a' }; CREATE msgs:5 = { chat: 'a' };")
         .unwrap();
     let mut resumed = Feed::open(
         &db,
@@ -173,7 +174,7 @@ fn progress_is_offered_only_once_the_feed_has_been_quiet_for_a_while() {
     let db = ready();
     let mut writer = session(&db);
     writer
-        .run("CREATE msgs:1 = { chat: 'a' }; CREATE msgs:2 = { chat: 'b' };")
+        .run_now("CREATE msgs:1 = { chat: 'a' }; CREATE msgs:2 = { chat: 'b' };")
         .unwrap();
     let mut reader = session(&db);
     let asked = chat("a");
@@ -193,11 +194,11 @@ fn a_condition_on_a_field_the_subscriber_cannot_see_is_refused_at_open() {
     let db = ready();
     let mut owner = db.session();
     owner
-        .run("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
     let mut root = session(&db);
     root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
          DEFINE USER narrow ON NAMESPACE prod AUTHORITIES read PASSWORD 'correct horse battery';\n\
          GRANT read ON msgs FIELDS chat TO narrow;\n\
@@ -207,7 +208,7 @@ fn a_condition_on_a_field_the_subscriber_cannot_see_is_refused_at_open() {
     let mut narrow = db.session();
     narrow.sign_in("narrow", PASSWORD).unwrap();
     narrow
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     let none = Parameters::new();
     let refused = Feed::open(&db, &mut narrow, &narrowed(0, "secret = 1", &none)).err();
@@ -230,11 +231,11 @@ fn a_feed_whose_condition_field_is_hidden_while_it_runs_ends() {
     let db = ready();
     let mut owner = db.session();
     owner
-        .run("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
     let mut root = session(&db);
     root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
          DEFINE USER narrow ON NAMESPACE prod AUTHORITIES read PASSWORD 'correct horse battery';\n\
          GRANT read ON msgs FIELDS chat, text TO narrow;",
@@ -243,11 +244,11 @@ fn a_feed_whose_condition_field_is_hidden_while_it_runs_ends() {
     let mut narrow = db.session();
     narrow.sign_in("narrow", PASSWORD).unwrap();
     narrow
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     let asked = chat("a");
     let mut feed = Feed::open(&db, &mut narrow, &narrowed(0, "chat = $chat", &asked)).unwrap();
-    root.run(
+    root.run_now(
         // A grant says what the result is: this one takes `chat` away.
         "GRANT read ON msgs FIELDS text TO narrow;\n\
          CREATE msgs:1 = { chat: 'a', text: 'hi' };",
@@ -310,7 +311,7 @@ fn a_bound_value_is_compared_and_never_read_as_syntax() {
     let db = ready();
     let mut writer = session(&db);
     writer
-        .run(
+        .run_now(
             "CREATE msgs:1 = { chat: 'a' }; CREATE msgs:2 = { chat: \"a' OR true OR chat = 'z\" };",
         )
         .unwrap();
@@ -326,7 +327,7 @@ fn a_record_created_with_a_generated_identity_reaches_the_feed() {
     let db = ready();
     let mut writer = session(&db);
     writer
-        .run("CREATE msgs = { chat: 'a' }; CREATE msgs:7 = { chat: 'a' };")
+        .run_now("CREATE msgs = { chat: 'a' }; CREATE msgs:7 = { chat: 'a' };")
         .unwrap();
     let mut reader = session(&db);
     let mut feed = Feed::open(

@@ -17,6 +17,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Error, Note, Outcome, Session};
@@ -29,7 +30,7 @@ const READ: &str = "SELECT id FROM notes WHERE body MATCHES '東京';";
 fn store() -> Store {
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     Session::new(&store)
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER plain FILTERS lowercase, ascii;\n\
@@ -69,7 +70,7 @@ fn written_by(store: &Store, index: &str, built: Option<u32>) {
 
 /// The ids a read answered with, sorted, its path, and its rebuild notes.
 fn read(session: &mut Session<'_>, statement: &str) -> (Vec<String>, AccessPath, Vec<Note>) {
-    let outcomes = session.run(statement).unwrap();
+    let outcomes = session.run_now(statement).unwrap();
     let Some(outcome @ Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("{statement}: {:?}", outcomes.last());
     };
@@ -104,7 +105,7 @@ fn generation_of(entries: &Value, named: &str, key: &str) -> (Value, Value) {
 }
 
 fn field_index(session: &mut Session<'_>) -> (Value, Value) {
-    let outcomes = session.run("INFO FOR TABLE notes;").unwrap();
+    let outcomes = session.run_now("INFO FOR TABLE notes;").unwrap();
     let Some(Outcome::Value(Value::Object(report))) = outcomes.last() else {
         panic!("{:?}", outcomes.last());
     };
@@ -112,7 +113,7 @@ fn field_index(session: &mut Session<'_>) -> (Value, Value) {
 }
 
 fn member(session: &mut Session<'_>) -> (Value, Value) {
-    let outcomes = session.run("INFO FOR SEARCH kb;").unwrap();
+    let outcomes = session.run_now("INFO FOR SEARCH kb;").unwrap();
     let Some(Outcome::Value(Value::Object(report))) = outcomes.last() else {
         panic!("{:?}", outcomes.last());
     };
@@ -127,7 +128,7 @@ fn current() -> Value {
 fn a_new_search_index_records_its_generation_and_is_answered_from() {
     let store = store();
     let mut session = Session::new(&store);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
     assert_eq!(field_index(&mut session), (current(), Value::Bool(false)));
     assert_eq!(member(&mut session), (current(), Value::Bool(false)));
     let (ids, path, notes) = read(&mut session, READ);
@@ -142,7 +143,7 @@ fn a_field_index_of_another_or_no_generation_is_scanned_past_until_rebuilt() {
         let store = store();
         written_by(&store, "by_body", built);
         let mut session = Session::new(&store);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
         let expected_tokenizer =
             built.map_or(Value::Null, |generation| Value::from(i64::from(generation)));
         assert_eq!(
@@ -175,7 +176,7 @@ fn a_field_index_of_another_or_no_generation_is_scanned_past_until_rebuilt() {
             notes[0].message()
         );
         // Asserting the index is refused rather than quietly scanned.
-        match session.run(&format!(
+        match session.run_now(&format!(
             "{} USING INDEX by_body;",
             READ.trim_end_matches(';')
         )) {
@@ -183,7 +184,7 @@ fn a_field_index_of_another_or_no_generation_is_scanned_past_until_rebuilt() {
             other => panic!("built {built:?}: USING INDEX was not refused: {other:?}"),
         }
 
-        session.run("REBUILD INDEX by_body ON notes;").unwrap();
+        session.run_now("REBUILD INDEX by_body ON notes;").unwrap();
         assert_eq!(field_index(&mut session), (current(), Value::Bool(false)));
         let (ids, path, notes) = read(&mut session, READ);
         assert_eq!(ids, ["1"]);
@@ -201,7 +202,7 @@ fn a_search_member_of_no_generation_is_read_and_says_it_can_miss_records() {
     let store = store();
     written_by(&store, "kb", None);
     let mut session = Session::new(&store);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
     assert_eq!(member(&mut session), (Value::Null, Value::Bool(true)));
     let ask = "SELECT id FROM SEARCH kb MATCHES '東京';";
     let (ids, _, notes) = read(&mut session, ask);
@@ -217,7 +218,9 @@ fn a_search_member_of_no_generation_is_read_and_says_it_can_miss_records() {
     );
 
     session
-        .run("BEGIN; DROP SEARCH kb; DEFINE SEARCH kb ON notes FIELDS body ANALYZER plain; COMMIT;")
+        .run_now(
+            "BEGIN; DROP SEARCH kb; DEFINE SEARCH kb ON notes FIELDS body ANALYZER plain; COMMIT;",
+        )
         .unwrap();
     assert_eq!(member(&mut session), (current(), Value::Bool(false)));
     let (ids, _, notes) = read(&mut session, ask);
@@ -233,10 +236,10 @@ fn a_field_the_grant_hides_names_no_index_in_the_note() {
     let store = store();
     written_by(&store, "by_body", None);
     let mut root = Session::new(&store);
-    root.run("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
+    root.run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
     root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
          DEFINE FIELD title ON notes TYPE string;\n\
          DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
@@ -248,7 +251,7 @@ fn a_field_the_grant_hides_names_no_index_in_the_note() {
 
     let mut ada = Session::new(&store);
     ada.sign_in("ada", PASSWORD).unwrap();
-    ada.run(USE).unwrap();
+    ada.run_now(USE).unwrap();
     let (_, _, hidden) = read(&mut ada, READ);
     assert!(
         hidden.is_empty(),

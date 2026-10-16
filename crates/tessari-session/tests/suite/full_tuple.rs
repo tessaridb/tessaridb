@@ -30,6 +30,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tessari_session::RunNow;
 
 use tessari_kv::{
     Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
@@ -130,7 +131,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION users;",
@@ -138,7 +139,7 @@ fn ready(store: &Store) -> Session<'_> {
         .unwrap();
     for n in 1..=SHARED {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE users:{n} = {{ last: 'lovelace', first: 'n{n}', \
                  city: 'c{n}', town: 't{n}' }};"
             ))
@@ -153,7 +154,7 @@ const LEADING: &str = "SELECT * FROM users WHERE last = 'lovelace';";
 const TUPLE: &str = "SELECT * FROM users WHERE last = 'lovelace' AND first = 'n7';";
 
 fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
-    let outcomes = session.run(&format!("EXPLAIN {read}")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read}")).unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("a plan answered with {:?}", outcomes.last());
     };
@@ -161,7 +162,7 @@ fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
 }
 
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let mut found: Vec<RecordId> = outcomes
         .last()
         .unwrap()
@@ -177,7 +178,7 @@ fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
 /// What one read cost the backend, with the counter reset around it.
 fn entries(session: &mut Session<'_>, counting: &Counting, read: &str) -> usize {
     counting.reset();
-    session.run(read).unwrap();
+    session.run_now(read).unwrap();
     counting.entries()
 }
 
@@ -185,12 +186,12 @@ fn entries(session: &mut Session<'_>, counting: &Counting, read: &str) -> usize 
 fn a_condition_naming_both_columns_examines_one_record_instead_of_every_sharing_the_first() {
     let (store, counting) = counted();
     let mut session = ready(&store);
-    session.run(COMPOSITE).unwrap();
+    session.run_now(COMPOSITE).unwrap();
     // Once uncounted: the index definition dropped the catalog rows held between
     // statements, so the first read after it would pay for re-reading them and
     // the second would not — and the subtraction below cancels the catalog only
     // when both statements pay the same for it.
-    session.run(LEADING).unwrap();
+    session.run_now(LEADING).unwrap();
 
     let leading = entries(&mut session, &counting, LEADING);
     let tuple = entries(&mut session, &counting, TUPLE);
@@ -215,7 +216,7 @@ fn a_condition_naming_both_columns_examines_one_record_instead_of_every_sharing_
 fn the_plan_says_how_many_of_the_index_columns_the_lookup_fixes() {
     let store = store();
     let mut session = ready(&store);
-    session.run(COMPOSITE).unwrap();
+    session.run_now(COMPOSITE).unwrap();
 
     assert_eq!(plan(&mut session, TUPLE, "index"), r#"String("by_name")"#);
     assert_eq!(plan(&mut session, TUPLE, "shape"), r#"String("equality")"#);
@@ -232,7 +233,7 @@ fn a_unique_composite_promises_one_exactly_when_the_condition_fixes_every_field(
     // observable proof that the gathering landed.
     let store = store();
     let mut session = ready(&store);
-    session.run(UNIQUE).unwrap();
+    session.run_now(UNIQUE).unwrap();
 
     assert_eq!(plan(&mut session, TUPLE, "at_most"), "Number(Integer(1))");
     // Unchanged where it was always true: fixing one field of a pair promises
@@ -255,9 +256,9 @@ fn the_ceiling_is_what_makes_the_planner_choose_the_composite() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE INDEX by_last ON users FIELDS last;")
+        .run_now("DEFINE INDEX by_last ON users FIELDS last;")
         .unwrap();
-    session.run(UNIQUE).unwrap();
+    session.run_now(UNIQUE).unwrap();
 
     assert_eq!(plan(&mut session, TUPLE, "index"), r#"String("by_name")"#);
     assert_eq!(plan(&mut session, TUPLE, "at_most"), "Number(Integer(1))");
@@ -276,9 +277,9 @@ fn more_fixed_columns_wins_even_with_no_ceiling_to_show_for_it() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE INDEX by_last ON users FIELDS last;")
+        .run_now("DEFINE INDEX by_last ON users FIELDS last;")
         .unwrap();
-    session.run(COMPOSITE).unwrap();
+    session.run_now(COMPOSITE).unwrap();
 
     assert_eq!(plan(&mut session, TUPLE, "index"), r#"String("by_name")"#);
     assert_eq!(plan(&mut session, TUPLE, "at_most"), "None");
@@ -296,10 +297,10 @@ fn a_tie_still_breaks_on_the_order_the_author_wrote() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE INDEX by_city ON users FIELDS city;")
+        .run_now("DEFINE INDEX by_city ON users FIELDS city;")
         .unwrap();
     session
-        .run("DEFINE INDEX by_town ON users FIELDS town;")
+        .run_now("DEFINE INDEX by_town ON users FIELDS town;")
         .unwrap();
 
     let read = "SELECT * FROM users WHERE town = 't3' AND city = 'c3';";
@@ -319,7 +320,7 @@ fn a_mixed_tuple_fixes_only_the_equality_run() {
     // rest — which it does to every candidate anyway.
     let store = store();
     let mut session = ready(&store);
-    session.run(COMPOSITE).unwrap();
+    session.run_now(COMPOSITE).unwrap();
 
     let read = "SELECT * FROM users WHERE last = 'lovelace' AND first LIKE 'n7%';";
     assert_eq!(plan(&mut session, read, "index"), r#"String("by_name")"#);
@@ -354,9 +355,9 @@ fn the_answers_are_the_ones_a_scan_gives() {
     let mut without = ready(&plain);
     let indexed = store();
     let mut with = ready(&indexed);
-    with.run("DEFINE INDEX by_last ON users FIELDS last;")
+    with.run_now("DEFINE INDEX by_last ON users FIELDS last;")
         .unwrap();
-    with.run(COMPOSITE).unwrap();
+    with.run_now(COMPOSITE).unwrap();
 
     for read in reads {
         assert_eq!(

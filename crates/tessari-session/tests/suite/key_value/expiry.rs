@@ -7,6 +7,7 @@
 //! that never answered would pass the "after" half on its own.
 
 use std::thread;
+use tessari_session::RunNow;
 
 use tessari_encoding::KeyKind;
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
@@ -190,7 +191,7 @@ fn a_transaction_sees_its_own_expiring_write_on_its_own_clock() {
     on_each_backend(|backend| {
         let mut session = opened(&backend.store);
         let answers = session
-            .run(
+            .run_now(
                 "BEGIN; SET cache:'t' = 1 EXPIRE 1h; SET cache:'gone' = 1; \
                  EXPIRE cache:'gone' -5s; RETURN [GET cache:'t', GET cache:'gone']; COMMIT;",
             )
@@ -298,7 +299,7 @@ fn an_expiry_survives_the_store_being_closed_and_opened_again() {
     let store = open();
     let mut session = tessari_session::Session::new(&store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE app;")
+        .run_now("USE NAMESPACE prod; USE DATABASE app;")
         .unwrap();
     assert!(matches!(
         value(&mut session, "RETURN TTL cache:'k';"),

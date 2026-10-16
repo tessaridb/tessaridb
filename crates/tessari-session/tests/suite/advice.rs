@@ -17,6 +17,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_ql::Parameters;
@@ -32,7 +33,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE people (name string);",
@@ -49,7 +50,7 @@ fn the_refusal_names_its_table_the_way_a_declaration_would() {
     let store = store();
     let mut session = ready(&store);
 
-    let refusal = session.run(UNDECLARED).unwrap_err().to_string();
+    let refusal = session.run_now(UNDECLARED).unwrap_err().to_string();
 
     assert!(
         refusal.contains("people"),
@@ -85,7 +86,7 @@ fn every_declaration_refusal_names_its_table_the_way_a_declaration_would() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE ledgers (balance int ASSERT $value >= 0, \
@@ -103,7 +104,7 @@ fn every_declaration_refusal_names_its_table_the_way_a_declaration_would() {
     ]
     .map(|statement| {
         session
-            .run(statement)
+            .run_now(statement)
             .expect_err("a write the declaration refuses was accepted")
             .to_string()
     });
@@ -133,19 +134,19 @@ fn the_suggested_declaration_makes_the_refused_write_succeed() {
     let store = store();
     let mut session = ready(&store);
 
-    let Error::UndeclaredField { suggestion, .. } = session.run(UNDECLARED).unwrap_err() else {
+    let Error::UndeclaredField { suggestion, .. } = session.run_now(UNDECLARED).unwrap_err() else {
         panic!("the refusal carried no statement to run");
     };
 
     // Verbatim. A suggestion that needs editing before it runs is a suggestion
     // that did not answer the question the caller asked.
     session
-        .run(&format!("{suggestion};"))
+        .run_now(&format!("{suggestion};"))
         .unwrap_or_else(|error| {
             panic!("the suggested statement did not run: {error} — {suggestion}")
         });
     session
-        .run(UNDECLARED)
+        .run_now(UNDECLARED)
         .unwrap_or_else(|error| panic!("the write is still refused after its own remedy: {error}"));
 }
 
@@ -158,15 +159,15 @@ fn the_suggestion_declares_a_kind_that_accepts_what_was_sent() {
     let mut session = ready(&store);
 
     let Error::UndeclaredField { suggestion, .. } = session
-        .run("CREATE people:2 = { name: 'grace', born: 1906 };")
+        .run_now("CREATE people:2 = { name: 'grace', born: 1906 };")
         .unwrap_err()
     else {
         panic!("the refusal carried no statement to run");
     };
 
-    session.run(&format!("{suggestion};")).unwrap();
+    session.run_now(&format!("{suggestion};")).unwrap();
     session
-        .run("CREATE people:2 = { name: 'grace', born: 1906 };")
+        .run_now("CREATE people:2 = { name: 'grace', born: 1906 };")
         .unwrap_or_else(|error| panic!("a number was declared as something else: {error}"));
 }
 
@@ -188,7 +189,7 @@ fn a_field_the_language_cannot_spell_is_refused_without_a_suggestion() {
     parameters.insert("row".to_owned(), Value::Object(row));
 
     let refusal = session
-        .run_with("CREATE people:3 = $row;", &parameters)
+        .run_with_now("CREATE people:3 = $row;", &parameters)
         .unwrap_err();
 
     assert!(
@@ -212,7 +213,7 @@ fn a_refused_batch_names_every_row_that_was_wrong() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE readings (n int);",
@@ -220,7 +221,7 @@ fn a_refused_batch_names_every_row_that_was_wrong() {
         .unwrap();
 
     let refusal = session
-        .run("INSERT INTO readings (n) VALUES (1), ('two'), (3), ('four'), ('five');")
+        .run_now("INSERT INTO readings (n) VALUES (1), ('two'), (3), ('four'), ('five');")
         .unwrap_err()
         .to_string();
 
@@ -251,7 +252,7 @@ fn one_bad_row_is_refused_the_way_it_always_was() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE readings (n int);",
@@ -259,7 +260,7 @@ fn one_bad_row_is_refused_the_way_it_always_was() {
         .unwrap();
 
     let refusal = session
-        .run("INSERT INTO readings (n) VALUES (1), ('two'), (3);")
+        .run_now("INSERT INTO readings (n) VALUES (1), ('two'), (3);")
         .unwrap_err()
         .to_string();
 
@@ -284,10 +285,10 @@ fn a_rehearsed_write_is_refused_in_exactly_the_words_the_real_one_is() {
     let mut session = ready(&store);
 
     let rehearsed = session
-        .run(&format!("BEGIN; {UNDECLARED} VERIFY;"))
+        .run_now(&format!("BEGIN; {UNDECLARED} VERIFY;"))
         .unwrap_err()
         .to_string();
-    let performed = session.run(UNDECLARED).unwrap_err().to_string();
+    let performed = session.run_now(UNDECLARED).unwrap_err().to_string();
 
     assert_eq!(
         rehearsed, performed,
@@ -301,10 +302,10 @@ fn a_rehearsal_that_passes_writes_nothing() {
     let mut session = ready(&store);
 
     session
-        .run("BEGIN; CREATE people:1 = { name: 'ada' }; VERIFY;")
+        .run_now("BEGIN; CREATE people:1 = { name: 'ada' }; VERIFY;")
         .unwrap_or_else(|error| panic!("a write that should be accepted was refused: {error}"));
 
-    let after = format!("{:?}", session.run("SELECT * FROM people;").unwrap());
+    let after = format!("{:?}", session.run_now("SELECT * FROM people;").unwrap());
     assert!(
         !after.contains("ada"),
         "the rehearsal committed the record it was rehearsing: {after}"
@@ -321,7 +322,7 @@ fn a_rehearsal_reports_a_refusal_that_only_the_index_would_raise() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE people (name string) SCHEMALESS;\n\
@@ -331,7 +332,7 @@ fn a_rehearsal_reports_a_refusal_that_only_the_index_would_raise() {
         .unwrap();
 
     let refusal = session
-        .run("BEGIN; CREATE people:2 = { name: 'ada' }; VERIFY;")
+        .run_now("BEGIN; CREATE people:2 = { name: 'ada' }; VERIFY;")
         .unwrap_err()
         .to_string();
 
@@ -346,7 +347,7 @@ fn a_rehearsal_without_a_transaction_is_refused_like_its_siblings() {
     let store = store();
     let mut session = ready(&store);
 
-    let refusal = session.run("VERIFY;").unwrap_err();
+    let refusal = session.run_now("VERIFY;").unwrap_err();
 
     assert!(
         matches!(refusal, Error::NoOpenTransaction { .. }),
@@ -362,11 +363,11 @@ fn the_refusal_names_no_field_the_caller_did_not_send() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE FIELD salary ON people TYPE int;")
+        .run_now("DEFINE FIELD salary ON people TYPE int;")
         .unwrap();
 
     let refusal = session
-        .run("CREATE people:4 = { name: 'ada', slary: 1 };")
+        .run_now("CREATE people:4 = { name: 'ada', slary: 1 };")
         .unwrap_err()
         .to_string();
 

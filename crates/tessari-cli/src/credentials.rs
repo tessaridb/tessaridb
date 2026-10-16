@@ -266,6 +266,7 @@ pub(crate) async fn watch(
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+    use tessari_session::RunNow;
 
     use super::{Looked, Watched};
 
@@ -332,7 +333,7 @@ mod tests {
 
         let fingerprint = "ab".repeat(32);
         db.session()
-            .run(&format!("REVOKE CERTIFICATE '{fingerprint}';"))
+            .run_now(&format!("REVOKE CERTIFICATE '{fingerprint}';"))
             .expect("a revocation");
         revoking.refresh().expect("the list");
         assert_eq!(
@@ -349,7 +350,7 @@ mod tests {
             keys: keys(),
         };
         db.session()
-            .run(
+            .run_now(
                 "BEGIN; DEFINE REPLICA gone AT 'h:1' NODE '3f9a1c04-b7e2-489d-b561-0af3d82c7e46' \
                  ROLES serving; DROP REPLICA gone; COMMIT;",
             )

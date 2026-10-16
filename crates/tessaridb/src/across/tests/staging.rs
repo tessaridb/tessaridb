@@ -3,6 +3,7 @@
 //! aborted where one did not — and never resolves an intent against it.
 
 use tessari_encoding::{Participant, TransactionRecord};
+use tessari_session::RunNow;
 
 use tessari_session::AcrossAsk;
 use tessari_storage::Decision;
@@ -118,7 +119,7 @@ fn a_bar_ends_with_its_log_and_a_late_prepare_is_refused_as_too_old() {
     let (db, _) = left_behind(&[]);
     let (home, _) = ranges(&db);
     db.session()
-        .run("USE NAMESPACE prod; DEFINE DATABASE other; USE DATABASE other; DEFINE COLLECTION more;")
+        .run_now("USE NAMESPACE prod; DEFINE DATABASE other; USE DATABASE other; DEFINE COLLECTION more;")
         .unwrap();
     let store = db.store();
     let (elsewhere, late) = {
@@ -152,7 +153,9 @@ fn a_bar_ends_with_its_log_and_a_late_prepare_is_refused_as_too_old() {
     // Writes into the barred range after the bar, so its log has a tail to
     // prune under.
     db.session()
-        .run("USE NAMESPACE prod; USE DATABASE other; CREATE more:1 = 'a'; CREATE more:2 = 'b';")
+        .run_now(
+            "USE NAMESPACE prod; USE DATABASE other; CREATE more:1 = 'a'; CREATE more:2 = 'b';",
+        )
         .unwrap();
     let tail = store.committed_tail(log).unwrap();
     store.prune_log(log, tail).unwrap();

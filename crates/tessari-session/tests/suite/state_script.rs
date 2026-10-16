@@ -7,6 +7,7 @@
 //! silence.
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -87,7 +88,7 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session.sign_in(name, PASSWORD).unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
     session
 }
@@ -95,8 +96,10 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
 /// A store with the fixture applied, and the script `BACKUP SCRIPT` answers.
 fn original() -> (Store, String) {
     let source = store();
-    Session::new(&source).run(EVERYTHING).unwrap();
-    let answered = signed_in(&source, "root").run("BACKUP SCRIPT;").unwrap();
+    Session::new(&source).run_now(EVERYTHING).unwrap();
+    let answered = signed_in(&source, "root")
+        .run_now("BACKUP SCRIPT;")
+        .unwrap();
     let Some(Outcome::Value(tessari_types::Value::String(script))) = answered.last() else {
         panic!("BACKUP SCRIPT answered {answered:?}");
     };
@@ -108,14 +111,14 @@ fn a_script_rebuilds_a_store_that_answers_what_the_source_answers() {
     let (source, script) = original();
     let target = store();
     Session::new(&target)
-        .run(&script)
+        .run_now(&script)
         .unwrap_or_else(|refusal| panic!("the script did not restore: {refusal}\n{script}"));
     let mut here = signed_in(&source, "root");
     let mut there = signed_in(&target, "root");
     for read in INTERROGATION {
         assert_eq!(
-            format!("{:?}", here.run(read).unwrap()),
-            format!("{:?}", there.run(read).unwrap()),
+            format!("{:?}", here.run_now(read).unwrap()),
+            format!("{:?}", there.run_now(read).unwrap()),
             "the two stores disagree about {read}"
         );
     }
@@ -124,7 +127,9 @@ fn a_script_rebuilds_a_store_that_answers_what_the_source_answers() {
     let mut ttl = |key: &str| {
         format!(
             "{:?}",
-            there.run(&format!("RETURN TTL cache:'{key}';")).unwrap()
+            there
+                .run_now(&format!("RETURN TTL cache:'{key}';"))
+                .unwrap()
         )
     };
     let soon = ttl("soon");
@@ -139,7 +144,7 @@ fn a_script_rebuilds_a_store_that_answers_what_the_source_answers() {
     let mut message = |id: u32| {
         format!(
             "{:?}",
-            there.run(&format!("RETURN TTL message:{id};")).unwrap()
+            there.run_now(&format!("RETURN TTL message:{id};")).unwrap()
         )
     };
     assert!(message(1).contains("Duration"), "{}", message(1));
@@ -151,13 +156,13 @@ fn a_script_rebuilds_a_store_that_answers_what_the_source_answers() {
     );
     // The viewer is back with her grant: two fields of one table, nothing else.
     let mut bea = signed_in(&target, "bea");
-    let seen = format!("{:?}", bea.run("SELECT * FROM people:1;").unwrap());
+    let seen = format!("{:?}", bea.run_now("SELECT * FROM people:1;").unwrap());
     assert!(
         seen.contains("ada") && !seen.contains("london"),
         "bea's grant came back wrong: {seen}"
     );
     assert!(
-        bea.run("SELECT * FROM kinds;").is_err(),
+        bea.run_now("SELECT * FROM kinds;").is_err(),
         "bea reads a table she was never granted"
     );
 }
@@ -187,7 +192,7 @@ fn what_a_script_does_not_carry_is_named_in_its_header() {
 fn a_part_with_no_faithful_spelling_is_refused_by_name_and_not_written() {
     let source = store();
     Session::new(&source)
-        .run(
+        .run_now(
             "DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; \
              DEFINE TABLE a SCHEMALESS; DEFINE TABLE b SCHEMALESS; \
              DEFINE TABLE likes EDGE FROM a TO b; CREATE a:1 = {}; CREATE b:1 = {}; \
@@ -209,11 +214,11 @@ fn a_part_with_no_faithful_spelling_is_refused_by_name_and_not_written() {
     );
     // And the rest restores — and every table is either restored or named.
     let target = store();
-    Session::new(&target).run(&taken.text).unwrap();
+    Session::new(&target).run_now(&taken.text).unwrap();
     let tables = |held: &Store| {
         let mut session = Session::new(held);
         let info = session
-            .run("USE NAMESPACE n; USE DATABASE d; INFO FOR DATABASE;")
+            .run_now("USE NAMESPACE n; USE DATABASE d; INFO FOR DATABASE;")
             .unwrap();
         format!("{info:?}")
     };
@@ -243,7 +248,7 @@ fn a_part_with_no_faithful_spelling_is_refused_by_name_and_not_written() {
 fn a_record_whose_instant_passed_before_the_restore_is_not_written_back() {
     let source = store();
     Session::new(&source)
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; USE DATABASE orders; \
              DEFINE TABLE message (body string) EXPIRE; \
              CREATE message:1 = { body: 'soon' } EXPIRE 300ms; \
@@ -251,19 +256,21 @@ fn a_record_whose_instant_passed_before_the_restore_is_not_written_back() {
              DEFINE USER root ROLE owner PASSWORD 'a long one';",
         )
         .unwrap();
-    let answered = signed_in(&source, "root").run("BACKUP SCRIPT;").unwrap();
+    let answered = signed_in(&source, "root")
+        .run_now("BACKUP SCRIPT;")
+        .unwrap();
     let Some(Outcome::Value(tessari_types::Value::String(script))) = answered.last() else {
         panic!("BACKUP SCRIPT answered {answered:?}");
     };
     std::thread::sleep(std::time::Duration::from_millis(450));
     let target = store();
     Session::new(&target)
-        .run(script)
+        .run_now(script)
         .unwrap_or_else(|refusal| panic!("the script did not restore: {refusal}\n{script}"));
     let read = format!(
         "{:?}",
         signed_in(&target, "root")
-            .run("SELECT * FROM message;")
+            .run_now("SELECT * FROM message;")
             .unwrap()
     );
     assert!(read.contains("stays") && !read.contains("soon"), "{read}");

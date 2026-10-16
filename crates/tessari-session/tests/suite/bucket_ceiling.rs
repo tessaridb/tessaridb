@@ -34,6 +34,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -53,7 +54,7 @@ DEFINE DATABASE work; USE DATABASE work;
 fn holding<'a>(store: &'a Store, declaration: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session
-        .run(&format!("{TENANCY}DEFINE BUCKET media{declaration};"))
+        .run_now(&format!("{TENANCY}DEFINE BUCKET media{declaration};"))
         .unwrap();
     session
 }
@@ -72,13 +73,16 @@ fn seeded(size: usize) -> Vec<u8> {
 
 /// What a statement said when it was refused, or `None` when it was accepted.
 fn refusal(session: &mut Session<'_>, statement: &str) -> Option<String> {
-    session.run(statement).err().map(|error| error.to_string())
+    session
+        .run_now(statement)
+        .err()
+        .map(|error| error.to_string())
 }
 
 /// The bytes stored at `/big.bin`, or `None` when there are none.
 fn stored(session: &mut Session<'_>) -> Option<Vec<u8>> {
     match session
-        .run("READ media:'/big.bin';")
+        .run_now("READ media:'/big.bin';")
         .unwrap()
         .pop()
         .unwrap()
@@ -96,7 +100,7 @@ fn a_file_inside_the_ceiling_is_written_and_one_above_it_is_refused() {
 
     let inside = seeded(100);
     session
-        .run(&format!("PUT media:'/big.bin' = 0x{};", hex(&inside)))
+        .run_now(&format!("PUT media:'/big.bin' = 0x{};", hex(&inside)))
         .unwrap();
     assert_eq!(stored(&mut session), Some(inside));
 
@@ -124,7 +128,7 @@ fn a_ranged_write_that_grows_a_file_past_the_ceiling_is_refused_though_no_single
 
     let first = seeded(90);
     session
-        .run(&format!("PUT media:'/big.bin' = 0x{};", hex(&first)))
+        .run_now(&format!("PUT media:'/big.bin' = 0x{};", hex(&first)))
         .unwrap();
 
     let more = seeded(20);
@@ -151,10 +155,10 @@ fn a_ranged_write_that_stays_inside_the_ceiling_is_written() {
 
     let first = seeded(90);
     session
-        .run(&format!("PUT media:'/big.bin' = 0x{};", hex(&first)))
+        .run_now(&format!("PUT media:'/big.bin' = 0x{};", hex(&first)))
         .unwrap();
     session
-        .run("PUT media:'/big.bin' START 10 = 0xffff;")
+        .run_now("PUT media:'/big.bin' START 10 = 0xffff;")
         .unwrap();
 
     let found = stored(&mut session).expect("the splice was refused");
@@ -175,7 +179,7 @@ fn a_bucket_declared_without_the_clause_takes_whatever_it_is_given() {
 
     let big = seeded(4096);
     session
-        .run(&format!("PUT media:'/big.bin' = 0x{};", hex(&big)))
+        .run_now(&format!("PUT media:'/big.bin' = 0x{};", hex(&big)))
         .unwrap();
     assert_eq!(stored(&mut session), Some(big));
 }
@@ -188,7 +192,12 @@ fn the_ceiling_reads_back_in_the_statement_that_would_recreate_the_bucket() {
     let held = store();
     let mut session = holding(&held, " MAX 5242880");
 
-    let report = match session.run("INFO FOR TABLE media;").unwrap().pop().unwrap() {
+    let report = match session
+        .run_now("INFO FOR TABLE media;")
+        .unwrap()
+        .pop()
+        .unwrap()
+    {
         Outcome::Value(value) => value,
         other => panic!("{other:?}"),
     };
@@ -212,7 +221,12 @@ fn a_bucket_with_no_ceiling_reads_back_without_the_clause() {
     let held = store();
     let mut session = holding(&held, "");
 
-    let report = match session.run("INFO FOR TABLE media;").unwrap().pop().unwrap() {
+    let report = match session
+        .run_now("INFO FOR TABLE media;")
+        .unwrap()
+        .pop()
+        .unwrap()
+    {
         Outcome::Value(value) => value,
         other => panic!("{other:?}"),
     };
@@ -233,7 +247,7 @@ fn a_ceiling_of_nothing_is_refused_at_the_declaration() {
     // it is written instead of being stored as a store nobody can use.
     let held = store();
     let mut session = Session::new(&held);
-    session.run(TENANCY).unwrap();
+    session.run_now(TENANCY).unwrap();
     assert!(
         refusal(&mut session, "DEFINE BUCKET media MAX 0;").is_some(),
         "a bucket that accepts nothing was declared"

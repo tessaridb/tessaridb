@@ -22,6 +22,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
@@ -37,7 +38,7 @@ fn store() -> Store {
 fn social(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE social; USE DATABASE social;\n\
              DEFINE GRAPH org;\n\
@@ -55,7 +56,7 @@ fn social(store: &Store) -> Session<'_> {
 
 /// The rows a query answered with.
 fn rows(session: &mut Session<'_>, script: &str) -> Vec<Value> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     match outcomes.last() {
         Some(Outcome::Records { records, .. }) => {
             records.iter().map(|(_, value)| value.clone()).collect()
@@ -85,7 +86,7 @@ fn an_edge_is_reachable_from_both_of_the_records_it_joins() {
     let store = store();
     let mut session = social(&store);
     session
-        .run(
+        .run_now(
             "RELATE person:1->works_at->company:1;\n\
              RELATE person:2->works_at->company:1;",
         )
@@ -115,7 +116,7 @@ fn an_edge_carries_its_own_properties_in_both_directions() {
     let store = store();
     let mut session = social(&store);
     session
-        .run("RELATE person:1->works_at->company:1 = { since: 1843 };")
+        .run_now("RELATE person:1->works_at->company:1 = { since: 1843 };")
         .unwrap();
 
     // The properties live in the adjacency value on both entries, so a reverse
@@ -148,7 +149,7 @@ fn relating_the_same_pair_twice_replaces_rather_than_doubles() {
     let store = store();
     let mut session = social(&store);
     session
-        .run(
+        .run_now(
             "RELATE person:1->works_at->company:1 = { since: 1843 };\n\
              RELATE person:1->works_at->company:1 = { since: 1852 };",
         )
@@ -173,11 +174,11 @@ fn a_relation_off_the_declared_pair_is_refused_in_both_of_the_ways_it_can_be_wro
     // The declared pair is accepted first, so the refusals below cannot pass by
     // refusing everything.
     session
-        .run("RELATE person:1->works_at->company:1;")
+        .run_now("RELATE person:1->works_at->company:1;")
         .unwrap();
 
     let error = session
-        .run("RELATE person:1->works_at->person:2;")
+        .run_now("RELATE person:1->works_at->person:2;")
         .unwrap_err();
     assert!(
         matches!(error, Error::EndpointsNotDeclared { .. }),
@@ -187,7 +188,7 @@ fn a_relation_off_the_declared_pair_is_refused_in_both_of_the_ways_it_can_be_wro
     // Right pair, wrong way round — an unordered check would accept this, and the
     // adjacency written would say a company works at a person.
     let error = session
-        .run("RELATE company:1->works_at->person:1;")
+        .run_now("RELATE company:1->works_at->person:1;")
         .unwrap_err();
     assert!(
         matches!(error, Error::EndpointsNotDeclared { .. }),
@@ -199,13 +200,15 @@ fn a_relation_off_the_declared_pair_is_refused_in_both_of_the_ways_it_can_be_wro
 fn an_endpoint_outside_the_graph_is_refused_because_that_is_what_bounds_a_walk() {
     let store = store();
     let mut session = social(&store);
-    session.run("DEFINE TABLE audit (at datetime);").unwrap();
+    session
+        .run_now("DEFINE TABLE audit (at datetime);")
+        .unwrap();
 
     // `audit` belongs to no graph. A kind reaching it would let a traversal leave
     // the structure it was told to stay inside and still answer — with records the
     // graph does not contain.
     let error = session
-        .run("DEFINE EDGE logged IN org FROM person TO audit;")
+        .run_now("DEFINE EDGE logged IN org FROM person TO audit;")
         .unwrap_err();
     let Error::EndpointOutsideGraph { table, graph, .. } = &error else {
         panic!("{error}");
@@ -218,7 +221,7 @@ fn an_endpoint_outside_the_graph_is_refused_because_that_is_what_bounds_a_walk()
     // of that name exists at all, so the declaration wrote nothing before it
     // failed.
     let error = session
-        .run("RELATE person:1->logged->company:1;")
+        .run_now("RELATE person:1->logged->company:1;")
         .unwrap_err();
     let Error::Unknown { name, .. } = &error else {
         panic!("{error}");
@@ -231,7 +234,7 @@ fn a_deleted_node_drops_out_of_the_walk_rather_than_failing_it() {
     let store = store();
     let mut session = social(&store);
     session
-        .run(
+        .run_now(
             "RELATE person:1->works_at->company:1;\n\
              RELATE person:1->works_at->company:2;\n\
              DELETE company:2;",
@@ -258,20 +261,20 @@ fn dropping_an_edge_kind_takes_its_adjacency_with_it() {
     let store = store();
     let mut session = social(&store);
     session
-        .run("RELATE person:1->works_at->company:1;")
+        .run_now("RELATE person:1->works_at->company:1;")
         .unwrap();
     assert_eq!(
         rows(&mut session, "SELECT * FROM person:1->works_at;").len(),
         1
     );
 
-    session.run("DROP EDGE works_at;").unwrap();
+    session.run_now("DROP EDGE works_at;").unwrap();
 
     // The entries go with the kind, in the transaction that dropped it. Entries
     // left behind would point at an id nothing resolves, and a walk would reach
     // through a join that no longer exists.
     let error = session
-        .run("SELECT * FROM person:1->works_at;")
+        .run_now("SELECT * FROM person:1->works_at;")
         .unwrap_err();
     let Error::Unknown { name, .. } = &error else {
         panic!("{error}");
@@ -281,7 +284,7 @@ fn dropping_an_edge_kind_takes_its_adjacency_with_it() {
     // And the name is released, so the kind can be declared again over the same
     // pair — with nothing surviving from the first one.
     session
-        .run("DEFINE EDGE works_at IN org FROM person TO company;")
+        .run_now("DEFINE EDGE works_at IN org FROM person TO company;")
         .unwrap();
     assert!(rows(&mut session, "SELECT * FROM person:1->works_at;").is_empty());
 }
@@ -294,12 +297,12 @@ fn a_graph_refuses_to_be_dropped_while_an_edge_kind_belongs_to_it() {
     // Two dependants, and they are refused separately: the tables were already
     // asserted in `graph_container.rs`, so this drops them first to reach the
     // edge kind's own refusal rather than passing on the earlier one.
-    session.run("DROP EDGE works_at;").unwrap();
+    session.run_now("DROP EDGE works_at;").unwrap();
     session
-        .run("DEFINE EDGE works_at IN org FROM person TO company;")
+        .run_now("DEFINE EDGE works_at IN org FROM person TO company;")
         .unwrap();
 
-    let error = session.run("DROP GRAPH org;").unwrap_err();
+    let error = session.run_now("DROP GRAPH org;").unwrap_err();
     let Error::StillDepended { name, .. } = &error else {
         panic!("{error}");
     };
@@ -311,7 +314,7 @@ fn a_graph_lists_its_edge_kinds_beside_its_node_tables_and_not_among_them() {
     let store = store();
     let mut session = social(&store);
 
-    let outcomes = session.run("INFO FOR GRAPH org;").unwrap();
+    let outcomes = session.run_now("INFO FOR GRAPH org;").unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("expected a report");
     };
@@ -344,7 +347,7 @@ fn two_edge_kinds_over_the_same_pair_do_not_see_each_others_edges() {
     let store = store();
     let mut session = social(&store);
     session
-        .run(
+        .run_now(
             "DEFINE EDGE founded IN org FROM person TO company;\n\
              RELATE person:1->works_at->company:1;\n\
              RELATE person:2->founded->company:1;",
@@ -369,7 +372,7 @@ fn two_edge_kinds_over_the_same_pair_do_not_see_each_others_edges() {
 fn chain(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE social; USE DATABASE social;\n\
              DEFINE GRAPH web;\n\
@@ -392,7 +395,7 @@ fn an_edge_is_removed_by_the_pair_it_joins_and_its_adjacency_goes_with_it() {
     let store = store();
     let mut session = social(&store);
     session
-        .run(
+        .run_now(
             "RELATE person:1->works_at->company:1;\n\
              RELATE person:2->works_at->company:1;",
         )
@@ -402,7 +405,7 @@ fn an_edge_is_removed_by_the_pair_it_joins_and_its_adjacency_goes_with_it() {
     // the two endpoints and the kind are what they wrote, and they are what
     // removes it.
     session
-        .run("DELETE person:1->works_at->company:1;")
+        .run_now("DELETE person:1->works_at->company:1;")
         .unwrap();
 
     assert!(names(&mut session, "SELECT * FROM person:1->works_at->company;").is_empty());
@@ -425,14 +428,14 @@ fn deleting_an_edge_that_was_never_there_removes_nothing_rather_than_failing() {
     let store = store();
     let mut session = social(&store);
     session
-        .run("RELATE person:1->works_at->company:1;")
+        .run_now("RELATE person:1->works_at->company:1;")
         .unwrap();
 
     // An absent edge deletes the way an absent record does. The pair is
     // declared, so nothing about the statement is wrong; there is simply
     // nothing under it.
     session
-        .run("DELETE person:2->works_at->company:2;")
+        .run_now("DELETE person:2->works_at->company:2;")
         .unwrap();
     assert_eq!(
         rows(&mut session, "SELECT * FROM person:1->works_at;").len(),
@@ -445,7 +448,7 @@ fn deleting_an_edge_off_the_declared_pair_is_refused_in_both_of_the_ways_it_can_
     let store = store();
     let mut session = social(&store);
     session
-        .run("RELATE person:1->works_at->company:1;")
+        .run_now("RELATE person:1->works_at->company:1;")
         .unwrap();
 
     // Refused rather than answered with a silent no-op, and refused the same
@@ -457,7 +460,7 @@ fn deleting_an_edge_off_the_declared_pair_is_refused_in_both_of_the_ways_it_can_
         "DELETE person:1->works_at->person:2;",
         "DELETE company:1->works_at->person:1;",
     ] {
-        let error = session.run(wrong).unwrap_err();
+        let error = session.run_now(wrong).unwrap_err();
         assert!(
             matches!(error, Error::EndpointsNotDeclared { .. }),
             "{wrong}: {error}"
@@ -530,7 +533,9 @@ fn depth_one_answers_exactly_what_the_step_written_out_answers() {
 fn depth_over_a_cycle_terminates_and_answers_each_record_once() {
     let store = store();
     let mut session = chain(&store);
-    session.run("RELATE person:4->knows->person:1;").unwrap();
+    session
+        .run_now("RELATE person:4->knows->person:1;")
+        .unwrap();
 
     // This is what makes the bound a bound. `n` is a literal, so the number of
     // rounds is in the statement — but without a visited set the *work* would

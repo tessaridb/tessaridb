@@ -10,6 +10,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Session};
@@ -26,7 +27,7 @@ fn store() -> Store {
 fn searchable(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod;\n\
              USE NAMESPACE prod;\n\
              DEFINE DATABASE orders;\n\
@@ -42,13 +43,13 @@ fn searchable(store: &Store) -> Session<'_> {
 
 fn write(session: &mut Session<'_>, id: u64, body: &str) {
     session
-        .run(&format!("CREATE notes:{id} = {{ body: '{body}' }};"))
+        .run_now(&format!("CREATE notes:{id} = {{ body: '{body}' }};"))
         .unwrap();
 }
 
 fn rewrite(session: &mut Session<'_>, id: u64, body: &str) {
     session
-        .run(&format!("UPDATE notes:{id} = {{ body: '{body}' }};"))
+        .run_now(&format!("UPDATE notes:{id} = {{ body: '{body}' }};"))
         .unwrap();
 }
 
@@ -70,7 +71,7 @@ fn number(value: &Value) -> f64 {
 
 /// The record ids a script answers with, in the order it answered.
 fn ordered(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     outcomes[0]
         .records()
         .unwrap()
@@ -87,7 +88,7 @@ fn a_score_is_addressable_in_a_projection() {
     write(&mut session, 2, "an unrelated note about breakfast");
 
     let outcomes = session
-        .run(
+        .run_now(
             "SELECT body, search::score(body, 'lock contention') AS relevance \
              FROM notes ORDER BY relevance DESC;",
         )
@@ -160,7 +161,7 @@ fn a_score_without_a_search_index_is_refused_and_names_the_field() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
              DEFINE ANALYZER simple FILTERS lowercase;\n\
@@ -171,7 +172,7 @@ fn a_score_without_a_search_index_is_refused_and_names_the_field() {
         .unwrap();
 
     let refused = session
-        .run("SELECT search::score(body, 'lock') AS s FROM notes;")
+        .run_now("SELECT search::score(body, 'lock') AS s FROM notes;")
         .unwrap_err();
     match refused {
         Error::NoSearchIndex { field, .. } => assert_eq!(field, "body"),
@@ -194,11 +195,11 @@ fn the_maintained_statistics_equal_a_recount_after_writes_updates_and_deletes() 
     // An update, which must remove the old length as well as add the new one.
     rewrite(&mut session, 2, "two");
     // A delete, which must remove a document and its whole length.
-    session.run("DELETE notes:3;").unwrap();
+    session.run_now("DELETE notes:3;").unwrap();
     // A record with no text in the indexed field is in neither the postings nor
     // the count.
     session
-        .run("CREATE notes:4 = { title: 'no body at all' };")
+        .run_now("CREATE notes:4 = { title: 'no body at all' };")
         .unwrap();
     // And one whose text analyses to nothing.
     write(&mut session, 5, "   ");
@@ -214,7 +215,7 @@ fn defining_an_index_on_a_populated_table_counts_what_was_already_there() {
     let afterwards = store();
     let mut session = Session::new(&afterwards);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
              DEFINE ANALYZER simple FILTERS lowercase;\n\
@@ -226,7 +227,7 @@ fn defining_an_index_on_a_populated_table_counts_what_was_already_there() {
         )
         .unwrap();
     session
-        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
         .unwrap();
 
     assert_statistics_match_the_records(&afterwards, &mut session);
@@ -237,7 +238,9 @@ fn defining_an_index_on_a_populated_table_counts_what_was_already_there() {
     let mut fresh = searchable(&beforehand);
     write(&mut fresh, 1, "one two three");
     write(&mut fresh, 2, "two three");
-    fresh.run("CREATE notes:3 = { title: 'no body' };").unwrap();
+    fresh
+        .run_now("CREATE notes:3 = { title: 'no body' };")
+        .unwrap();
     assert_eq!(held(&afterwards), held(&beforehand));
 }
 
@@ -268,7 +271,7 @@ fn held(store: &Store) -> (u64, u64) {
 /// breaks, which is the right place for it to.
 fn assert_statistics_match_the_records(store: &Store, session: &mut Session<'_>) {
     let analyzer = Analyzer::default();
-    let outcomes = session.run("SELECT * FROM notes;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM notes;").unwrap();
     let mut documents = 0_u64;
     let mut terms = 0_u64;
     for (_, record) in outcomes[0].records().unwrap() {
@@ -319,7 +322,7 @@ fn a_term_test_inside_a_projection_now_reads_the_schema_too() {
     write(&mut session, 1, "lock contention");
 
     let outcomes = session
-        .run("SELECT body MATCHES 'lock' AS hit FROM notes;")
+        .run_now("SELECT body MATCHES 'lock' AS hit FROM notes;")
         .unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(field(&records[0].1, "hit"), &Value::Bool(true));
@@ -332,7 +335,7 @@ fn a_term_test_inside_a_projection_now_reads_the_schema_too() {
 fn two_searchable_fields(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod;\n\
              USE NAMESPACE prod;\n\
              DEFINE DATABASE orders;\n\
@@ -349,7 +352,7 @@ fn two_searchable_fields(store: &Store) -> Session<'_> {
     // two fields order the same two records the opposite way round. That
     // opposition is what makes the measurement below able to fail.
     session
-        .run(
+        .run_now(
             "CREATE notes:1 = { body: 'quorum quorum quorum', decoy: 'quiet', title: 'first' };\n\
              CREATE notes:2 = { body: 'quiet', decoy: 'quorum quorum quorum', title: 'second' };",
         )
@@ -404,7 +407,7 @@ fn a_projection_shadowing_the_searched_field_does_not_change_the_order() {
     let mut session = two_searchable_fields(&store);
 
     let outcomes = session
-        .run("SELECT decoy AS body FROM notes ORDER BY search::score(body, 'quorum') DESC;")
+        .run_now("SELECT decoy AS body FROM notes ORDER BY search::score(body, 'quorum') DESC;")
         .unwrap();
     let records = outcomes[0].records().unwrap();
 
@@ -447,7 +450,7 @@ fn a_projection_dropping_the_searched_field_does_not_change_the_order() {
     let mut session = two_searchable_fields(&store);
 
     let outcomes = session
-        .run("SELECT title FROM notes ORDER BY search::score(body, 'quorum') DESC;")
+        .run_now("SELECT title FROM notes ORDER BY search::score(body, 'quorum') DESC;")
         .unwrap();
     let records = outcomes[0].records().unwrap();
 
@@ -488,11 +491,11 @@ fn a_record_with_no_text_in_the_field_scores_zero_rather_than_none() {
     write(&mut session, 1, "a note mentioning locks once");
     // No `body` at all, which the fixture's other records cannot express.
     session
-        .run("CREATE notes:2 = { title: 'this record carries no body' };")
+        .run_now("CREATE notes:2 = { title: 'this record carries no body' };")
         .unwrap();
 
     let outcomes = session
-        .run(
+        .run_now(
             "SELECT search::score(body, 'locks') AS relevance \
              FROM notes ORDER BY relevance DESC;",
         )
@@ -548,7 +551,7 @@ fn an_explanation_adds_up_to_the_score_and_names_what_it_weighed() {
     write(&mut session, 4, "vector vector");
     for query in ["fox", "quick fox", "fox fox", "vecto*", "quick vecto* fox"] {
         let outcomes = session
-            .run_with(
+            .run_with_now(
                 "SELECT id, search::score(body, $q) AS s, search::explain(body, $q) AS e FROM notes;",
                 &[("q".to_owned(), Value::String(query.to_owned()))]
                     .into_iter()
@@ -573,7 +576,7 @@ fn an_explanation_adds_up_to_the_score_and_names_what_it_weighed() {
 
     // What the parts say, pinned for one record and one query.
     let outcomes = session
-        .run(
+        .run_now(
             "SELECT search::explain(body, 'fox fox quick vecto*') AS e FROM notes \
              WHERE body MATCHES 'vectorised';",
         )
@@ -615,7 +618,7 @@ fn an_explanation_without_a_search_index_is_refused_like_a_score() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; USE DATABASE orders;\n\
              DEFINE ANALYZER simple FILTERS lowercase;\n\
              DEFINE TABLE notes SCHEMALESS;\n\
@@ -623,7 +626,7 @@ fn an_explanation_without_a_search_index_is_refused_like_a_score() {
              CREATE notes:1 = { body: 'fox' };",
         )
         .unwrap();
-    let refused = session.run("SELECT search::explain(body, 'fox') AS e FROM notes;");
+    let refused = session.run_now("SELECT search::explain(body, 'fox') AS e FROM notes;");
     assert!(
         matches!(refused, Err(Error::NoSearchIndex { ref field, .. }) if field == "body"),
         "{refused:?}"
@@ -665,7 +668,7 @@ fn a_ranked_page_after_the_first_is_read_by_the_walk_and_the_pages_are_the_ranki
         let read = format!(
             "SELECT * FROM notes ORDER BY search::score(body, 'alpha beta') DESC{after} LIMIT 3;"
         );
-        let outcomes = session.run(&read).unwrap();
+        let outcomes = session.run_now(&read).unwrap();
         let tessari_session::Outcome::Records {
             records,
             plan,
@@ -707,7 +710,7 @@ fn a_record_read_by_identity_is_scored_against_its_table() {
     write(&mut session, 3, "an unrelated note about breakfast");
 
     let score_of = |session: &mut Session<'_>, read: &str| {
-        let outcomes = session.run(read).unwrap();
+        let outcomes = session.run_now(read).unwrap();
         let records = outcomes[0].records().unwrap();
         let (_, record) = records
             .iter()
@@ -731,7 +734,7 @@ fn a_record_read_by_identity_is_scored_against_its_table() {
     );
     assert_eq!(by_span.to_bits(), from_table.to_bits());
     let explained = session
-        .run("SELECT search::explain(body, 'contention') AS why FROM notes:2;")
+        .run_now("SELECT search::explain(body, 'contention') AS why FROM notes:2;")
         .unwrap();
     let records = explained[0].records().unwrap();
     assert!(

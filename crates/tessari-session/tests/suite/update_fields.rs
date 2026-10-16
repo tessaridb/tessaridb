@@ -13,6 +13,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Session};
@@ -27,7 +28,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE users SCHEMALESS;\n\
@@ -42,14 +43,14 @@ fn ready(store: &Store) -> Session<'_> {
 /// The whole record, as text — because what a field update gets wrong is the
 /// fields nobody was looking at.
 fn record(session: &mut Session<'_>, script: &str) -> String {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let records = outcomes.last().unwrap().records().unwrap();
     assert_eq!(records.len(), 1, "{records:?}");
     format!("{:?}", records[0].1)
 }
 
 fn field(session: &mut Session<'_>, script: &str, name: &str) -> String {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let records = outcomes.last().unwrap().records().unwrap();
     let Value::Object(fields) = &records[0].1 else {
         panic!("not an object");
@@ -63,7 +64,7 @@ fn one_field_changes_and_the_rest_do_not() {
     let mut session = ready(&store);
     let before = record(&mut session, "SELECT * FROM users:1;");
     session
-        .run("UPDATE users:1 SET name = 'ada lovelace';")
+        .run_now("UPDATE users:1 SET name = 'ada lovelace';")
         .unwrap();
     let after = record(&mut session, "SELECT * FROM users:1;");
     assert_ne!(before, after);
@@ -89,7 +90,7 @@ fn several_assignments_all_apply_and_may_read_the_record() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("UPDATE users:1 SET visits = visits + 1, city = 'Lyon';")
+        .run_now("UPDATE users:1 SET visits = visits + 1, city = 'Lyon';")
         .unwrap();
     assert_eq!(
         field(&mut session, "SELECT * FROM users:1;", "visits"),
@@ -109,7 +110,7 @@ fn every_right_hand_side_sees_the_record_as_it_was() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("UPDATE users:1 SET name = city, city = name;")
+        .run_now("UPDATE users:1 SET name = city, city = name;")
         .unwrap();
     assert_eq!(
         field(&mut session, "SELECT * FROM users:1;", "name"),
@@ -127,7 +128,7 @@ fn assigning_none_removes_the_field() {
     // there and holds not-being-there.
     let store = store();
     let mut session = ready(&store);
-    session.run("UPDATE users:1 SET city = NONE;").unwrap();
+    session.run_now("UPDATE users:1 SET city = NONE;").unwrap();
     assert_eq!(
         field(&mut session, "SELECT * FROM users:1;", "city"),
         "None",
@@ -139,7 +140,7 @@ fn assigning_none_removes_the_field() {
     assert!(after.contains("75001"), "{after}");
     // …and `null` is a value, so it stays. The two are different questions and
     // this is where the difference shows.
-    session.run("UPDATE users:2 SET city = NULL;").unwrap();
+    session.run_now("UPDATE users:2 SET city = NULL;").unwrap();
     assert_eq!(
         field(&mut session, "SELECT * FROM users:2;", "city"),
         "Null"
@@ -151,7 +152,7 @@ fn a_nested_route_changes_only_what_it_names() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("UPDATE users:1 SET address.city = 'Lyon';")
+        .run_now("UPDATE users:1 SET address.city = 'Lyon';")
         .unwrap();
     let after = record(&mut session, "SELECT * FROM users:1;");
     assert!(after.contains("Lyon"), "{after}");
@@ -173,7 +174,7 @@ fn a_route_the_record_does_not_have_is_refused_rather_than_created() {
         // A position: assigning into an array by index is its own question.
         "UPDATE users:1 SET address[0] = 'x';",
     ] {
-        let refused = session.run(script);
+        let refused = session.run_now(script);
         assert!(refused.is_err(), "{script} was accepted: {refused:?}");
     }
     // …and nothing was written on the way to being refused.
@@ -186,7 +187,7 @@ fn a_route_the_record_does_not_have_is_refused_rather_than_created() {
 fn a_record_that_is_not_there_is_refused() {
     let store = store();
     let mut session = ready(&store);
-    let refused = session.run("UPDATE users:99 SET name = 'nobody';");
+    let refused = session.run_now("UPDATE users:99 SET name = 'nobody';");
     assert!(refused.is_err(), "{refused:?}");
 }
 
@@ -198,16 +199,16 @@ fn the_schema_still_decides_what_may_land() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE FIELD visits ON users TYPE int ASSERT $value >= 0;")
+        .run_now("DEFINE FIELD visits ON users TYPE int ASSERT $value >= 0;")
         .unwrap();
-    let refused = session.run("UPDATE users:1 SET visits = 0 - 5;");
+    let refused = session.run_now("UPDATE users:1 SET visits = 0 - 5;");
     assert!(refused.is_err(), "{refused:?}");
     assert_eq!(
         field(&mut session, "SELECT * FROM users:1;", "visits"),
         "Number(Integer(3))",
         "a refused update changed the record"
     );
-    session.run("UPDATE users:1 SET visits = 7;").unwrap();
+    session.run_now("UPDATE users:1 SET visits = 7;").unwrap();
     assert_eq!(
         field(&mut session, "SELECT * FROM users:1;", "visits"),
         "Number(Integer(7))"
@@ -222,14 +223,16 @@ fn a_default_applies_to_the_result_the_way_it_does_to_a_whole_record_write() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE FIELD tier ON users TYPE string DEFAULT 'bronze';")
+        .run_now("DEFINE FIELD tier ON users TYPE string DEFAULT 'bronze';")
         .unwrap();
-    session.run("UPDATE users:1 SET tier = 'gold';").unwrap();
+    session
+        .run_now("UPDATE users:1 SET tier = 'gold';")
+        .unwrap();
     assert_eq!(
         field(&mut session, "SELECT * FROM users:1;", "tier"),
         r#"String("gold")"#
     );
-    session.run("UPDATE users:1 SET tier = NONE;").unwrap();
+    session.run_now("UPDATE users:1 SET tier = NONE;").unwrap();
     assert_eq!(
         field(&mut session, "SELECT * FROM users:1;", "tier"),
         r#"String("bronze")"#,
@@ -242,18 +245,20 @@ fn an_index_keeps_up_because_this_is_an_ordinary_write() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE INDEX by_city ON users FIELDS city;")
+        .run_now("DEFINE INDEX by_city ON users FIELDS city;")
         .unwrap();
-    session.run("UPDATE users:2 SET city = 'Paris';").unwrap();
+    session
+        .run_now("UPDATE users:2 SET city = 'Paris';")
+        .unwrap();
 
     let outcomes = session
-        .run("SELECT * FROM users WHERE city = 'Paris';")
+        .run_now("SELECT * FROM users WHERE city = 'Paris';")
         .unwrap();
     assert_eq!(outcomes[0].path().unwrap(), AccessPath::Index);
     assert_eq!(outcomes[0].records().unwrap().len(), 2);
     // …and the entry the record left behind is gone.
     let outcomes = session
-        .run("SELECT * FROM users WHERE city = 'Lyon';")
+        .run_now("SELECT * FROM users WHERE city = 'Lyon';")
         .unwrap();
     assert!(outcomes[0].records().unwrap().is_empty());
 }
@@ -265,7 +270,7 @@ fn the_whole_record_form_still_replaces_the_record() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("UPDATE users:1 = { name: 'only this' };")
+        .run_now("UPDATE users:1 = { name: 'only this' };")
         .unwrap();
     let after = record(&mut session, "SELECT * FROM users:1;");
     assert!(after.contains("only this"), "{after}");
@@ -313,7 +318,7 @@ fn concurrent_sessions_incrementing_one_field_all_land() {
         let store = store();
         {
             let mut session = ready(&store);
-            session.run("UPDATE users:1 SET visits = 0;").unwrap();
+            session.run_now("UPDATE users:1 SET visits = 0;").unwrap();
         }
 
         thread::scope(|scope| {
@@ -322,10 +327,10 @@ fn concurrent_sessions_incrementing_one_field_all_land() {
                 scope.spawn(move || {
                     let mut session = Session::new(&store);
                     session
-                        .run("USE NAMESPACE prod; USE DATABASE shop;")
+                        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
                         .unwrap();
                     loop {
-                        match session.run("UPDATE users:1 SET visits = visits + 1;") {
+                        match session.run_now("UPDATE users:1 SET visits = visits + 1;") {
                             Ok(_) => break,
                             Err(error) if retryable(&error) => (),
                             Err(other) => panic!("run {run}: unexpected error: {other}"),
@@ -337,7 +342,7 @@ fn concurrent_sessions_incrementing_one_field_all_land() {
 
         let mut session = Session::new(&store);
         session
-            .run("USE NAMESPACE prod; USE DATABASE shop;")
+            .run_now("USE NAMESPACE prod; USE DATABASE shop;")
             .unwrap();
         let landed = field(&mut session, "SELECT * FROM users:1;", "visits");
         assert_eq!(
@@ -381,7 +386,7 @@ fn a_condition_that_holds_applies_and_one_that_does_not_writes_nothing() {
     let mut session = ready(&store);
 
     session
-        .run("UPDATE users:1 SET city = 'Lyon' WHERE visits = 3;")
+        .run_now("UPDATE users:1 SET city = 'Lyon' WHERE visits = 3;")
         .unwrap();
     assert_eq!(
         field(&mut session, "SELECT city FROM users:1;", "city"),
@@ -390,7 +395,7 @@ fn a_condition_that_holds_applies_and_one_that_does_not_writes_nothing() {
 
     let before = record(&mut session, "SELECT * FROM users:1;");
     let refused = session
-        .run("UPDATE users:1 SET city = 'Nice' WHERE visits = 99;")
+        .run_now("UPDATE users:1 SET city = 'Nice' WHERE visits = 99;")
         .unwrap_err()
         .to_string();
     assert!(
@@ -415,7 +420,7 @@ fn the_condition_reads_the_stored_record_and_not_the_payload_being_written() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("UPDATE users:1 SET visits = 4 WHERE visits = 3;")
+        .run_now("UPDATE users:1 SET visits = 4 WHERE visits = 3;")
         .unwrap();
     assert_eq!(
         field(&mut session, "SELECT visits FROM users:1;", "visits"),
@@ -434,7 +439,7 @@ fn a_lost_race_discards_the_work_above_it_in_the_transaction() {
     let mut session = ready(&store);
 
     let refused = session
-        .run(
+        .run_now(
             "BEGIN;\n\
              UPDATE users:2 SET city = 'Nice';\n\
              UPDATE users:1 SET city = 'Nice' WHERE visits = 99;\n\
@@ -461,7 +466,7 @@ fn the_condition_takes_a_parameter() {
     let mut given = tessari_session::Parameters::new();
     given.insert("expected".to_owned(), Value::from(3_i64));
     session
-        .run_with(
+        .run_with_now(
             "UPDATE users:1 SET city = 'Nice' WHERE visits = $expected;",
             &given,
         )
@@ -482,7 +487,7 @@ fn upsert_takes_no_condition() {
     let store = store();
     let mut session = ready(&store);
     let refused = session
-        .run("UPSERT users:9 SET city = 'Nice' WHERE visits = 1;")
+        .run_now("UPSERT users:9 SET city = 'Nice' WHERE visits = 1;")
         .unwrap_err()
         .to_string();
     assert!(refused.contains("UPSERT"), "{refused}");

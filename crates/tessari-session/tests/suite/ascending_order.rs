@@ -33,6 +33,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use tessari_session::RunNow;
 
 use tessari_kv::{
     Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
@@ -121,7 +122,7 @@ impl KvBackend for Counting {
 fn ready<'a>(store: &'a Store, declaration: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE events SCHEMALESS;\n\
@@ -132,15 +133,15 @@ fn ready<'a>(store: &'a Store, declaration: &str) -> Session<'a> {
     for n in 1..=RECORDS {
         script.push_str(&format!("CREATE events:{n} = {{ at: {} }};\n", n / 2));
         if n % 100 == 0 {
-            session.run(&script).unwrap();
+            session.run_now(&script).unwrap();
             script.clear();
         }
     }
     if !script.is_empty() {
-        session.run(&script).unwrap();
+        session.run_now(&script).unwrap();
     }
     session
-        .run("DEFINE INDEX by_at ON events FIELDS at;")
+        .run_now("DEFINE INDEX by_at ON events FIELDS at;")
         .unwrap();
     session
 }
@@ -152,7 +153,7 @@ const REQUIRED: &str = "DEFINE FIELD at ON events TYPE int REQUIRED;";
 const OPTIONAL: &str = "DEFINE FIELD at ON events TYPE int;";
 
 fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
-    let outcomes = session.run(&format!("EXPLAIN {read}")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read}")).unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("a plan answered with {:?}", outcomes.last());
     };
@@ -162,7 +163,7 @@ fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
 /// The identities a read answers with, **in the order it answered**, and the
 /// path it took.
 fn answered(session: &mut Session<'_>, read: &str) -> (Vec<RecordId>, AccessPath) {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -266,7 +267,7 @@ fn a_bounded_ascending_read_examines_its_bound_and_not_the_table() {
     assert_eq!(ids.len(), LIMIT);
 
     counting.reset();
-    session.run("SELECT * FROM events;").unwrap();
+    session.run_now("SELECT * FROM events;").unwrap();
     let whole = counting.rows();
 
     // The number that fails this is the table's. A read that quietly fell back
@@ -285,7 +286,7 @@ fn a_route_below_a_required_field_is_refused() {
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE people SCHEMALESS;\n\
@@ -312,7 +313,7 @@ fn a_required_field_cannot_be_declared_over_a_table_that_already_breaks_it() {
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION events;\n\
@@ -320,7 +321,7 @@ fn a_required_field_cannot_be_declared_over_a_table_that_already_breaks_it() {
              CREATE events:2 = { };",
         )
         .unwrap();
-    let refused = session.run(REQUIRED);
+    let refused = session.run_now(REQUIRED);
     assert!(
         refused.is_err(),
         "a table already holding a record without the field accepted the declaration"

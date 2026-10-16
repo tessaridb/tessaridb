@@ -11,6 +11,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Error, Outcome, Session};
@@ -33,7 +34,7 @@ fn noted(index: Option<&str>) -> Store {
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
              DEFINE COLLECTION notes;\n\
@@ -48,7 +49,7 @@ fn noted(index: Option<&str>) -> Store {
         .unwrap();
     if let Some(options) = index {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE INDEX by_body ON notes FIELDS body SEARCH{options};"
             ))
             .unwrap();
@@ -75,7 +76,7 @@ const READS: [&str; 13] = [
 
 /// What a read answered, as text, and the path it took.
 fn answer(session: &mut Session<'_>, read: &str) -> (String, AccessPath) {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("{read}: {:?}", outcomes.last());
     };
@@ -86,11 +87,11 @@ fn answer(session: &mut Session<'_>, read: &str) -> (String, AccessPath) {
 fn every_cost_option_answers_what_the_scan_answers() {
     let scanned = noted(None);
     let mut without = Session::new(&scanned);
-    without.run(USE).unwrap();
+    without.run_now(USE).unwrap();
     for options in OPTIONS {
         let indexed = noted(Some(options));
         let mut with = Session::new(&indexed);
-        with.run(USE).unwrap();
+        with.run_now(USE).unwrap();
         for read in READS {
             let (expected, _) = answer(&mut without, read);
             let (found, path) = answer(&mut with, read);
@@ -111,9 +112,9 @@ fn an_unscored_index_refuses_a_score_as_no_index_does() {
     ] {
         let held = noted(Some(options));
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
         for call in ["search::score", "search::explain"] {
-            let ran = session.run(&format!(
+            let ran = session.run_now(&format!(
                 "SELECT {call}(body, 'ada') AS s FROM notes WHERE body MATCHES 'ada';"
             ));
             if refused {
@@ -136,7 +137,7 @@ fn the_options_are_said_back_and_survive_a_script() {
     assert!(script.contains(declared), "{script}");
     let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     let mut session = Session::new(&restored);
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     assert!(
         tessari_session::write_script(&restored)
             .unwrap()
@@ -157,7 +158,7 @@ fn the_options_are_said_back_and_survive_a_script() {
 fn a_cost_option_belongs_to_a_search_index_and_is_said_once() {
     let held = noted(None);
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
     for refused in [
         "DEFINE INDEX i ON notes FIELDS body POSITIONS;",
         "DEFINE INDEX i ON notes FIELDS body UNIQUE OFFSETS;",
@@ -166,7 +167,7 @@ fn a_cost_option_belongs_to_a_search_index_and_is_said_once() {
         "DEFINE INDEX i ON notes FIELDS body SEARCH NO POSITIONS;",
     ] {
         assert!(
-            matches!(session.run(refused), Err(Error::Script(_))),
+            matches!(session.run_now(refused), Err(Error::Script(_))),
             "{refused} was accepted"
         );
     }
@@ -183,8 +184,8 @@ fn a_phrase_on_an_index_keeping_positions_is_decided_there() {
     ] {
         let held = noted(Some(options));
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
-        let outcomes = session.run(read).unwrap();
+        session.run_now(USE).unwrap();
+        let outcomes = session.run_now(read).unwrap();
         let Some(Outcome::Records { plan, .. }) = outcomes.last() else {
             panic!("{read}");
         };
@@ -235,9 +236,9 @@ fn the_index_stores_the_lists_it_promises() {
     for (options, documents, counted) in [("", 7, true), (" NO SCORE", 0, false)] {
         let held = noted(Some(options));
         let mut writer = Session::new(&held);
-        writer.run(USE).unwrap();
+        writer.run_now(USE).unwrap();
         writer
-            .run("CREATE notes:7 = { body: 'written after the index' };")
+            .run_now("CREATE notes:7 = { body: 'written after the index' };")
             .unwrap();
         let transaction = held.begin().unwrap();
         let mut reading = held.begin().unwrap();

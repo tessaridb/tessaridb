@@ -47,7 +47,7 @@ tessari-kv.workspace = true
 # span every diagnostic carries and the dependency kind `StillDepended` names.
 # Neither is re-exported through `tessaridb`, which carries the error type only.
 tessari-ql.workspace = true
-tessari-session.workspace = true
+tessari-session = { workspace = true, features = ["test-support"] }
 tessari-storage.workspace = true
 # The redirect's epoch and the width of the node id it names, for the same
 # reason: `ReadIsElsewhere` carries both and `tessaridb` re-exports the error

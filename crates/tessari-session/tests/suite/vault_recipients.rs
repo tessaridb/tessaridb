@@ -32,6 +32,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_encoding::decode_payload;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -56,7 +57,7 @@ fn holding() -> Store {
     {
         let mut session = Session::new(&store);
         session
-            .run(&format!(
+            .run_now(&format!(
                 "{TENANCY}
                  UNSEAL VAULT WITH 'an operator passphrase';
                  DEFINE VAULT team;
@@ -71,19 +72,19 @@ fn holding() -> Store {
 
 fn session_on(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.run(USING).unwrap();
+    session.run_now(USING).unwrap();
     session
 }
 
 fn refusal(session: &mut Session<'_>, statement: &str) -> String {
     session
-        .run(statement)
+        .run_now(statement)
         .expect_err("the statement was accepted")
         .to_string()
 }
 
 fn value(session: &mut Session<'_>, statement: &str) -> Value {
-    match session.run(statement).unwrap().pop().unwrap() {
+    match session.run_now(statement).unwrap().pop().unwrap() {
         Outcome::Value(value) => value,
         other => panic!("expected a value, got {other:?}"),
     }
@@ -161,7 +162,7 @@ fn two_identifiers_the_engine_cannot_read_round_trip_unchanged() {
     let mut session = session_on(&store);
 
     session
-        .run(
+        .run_now(
             "ADD RECIPIENT 'urn:acme:kms:key/42' TO team:'github' KEY 0xdeadbeef;
              ADD RECIPIENT 'ada@example.com' TO team:'github' KEY 0x0102030405;",
         )
@@ -199,7 +200,7 @@ fn a_name_the_engine_might_have_noticed_is_carried_like_any_other() {
     ];
     for (n, name) in awkward.iter().enumerate() {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "ADD RECIPIENT '{name}' TO team:'github' KEY 0x{:02x};",
                 n + 1
             ))
@@ -251,7 +252,7 @@ fn adding_a_recipient_leaves_every_ciphertext_byte_identical() {
 
     let mut session = session_on(&store);
     session
-        .run("ADD RECIPIENT 'ops' TO team:'github' KEY 0xfeed;")
+        .run_now("ADD RECIPIENT 'ops' TO team:'github' KEY 0xfeed;")
         .unwrap();
 
     let after_fields = stored_record(&store);
@@ -274,7 +275,7 @@ fn removing_the_recipient_restores_the_record_byte_for_byte() {
 
     let mut session = session_on(&store);
     session
-        .run(
+        .run_now(
             "ADD RECIPIENT 'ops' TO team:'github' KEY 0xfeed;
              REMOVE RECIPIENT 'ops' FROM team:'github';",
         )
@@ -292,7 +293,7 @@ fn a_duplicate_add_is_refused_rather_than_overwriting() {
     let store = holding();
     let mut session = session_on(&store);
     session
-        .run("ADD RECIPIENT 'ops' TO team:'github' KEY 0xaaaa;")
+        .run_now("ADD RECIPIENT 'ops' TO team:'github' KEY 0xaaaa;")
         .unwrap();
 
     let refused = refusal(
@@ -314,7 +315,7 @@ fn removing_a_recipient_that_is_not_there_is_refused() {
     let store = holding();
     let mut session = session_on(&store);
     session
-        .run("ADD RECIPIENT 'ops' TO team:'github' KEY 0xaaaa;")
+        .run_now("ADD RECIPIENT 'ops' TO team:'github' KEY 0xaaaa;")
         .unwrap();
 
     // A typo in a revocation. Answering `ok` here is the failure this refusal
@@ -330,14 +331,14 @@ fn a_recipient_is_removed_while_the_store_is_sealed() {
     let store = holding();
     let mut session = session_on(&store);
     session
-        .run("ADD RECIPIENT 'ops' TO team:'github' KEY 0xaaaa;")
+        .run_now("ADD RECIPIENT 'ops' TO team:'github' KEY 0xaaaa;")
         .unwrap();
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
 
     // Revoking is the operation you least want to need an operator for, and
     // nothing here unwraps a key — so a sealed store can still do it.
     session
-        .run("REMOVE RECIPIENT 'ops' FROM team:'github';")
+        .run_now("REMOVE RECIPIENT 'ops' FROM team:'github';")
         .unwrap();
     assert!(listed(&mut session).is_empty());
 
@@ -356,10 +357,10 @@ fn an_index_on_a_plain_field_still_answers_after_a_recipient_is_added() {
     // of that decision: if the write went round the index maintenance in a way
     // that mattered, the record would stop being found.
     session
-        .run("DEFINE INDEX by_login ON team FIELDS login;")
+        .run_now("DEFINE INDEX by_login ON team FIELDS login;")
         .unwrap();
     session
-        .run("ADD RECIPIENT 'ops' TO team:'github' KEY 0xfeed;")
+        .run_now("ADD RECIPIENT 'ops' TO team:'github' KEY 0xfeed;")
         .unwrap();
 
     // Reached through the vault's own verb, since `SELECT` over a vault is
@@ -381,7 +382,7 @@ fn the_recipient_set_is_not_readable_without_the_grant() {
     {
         let mut owner = session_on(&store);
         owner
-            .run(
+            .run_now(
                 // The recipient and the second table first: declaring the
                 // store's first user closes it to anonymous sessions.
                 "ADD RECIPIENT 'ops' TO team:'github' KEY 0xfeed;
@@ -391,7 +392,7 @@ fn the_recipient_set_is_not_readable_without_the_grant() {
             .unwrap();
         let mut root = Session::new(&store);
         root.sign_in("root", "correct horse battery").unwrap();
-        root.run(&format!(
+        root.run_now(&format!(
             "{USING}
              DEFINE USER ada ON prod.work ROLE viewer PASSWORD 'correct horse battery';
              GRANT read ON notes TO ada;"
@@ -401,7 +402,7 @@ fn the_recipient_set_is_not_readable_without_the_grant() {
 
     let mut ada = Session::new(&store);
     ada.sign_in("ada", "correct horse battery").unwrap();
-    ada.run(USING).unwrap();
+    ada.run_now(USING).unwrap();
 
     // Ada holds a grant, so the loop over what a statement reaches is not
     // vacuous for her — which is the only condition under which this asserts
@@ -415,12 +416,12 @@ fn the_recipient_set_is_not_readable_without_the_grant() {
     {
         let mut root = Session::new(&store);
         root.sign_in("root", "correct horse battery").unwrap();
-        root.run(&format!("{USING} GRANT read ON team TO ada;"))
+        root.run_now(&format!("{USING} GRANT read ON team TO ada;"))
             .unwrap();
     }
     let mut ada = Session::new(&store);
     ada.sign_in("ada", "correct horse battery").unwrap();
-    ada.run(USING).unwrap();
+    ada.run_now(USING).unwrap();
     assert_eq!(listed(&mut ada).len(), 1);
 }
 
@@ -429,7 +430,7 @@ fn a_table_that_is_not_a_vault_has_no_recipients() {
     let store = holding();
     let mut session = session_on(&store);
     session
-        .run("DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { body: 'hello' };")
+        .run_now("DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { body: 'hello' };")
         .unwrap();
 
     let refused = refusal(&mut session, "INFO FOR RECIPIENTS OF notes:1;");
@@ -448,7 +449,7 @@ fn the_material_may_arrive_as_a_parameter() {
     // the bytes arrive bound, not formatted into the statement as hex.
     let parameters = Parameters::from([("wrapped".to_owned(), Value::Bytes(vec![9, 8, 7]))]);
     session
-        .run_with(
+        .run_with_now(
             "ADD RECIPIENT 'ops' TO team:'github' KEY $wrapped;",
             &parameters,
         )
@@ -495,7 +496,7 @@ fn a_concurrent_add_and_remove_leave_a_consistent_set() {
     {
         let mut setup = session_on(&store);
         setup
-            .run("ADD RECIPIENT 'ops' TO team:'github' KEY 0xaaaa;")
+            .run_now("ADD RECIPIENT 'ops' TO team:'github' KEY 0xaaaa;")
             .unwrap();
     }
     let address = address_of(&store);
@@ -560,7 +561,7 @@ fn a_recipient_survives_the_rotation_of_the_secret_they_were_shared() {
     let store = holding();
     let mut session = session_on(&store);
     session
-        .run("ADD RECIPIENT 'ops' TO team:'github' KEY 0xfeed;")
+        .run_now("ADD RECIPIENT 'ops' TO team:'github' KEY 0xfeed;")
         .unwrap();
 
     // The control. A test that only looked afterwards would pass against an
@@ -571,7 +572,7 @@ fn a_recipient_survives_the_rotation_of_the_secret_they_were_shared() {
     assert_eq!(before.len(), 2, "the recipient was not added: {before:?}");
 
     session
-        .run("UPDATE team:'github' SET token = 'rotated-4d5e6f';")
+        .run_now("UPDATE team:'github' SET token = 'rotated-4d5e6f';")
         .unwrap();
 
     // The property. Before W135 a vault write minted a fresh data key and wrote
@@ -592,7 +593,7 @@ fn a_recipient_survives_the_rotation_of_the_secret_they_were_shared() {
     // satisfiable by an edit that wrote nothing.
     let opened = format!(
         "{:?}",
-        session.run("REVEAL token FROM team:'github';").unwrap()
+        session.run_now("REVEAL token FROM team:'github';").unwrap()
     );
     assert!(opened.contains("rotated-4d5e6f"), "{opened}");
     assert!(!opened.contains(PLANTED), "{opened}");
@@ -603,7 +604,7 @@ fn an_edit_seals_what_it_names_and_leaves_the_other_envelope_alone() {
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     let mut session = Session::new(&store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{TENANCY}
              UNSEAL VAULT WITH 'an operator passphrase';
              DEFINE VAULT team;
@@ -621,7 +622,7 @@ fn an_edit_seals_what_it_names_and_leaves_the_other_envelope_alone() {
     );
 
     session
-        .run("UPDATE team:'github' SET token = 'rotated';")
+        .run_now("UPDATE team:'github' SET token = 'rotated';")
         .unwrap();
 
     // Byte-identity, asserted at the backend for the reason this file's header
@@ -639,7 +640,7 @@ fn an_edit_seals_what_it_names_and_leaves_the_other_envelope_alone() {
     let opened = format!(
         "{:?}",
         session
-            .run("REVEAL token, note FROM team:'github';")
+            .run_now("REVEAL token, note FROM team:'github';")
             .unwrap()
     );
     assert!(
@@ -653,11 +654,11 @@ fn replacing_the_whole_record_still_clears_the_recipients_and_that_is_the_contra
     let store = holding();
     let mut session = session_on(&store);
     session
-        .run("ADD RECIPIENT 'ops' TO team:'github' KEY 0xfeed;")
+        .run_now("ADD RECIPIENT 'ops' TO team:'github' KEY 0xfeed;")
         .unwrap();
 
     session
-        .run("UPDATE team:'github' = { login: 'boog', token: 'replaced' };")
+        .run_now("UPDATE team:'github' = { login: 'boog', token: 'replaced' };")
         .unwrap();
 
     let after_fields = stored_record(&store);
@@ -689,7 +690,7 @@ fn editing_a_field_that_is_not_secret_keeps_the_record_openable() {
     // version that returned early without it would leave a record whose every
     // secret is unopenable by anyone, forever, with the write reporting `ok`.
     session
-        .run("UPDATE team:'github' SET login = 'renamed';")
+        .run_now("UPDATE team:'github' SET login = 'renamed';")
         .unwrap();
 
     let fields = stored_record(&store);
@@ -700,7 +701,7 @@ fn editing_a_field_that_is_not_secret_keeps_the_record_openable() {
 
     let opened = format!(
         "{:?}",
-        session.run("REVEAL token FROM team:'github';").unwrap()
+        session.run_now("REVEAL token FROM team:'github';").unwrap()
     );
     assert!(
         opened.contains(PLANTED),

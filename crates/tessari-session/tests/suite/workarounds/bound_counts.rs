@@ -1,6 +1,7 @@
 //! `LIMIT $n`, `START $n` and `CLAIM $n FROM q` (ADR-0124 D5).
 
 use std::collections::BTreeMap;
+use tessari_session::RunNow;
 
 use tessari_session::{Error, Outcome, Parameters};
 use tessari_types::{Number, Value};
@@ -35,14 +36,14 @@ fn a_bound_limit_and_start_answer_what_the_literals_answer() {
     let mut parameters = bound("n", int(2));
     parameters.insert("s".to_owned(), int(1));
     let with = session
-        .run_with("SELECT * FROM t START $s LIMIT $n;", &parameters)
+        .run_with_now("SELECT * FROM t START $s LIMIT $n;", &parameters)
         .unwrap()
         .pop()
         .unwrap();
     assert_eq!(count(&with), 2);
     assert_eq!(with, literal);
     let lets = session
-        .run("LET $n = 3; SELECT * FROM t LIMIT $n;")
+        .run_now("LET $n = 3; SELECT * FROM t LIMIT $n;")
         .unwrap()
         .pop()
         .unwrap();
@@ -56,7 +57,7 @@ fn a_bound_count_that_is_not_a_whole_number_is_refused() {
     run(&mut session, "DEFINE TABLE t SCHEMALESS;");
     for wrong in [Value::from("2"), int(-1), Value::Number(Number::Float(1.5))] {
         let error = session
-            .run_with("SELECT * FROM t LIMIT $n;", &bound("n", wrong.clone()))
+            .run_with_now("SELECT * FROM t LIMIT $n;", &bound("n", wrong.clone()))
             .unwrap_err();
         assert!(
             error.to_string().contains("`$n` is bound to"),
@@ -75,14 +76,14 @@ fn a_bound_claim_takes_that_many_and_keeps_its_ceiling() {
          CREATE jobs = { i: 3 };",
     );
     let taken = session
-        .run_with("CLAIM $n FROM jobs;", &bound("n", int(2)))
+        .run_with_now("CLAIM $n FROM jobs;", &bound("n", int(2)))
         .unwrap()
         .pop()
         .unwrap();
     assert_eq!(count(&taken), 2);
     let literal = refused(&mut session, "CLAIM 501 FROM jobs;");
     let with = session
-        .run_with("CLAIM $n FROM jobs;", &bound("n", int(501)))
+        .run_with_now("CLAIM $n FROM jobs;", &bound("n", int(501)))
         .unwrap_err();
     assert!(
         matches!(literal, Error::ClaimAboveCeiling { .. }),
@@ -90,7 +91,7 @@ fn a_bound_claim_takes_that_many_and_keeps_its_ceiling() {
     );
     assert!(matches!(with, Error::ClaimAboveCeiling { .. }), "{with:?}");
     let zero = session
-        .run_with("CLAIM $n FROM jobs;", &bound("n", int(0)))
+        .run_with_now("CLAIM $n FROM jobs;", &bound("n", int(0)))
         .unwrap_err();
     assert!(zero.to_string().contains("`$n` is bound to"), "{zero}");
 }

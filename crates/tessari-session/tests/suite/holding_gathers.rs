@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tessari_session::RunNow;
 
 use tessari_constants::GATHER_RECORDS;
 use tessari_session::{Asked, Gather, Gathered, Partial, Reduced, Unanswered};
@@ -66,9 +67,9 @@ fn readings() -> Pair {
             second % 60,
         ));
     }
-    signed_in(&leader, "root").run(&script).unwrap();
+    signed_in(&leader, "root").run_now(&script).unwrap();
     signed_in(&leader, "root")
-        .run(
+        .run_now(
             "USE NAMESPACE prod; USE DATABASE shop; \
              GRANT read ON readings FIELDS meter, at TO narrow;",
         )
@@ -240,7 +241,7 @@ fn a_median_over_more_records_than_a_gather_holds_answers_and_a_collect_is_refus
     let mut follower =
         signed_in(pair.follower(), "reader").gathering(Arc::clone(&leaders) as Arc<dyn Gather>);
     follower
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     // Twice `GATHER_RECORDS` ones, beside this node's own 2 and 7.
     let (rows, _) = answer(&mut follower, "SELECT median(total) AS middle FROM ledger;");

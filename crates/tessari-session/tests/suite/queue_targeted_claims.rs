@@ -28,6 +28,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Outcome, Session};
@@ -41,7 +42,7 @@ fn store() -> Store {
 fn ready<'a>(store: &'a Store, declaration: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE QUEUE jobs {declaration};\n\
@@ -71,7 +72,7 @@ fn access(outcome: &Outcome) -> AccessPath {
 
 /// One statement's outcome.
 fn run(session: &mut Session<'_>, script: &str) -> Outcome {
-    session.run(script).unwrap().pop().unwrap()
+    session.run_now(script).unwrap().pop().unwrap()
 }
 
 #[test]
@@ -116,7 +117,7 @@ fn a_record_that_does_not_exist_is_refused_naming_it() {
     let store = store();
     let mut session = ready(&store, "TIMEOUT 30s");
 
-    let refusal = session.run("CLAIM jobs:99;").unwrap_err().to_string();
+    let refusal = session.run_now("CLAIM jobs:99;").unwrap_err().to_string();
 
     assert!(
         refusal.contains("record") && refusal.contains("99"),
@@ -165,7 +166,7 @@ fn a_targeted_claim_on_a_plain_table_is_refused_as_not_a_queue() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION notes;\n\
@@ -173,7 +174,7 @@ fn a_targeted_claim_on_a_plain_table_is_refused_as_not_a_queue() {
         )
         .unwrap();
 
-    let refusal = session.run("CLAIM notes:1;").unwrap_err().to_string();
+    let refusal = session.run_now("CLAIM notes:1;").unwrap_err().to_string();
 
     assert!(
         refusal.contains("notes"),
@@ -187,7 +188,7 @@ fn a_second_targeted_claim_in_one_transaction_sees_the_hold_the_first_wrote() {
     let mut session = ready(&store, "TIMEOUT 30s");
 
     let outcomes = session
-        .run("BEGIN; CLAIM jobs:1; CLAIM jobs:1; COMMIT;")
+        .run_now("BEGIN; CLAIM jobs:1; CLAIM jobs:1; COMMIT;")
         .unwrap();
 
     // Index 0 is the BEGIN, 1 and 2 the two claims, 3 the COMMIT.
@@ -224,7 +225,7 @@ fn a_claim_naming_a_table_without_an_identity_names_both_forms() {
     let store = store();
     let mut session = ready(&store, "TIMEOUT 30s");
 
-    let refusal = session.run("CLAIM jobs;").unwrap_err().to_string();
+    let refusal = session.run_now("CLAIM jobs;").unwrap_err().to_string();
 
     // The likely mistake is a missing `FROM`, not a missing identity, so the
     // message says what a claim can look like rather than only what the parser

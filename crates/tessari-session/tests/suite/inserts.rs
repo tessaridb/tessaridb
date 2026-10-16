@@ -19,6 +19,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -32,7 +33,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;
 DEFINE DATABASE shop; USE DATABASE shop;
@@ -47,7 +48,7 @@ DEFINE COLLECTION readings;
 
 fn run(session: &mut Session<'_>, script: &str) -> Outcome {
     session
-        .run(script)
+        .run_now(script)
         .unwrap_or_else(|error| panic!("{script}: {error}"))
         .pop()
         .expect("one outcome")
@@ -141,7 +142,7 @@ fn a_row_that_fails_in_the_middle_leaves_none_of_the_batch_behind() {
 
     // Row two collides on the unique index. Rows one and three are unobjectionable
     // on their own, and row one is written before the failure is reached.
-    let refused = session.run(
+    let refused = session.run_now(
         "INSERT INTO users (name, email) VALUES
            ('ada', 'ada@example.com'),
            ('someone', 'grace@example.com'),
@@ -196,8 +197,8 @@ fn a_batch_written_later_sorts_after_one_written_before_it() {
 fn an_insert_is_refused_where_a_bucket_would_be_written_by_hand() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE BUCKET files;").unwrap();
+    session.run_now("DEFINE BUCKET files;").unwrap();
 
-    let refused = session.run("INSERT INTO files (path) VALUES ('/a.txt');");
+    let refused = session.run_now("INSERT INTO files (path) VALUES ('/a.txt');");
     assert!(refused.is_err(), "a bucket was written by hand");
 }

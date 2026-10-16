@@ -27,6 +27,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Error, Session};
@@ -60,7 +61,7 @@ CREATE items:2 = { at: [0.9, 0.8] };
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.run(SCHEMA).unwrap();
+    session.run_now(SCHEMA).unwrap();
     session
 }
 
@@ -99,7 +100,7 @@ fn each_path_permits_the_word_that_names_it() {
     for (read, path) in PER_PATH {
         let script = format!("{read} USING {};", path.name());
         let outcomes = session
-            .run(&script)
+            .run_now(&script)
             .unwrap_or_else(|error| panic!("{script} was refused: {error}"));
         // Permitted *and* still answering — an assertion that swallowed the
         // answer would pass this test and be useless.
@@ -117,7 +118,7 @@ fn each_path_refuses_every_word_that_does_not_name_it() {
                 continue;
             }
             let script = format!("{read} USING {};", wrong.name());
-            match session.run(&script) {
+            match session.run_now(&script) {
                 Err(Error::PathNotTaken { expected, took, .. }) => {
                     assert_eq!(expected, wrong.name(), "{script}");
                     assert_eq!(took, path.name(), "{script}");
@@ -132,7 +133,7 @@ fn each_path_refuses_every_word_that_does_not_name_it() {
 fn a_word_that_is_not_a_path_is_refused_before_the_read() {
     let store = store();
     let mut session = ready(&store);
-    match session.run("SELECT * FROM users USING inedx;") {
+    match session.run_now("SELECT * FROM users USING inedx;") {
         Err(Error::NoSuchAccessPath { named, known, .. }) => {
             assert_eq!(named, "inedx");
             // The refusal lists the words rather than saying only that this one
@@ -148,8 +149,8 @@ fn a_word_that_is_not_a_path_is_refused_before_the_read() {
 fn the_word_may_be_written_in_any_case() {
     let store = store();
     let mut session = ready(&store);
-    session.run("SELECT * FROM users USING SCAN;").unwrap();
-    session.run("SELECT * FROM users USING Scan;").unwrap();
+    session.run_now("SELECT * FROM users USING SCAN;").unwrap();
+    session.run_now("SELECT * FROM users USING Scan;").unwrap();
 }
 
 #[test]
@@ -159,14 +160,14 @@ fn an_index_may_be_named_and_a_different_one_refuses() {
     const READ: &str = "SELECT * FROM users WHERE email = 'ada@example.com'";
 
     let outcomes = session
-        .run(&format!("{READ} USING INDEX by_email;"))
+        .run_now(&format!("{READ} USING INDEX by_email;"))
         .unwrap();
     assert_eq!(outcomes.last().unwrap().records().unwrap().len(), 1);
 
     // The question `USING index` cannot ask. Both indexes exist and both are on
     // `users`; only one of them served this read, and a plan regression that
     // swapped them is invisible to the path word.
-    match session.run(&format!("{READ} USING INDEX by_city;")) {
+    match session.run_now(&format!("{READ} USING INDEX by_city;")) {
         Err(Error::IndexNotUsed { expected, took, .. }) => {
             assert_eq!(expected, "by_city");
             assert_eq!(took, "`by_email`");
@@ -179,7 +180,7 @@ fn an_index_may_be_named_and_a_different_one_refuses() {
 fn naming_an_index_on_a_read_that_used_none_says_so() {
     let store = store();
     let mut session = ready(&store);
-    match session.run("SELECT * FROM users USING INDEX by_city;") {
+    match session.run_now("SELECT * FROM users USING INDEX by_city;") {
         Err(Error::IndexNotUsed { expected, took, .. }) => {
             assert_eq!(expected, "by_city");
             assert_eq!(took, "no index", "a scan reported an index");
@@ -195,7 +196,7 @@ fn a_read_that_fell_back_is_refused_for_the_path_it_did_not_take() {
     // The planner chooses `ordered` here and the read cannot fill the bound from
     // the index, so it scans. This is the case the whole clause exists for, and
     // an assertion checked against the planner's choice would permit it.
-    match session.run(&format!("{THIN} USING ordered;")) {
+    match session.run_now(&format!("{THIN} USING ordered;")) {
         Err(Error::PathNotTaken { expected, took, .. }) => {
             assert_eq!(expected, "ordered");
             assert_eq!(took, "scan");
@@ -211,7 +212,7 @@ fn the_same_read_permits_the_path_it_actually_took() {
     // The other half, and not a formality: a clause that refused everything
     // would pass the test above. `scan` is what honestly happened, so `scan` is
     // permitted — and the answer is still the right one.
-    let outcomes = session.run(&format!("{THIN} USING scan;")).unwrap();
+    let outcomes = session.run_now(&format!("{THIN} USING scan;")).unwrap();
     assert_eq!(outcomes.last().unwrap().records().unwrap().len(), 10);
 }
 
@@ -223,13 +224,13 @@ fn an_assertion_inside_a_materialised_source_is_the_inner_read_s() {
     // outer statement is `materialised` whatever the inner one did, so the two
     // assertions are about different reads and both hold at once.
     session
-        .run(
+        .run_now(
             "SELECT * FROM (SELECT * FROM users WHERE email = 'ada@example.com' \
              LIMIT 1 USING index) USING materialised;",
         )
         .unwrap();
     // And the inner one is really checked, rather than parsed and dropped.
-    match session.run(
+    match session.run_now(
         "SELECT * FROM (SELECT * FROM users WHERE email = 'ada@example.com' \
          LIMIT 1 USING scan) USING materialised;",
     ) {
@@ -260,7 +261,7 @@ const THIN: &str = "SELECT * FROM events WHERE rare = 0 ORDER BY at DESC LIMIT 1
 fn thin(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION events;\n\
@@ -275,7 +276,7 @@ fn thin(store: &Store) -> Session<'_> {
             n % 100
         ));
         if n % 200 == 0 {
-            session.run(&script).unwrap();
+            session.run_now(&script).unwrap();
             script.clear();
         }
     }

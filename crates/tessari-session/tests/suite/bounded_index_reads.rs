@@ -54,6 +54,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tessari_session::RunNow;
 
 use tessari_kv::{
     Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
@@ -158,7 +159,7 @@ fn counted() -> (Store, Arc<Counting>) {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION spans;\n\
@@ -174,10 +175,10 @@ fn ready(store: &Store) -> Session<'_> {
             n % 4
         );
         session
-            .run(&format!("CREATE spans:{n} = {record};"))
+            .run_now(&format!("CREATE spans:{n} = {record};"))
             .unwrap();
         session
-            .run(&format!("CREATE mirror:{n} = {record};"))
+            .run_now(&format!("CREATE mirror:{n} = {record};"))
             .unwrap();
     }
     session
@@ -186,7 +187,7 @@ fn ready(store: &Store) -> Session<'_> {
 /// How the planner reached the records, so a test cannot pass by quietly taking
 /// the scan it was written to compare against.
 fn path(session: &mut Session<'_>, read: &str) -> AccessPath {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -197,7 +198,7 @@ fn path(session: &mut Session<'_>, read: &str) -> AccessPath {
 /// identity.
 fn answer(session: &mut Session<'_>, read: &str) -> Vec<(RecordId, Value)> {
     session
-        .run(read)
+        .run_now(read)
         .unwrap()
         .last()
         .unwrap()

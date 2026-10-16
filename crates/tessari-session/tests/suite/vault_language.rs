@@ -46,6 +46,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -67,7 +68,7 @@ fn store() -> Store {
 fn holding(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{TENANCY}
              UNSEAL VAULT WITH 'an operator passphrase';
              DEFINE VAULT team;
@@ -80,13 +81,13 @@ fn holding(store: &Store) -> Session<'_> {
 
 fn refusal(session: &mut Session<'_>, statement: &str) -> String {
     session
-        .run(statement)
+        .run_now(statement)
         .expect_err("the statement was accepted")
         .to_string()
 }
 
 fn value(session: &mut Session<'_>, statement: &str) -> Value {
-    match session.run(statement).unwrap().pop().unwrap() {
+    match session.run_now(statement).unwrap().pop().unwrap() {
         Outcome::Value(value) => value,
         other => panic!("expected a value, got {other:?}"),
     }
@@ -94,7 +95,7 @@ fn value(session: &mut Session<'_>, statement: &str) -> Value {
 
 fn write_one(session: &mut Session<'_>) {
     session
-        .run(&format!(
+        .run_now(&format!(
             "CREATE team:'github' = {{ login: 'boog', token: '{PLANTED}' }};"
         ))
         .unwrap();
@@ -183,7 +184,7 @@ fn an_index_over_a_secret_field_is_refused() {
     // The control: an index over a field that is not secret is fine, so the
     // refusal above is about the marker and not about vaults refusing indexes.
     session
-        .run("DEFINE INDEX by_login ON team FIELDS login;")
+        .run_now("DEFINE INDEX by_login ON team FIELDS login;")
         .unwrap();
 }
 
@@ -191,7 +192,7 @@ fn an_index_over_a_secret_field_is_refused() {
 fn secret_needs_a_vault() {
     let store = store();
     let mut session = holding(&store);
-    session.run("DEFINE TABLE staff SCHEMALESS;").unwrap();
+    session.run_now("DEFINE TABLE staff SCHEMALESS;").unwrap();
 
     let said = refusal(
         &mut session,
@@ -204,7 +205,7 @@ fn secret_needs_a_vault() {
 fn secret_is_refused_in_a_columnar_table_and_in_an_alter() {
     let store = store();
     let mut session = holding(&store);
-    session.run("DEFINE TABLE staff SCHEMALESS;").unwrap();
+    session.run_now("DEFINE TABLE staff SCHEMALESS;").unwrap();
 
     // Both are grammar refusals rather than catalog ones, and both matter for
     // the same reason: a `SECRET` that parsed and was dropped would leave a
@@ -238,7 +239,7 @@ fn a_sealed_store_refuses_the_write_and_the_reveal() {
     let store = store();
     let mut session = holding(&store);
     write_one(&mut session);
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
 
     let said = refusal(
         &mut session,
@@ -255,7 +256,7 @@ fn a_sealed_store_refuses_the_write_and_the_reveal() {
     // And unsealing again restores it, so sealing is a state rather than a
     // one-way door.
     session
-        .run("UNSEAL VAULT WITH 'an operator passphrase';")
+        .run_now("UNSEAL VAULT WITH 'an operator passphrase';")
         .unwrap();
     let Value::Object(fields) = value(&mut session, "REVEAL token FROM team:'github';") else {
         panic!("REVEAL answers with an object")
@@ -271,7 +272,7 @@ fn a_wrong_passphrase_is_refused_and_does_not_unseal() {
     let store = store();
     let mut session = holding(&store);
     write_one(&mut session);
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
 
     let said = refusal(&mut session, "UNSEAL VAULT WITH 'not the passphrase';");
     assert!(
@@ -287,7 +288,7 @@ fn a_wrong_passphrase_is_refused_and_does_not_unseal() {
 fn the_first_unseal_says_it_initialised_and_the_second_says_it_unsealed() {
     let store = store();
     let mut session = Session::new(&store);
-    session.run(TENANCY).unwrap();
+    session.run_now(TENANCY).unwrap();
 
     // The distinction that makes a mistyped first passphrase survivable: there
     // is no path that replaces a root once written, so an operator who expected
@@ -296,7 +297,7 @@ fn the_first_unseal_says_it_initialised_and_the_second_says_it_unsealed() {
         value(&mut session, "UNSEAL VAULT WITH 'first';"),
         Value::from("initialised")
     );
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
     assert_eq!(
         value(&mut session, "UNSEAL VAULT WITH 'first';"),
         Value::from("unsealed")
@@ -338,7 +339,7 @@ fn dropping_a_vault_makes_its_records_unopenable() {
     let store = store();
     let mut session = holding(&store);
     write_one(&mut session);
-    session.run("DROP VAULT team;").unwrap();
+    session.run_now("DROP VAULT team;").unwrap();
 
     // The vault is gone as a name, which is what a drop of anything does. What
     // makes this one a crypto-shred is that the key went with it: re-declaring
@@ -347,9 +348,9 @@ fn dropping_a_vault_makes_its_records_unopenable() {
     let said = refusal(&mut session, "REVEAL token FROM team:'github';");
     assert!(!said.contains(PLANTED), "{said}");
 
-    session.run("DEFINE VAULT team;").unwrap();
+    session.run_now("DEFINE VAULT team;").unwrap();
     session
-        .run("DEFINE FIELD token ON team TYPE string SECRET;")
+        .run_now("DEFINE FIELD token ON team TYPE string SECRET;")
         .unwrap();
     // Absent, not opened, and `none` rather than an empty object: the record
     // went with the table, and the re-declared vault holds a **new** key, so
@@ -366,7 +367,7 @@ fn dropping_a_vault_makes_its_records_unopenable() {
 fn define_vault_needs_an_unsealed_store() {
     let store = store();
     let mut session = Session::new(&store);
-    session.run(TENANCY).unwrap();
+    session.run_now(TENANCY).unwrap();
 
     // Before any `UNSEAL` there is no master key, so there is nothing to wrap
     // the vault's own key under. Refused rather than deferred: a vault created
@@ -412,8 +413,10 @@ fn a_vault_is_strict_and_cannot_be_made_schemaless() {
 
     // The control: an ordinary table is still free to be schemaless, so the
     // refusal is about vaults and not about `ALTER` losing the ability.
-    session.run("DEFINE TABLE staff SCHEMAFULL;").unwrap();
-    session.run("ALTER TABLE staff SET SCHEMALESS;").unwrap();
+    session.run_now("DEFINE TABLE staff SCHEMAFULL;").unwrap();
+    session
+        .run_now("ALTER TABLE staff SET SCHEMALESS;")
+        .unwrap();
 }
 
 /// The filter and the ordering the design names as oracles have no shape on a
@@ -447,7 +450,7 @@ fn reveal_has_no_filter_and_no_ordering_to_hang_an_oracle_on() {
 
     // The control: the form without the clause is accepted, so the refusals
     // above are about the clause and not about the statement.
-    session.run("REVEAL token FROM team:'github';").unwrap();
+    session.run_now("REVEAL token FROM team:'github';").unwrap();
 }
 
 /// Criterion W1's `INFO` clause, in the shape the collection precedent set:
@@ -470,7 +473,7 @@ fn a_vault_is_declared_back_as_a_vault_and_not_as_a_strict_table() {
     };
     assert_eq!(report.get("vault"), Some(&Value::Bool(true)));
     // The control: the marker distinguishes, rather than being true of tables.
-    session.run("DEFINE TABLE staff SCHEMAFULL;").unwrap();
+    session.run_now("DEFINE TABLE staff SCHEMAFULL;").unwrap();
     let Value::Object(ordinary) = value(&mut session, "INFO FOR TABLE staff;") else {
         panic!("INFO answers with an object")
     };
@@ -489,7 +492,7 @@ fn a_vault_is_declared_back_as_a_vault_and_not_as_a_strict_table() {
     let second = store_second();
     let mut fresh = Session::new(&second);
     fresh
-        .run(&format!(
+        .run_now(&format!(
             "{TENANCY} UNSEAL VAULT WITH 'another passphrase'; {script}"
         ))
         .unwrap();
@@ -531,9 +534,9 @@ fn a_vault_has_no_plan_to_explain_and_the_refusal_carries_nothing() {
     let store = store();
     let mut session = holding(&store);
     write_one(&mut session);
-    session.run("DEFINE TABLE notes SCHEMALESS;").unwrap();
+    session.run_now("DEFINE TABLE notes SCHEMALESS;").unwrap();
     session
-        .run("CREATE notes:1 = { text: 'ordinary' };")
+        .run_now("CREATE notes:1 = { text: 'ordinary' };")
         .unwrap();
 
     // The control: a plan exists for a table that can be read.
@@ -577,7 +580,7 @@ fn a_field_named_password_can_live_in_a_vault() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{TENANCY}
              UNSEAL VAULT WITH 'an operator passphrase';
              DEFINE VAULT team;
@@ -615,10 +618,10 @@ fn a_field_named_password_can_live_in_a_vault() {
     // The record goes rather than the value, because clearing a sealed field is
     // an edit of a vault record and this test is about the catalog statement.
     session
-        .run("DELETE team:'github';")
+        .run_now("DELETE team:'github';")
         .expect("the record could not be removed");
     session
-        .run("ALTER TABLE team DROP FIELD 'password';")
+        .run_now("ALTER TABLE team DROP FIELD 'password';")
         .expect("a field no record carries must be droppable");
 }
 
@@ -677,7 +680,7 @@ fn an_assignment_that_reads_a_vault_record_is_refused_and_says_why() {
     let store = store();
     let mut session = holding(&store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "CREATE team:'github' = {{ login: 'ada', token: '{PLANTED}' }};"
         ))
         .unwrap();
@@ -709,7 +712,7 @@ fn an_assignment_that_reads_a_vault_record_is_refused_and_says_why() {
     // And the ordinary edit the refusal exists to permit does work, which is
     // what stops this test passing against a store that refuses everything.
     session
-        .run("UPDATE team:'github' SET token = 'rotated';")
+        .run_now("UPDATE team:'github' SET token = 'rotated';")
         .unwrap();
     let opened = format!(
         "{:?}",
@@ -732,14 +735,16 @@ fn an_ordinary_table_is_still_edited_field_by_field() {
     let store = store();
     let mut session = holding(&store);
     session
-        .run("DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { body: 'first' };")
+        .run_now("DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { body: 'first' };")
         .unwrap();
-    session.run("UPDATE notes:1 SET body = 'second';").unwrap();
+    session
+        .run_now("UPDATE notes:1 SET body = 'second';")
+        .unwrap();
     // The half that matters: reading the record inside the assignment.
-    session.run("UPDATE notes:1 SET copy = body;").unwrap();
+    session.run_now("UPDATE notes:1 SET copy = body;").unwrap();
     let read = format!(
         "{:?}",
-        session.run("SELECT body, copy FROM notes:1;").unwrap()
+        session.run_now("SELECT body, copy FROM notes:1;").unwrap()
     );
     assert!(read.matches("second").count() == 2, "{read}");
 }

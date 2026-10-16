@@ -18,6 +18,7 @@
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_wire::{Answer, Client, Node};
 use tessaridb::{Db, Sequence, Value};
@@ -113,7 +114,7 @@ fn two_nodes_declared(
 
     leader
         .session()
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
              USE DATABASE orders; DEFINE COLLECTION users; \
              CREATE users:1 = {{ name: 'ada' }}; \
@@ -128,7 +129,7 @@ fn two_nodes_declared(
     // what lets the statement that drops the role be run against it at all.
     follower
         .session()
-        .run("DEFINE NODE ROLES serving;")
+        .run_now("DEFINE NODE ROLES serving;")
         .unwrap();
     let (follower_node, follower_address) = serving(&follower);
 
@@ -198,7 +199,7 @@ fn read_only_with_no_peer() -> (Arc<Db>, String, Arc<Node>) {
     let alone = Arc::new(Db::in_memory().unwrap());
     alone
         .session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
              USE DATABASE orders; DEFINE COLLECTION users; \
              CREATE users:1 = { name: 'ada' }; DEFINE NODE ROLES serving;",

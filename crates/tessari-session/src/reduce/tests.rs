@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use crate::run_now::RunNow;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -15,7 +16,7 @@ use crate::session::Session;
 fn found() -> (Store, Vec<(RecordId, Vec<u8>)>) {
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     Session::new(&store)
-        .run(
+        .run_now(
             "DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; \
              DEFINE COLLECTION r; \
              CREATE r:'a' = { n: 1, f: 0.5, s: 'x' }; CREATE r:'b' = { n: 2, f: 1.5, s: 'y' };",

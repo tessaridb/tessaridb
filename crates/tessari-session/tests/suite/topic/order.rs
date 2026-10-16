@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::thread;
+use tessari_session::RunNow;
 
 use tessari_types::RecordId;
 
@@ -72,7 +73,7 @@ fn concurrent_appenders_leave_no_gap_and_no_position_twice() {
                                 "w{writer}n{n} was still refused after {attempt} attempts"
                             );
                             match session
-                                .run(&format!("CREATE events:'w{writer}n{n}' = {{ n: {n} }};"))
+                                .run_now(&format!("CREATE events:'w{writer}n{n}' = {{ n: {n} }};"))
                             {
                                 Ok(_) => break,
                                 Err(why) if why.to_string().contains("gave up") => {}
@@ -120,8 +121,8 @@ fn a_reader_beside_appenders_only_ever_sees_a_contiguous_prefix() {
                 scope.spawn(move || {
                     let mut session = another(store);
                     for n in 0..30 {
-                        let _ =
-                            session.run(&format!("CREATE events:'w{writer}n{n}' = {{ n: {n} }};"));
+                        let _ = session
+                            .run_now(&format!("CREATE events:'w{writer}n{n}' = {{ n: {n} }};"));
                     }
                 });
             }

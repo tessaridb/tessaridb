@@ -34,6 +34,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -314,7 +315,7 @@ fn store() -> Store {
 fn peopled(store: &Store) {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION orders; CREATE orders:1 = { total: 5 };\n\
@@ -335,7 +336,7 @@ fn declare(root: &mut Session<'_>, rolling: &mut Rolling, ordinal: u32) -> Ident
         Reach::Namespace(named) => format!("ON NAMESPACE {named} "),
         Reach::Database(namespace, named) => format!("ON {namespace}.{named} "),
     };
-    root.run(&format!(
+    root.run_now(&format!(
         "DEFINE USER {name} {scope}AUTHORITIES {first} PASSWORD '{PASSWORD}';"
     ))
     .unwrap();
@@ -353,7 +354,7 @@ fn declare(root: &mut Session<'_>, rolling: &mut Rolling, ordinal: u32) -> Ident
     for _ in 0..rolling.below(3) {
         let kind = KINDS[rolling.below(KINDS.len())];
         let reach = REACHES[rolling.below(REACHES.len())];
-        let asked = root.run(&format!("GRANT {kind} ON {} TO {name};", reach.named()));
+        let asked = root.run_now(&format!("GRANT {kind} ON {} TO {name};", reach.named()));
         match asked {
             Ok(_) => held.push((kind, reach)),
             Err(refusal) if refusal.to_string().contains("confined") => {}
@@ -384,7 +385,7 @@ fn the_store_and_the_document_agree_about_every_generated_identity() {
                     "USE NAMESPACE prod; USE DATABASE shop; {}",
                     demand.script.replace("NNN", &unique)
                 );
-                let answered = session.run(&script);
+                let answered = session.run_now(&script);
                 let store_says = answered.is_ok();
                 let document_says = document_allows(&who, demand);
                 if store_says != document_says {

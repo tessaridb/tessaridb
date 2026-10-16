@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 use std::thread;
+use tessari_session::RunNow;
 
 use tessari_encoding::{KeyKind, ModifiedKey, StoreKey};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
@@ -128,7 +129,7 @@ fn a_commit_never_evicts_its_own_writes_and_refuses_to_outgrow_the_limit_alone()
             "DEFINE SPACE lru MAX 3; SET lru:'a' = 1; SET lru:'b' = 1; SET lru:'c' = 1;",
         );
         session
-            .run("BEGIN; SET lru:'x' = 1; SET lru:'y' = 1; COMMIT;")
+            .run_now("BEGIN; SET lru:'x' = 1; SET lru:'y' = 1; COMMIT;")
             .unwrap();
         assert_eq!(
             keys_of(&mut session, "lru"),
@@ -144,7 +145,7 @@ fn a_commit_never_evicts_its_own_writes_and_refuses_to_outgrow_the_limit_alone()
         // ENTRY of the index is the key this commit writes, and it must be
         // passed over for the next one.
         session
-            .run("BEGIN; SET lru:'c' = 2; SET lru:'z' = 1; COMMIT;")
+            .run_now("BEGIN; SET lru:'c' = 2; SET lru:'z' = 1; COMMIT;")
             .unwrap();
         assert_eq!(
             keys_of(&mut session, "lru"),
@@ -156,7 +157,7 @@ fn a_commit_never_evicts_its_own_writes_and_refuses_to_outgrow_the_limit_alone()
             "{}: the rewritten oldest key survives its own commit",
             backend.name
         );
-        let why = match session.run(
+        let why = match session.run_now(
             "BEGIN; SET lru:'p' = 1; SET lru:'q' = 1; SET lru:'r' = 1; SET lru:'s' = 1; COMMIT;",
         ) {
             Err(why) => why.to_string(),
@@ -212,11 +213,11 @@ fn concurrent_writers_never_take_a_space_past_its_limit() {
                 scope.spawn(move || {
                     let mut session = Session::new(store);
                     session
-                        .run("USE NAMESPACE prod; USE DATABASE app;")
+                        .run_now("USE NAMESPACE prod; USE DATABASE app;")
                         .unwrap();
                     for n in 0..25 {
-                        let _ = session.run(&format!("SET lru:'w{writer}n{n}' = 1;"));
-                        let _ = session.run(&format!("SET strict:'w{writer}n{n}' = 1;"));
+                        let _ = session.run_now(&format!("SET lru:'w{writer}n{n}' = 1;"));
+                        let _ = session.run_now(&format!("SET strict:'w{writer}n{n}' = 1;"));
                     }
                 });
             }

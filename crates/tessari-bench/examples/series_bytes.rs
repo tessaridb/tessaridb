@@ -13,6 +13,7 @@
 use std::error::Error;
 use std::fs;
 use std::path::Path;
+use tessari_session::RunNow;
 
 use tessari_kv::{KeyRange, Keyspace, KvBackend, ScanRequest};
 use tessari_lsm::{LsmBackend, StoreConfig};
@@ -40,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let db = Db::open(dir)?;
     let mut session = db.session();
-    session.run(&format!(
+    session.run_now(&format!(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench; DEFINE DATABASE bench; \
          USE DATABASE bench; DEFINE SERIES readings RETAIN 36500d{clause};"
     ))?;
@@ -59,7 +60,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ));
         }
         script.push_str(" COMMIT;");
-        session.run(&script)?;
+        session.run_now(&script)?;
         written = upto;
     }
     drop(session);

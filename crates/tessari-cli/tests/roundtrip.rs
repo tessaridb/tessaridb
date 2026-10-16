@@ -30,6 +30,7 @@
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -70,7 +71,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
              DEFINE COLLECTION probe;",
@@ -80,7 +81,9 @@ fn ready(store: &Store) -> Session<'_> {
 }
 
 fn read(session: &mut Session<'_>, id: u64) -> Value {
-    let outcomes = session.run(&format!("SELECT * FROM probe:{id};")).unwrap();
+    let outcomes = session
+        .run_now(&format!("SELECT * FROM probe:{id};"))
+        .unwrap();
     outcomes[0].records().unwrap()[0].1.clone()
 }
 
@@ -89,7 +92,7 @@ fn every_value_kind_survives_being_printed_and_read_back() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(ONE_OF_EACH.replace("''", "\\'").as_str())
+        .run_now(ONE_OF_EACH.replace("''", "\\'").as_str())
         .unwrap();
     let original = read(&mut session, 1);
 
@@ -97,7 +100,7 @@ fn every_value_kind_survives_being_printed_and_read_back() {
     // record. If the rendering is not readable, this refuses.
     let rendered = tessari_cli_render(&original);
     session
-        .run(&format!("CREATE probe:9 = {rendered};"))
+        .run_now(&format!("CREATE probe:9 = {rendered};"))
         .unwrap_or_else(|failure| panic!("the rendering did not parse: {failure}\n{rendered}"));
     let again = read(&mut session, 9);
 

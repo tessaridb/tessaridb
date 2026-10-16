@@ -30,6 +30,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_constants::FREE_SIGN_IN_FAILURES;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -44,7 +45,7 @@ fn store_with(name: &str) -> Store {
     let store = Store::open(backend).unwrap();
     let mut opening = Session::new(&store);
     opening
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE USER {name} ROLE owner PASSWORD '{PASSWORD}';"
         ))
         .unwrap();

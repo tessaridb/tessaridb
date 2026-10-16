@@ -22,6 +22,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -47,13 +48,13 @@ fn store() -> Store {
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.run(SCHEMA).unwrap();
+    session.run_now(SCHEMA).unwrap();
     session
 }
 
 fn run(session: &mut Session<'_>, script: &str) -> Outcome {
     session
-        .run(script)
+        .run_now(script)
         .unwrap_or_else(|error| panic!("{script}: {error}"))
         .pop()
         .expect("one outcome")

@@ -8,6 +8,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -21,7 +22,7 @@ fn store() -> Store {
 }
 
 fn answer(session: &mut Session<'_>, statement: &str) -> std::collections::BTreeMap<String, Value> {
-    match session.run(statement).unwrap().pop().unwrap() {
+    match session.run_now(statement).unwrap().pop().unwrap() {
         Outcome::Value(Value::Object(fields)) => fields,
         other => panic!("expected an object, got {other:?}"),
     }
@@ -48,7 +49,7 @@ fn the_state_follows_unseal_and_seal_and_says_when_it_ends() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
         .unwrap();
 
     let report = answer(&mut session, "INFO FOR SEAL;");
@@ -64,7 +65,7 @@ fn the_state_follows_unseal_and_seal_and_says_when_it_ends() {
         ))
     );
 
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
     assert_eq!(state(&mut session), "sealed");
 }
 
@@ -74,7 +75,7 @@ fn an_unseal_past_its_period_reads_as_sealed() {
     store.vault().last_for(std::time::Duration::ZERO);
     let mut session = Session::new(&store);
     session
-        .run(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
         .unwrap();
     assert_eq!(state(&mut session), "sealed");
 }
@@ -84,7 +85,7 @@ fn any_signed_in_user_may_ask() {
     let store = store();
     let mut owner = Session::new(&store);
     owner
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE work;
              DEFINE USER root ROLE owner PASSWORD 'root-password';",
         )
@@ -92,7 +93,7 @@ fn any_signed_in_user_may_ask() {
     // The first user closes the store, so the second is declared by the owner.
     let mut root = Session::new(&store);
     root.sign_in("root", "root-password").unwrap();
-    root.run("DEFINE USER ada ON prod.work ROLE viewer PASSWORD 'ada-password';")
+    root.run_now("DEFINE USER ada ON prod.work ROLE viewer PASSWORD 'ada-password';")
         .unwrap();
     let mut viewer = Session::new(&store);
     viewer.sign_in("ada", "ada-password").unwrap();
@@ -100,7 +101,7 @@ fn any_signed_in_user_may_ask() {
 
     let mut nobody = Session::new(&store);
     assert!(
-        nobody.run("INFO FOR SEAL;").is_err(),
+        nobody.run_now("INFO FOR SEAL;").is_err(),
         "a closed store answered a caller who never signed in"
     );
 }
@@ -110,13 +111,13 @@ fn a_passphrase_guessed_three_times_wrong_is_made_to_wait() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
         .unwrap();
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
 
     for guess in ["guess one", "guess two", "guess three"] {
         let refused = session
-            .run(&format!("UNSEAL VAULT WITH '{guess}';"))
+            .run_now(&format!("UNSEAL VAULT WITH '{guess}';"))
             .expect_err("a wrong passphrase unsealed");
         assert!(
             !matches!(refused, tessari_session::Error::PassphraseThrottled),
@@ -127,7 +128,7 @@ fn a_passphrase_guessed_three_times_wrong_is_made_to_wait() {
     // passphrase, and a caller who has missed three times is not told whether
     // the fourth was right.
     let refused = session
-        .run(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
         .expect_err("a fourth attempt was tried at once");
     assert!(
         matches!(refused, tessari_session::Error::PassphraseThrottled),
@@ -195,14 +196,14 @@ fn the_surface_asks_the_authority_the_statement_asks() {
     let store = store();
     let mut owner = Session::new(&store);
     owner
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE work;
              DEFINE USER root ROLE owner PASSWORD 'root-password';",
         )
         .unwrap();
     let mut root = Session::new(&store);
     root.sign_in("root", "root-password").unwrap();
-    root.run("DEFINE USER ada ON prod.work ROLE viewer PASSWORD 'ada-password';")
+    root.run_now("DEFINE USER ada ON prod.work ROLE viewer PASSWORD 'ada-password';")
         .unwrap();
 
     let mut viewer = Session::new(&store);
@@ -243,7 +244,7 @@ const PLANTED: &str = "correct-horse-battery-staple-9f2b";
 fn holding_a_secret(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;
              DEFINE DATABASE work; USE DATABASE work;
              UNSEAL VAULT WITH '{PASSPHRASE}';
@@ -257,7 +258,7 @@ fn holding_a_secret(store: &Store) -> Session<'_> {
 
 fn revealed(session: &mut Session<'_>) -> Value {
     match session
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .unwrap()
         .pop()
         .unwrap()
@@ -272,7 +273,7 @@ fn a_changed_passphrase_opens_every_secret_and_the_old_one_opens_nothing() {
     let store = store();
     let mut session = holding_a_secret(&store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "CHANGE VAULT PASSPHRASE FROM '{PASSPHRASE}' TO 'the new passphrase';"
         ))
         .unwrap();
@@ -280,15 +281,15 @@ fn a_changed_passphrase_opens_every_secret_and_the_old_one_opens_nothing() {
     // where it was.
     assert_eq!(state(&mut session), "unsealed");
 
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
     assert!(
         session
-            .run(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
+            .run_now(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
             .is_err(),
         "the old passphrase still unseals"
     );
     session
-        .run("UNSEAL VAULT WITH 'the new passphrase';")
+        .run_now("UNSEAL VAULT WITH 'the new passphrase';")
         .unwrap();
     assert_eq!(revealed(&mut session), Value::from(PLANTED));
 }
@@ -298,7 +299,7 @@ fn a_wrong_current_passphrase_changes_nothing() {
     let store = store();
     let mut session = holding_a_secret(&store);
     let refused = session
-        .run("CHANGE VAULT PASSPHRASE FROM 'not it' TO 'the new passphrase';")
+        .run_now("CHANGE VAULT PASSPHRASE FROM 'not it' TO 'the new passphrase';")
         .expect_err("a wrong current passphrase was accepted");
     assert!(!refused.to_string().contains("not it"), "{refused}");
     assert!(
@@ -306,9 +307,9 @@ fn a_wrong_current_passphrase_changes_nothing() {
         "{refused}"
     );
 
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
     session
-        .run(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
         .unwrap();
     assert_eq!(revealed(&mut session), Value::from(PLANTED));
 }
@@ -318,7 +319,7 @@ fn a_store_with_no_root_has_no_passphrase_to_change() {
     let store = store();
     let mut session = Session::new(&store);
     let refused = session
-        .run("CHANGE VAULT PASSPHRASE FROM 'a' TO 'b';")
+        .run_now("CHANGE VAULT PASSPHRASE FROM 'a' TO 'b';")
         .expect_err("a passphrase was changed on a store that never had one");
     assert!(
         matches!(refused, tessari_session::Error::NoVaultRoot),
@@ -372,7 +373,7 @@ fn a_vault_lists_its_ids_in_pages_and_never_a_value() {
     let store = store();
     let mut session = holding_a_secret(&store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "CREATE team:'gitlab' = {{ token: '{PLANTED}' }};
              CREATE team:'aws' = {{ token: '{PLANTED}' }};"
         ))
@@ -403,7 +404,10 @@ fn a_vault_lists_its_ids_in_pages_and_never_a_value() {
     assert_eq!(rest, vec![Value::from("gitlab")]);
     assert_eq!(next, Value::None);
 
-    let rendered = format!("{:?}", session.run("INFO FOR VAULT team RECORDS;").unwrap());
+    let rendered = format!(
+        "{:?}",
+        session.run_now("INFO FOR VAULT team RECORDS;").unwrap()
+    );
     assert!(
         !rendered.contains(PLANTED),
         "a listing carried a value: {rendered}"
@@ -417,14 +421,14 @@ fn a_listing_is_asked_of_the_vault_it_names() {
     let store = store();
     let mut session = holding_a_secret(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE notes SCHEMALESS;
              DEFINE USER root ROLE owner PASSWORD 'root-password';",
         )
         .unwrap();
     let mut root = Session::new(&store);
     root.sign_in("root", "root-password").unwrap();
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE work;
          DEFINE USER ada ON prod.work ROLE editor PASSWORD 'ada-password';
          GRANT read, write ON notes TO ada;",
@@ -432,17 +436,18 @@ fn a_listing_is_asked_of_the_vault_it_names() {
     .unwrap();
     let mut ada = Session::new(&store);
     ada.sign_in("ada", "ada-password").unwrap();
-    ada.run("USE NAMESPACE prod; USE DATABASE work;").unwrap();
+    ada.run_now("USE NAMESPACE prod; USE DATABASE work;")
+        .unwrap();
     assert!(
-        ada.run("INFO FOR VAULT team RECORDS;").is_err(),
+        ada.run_now("INFO FOR VAULT team RECORDS;").is_err(),
         "a user granted another table listed the vault"
     );
-    root.run("GRANT read ON team TO ada;").unwrap();
+    root.run_now("GRANT read ON team TO ada;").unwrap();
     let (listed_ids, _) = listed(&mut ada, "INFO FOR VAULT team RECORDS;");
     assert_eq!(listed_ids, vec![Value::from("github")]);
 
     let refused = root
-        .run("INFO FOR VAULT team RECORDS LIMIT 10001;")
+        .run_now("INFO FOR VAULT team RECORDS LIMIT 10001;")
         .expect_err("a page above the ceiling was answered");
     assert!(refused.to_string().contains("10000"), "{refused}");
 }
@@ -452,7 +457,7 @@ fn a_record_id_in_a_vault_listing_or_recipient_list_may_be_a_parameter() {
     let store = store();
     let mut session = holding_a_secret(&store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "CREATE team:'gitlab' = {{ token: '{PLANTED}' }};
              ADD RECIPIENT 'bob' TO team:'gitlab' KEY 0x0102;"
         ))
@@ -462,7 +467,7 @@ fn a_record_id_in_a_vault_listing_or_recipient_list_may_be_a_parameter() {
     parameters.insert("id".to_owned(), Value::from("gitlab"));
 
     let mut page = match session
-        .run_with(
+        .run_with_now(
             "INFO FOR VAULT team RECORDS AFTER team:$after;",
             &parameters,
         )
@@ -478,7 +483,7 @@ fn a_record_id_in_a_vault_listing_or_recipient_list_may_be_a_parameter() {
     );
 
     let listed = session
-        .run_with("INFO FOR RECIPIENTS OF team:$id;", &parameters)
+        .run_with_now("INFO FOR RECIPIENTS OF team:$id;", &parameters)
         .unwrap();
     assert!(format!("{listed:?}").contains("bob"), "{listed:?}");
 }

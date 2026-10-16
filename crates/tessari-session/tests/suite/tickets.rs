@@ -25,6 +25,7 @@
 
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Session, Ticket};
@@ -41,17 +42,17 @@ fn store() -> Store {
 fn peopled(store: &Store) {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION orders;",
         )
         .unwrap();
     session
-        .run("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
     let mut root = signed_in(store, "root");
-    root.run(
+    root.run_now(
         "DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
          DEFINE USER vic ON prod.shop ROLE viewer PASSWORD 'correct horse battery';",
     )
@@ -62,7 +63,7 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session.sign_in(name, PASSWORD).unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -77,7 +78,7 @@ fn resumed<'a>(store: &'a Store, ticket: &Ticket) -> Session<'a> {
     let mut session = Session::new(store);
     session.resume(ticket).unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -94,7 +95,7 @@ fn a_ticket_taken_up_again_is_the_same_identity() {
     // store this would be refused, and if it were nobody at all it would not
     // reach the table.
     carried
-        .run("CREATE orders:1 = { total: 5 };")
+        .run_now("CREATE orders:1 = { total: 5 };")
         .expect("an editor's ticket writes as an editor");
 }
 
@@ -110,7 +111,7 @@ fn the_same_ticket_serves_more_than_once() {
     for total in 1..=3_u32 {
         let mut carried = resumed(&store, &ticket);
         carried
-            .run(&format!("CREATE orders:{total} = {{ total: {total} }};"))
+            .run_now(&format!("CREATE orders:{total} = {{ total: {total} }};"))
             .unwrap();
     }
 }
@@ -135,7 +136,7 @@ fn a_password_change_kills_the_ticket() {
     assert!(Session::new(&store).resume(&ticket).is_ok());
 
     let mut root = signed_in(&store, "root");
-    root.run("ALTER USER ada SET PASSWORD 'a different horse entirely';")
+    root.run_now("ALTER USER ada SET PASSWORD 'a different horse entirely';")
         .unwrap();
 
     // Rotating a password that somebody else may have learned is worthless if
@@ -155,7 +156,7 @@ fn a_role_change_kills_the_ticket() {
     assert!(Session::new(&store).resume(&ticket).is_ok());
 
     let mut root = signed_in(&store, "root");
-    root.run("ALTER USER ada SET ROLE viewer;").unwrap();
+    root.run_now("ALTER USER ada SET ROLE viewer;").unwrap();
 
     // Demoting somebody who holds a token has to take effect, or the demotion
     // is a note in the catalog rather than a change in what they may do.
@@ -174,7 +175,7 @@ fn removing_the_user_kills_the_ticket() {
     assert!(Session::new(&store).resume(&ticket).is_ok());
 
     let mut root = signed_in(&store, "root");
-    root.run("DROP USER ada;").unwrap();
+    root.run_now("DROP USER ada;").unwrap();
 
     assert!(
         Session::new(&store).resume(&ticket).is_err(),
@@ -193,14 +194,14 @@ fn a_ticket_carries_no_authority_the_password_did_not() {
     // A viewer reads and does not write, through a token exactly as through a
     // password. A token that widened anything would be a second permission
     // system quietly disagreeing with the first.
-    carried.run("SELECT * FROM orders;").unwrap();
+    carried.run_now("SELECT * FROM orders;").unwrap();
     assert!(
-        carried.run("CREATE orders:9 = { total: 9 };").is_err(),
+        carried.run_now("CREATE orders:9 = { total: 9 };").is_err(),
         "a viewer's ticket must not write"
     );
     assert!(
         carried
-            .run("DEFINE USER mallory ON prod.shop ROLE owner PASSWORD 'a long enough one';")
+            .run_now("DEFINE USER mallory ON prod.shop ROLE owner PASSWORD 'a long enough one';")
             .is_err(),
         "a viewer's ticket must not declare users"
     );

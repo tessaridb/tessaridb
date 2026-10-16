@@ -27,6 +27,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Note, Outcome, Session};
@@ -43,7 +44,7 @@ fn store() -> Store {
 fn peopled(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE staff SCHEMALESS;\n\
@@ -58,7 +59,7 @@ fn peopled(store: &Store) -> Session<'_> {
 
 /// One statement's outcome.
 fn run(session: &mut Session<'_>, script: &str) -> Outcome {
-    session.run(script).unwrap().pop().unwrap()
+    session.run_now(script).unwrap().pop().unwrap()
 }
 
 /// The notes one read raised.
@@ -71,7 +72,7 @@ fn notes(session: &mut Session<'_>, script: &str) -> Vec<Note> {
 
 /// The refusal one statement raises.
 fn refused(session: &mut Session<'_>, script: &str) -> String {
-    match session.run(script) {
+    match session.run_now(script) {
         Err(why) => why.to_string(),
         Ok(outcome) => panic!("expected a refusal, got {outcome:?}"),
     }
@@ -98,7 +99,7 @@ fn a_view_answers_what_its_read_answers() {
     let store = store();
     let mut session = peopled(&store);
     session
-        .run("DEFINE VIEW engineers AS SELECT * FROM staff WHERE team = 'eng';")
+        .run_now("DEFINE VIEW engineers AS SELECT * FROM staff WHERE team = 'eng';")
         .unwrap();
     // Compared against the read itself rather than against a list written out
     // here, because that is literally the claim: a view answers what its read
@@ -120,7 +121,7 @@ fn a_view_is_read_through_its_own_projection() {
     let store = store();
     let mut session = peopled(&store);
     session
-        .run("DEFINE VIEW roster AS SELECT name, team FROM staff;")
+        .run_now("DEFINE VIEW roster AS SELECT name, team FROM staff;")
         .unwrap();
     let answered = records(&run(&mut session, "SELECT * FROM roster;"));
     assert_eq!(answered.len(), 4, "the view lost records: {answered:?}");
@@ -144,7 +145,7 @@ fn a_condition_over_a_view_sees_the_view_and_not_the_base_record() {
     let store = store();
     let mut session = peopled(&store);
     session
-        .run("DEFINE VIEW roster AS SELECT name, team FROM staff;")
+        .run_now("DEFINE VIEW roster AS SELECT name, team FROM staff;")
         .unwrap();
     // `salary` is a real field of `staff` and is not one of `roster`. Merging
     // this condition into the view's own source would test it against the base
@@ -175,7 +176,7 @@ fn a_view_naming_a_view_is_expanded() {
     let store = store();
     let mut session = peopled(&store);
     session
-        .run(
+        .run_now(
             "DEFINE VIEW engineers AS SELECT * FROM staff WHERE team = 'eng';\n\
              DEFINE VIEW senior_engineers AS SELECT * FROM engineers WHERE salary > 110;",
         )
@@ -192,13 +193,13 @@ fn a_view_chain_past_the_depth_is_refused_naming_the_chain() {
     let store = store();
     let mut session = peopled(&store);
     session
-        .run("DEFINE VIEW v0 AS SELECT * FROM staff;")
+        .run_now("DEFINE VIEW v0 AS SELECT * FROM staff;")
         .unwrap();
     // `v0` is one view; `v8` is nine, which is one past the bound. Built by name
     // so the chain is legible in the refusal rather than only in the count.
     for step in 1..=8 {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE VIEW v{step} AS SELECT * FROM v{};",
                 step - 1
             ))
@@ -229,7 +230,7 @@ fn a_view_that_names_itself_is_refused_by_the_same_bound() {
     // Accepted at definition — nothing is resolved there, the same rule a
     // field's `DEFAULT` follows — and refused on the first read.
     session
-        .run("DEFINE VIEW loop_ AS SELECT * FROM loop_;")
+        .run_now("DEFINE VIEW loop_ AS SELECT * FROM loop_;")
         .unwrap();
     let refusal = refused(&mut session, "SELECT * FROM loop_;");
     assert!(
@@ -243,14 +244,14 @@ fn a_caller_granted_the_view_and_not_the_table_is_refused_naming_the_table() {
     let store = store();
     let mut session = peopled(&store);
     session
-        .run(
+        .run_now(
             "DEFINE VIEW engineers AS SELECT * FROM staff WHERE team = 'eng';\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
         )
         .unwrap();
     let mut root = Session::new(&store);
     root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
          DEFINE TABLE audit SCHEMALESS;\n\
          DEFINE USER caller ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
@@ -274,7 +275,7 @@ fn a_caller_granted_the_view_and_not_the_table_is_refused_naming_the_table() {
     let mut caller = Session::new(&store);
     caller.sign_in("caller", PASSWORD).unwrap();
     caller
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     let refusal = refused(&mut caller, "SELECT * FROM engineers;");
     assert!(
@@ -288,7 +289,7 @@ fn a_caller_granted_the_view_and_not_the_table_is_refused_naming_the_table() {
     let mut definer = Session::new(&store);
     definer.sign_in("definer", PASSWORD).unwrap();
     definer
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     assert_eq!(
         identities(&run(&mut definer, "SELECT * FROM engineers;")),
@@ -302,7 +303,7 @@ fn a_view_with_no_limit_past_the_ceiling_is_refused_rather_than_shortened() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE wide SCHEMALESS;",
@@ -314,9 +315,9 @@ fn a_view_with_no_limit_past_the_ceiling_is_refused_rather_than_shortened() {
     for n in 1..=10_001 {
         script.push_str(&format!("CREATE wide:{n} = {{ n: {n} }};\n"));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     session
-        .run("DEFINE VIEW everything AS SELECT * FROM wide;")
+        .run_now("DEFINE VIEW everything AS SELECT * FROM wide;")
         .unwrap();
     let refusal = refused(&mut session, "SELECT * FROM everything LIMIT 1;");
     assert!(
@@ -326,7 +327,7 @@ fn a_view_with_no_limit_past_the_ceiling_is_refused_rather_than_shortened() {
     // A view that states its own bound is not touched by the ceiling, which is
     // the escape the refusal is pointing at.
     session
-        .run("DEFINE VIEW first_ten AS SELECT * FROM wide LIMIT 10;")
+        .run_now("DEFINE VIEW first_ten AS SELECT * FROM wide LIMIT 10;")
         .unwrap();
     assert_eq!(
         identities(&run(&mut session, "SELECT * FROM first_ten;")).len(),
@@ -345,7 +346,7 @@ fn a_view_most_of_the_way_to_the_ceiling_says_so_before_it_is_refused() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE wide SCHEMALESS;",
@@ -359,10 +360,10 @@ fn a_view_most_of_the_way_to_the_ceiling_says_so_before_it_is_refused() {
     for n in 1..=HELD {
         script.push_str(&format!("CREATE wide:{n} = {{ n: {n} }};\n"));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
 
     session
-        .run("DEFINE VIEW everything AS SELECT * FROM wide;")
+        .run_now("DEFINE VIEW everything AS SELECT * FROM wide;")
         .unwrap();
     assert_eq!(
         notes(&mut session, "SELECT * FROM everything;"),
@@ -377,7 +378,7 @@ fn a_view_most_of_the_way_to_the_ceiling_says_so_before_it_is_refused() {
     // author about one would send them to fix something that does not apply to
     // them.
     session
-        .run("DEFINE VIEW first_hundred AS SELECT * FROM wide LIMIT 100;")
+        .run_now("DEFINE VIEW first_hundred AS SELECT * FROM wide LIMIT 100;")
         .unwrap();
     // It raises `subquery-ceiling` instead, and correctly: it filled the bound
     // its own author wrote, which is the neighbouring note's whole subject. What
@@ -391,7 +392,7 @@ fn a_view_most_of_the_way_to_the_ceiling_says_so_before_it_is_refused() {
     // And a view with room left says nothing, which is what stops this note
     // from being one that always fires.
     session
-        .run("DEFINE VIEW hardly_any AS SELECT * FROM wide WHERE n < 10;")
+        .run_now("DEFINE VIEW hardly_any AS SELECT * FROM wide WHERE n < 10;")
         .unwrap();
     assert_eq!(
         notes(&mut session, "SELECT * FROM hardly_any;"),
@@ -405,7 +406,7 @@ fn a_view_is_not_a_store_and_refuses_everything_that_treats_it_as_one() {
     let store = store();
     let mut session = peopled(&store);
     session
-        .run("DEFINE VIEW engineers AS SELECT * FROM staff WHERE team = 'eng';")
+        .run_now("DEFINE VIEW engineers AS SELECT * FROM staff WHERE team = 'eng';")
         .unwrap();
     for statement in [
         "CREATE engineers:9 = { name: 'ev' };",
@@ -436,7 +437,7 @@ fn a_view_round_trips_through_info() {
     let mut session = peopled(&store);
     let written = "SELECT name, team FROM staff WHERE team = 'eng'";
     session
-        .run(&format!("DEFINE VIEW engineers AS {written};"))
+        .run_now(&format!("DEFINE VIEW engineers AS {written};"))
         .unwrap();
     let Outcome::Value(Value::Object(report)) = run(&mut session, "INFO FOR TABLE engineers;")
     else {
@@ -473,7 +474,7 @@ fn a_view_cannot_take_the_name_of_a_table_and_a_table_cannot_take_a_view_s() {
         "a view took a table's name: {refusal}"
     );
     session
-        .run("DEFINE VIEW engineers AS SELECT * FROM staff WHERE team = 'eng';")
+        .run_now("DEFINE VIEW engineers AS SELECT * FROM staff WHERE team = 'eng';")
         .unwrap();
     let refusal = refused(&mut session, "DEFINE TABLE engineers SCHEMALESS;");
     assert!(
@@ -498,9 +499,9 @@ fn dropping_a_view_removes_the_definition_and_nothing_else() {
     let store = store();
     let mut session = peopled(&store);
     session
-        .run("DEFINE VIEW engineers AS SELECT * FROM staff WHERE team = 'eng';")
+        .run_now("DEFINE VIEW engineers AS SELECT * FROM staff WHERE team = 'eng';")
         .unwrap();
-    session.run("DROP VIEW engineers;").unwrap();
+    session.run_now("DROP VIEW engineers;").unwrap();
     let refusal = refused(&mut session, "SELECT * FROM engineers;");
     assert!(
         refusal.contains("engineers"),

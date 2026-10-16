@@ -15,6 +15,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_encoding::{
     IndexAddress, KeyKind, SpatialExtent, SpatialIndexKey, StoreKey, StoreValue,
@@ -34,7 +35,7 @@ fn backend() -> Arc<dyn KvBackend> {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE atlas; USE NAMESPACE atlas;\n\
              DEFINE DATABASE world; USE DATABASE world;\n\
              DEFINE COLLECTION places;",
@@ -48,7 +49,7 @@ fn a_spatial_index_is_defined_and_reads_back_as_one() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE INDEX by_where ON places FIELDS location SPATIAL;")
+        .run_now("DEFINE INDEX by_where ON places FIELDS location SPATIAL;")
         .unwrap();
 
     let mut transaction = store.begin().unwrap();
@@ -80,14 +81,14 @@ fn the_index_is_built_over_rows_that_are_already_there() {
     let store = Store::open(Arc::clone(&held)).unwrap();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE places:1 = { location: geometry { type: 'Point', coordinates: [2.35, 48.85] } };\n\
              CREATE places:2 = { location: geometry { type: 'LineString', coordinates: [[0, 0], [1, 1]] } };\n\
              CREATE places:3 = { note: 'no geometry here' };",
         )
         .unwrap();
     session
-        .run("DEFINE INDEX by_where ON places FIELDS location SPATIAL;")
+        .run_now("DEFINE INDEX by_where ON places FIELDS location SPATIAL;")
         .unwrap();
 
     let mut transaction = store.begin().unwrap();
@@ -132,9 +133,9 @@ fn spatial_is_contextual_and_is_still_a_name() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("CREATE places:1 = { spatial: 'a word, not an index kind' };")
+        .run_now("CREATE places:1 = { spatial: 'a word, not an index kind' };")
         .unwrap();
-    session.run("DEFINE COLLECTION spatial;").unwrap();
+    session.run_now("DEFINE COLLECTION spatial;").unwrap();
 }
 
 #[test]
@@ -147,7 +148,7 @@ fn an_index_is_one_kind_and_not_two() {
         "DEFINE INDEX bad ON places FIELDS location SPATIAL VECTOR cosine;",
     ] {
         assert!(
-            session.run(statement).is_err(),
+            session.run_now(statement).is_err(),
             "two kinds on one index should be refused: {statement}"
         );
     }
@@ -162,7 +163,7 @@ fn a_multi_valued_route_is_refused() {
     let mut session = ready(&store);
     assert!(
         session
-            .run("DEFINE INDEX bad ON places FIELDS spots[*] SPATIAL;")
+            .run_now("DEFINE INDEX bad ON places FIELDS spots[*] SPATIAL;")
             .is_err()
     );
 }
@@ -179,7 +180,7 @@ fn a_rebuild_removes_an_entry_the_rows_do_not_imply() {
     let store = Store::open(Arc::clone(&held)).unwrap();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE places:1 = { location: geometry { type: 'Point', coordinates: [2.35, 48.85] } };\n\
              DEFINE INDEX by_where ON places FIELDS location SPATIAL;",
         )
@@ -204,7 +205,9 @@ fn a_rebuild_removes_an_entry_the_rows_do_not_imply() {
     .unwrap();
     assert!(entries(&held, address).contains(&orphan.encode().as_slice().to_vec()));
 
-    session.run("REBUILD INDEX by_where ON places;").unwrap();
+    session
+        .run_now("REBUILD INDEX by_where ON places;")
+        .unwrap();
     assert!(
         !entries(&held, address).contains(&orphan.encode().as_slice().to_vec()),
         "a rebuild should leave only the entries the rows imply"

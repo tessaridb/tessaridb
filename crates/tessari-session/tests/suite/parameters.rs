@@ -14,6 +14,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Outcome, Parameters, Session};
@@ -29,7 +30,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE users SCHEMALESS;\n\
@@ -53,7 +54,7 @@ fn answered(
     script: &str,
     parameters: &Parameters,
 ) -> (Vec<(RecordId, Value)>, AccessPath) {
-    let outcomes = session.run_with(script, parameters).unwrap();
+    let outcomes = session.run_with_now(script, parameters).unwrap();
     let last = outcomes.last().unwrap();
     match last {
         Outcome::Records { records, plan, .. } => (records.clone(), plan.access),
@@ -103,7 +104,7 @@ fn an_unbound_parameter_refuses_the_whole_script() {
     let store = store();
     let mut session = ready(&store);
     let refusal = session
-        .run_with(
+        .run_with_now(
             "CREATE users:3 = { name: 'alan' };\n\
              SELECT * FROM users WHERE city = $where;",
             &Parameters::new(),
@@ -144,7 +145,7 @@ fn a_parameter_stands_wherever_a_literal_does() {
     // A value position: the whole content of a write, built from an object
     // literal whose fields are parameters.
     session
-        .run_with(
+        .run_with_now(
             "CREATE users:3 = { name: $name, age: $age, tags: [$city, 'x'] };",
             &parameters,
         )
@@ -192,7 +193,7 @@ fn an_index_still_serves_a_parameterised_equality() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE INDEX by_name ON users FIELDS name UNIQUE;")
+        .run_now("DEFINE INDEX by_name ON users FIELDS name UNIQUE;")
         .unwrap();
 
     let (rows, path) = answered(
@@ -212,7 +213,7 @@ fn run_without_parameters_is_run_with_none() {
     let store = store();
     let mut session = ready(&store);
     let (plain, _) = answered(&mut session, "SELECT * FROM users;", &Parameters::new());
-    let outcomes = session.run("SELECT * FROM users;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM users;").unwrap();
     let Outcome::Records { records, .. } = &outcomes[0] else {
         panic!("not records: {:?}", outcomes[0]);
     };
@@ -227,7 +228,7 @@ fn a_parameter_in_a_stored_expression_is_refused_where_it_is_written() {
     let store = store();
     let mut session = ready(&store);
     let refusal = session
-        .run_with(
+        .run_with_now(
             "DEFINE FIELD city ON users TYPE string DEFAULT $where;",
             &bound("where", Value::String("london".to_owned())),
         )
@@ -246,11 +247,11 @@ fn a_parameter_names_the_record_and_never_the_table() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE SPACE sessions; SET sessions:'abc' = { level: 3 };")
+        .run_now("DEFINE SPACE sessions; SET sessions:'abc' = { level: 3 };")
         .unwrap();
 
     let outcomes = session
-        .run_with(
+        .run_with_now(
             "GET sessions:$key;",
             &bound("key", Value::String("abc".to_owned())),
         )
@@ -268,11 +269,11 @@ fn a_supplied_identity_is_the_value_it_was_and_not_its_text() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("CREATE users:'1' = { name: 'the text one' };")
+        .run_now("CREATE users:'1' = { name: 'the text one' };")
         .unwrap();
 
     let outcomes = session
-        .run_with(
+        .run_with_now(
             "SELECT * FROM users:$who;",
             &bound("who", Value::Number(Number::Integer(1))),
         )
@@ -290,7 +291,7 @@ fn an_identity_a_record_cannot_have_is_refused_where_it_is_supplied() {
     let store = store();
     let mut session = ready(&store);
     let refusal = session
-        .run_with(
+        .run_with_now(
             "SELECT * FROM users:$who;",
             &bound("who", Value::Number(Number::float(1.5))),
         )
@@ -304,16 +305,16 @@ fn a_file_is_reachable_by_a_supplied_path() {
     // statement without a script being built around it.
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE BUCKET media;").unwrap();
+    session.run_now("DEFINE BUCKET media;").unwrap();
 
     let mut given = Parameters::new();
     given.insert("path".to_owned(), Value::String("/a b/c.txt".to_owned()));
     given.insert("held".to_owned(), Value::String("content".to_owned()));
     session
-        .run_with("PUT media:$path = $held;", &given)
+        .run_with_now("PUT media:$path = $held;", &given)
         .unwrap();
 
-    let outcomes = session.run_with("READ media:$path;", &given).unwrap();
+    let outcomes = session.run_with_now("READ media:$path;", &given).unwrap();
     assert_eq!(
         outcomes[0],
         Outcome::Value(Value::Bytes(b"content".to_vec()))

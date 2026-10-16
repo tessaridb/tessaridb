@@ -33,6 +33,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use tessari_session::RunNow;
 
 use tessari_kv::{
     Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
@@ -121,7 +122,7 @@ impl KvBackend for Counting {
 fn ready<'a>(store: &'a Store, index: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION events;",
@@ -135,15 +136,15 @@ fn ready<'a>(store: &'a Store, index: &str) -> Session<'a> {
             RECORDS.saturating_sub(n)
         ));
         if n % 100 == 0 {
-            session.run(&script).unwrap();
+            session.run_now(&script).unwrap();
             script.clear();
         }
     }
     if !script.is_empty() {
-        session.run(&script).unwrap();
+        session.run_now(&script).unwrap();
     }
     if !index.is_empty() {
-        session.run(index).unwrap();
+        session.run_now(index).unwrap();
     }
     session
 }
@@ -152,7 +153,7 @@ fn ready<'a>(store: &'a Store, index: &str) -> Session<'a> {
 const COMPOSITE: &str = "DEFINE INDEX by_at_tag ON events FIELDS at, tag;";
 
 fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
-    let outcomes = session.run(&format!("EXPLAIN {read}")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read}")).unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("a plan answered with {:?}", outcomes.last());
     };
@@ -164,7 +165,7 @@ fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
 /// Sorted because a range is not an order and this file asserts nothing about
 /// the order — the previous wave's file owns that claim.
 fn answered(session: &mut Session<'_>, read: &str) -> (Vec<RecordId>, AccessPath) {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -320,7 +321,7 @@ fn a_single_field_index_on_the_ranged_field_still_wins_when_it_exists() {
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     let mut session = ready(&store, COMPOSITE);
     session
-        .run("DEFINE INDEX by_tag ON events FIELDS tag;")
+        .run_now("DEFINE INDEX by_tag ON events FIELDS tag;")
         .unwrap();
     assert_eq!(plan(&mut session, SLICE, "index"), r#"String("by_at_tag")"#);
 }

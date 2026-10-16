@@ -32,6 +32,7 @@
 //! paying for it per read.
 
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessaridb::Db;
 
@@ -81,13 +82,13 @@ pub(crate) fn answered(outcomes: &[tessaridb::Outcome]) -> Vec<String> {
 pub(crate) fn span(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE TABLE windows SCHEMALESS;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench; DEFINE TABLE windows SCHEMALESS;")?;
 
     // The identity and the field carry the same number, which is what makes the
     // three reads comparable: the span walks the key, the other two test the
     // field, and they are asking one question.
     for n in 0..RECORDS {
-        session.run(&format!(
+        session.run_now(&format!(
             "CREATE windows:{n} = {{ n: {n}, note: 'a payload long enough to be a record rather than a token' }};"
         ))?;
     }
@@ -100,7 +101,7 @@ pub(crate) fn span(db: &Db) -> Failable<Vec<Report>> {
         let from = lower(query);
         let upto = from.saturating_add(WINDOW);
         let started = Instant::now();
-        session.run(&format!("SELECT * FROM windows:{from}..{upto};"))?;
+        session.run_now(&format!("SELECT * FROM windows:{from}..{upto};"))?;
         ranged.push(started.elapsed());
     }
     reports.push(ranged.summarise("window by span"));
@@ -110,7 +111,7 @@ pub(crate) fn span(db: &Db) -> Failable<Vec<Report>> {
         let from = lower(query);
         let upto = from.saturating_add(WINDOW);
         let started = Instant::now();
-        session.run(&format!(
+        session.run_now(&format!(
             "SELECT * FROM windows WHERE n >= {from} AND n < {upto};"
         ))?;
         scanned.push(started.elapsed());
@@ -119,7 +120,7 @@ pub(crate) fn span(db: &Db) -> Failable<Vec<Report>> {
 
     let mut built = Samples::with_capacity(1);
     let started = Instant::now();
-    session.run("DEFINE INDEX by_n ON windows FIELDS n;")?;
+    session.run_now("DEFINE INDEX by_n ON windows FIELDS n;")?;
     built.push(started.elapsed());
     reports.push(built.summarise("the index, built once"));
 
@@ -128,7 +129,7 @@ pub(crate) fn span(db: &Db) -> Failable<Vec<Report>> {
         let from = lower(query);
         let upto = from.saturating_add(WINDOW);
         let started = Instant::now();
-        session.run(&format!(
+        session.run_now(&format!(
             "SELECT * FROM windows WHERE n >= {from} AND n < {upto};"
         ))?;
         served.push(started.elapsed());
@@ -141,12 +142,12 @@ pub(crate) fn span(db: &Db) -> Failable<Vec<Report>> {
     // a count would report that as agreement.
     let from = lower(1);
     let upto = from.saturating_add(WINDOW);
-    let by_span = answered(&session.run(&format!("SELECT * FROM windows:{from}..{upto};"))?);
-    let by_field = answered(&session.run(&format!(
+    let by_span = answered(&session.run_now(&format!("SELECT * FROM windows:{from}..{upto};"))?);
+    let by_field = answered(&session.run_now(&format!(
         "SELECT * FROM windows WHERE n >= {from} AND n < {upto};"
     ))?);
-    session.run("DROP INDEX by_n ON windows;")?;
-    let by_scan = answered(&session.run(&format!(
+    session.run_now("DROP INDEX by_n ON windows;")?;
+    let by_scan = answered(&session.run_now(&format!(
         "SELECT * FROM windows WHERE n >= {from} AND n < {upto};"
     ))?);
 

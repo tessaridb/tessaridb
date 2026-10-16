@@ -1,4 +1,5 @@
 use super::*;
+use tessari_session::RunNow;
 
 #[test]
 fn a_door_places_a_candidate_only_where_its_own_row_leads() {
@@ -216,7 +217,7 @@ fn a_held_stream_is_sent_a_commit_the_moment_it_lands() {
         let committed = std::time::Instant::now();
         committing
             .session()
-            .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
+            .run_now("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
             .expect("the leader commits");
         committed
     });
@@ -375,7 +376,7 @@ fn a_pushed_round_is_held_only_once_the_follower_says_so() {
     // Not asked again: the commit has to be pushed.
     leader
         .session()
-        .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
         .expect("the leader commits");
     let second = next_round(&mut following).expect("the pushed round");
     assert!(!second.is_quiet(), "the round carried the commit");

@@ -185,8 +185,9 @@ pub(crate) async fn converse<C: Carried>(
         {
             let stream = C::to_thread(reader.into_inner(), writer.into_inner())?;
             let spell = talk.clone();
+            let runtime = tokio::runtime::Handle::current();
             let cooled = tokio::task::spawn_blocking(move || {
-                let cooled = hot::serve(&spell, session, stream, request, theirs);
+                let cooled = hot::serve(&spell, session, stream, request, theirs, &runtime);
                 drop(held);
                 cooled
             })
@@ -215,9 +216,9 @@ pub(crate) async fn converse<C: Carried>(
         let db = Arc::clone(&talk.db);
         let bridged = talk
             .bridge
-            .call(session, move |held: Detached| {
+            .call_async(session, move |held: Detached| async move {
                 let mut attached = held.attach(db.store());
-                let answer = respond(&db, &mut attached, &request, theirs);
+                let answer = respond(&db, &mut attached, &request, theirs).await;
                 (attached.detach(), answer)
             })
             .await;

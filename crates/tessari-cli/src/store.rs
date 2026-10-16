@@ -49,6 +49,8 @@ pub struct Embedded<'a> {
     db: &'a Db,
     session: Session<'a>,
     parameters: Parameters,
+    /// Drives the session's statements, one after another, on this thread.
+    runtime: tokio::runtime::Runtime,
 }
 
 impl<'a> Embedded<'a> {
@@ -59,7 +61,8 @@ impl<'a> Embedded<'a> {
     /// Returns the store's own words when the credentials are refused. Refused
     /// here rather than at the first statement, because a session that carried
     /// on anonymously after a failed sign-in would answer a different question
-    /// than the one that was asked.
+    /// than the one that was asked. Also when the runtime that drives the
+    /// statements cannot be built.
     pub fn new(
         db: &'a Db,
         credentials: Option<&(String, String)>,
@@ -71,10 +74,17 @@ impl<'a> Embedded<'a> {
                 .sign_in(name, password)
                 .map_err(|held| held.to_string())?;
         }
+        // bgv-allow(current-thread): a prompt, a file or a pipe runs one
+        // statement at a time and nothing else, so one thread drives them all.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|why| format!("the runtime would not start: {why}"))?;
         Ok(Self {
             db,
             session,
             parameters,
+            runtime,
         })
     }
 }
@@ -82,8 +92,8 @@ impl<'a> Embedded<'a> {
 impl Store for Embedded<'_> {
     fn run(&mut self, script: &str) -> Result<Vec<Answer>, String> {
         let outcomes = self
-            .session
-            .run_with(script, &self.parameters)
+            .runtime
+            .block_on(self.session.run_with(script, &self.parameters))
             .map_err(|held| held.to_string())?;
         Ok(outcomes
             .iter()

@@ -26,6 +26,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -44,7 +45,7 @@ DEFINE DATABASE library; USE DATABASE library;
 fn through_the_field(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}DEFINE COLLECTION documents;\n\
              DEFINE FIELD embedding ON documents TYPE vector<3>;"
         ))
@@ -56,7 +57,7 @@ fn through_the_field(store: &Store) -> Session<'_> {
 fn through_the_table(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}DEFINE TABLE documents (embedding vector<3>);"
         ))
         .unwrap();
@@ -65,7 +66,10 @@ fn through_the_table(store: &Store) -> Session<'_> {
 
 /// What a write said when it was refused, or `None` when it was accepted.
 fn refusal(session: &mut Session<'_>, statement: &str) -> Option<String> {
-    session.run(statement).err().map(|error| error.to_string())
+    session
+        .run_now(statement)
+        .err()
+        .map(|error| error.to_string())
 }
 
 #[test]
@@ -75,7 +79,7 @@ fn a_declared_width_refuses_a_write_of_any_other_width() {
 
     // The right width goes in.
     session
-        .run("CREATE documents:1 = { embedding: [1.0, 2.0, 3.0] };")
+        .run_now("CREATE documents:1 = { embedding: [1.0, 2.0, 3.0] };")
         .unwrap();
 
     // Too short and too long are both refused, and the message carries the
@@ -145,7 +149,10 @@ fn the_width_reads_back_out_of_the_catalog_as_it_was_written() {
     let held = store();
     let mut session = through_the_field(&held);
 
-    let reported = format!("{:?}", session.run("INFO FOR TABLE documents;").unwrap());
+    let reported = format!(
+        "{:?}",
+        session.run_now("INFO FOR TABLE documents;").unwrap()
+    );
     assert!(reported.contains("vector<3>"), "{reported}");
 }
 
@@ -158,10 +165,10 @@ fn a_declared_width_does_not_make_the_field_mandatory() {
     let mut session = through_the_field(&held);
 
     session
-        .run("CREATE documents:7 = { title: 'no vector here' };")
+        .run_now("CREATE documents:7 = { title: 'no vector here' };")
         .unwrap();
     session
-        .run("CREATE documents:8 = { embedding: NULL };")
+        .run_now("CREATE documents:8 = { embedding: NULL };")
         .unwrap();
 }
 
@@ -173,13 +180,13 @@ fn one_table_holds_two_vectors_of_different_widths_and_checks_each() {
     let held = store();
     let mut session = Session::new(&held);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}DEFINE TABLE documents (title_at vector<2>, body_at vector<4>);"
         ))
         .unwrap();
 
     session
-        .run("CREATE documents:1 = { title_at: [1.0, 2.0], body_at: [1.0, 2.0, 3.0, 4.0] };")
+        .run_now("CREATE documents:1 = { title_at: [1.0, 2.0], body_at: [1.0, 2.0, 3.0, 4.0] };")
         .unwrap();
 
     // Each field is held to its own width, including the case that would pass

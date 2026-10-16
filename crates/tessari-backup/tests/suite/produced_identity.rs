@@ -23,6 +23,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -42,10 +43,10 @@ fn store() -> Store {
 fn held(store: &Store) -> Vec<RecordId> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
     session
-        .run("SELECT * FROM readings;")
+        .run_now("SELECT * FROM readings;")
         .unwrap()
         .pop()
         .expect("one outcome")
@@ -62,9 +63,9 @@ fn leader() -> (Store, Vec<RecordId>, Vec<u8>) {
     let store = store();
     let answered = {
         let mut session = Session::new(&store);
-        session.run(TENANCY).unwrap();
+        session.run_now(TENANCY).unwrap();
         session
-            .run("INSERT INTO readings (n) VALUES (1), (2), (3);")
+            .run_now("INSERT INTO readings (n) VALUES (1), (2), (3);")
             .unwrap()
             .pop()
             .expect("one outcome")

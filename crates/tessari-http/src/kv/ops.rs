@@ -149,7 +149,7 @@ impl Request {
     }
 
     /// Run the statement this request stands for, in `session`, against `space`.
-    pub(crate) fn run(self, session: &mut Session<'_>, db: &Db, space: &str) -> Answer {
+    pub(crate) async fn run(self, session: &mut Session<'_>, db: &Db, space: &str) -> Answer {
         let mut given = Parameters::new();
         let script = match &self {
             Self::Read { key } => {
@@ -245,7 +245,7 @@ impl Request {
                 format!("{script} LIMIT {limit};")
             }
         };
-        let outcomes = match session.run_with(&script, &given) {
+        let outcomes = match session.run_with(&script, &given).await {
             Ok(outcomes) => outcomes,
             Err(error) => return failure(&error),
         };

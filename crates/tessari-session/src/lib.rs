@@ -103,5 +103,9 @@ pub use session::{
     RefusalKind, Session, across_lapse_millis, recover_staging,
 };
 pub use tessari_ql::Parameters;
+#[cfg(feature = "test-support")]
+mod run_now;
+#[cfg(feature = "test-support")]
+pub use run_now::RunNow;
 pub use ticket::Ticket;
 pub use vault_surface::{VaultAct, VaultTarget};

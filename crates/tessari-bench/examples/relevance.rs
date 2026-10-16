@@ -33,6 +33,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use tessari_session::RunNow;
 
 use tessaridb::{Db, Parameters, Value};
 
@@ -228,7 +229,7 @@ fn ranked_pages(
         judged.query.clone()
     };
     parameters.insert("q".to_owned(), Value::String(query));
-    let outcomes = session.run_with(&statement(&judged.kind, engine), &parameters)?;
+    let outcomes = session.run_with_now(&statement(&judged.kind, engine), &parameters)?;
     let records = outcomes
         .last()
         .and_then(|outcome| outcome.records())
@@ -340,7 +341,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let db = Db::in_memory()?;
     let mut session = db.session();
-    session.run(SCHEMA)?;
+    session.run_now(SCHEMA)?;
     for (number, fragment) in fragments.iter().enumerate() {
         let mut parameters = Parameters::new();
         parameters.insert("id".to_owned(), Value::from(i64::try_from(number)?));
@@ -352,14 +353,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         parameters.insert("text".to_owned(), Value::String(fragment.text.clone()));
         parameters.insert("title".to_owned(), Value::String(fragment.title.clone()));
         parameters.insert("body".to_owned(), Value::String(fragment.body.clone()));
-        session.run_with(
+        session.run_with_now(
             "CREATE fragment:$id = { page: $page, title: $title, heading: $heading, \
              body: $body, text: $text };",
             &parameters,
         )?;
     }
     if engine.is_some() {
-        session.run(ENGINE)?;
+        session.run_now(ENGINE)?;
     }
 
     let build = if cfg!(debug_assertions) {

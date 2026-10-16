@@ -13,6 +13,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -29,7 +30,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION users;\n\
@@ -62,7 +63,7 @@ fn a_conditional_computes_a_projected_value() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run(
+        .run_now(
             "SELECT IF age >= 40 THEN 'senior' ELSE 'junior' END AS band \
              FROM users WHERE name = 'ada';",
         )
@@ -78,7 +79,7 @@ fn else_if_chains_and_one_end_closes_it() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run(
+        .run_now(
             "SELECT IF age >= 45 THEN 'a' ELSE IF age >= 40 THEN 'b' ELSE 'c' END AS band \
              FROM users WHERE name = 'alan';",
         )
@@ -98,10 +99,10 @@ fn a_conditional_with_no_else_answers_an_absence() {
     let store = store();
     let mut session = ready(&store);
     let conditional = session
-        .run("SELECT IF age > 100 THEN 'ancient' END AS band FROM users WHERE name = 'ada';")
+        .run_now("SELECT IF age > 100 THEN 'ancient' END AS band FROM users WHERE name = 'ada';")
         .unwrap();
     let missing_path = session
-        .run("SELECT no_such_field AS band FROM users WHERE name = 'ada';")
+        .run_now("SELECT no_such_field AS band FROM users WHERE name = 'ada';")
         .unwrap();
     assert_eq!(
         one(&conditional[0]),
@@ -125,7 +126,7 @@ fn only_the_taken_arm_is_evaluated() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT IF age > 0 THEN age ELSE age / 0 END AS n FROM users WHERE name = 'ada';")
+        .run_now("SELECT IF age > 0 THEN age ELSE age / 0 END AS n FROM users WHERE name = 'ada';")
         .unwrap();
     assert_eq!(
         field(one(&outcomes[0]), "n"),
@@ -138,7 +139,7 @@ fn a_conditional_stands_in_a_filter() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT * FROM users WHERE (IF age >= 40 THEN true ELSE false END) = true;")
+        .run_now("SELECT * FROM users WHERE (IF age >= 40 THEN true ELSE false END) = true;")
         .unwrap();
     assert_eq!(outcomes[0].records().map(<[_]>::len), Some(2));
 }
@@ -148,7 +149,7 @@ fn a_conditional_stands_in_an_ordering() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT name FROM users ORDER BY IF age >= 40 THEN 0 ELSE 1 END, name;")
+        .run_now("SELECT name FROM users ORDER BY IF age >= 40 THEN 0 ELSE 1 END, name;")
         .unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(
@@ -162,9 +163,9 @@ fn a_conditional_stands_in_an_assignment() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("UPDATE users:3 SET band = IF age >= 40 THEN 'senior' ELSE 'junior' END;")
+        .run_now("UPDATE users:3 SET band = IF age >= 40 THEN 'senior' ELSE 'junior' END;")
         .unwrap();
-    let outcomes = session.run("SELECT band FROM users:3;").unwrap();
+    let outcomes = session.run_now("SELECT band FROM users:3;").unwrap();
     assert_eq!(
         field(one(&outcomes[0]), "band"),
         &Value::String("senior".to_owned())
@@ -176,7 +177,7 @@ fn coalesce_passes_over_an_absent_field() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT nickname ?? name AS shown FROM users WHERE name = 'alan';")
+        .run_now("SELECT nickname ?? name AS shown FROM users WHERE name = 'alan';")
         .unwrap();
     assert_eq!(
         field(one(&outcomes[0]), "shown"),
@@ -191,7 +192,7 @@ fn and_over_a_null_one_too() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT nickname ?? name AS shown FROM users WHERE name = 'grace';")
+        .run_now("SELECT nickname ?? name AS shown FROM users WHERE name = 'grace';")
         .unwrap();
     assert_eq!(
         field(one(&outcomes[0]), "shown"),
@@ -204,7 +205,7 @@ fn and_keeps_a_value_that_is_there() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT nickname ?? name AS shown FROM users WHERE name = 'ada';")
+        .run_now("SELECT nickname ?? name AS shown FROM users WHERE name = 'ada';")
         .unwrap();
     assert_eq!(
         field(one(&outcomes[0]), "shown"),
@@ -219,10 +220,10 @@ fn none_and_null_stay_different_everywhere_else() {
     let store = store();
     let mut session = ready(&store);
     let absent = session
-        .run("SELECT * FROM users WHERE nickname = NONE;")
+        .run_now("SELECT * FROM users WHERE nickname = NONE;")
         .unwrap();
     let null = session
-        .run("SELECT * FROM users WHERE nickname = NULL;")
+        .run_now("SELECT * FROM users WHERE nickname = NULL;")
         .unwrap();
     assert_eq!(absent[0].records().map(<[_]>::len), Some(1));
     assert_eq!(null[0].records().map(<[_]>::len), Some(1));
@@ -233,7 +234,7 @@ fn coalesce_chains_left_to_right() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT nickname ?? missing ?? 'unknown' AS shown FROM users WHERE name = 'alan';")
+        .run_now("SELECT nickname ?? missing ?? 'unknown' AS shown FROM users WHERE name = 'alan';")
         .unwrap();
     assert_eq!(
         field(one(&outcomes[0]), "shown"),
@@ -248,7 +249,7 @@ fn coalesce_binds_tighter_than_a_comparison() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT * FROM users WHERE nickname ?? name = 'alan';")
+        .run_now("SELECT * FROM users WHERE nickname ?? name = 'alan';")
         .unwrap();
     assert_eq!(outcomes[0].records().map(<[_]>::len), Some(1));
 }
@@ -259,7 +260,7 @@ fn coalesce_binds_looser_than_arithmetic() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT missing ?? 1 + 1 AS n FROM users WHERE name = 'ada';")
+        .run_now("SELECT missing ?? 1 + 1 AS n FROM users WHERE name = 'ada';")
         .unwrap();
     assert_eq!(
         field(one(&outcomes[0]), "n"),
@@ -272,7 +273,7 @@ fn the_two_compose() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run(
+        .run_now(
             "SELECT IF (nickname ?? '') = '' THEN 'no nickname' ELSE nickname END AS shown \
              FROM users WHERE name = 'grace';",
         )
@@ -287,7 +288,7 @@ fn the_two_compose() {
 fn a_conditional_needs_its_end() {
     let store = store();
     let mut session = ready(&store);
-    let failed = session.run("SELECT IF age > 1 THEN 'a' ELSE 'b' AS band FROM users;");
+    let failed = session.run_now("SELECT IF age > 1 THEN 'a' ELSE 'b' AS band FROM users;");
     assert!(
         failed.is_err(),
         "a conditional without END should be refused"
@@ -298,7 +299,7 @@ fn a_conditional_needs_its_end() {
 fn a_test_that_is_not_a_boolean_is_refused() {
     let store = store();
     let mut session = ready(&store);
-    let failed = session.run("SELECT IF name THEN 'a' ELSE 'b' END AS band FROM users;");
+    let failed = session.run_now("SELECT IF name THEN 'a' ELSE 'b' END AS band FROM users;");
     assert!(failed.is_err(), "a non-boolean test should be refused");
 }
 
@@ -308,6 +309,6 @@ fn a_lone_question_mark_is_not_an_operator() {
     // and is refused where it is written rather than further along.
     let store = store();
     let mut session = ready(&store);
-    let failed = session.run("SELECT nickname ? name AS shown FROM users;");
+    let failed = session.run_now("SELECT nickname ? name AS shown FROM users;");
     assert!(failed.is_err(), "a lone `?` should be refused");
 }

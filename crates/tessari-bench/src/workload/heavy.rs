@@ -3,6 +3,7 @@
 use super::{DIMENSIONS, Failable, QUERIES, RECORDS, SECRETS, embedding, ids, prepared};
 use crate::samples::{Report, Samples};
 use std::time::Instant;
+use tessari_session::RunNow;
 use tessaridb::Db;
 
 /// A backup, and the restore that replays it.
@@ -15,13 +16,13 @@ use tessaridb::Db;
 pub(crate) fn restore(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run(
+    session.run_now(
         "USE NAMESPACE bench; USE DATABASE bench;\n\
          DEFINE COLLECTION people;\n\
          DEFINE INDEX by_city ON people FIELDS city;",
     )?;
     for n in 0..RECORDS {
-        session.run(&format!(
+        session.run_now(&format!(
             "CREATE people:{n} = {{ name: 'person {n}', city: 'city {}' }};",
             n % 50
         ))?;
@@ -64,9 +65,9 @@ pub(crate) fn restore(db: &Db) -> Failable<Vec<Report>> {
 pub(crate) fn vector_index(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION items;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION items;")?;
     for n in 0..RECORDS {
-        session.run(&format!(
+        session.run_now(&format!(
             "CREATE items:{n} = {{ embedding: {} }};",
             embedding(n)
         ))?;
@@ -75,7 +76,7 @@ pub(crate) fn vector_index(db: &Db) -> Failable<Vec<Report>> {
     let mut built = Samples::with_capacity(1);
     timed!(
         built,
-        session.run("DEFINE INDEX by_embedding ON items FIELDS embedding VECTOR euclidean;")?
+        session.run_now("DEFINE INDEX by_embedding ON items FIELDS embedding VECTOR euclidean;")?
     );
     let mut reports = vec![built.summarise("vector-index-build")];
 
@@ -89,8 +90,8 @@ pub(crate) fn vector_index(db: &Db) -> Failable<Vec<Report>> {
             format!("SELECT * FROM items ORDER BY vector::euclidean(embedding, {query}) LIMIT 10;");
         let walked_read = format!("{} APPROXIMATE;", exact_read.trim_end_matches(';'));
 
-        let truth = ids(timed!(exact, session.run(&exact_read)?));
-        let found = ids(timed!(approximate, session.run(&walked_read)?));
+        let truth = ids(timed!(exact, session.run_now(&exact_read)?));
+        let found = ids(timed!(approximate, session.run_now(&walked_read)?));
         overlap = overlap.saturating_add(
             u64::try_from(found.iter().filter(|id| truth.contains(id)).count()).unwrap_or(0),
         );
@@ -177,7 +178,7 @@ pub(crate) fn clustered(n: u64) -> String {
 pub(crate) fn vault(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run(
+    session.run_now(
         "USE NAMESPACE bench; USE DATABASE bench;\n\
          UNSEAL VAULT WITH 'a benchmark passphrase';\n\
          DEFINE VAULT credentials;\n\
@@ -192,7 +193,7 @@ pub(crate) fn vault(db: &Db) -> Failable<Vec<Report>> {
     for n in 0..SECRETS {
         timed!(
             sealed,
-            session.run(&format!(
+            session.run_now(&format!(
                 "CREATE credentials:{n} = {{ login: 'user {n}', token: 'ghp_{n}_0123456789abcdef' }};"
             ))?
         );
@@ -204,7 +205,7 @@ pub(crate) fn vault(db: &Db) -> Failable<Vec<Report>> {
     for n in 0..SECRETS {
         timed!(
             unsealed,
-            session.run(&format!(
+            session.run_now(&format!(
                 "CREATE plain:{n} = {{ login: 'user {n}', token: 'ghp_{n}_0123456789abcdef' }};"
             ))?
         );
@@ -214,13 +215,13 @@ pub(crate) fn vault(db: &Db) -> Failable<Vec<Report>> {
     for n in 0..SECRETS {
         timed!(
             revealed,
-            session.run(&format!("REVEAL token FROM credentials:{n};"))?
+            session.run_now(&format!("REVEAL token FROM credentials:{n};"))?
         );
     }
 
     let mut read = Samples::with_capacity(held);
     for n in 0..SECRETS {
-        timed!(read, session.run(&format!("SELECT * FROM plain:{n};"))?);
+        timed!(read, session.run_now(&format!("SELECT * FROM plain:{n};"))?);
     }
 
     Ok(vec![

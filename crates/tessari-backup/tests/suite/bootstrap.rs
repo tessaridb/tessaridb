@@ -16,6 +16,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_encoding::LogId;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -56,7 +57,7 @@ fn store() -> (Arc<dyn KvBackend>, Store) {
 fn session(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
     session
 }
@@ -66,7 +67,7 @@ fn leader() -> (Store, Vec<u8>) {
     let (_, store) = store();
     {
         let mut opening = Session::new(&store);
-        opening.run(LEADER).unwrap();
+        opening.run_now(LEADER).unwrap();
     }
     let mut prefix = Vec::new();
     let written = tessari_backup::write(&store, &mut prefix).unwrap();
@@ -90,7 +91,7 @@ fn interrogate(store: &Store) -> Vec<String> {
     let mut session = session(store);
     INTERROGATION
         .iter()
-        .map(|script| format!("{:?}", session.run(script).unwrap()))
+        .map(|script| format!("{:?}", session.run_now(script).unwrap()))
         .collect()
 }
 
@@ -126,10 +127,10 @@ fn a_bootstrapped_node_follows_from_where_it_stopped_and_neither_replays_nor_ski
     {
         let mut moving = session(&held);
         moving
-            .run("DEFINE FIELD city ON people TYPE string;")
+            .run_now("DEFINE FIELD city ON people TYPE string;")
             .unwrap();
         moving
-            .run("CREATE people:4 = { name: 'katherine', email: 'd@x', city: 'hampton' };")
+            .run_now("CREATE people:4 = { name: 'katherine', email: 'd@x', city: 'hampton' };")
             .unwrap();
     }
 
@@ -174,7 +175,7 @@ fn the_change_feed_is_not_the_replication_channel() {
     {
         let mut moving = session(&held);
         moving
-            .run("DEFINE FIELD city ON people TYPE string;")
+            .run_now("DEFINE FIELD city ON people TYPE string;")
             .unwrap();
     }
 
@@ -252,7 +253,7 @@ fn a_node_that_already_holds_something_is_refused_rather_than_merged() {
     {
         let mut its_own = Session::new(&occupied);
         its_own
-            .run("DEFINE NAMESPACE mine; USE NAMESPACE mine; DEFINE DATABASE theirs;")
+            .run_now("DEFINE NAMESPACE mine; USE NAMESPACE mine; DEFINE DATABASE theirs;")
             .unwrap();
     }
 

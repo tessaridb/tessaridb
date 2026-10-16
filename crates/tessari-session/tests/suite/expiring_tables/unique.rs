@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration as Wait;
+use tessari_session::RunNow;
 
 use tessari_encoding::{IndexTarget, KeyKind, StoreKey, StoreValue, UniqueIndexKey};
 use tessari_kv::{KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
@@ -82,7 +83,7 @@ fn a_unique_value_a_live_record_holds_is_still_refused() {
     );
     assert!(
         session
-            .run("CREATE users:2 = { email: 'a@x' };")
+            .run_now("CREATE users:2 = { email: 'a@x' };")
             .unwrap_err()
             .to_string()
             .contains("by_email"),

@@ -40,6 +40,7 @@
 //! time and a hundred at a time, which is the number behind that advice.
 
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessaridb::Db;
 
@@ -82,7 +83,7 @@ const BATCH: u64 = 100;
 pub fn queue(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench;")?;
 
     let mut reports = vec![Report::measurement(
         "corpus",
@@ -97,7 +98,7 @@ pub fn queue(db: &Db) -> Failable<Vec<Report>> {
         // prefix another one inherits. The claimable records behind the prefix
         // are what the timed claims consume.
         let held_name = format!("held_{depth}");
-        session.run(&format!("DEFINE QUEUE {held_name} TIMEOUT 3600s;"))?;
+        session.run_now(&format!("DEFINE QUEUE {held_name} TIMEOUT 3600s;"))?;
         seed(&mut session, &held_name, depth.saturating_add(SAMPLES))?;
         // Claimed and left. An hour is far longer than this workload runs, so
         // nothing in the prefix lapses while it is being measured.
@@ -112,7 +113,7 @@ pub fn queue(db: &Db) -> Failable<Vec<Report>> {
         // hold of no length means the deadline is never what stops a record
         // being handed out again — the spent attempt is.
         let dead_name = format!("dead_{depth}");
-        session.run(&format!("DEFINE QUEUE {dead_name} TIMEOUT 1ns ATTEMPTS 1;"))?;
+        session.run_now(&format!("DEFINE QUEUE {dead_name} TIMEOUT 1ns ATTEMPTS 1;"))?;
         seed(&mut session, &dead_name, depth.saturating_add(SAMPLES))?;
         take(&mut session, &dead_name, depth)?;
         reports.push(timed_claims(
@@ -133,24 +134,24 @@ pub fn queue(db: &Db) -> Failable<Vec<Report>> {
     // throughput identical to the thousand-held row above. The delete is a
     // worker finishing its work, and it is outside the timer because what is
     // being measured is the claim.
-    session.run("DEFINE QUEUE drained_one TIMEOUT 3600s;")?;
+    session.run_now("DEFINE QUEUE drained_one TIMEOUT 3600s;")?;
     seed(&mut session, "drained_one", DRAIN)?;
     let mut one = Samples::with_capacity(usize::try_from(DRAIN).unwrap_or(usize::MAX));
     for _ in 0..DRAIN {
         let started = Instant::now();
-        let taken = session.run("CLAIM FROM drained_one;")?;
+        let taken = session.run_now("CLAIM FROM drained_one;")?;
         one.push(started.elapsed());
         finish(&mut session, "drained_one", &handed_out(taken))?;
     }
     reports.push(one.summarise("drain one at a time"));
 
-    session.run("DEFINE QUEUE drained_batch TIMEOUT 3600s;")?;
+    session.run_now("DEFINE QUEUE drained_batch TIMEOUT 3600s;")?;
     seed(&mut session, "drained_batch", DRAIN)?;
     let batches = DRAIN / BATCH;
     let mut batched = Samples::with_capacity(usize::try_from(batches).unwrap_or(usize::MAX));
     for _ in 0..batches {
         let started = Instant::now();
-        let taken = session.run(&format!("CLAIM {BATCH} FROM drained_batch;"))?;
+        let taken = session.run_now(&format!("CLAIM {BATCH} FROM drained_batch;"))?;
         batched.push(started.elapsed());
         finish(&mut session, "drained_batch", &handed_out(taken))?;
     }
@@ -165,7 +166,7 @@ pub fn queue(db: &Db) -> Failable<Vec<Report>> {
 /// Fill a queue with `count` pieces of work.
 fn seed(session: &mut tessaridb::Session<'_>, queue: &str, count: u64) -> Failable<()> {
     for n in 0..count {
-        session.run(&format!("CREATE {queue}:{n} = {{ url: 'j{n}' }};"))?;
+        session.run_now(&format!("CREATE {queue}:{n} = {{ url: 'j{n}' }};"))?;
     }
     Ok(())
 }
@@ -178,7 +179,7 @@ fn take(session: &mut tessaridb::Session<'_>, queue: &str, count: u64) -> Failab
     let mut taken = 0_u64;
     while taken < count {
         let asking = CLAIM_CEILING.min(count.saturating_sub(taken));
-        session.run(&format!("CLAIM {asking} FROM {queue};"))?;
+        session.run_now(&format!("CLAIM {asking} FROM {queue};"))?;
         taken = taken.saturating_add(asking);
     }
     Ok(())
@@ -193,7 +194,7 @@ fn timed_claims(
     let mut samples = Samples::with_capacity(usize::try_from(SAMPLES).unwrap_or(usize::MAX));
     for _ in 0..SAMPLES {
         let started = Instant::now();
-        session.run(&format!("CLAIM FROM {queue};"))?;
+        session.run_now(&format!("CLAIM FROM {queue};"))?;
         samples.push(started.elapsed());
     }
     Ok(samples.summarise(phase))
@@ -215,7 +216,7 @@ fn finish(
     taken: &[tessari_types::RecordId],
 ) -> Failable<()> {
     for id in taken {
-        session.run(&format!("DELETE {queue}:{};", id.to_literal()))?;
+        session.run_now(&format!("DELETE {queue}:{};", id.to_literal()))?;
     }
     Ok(())
 }

@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tessari_session::RunNow;
 
 use tessari_ingest::{Broker, Message, Runner, Source, SourceError};
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -47,13 +48,13 @@ fn declared_on(backend: &Arc<dyn KvBackend>, policy: &str, parallelism: &str) ->
     let store = Store::open(Arc::clone(backend)).unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
              DEFINE DATABASE shop; USE DATABASE shop; DEFINE COLLECTION orders;",
         )
         .unwrap();
     session
-        .run(
+        .run_now(
             &DECLARE
                 .replace("ON FAILURE quarantine", &format!("ON FAILURE {policy}"))
                 .replace(";", &format!("{parallelism};")),
@@ -66,7 +67,7 @@ fn declared_on(backend: &Arc<dyn KvBackend>, policy: &str, parallelism: &str) ->
 fn landed(store: &Store) -> BTreeMap<String, Value> {
     let mut session = Session::new(store);
     let answered = session
-        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;")
         .unwrap();
     let Some(Outcome::Records { records, .. }) = answered.last() else {
         panic!("not records: {answered:?}");
@@ -454,7 +455,7 @@ fn a_declaration_whose_destination_has_gone_is_skipped_rather_than_fatal() {
     // as not running here, which is the same thing `INFO FOR KAFKA CONSUMER` says.
     let store = declared("quarantine", "");
     Session::new(&store)
-        .run("USE NAMESPACE prod; USE DATABASE shop; DROP TABLE orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; DROP TABLE orders;")
         .unwrap();
     let broker: Arc<dyn Broker> = Arc::new(Handing {
         messages: vec![message(0, 1, r#"{"order_id": 1, "amount": 10}"#)],
@@ -607,7 +608,7 @@ fn a_quarantined_message_is_found_through_the_language_after_a_restart() {
     let reopened = Store::open(Arc::clone(&backend)).unwrap();
     let mut session = Session::new(&reopened);
     let answered = session
-        .run("USE NAMESPACE prod; USE DATABASE shop; INFO FOR KAFKA CONSUMER orders_in;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; INFO FOR KAFKA CONSUMER orders_in;")
         .unwrap();
     let Some(Outcome::Value(Value::Object(info))) = answered.last() else {
         panic!("not an object: {answered:?}");
@@ -684,7 +685,7 @@ mod broker {
         let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
         let mut session = Session::new(&store);
         session
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
                  DEFINE DATABASE shop; USE DATABASE shop; DEFINE COLLECTION orders; \
                  DEFINE KAFKA CONSUMER orders_in FROM '{brokers}' TOPIC '{topic}' \

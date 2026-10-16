@@ -6,6 +6,7 @@
 //! no way to plant a credential weaker than the store would have made itself.
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -34,7 +35,7 @@ fn stored(store: &Store, name: &str) -> String {
 fn a_user_defined_by_their_stored_hash_signs_in_with_their_password() {
     let source = store();
     Session::new(&source)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE USER ada ROLE owner PASSWORD '{PASSWORD}';"
         ))
         .unwrap();
@@ -42,7 +43,7 @@ fn a_user_defined_by_their_stored_hash_signs_in_with_their_password() {
 
     let target = store();
     Session::new(&target)
-        .run(&format!("DEFINE USER ada ROLE owner PASSHASH '{hash}';"))
+        .run_now(&format!("DEFINE USER ada ROLE owner PASSHASH '{hash}';"))
         .unwrap();
     assert_eq!(
         stored(&target, "ada"),
@@ -78,7 +79,7 @@ fn a_hash_this_store_would_not_have_made_is_refused() {
     );
     assert!(
         Session::new(&store())
-            .run(&format!("DEFINE USER ada ROLE owner PASSHASH '{floor}';"))
+            .run_now(&format!("DEFINE USER ada ROLE owner PASSHASH '{floor}';"))
             .is_ok(),
         "a hash at the store's own parameters was refused"
     );
@@ -89,7 +90,7 @@ fn a_hash_this_store_would_not_have_made_is_refused() {
         "hunter2".to_owned(),
     ] {
         let refused = Session::new(&store())
-            .run(&format!("DEFINE USER ada ROLE owner PASSHASH '{weak}';"))
+            .run_now(&format!("DEFINE USER ada ROLE owner PASSHASH '{weak}';"))
             .unwrap_err()
             .to_string();
         assert!(

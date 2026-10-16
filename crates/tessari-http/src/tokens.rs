@@ -179,6 +179,8 @@ impl Tokens {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use tessari_session::RunNow;
+
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -203,7 +205,7 @@ mod tests {
     fn signed(store: &Store) -> Session<'_> {
         let mut declaring = Session::new(store);
         declaring
-            .run("DEFINE USER ada ROLE owner PASSWORD 'correct horse battery';")
+            .run_now("DEFINE USER ada ROLE owner PASSWORD 'correct horse battery';")
             .unwrap();
         let mut session = Session::new(store);
         session.sign_in("ada", "correct horse battery").unwrap();

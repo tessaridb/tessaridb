@@ -121,7 +121,7 @@ fn a_shard_the_answerers_map_has_moved_past_is_refused_as_moved() {
     let authority = Authority::new();
     let (db, table) = leader();
     db.session()
-        .run("USE NAMESPACE prod; USE DATABASE shop; ALTER TABLE ledger SPLIT AT 'c';")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; ALTER TABLE ledger SPLIT AT 'c';")
         .unwrap();
     let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 1);
     let retired = ask(&authority, address, &asking(table, 1));

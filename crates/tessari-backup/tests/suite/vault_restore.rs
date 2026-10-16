@@ -26,6 +26,7 @@
 
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessari_kv::{KeyRange, Keyspace, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
 use tessari_session::{Outcome, Session};
@@ -94,7 +95,7 @@ fn a_vault_survives_a_backup_and_opens_again_with_only_the_passphrase() {
     {
         let mut session = Session::new(&source);
         session
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod;
                  DEFINE DATABASE work; USE DATABASE work;
                  UNSEAL VAULT WITH '{PASSPHRASE}';
@@ -124,21 +125,21 @@ fn a_vault_survives_a_backup_and_opens_again_with_only_the_passphrase() {
     assert!(brought_up.records > 0, "a restore that applied nothing");
 
     let mut session = Session::new(&restored);
-    session.run(USING).unwrap();
+    session.run_now(USING).unwrap();
 
     // The control first: the vault and its record are here. Without this, the
     // refusal below could mean the backup carried nothing at all.
-    session.run("INFO FOR VAULT team;").unwrap();
+    session.run_now("INFO FOR VAULT team;").unwrap();
 
     // Sealed. This is the assertion the whole drill exists for.
     session
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .expect_err("a restored store opened a vault before anybody unsealed it");
 
     // And the passphrase has to be the right one — a restore that accepted any
     // passphrase would be carrying the key rather than the wrapper.
     session
-        .run("UNSEAL VAULT WITH 'not the passphrase';")
+        .run_now("UNSEAL VAULT WITH 'not the passphrase';")
         .expect_err("a restored store unsealed with the wrong passphrase");
 
     // What unsealing required: the passphrase, and nothing else. No key file,
@@ -147,13 +148,13 @@ fn a_vault_survives_a_backup_and_opens_again_with_only_the_passphrase() {
     // turns it into a key.
     let unseal_started = Instant::now();
     session
-        .run(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
         .unwrap();
     let unseal_took = unseal_started.elapsed();
 
     let reveal_started = Instant::now();
     let opened = match session
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .unwrap()
         .pop()
         .unwrap()

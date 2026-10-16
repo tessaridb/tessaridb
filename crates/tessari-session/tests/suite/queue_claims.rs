@@ -21,6 +21,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -35,7 +36,7 @@ fn store() -> Store {
 fn ready<'a>(store: &'a Store, declaration: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE QUEUE jobs {declaration};\n\
@@ -57,7 +58,7 @@ fn claimed(outcome: &Outcome) -> Vec<String> {
 
 /// One statement's outcome.
 fn run(session: &mut Session<'_>, script: &str) -> Outcome {
-    session.run(script).unwrap().pop().unwrap()
+    session.run_now(script).unwrap().pop().unwrap()
 }
 
 #[test]
@@ -215,8 +216,8 @@ fn a_caller_cannot_write_the_fields_the_engine_writes() {
     let store = store();
     let mut session = ready(&store, "TIMEOUT 30s");
 
-    let deadline = session.run("CREATE jobs:9 = { claimed_until: 1 };");
-    let attempts = session.run("UPDATE jobs:1 SET attempts = 0;");
+    let deadline = session.run_now("CREATE jobs:9 = { claimed_until: 1 };");
+    let attempts = session.run_now("UPDATE jobs:1 SET attempts = 0;");
 
     // Named rather than silently dropped, so a payload that happens to use one
     // of these names is told exactly what happened (Q-461).
@@ -232,7 +233,7 @@ fn the_same_field_names_are_ordinary_on_a_table_that_is_not_a_queue() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION notes;\n\
@@ -257,14 +258,14 @@ fn claiming_from_a_table_that_is_not_a_queue_is_refused() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION notes; CREATE notes:1 = { a: 1 };",
         )
         .unwrap();
 
-    let refused = session.run("CLAIM FROM notes;");
+    let refused = session.run_now("CLAIM FROM notes;");
 
     // Refused rather than answered as an ordinary read: `CLAIM` writes, and a
     // table that gained holds because somebody used the wrong verb would carry
@@ -277,7 +278,7 @@ fn a_claim_above_the_ceiling_is_refused_by_the_store_and_names_the_number() {
     let store = store();
     let mut session = ready(&store, "TIMEOUT 30s");
 
-    let refused = session.run("CLAIM 501 FROM jobs;");
+    let refused = session.run_now("CLAIM 501 FROM jobs;");
 
     // The grammar refuses zero because that is a shape mistake; the ceiling is
     // the store's question, and this is where it is answered.
@@ -299,7 +300,7 @@ fn a_queue_declared_with_no_ceiling_hands_a_record_out_without_end() {
     // grammar refuses `ATTEMPTS 0` rather than reading it as a second one.
     assert!(
         session
-            .run("DEFINE QUEUE other TIMEOUT 5s ATTEMPTS 0;")
+            .run_now("DEFINE QUEUE other TIMEOUT 5s ATTEMPTS 0;")
             .is_err()
     );
 }
@@ -310,23 +311,23 @@ fn dropping_a_queue_takes_its_held_records_with_it() {
     let mut session = ready(&store, "TIMEOUT 30s");
 
     run(&mut session, "CLAIM 2 FROM jobs;");
-    session.run("DROP QUEUE jobs;").unwrap();
+    session.run_now("DROP QUEUE jobs;").unwrap();
 
     // A hold is a field on a record rather than a resource somebody else owns,
     // so there is nothing here to wait for and nothing to release first.
-    assert!(session.run("SELECT * FROM jobs;").is_err());
+    assert!(session.run_now("SELECT * FROM jobs;").is_err());
 }
 
 #[test]
 fn drop_queue_refuses_a_table_that_is_not_one() {
     let store = store();
     let mut session = ready(&store, "TIMEOUT 30s");
-    session.run("DEFINE COLLECTION notes;").unwrap();
+    session.run_now("DEFINE COLLECTION notes;").unwrap();
 
     // Reported as unknown rather than as a wrong kind, the shape `DROP VECTOR`
     // already uses: a word that removed a table of another kind would be a
     // second spelling of `DROP TABLE`.
-    assert!(session.run("DROP QUEUE notes;").is_err());
+    assert!(session.run_now("DROP QUEUE notes;").is_err());
 }
 
 // ------------------------------------------------------------- the claimant
@@ -335,7 +336,7 @@ fn drop_queue_refuses_a_table_that_is_not_one() {
 fn beside<'a>(store: &'a Store) -> Session<'a> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -370,7 +371,7 @@ fn holder(session: &mut Session<'_>, record: &str) -> String {
 fn a_session_that_says_who_it_is_signs_the_hold_and_one_that_does_not_signs_nothing() {
     let store = store();
     let mut said = ready(&store, "TIMEOUT 30s");
-    said.run("USE CONSUMER 'billing';").unwrap();
+    said.run_now("USE CONSUMER 'billing';").unwrap();
     run(&mut said, "CLAIM FROM jobs;");
     let signed = holder(&mut said, "jobs:1");
     assert!(signed.starts_with("billing/"), "{signed}");
@@ -389,16 +390,16 @@ fn releasing_another_claimants_hold_is_refused_and_names_the_consumer() {
     // anywhere saying so.
     let store = store();
     let mut mine = ready(&store, "TIMEOUT 30s");
-    mine.run("USE CONSUMER 'billing';").unwrap();
+    mine.run_now("USE CONSUMER 'billing';").unwrap();
     run(&mut mine, "CLAIM jobs:1;");
 
     let mut theirs = beside(&store);
-    theirs.run("USE CONSUMER 'reports';").unwrap();
-    let refused = theirs.run("RELEASE jobs:1;").unwrap_err().to_string();
+    theirs.run_now("USE CONSUMER 'reports';").unwrap();
+    let refused = theirs.run_now("RELEASE jobs:1;").unwrap_err().to_string();
     assert!(refused.contains("billing"), "{refused}");
 
     // And my own hold still lets go.
-    mine.run("RELEASE jobs:1;").unwrap();
+    mine.run_now("RELEASE jobs:1;").unwrap();
     assert_eq!(holder(&mut mine, "jobs:1"), "none");
 }
 
@@ -410,18 +411,18 @@ fn an_unsigned_hold_stays_releasable_by_anybody() {
     let mut first = ready(&store, "TIMEOUT 30s");
     run(&mut first, "CLAIM jobs:1;");
     let mut other = beside(&store);
-    other.run("RELEASE jobs:1;").unwrap();
+    other.run_now("RELEASE jobs:1;").unwrap();
 }
 
 #[test]
 fn release_all_answers_the_records_it_freed_and_leaves_other_claimants_alone() {
     let store = store();
     let mut mine = ready(&store, "TIMEOUT 30s");
-    mine.run("USE CONSUMER 'billing';").unwrap();
+    mine.run_now("USE CONSUMER 'billing';").unwrap();
     run(&mut mine, "CLAIM 2 FROM jobs;");
 
     let mut theirs = beside(&store);
-    theirs.run("USE CONSUMER 'reports';").unwrap();
+    theirs.run_now("USE CONSUMER 'reports';").unwrap();
     run(&mut theirs, "CLAIM FROM jobs;");
 
     // The records and not a count: a caller cannot list what it holds without
@@ -444,7 +445,10 @@ fn release_all_without_a_declared_consumer_is_refused_and_names_the_statement() 
     let store = store();
     let mut quiet = ready(&store, "TIMEOUT 30s");
     run(&mut quiet, "CLAIM FROM jobs;");
-    let refused = quiet.run("RELEASE ALL FROM jobs;").unwrap_err().to_string();
+    let refused = quiet
+        .run_now("RELEASE ALL FROM jobs;")
+        .unwrap_err()
+        .to_string();
     assert!(refused.contains("USE CONSUMER"), "{refused}");
 }
 
@@ -455,9 +459,9 @@ fn the_same_consumer_name_shares_the_work_and_fences_nobody() {
     // workers*, and fencing them would make the fifth displace the fourth.
     let store = store();
     let mut one = ready(&store, "TIMEOUT 30s");
-    one.run("USE CONSUMER 'billing';").unwrap();
+    one.run_now("USE CONSUMER 'billing';").unwrap();
     let mut two = beside(&store);
-    two.run("USE CONSUMER 'billing';").unwrap();
+    two.run_now("USE CONSUMER 'billing';").unwrap();
 
     assert_eq!(claimed(&run(&mut one, "CLAIM FROM jobs;")), vec!["1"]);
     // The second session under the same name gets DIFFERENT work, and the
@@ -473,9 +477,9 @@ fn two_sessions_under_one_name_hold_different_instances() {
     // colleague's work by accident.
     let store = store();
     let mut one = ready(&store, "TIMEOUT 30s");
-    one.run("USE CONSUMER 'billing';").unwrap();
+    one.run_now("USE CONSUMER 'billing';").unwrap();
     let mut two = beside(&store);
-    two.run("USE CONSUMER 'billing';").unwrap();
+    two.run_now("USE CONSUMER 'billing';").unwrap();
     run(&mut one, "CLAIM jobs:1;");
     run(&mut two, "CLAIM jobs:2;");
     assert_ne!(holder(&mut one, "jobs:1"), holder(&mut two, "jobs:2"));
@@ -491,9 +495,9 @@ fn the_named_consumer_form_reaches_the_whole_group() {
     // to type. Both holds go, and that is the point of naming it.
     let store = store();
     let mut one = ready(&store, "TIMEOUT 30s");
-    one.run("USE CONSUMER 'billing';").unwrap();
+    one.run_now("USE CONSUMER 'billing';").unwrap();
     let mut two = beside(&store);
-    two.run("USE CONSUMER 'billing';").unwrap();
+    two.run_now("USE CONSUMER 'billing';").unwrap();
     run(&mut one, "CLAIM jobs:1;");
     run(&mut two, "CLAIM jobs:2;");
 
@@ -512,11 +516,11 @@ fn declaring_a_consumer_again_mints_a_new_instance() {
     // inside one session.
     let store = store();
     let mut session = ready(&store, "TIMEOUT 30s");
-    session.run("USE CONSUMER 'billing';").unwrap();
+    session.run_now("USE CONSUMER 'billing';").unwrap();
     run(&mut session, "CLAIM jobs:1;");
     let first = holder(&mut session, "jobs:1");
 
-    session.run("USE CONSUMER 'billing';").unwrap();
+    session.run_now("USE CONSUMER 'billing';").unwrap();
     run(&mut session, "CLAIM jobs:2;");
     assert_ne!(first, holder(&mut session, "jobs:2"));
 
@@ -534,7 +538,7 @@ fn a_caller_cannot_sign_a_hold_itself() {
     let store = store();
     let mut session = ready(&store, "TIMEOUT 30s");
     let refused = session
-        .run("CREATE jobs:9 = { url: 'd', claimed_by: { consumer: 'billing' } };")
+        .run_now("CREATE jobs:9 = { url: 'd', claimed_by: { consumer: 'billing' } };")
         .unwrap_err()
         .to_string();
     assert!(refused.contains("claimed_by"), "{refused}");
@@ -550,20 +554,20 @@ fn a_group_frees_a_siblings_hold_by_naming_the_record() {
     // of them.
     let store = store();
     let mut first = ready(&store, "TIMEOUT 30s");
-    first.run("USE CONSUMER 'billing';").unwrap();
+    first.run_now("USE CONSUMER 'billing';").unwrap();
     run(&mut first, "CLAIM jobs:1;");
 
     let mut second = beside(&store);
-    second.run("USE CONSUMER 'billing';").unwrap();
+    second.run_now("USE CONSUMER 'billing';").unwrap();
 
     // The bare form still refuses, because the instance is not this one's —
     // that is the safety this statement is deliberately not weakening.
-    let refused = second.run("RELEASE jobs:1;").unwrap_err().to_string();
+    let refused = second.run_now("RELEASE jobs:1;").unwrap_err().to_string();
     assert!(refused.contains("billing"), "{refused}");
 
     // Naming the group frees it.
     second
-        .run("RELEASE jobs:1 FOR CONSUMER 'billing';")
+        .run_now("RELEASE jobs:1 FOR CONSUMER 'billing';")
         .unwrap();
     assert_eq!(holder(&mut second, "jobs:1"), "none");
 }
@@ -575,12 +579,12 @@ fn naming_a_group_that_does_not_hold_the_record_is_refused_and_names_the_one_tha
     // gives, carrying the holder so the caller learns who to ask.
     let store = store();
     let mut mine = ready(&store, "TIMEOUT 30s");
-    mine.run("USE CONSUMER 'billing';").unwrap();
+    mine.run_now("USE CONSUMER 'billing';").unwrap();
     run(&mut mine, "CLAIM jobs:1;");
 
     let mut theirs = beside(&store);
     let refused = theirs
-        .run("RELEASE jobs:1 FOR CONSUMER 'reports';")
+        .run_now("RELEASE jobs:1 FOR CONSUMER 'reports';")
         .unwrap_err()
         .to_string();
     assert!(refused.contains("billing"), "{refused}");
@@ -599,12 +603,14 @@ fn naming_a_group_leaves_a_hold_nobody_signed_exactly_where_the_sweep_leaves_it(
     let deadline = held_until(&mut quiet, "jobs:1");
 
     let mut named = beside(&store);
-    named.run("RELEASE jobs:1 FOR CONSUMER 'billing';").unwrap();
+    named
+        .run_now("RELEASE jobs:1 FOR CONSUMER 'billing';")
+        .unwrap();
     // Still held, and by the same deadline: the statement did nothing at all.
     assert_eq!(held_until(&mut named, "jobs:1"), deadline);
 
     // And the bare form goes on freeing it, as it always has.
-    named.run("RELEASE jobs:1;").unwrap();
+    named.run_now("RELEASE jobs:1;").unwrap();
     assert_eq!(holder(&mut named, "jobs:1"), "none");
 }
 
@@ -634,7 +640,7 @@ fn a_strict_queue_accepts_the_fields_the_engine_writes_and_still_refuses_the_cal
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE QUEUE jobs TIMEOUT 30s;\n\
@@ -643,7 +649,7 @@ fn a_strict_queue_accepts_the_fields_the_engine_writes_and_still_refuses_the_cal
              CREATE jobs:1 = { url: 'a' };",
         )
         .unwrap();
-    session.run("USE CONSUMER 'billing';").unwrap();
+    session.run_now("USE CONSUMER 'billing';").unwrap();
     let taken = claimed(&run(&mut session, "CLAIM FROM jobs;"));
     assert_eq!(taken, vec!["1".to_owned()]);
     assert!(holder(&mut session, "jobs:1").starts_with("billing/"));
@@ -651,7 +657,7 @@ fn a_strict_queue_accepts_the_fields_the_engine_writes_and_still_refuses_the_cal
     // The exemption opens nothing: a caller writing the same field is refused
     // by the guard that says it is the engine's, before strictness is asked.
     let refused = session
-        .run("UPDATE jobs:1 SET attempts = 0;")
+        .run_now("UPDATE jobs:1 SET attempts = 0;")
         .unwrap_err()
         .to_string();
     assert!(refused.contains("written by the store"), "{refused}");
@@ -669,20 +675,20 @@ fn a_claimed_record_may_still_be_worked_on() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE QUEUE jobs TIMEOUT 30s;\n\
              CREATE jobs:1 = { url: 'a' };",
         )
         .unwrap();
-    session.run("USE CONSUMER 'billing';").unwrap();
+    session.run_now("USE CONSUMER 'billing';").unwrap();
     let taken = claimed(&run(&mut session, "CLAIM FROM jobs;"));
     assert_eq!(taken, vec!["1".to_owned()]);
     let deadline = held_until(&mut session, "jobs:1");
 
     // A field of the caller's own, on a record the caller holds.
-    session.run("UPDATE jobs:1 SET url = 'b';").unwrap();
+    session.run_now("UPDATE jobs:1 SET url = 'b';").unwrap();
 
     // And the hold is still there afterwards, on the same deadline and with the
     // same count. An update that quietly freed the work would pass an assertion
@@ -699,7 +705,7 @@ fn a_claimed_record_may_still_be_worked_on() {
         "UPDATE jobs:1 SET claimed_until = 1;",
         "UPDATE jobs:1 SET claimed_by = 'someone';",
     ] {
-        let refused = session.run(statement).unwrap_err().to_string();
+        let refused = session.run_now(statement).unwrap_err().to_string();
         assert!(
             refused.contains("written by the store"),
             "{statement}: {refused}"
@@ -743,14 +749,14 @@ fn a_compare_and_set_on_held_work_keeps_the_hold() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE QUEUE jobs TIMEOUT 30s;\n\
              CREATE jobs:1 = { url: 'a', version: 1 };",
         )
         .unwrap();
-    session.run("USE CONSUMER 'billing';").unwrap();
+    session.run_now("USE CONSUMER 'billing';").unwrap();
     let taken = claimed(&run(&mut session, "CLAIM FROM jobs;"));
     assert_eq!(taken, vec!["1".to_owned()]);
 
@@ -760,7 +766,7 @@ fn a_compare_and_set_on_held_work_keeps_the_hold() {
 
     // The compare-and-set a versioned consumer writes, in one statement.
     session
-        .run("UPDATE jobs:1 SET url = 'b', version = 2 WHERE version = 1;")
+        .run_now("UPDATE jobs:1 SET url = 'b', version = 2 WHERE version = 1;")
         .unwrap();
 
     assert_eq!(
@@ -781,7 +787,7 @@ fn a_compare_and_set_on_held_work_keeps_the_hold() {
 
     // And the loser of the race is refused rather than told a number.
     let refused = session
-        .run("UPDATE jobs:1 SET url = 'c', version = 3 WHERE version = 1;")
+        .run_now("UPDATE jobs:1 SET url = 'c', version = 3 WHERE version = 1;")
         .unwrap_err()
         .to_string();
     assert!(
@@ -822,7 +828,7 @@ fn a_queue_can_be_an_end_of_a_link() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE GRAPH work;\n\
@@ -856,7 +862,7 @@ fn a_strict_queue_refuses_a_field_nobody_declared() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE QUEUE jobs TIMEOUT 30s SCHEMAFULL;\n\
@@ -866,7 +872,7 @@ fn a_strict_queue_refuses_a_field_nobody_declared() {
         .unwrap();
 
     let refused = session
-        .run("CREATE jobs:2 = { url: 'b', sneaky: 3 };")
+        .run_now("CREATE jobs:2 = { url: 'b', sneaky: 3 };")
         .unwrap_err()
         .to_string();
     assert!(refused.contains("sneaky"), "{refused}");
@@ -883,10 +889,10 @@ fn a_queue_declared_with_no_flags_is_lenient_and_in_no_graph() {
     let store = store();
     let mut session = ready(&store, "TIMEOUT 30s");
     session
-        .run("CREATE jobs:9 = { url: 'd', anything: true };")
+        .run_now("CREATE jobs:9 = { url: 'd', anything: true };")
         .unwrap();
     let refused = session
-        .run("DEFINE GRAPH work; DEFINE TABLE crews SCHEMALESS IN work; DEFINE EDGE runs IN work FROM crews TO jobs;")
+        .run_now("DEFINE GRAPH work; DEFINE TABLE crews SCHEMALESS IN work; DEFINE EDGE runs IN work FROM crews TO jobs;")
         .unwrap_err()
         .to_string();
     assert!(
@@ -907,21 +913,21 @@ fn the_queue_flags_are_order_free_and_neither_is_accepted_twice() {
         let store = store();
         let mut session = Session::new(&store);
         session
-            .run(
+            .run_now(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
                  DEFINE DATABASE shop; USE DATABASE shop;\n\
                  DEFINE GRAPH work;",
             )
             .unwrap();
         session
-            .run(declaration)
+            .run_now(declaration)
             .unwrap_or_else(|error| panic!("{declaration} was refused: {error}"));
     }
 
     let alone = store();
     let mut session = Session::new(&alone);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE GRAPH work;",
@@ -932,7 +938,7 @@ fn the_queue_flags_are_order_free_and_neither_is_accepted_twice() {
         "DEFINE QUEUE jobs TIMEOUT 30s IN work IN work;",
     ] {
         assert!(
-            session.run(twice).is_err(),
+            session.run_now(twice).is_err(),
             "a repeated flag was accepted: {twice}"
         );
     }
@@ -971,7 +977,7 @@ fn a_whole_record_write_cannot_drop_the_hold_or_the_attempt_count() {
 
     // The form a consumer that stores whole records actually writes — the
     // caller's own fields, and nothing said about the engine's.
-    session.run("UPDATE jobs:1 = { url: 'z' };").unwrap();
+    session.run_now("UPDATE jobs:1 = { url: 'z' };").unwrap();
 
     assert_eq!(
         holder(&mut session, "jobs:1"),
@@ -1012,11 +1018,11 @@ fn a_whole_record_write_cannot_clear_the_attempt_count_of_a_free_record() {
     let mut session = ready(&store, "TIMEOUT 30s ATTEMPTS 3");
     run(&mut session, "USE CONSUMER 'billing'; CLAIM jobs:1;");
     session
-        .run("RELEASE jobs:1 FOR CONSUMER 'billing';")
+        .run_now("RELEASE jobs:1 FOR CONSUMER 'billing';")
         .unwrap();
     let attempts = attempts_of(&mut session, "jobs:1");
 
-    session.run("UPDATE jobs:1 = { url: 'z' };").unwrap();
+    session.run_now("UPDATE jobs:1 = { url: 'z' };").unwrap();
     assert_eq!(
         attempts_of(&mut session, "jobs:1"),
         attempts,
@@ -1036,7 +1042,7 @@ fn a_whole_record_compare_and_set_keeps_the_hold() {
     let attempts = attempts_of(&mut session, "jobs:1");
 
     session
-        .run("UPDATE jobs:1 = { url: 'z' } WHERE url = 'a';")
+        .run_now("UPDATE jobs:1 = { url: 'z' } WHERE url = 'a';")
         .unwrap();
     assert_eq!(holder(&mut session, "jobs:1"), held_by);
     assert_eq!(attempts_of(&mut session, "jobs:1"), attempts);
@@ -1061,7 +1067,7 @@ fn a_strict_queue_in_a_graph_can_be_both_ends_of_one_edge() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE GRAPH work;\n\
@@ -1088,7 +1094,7 @@ fn a_strict_queue_in_a_graph_can_be_both_ends_of_one_edge() {
     // which is a different claim from the declaration being accepted: the two
     // flags have been tested apart and together only at the `DEFINE`.
     let refused = session
-        .run("CREATE tasks:'c' = { title: 'third', sneaky: 3 };")
+        .run_now("CREATE tasks:'c' = { title: 'third', sneaky: 3 };")
         .unwrap_err()
         .to_string();
     assert!(refused.contains("sneaky"), "{refused}");
@@ -1102,7 +1108,9 @@ fn a_strict_queue_in_a_graph_can_be_both_ends_of_one_edge() {
 fn empty(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;")
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;",
+        )
         .unwrap();
     session
 }
@@ -1308,7 +1316,7 @@ fn a_queue_record_is_a_schedule_that_fires_once_per_period_and_survives_its_work
 fn mixed<'a>(store: &'a Store, declaration: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE QUEUE media {declaration};\n\
@@ -1345,7 +1353,7 @@ fn a_claims_condition_an_index_covers_is_served_by_the_index() {
         "the held record is passed over, as the scan passes over it"
     );
     let own = session
-        .run("BEGIN; CREATE media:0 = { kind: 'image' }; CLAIM FROM media WHERE kind = 'image'; COMMIT;")
+        .run_now("BEGIN; CREATE media:0 = { kind: 'image' }; CLAIM FROM media WHERE kind = 'image'; COMMIT;")
         .unwrap();
     assert_eq!(
         claimed(&own[2]),
@@ -1417,12 +1425,12 @@ fn a_claims_condition_binds_its_values_and_must_be_a_question() {
     let mut supplied = tessari_session::Parameters::new();
     supplied.insert("kind".to_owned(), Value::String("video".to_owned()));
     let outcome = session
-        .run_with("CLAIM FROM media WHERE kind = $kind;", &supplied)
+        .run_with_now("CLAIM FROM media WHERE kind = $kind;", &supplied)
         .unwrap()
         .pop()
         .unwrap();
     assert_eq!(claimed(&outcome), vec!["1"]);
-    let refused = session.run("CLAIM FROM media WHERE kind;");
+    let refused = session.run_now("CLAIM FROM media WHERE kind;");
     assert!(
         matches!(
             refused,
@@ -1436,7 +1444,7 @@ fn a_claims_condition_binds_its_values_and_must_be_a_question() {
 fn lettered<'a>(store: &'a Store, declaration: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TOPIC dead;\n\
@@ -1528,12 +1536,12 @@ fn a_priority_claim_moves_a_spent_record_too() {
 fn a_dead_letter_needs_attempts_and_a_topic() {
     let store = store();
     let mut session = lettered(&store, "TIMEOUT 1m");
-    let refused = session.run("DEFINE QUEUE other TIMEOUT 1m DEAD LETTER TO dead;");
+    let refused = session.run_now("DEFINE QUEUE other TIMEOUT 1m DEAD LETTER TO dead;");
     assert!(
         matches!(&refused, Err(tessari_session::Error::Script(found)) if found.to_string().contains("ATTEMPTS")),
         "{refused:?}"
     );
-    let refused = session.run("DEFINE QUEUE other TIMEOUT 1m ATTEMPTS 2 DEAD LETTER TO jobs;");
+    let refused = session.run_now("DEFINE QUEUE other TIMEOUT 1m ATTEMPTS 2 DEAD LETTER TO jobs;");
     assert!(
         matches!(refused, Err(tessari_session::Error::NotATopic { .. })),
         "{refused:?}"
@@ -1561,7 +1569,7 @@ fn a_queue_reports_its_dead_letter_by_name() {
 fn worker(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }

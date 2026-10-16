@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -25,7 +26,7 @@ fn store() -> Store {
 fn ready(store: &Store, count: i64) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION people; DEFINE COLLECTION mirror;\n\
@@ -47,12 +48,12 @@ fn write(session: &mut Session<'_>, from: i64, to: i64) {
             "UPSERT people:{n} = {body}; UPSERT mirror:{n} = {body};\n"
         ));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
 }
 
 fn explained(session: &mut Session<'_>, condition: &str) -> BTreeMap<String, Value> {
     let outcomes = session
-        .run(&format!("EXPLAIN SELECT * FROM people WHERE {condition};"))
+        .run_now(&format!("EXPLAIN SELECT * FROM people WHERE {condition};"))
         .unwrap();
     let Some(Outcome::Value(Value::Object(plan))) = outcomes.last() else {
         panic!("{outcomes:?}");
@@ -71,7 +72,7 @@ fn estimate(plan: &BTreeMap<String, Value>) -> Option<(i64, String)> {
 }
 
 fn ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     outcomes
         .last()
         .unwrap()
@@ -93,7 +94,7 @@ fn agree(session: &mut Session<'_>, rest: &str) {
 fn analyze_answers_each_value_index_it_summarised() {
     let store = store();
     let mut session = ready(&store, 2_000);
-    let outcomes = session.run("ANALYZE TABLE people;").unwrap();
+    let outcomes = session.run_now("ANALYZE TABLE people;").unwrap();
     let Some(Outcome::Value(Value::Array(taken))) = outcomes.last() else {
         panic!("{outcomes:?}");
     };
@@ -136,7 +137,7 @@ fn a_plan_reports_the_probe_before_analyze_and_the_statistic_after() {
         Some((200, "probe".to_owned())),
         "{before:?}"
     );
-    session.run("ANALYZE TABLE people;").unwrap();
+    session.run_now("ANALYZE TABLE people;").unwrap();
     let after = explained(&mut session, "band = 3");
     assert_eq!(
         estimate(&after),
@@ -150,14 +151,14 @@ fn a_plan_reports_the_probe_before_analyze_and_the_statistic_after() {
 fn a_statistic_the_index_has_changed_past_is_set_aside() {
     let store = store();
     let mut session = ready(&store, 2_000);
-    session.run("ANALYZE TABLE people;").unwrap();
+    session.run_now("ANALYZE TABLE people;").unwrap();
     // Every record moves to another band: two thousand entries change, past
     // both a tenth of the entries and the floor.
     let mut script = String::new();
     for n in 0..2_000 {
         script.push_str(&format!("UPDATE people:{n} SET band = {};\n", (n + 1) % 10));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     let plan = explained(&mut session, "band = 3");
     assert_eq!(
         estimate(&plan).map(|(_, by)| by),
@@ -177,7 +178,7 @@ fn an_estimate_ranks_two_indexes_the_shape_could_not_tell_apart() {
         explained(&mut session, condition).get("index"),
         Some(&Value::from("by_band"))
     );
-    session.run("ANALYZE TABLE people;").unwrap();
+    session.run_now("ANALYZE TABLE people;").unwrap();
     let plan = explained(&mut session, condition);
     assert_eq!(plan.get("index"), Some(&Value::from("by_rare")), "{plan:?}");
     assert_eq!(estimate(&plan), Some((4, "statistics".to_owned())));
@@ -188,7 +189,7 @@ fn an_estimate_ranks_two_indexes_the_shape_could_not_tell_apart() {
 fn an_index_that_selects_most_of_the_table_loses_to_it_on_the_statistic_alone() {
     let store = store();
     let mut session = ready(&store, 2_000);
-    session.run("ANALYZE TABLE people;").unwrap();
+    session.run_now("ANALYZE TABLE people;").unwrap();
     let plan = explained(&mut session, "n > 10");
     assert_eq!(plan.get("access"), Some(&Value::from("scan")), "{plan:?}");
     // And one that selects a few is served on it, with no count taken.
@@ -241,7 +242,7 @@ fn a_bounded_equality_answers_what_the_scan_answers_inside_a_transaction() {
         ));
     }
     script.push_str("CANCEL;");
-    let outcomes = session.run(&script).unwrap();
+    let outcomes = session.run_now(&script).unwrap();
     let answered: Vec<Vec<RecordId>> = outcomes
         .iter()
         .filter_map(|outcome| outcome.records())
@@ -263,7 +264,7 @@ fn a_bounded_equality_answers_what_the_scan_answers_inside_a_transaction() {
 fn an_estimate_on_a_field_the_caller_cannot_read_is_withheld() {
     let store = store();
     let mut root = Session::new(&store);
-    root.run(
+    root.run_now(
         "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
          DEFINE DATABASE shop; USE DATABASE shop;\n\
          DEFINE COLLECTION staff;\n\
@@ -276,7 +277,7 @@ fn an_estimate_on_a_field_the_caller_cannot_read_is_withheld() {
     let mut owner = Session::new(&store);
     owner.sign_in("root", "correct horse battery").unwrap();
     owner
-        .run(
+        .run_now(
             "USE NAMESPACE prod; USE DATABASE shop;\n\
              DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
              GRANT read ON staff FIELDS name TO ada;\n\
@@ -285,7 +286,7 @@ fn an_estimate_on_a_field_the_caller_cannot_read_is_withheld() {
         .unwrap();
     let read = "EXPLAIN SELECT * FROM staff WHERE salary = 200000;";
     let plan = |session: &mut Session<'_>| {
-        let outcomes = session.run(read).unwrap();
+        let outcomes = session.run_now(read).unwrap();
         let Some(Outcome::Value(Value::Object(plan))) = outcomes.last() else {
             panic!("{outcomes:?}");
         };
@@ -296,7 +297,8 @@ fn an_estimate_on_a_field_the_caller_cannot_read_is_withheld() {
     assert!(estimate(&plan(&mut owner)).is_some());
     let mut ada = Session::new(&store);
     ada.sign_in("ada", "correct horse battery").unwrap();
-    ada.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+    ada.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
     let hidden = plan(&mut ada);
     assert_eq!(hidden.get("index"), Some(&Value::from("by_salary")));
     assert_eq!(estimate(&hidden), None, "{hidden:?}");

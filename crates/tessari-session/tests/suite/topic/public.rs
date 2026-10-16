@@ -1,6 +1,7 @@
 //! Who may append and read: an anonymous caller at a `PUBLIC` topic, and
 //! grants (S5.1, S5.2).
 
+use tessari_session::RunNow;
 use tessari_session::Session;
 use tessari_storage::Store;
 
@@ -28,7 +29,7 @@ fn closed(store: &Store) -> Session<'_> {
 fn anonymous(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE app;")
+        .run_now("USE NAMESPACE prod; USE DATABASE app;")
         .unwrap();
     session
 }

@@ -68,6 +68,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
+use tessari_session::RunNow;
 
 use tessari_encoding::{
     CODEC_VERSION, Posting, PostingKey, SearchTermKey, StoreKey, StoreValue, TermStatistics,
@@ -130,7 +131,7 @@ const USE: &str = "USE NAMESPACE prod; USE DATABASE shop;";
 /// answer wants.
 fn build(session: &mut Session<'_>) {
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER simple FILTERS lowercase;\n\
@@ -143,11 +144,11 @@ fn build(session: &mut Session<'_>) {
         let repeats = usize::try_from(n % 4).unwrap().saturating_add(1);
         let body = vec![word; repeats].join(" ");
         session
-            .run(&format!("CREATE notes:{n} = {{ body: '{body}' }};"))
+            .run_now(&format!("CREATE notes:{n} = {{ body: '{body}' }};"))
             .unwrap();
     }
     session
-        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
         .unwrap();
 }
 
@@ -171,7 +172,7 @@ fn contested(answer: &[String]) -> bool {
 /// and in what order, not what they contain.
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<String> {
     session
-        .run(read)
+        .run_now(read)
         .unwrap()
         .last()
         .unwrap()
@@ -367,7 +368,7 @@ fn an_index_in_the_prior_format_answers_the_same_after_its_writer_is_killed() {
     }
 
     let mut session = Session::new(&store);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     // Membership is what `MATCHES` ever needed, and the index still carries it.
     assert_eq!(&ids(&mut session, MEMBERS), members);
@@ -453,11 +454,11 @@ fn a_value_from_an_unknown_codec_version_is_refused_and_names_it() {
 
     let (_backend, store) = open(&path);
     let mut session = Session::new(&store);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     // The scored read is the one that decodes a posting's value; `MATCHES` reads
     // keys alone and would not reach this at all.
-    let refused = session.run(RANKED);
+    let refused = session.run_now(RANKED);
     let error = refused.expect_err("an unknown codec version must not be read as this one");
 
     let said = error.to_string();

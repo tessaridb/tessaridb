@@ -21,6 +21,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -56,13 +57,13 @@ fn store() -> Store {
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.run(STOPS).unwrap();
+    session.run_now(STOPS).unwrap();
     session
 }
 
 /// The records a read answers with, **in the order it answered them**.
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     outcomes
         .last()
         .unwrap()
@@ -75,7 +76,7 @@ fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
 
 /// One field of the plan a read would take.
 fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
-    let outcomes = session.run(&format!("EXPLAIN {read}")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read}")).unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("a plan answered with {:?}", outcomes.last());
     };
@@ -105,7 +106,7 @@ fn same_either_way(read: &str) -> String {
 
     let indexed = store();
     let mut with = ready(&indexed);
-    with.run(INDEX).unwrap();
+    with.run_now(INDEX).unwrap();
     let served = ids(&mut with, read);
     assert_eq!(
         served, scanned,
@@ -149,7 +150,7 @@ fn the_plan_says_which_kind_of_order_it_serves() {
     // invisible.
     let indexed = store();
     let mut session = ready(&indexed);
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
     let read = format!(
         "SELECT * FROM stops ORDER BY geo::distance(at, {}) LIMIT 3;",
         place(2.3, 48.8)
@@ -192,9 +193,9 @@ fn a_bound_the_index_cannot_fill_falls_back_to_the_scan() {
     // short, which is the same rule an ordered walk follows.
     let indexed = store();
     let mut session = ready(&indexed);
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
     session
-        .run("CREATE stops:'nowhere' = { name: 'no place' };")
+        .run_now("CREATE stops:'nowhere' = { name: 'no place' };")
         .unwrap();
 
     let inside = format!(
@@ -229,13 +230,13 @@ fn a_record_holding_a_shape_gives_the_walk_up_to_the_scan_which_answers() {
 
     let bare = store();
     let mut without = ready(&bare);
-    without.run(path).unwrap();
+    without.run_now(path).unwrap();
     let scanned = ids(&mut without, &read);
 
     let indexed = store();
     let mut with = ready(&indexed);
-    with.run(INDEX).unwrap();
-    with.run(path).unwrap();
+    with.run_now(INDEX).unwrap();
+    with.run_now(path).unwrap();
     let served = ids(&mut with, &read);
 
     assert_eq!(served, scanned, "the index changed what the read answers");
@@ -258,7 +259,7 @@ fn an_ordered_index_on_the_field_does_not_capture_a_distance_order() {
     let indexed = store();
     let mut session = ready(&indexed);
     session
-        .run("DEFINE INDEX by_value ON stops FIELDS at;")
+        .run_now("DEFINE INDEX by_value ON stops FIELDS at;")
         .unwrap();
     let read = format!(
         "SELECT * FROM stops ORDER BY geo::distance(at, {}) LIMIT 3;",
@@ -276,7 +277,7 @@ fn every_shape_the_walk_does_not_produce_stays_a_scan() {
     let here = place(2.3, 48.8);
     let indexed = store();
     let mut session = ready(&indexed);
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
     for (why, read) in [
         (
             "descending — a distance orders ascending",
@@ -368,7 +369,7 @@ fn a_write_in_this_transaction_sends_the_read_back_to_the_scan() {
     // nothing to re-test it against afterwards.
     let indexed = store();
     let mut session = ready(&indexed);
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
     let read = format!(
         "SELECT * FROM stops ORDER BY geo::distance(at, {}) LIMIT 3;",
         place(2.3, 48.8)
@@ -376,7 +377,7 @@ fn a_write_in_this_transaction_sends_the_read_back_to_the_scan() {
     assert_eq!(plan(&mut session, &read, "access"), "ordered");
 
     let outcomes = session
-        .run(&format!(
+        .run_now(&format!(
             "BEGIN; CREATE stops:'new' = {{ at: {} }}; EXPLAIN {read} COMMIT;",
             place(2.31, 48.81)
         ))

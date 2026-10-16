@@ -32,5 +32,6 @@ rdkafka = { workspace = true, optional = true }
 workspace = true
 
 [dev-dependencies]
+tessari-session = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros", "test-util"] }
 tessari-kv = { workspace = true }

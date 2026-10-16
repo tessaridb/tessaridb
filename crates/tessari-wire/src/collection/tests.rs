@@ -2,6 +2,7 @@ use super::{
     COLLECTION_BUDGET_BYTES, Catalog, Collect, Collected, Collector, LogId, NODE_ID_LEN, Reach,
     Result, Serving, StoreValue, logs_to_collect,
 };
+use tessari_session::RunNow;
 use tessari_types::{DatabaseId, NamespaceId};
 
 use crate::error::Error;
@@ -120,7 +121,7 @@ fn declared(db: &Db) -> Vec<String> {
 fn granting(clause: &str) -> Arc<Db> {
     let db = Arc::new(Db::in_memory().expect("an in-memory store"));
     db.session()
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
                  USE DATABASE orders; DEFINE COLLECTION users; \
                  CREATE users:1 = {{ name: 'ada' }}; \

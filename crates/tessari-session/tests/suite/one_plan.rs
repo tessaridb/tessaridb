@@ -33,6 +33,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Note, Outcome, Session};
@@ -71,13 +72,13 @@ CREATE items:2 = { at: [0.9, 0.8] };
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.run(SCHEMA).unwrap();
+    session.run_now(SCHEMA).unwrap();
     session
 }
 
 /// The plan `EXPLAIN` reports for a read, as the value it answers with.
 fn explained(session: &mut Session<'_>, read: &str) -> Value {
-    let outcomes = session.run(&format!("EXPLAIN {read}")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read}")).unwrap();
     let Some(Outcome::Value(plan)) = outcomes.last() else {
         panic!("an EXPLAIN answered with {:?}", outcomes.last());
     };
@@ -86,7 +87,7 @@ fn explained(session: &mut Session<'_>, read: &str) -> Value {
 
 /// The plan the read itself carried, rendered the same way, with its notes.
 fn answered(session: &mut Session<'_>, read: &str) -> (Value, Vec<Note>) {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { plan, notes, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -261,7 +262,7 @@ fn a_read_that_fell_back_reports_what_it_did_and_says_why() {
 fn store_with_a_thin_condition(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION events;\n\
@@ -276,7 +277,7 @@ fn store_with_a_thin_condition(store: &Store) -> Session<'_> {
             n % 100
         ));
         if n % 200 == 0 {
-            session.run(&script).unwrap();
+            session.run_now(&script).unwrap();
             script.clear();
         }
     }

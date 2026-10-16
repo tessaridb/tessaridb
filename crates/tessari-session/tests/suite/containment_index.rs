@@ -16,6 +16,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_encoding::{ContainmentKey, IndexValues, KeyKind, StoreKey};
 use tessari_kv::{KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
@@ -132,7 +133,7 @@ fn memory() -> (Arc<dyn KvBackend>, Store) {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d;\n\
              DEFINE COLLECTION plain; DEFINE COLLECTION indexed;\n\
              DEFINE INDEX by_doc ON indexed FIELDS doc CONTAINS;",
@@ -151,7 +152,7 @@ fn put(session: &mut Session<'_>, id: u64, field: Option<&Value>) {
         |held| format!("{{ doc: {} }}", written(held)),
     );
     session
-        .run(&format!(
+        .run_now(&format!(
             "UPSERT plain:{id} = {body}; UPSERT indexed:{id} = {body};"
         ))
         .unwrap();
@@ -167,7 +168,7 @@ fn answered(
         "SELECT * FROM {table} WHERE doc CONTAINS {};",
         written(asked)
     );
-    let outcome = session.run(&statement).unwrap().pop().unwrap();
+    let outcome = session.run_now(&statement).unwrap().pop().unwrap();
     let path = outcome.path().unwrap();
     let Outcome::Records { records, .. } = outcome else {
         panic!("{statement}");
@@ -221,7 +222,7 @@ fn swept(backend: &Arc<dyn KvBackend>, session: &mut Session<'_>) {
         })
         .collect();
     let Outcome::Records { records, .. } = session
-        .run("SELECT * FROM indexed;")
+        .run_now("SELECT * FROM indexed;")
         .unwrap()
         .pop()
         .unwrap()
@@ -280,7 +281,7 @@ fn a_containment_index_answers_what_the_scan_answers_over_generated_documents() 
             0 | 1 => put(&mut session, id, draw.field().as_ref()),
             2 => {
                 session
-                    .run(&format!("DELETE plain:{id}; DELETE indexed:{id};"))
+                    .run_now(&format!("DELETE plain:{id}; DELETE indexed:{id};"))
                     .unwrap();
             }
             _ => {}
@@ -295,11 +296,11 @@ fn a_record_this_transaction_wrote_is_offered_before_it_commits() {
     let (_, store) = memory();
     let mut session = ready(&store);
     session
-        .run("CREATE indexed:1 = { doc: { city: 'Paris' } };")
+        .run_now("CREATE indexed:1 = { doc: { city: 'Paris' } };")
         .unwrap();
     let asked = "SELECT * FROM indexed WHERE doc CONTAINS { city: 'Paris' };";
     let mut outcomes = session
-        .run(&format!(
+        .run_now(&format!(
             "BEGIN; CREATE indexed:2 = {{ doc: {{ city: 'Paris' }} }}; DELETE indexed:1; {asked} CANCEL;"
         ))
         .unwrap();
@@ -312,7 +313,7 @@ fn a_record_this_transaction_wrote_is_offered_before_it_commits() {
         .map(|(id, _)| id.clone())
         .collect();
     assert_eq!(ids, vec![RecordId::Int(2)]);
-    let ids: Vec<RecordId> = session.run(asked).unwrap()[0]
+    let ids: Vec<RecordId> = session.run_now(asked).unwrap()[0]
         .records()
         .unwrap()
         .iter()
@@ -337,17 +338,20 @@ fn the_index_reads_back_after_the_store_is_closed_and_opened() {
         let disk = open();
         let mut session = ready(&disk);
         session
-            .run(
+            .run_now(
                 "CREATE indexed:1 = { doc: { items: [{ sku: 'a' }, { sku: 'b' }] } };\n\
                  CREATE indexed:2 = { doc: { items: [{ sku: 'c' }] } };",
             )
             .unwrap();
-        assert_eq!(session.run(asked).unwrap()[0].records().unwrap().len(), 1);
+        assert_eq!(
+            session.run_now(asked).unwrap()[0].records().unwrap().len(),
+            1
+        );
     }
     let disk = open();
     let mut session = Session::new(&disk);
-    session.run("USE NAMESPACE n; USE DATABASE d;").unwrap();
-    let outcome = session.run(asked).unwrap().pop().unwrap();
+    session.run_now("USE NAMESPACE n; USE DATABASE d;").unwrap();
+    let outcome = session.run_now(asked).unwrap().pop().unwrap();
     assert_eq!(outcome.path(), Some(AccessPath::Index));
     assert_eq!(outcome.records().unwrap().len(), 1);
 }
@@ -379,7 +383,7 @@ fn a_store_holding_format_five_refuses_a_containment_index_and_keeps_its_format(
     let store = Store::open(Arc::clone(&backend)).unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d;\n\
              DEFINE COLLECTION notes; CREATE notes:1 = { doc: { a: 1 }, n: 1 };\n\
              DEFINE INDEX by_n ON notes FIELDS n;",
@@ -391,7 +395,7 @@ fn a_store_holding_format_five_refuses_a_containment_index_and_keeps_its_format(
         "an ordinary index moved the format"
     );
     let refused = session
-        .run("DEFINE INDEX by_doc ON notes FIELDS doc CONTAINS;")
+        .run_now("DEFINE INDEX by_doc ON notes FIELDS doc CONTAINS;")
         .unwrap_err();
     assert!(
         matches!(

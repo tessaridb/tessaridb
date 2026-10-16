@@ -27,6 +27,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Note, Outcome, Session};
@@ -50,14 +51,14 @@ fn fill(session: &mut Session<'_>) {
             "CREATE embeddings:{n} = {{ vector: [{n}.0, 0.0] }};\n"
         ));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
 }
 
 /// A store declared by the word, filled.
 fn through_the_store(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}DEFINE VECTOR embeddings DIMENSION 2 DISTANCE euclidean;"
         ))
         .unwrap();
@@ -69,7 +70,7 @@ fn through_the_store(store: &Store) -> Session<'_> {
 fn through_the_field(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}DEFINE COLLECTION embeddings;\n\
              DEFINE FIELD vector ON embeddings TYPE vector<2> REQUIRED;\n\
              DEFINE INDEX vector ON embeddings FIELDS vector VECTOR euclidean;"
@@ -84,7 +85,7 @@ const NEAR: &str = "SELECT * FROM embeddings \
 
 /// The records a read answered with, its notes, and the path that served it.
 fn answered(session: &mut Session<'_>, script: &str) -> (Vec<RecordId>, Vec<Note>, AccessPath) {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let Some(Outcome::Records {
         records,
         plan,

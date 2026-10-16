@@ -7,6 +7,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Error, Session};
@@ -22,7 +23,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod;\n\
              USE NAMESPACE prod;\n\
              DEFINE DATABASE orders;\n\
@@ -47,10 +48,10 @@ fn a_script_defines_a_table_and_writes_to_it() {
     let mut session = ready(&store);
 
     session
-        .run("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { name: 'ada' };")
+        .run_now("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { name: 'ada' };")
         .unwrap();
 
-    let outcomes = session.run("SELECT * FROM users:1;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM users:1;").unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].0, RecordId::Int(1));
@@ -67,7 +68,7 @@ fn a_definition_and_a_write_land_together_or_not_at_all() {
     let store = store();
     let mut session = ready(&store);
 
-    let failed = session.run(
+    let failed = session.run_now(
         "BEGIN;\n\
          DEFINE COLLECTION accounts;\n\
          CREATE accounts:1 = { balance: 10 };\n\
@@ -77,7 +78,7 @@ fn a_definition_and_a_write_land_together_or_not_at_all() {
 
     // The table is gone with the transaction that defined it, so the read
     // cannot even name it.
-    let error = session.run("SELECT * FROM accounts;").unwrap_err();
+    let error = session.run_now("SELECT * FROM accounts;").unwrap_err();
     assert!(
         matches!(
             &error,
@@ -90,14 +91,14 @@ fn a_definition_and_a_write_land_together_or_not_at_all() {
     );
 
     session
-        .run(
+        .run_now(
             "BEGIN;\n\
              DEFINE COLLECTION accounts;\n\
              CREATE accounts:1 = { balance: 10 };\n\
              COMMIT;",
         )
         .unwrap();
-    let outcomes = session.run("SELECT * FROM accounts;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM accounts;").unwrap();
     assert_eq!(outcomes[0].records().unwrap().len(), 1);
 }
 
@@ -105,10 +106,10 @@ fn a_definition_and_a_write_land_together_or_not_at_all() {
 fn a_script_that_never_commits_discards_its_work_and_says_so() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE users SCHEMALESS;").unwrap();
+    session.run_now("DEFINE TABLE users SCHEMALESS;").unwrap();
 
     let error = session
-        .run("BEGIN; CREATE users:1 = { name: 'ada' };")
+        .run_now("BEGIN; CREATE users:1 = { name: 'ada' };")
         .unwrap_err();
     assert!(
         matches!(error, Error::UnclosedTransaction { .. }),
@@ -117,7 +118,7 @@ fn a_script_that_never_commits_discards_its_work_and_says_so() {
 
     // Committing silently would commit work the author never said was
     // finished; discarding silently would hide that it ran.
-    let outcomes = session.run("SELECT * FROM users;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM users;").unwrap();
     assert!(outcomes[0].records().unwrap().is_empty());
 }
 
@@ -126,7 +127,7 @@ fn the_three_access_paths_answer_from_the_store() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE INDEX by_email ON users FIELDS email UNIQUE;\n\
              CREATE users:1 = { name: 'ada', email: 'ada@example.com' };\n\
@@ -134,14 +135,14 @@ fn the_three_access_paths_answer_from_the_store() {
         )
         .unwrap();
 
-    let by_id = session.run("SELECT * FROM users:1;").unwrap();
+    let by_id = session.run_now("SELECT * FROM users:1;").unwrap();
     assert_eq!(by_id[0].records().unwrap().len(), 1);
 
-    let whole = session.run("SELECT * FROM users;").unwrap();
+    let whole = session.run_now("SELECT * FROM users;").unwrap();
     assert_eq!(whole[0].records().unwrap().len(), 2);
 
     let by_index = session
-        .run("SELECT * FROM users WHERE email = 'grace@example.com';")
+        .run_now("SELECT * FROM users WHERE email = 'grace@example.com';")
         .unwrap();
     let found = by_index[0].records().unwrap();
     assert_eq!(found.len(), 1);
@@ -155,7 +156,7 @@ fn the_access_path_follows_what_exists_rather_than_how_the_query_is_written() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE users SCHEMALESS;\n\
              CREATE users:1 = { name: 'ada lovelace', email: 'ada@example.com' };\n\
              CREATE users:2 = { name: 'grace hopper', email: 'grace@example.com' };",
@@ -165,7 +166,7 @@ fn the_access_path_follows_what_exists_rather_than_how_the_query_is_written() {
     // No index on `name`, so the same statement reads the table and tests each
     // record. Correct, and it says so.
     let scanned = session
-        .run("SELECT * FROM users WHERE name = 'ada lovelace';")
+        .run_now("SELECT * FROM users WHERE name = 'ada lovelace';")
         .unwrap();
     assert_eq!(scanned[0].records().unwrap().len(), 1);
     assert_eq!(scanned[0].path(), Some(AccessPath::Scan));
@@ -174,13 +175,13 @@ fn the_access_path_follows_what_exists_rather_than_how_the_query_is_written() {
     // read. The record is written after the index so that maintenance sees it —
     // see the next test for what happens when it is not.
     session
-        .run(
+        .run_now(
             "DEFINE INDEX by_email ON users FIELDS email UNIQUE;\n\
              CREATE users:3 = { name: 'katherine johnson', email: 'kj@example.com' };",
         )
         .unwrap();
     let indexed = session
-        .run("SELECT * FROM users WHERE email = 'kj@example.com';")
+        .run_now("SELECT * FROM users WHERE email = 'kj@example.com';")
         .unwrap();
     assert_eq!(indexed[0].records().unwrap().len(), 1);
     assert_eq!(indexed[0].path(), Some(AccessPath::Index));
@@ -196,20 +197,20 @@ fn an_index_over_rows_that_predate_it_answers_exactly_as_the_scan_did() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { email: 'ada@example.com' };")
+        .run_now("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { email: 'ada@example.com' };")
         .unwrap();
 
     let by_scan = session
-        .run("SELECT * FROM users WHERE email = 'ada@example.com';")
+        .run_now("SELECT * FROM users WHERE email = 'ada@example.com';")
         .unwrap();
     assert_eq!(by_scan[0].path(), Some(AccessPath::Scan));
 
     session
-        .run("DEFINE INDEX by_email ON users FIELDS email;")
+        .run_now("DEFINE INDEX by_email ON users FIELDS email;")
         .unwrap();
 
     let by_index = session
-        .run("SELECT * FROM users WHERE email = 'ada@example.com';")
+        .run_now("SELECT * FROM users WHERE email = 'ada@example.com';")
         .unwrap();
     assert_eq!(by_index[0].path(), Some(AccessPath::Index));
     assert_eq!(by_index[0].records(), by_scan[0].records());
@@ -224,13 +225,13 @@ fn an_index_defined_inside_an_open_transaction_is_built_with_it() {
 
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE users SCHEMALESS;").unwrap();
+    session.run_now("DEFINE TABLE users SCHEMALESS;").unwrap();
     session
-        .run("CREATE users:1 = { email: 'ada@example.com' };")
+        .run_now("CREATE users:1 = { email: 'ada@example.com' };")
         .unwrap();
 
     session
-        .run(
+        .run_now(
             "BEGIN;\n\
              DEFINE INDEX by_email ON users FIELDS email;\n\
              CREATE users:2 = { email: 'grace@example.com' };\n\
@@ -240,7 +241,7 @@ fn an_index_defined_inside_an_open_transaction_is_built_with_it() {
 
     for email in ["ada@example.com", "grace@example.com"] {
         let found = session
-            .run(&format!("SELECT * FROM users WHERE email = '{email}';"))
+            .run_now(&format!("SELECT * FROM users WHERE email = '{email}';"))
             .unwrap();
         assert_eq!(found[0].path(), Some(AccessPath::Index));
         assert_eq!(found[0].records().unwrap().len(), 1, "{email}");
@@ -252,7 +253,7 @@ fn a_pattern_match_follows_sql_and_is_anchored_to_the_whole_value() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE notes SCHEMALESS;\n\
              CREATE notes:1 = { body: 'Ada Lovelace wrote the first program' };\n\
              CREATE notes:2 = { body: 'Grace Hopper found the first bug' };",
@@ -260,32 +261,32 @@ fn a_pattern_match_follows_sql_and_is_anchored_to_the_whole_value() {
         .unwrap();
 
     let found = session
-        .run("SELECT * FROM notes WHERE body LIKE '%Lovelace%';")
+        .run_now("SELECT * FROM notes WHERE body LIKE '%Lovelace%';")
         .unwrap();
     assert_eq!(found[0].records().unwrap().len(), 1);
 
     // Anchored to the whole value, exactly as SQL is — which is why a substring
     // search needs both wildcards.
     let unanchored = session
-        .run("SELECT * FROM notes WHERE body LIKE 'Lovelace';")
+        .run_now("SELECT * FROM notes WHERE body LIKE 'Lovelace';")
         .unwrap();
     assert!(unanchored[0].records().unwrap().is_empty());
 
     let folded = session
-        .run("SELECT * FROM notes WHERE body ILIKE '%lovelace%';")
+        .run_now("SELECT * FROM notes WHERE body ILIKE '%lovelace%';")
         .unwrap();
     assert_eq!(folded[0].records().unwrap().len(), 1);
 
     let none = session
-        .run("SELECT * FROM notes WHERE body LIKE '%babbage%';")
+        .run_now("SELECT * FROM notes WHERE body LIKE '%babbage%';")
         .unwrap();
     assert!(none[0].records().unwrap().is_empty());
 
     // A field that is not text never matches a text test, rather than erroring:
     // the record simply does not satisfy the filter.
-    session.run("CREATE notes:3 = { body: 42 };").unwrap();
+    session.run_now("CREATE notes:3 = { body: 42 };").unwrap();
     let still = session
-        .run("SELECT * FROM notes WHERE body LIKE '%Lovelace%';")
+        .run_now("SELECT * FROM notes WHERE body LIKE '%Lovelace%';")
         .unwrap();
     assert_eq!(still[0].records().unwrap().len(), 1);
 }
@@ -295,29 +296,31 @@ fn a_create_never_replaces_and_an_update_never_invents() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { name: 'ada' };")
+        .run_now("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { name: 'ada' };")
         .unwrap();
 
     let error = session
-        .run("CREATE users:1 = { name: 'grace' };")
+        .run_now("CREATE users:1 = { name: 'grace' };")
         .unwrap_err();
     assert!(matches!(error, Error::RecordExists { .. }), "{error}");
 
     let error = session
-        .run("UPDATE users:9 = { name: 'grace' };")
+        .run_now("UPDATE users:9 = { name: 'grace' };")
         .unwrap_err();
     assert!(matches!(error, Error::NoSuchRecord { .. }), "{error}");
 
     // The refused create left the record alone.
-    let outcomes = session.run("SELECT * FROM users:1;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM users:1;").unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(
         field(&records[0].1, "name"),
         &Value::String("ada".to_owned())
     );
 
-    session.run("UPDATE users:1 = { name: 'grace' };").unwrap();
-    let outcomes = session.run("SELECT * FROM users:1;").unwrap();
+    session
+        .run_now("UPDATE users:1 = { name: 'grace' };")
+        .unwrap();
+    let outcomes = session.run_now("SELECT * FROM users:1;").unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(
         field(&records[0].1, "name"),
@@ -329,25 +332,25 @@ fn a_create_never_replaces_and_an_update_never_invents() {
 fn a_key_value_space_holds_whole_values_and_replaces_them() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE SPACE sessions;").unwrap();
+    session.run_now("DEFINE SPACE sessions;").unwrap();
 
-    session.run("SET sessions:'abc' = 42;").unwrap();
-    let outcomes = session.run("GET sessions:'abc';").unwrap();
+    session.run_now("SET sessions:'abc' = 42;").unwrap();
+    let outcomes = session.run_now("GET sessions:'abc';").unwrap();
     assert_eq!(
         outcomes[0].value(),
         Some(&Value::Number(tessari_types::Number::Integer(42)))
     );
 
     // A key-value write replaces; it never merges.
-    session.run("SET sessions:'abc' = 'replaced';").unwrap();
-    let outcomes = session.run("GET sessions:'abc';").unwrap();
+    session.run_now("SET sessions:'abc' = 'replaced';").unwrap();
+    let outcomes = session.run_now("GET sessions:'abc';").unwrap();
     assert_eq!(
         outcomes[0].value(),
         Some(&Value::String("replaced".to_owned()))
     );
 
-    session.run("DEL sessions:'abc';").unwrap();
-    let outcomes = session.run("GET sessions:'abc';").unwrap();
+    session.run_now("DEL sessions:'abc';").unwrap();
+    let outcomes = session.run_now("GET sessions:'abc';").unwrap();
     assert_eq!(outcomes[0].value(), Some(&Value::None));
 }
 
@@ -356,33 +359,33 @@ fn membership_asks_a_different_question_from_a_pattern() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE notes SCHEMALESS;\n\
              CREATE notes:1 = { body: 'urgent review', tags: ['urgent', 'review'] };",
         )
         .unwrap();
 
     let member = session
-        .run("SELECT * FROM notes WHERE tags CONTAINS 'urgent';")
+        .run_now("SELECT * FROM notes WHERE tags CONTAINS 'urgent';")
         .unwrap();
     assert_eq!(member[0].records().unwrap().len(), 1);
 
     // Membership is exact on the element — not a substring of it.
     let partial = session
-        .run("SELECT * FROM notes WHERE tags CONTAINS 'urg';")
+        .run_now("SELECT * FROM notes WHERE tags CONTAINS 'urg';")
         .unwrap();
     assert!(partial[0].records().unwrap().is_empty());
 
     // And a single value is not a one-element collection, so a query that
     // confuses the two finds nothing rather than looking right.
     let scalar = session
-        .run("SELECT * FROM notes WHERE body CONTAINS 'urgent review';")
+        .run_now("SELECT * FROM notes WHERE body CONTAINS 'urgent review';")
         .unwrap();
     assert!(scalar[0].records().unwrap().is_empty());
 
     // The text question is still answered by the text test.
     let text = session
-        .run("SELECT * FROM notes WHERE body LIKE '%urgent%';")
+        .run_now("SELECT * FROM notes WHERE body LIKE '%urgent%';")
         .unwrap();
     assert_eq!(text[0].records().unwrap().len(), 1);
 }
@@ -393,13 +396,13 @@ fn a_missing_key_and_a_stored_null_are_different_answers() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE SPACE sessions; SET sessions:'here' = NULL;")
+        .run_now("DEFINE SPACE sessions; SET sessions:'here' = NULL;")
         .unwrap();
 
-    let stored = session.run("GET sessions:'here';").unwrap();
+    let stored = session.run_now("GET sessions:'here';").unwrap();
     assert_eq!(stored[0].value(), Some(&Value::Null));
 
-    let absent = session.run("GET sessions:'gone';").unwrap();
+    let absent = session.run_now("GET sessions:'gone';").unwrap();
     assert_eq!(absent[0].value(), Some(&Value::None));
 }
 
@@ -408,7 +411,7 @@ fn keys_lists_a_space_and_a_range_bounds_it() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE SPACE sessions;\n\
              SET sessions:'a' = 1;\n\
              SET sessions:'f' = 2;\n\
@@ -417,10 +420,12 @@ fn keys_lists_a_space_and_a_range_bounds_it() {
         )
         .unwrap();
 
-    let all = session.run("KEYS FROM sessions;").unwrap();
+    let all = session.run_now("KEYS FROM sessions;").unwrap();
     assert_eq!(all[0].keys().unwrap().len(), 4);
 
-    let bounded = session.run("KEYS FROM sessions RANGE 'a'..'m';").unwrap();
+    let bounded = session
+        .run_now("KEYS FROM sessions RANGE 'a'..'m';")
+        .unwrap();
     let keys = bounded[0].keys().unwrap();
     assert_eq!(
         keys,
@@ -430,7 +435,9 @@ fn keys_lists_a_space_and_a_range_bounds_it() {
         ]
     );
 
-    let inclusive = session.run("KEYS FROM sessions RANGE 'a'..='m';").unwrap();
+    let inclusive = session
+        .run_now("KEYS FROM sessions RANGE 'a'..='m';")
+        .unwrap();
     assert_eq!(inclusive[0].keys().unwrap().len(), 3);
 }
 
@@ -441,7 +448,7 @@ fn a_key_value_read_composes_into_a_record_statement_at_one_snapshot() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE SPACE emails;\n\
              DEFINE INDEX by_email ON users FIELDS email UNIQUE;\n\
@@ -451,7 +458,7 @@ fn a_key_value_read_composes_into_a_record_statement_at_one_snapshot() {
         .unwrap();
 
     let outcomes = session
-        .run("SELECT * FROM users WHERE email = GET emails:'primary';")
+        .run_now("SELECT * FROM users WHERE email = GET emails:'primary';")
         .unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(records.len(), 1);
@@ -466,7 +473,7 @@ fn an_embedded_read_stands_where_a_value_stands() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE COLLECTION audit;\n\
              DEFINE SPACE sessions;\n\
@@ -479,7 +486,7 @@ fn an_embedded_read_stands_where_a_value_stands() {
         )
         .unwrap();
 
-    let outcomes = session.run("SELECT * FROM audit:1;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM audit:1;").unwrap();
     let record = &outcomes[0].records().unwrap()[0].1;
     assert_eq!(
         field(record, "actor"),
@@ -497,7 +504,7 @@ fn a_unique_index_refuses_a_second_record_with_the_same_value() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE INDEX by_email ON users FIELDS email UNIQUE;\n\
              CREATE users:1 = { email: 'ada@example.com' };",
@@ -505,7 +512,7 @@ fn a_unique_index_refuses_a_second_record_with_the_same_value() {
         .unwrap();
 
     let error = session
-        .run("CREATE users:2 = { email: 'ada@example.com' };")
+        .run_now("CREATE users:2 = { email: 'ada@example.com' };")
         .unwrap_err();
     assert!(matches!(error, Error::Store(_)), "{error}");
 }
@@ -515,10 +522,12 @@ fn a_statement_with_no_database_selected_is_an_error_and_not_a_guess() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod;")
+        .run_now("DEFINE NAMESPACE prod; USE NAMESPACE prod;")
         .unwrap();
 
-    let error = session.run("DEFINE TABLE users SCHEMALESS;").unwrap_err();
+    let error = session
+        .run_now("DEFINE TABLE users SCHEMALESS;")
+        .unwrap_err();
     assert!(matches!(error, Error::NoDatabaseSelected { .. }), "{error}");
 }
 
@@ -527,7 +536,7 @@ fn a_name_the_catalog_does_not_hold_is_named_back() {
     let store = store();
     let mut session = ready(&store);
 
-    let error = session.run("SELECT * FROM missing;").unwrap_err();
+    let error = session.run_now("SELECT * FROM missing;").unwrap_err();
     let Error::Unknown { entity, name, .. } = &error else {
         panic!("{error}");
     };
@@ -539,19 +548,21 @@ fn a_name_the_catalog_does_not_hold_is_named_back() {
 fn if_not_exists_accepts_a_definition_that_already_stands() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE users SCHEMALESS;").unwrap();
+    session.run_now("DEFINE TABLE users SCHEMALESS;").unwrap();
 
-    let error = session.run("DEFINE TABLE users SCHEMALESS;").unwrap_err();
+    let error = session
+        .run_now("DEFINE TABLE users SCHEMALESS;")
+        .unwrap_err();
     assert!(matches!(error, Error::Store(_)), "{error}");
 
     session
-        .run("DEFINE TABLE IF NOT EXISTS users SCHEMALESS;")
+        .run_now("DEFINE TABLE IF NOT EXISTS users SCHEMALESS;")
         .unwrap();
     session
-        .run("DEFINE INDEX IF NOT EXISTS by_email ON users FIELDS email;")
+        .run_now("DEFINE INDEX IF NOT EXISTS by_email ON users FIELDS email;")
         .unwrap();
     session
-        .run("DEFINE INDEX IF NOT EXISTS by_email ON users FIELDS email;")
+        .run_now("DEFINE INDEX IF NOT EXISTS by_email ON users FIELDS email;")
         .unwrap();
 }
 
@@ -562,15 +573,15 @@ fn a_session_resolves_a_name_afresh_for_every_statement() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { name: 'ada' };")
+        .run_now("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { name: 'ada' };")
         .unwrap();
-    session.run("DROP TABLE users;").unwrap();
+    session.run_now("DROP TABLE users;").unwrap();
 
-    let error = session.run("SELECT * FROM users;").unwrap_err();
+    let error = session.run_now("SELECT * FROM users;").unwrap_err();
     assert!(matches!(&error, Error::Unknown { .. }), "{error}");
 
-    session.run("DEFINE TABLE users SCHEMALESS;").unwrap();
-    let outcomes = session.run("SELECT * FROM users;").unwrap();
+    session.run_now("DEFINE TABLE users SCHEMALESS;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM users;").unwrap();
     // The re-created table is a different table, and it holds nothing — the
     // records of the old one are not its records.
     assert!(outcomes[0].records().unwrap().is_empty());
@@ -581,7 +592,7 @@ fn a_qualified_name_reaches_another_database_in_the_same_namespace() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE DATABASE archive;\n\
              USE DATABASE archive;\n\
              DEFINE TABLE users SCHEMALESS;\n\
@@ -592,13 +603,13 @@ fn a_qualified_name_reaches_another_database_in_the_same_namespace() {
         )
         .unwrap();
 
-    let here = session.run("SELECT * FROM users:1;").unwrap();
+    let here = session.run_now("SELECT * FROM users:1;").unwrap();
     assert_eq!(
         field(&here[0].records().unwrap()[0].1, "name"),
         &Value::String("ada".to_owned())
     );
 
-    let there = session.run("SELECT * FROM archive.users:1;").unwrap();
+    let there = session.run_now("SELECT * FROM archive.users:1;").unwrap();
     assert_eq!(
         field(&there[0].records().unwrap()[0].1, "name"),
         &Value::String("grace".to_owned())
@@ -612,7 +623,7 @@ fn a_prefix_pattern_on_an_indexed_field_is_a_range_read_answering_exactly_as_the
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE people SCHEMALESS;\n\
              CREATE people:1 = { name: 'ada lovelace' };\n\
              CREATE people:2 = { name: 'adam smith' };\n\
@@ -622,7 +633,7 @@ fn a_prefix_pattern_on_an_indexed_field_is_a_range_read_answering_exactly_as_the
         .unwrap();
 
     let by_scan = session
-        .run("SELECT * FROM people WHERE name LIKE 'ada%';")
+        .run_now("SELECT * FROM people WHERE name LIKE 'ada%';")
         .unwrap();
     assert_eq!(by_scan[0].path(), Some(AccessPath::Scan));
     assert_eq!(
@@ -632,11 +643,11 @@ fn a_prefix_pattern_on_an_indexed_field_is_a_range_read_answering_exactly_as_the
     );
 
     session
-        .run("DEFINE INDEX by_name ON people FIELDS name;")
+        .run_now("DEFINE INDEX by_name ON people FIELDS name;")
         .unwrap();
 
     let by_index = session
-        .run("SELECT * FROM people WHERE name LIKE 'ada%';")
+        .run_now("SELECT * FROM people WHERE name LIKE 'ada%';")
         .unwrap();
     assert_eq!(by_index[0].path(), Some(AccessPath::Index));
     // The records, not the count: a plan that returns the right number of the
@@ -646,7 +657,7 @@ fn a_prefix_pattern_on_an_indexed_field_is_a_range_read_answering_exactly_as_the
     // A prefix shorter than a stored value, and one that is a whole value.
     for (pattern, expected) in [("ad%", 3), ("ada lovelace%", 1), ("adam%", 1), ("z%", 0)] {
         let found = session
-            .run(&format!(
+            .run_now(&format!(
                 "SELECT * FROM people WHERE name LIKE '{pattern}';"
             ))
             .unwrap();
@@ -665,7 +676,7 @@ fn only_a_trailing_wildcard_uses_the_index_and_the_rest_keep_the_scan() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE people SCHEMALESS;\n\
              CREATE people:1 = { name: 'ada lovelace' };\n\
              DEFINE INDEX by_name ON people FIELDS name;",
@@ -674,7 +685,7 @@ fn only_a_trailing_wildcard_uses_the_index_and_the_rest_keep_the_scan() {
 
     for pattern in ["%lovelace", "%love%", "a_a%", "ada%lace", "%"] {
         let found = session
-            .run(&format!(
+            .run_now(&format!(
                 "SELECT * FROM people WHERE name LIKE '{pattern}';"
             ))
             .unwrap();
@@ -684,7 +695,7 @@ fn only_a_trailing_wildcard_uses_the_index_and_the_rest_keep_the_scan() {
     // ILIKE keeps the scan even in the shape LIKE would index, because the index
     // stores one case and folding at query time is not what it holds.
     let folded = session
-        .run("SELECT * FROM people WHERE name ILIKE 'ADA%';")
+        .run_now("SELECT * FROM people WHERE name ILIKE 'ADA%';")
         .unwrap();
     assert_eq!(folded[0].path(), Some(AccessPath::Scan));
     assert_eq!(folded[0].records().unwrap().len(), 1);
@@ -697,7 +708,7 @@ fn an_escaped_wildcard_in_the_prefix_is_read_as_the_character_it_escapes() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION codes;\n\
              CREATE codes:1 = { label: '50% off' };\n\
              CREATE codes:2 = { label: '50 off' };\n\
@@ -708,7 +719,7 @@ fn an_escaped_wildcard_in_the_prefix_is_read_as_the_character_it_escapes() {
     let found = session
         // Two backslashes in the script: the lexer resolves them to one, so the
         // pattern the matcher sees is `50\%%` — an escaped `%`, then a wildcard.
-        .run("SELECT * FROM codes WHERE label LIKE '50\\\\%%';")
+        .run_now("SELECT * FROM codes WHERE label LIKE '50\\\\%%';")
         .unwrap();
     assert_eq!(found[0].path(), Some(AccessPath::Index));
     assert_eq!(found[0].records().unwrap().len(), 1);
@@ -721,7 +732,7 @@ fn a_prefix_read_sees_this_transactions_own_writes_and_not_its_stale_entries() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE people SCHEMALESS;\n\
              CREATE people:1 = { name: 'ada lovelace' };\n\
              DEFINE INDEX by_name ON people FIELDS name;",
@@ -729,7 +740,7 @@ fn a_prefix_read_sees_this_transactions_own_writes_and_not_its_stale_entries() {
         .unwrap();
 
     let outcomes = session
-        .run(
+        .run_now(
             "BEGIN;\n\
              CREATE people:2 = { name: 'adam smith' };\n\
              UPDATE people:1 = { name: 'grace hopper' };\n\
@@ -750,7 +761,7 @@ fn a_declared_type_is_enforced_through_the_language() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE people SCHEMALESS;\n\
              DEFINE FIELD age ON people TYPE int;\n\
              CREATE people:1 = { age: 34 };",
@@ -758,7 +769,7 @@ fn a_declared_type_is_enforced_through_the_language() {
         .unwrap();
 
     let error = session
-        .run("CREATE people:2 = { age: 'thirty four' };")
+        .run_now("CREATE people:2 = { age: 'thirty four' };")
         .unwrap_err();
     let text = error.to_string();
     assert!(text.contains("age"), "{text}");
@@ -766,7 +777,7 @@ fn a_declared_type_is_enforced_through_the_language() {
     assert!(text.contains("string"), "{text}");
 
     // And nothing landed.
-    let found = session.run("SELECT * FROM people;").unwrap();
+    let found = session.run_now("SELECT * FROM people;").unwrap();
     assert_eq!(found[0].records().unwrap().len(), 1);
 }
 
@@ -778,7 +789,7 @@ fn a_reserved_word_is_read_as_a_type_name_after_type() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE events SCHEMALESS;\n\
              DEFINE FIELD at ON events TYPE datetime;\n\
              DEFINE FIELD who ON events TYPE record;\n\
@@ -789,21 +800,21 @@ fn a_reserved_word_is_read_as_a_type_name_after_type() {
         .unwrap();
 
     session
-        .run("CREATE events:1 = { at: datetime '2026-08-22T00:00:00Z' };")
+        .run_now("CREATE events:1 = { at: datetime '2026-08-22T00:00:00Z' };")
         .unwrap();
-    assert!(session.run("CREATE events:2 = { at: 7 };").is_err());
+    assert!(session.run_now("CREATE events:2 = { at: 7 };").is_err());
 }
 
 #[test]
 fn a_word_that_is_not_a_type_is_refused_where_a_type_belongs() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE shapes SCHEMALESS;").unwrap();
+    session.run_now("DEFINE TABLE shapes SCHEMALESS;").unwrap();
     // `geometry` used to stand here, and stopped being a counter-example the
     // moment the value system gained the type. The word chosen now is one no
     // type is ever likely to claim.
     let error = session
-        .run("DEFINE FIELD outline ON shapes TYPE parallelogram;")
+        .run_now("DEFINE FIELD outline ON shapes TYPE parallelogram;")
         .unwrap_err();
     assert!(error.to_string().contains("type name"), "{error}");
 }
@@ -815,12 +826,12 @@ fn the_two_types_the_value_system_gained_are_type_names_the_language_accepts() {
     // drifting apart again.
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE shapes SCHEMALESS;").unwrap();
+    session.run_now("DEFINE TABLE shapes SCHEMALESS;").unwrap();
     session
-        .run("DEFINE FIELD outline ON shapes TYPE geometry;")
+        .run_now("DEFINE FIELD outline ON shapes TYPE geometry;")
         .expect("geometry is a type");
     session
-        .run("DEFINE FIELD pattern ON shapes TYPE regex;")
+        .run_now("DEFINE FIELD pattern ON shapes TYPE regex;")
         .expect("regex is a type");
 }
 
@@ -829,7 +840,7 @@ fn a_schemafull_table_refuses_a_misspelled_field_and_a_schemaless_one_does_not()
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE ledger SCHEMAFULL;\n\
              DEFINE FIELD amount ON ledger TYPE decimal;\n\
              DEFINE TABLE notes SCHEMALESS;\n\
@@ -838,14 +849,14 @@ fn a_schemafull_table_refuses_a_misspelled_field_and_a_schemaless_one_does_not()
         .unwrap();
 
     let error = session
-        .run("CREATE ledger:1 = { amuont: dec 12.34 };")
+        .run_now("CREATE ledger:1 = { amuont: dec 12.34 };")
         .unwrap_err();
     assert!(error.to_string().contains("amuont"), "{error}");
 
     // The same statement on a schemaless table lands, and the record is one
     // nobody will find by filtering on `amount`.
     session
-        .run("CREATE notes:1 = { amuont: dec 12.34 };")
+        .run_now("CREATE notes:1 = { amuont: dec 12.34 };")
         .unwrap();
 }
 
@@ -854,7 +865,7 @@ fn a_declaration_and_the_rows_it_constrains_land_together_or_not_at_all() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE guests SCHEMALESS;\n\
              CREATE guests:1 = { handle: 'ada' };",
         )
@@ -862,31 +873,31 @@ fn a_declaration_and_the_rows_it_constrains_land_together_or_not_at_all() {
 
     // Declaring over a row that already violates it writes nothing — not the
     // definition either, so the constraint cannot be believed to hold.
-    session.run("CREATE guests:2 = { handle: 7 };").unwrap();
+    session.run_now("CREATE guests:2 = { handle: 7 };").unwrap();
     assert!(
         session
-            .run("DEFINE FIELD handle ON guests TYPE string;")
+            .run_now("DEFINE FIELD handle ON guests TYPE string;")
             .is_err()
     );
     // The declaration is gone, so the offending value is still writable.
-    session.run("CREATE guests:3 = { handle: 9 };").unwrap();
+    session.run_now("CREATE guests:3 = { handle: 9 };").unwrap();
 
-    session.run("DELETE guests:2;").unwrap();
-    session.run("DELETE guests:3;").unwrap();
+    session.run_now("DELETE guests:2;").unwrap();
+    session.run_now("DELETE guests:3;").unwrap();
     session
-        .run("DEFINE FIELD handle ON guests TYPE string;")
+        .run_now("DEFINE FIELD handle ON guests TYPE string;")
         .unwrap();
-    assert!(session.run("CREATE guests:4 = { handle: 7 };").is_err());
+    assert!(session.run_now("CREATE guests:4 = { handle: 7 };").is_err());
 }
 
 #[test]
 fn a_row_and_its_declaration_may_be_written_in_either_order_in_one_transaction() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE staff SCHEMALESS;").unwrap();
+    session.run_now("DEFINE TABLE staff SCHEMALESS;").unwrap();
 
     session
-        .run(
+        .run_now(
             "BEGIN;\n\
              CREATE staff:1 = { handle: 'ada' };\n\
              DEFINE FIELD handle ON staff TYPE string;\n\
@@ -896,7 +907,7 @@ fn a_row_and_its_declaration_may_be_written_in_either_order_in_one_transaction()
 
     assert!(
         session
-            .run(
+            .run_now(
                 "BEGIN;\n\
                  CREATE staff:2 = { handle: 7 };\n\
                  COMMIT;",
@@ -910,18 +921,24 @@ fn dropping_a_declaration_leaves_the_data_and_removes_only_the_rule() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE members SCHEMALESS;\n\
              DEFINE FIELD handle ON members TYPE string;\n\
              CREATE members:1 = { handle: 'ada' };",
         )
         .unwrap();
-    assert!(session.run("CREATE members:2 = { handle: 7 };").is_err());
+    assert!(
+        session
+            .run_now("CREATE members:2 = { handle: 7 };")
+            .is_err()
+    );
 
-    session.run("DROP FIELD handle ON members;").unwrap();
-    session.run("CREATE members:2 = { handle: 7 };").unwrap();
+    session.run_now("DROP FIELD handle ON members;").unwrap();
+    session
+        .run_now("CREATE members:2 = { handle: 7 };")
+        .unwrap();
 
-    let found = session.run("SELECT * FROM members;").unwrap();
+    let found = session.run_now("SELECT * FROM members;").unwrap();
     assert_eq!(found[0].records().unwrap().len(), 2);
 }
 
@@ -932,7 +949,7 @@ fn a_traversal_is_a_walk_and_says_so() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE TABLE follows EDGE;\n\
              CREATE users:1 = { handle: 'ada' };\n\
@@ -945,11 +962,11 @@ fn a_traversal_is_a_walk_and_says_so() {
     // index is not a choice — an edge table is given one on each endpoint when it
     // is declared — so `index` invited the question of which, and the only answer
     // is the schema. It is also the word `EXPLAIN` has always used for a walk.
-    let found = session.run("SELECT * FROM users:1->follows;").unwrap();
+    let found = session.run_now("SELECT * FROM users:1->follows;").unwrap();
     assert_eq!(found[0].path(), Some(AccessPath::Graph));
 
     let reached = session
-        .run("SELECT * FROM users:1->follows->users;")
+        .run_now("SELECT * FROM users:1->follows->users;")
         .unwrap();
     assert_eq!(reached[0].path(), Some(AccessPath::Graph));
     let records = reached[0].records().unwrap();
@@ -962,7 +979,7 @@ fn the_two_directions_answer_the_mirrored_question_over_the_same_data() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE TABLE follows EDGE;\n\
              CREATE users:1 = { handle: 'ada' };\n\
@@ -975,15 +992,15 @@ fn the_two_directions_answer_the_mirrored_question_over_the_same_data() {
 
     // Nobody follows ada; two people follow katherine.
     let out = session
-        .run("SELECT * FROM users:1->follows->users;")
+        .run_now("SELECT * FROM users:1->follows->users;")
         .unwrap();
     assert_eq!(out[0].records().unwrap().len(), 1);
     let into = session
-        .run("SELECT * FROM users:3<-follows<-users;")
+        .run_now("SELECT * FROM users:3<-follows<-users;")
         .unwrap();
     assert_eq!(into[0].records().unwrap().len(), 2);
     let none = session
-        .run("SELECT * FROM users:1<-follows<-users;")
+        .run_now("SELECT * FROM users:1<-follows<-users;")
         .unwrap();
     assert!(none[0].records().unwrap().is_empty());
 }
@@ -993,7 +1010,7 @@ fn an_edges_own_properties_survive_beside_its_endpoints() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE TABLE follows EDGE;\n\
              CREATE users:1 = { handle: 'ada' };\n\
@@ -1002,7 +1019,7 @@ fn an_edges_own_properties_survive_beside_its_endpoints() {
         )
         .unwrap();
 
-    let found = session.run("SELECT * FROM users:1->follows;").unwrap();
+    let found = session.run_now("SELECT * FROM users:1->follows;").unwrap();
     let records = found[0].records().unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(field(&records[0].1, "weight"), &Value::Number(3.into()));
@@ -1016,7 +1033,7 @@ fn a_property_that_is_not_a_set_of_named_fields_is_refused_where_it_is_written()
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE TABLE follows EDGE;\n\
              CREATE users:1 = { handle: 'ada' };\n\
@@ -1024,7 +1041,7 @@ fn a_property_that_is_not_a_set_of_named_fields_is_refused_where_it_is_written()
         )
         .unwrap();
     let error = session
-        .run("RELATE users:1->follows->users:2 = 7;")
+        .run_now("RELATE users:1->follows->users:2 = 7;")
         .unwrap_err();
     assert!(error.to_string().contains("object"), "{error}");
 }
@@ -1036,11 +1053,11 @@ fn a_second_arrow_pointing_the_other_way_is_refused_rather_than_answered() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE users SCHEMALESS;\nDEFINE TABLE follows EDGE;\nCREATE users:1 = { handle: 'ada' };")
+        .run_now("DEFINE TABLE users SCHEMALESS;\nDEFINE TABLE follows EDGE;\nCREATE users:1 = { handle: 'ada' };")
         .unwrap();
     assert!(
         session
-            .run("SELECT * FROM users:1->follows<-users;")
+            .run_now("SELECT * FROM users:1->follows<-users;")
             .is_err()
     );
 }
@@ -1050,7 +1067,7 @@ fn an_edge_table_may_also_be_schemafull_in_either_order() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE knows EDGE SCHEMAFULL;\nDEFINE TABLE likes SCHEMAFULL EDGE;")
+        .run_now("DEFINE TABLE knows EDGE SCHEMAFULL;\nDEFINE TABLE likes SCHEMAFULL EDGE;")
         .unwrap();
 }
 
@@ -1062,15 +1079,15 @@ fn a_schemafull_edge_table_still_accepts_the_endpoints_the_store_writes() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE TABLE knows EDGE SCHEMAFULL;\n\
              CREATE users:1 = { handle: 'ada' };\n\
              CREATE users:2 = { handle: 'grace' };",
         )
         .unwrap();
-    session.run("RELATE users:1->knows->users:2;").unwrap();
-    let found = session.run("SELECT * FROM users:1->knows;").unwrap();
+    session.run_now("RELATE users:1->knows->users:2;").unwrap();
+    let found = session.run_now("SELECT * FROM users:1->knows;").unwrap();
     assert_eq!(found[0].records().unwrap().len(), 1);
 }
 
@@ -1078,7 +1095,7 @@ fn a_schemafull_edge_table_still_accepts_the_endpoints_the_store_writes() {
 /// some records and nothing at all in others.
 fn people_with_addresses(session: &mut Session<'_>) {
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION people;\n\
              CREATE people:1 = { name: 'ada', address: { city: 'Paris', zip: '75001' }, tags: ['urgent', 'old'] };\n\
              CREATE people:2 = { name: 'grace', address: { city: 'Lyon' }, tags: ['old'] };\n\
@@ -1095,7 +1112,7 @@ fn a_filter_reads_a_value_nested_inside_a_record() {
     people_with_addresses(&mut session);
 
     let found = session
-        .run("SELECT * FROM people WHERE address.city = 'Paris';")
+        .run_now("SELECT * FROM people WHERE address.city = 'Paris';")
         .unwrap();
     let records = found[0].records().unwrap();
     assert_eq!(records.len(), 1, "{records:?}");
@@ -1109,13 +1126,13 @@ fn a_filter_reads_an_element_of_an_array() {
     people_with_addresses(&mut session);
 
     let first = session
-        .run("SELECT * FROM people WHERE tags[0] = 'urgent';")
+        .run_now("SELECT * FROM people WHERE tags[0] = 'urgent';")
         .unwrap();
     assert_eq!(first[0].records().unwrap().len(), 1);
 
     // Position, not membership. `people:2` holds `'old'` too, at position 0.
     let second = session
-        .run("SELECT * FROM people WHERE tags[1] = 'old';")
+        .run_now("SELECT * FROM people WHERE tags[1] = 'old';")
         .unwrap();
     let records = second[0].records().unwrap();
     assert_eq!(records.len(), 1);
@@ -1146,7 +1163,7 @@ fn every_way_a_route_ends_early_matches_nothing_rather_than_failing() {
         "tags.first = 'old'",
     ] {
         let found = session
-            .run(&format!("SELECT * FROM people WHERE {filter};"))
+            .run_now(&format!("SELECT * FROM people WHERE {filter};"))
             .unwrap();
         assert!(
             found[0].records().unwrap().is_empty(),
@@ -1164,7 +1181,7 @@ fn an_index_on_a_path_answers_the_filter_it_projects() {
     people_with_addresses(&mut session);
 
     let scanned = session
-        .run("SELECT * FROM people WHERE address.city = 'Paris';")
+        .run_now("SELECT * FROM people WHERE address.city = 'Paris';")
         .unwrap();
     assert_eq!(scanned[0].path(), Some(AccessPath::Scan));
     let by_scan: Vec<_> = scanned[0].records().unwrap().to_vec();
@@ -1172,11 +1189,11 @@ fn an_index_on_a_path_answers_the_filter_it_projects() {
     // The index is declared over rows that already exist, so it has to build
     // entries for them — including for the two records the path does not reach.
     session
-        .run("DEFINE INDEX by_home_city ON people FIELDS address.city;")
+        .run_now("DEFINE INDEX by_home_city ON people FIELDS address.city;")
         .unwrap();
 
     let indexed = session
-        .run("SELECT * FROM people WHERE address.city = 'Paris';")
+        .run_now("SELECT * FROM people WHERE address.city = 'Paris';")
         .unwrap();
     assert_eq!(indexed[0].path(), Some(AccessPath::Index));
 
@@ -1193,13 +1210,13 @@ fn an_index_on_a_path_serves_a_prefix_pattern_as_a_range() {
     let mut session = ready(&store);
     people_with_addresses(&mut session);
     session
-        .run("DEFINE INDEX by_home_city ON people FIELDS address.city;")
+        .run_now("DEFINE INDEX by_home_city ON people FIELDS address.city;")
         .unwrap();
 
     // Nothing about the prefix rule depended on the value being top-level: the
     // index stores order-encoded values whatever route produced them.
     let found = session
-        .run("SELECT * FROM people WHERE address.city LIKE 'Par%';")
+        .run_now("SELECT * FROM people WHERE address.city LIKE 'Par%';")
         .unwrap();
     assert_eq!(found[0].path(), Some(AccessPath::Index));
     let records = found[0].records().unwrap();
@@ -1215,13 +1232,13 @@ fn an_index_answers_the_route_it_projects_and_no_other() {
     let mut session = ready(&store);
     people_with_addresses(&mut session);
     session
-        .run("DEFINE INDEX by_home_city ON people FIELDS address.city;")
+        .run_now("DEFINE INDEX by_home_city ON people FIELDS address.city;")
         .unwrap();
 
     // An index on `address.city` is not an index on `address`, for the same
     // reason an index on `(a, b)` is not one on `a`.
     let whole = session
-        .run("SELECT * FROM people WHERE address = 'Paris';")
+        .run_now("SELECT * FROM people WHERE address = 'Paris';")
         .unwrap();
     assert_eq!(whole[0].path(), Some(AccessPath::Scan));
     assert_eq!(whole[0].records().unwrap().len(), 1);
@@ -1234,14 +1251,14 @@ fn a_composite_index_may_mix_a_route_and_a_plain_field() {
     let mut session = ready(&store);
     people_with_addresses(&mut session);
     session
-        .run("DEFINE INDEX by_city_and_name ON people FIELDS address.city, name;")
+        .run_now("DEFINE INDEX by_city_and_name ON people FIELDS address.city, name;")
         .unwrap();
 
     // A composite serves neither half alone, so this stays a scan — the
     // assertion is that defining it over existing rows succeeded and the read
     // still answers correctly.
     let found = session
-        .run("SELECT * FROM people WHERE address.city = 'Lyon';")
+        .run_now("SELECT * FROM people WHERE address.city = 'Lyon';")
         .unwrap();
     let records = found[0].records().unwrap();
     assert_eq!(records.len(), 1);
@@ -1258,7 +1275,7 @@ fn a_route_is_not_read_where_a_table_may_stand() {
     let mut session = ready(&store);
     people_with_addresses(&mut session);
 
-    let found = session.run("SELECT * FROM orders.people;").unwrap();
+    let found = session.run_now("SELECT * FROM orders.people;").unwrap();
     assert_eq!(found[0].records().unwrap().len(), 4);
 }
 
@@ -1269,7 +1286,7 @@ fn a_position_in_a_route_is_a_whole_number() {
     people_with_addresses(&mut session);
 
     for filter in ["tags[-1] = 'old'", "tags['a'] = 'old'", "tags[] = 'old'"] {
-        let refused = session.run(&format!("SELECT * FROM people WHERE {filter};"));
+        let refused = session.run_now(&format!("SELECT * FROM people WHERE {filter};"));
         assert!(refused.is_err(), "{filter} was accepted");
     }
 }
@@ -1280,7 +1297,7 @@ fn a_read_may_ask_for_some_of_a_record_rather_than_all_of_it() {
     let mut session = ready(&store);
     people_with_addresses(&mut session);
 
-    let found = session.run("SELECT name FROM people:1;").unwrap();
+    let found = session.run_now("SELECT name FROM people:1;").unwrap();
     let records = found[0].records().unwrap();
     assert_eq!(
         records[0].1,
@@ -1297,12 +1314,14 @@ fn a_projected_route_answers_under_the_last_step_of_its_name() {
     let mut session = ready(&store);
     people_with_addresses(&mut session);
 
-    let found = session.run("SELECT address.city FROM people:1;").unwrap();
+    let found = session
+        .run_now("SELECT address.city FROM people:1;")
+        .unwrap();
     let record = &found[0].records().unwrap()[0].1;
     assert_eq!(field(record, "city"), &Value::String("Paris".to_owned()));
 
     let renamed = session
-        .run("SELECT address.city AS home, tags[0] AS first_tag FROM people:1;")
+        .run_now("SELECT address.city AS home, tags[0] AS first_tag FROM people:1;")
         .unwrap();
     let record = &renamed[0].records().unwrap()[0].1;
     assert_eq!(field(record, "home"), &Value::String("Paris".to_owned()));
@@ -1323,7 +1342,7 @@ fn a_projected_route_that_reaches_nothing_leaves_its_field_out() {
     people_with_addresses(&mut session);
 
     let found = session
-        .run("SELECT name, address.city FROM people;")
+        .run_now("SELECT name, address.city FROM people;")
         .unwrap();
     let records = found[0].records().unwrap();
     assert_eq!(records.len(), 4);
@@ -1347,7 +1366,7 @@ fn a_projection_applies_to_every_source_and_changes_no_access_path() {
     let mut session = ready(&store);
     people_with_addresses(&mut session);
     session
-        .run(
+        .run_now(
             "DEFINE INDEX by_home_city ON people FIELDS address.city;\n\
              DEFINE TABLE knows EDGE;\n\
              RELATE people:1->knows->people:2;",
@@ -1366,7 +1385,7 @@ fn a_projection_applies_to_every_source_and_changes_no_access_path() {
             AccessPath::Graph,
         ),
     ] {
-        let found = session.run(script).unwrap();
+        let found = session.run_now(script).unwrap();
         assert_eq!(found[0].path(), Some(expected), "{script}");
         for (_, record) in found[0].records().unwrap() {
             let Value::Object(fields) = record else {
@@ -1384,9 +1403,9 @@ fn a_projection_shapes_a_read_standing_in_a_value_position() {
     people_with_addresses(&mut session);
 
     session
-        .run("DEFINE COLLECTION audit; CREATE audit:1 = { who: (SELECT name FROM people:1) };")
+        .run_now("DEFINE COLLECTION audit; CREATE audit:1 = { who: (SELECT name FROM people:1) };")
         .unwrap();
-    let found = session.run("SELECT * FROM audit:1;").unwrap();
+    let found = session.run_now("SELECT * FROM audit:1;").unwrap();
     let who = field(&found[0].records().unwrap()[0].1, "who");
     assert_eq!(field(who, "name"), &Value::String("ada".to_owned()));
     let Value::Object(fields) = who else {
@@ -1399,7 +1418,7 @@ fn a_projection_shapes_a_read_standing_in_a_value_position() {
 /// means across them rather than only within numbers.
 fn mixed_ages(session: &mut Session<'_>) {
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION people;\n\
              CREATE people:1 = { name: 'ada', age: 17, city: 'Paris' };\n\
              CREATE people:2 = { name: 'grace', age: 45, city: 'Lyon' };\n\
@@ -1411,7 +1430,7 @@ fn mixed_ages(session: &mut Session<'_>) {
 }
 
 fn found_ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     outcomes[0]
         .records()
         .unwrap()
@@ -1508,7 +1527,7 @@ fn membership_reads_from_either_end() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE notes SCHEMALESS;\n\
              CREATE notes:1 = { tags: ['urgent', 'old'] };\n\
              CREATE notes:2 = { tags: ['old'] };",
@@ -1534,7 +1553,9 @@ fn a_condition_that_is_not_a_boolean_is_refused_by_the_type_it_found() {
     let mut session = ready(&store);
     mixed_ages(&mut session);
 
-    let error = session.run("SELECT * FROM people WHERE name;").unwrap_err();
+    let error = session
+        .run_now("SELECT * FROM people WHERE name;")
+        .unwrap_err();
     assert!(
         matches!(
             error,
@@ -1555,9 +1576,9 @@ fn a_bare_name_is_a_route_in_a_condition_and_a_table_in_a_value() {
 
     // In a value position `people` is the table itself.
     session
-        .run("DEFINE COLLECTION audit; CREATE audit:1 = { subject: people };")
+        .run_now("DEFINE COLLECTION audit; CREATE audit:1 = { subject: people };")
         .unwrap();
-    let found = session.run("SELECT * FROM audit:1;").unwrap();
+    let found = session.run_now("SELECT * FROM audit:1;").unwrap();
     assert!(matches!(
         field(&found[0].records().unwrap()[0].1, "subject"),
         Value::Table(_)
@@ -1579,15 +1600,15 @@ fn an_index_narrows_a_conjunction_and_the_rest_of_it_still_applies() {
     mixed_ages(&mut session);
 
     let script = "SELECT * FROM people WHERE city = 'Paris' AND age = 17;";
-    let by_scan = session.run(script).unwrap();
+    let by_scan = session.run_now(script).unwrap();
     assert_eq!(by_scan[0].path(), Some(AccessPath::Scan));
     let scanned: Vec<_> = by_scan[0].records().unwrap().to_vec();
 
     session
-        .run("DEFINE INDEX by_city ON people FIELDS city;")
+        .run_now("DEFINE INDEX by_city ON people FIELDS city;")
         .unwrap();
 
-    let by_index = session.run(script).unwrap();
+    let by_index = session.run_now(script).unwrap();
     assert_eq!(by_index[0].path(), Some(AccessPath::Index));
     // Record for record. The index answered `city = 'Paris'` — three records —
     // and the other conjunct still had to remove two of them.
@@ -1605,11 +1626,11 @@ fn neither_side_of_an_or_may_narrow_by_itself() {
     let mut session = ready(&store);
     mixed_ages(&mut session);
     session
-        .run("DEFINE INDEX by_city ON people FIELDS city;")
+        .run_now("DEFINE INDEX by_city ON people FIELDS city;")
         .unwrap();
 
     let found = session
-        .run("SELECT * FROM people WHERE city = 'Paris' OR age = 45;")
+        .run_now("SELECT * FROM people WHERE city = 'Paris' OR age = 45;")
         .unwrap();
     assert_eq!(found[0].path(), Some(AccessPath::Scan));
     assert_eq!(found[0].records().unwrap().len(), 4);
@@ -1623,7 +1644,7 @@ fn a_comparison_against_another_field_is_never_used_as_a_bound() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION pairs;\n\
              DEFINE INDEX by_left ON pairs FIELDS left;\n\
              CREATE pairs:1 = { left: 'a', right: 'a' };\n\
@@ -1632,7 +1653,7 @@ fn a_comparison_against_another_field_is_never_used_as_a_bound() {
         .unwrap();
 
     let found = session
-        .run("SELECT * FROM pairs WHERE left = right;")
+        .run_now("SELECT * FROM pairs WHERE left = right;")
         .unwrap();
     assert_eq!(found[0].path(), Some(AccessPath::Scan));
     assert_eq!(found[0].records().unwrap().len(), 1);
@@ -1651,7 +1672,9 @@ fn an_ordered_comparison_is_served_by_the_index_and_answers_what_the_scan_did() 
         let store = store();
         let mut session = ready(&store);
         mixed_ages(&mut session);
-        let found = session.run("SELECT * FROM people WHERE age > 18;").unwrap();
+        let found = session
+            .run_now("SELECT * FROM people WHERE age > 18;")
+            .unwrap();
         assert_eq!(found[0].path(), Some(AccessPath::Scan));
         found[0]
             .records()
@@ -1665,10 +1688,12 @@ fn an_ordered_comparison_is_served_by_the_index_and_answers_what_the_scan_did() 
     let mut session = ready(&store);
     mixed_ages(&mut session);
     session
-        .run("DEFINE INDEX by_age ON people FIELDS age;")
+        .run_now("DEFINE INDEX by_age ON people FIELDS age;")
         .unwrap();
 
-    let found = session.run("SELECT * FROM people WHERE age > 18;").unwrap();
+    let found = session
+        .run_now("SELECT * FROM people WHERE age > 18;")
+        .unwrap();
     assert_eq!(found[0].path(), Some(AccessPath::Index));
     let served: Vec<_> = found[0]
         .records()
@@ -1684,14 +1709,14 @@ fn arithmetic_promotes_the_kinds_and_never_truncates_a_division() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION lines;\n\
              CREATE lines:1 = { price: dec 2.50, quantity: 3, weight: 1.5 };",
         )
         .unwrap();
 
     let found = session
-        .run(
+        .run_now(
             "SELECT price * quantity AS total, quantity / 2 AS half, \
              price + weight AS mixed FROM lines:1;",
         )
@@ -1712,7 +1737,7 @@ fn arithmetic_that_has_no_answer_fails_rather_than_producing_one() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE COLLECTION lines; CREATE lines:1 = { n: 1, name: 'ada' };")
+        .run_now("DEFINE COLLECTION lines; CREATE lines:1 = { n: 1, name: 'ada' };")
         .unwrap();
 
     for script in [
@@ -1720,7 +1745,7 @@ fn arithmetic_that_has_no_answer_fails_rather_than_producing_one() {
         "SELECT name + n AS bad FROM lines:1;",
         "SELECT n + 9223372036854775807 + 9223372036854775807 AS bad FROM lines:1;",
     ] {
-        assert!(session.run(script).is_err(), "{script} answered");
+        assert!(session.run_now(script).is_err(), "{script} answered");
     }
 }
 
@@ -1731,7 +1756,7 @@ fn a_function_computes_over_the_record_it_is_projecting() {
     people_with_addresses(&mut session);
 
     let found = session
-        .run(
+        .run_now(
             "SELECT string::upper(address.city) AS shout, string::len(name) AS letters \
              FROM people:1;",
         )
@@ -1772,7 +1797,7 @@ fn the_last_element_is_reachable_only_through_a_function() {
     people_with_addresses(&mut session);
 
     let found = session
-        .run("SELECT array::last(tags) AS newest FROM people:1;")
+        .run_now("SELECT array::last(tags) AS newest FROM people:1;")
         .unwrap();
     assert_eq!(
         field(&found[0].records().unwrap()[0].1, "newest"),
@@ -1789,17 +1814,17 @@ fn a_call_is_checked_for_arity_when_the_statement_is_read() {
     // Before anything runs, and before any record is in hand.
     assert!(
         session
-            .run("SELECT string::len(name, name) AS n FROM people;")
+            .run_now("SELECT string::len(name, name) AS n FROM people;")
             .is_err()
     );
     assert!(
         session
-            .run("SELECT string::nope(name) AS n FROM people;")
+            .run_now("SELECT string::nope(name) AS n FROM people;")
             .is_err()
     );
     // A wrong argument type is a different failure, and it names the position.
     let error = session
-        .run("SELECT string::len(address) AS n FROM people:1;")
+        .run_now("SELECT string::len(address) AS n FROM people:1;")
         .unwrap_err();
     let message = error.to_string();
     assert!(message.contains("string::len"), "{message}");
@@ -1815,10 +1840,10 @@ fn a_computed_projection_needs_a_name_of_its_own() {
     // A bare route names itself; anything computed does not.
     assert!(
         session
-            .run("SELECT string::len(name) FROM people;")
+            .run_now("SELECT string::len(name) FROM people;")
             .is_err()
     );
-    assert!(session.run("SELECT name FROM people;").is_ok());
+    assert!(session.run_now("SELECT name FROM people;").is_ok());
 }
 
 #[test]
@@ -1828,18 +1853,30 @@ fn a_required_field_must_hold_a_value_and_null_is_not_one() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE users SCHEMALESS;\n\
              DEFINE FIELD email ON users TYPE string REQUIRED;",
         )
         .unwrap();
 
     session
-        .run("CREATE users:1 = { email: 'ada@example.com' };")
+        .run_now("CREATE users:1 = { email: 'ada@example.com' };")
         .unwrap();
-    assert!(session.run("CREATE users:2 = { name: 'grace' };").is_err());
-    assert!(session.run("CREATE users:3 = { email: NULL };").is_err());
-    assert!(session.run("CREATE users:4 = { email: NONE };").is_err());
+    assert!(
+        session
+            .run_now("CREATE users:2 = { name: 'grace' };")
+            .is_err()
+    );
+    assert!(
+        session
+            .run_now("CREATE users:3 = { email: NULL };")
+            .is_err()
+    );
+    assert!(
+        session
+            .run_now("CREATE users:4 = { email: NONE };")
+            .is_err()
+    );
 }
 
 #[test]
@@ -1850,16 +1887,18 @@ fn requiring_a_field_over_rows_that_lack_it_writes_nothing_at_all() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { name: 'ada' };")
+        .run_now("DEFINE TABLE users SCHEMALESS; CREATE users:1 = { name: 'ada' };")
         .unwrap();
 
     assert!(
         session
-            .run("DEFINE FIELD email ON users TYPE string REQUIRED;")
+            .run_now("DEFINE FIELD email ON users TYPE string REQUIRED;")
             .is_err()
     );
     // Not even the declaration landed, so a later write is still accepted.
-    session.run("CREATE users:2 = { name: 'grace' };").unwrap();
+    session
+        .run_now("CREATE users:2 = { name: 'grace' };")
+        .unwrap();
 }
 
 #[test]
@@ -1867,7 +1906,7 @@ fn a_default_fills_a_field_a_write_leaves_out() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE notes SCHEMALESS;\n\
              DEFINE FIELD state ON notes TYPE string DEFAULT 'open';\n\
              DEFINE FIELD seen ON notes TYPE int DEFAULT 1 + 1;\n\
@@ -1876,7 +1915,7 @@ fn a_default_fills_a_field_a_write_leaves_out() {
         )
         .unwrap();
 
-    let found = session.run("SELECT * FROM notes;").unwrap();
+    let found = session.run_now("SELECT * FROM notes;").unwrap();
     let records = found[0].records().unwrap();
     assert_eq!(
         field(&records[0].1, "state"),
@@ -1898,14 +1937,14 @@ fn a_default_is_evaluated_and_not_stored_as_an_expression() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE notes SCHEMALESS;\n\
              DEFINE FIELD created ON notes TYPE datetime DEFAULT time::now();\n\
              CREATE notes:1 = { body: 'first' };",
         )
         .unwrap();
 
-    let found = session.run("SELECT * FROM notes:1;").unwrap();
+    let found = session.run_now("SELECT * FROM notes:1;").unwrap();
     let created = field(&found[0].records().unwrap()[0].1, "created");
     assert!(matches!(created, Value::Datetime(_)), "{created:?}");
 }
@@ -1915,14 +1954,14 @@ fn a_required_field_with_a_default_always_holds_a_value() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE notes SCHEMALESS;\n\
              DEFINE FIELD state ON notes TYPE string REQUIRED DEFAULT 'open';\n\
              CREATE notes:1 = { body: 'first' };",
         )
         .unwrap();
 
-    let found = session.run("SELECT * FROM notes:1;").unwrap();
+    let found = session.run_now("SELECT * FROM notes:1;").unwrap();
     assert_eq!(
         field(&found[0].records().unwrap()[0].1, "state"),
         &Value::String("open".to_owned())
@@ -1936,13 +1975,13 @@ fn a_default_does_not_reach_backwards_over_rows_already_written() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { body: 'first' };")
+        .run_now("DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { body: 'first' };")
         .unwrap();
     session
-        .run("DEFINE FIELD state ON notes TYPE string DEFAULT 'open';")
+        .run_now("DEFINE FIELD state ON notes TYPE string DEFAULT 'open';")
         .unwrap();
 
-    let found = session.run("SELECT * FROM notes:1;").unwrap();
+    let found = session.run_now("SELECT * FROM notes:1;").unwrap();
     let record = &found[0].records().unwrap()[0].1;
     let Value::Object(fields) = record else {
         panic!("not an object");
@@ -1954,11 +1993,11 @@ fn a_default_does_not_reach_backwards_over_rows_already_written() {
 fn a_default_is_checked_when_it_is_declared_and_not_when_it_first_bites() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE TABLE notes SCHEMALESS;").unwrap();
+    session.run_now("DEFINE TABLE notes SCHEMALESS;").unwrap();
 
     // The wrong type, caught before the declaration lands.
     let error = session
-        .run("DEFINE FIELD seen ON notes TYPE int DEFAULT 'open';")
+        .run_now("DEFINE FIELD seen ON notes TYPE int DEFAULT 'open';")
         .unwrap_err();
     assert!(
         matches!(error, Error::DefaultDoesNotMatch { .. }),
@@ -1970,13 +2009,13 @@ fn a_default_is_checked_when_it_is_declared_and_not_when_it_first_bites() {
     // rather than on somebody's first write.
     assert!(
         session
-            .run("DEFINE FIELD echo ON notes TYPE string DEFAULT body;")
+            .run_now("DEFINE FIELD echo ON notes TYPE string DEFAULT body;")
             .is_err()
     );
 
     // Neither declaration landed, so the field name is still free.
     session
-        .run("DEFINE FIELD seen ON notes TYPE int DEFAULT 0;")
+        .run_now("DEFINE FIELD seen ON notes TYPE int DEFAULT 0;")
         .unwrap();
 }
 
@@ -1984,7 +2023,7 @@ fn a_default_is_checked_when_it_is_declared_and_not_when_it_first_bites() {
 /// order has to say where each goes rather than leaving it to the scan.
 fn sortable(session: &mut Session<'_>) {
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION people;\n\
              CREATE people:1 = { name: 'ada', age: 45, city: 'Paris' };\n\
              CREATE people:2 = { name: 'grace', age: 17, city: 'Lyon' };\n\
@@ -2067,14 +2106,14 @@ fn equal_keys_are_broken_by_identity_so_the_answer_never_moves() {
     sortable(&mut session);
 
     let script = "SELECT * FROM people WHERE city = 'Paris' ORDER BY age;";
-    let by_scan = session.run(script).unwrap();
+    let by_scan = session.run_now(script).unwrap();
     assert_eq!(by_scan[0].path(), Some(AccessPath::Scan));
     let scanned: Vec<_> = by_scan[0].records().unwrap().to_vec();
 
     session
-        .run("DEFINE INDEX by_city ON people FIELDS city;")
+        .run_now("DEFINE INDEX by_city ON people FIELDS city;")
         .unwrap();
-    let by_index = session.run(script).unwrap();
+    let by_index = session.run_now(script).unwrap();
     assert_eq!(by_index[0].path(), Some(AccessPath::Index));
     assert_eq!(by_index[0].records().unwrap(), scanned.as_slice());
     // people:1 and people:5 both hold 45, and identity decides.
@@ -2118,7 +2157,7 @@ fn a_sort_key_may_be_a_route_or_a_projected_name() {
     // reaches nothing and it sorts with the ones that have no address at all —
     // last, under `DESC`.
     let by_route = session
-        .run("SELECT * FROM people ORDER BY address.city DESC;")
+        .run_now("SELECT * FROM people ORDER BY address.city DESC;")
         .unwrap();
     let routed: Vec<_> = by_route[0]
         .records()
@@ -2132,7 +2171,7 @@ fn a_sort_key_may_be_a_route_or_a_projected_name() {
     // …and the name the projection gave it answers the same way, which is the
     // point: one order, whichever way the key is named.
     let by_name = session
-        .run("SELECT address.city AS home FROM people ORDER BY home DESC;")
+        .run_now("SELECT address.city AS home FROM people ORDER BY home DESC;")
         .unwrap();
     let named: Vec<_> = by_name[0]
         .records()
@@ -2151,7 +2190,7 @@ fn the_words_that_shape_a_read_are_not_reserved_names() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION order;\n\
              CREATE order:1 = { limit: 10, by: 'ada', start: 1 };",
         )
@@ -2173,7 +2212,9 @@ fn a_fold_answers_once_for_many_records() {
     let mut session = ready(&store);
     sortable(&mut session);
 
-    let found = session.run("SELECT count(*) AS n FROM people;").unwrap();
+    let found = session
+        .run_now("SELECT count(*) AS n FROM people;")
+        .unwrap();
     let records = found[0].records().unwrap();
     assert_eq!(records.len(), 1, "one answer, not one per record");
     assert_eq!(
@@ -2190,7 +2231,7 @@ fn counting_a_value_and_counting_records_are_different_questions() {
 
     // people:4 has no age at all and people:3 holds null; neither is a value.
     let found = session
-        .run("SELECT count(*) AS records, count(age) AS ages FROM people;")
+        .run_now("SELECT count(*) AS records, count(age) AS ages FROM people;")
         .unwrap();
     let record = &found[0].records().unwrap()[0].1;
     assert_eq!(field(record, "records"), &Value::Number(Number::Integer(5)));
@@ -2204,7 +2245,7 @@ fn grouping_answers_once_per_distinct_key() {
     sortable(&mut session);
 
     let found = session
-        .run("SELECT city, count(*) AS n FROM people GROUP BY city;")
+        .run_now("SELECT city, count(*) AS n FROM people GROUP BY city;")
         .unwrap();
     let records = found[0].records().unwrap();
     assert_eq!(records.len(), 2);
@@ -2228,7 +2269,7 @@ fn the_folds_ignore_what_holds_nothing_and_say_so_when_there_is_nothing() {
     sortable(&mut session);
 
     let found = session
-        .run(
+        .run_now(
             "SELECT sum(age) AS total, mean(age) AS average, \
              min(age) AS youngest, max(age) AS oldest FROM people;",
         )
@@ -2246,7 +2287,7 @@ fn the_folds_ignore_what_holds_nothing_and_say_so_when_there_is_nothing() {
     // rounded. Asserted over data whose average is whole, so the assertion is
     // about the value rather than about how many digits survived.
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION scores;\n\
              CREATE scores:1 = { n: 10 };\n\
              CREATE scores:2 = { n: 20 };\n\
@@ -2254,7 +2295,7 @@ fn the_folds_ignore_what_holds_nothing_and_say_so_when_there_is_nothing() {
         )
         .unwrap();
     let exact = session
-        .run("SELECT mean(n) AS average FROM scores;")
+        .run_now("SELECT mean(n) AS average FROM scores;")
         .unwrap();
     assert_eq!(
         field(&exact[0].records().unwrap()[0].1, "average"),
@@ -2264,10 +2305,10 @@ fn the_folds_ignore_what_holds_nothing_and_say_so_when_there_is_nothing() {
 
     // Over a group holding no numbers at all: sum is zero, mean is nothing.
     session
-        .run("DEFINE COLLECTION empty; CREATE empty:1 = { name: 'ada' };")
+        .run_now("DEFINE COLLECTION empty; CREATE empty:1 = { name: 'ada' };")
         .unwrap();
     let none = session
-        .run("SELECT sum(age) AS total, mean(age) AS average FROM empty;")
+        .run_now("SELECT sum(age) AS total, mean(age) AS average FROM empty;")
         .unwrap();
     let record = &none[0].records().unwrap()[0].1;
     assert_eq!(field(record, "total"), &Value::Number(Number::Integer(0)));
@@ -2288,7 +2329,7 @@ fn a_fold_over_something_that_is_not_a_number_fails_rather_than_skipping() {
     sortable(&mut session);
 
     let error = session
-        .run("SELECT sum(name) AS total FROM people;")
+        .run_now("SELECT sum(name) AS total FROM people;")
         .unwrap_err();
     assert!(matches!(error, Error::NotSummable { .. }), "{error}");
 }
@@ -2303,15 +2344,19 @@ fn a_grouped_read_may_answer_only_with_its_keys_and_its_folds() {
     // silently is how a wrong number reaches a report.
     assert!(
         session
-            .run("SELECT name, count(*) AS n FROM people GROUP BY city;")
+            .run_now("SELECT name, count(*) AS n FROM people GROUP BY city;")
             .is_err()
     );
     // `*` over a group would answer with whichever record came last.
-    assert!(session.run("SELECT * FROM people GROUP BY city;").is_err());
+    assert!(
+        session
+            .run_now("SELECT * FROM people GROUP BY city;")
+            .is_err()
+    );
     // And a fold has no name of its own.
-    assert!(session.run("SELECT count(*) FROM people;").is_err());
+    assert!(session.run_now("SELECT count(*) FROM people;").is_err());
     // `*` means the records themselves, which only `count` can fold.
-    assert!(session.run("SELECT sum(*) AS n FROM people;").is_err());
+    assert!(session.run_now("SELECT sum(*) AS n FROM people;").is_err());
 }
 
 #[test]
@@ -2321,7 +2366,7 @@ fn ordering_and_bounding_a_grouped_read_shapes_the_groups() {
     sortable(&mut session);
 
     let found = session
-        .run(
+        .run_now(
             "SELECT city, count(*) AS n FROM people \
              GROUP BY city ORDER BY n DESC LIMIT 1;",
         )
@@ -2336,7 +2381,7 @@ fn grouping_by_several_keys_groups_by_the_combination() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION sales;\n\
              CREATE sales:1 = { city: 'Paris', year: 2025, n: 1 };\n\
              CREATE sales:2 = { city: 'Paris', year: 2026, n: 2 };\n\
@@ -2346,7 +2391,7 @@ fn grouping_by_several_keys_groups_by_the_combination() {
         .unwrap();
 
     let found = session
-        .run("SELECT city, year, sum(n) AS total FROM sales GROUP BY city, year;")
+        .run_now("SELECT city, year, sum(n) AS total FROM sales GROUP BY city, year;")
         .unwrap();
     let records = found[0].records().unwrap();
     assert_eq!(records.len(), 3);
@@ -2364,14 +2409,14 @@ fn a_field_called_count_is_still_a_field() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE COLLECTION tallies; CREATE tallies:1 = { count: 7 };")
+        .run_now("DEFINE COLLECTION tallies; CREATE tallies:1 = { count: 7 };")
         .unwrap();
 
     assert_eq!(
         found_ids(&mut session, "SELECT * FROM tallies WHERE count = 7;"),
         vec![RecordId::Int(1)]
     );
-    let found = session.run("SELECT count FROM tallies;").unwrap();
+    let found = session.run_now("SELECT count FROM tallies;").unwrap();
     assert_eq!(
         field(&found[0].records().unwrap()[0].1, "count"),
         &Value::Number(Number::Integer(7))
@@ -2381,7 +2426,7 @@ fn a_field_called_count_is_still_a_field() {
 /// Notes carrying text an analyzer has an opinion about, and text it does not.
 fn searchable(session: &mut Session<'_>) {
     session
-        .run(
+        .run_now(
             "DEFINE ANALYZER simple FILTERS lowercase, ascii;\n\
              DEFINE TABLE notes SCHEMALESS;\n\
              DEFINE FIELD body ON notes TYPE string ANALYZER simple;\n\
@@ -2495,7 +2540,7 @@ fn an_analyzer_is_declared_once_and_attached_where_it_is_needed() {
 
     // One declaration, two fields on two tables.
     session
-        .run(
+        .run_now(
             "DEFINE TABLE letters SCHEMALESS;\n\
              DEFINE FIELD text ON letters TYPE string ANALYZER simple;\n\
              CREATE letters:1 = { text: 'Dear Ada' };",
@@ -2512,11 +2557,11 @@ fn an_analyzer_is_declared_once_and_attached_where_it_is_needed() {
     // The name is unique, like every other name.
     assert!(
         session
-            .run("DEFINE ANALYZER simple FILTERS lowercase;")
+            .run_now("DEFINE ANALYZER simple FILTERS lowercase;")
             .is_err()
     );
     session
-        .run("DEFINE ANALYZER IF NOT EXISTS simple FILTERS lowercase;")
+        .run_now("DEFINE ANALYZER IF NOT EXISTS simple FILTERS lowercase;")
         .unwrap();
 }
 
@@ -2558,9 +2603,11 @@ fn a_declared_analyzer_survives_a_replica_replaying_the_log() {
     // The analyzer, the attachment and the records all arrived through one log,
     // so the replica answers the same search.
     let mut mirrored = Session::new(&replica);
-    mirrored.run("USE NAMESPACE prod DATABASE orders;").unwrap();
+    mirrored
+        .run_now("USE NAMESPACE prod DATABASE orders;")
+        .unwrap();
     let found = mirrored
-        .run("SELECT * FROM notes WHERE body MATCHES 'lovelace';")
+        .run_now("SELECT * FROM notes WHERE body MATCHES 'lovelace';")
         .unwrap();
     assert_eq!(found[0].records().unwrap().len(), 1);
 }
@@ -2578,15 +2625,15 @@ fn a_search_index_changes_the_cost_and_not_the_answer() {
     searchable(&mut session);
 
     let script = "SELECT * FROM notes WHERE body MATCHES 'lovelace';";
-    let by_scan = session.run(script).unwrap();
+    let by_scan = session.run_now(script).unwrap();
     assert_eq!(by_scan[0].path(), Some(AccessPath::Scan));
     let scanned: Vec<_> = by_scan[0].records().unwrap().to_vec();
 
     session
-        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
         .unwrap();
 
-    let by_index = session.run(script).unwrap();
+    let by_index = session.run_now(script).unwrap();
     assert_eq!(by_index[0].path(), Some(AccessPath::Index));
     assert_eq!(by_index[0].records().unwrap(), scanned.as_slice());
     assert_eq!(scanned.len(), 1);
@@ -2598,7 +2645,7 @@ fn a_search_index_built_over_existing_rows_answers_every_shape_of_query() {
     let mut session = ready(&store);
     searchable(&mut session);
     session
-        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
         .unwrap();
 
     // Several terms: the postings of each, intersected.
@@ -2633,7 +2680,7 @@ fn an_update_takes_back_the_postings_the_record_no_longer_earns() {
     let mut session = ready(&store);
     searchable(&mut session);
     session
-        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
         .unwrap();
 
     assert_eq!(
@@ -2645,7 +2692,7 @@ fn an_update_takes_back_the_postings_the_record_no_longer_earns() {
         1
     );
     session
-        .run("UPDATE notes:1 = { body: 'Grace Hopper wrote a compiler' };")
+        .run_now("UPDATE notes:1 = { body: 'Grace Hopper wrote a compiler' };")
         .unwrap();
 
     // The old term is gone and the new one is there — an orphan posting would
@@ -2666,7 +2713,7 @@ fn an_update_takes_back_the_postings_the_record_no_longer_earns() {
     );
 
     // And a delete takes the rest.
-    session.run("DELETE notes:1;").unwrap();
+    session.run_now("DELETE notes:1;").unwrap();
     assert!(
         found_ids(
             &mut session,
@@ -2687,11 +2734,11 @@ fn an_ordered_index_is_never_asked_a_term_question() {
     let mut session = ready(&store);
     searchable(&mut session);
     session
-        .run("DEFINE INDEX by_body_value ON notes FIELDS body;")
+        .run_now("DEFINE INDEX by_body_value ON notes FIELDS body;")
         .unwrap();
 
     let found = session
-        .run("SELECT * FROM notes WHERE body MATCHES 'lovelace';")
+        .run_now("SELECT * FROM notes WHERE body MATCHES 'lovelace';")
         .unwrap();
     assert_eq!(found[0].path(), Some(AccessPath::Scan));
     assert_eq!(found[0].records().unwrap().len(), 1);
@@ -2705,7 +2752,7 @@ fn a_replica_builds_the_same_postings_from_the_same_log() {
     let mut session = ready(&store);
     searchable(&mut session);
     session
-        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
         .unwrap();
 
     let replica_backend =
@@ -2714,9 +2761,11 @@ fn a_replica_builds_the_same_postings_from_the_same_log() {
     crate::replay(&store, &replica);
 
     let mut mirrored = Session::new(&replica);
-    mirrored.run("USE NAMESPACE prod DATABASE orders;").unwrap();
+    mirrored
+        .run_now("USE NAMESPACE prod DATABASE orders;")
+        .unwrap();
     let found = mirrored
-        .run("SELECT * FROM notes WHERE body MATCHES 'lovelace';")
+        .run_now("SELECT * FROM notes WHERE body MATCHES 'lovelace';")
         .unwrap();
     assert_eq!(found[0].path(), Some(tessari_session::AccessPath::Index));
     assert_eq!(found[0].records().unwrap().len(), 1);
@@ -2725,7 +2774,7 @@ fn a_replica_builds_the_same_postings_from_the_same_log() {
 /// Notes with embeddings, one missing and one the wrong shape.
 fn embedded(session: &mut Session<'_>) {
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION notes;\n\
              CREATE notes:1 = { title: 'east', embedding: [1.0, 0.0] };\n\
              CREATE notes:2 = { title: 'north-east', embedding: [0.7, 0.7] };\n\
@@ -2784,7 +2833,7 @@ fn the_three_distances_answer_three_questions() {
     embedded(&mut session);
 
     let found = session
-        .run(
+        .run_now(
             "SELECT vector::cosine(embedding, [2.0, 0.0]) AS angle, \
              vector::euclidean(embedding, [2.0, 0.0]) AS gap, \
              vector::dot(embedding, [2.0, 0.0]) AS inner \
@@ -2805,7 +2854,7 @@ fn ordering_by_an_expression_works_for_anything_computed() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION people;\n\
              CREATE people:1 = { name: 'barbara' };\n\
              CREATE people:2 = { name: 'ada' };\n\
@@ -2839,7 +2888,7 @@ fn ordering_by_an_expression_works_for_anything_computed() {
 /// first one. There is no other way in, which is the point of the rule.
 fn guarded(session: &mut Session<'_>) {
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION notes;\n\
              CREATE notes:1 = { body: 'written while open' };\n\
              DEFINE USER root ROLE owner PASSWORD 'root secret';",
@@ -2847,7 +2896,7 @@ fn guarded(session: &mut Session<'_>) {
         .unwrap();
     session.sign_in("root", "root secret").unwrap();
     session
-        .run(
+        .run_now(
             "DEFINE USER ada ON prod.orders ROLE editor PASSWORD 'correct horse';\n\
              DEFINE USER grace ON prod.orders ROLE viewer PASSWORD 'watch only';",
         )
@@ -2862,14 +2911,14 @@ fn a_store_with_no_users_is_open_and_the_first_one_closes_it() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE COLLECTION notes; CREATE notes:1 = { body: 'anyone' };")
+        .run_now("DEFINE COLLECTION notes; CREATE notes:1 = { body: 'anyone' };")
         .unwrap();
 
     session
-        .run("DEFINE USER root ROLE owner PASSWORD 'root secret';")
+        .run_now("DEFINE USER root ROLE owner PASSWORD 'root secret';")
         .unwrap();
 
-    let error = session.run("SELECT * FROM notes;").unwrap_err();
+    let error = session.run_now("SELECT * FROM notes;").unwrap_err();
     assert!(matches!(error, Error::NotSignedIn { .. }), "{error}");
 }
 
@@ -2887,7 +2936,7 @@ fn a_signin_matches_the_password_and_says_nothing_about_which_half_was_wrong() {
     assert!(matches!(wrong_password, Error::SignInRefused));
 
     session.sign_in("ada", "correct horse").unwrap();
-    session.run("SELECT * FROM notes;").unwrap();
+    session.run_now("SELECT * FROM notes;").unwrap();
 }
 
 #[test]
@@ -2898,7 +2947,7 @@ fn a_role_decides_what_a_signed_in_session_may_do() {
 
     // A viewer reads and does nothing else.
     session.sign_in("grace", "watch only").unwrap();
-    session.run("SELECT * FROM notes;").unwrap();
+    session.run_now("SELECT * FROM notes;").unwrap();
     for refused in [
         "CREATE notes:2 = { body: 'no' };",
         "UPDATE notes:1 = { body: 'no' };",
@@ -2906,7 +2955,7 @@ fn a_role_decides_what_a_signed_in_session_may_do() {
         "DEFINE COLLECTION more;",
         "DROP TABLE notes;",
     ] {
-        let error = session.run(refused).unwrap_err();
+        let error = session.run_now(refused).unwrap_err();
         assert!(
             matches!(error, Error::RoleForbids { role: "viewer", .. }),
             "{refused} gave {error}"
@@ -2915,10 +2964,12 @@ fn a_role_decides_what_a_signed_in_session_may_do() {
 
     // An editor writes and defines structure, and may not declare users.
     session.sign_in("ada", "correct horse").unwrap();
-    session.run("CREATE notes:2 = { body: 'yes' };").unwrap();
-    session.run("DEFINE COLLECTION more;").unwrap();
+    session
+        .run_now("CREATE notes:2 = { body: 'yes' };")
+        .unwrap();
+    session.run_now("DEFINE COLLECTION more;").unwrap();
     let error = session
-        .run("DEFINE USER intruder ROLE owner PASSWORD 'x';")
+        .run_now("DEFINE USER intruder ROLE owner PASSWORD 'x';")
         .unwrap_err();
     assert!(
         matches!(error, Error::RoleForbids { role: "editor", .. }),
@@ -2928,7 +2979,7 @@ fn a_role_decides_what_a_signed_in_session_may_do() {
     // An owner does all of it.
     session.sign_in("root", "root secret").unwrap();
     session
-        .run("DEFINE USER another ROLE viewer PASSWORD 'y';")
+        .run_now("DEFINE USER another ROLE viewer PASSWORD 'y';")
         .unwrap();
 }
 
@@ -2942,11 +2993,11 @@ fn signing_in_again_replaces_the_identity_rather_than_adding_to_it() {
     session.sign_in("grace", "watch only").unwrap();
     // A session is one conversation with one user at a time, so the owner's
     // rights do not survive becoming a viewer.
-    assert!(session.run("DEFINE COLLECTION more;").is_err());
+    assert!(session.run_now("DEFINE COLLECTION more;").is_err());
 
     session.sign_out();
     assert!(matches!(
-        session.run("SELECT * FROM notes;").unwrap_err(),
+        session.run_now("SELECT * FROM notes;").unwrap_err(),
         Error::NotSignedIn { .. }
     ));
 }
@@ -2957,10 +3008,10 @@ fn a_scoped_user_cannot_reach_another_tenancy() {
     let mut session = ready(&store);
     guarded(&mut session);
     session.sign_in("root", "root secret").unwrap();
-    session.run("DEFINE NAMESPACE other;").unwrap();
+    session.run_now("DEFINE NAMESPACE other;").unwrap();
 
     session.sign_in("ada", "correct horse").unwrap();
-    let error = session.run("USE NAMESPACE other;").unwrap_err();
+    let error = session.run_now("USE NAMESPACE other;").unwrap_err();
     // The refusal names the tenancy and not a record: one that says whether a
     // record exists has answered the question it declined.
     assert!(matches!(error, Error::OutsideTenancy { .. }), "{error}");
@@ -2973,7 +3024,7 @@ fn what_is_stored_is_a_hash_and_no_plaintext_reaches_the_log() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE USER ada ROLE owner PASSWORD 'correct horse';")
+        .run_now("DEFINE USER ada ROLE owner PASSWORD 'correct horse';")
         .unwrap();
 
     // The log is what a replica and a backup receive, so a plaintext there is a
@@ -2997,7 +3048,7 @@ fn a_scoped_user_cannot_reach_another_database_by_naming_it() {
     guarded(&mut session);
     session.sign_in("root", "root secret").unwrap();
     session
-        .run(
+        .run_now(
             "DEFINE DATABASE archive;\n\
              USE DATABASE archive;\n\
              DEFINE COLLECTION notes;\n\
@@ -3007,11 +3058,11 @@ fn a_scoped_user_cannot_reach_another_database_by_naming_it() {
 
     session.sign_in("ada", "correct horse").unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
     // Naming the database directly never touches `USE`, so a check that only
     // guarded `USE` would have guarded the front door of a room with two.
-    let error = session.run("SELECT * FROM archive.notes;").unwrap_err();
+    let error = session.run_now("SELECT * FROM archive.notes;").unwrap_err();
     assert!(matches!(error, Error::OutsideTenancy { .. }), "{error}");
     // It names the tenancy the author wrote, which leaks nothing they did not
     // already type — and says nothing about whether that table or record exists.
@@ -3030,8 +3081,8 @@ fn the_system_namespace_has_no_name_and_so_no_statement_can_reach_it() {
     let store = store();
     let mut session = ready(&store);
     for attempt in ["USE NAMESPACE system;", "USE NAMESPACE catalog;"] {
-        session.run(attempt).unwrap();
-        let error = session.run("DEFINE COLLECTION intrusion;").unwrap_err();
+        session.run_now(attempt).unwrap();
+        let error = session.run_now("DEFINE COLLECTION intrusion;").unwrap_err();
         assert!(
             matches!(
                 error,
@@ -3065,7 +3116,7 @@ fn the_plan_chooses_the_index_and_never_the_answer() {
         let store = store();
         let mut session = ready(&store);
         session
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE COLLECTION users;\n\
                  {indexes}\n\
                  CREATE users:1 = {{ email: 'a@x', city: 'london', name: 'ada' }};\n\
@@ -3074,7 +3125,9 @@ fn the_plan_chooses_the_index_and_never_the_answer() {
             ))
             .unwrap();
         session
-            .run("SELECT * FROM users WHERE city = 'london' AND name LIKE 'a%' AND email = 'a@x';")
+            .run_now(
+                "SELECT * FROM users WHERE city = 'london' AND name LIKE 'a%' AND email = 'a@x';",
+            )
             .unwrap()[0]
             .records()
             .unwrap()
@@ -3112,7 +3165,7 @@ fn a_filter_reports_the_index_it_used_and_the_scan_when_there_is_none() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION users;\n\
              DEFINE INDEX by_email ON users FIELDS email UNIQUE;\n\
              CREATE users:1 = { email: 'a@x', city: 'london' };",
@@ -3120,12 +3173,12 @@ fn a_filter_reports_the_index_it_used_and_the_scan_when_there_is_none() {
         .unwrap();
 
     let served = session
-        .run("SELECT * FROM users WHERE city = 'london' AND email = 'a@x';")
+        .run_now("SELECT * FROM users WHERE city = 'london' AND email = 'a@x';")
         .unwrap();
     assert_eq!(served[0].path(), Some(AccessPath::Index));
 
     let scanned = session
-        .run("SELECT * FROM users WHERE city = 'london';")
+        .run_now("SELECT * FROM users WHERE city = 'london';")
         .unwrap();
     assert_eq!(scanned[0].path(), Some(AccessPath::Scan));
 }
@@ -3141,7 +3194,7 @@ fn one_statement_observes_one_instant() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION users;\n\
              CREATE users:1 = { name: 'ada' };\n\
              CREATE users:2 = { name: 'grace' };\n\
@@ -3149,7 +3202,9 @@ fn one_statement_observes_one_instant() {
         )
         .unwrap();
 
-    let outcomes = session.run("SELECT time::now() AS at FROM users;").unwrap();
+    let outcomes = session
+        .run_now("SELECT time::now() AS at FROM users;")
+        .unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(records.len(), 3);
     let first = field(&records[0].1, "at");

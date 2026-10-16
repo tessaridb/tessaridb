@@ -48,6 +48,7 @@ tessari-types.workspace = true
 tessari-wire.workspace = true
 
 [dev-dependencies]
+tessari-session = { workspace = true, features = ["test-support"] }
 # Already in the tree through `tessari-types`; nothing new is fetched, and a test
 # that builds a decimal needs the type that holds one.
 rust_decimal.workspace = true

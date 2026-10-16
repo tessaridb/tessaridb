@@ -12,6 +12,7 @@
 use std::io::Write;
 use std::net::TcpStream;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_wire::{Answer, Client, Node};
 use tessaridb::{Db, Value};
@@ -222,7 +223,7 @@ fn a_closed_store_refuses_an_unauthenticated_request_with_the_sessions_own_words
     {
         let mut session = db.session();
         session
-            .run("DEFINE USER root ROLE owner PASSWORD 'a long one';")
+            .run_now("DEFINE USER root ROLE owner PASSWORD 'a long one';")
             .unwrap();
     }
     let (_node, address) = serving(db);
@@ -390,9 +391,9 @@ fn a_bounded_read_this_node_cannot_answer_is_redirected_over_the_wire() {
         // puts its own copy outside every bound and sends the read elsewhere.
         let mut session = db.session();
         session
-            .run(&format!("{READY} DEFINE COLLECTION users;"))
+            .run_now(&format!("{READY} DEFINE COLLECTION users;"))
             .unwrap();
-        session.run("DEFINE NODE ROLES serving;").unwrap();
+        session.run_now("DEFINE NODE ROLES serving;").unwrap();
     }
     let (_node, address) = serving_among(db, Arc::new(tessari_wire::Published::holding(directory)));
     let mut client = Client::connect(&address).unwrap();
@@ -639,7 +640,7 @@ fn above_the_ceiling() -> Db {
     {
         let mut session = db.session();
         session
-            .run(&format!("{READY} DEFINE COLLECTION big;"))
+            .run_now(&format!("{READY} DEFINE COLLECTION big;"))
             .unwrap();
         let nine_megabytes = Value::String("x".repeat(9 * 1024 * 1024));
         let body = std::collections::BTreeMap::from([("body".to_owned(), nine_megabytes)]);
@@ -647,7 +648,7 @@ fn above_the_ceiling() -> Db {
             "CREATE big:1 = { body: $body };",
             "CREATE big:2 = { body: $body };",
         ] {
-            session.run_with(statement, &body).unwrap();
+            session.run_with_now(statement, &body).unwrap();
         }
     }
     db

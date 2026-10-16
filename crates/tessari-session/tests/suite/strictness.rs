@@ -20,6 +20,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -32,7 +33,9 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;")
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;",
+        )
         .unwrap();
     session
 }
@@ -42,18 +45,20 @@ fn a_collection_takes_a_field_nobody_declared_and_a_table_refuses_it() {
     let store = store();
     let mut session = ready(&store);
 
-    session.run("DEFINE COLLECTION notes;").unwrap();
-    session.run("DEFINE TABLE people (name string);").unwrap();
+    session.run_now("DEFINE COLLECTION notes;").unwrap();
+    session
+        .run_now("DEFINE TABLE people (name string);")
+        .unwrap();
 
     // The same record, to both. Anything else compares two writes rather than
     // two declarations.
     let record = "= { name: 'ada', nickname: 'the countess' }";
 
     session
-        .run(&format!("CREATE notes:1 {record};"))
+        .run_now(&format!("CREATE notes:1 {record};"))
         .unwrap_or_else(|error| panic!("a collection refused an undeclared field: {error}"));
 
-    let refused = session.run(&format!("CREATE people:1 {record};"));
+    let refused = session.run_now(&format!("CREATE people:1 {record};"));
     assert!(
         refused.is_err(),
         "a table accepted a field it does not declare, so the word bought nothing"
@@ -66,9 +71,11 @@ fn a_declared_table_is_strict_without_being_told_to_be() {
     let mut session = ready(&store);
 
     // No `SCHEMAFULL`. That is the whole assertion: the default moved.
-    session.run("DEFINE TABLE people (name string);").unwrap();
+    session
+        .run_now("DEFINE TABLE people (name string);")
+        .unwrap();
 
-    let refused = session.run("CREATE people:1 = { name: 'ada', nickname: 'x' };");
+    let refused = session.run_now("CREATE people:1 = { name: 'ada', nickname: 'x' };");
     assert!(
         refused.is_err(),
         "a declared table accepted an undeclared field by default"
@@ -81,11 +88,11 @@ fn schemaless_is_the_way_back_and_still_works() {
     let mut session = ready(&store);
 
     session
-        .run("DEFINE TABLE people (name string) SCHEMALESS;")
+        .run_now("DEFINE TABLE people (name string) SCHEMALESS;")
         .unwrap();
 
     session
-        .run("CREATE people:1 = { name: 'ada', nickname: 'the countess' };")
+        .run_now("CREATE people:1 = { name: 'ada', nickname: 'the countess' };")
         .unwrap_or_else(|error| panic!("SCHEMALESS did not restore the lenient reading: {error}"));
 }
 
@@ -94,7 +101,7 @@ fn a_table_declaring_nothing_is_refused_and_told_what_to_write() {
     let store = store();
     let mut session = ready(&store);
 
-    let refused = session.run("DEFINE TABLE people;");
+    let refused = session.run_now("DEFINE TABLE people;");
     let message = format!(
         "{}",
         refused.expect_err("a table declaring no fields was accepted")
@@ -123,16 +130,16 @@ fn a_stored_lenient_table_keeps_accepting_what_it_accepted() {
     {
         let mut declaring = ready(&store);
         declaring
-            .run("DEFINE TABLE people (name string) SCHEMALESS;")
+            .run_now("DEFINE TABLE people (name string) SCHEMALESS;")
             .unwrap();
     }
 
     let mut writing = Session::new(&store);
     writing
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     writing
-        .run("CREATE people:1 = { name: 'ada', nickname: 'the countess' };")
+        .run_now("CREATE people:1 = { name: 'ada', nickname: 'the countess' };")
         .unwrap_or_else(|error| panic!("a stored lenient table stopped being lenient: {error}"));
 }
 
@@ -143,12 +150,12 @@ fn a_collection_and_a_lenient_table_are_not_the_same_declaration() {
     // it cannot if the two were collapsed into one stored shape.
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE COLLECTION notes;").unwrap();
+    session.run_now("DEFINE COLLECTION notes;").unwrap();
     session
-        .run("DEFINE TABLE people (name string) SCHEMALESS;")
+        .run_now("DEFINE TABLE people (name string) SCHEMALESS;")
         .unwrap();
 
-    let catalog = format!("{:?}", session.run("INFO FOR DATABASE;").unwrap());
+    let catalog = format!("{:?}", session.run_now("INFO FOR DATABASE;").unwrap());
     assert!(
         catalog.contains("notes") && catalog.contains("people"),
         "the catalog does not hold both: {catalog}"

@@ -5,7 +5,7 @@ use tessari_types::RefusalClass;
 ///
 /// Runs on the blocking pool — a password hash, a statement and a forwarded
 /// write all block.
-pub(crate) fn respond(
+pub(crate) async fn respond(
     db: &Db,
     session: &mut tessaridb::Session<'_>,
     request: &Request,
@@ -47,7 +47,7 @@ pub(crate) fn respond(
     } else {
         None
     };
-    let ran = session.run_with(&request.script, &request.parameters);
+    let ran = session.run_with(&request.script, &request.parameters).await;
     // Cleared whatever the script did, so a sink it never took cannot catch the
     // next request's snapshot.
     let streamed = spool.filter(|_| session.snapshot_was_written());

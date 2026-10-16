@@ -17,6 +17,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -46,7 +47,7 @@ fn two_tenants(store: &Store) {
     // refuses the next statement of the very session that closed it, with a span
     // pointing at innocent text.
     opening
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE orders SCHEMALESS;\n\
@@ -67,7 +68,7 @@ fn two_tenants(store: &Store) {
     // nothing new to is one already entitled to the whole store. The `over`
     // argument answers *what this subscription carries*, and that is still one
     // namespace. Declaring `node` at `ON NAMESPACE prod` is now refused outright.
-    root.run(
+    root.run_now(
         "DEFINE USER prod_reader ON NAMESPACE prod AUTHORITIES read \
          PASSWORD 'correct horse battery';\n\
          DEFINE USER node AUTHORITIES replicate \
@@ -173,7 +174,7 @@ fn a_selective_follower_serves_its_own_tenants_reader_from_its_own_catalog() {
 
     let mut reader = signed_in(&follower, "prod_reader");
     let answer = reader
-        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;")
         .unwrap();
     let Some(Outcome::Records { records, .. }) = answer.last() else {
         panic!("the follower's own reader must be served its own table, got {answer:?}");
@@ -204,7 +205,7 @@ fn a_selective_followers_reader_cannot_name_another_tenants_table() {
 
     let mut reader = signed_in(&follower, "prod_reader");
     let refusal = reader
-        .run("USE NAMESPACE staging; USE DATABASE sandbox; SELECT * FROM payroll;")
+        .run_now("USE NAMESPACE staging; USE DATABASE sandbox; SELECT * FROM payroll;")
         .unwrap_err();
     assert!(
         matches!(refusal, tessari_session::Error::OutsideTenancy { ref name, .. } if name == "staging"),
@@ -410,7 +411,7 @@ fn a_store_reach_subscription_still_carries_the_whole_log() {
         "USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;",
         "USE NAMESPACE staging; USE DATABASE sandbox; SELECT * FROM payroll;",
     ] {
-        let answer = reader.run(script).unwrap();
+        let answer = reader.run_now(script).unwrap();
         let Some(Outcome::Records { records, .. }) = answer.last() else {
             panic!("a store subscription carries both tenants, {script} gave {answer:?}");
         };
@@ -447,7 +448,7 @@ fn a_namespace_owner_cannot_read_a_store_users_credentials() {
     two_tenants(&leader);
 
     let mut tenant = signed_in(&leader, "prod_owner");
-    let refusal = tenant.run("INFO FOR USER root;").unwrap_err();
+    let refusal = tenant.run_now("INFO FOR USER root;").unwrap_err();
     assert!(
         matches!(refusal, tessari_session::Error::NotYours { ref user, .. } if user == "root"),
         "a namespace owner does not administer a store-level user, got {refusal:?}"
@@ -456,7 +457,7 @@ fn a_namespace_owner_cannot_read_a_store_users_credentials() {
     // And the listing draws the same boundary, which is the road that leaks
     // quietly: a refusal on the singular form with the plural form still naming
     // everybody would hide nothing at all.
-    let listed = tenant.run("INFO FOR USERS;").unwrap();
+    let listed = tenant.run_now("INFO FOR USERS;").unwrap();
     let rendered = format!("{listed:?}");
     assert!(
         !rendered.contains("\"root\""),
@@ -522,7 +523,7 @@ fn a_namespace_owner_on_a_selective_follower_cannot_read_another_tenancys_creden
 
     let mut tenant = Session::new(&follower);
     tenant.sign_in("prod_owner", PASSWORD).unwrap();
-    let refusal = tenant.run("INFO FOR USER root;").unwrap_err();
+    let refusal = tenant.run_now("INFO FOR USER root;").unwrap_err();
     assert!(
         matches!(refusal, tessari_session::Error::NotYours { ref user, .. } if user == "root"),
         "the tenancy boundary is what protects the hash now, got {refusal:?}"
@@ -531,7 +532,7 @@ fn a_namespace_owner_on_a_selective_follower_cannot_read_another_tenancys_creden
     // The listing draws the same boundary. A refusal on the singular form beside
     // a listing that names everybody would hide nothing, and the listing is the
     // road an operator reaches for first.
-    let listed = tenant.run("INFO FOR USERS;").unwrap();
+    let listed = tenant.run_now("INFO FOR USERS;").unwrap();
     let rendered = format!("{listed:?}");
     assert!(
         !rendered.contains("\"root\""),
@@ -560,7 +561,7 @@ fn a_database_subscriber_is_given_the_namespace_its_database_lives_in() {
     );
     let mut reader = signed_in(&follower, "prod_reader");
     let answer = reader
-        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;")
         .unwrap();
     let Some(Outcome::Records { records, .. }) = answer.last() else {
         panic!("the subscribed database's reader must be served, got {answer:?}");
@@ -569,7 +570,7 @@ fn a_database_subscriber_is_given_the_namespace_its_database_lives_in() {
     // And still nothing sideways: the other tenancy is not a name here.
     assert!(
         reader
-            .run("USE NAMESPACE staging; USE DATABASE sandbox; SELECT * FROM payroll;")
+            .run_now("USE NAMESPACE staging; USE DATABASE sandbox; SELECT * FROM payroll;")
             .is_err()
     );
 }
@@ -579,7 +580,7 @@ fn sharded_tenant() -> (Store, tessari_storage::Reach, tessari_types::TableId) {
     let leader = store();
     two_tenants(&leader);
     let mut root = signed_in(&leader, "root");
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop; \
          DEFINE TABLE ledger (total int, peer record) IDENTITY uuid SPLIT AT 'g'; \
          CREATE ledger:'a' = { total: 1 }; CREATE ledger:'h' = { total: 2, peer: ledger:'a' };",
@@ -631,7 +632,7 @@ fn a_shard_subscriber_holds_its_shards_records_and_not_its_siblings() {
     // And its own reader can name the table and read the span it holds.
     let mut reader = signed_in(&follower, "prod_reader");
     let answer = reader
-        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM ledger:'g'..'z';")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM ledger:'g'..'z';")
         .unwrap();
     let Some(Outcome::Records { records, .. }) = answer.last() else {
         panic!("the held span answers, got {answer:?}");
@@ -653,10 +654,10 @@ fn a_shard_follower_refuses_a_read_that_needs_what_it_does_not_hold() {
     follower.record_served(second).unwrap();
     let mut reader = signed_in(&follower, "prod_reader");
     reader
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
 
-    let refused = |reader: &mut Session<'_>, read: &str| match reader.run(read) {
+    let refused = |reader: &mut Session<'_>, read: &str| match reader.run_now(read) {
         Err(tessari_session::Error::NotHeldHere { table, shards, .. }) => (table, shards),
         other => panic!("{read}: expected NotHeldHere, got {other:?}"),
     };
@@ -684,7 +685,7 @@ fn a_shard_follower_refuses_a_read_that_needs_what_it_does_not_hold() {
     );
 
     // What it holds, it answers.
-    let answered = |reader: &mut Session<'_>, read: &str| match reader.run(read) {
+    let answered = |reader: &mut Session<'_>, read: &str| match reader.run_now(read) {
         Ok(outcomes) => match outcomes.last() {
             Some(Outcome::Records { records, .. }) => records.len(),
             other => panic!("{read}: {other:?}"),
@@ -710,7 +711,7 @@ fn a_follower_served_the_whole_database_answers_every_read_as_before() {
     follower.record_served(over).unwrap();
     let mut reader = signed_in(&follower, "prod_reader");
     let outcomes = reader
-        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM ledger;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM ledger;")
         .unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("{outcomes:?}");
@@ -728,7 +729,7 @@ fn a_follower_served_the_whole_database_answers_every_read_as_before() {
 fn a_field_grant_narrows_its_user_on_a_selective_follower_as_on_the_leader() {
     let (leader, second, _) = sharded_tenant();
     signed_in(&leader, "root")
-        .run(
+        .run_now(
             "DEFINE USER narrow ON NAMESPACE prod AUTHORITIES read \
              PASSWORD 'correct horse battery';\n\
              USE NAMESPACE prod; USE DATABASE shop;\n\
@@ -747,7 +748,7 @@ fn a_field_grant_narrows_its_user_on_a_selective_follower_as_on_the_leader() {
         follower.record_served(over).unwrap();
         let mut reader = signed_in(&follower, "narrow");
         let outcomes = reader
-            .run(&format!("USE NAMESPACE prod; USE DATABASE shop; {read}"))
+            .run_now(&format!("USE NAMESPACE prod; USE DATABASE shop; {read}"))
             .unwrap();
         let Some(Outcome::Records { records, .. }) = outcomes.last() else {
             panic!("{over:?}: {outcomes:?}");
@@ -767,7 +768,7 @@ fn a_field_grant_narrows_its_user_on_a_selective_follower_as_on_the_leader() {
 fn a_record_written_alone_then_across_shards_ends_at_the_same_value_on_a_follower() {
     let (leader, _, _) = sharded_tenant();
     signed_in(&leader, "root")
-        .run(
+        .run_now(
             "USE NAMESPACE prod; USE DATABASE shop;\n\
              UPDATE ledger:'h' MERGE { total: 3 };\n\
              BEGIN; UPDATE ledger:'h' MERGE { total: 4 }; UPDATE ledger:'a' MERGE { total: 5 }; COMMIT;",
@@ -776,7 +777,7 @@ fn a_record_written_alone_then_across_shards_ends_at_the_same_value_on_a_followe
     let read = |store: &Store| {
         let mut reader = signed_in(store, "prod_reader");
         let outcomes = reader
-            .run("USE NAMESPACE prod; USE DATABASE shop; SELECT total FROM ledger:'h';")
+            .run_now("USE NAMESPACE prod; USE DATABASE shop; SELECT total FROM ledger:'h';")
             .unwrap();
         format!("{:?}", outcomes.last())
     };
@@ -795,7 +796,7 @@ fn a_record_written_alone_then_across_databases_ends_at_the_same_value_on_a_foll
     let leader = store();
     two_tenants(&leader);
     signed_in(&leader, "root")
-        .run(
+        .run_now(
             "USE NAMESPACE prod; DEFINE DATABASE other; USE DATABASE other; \
              DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { n: 0 };\n\
              USE DATABASE shop; UPDATE orders:1 MERGE { total: 3 };\n\
@@ -806,7 +807,7 @@ fn a_record_written_alone_then_across_databases_ends_at_the_same_value_on_a_foll
     let read = |store: &Store| {
         let mut reader = signed_in(store, "prod_reader");
         let outcomes = reader
-            .run("USE NAMESPACE prod; USE DATABASE shop; SELECT total FROM orders:1;")
+            .run_now("USE NAMESPACE prod; USE DATABASE shop; SELECT total FROM orders:1;")
             .unwrap();
         format!("{:?}", outcomes.last())
     };
@@ -827,7 +828,7 @@ fn a_record_written_alone_then_across_databases_ends_at_the_same_value_on_a_foll
 fn every_interleaving_of_homes_ends_level_on_a_follower_at_every_page_size() {
     let (leader, _, _) = sharded_tenant();
     let mut root = signed_in(&leader, "root");
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; DEFINE DATABASE other; USE DATABASE other; \
          DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { n: 0 };",
     )
@@ -889,7 +890,7 @@ fn every_interleaving_of_homes_ends_level_on_a_follower_at_every_page_size() {
             n += 1;
             script.push_str(&kind.replace('@', &n.to_string()));
         }
-        root.run(&script).unwrap();
+        root.run_now(&script).unwrap();
         let expected = held(&leader);
         for page in [1, 2, 3, 256] {
             let follower = follow_in_pages(&mut node, &leader, over, page);
@@ -909,14 +910,14 @@ fn a_follower_holds_the_params_its_database_defines() {
     let leader = store();
     two_tenants(&leader);
     signed_in(&leader, "root")
-        .run("USE NAMESPACE prod; USE DATABASE shop; DEFINE PARAM $grace VALUE 10m;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; DEFINE PARAM $grace VALUE 10m;")
         .unwrap();
     let over = Reach::Namespace(NamespaceId::new(1));
     let follower = follow(&leader, over, "node");
     follower.record_served(over).unwrap();
     let mut reader = signed_in(&follower, "prod_reader");
     let outcomes = reader
-        .run("USE NAMESPACE prod; USE DATABASE shop; RETURN $grace;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; RETURN $grace;")
         .unwrap();
     assert_eq!(
         outcomes.last(),

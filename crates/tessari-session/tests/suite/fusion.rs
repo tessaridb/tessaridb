@@ -8,6 +8,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::collections::BTreeMap;
+use tessari_session::RunNow;
 
 use tessari_session::Session;
 use tessari_types::{Number, RecordId, Value};
@@ -18,7 +19,7 @@ const K: f64 = 60.0;
 
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
     session
-        .run(read)
+        .run_now(read)
         .unwrap()
         .last()
         .unwrap()
@@ -171,7 +172,7 @@ fn search_ranks_answers_where_each_branch_placed_the_record() {
         };
         let (by_a, by_b) = (placed(&mut session, "a DESC"), placed(&mut session, "b"));
         let answered = session
-            .run(
+            .run_now(
                 "SELECT search::ranks() AS ranks FROM t WHERE c != 0 \
                  ORDER BY FUSE (a DESC, b) DEPTH 15;",
             )
@@ -211,7 +212,7 @@ fn search_ranks_outside_a_fused_read_is_refused_by_name() {
             "SELECT search::ranks() AS r FROM t;",
             "SELECT search::ranks() AS r FROM t ORDER BY a LIMIT 3;",
         ] {
-            let why = session.run(read).unwrap_err().to_string();
+            let why = session.run_now(read).unwrap_err().to_string();
             assert!(
                 why.contains(
                     "search::ranks() answers only in the projection of a read ordered by FUSE"

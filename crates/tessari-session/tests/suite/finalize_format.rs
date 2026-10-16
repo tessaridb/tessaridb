@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use tessari_session::RunNow;
 
 use tessari_encoding::{FormatVersion, FormatVersionKey, NodeVersion, StoreKey, StoreValue};
 use tessari_kv::{KvBackend, MemoryBackend, WriteBatch};
@@ -58,22 +59,22 @@ const SCHEMA: &str = "DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; US
 fn a_finalize_raises_the_format_once_and_the_newer_value_is_then_written() {
     let (backend, store) = held_at_five();
     let mut session = Session::new(&store);
-    session.run(SCHEMA).unwrap();
+    session.run_now(SCHEMA).unwrap();
     assert!(matches!(
-        session.run("DEFINE INDEX by_doc ON notes FIELDS doc CONTAINS;"),
+        session.run_now("DEFINE INDEX by_doc ON notes FIELDS doc CONTAINS;"),
         Err(Error::FormatNotFinalized { .. })
     ));
 
-    let finalized = session.run("ALTER STORE FINALIZE FORMAT;").unwrap();
+    let finalized = session.run_now("ALTER STORE FINALIZE FORMAT;").unwrap();
     let current = i64::from(FormatVersion::CURRENT.get());
     assert_eq!(answered_format(&finalized), current);
     assert_eq!(stamp(&backend), FormatVersion::CURRENT.get());
     session
-        .run("DEFINE INDEX by_doc ON notes FIELDS doc CONTAINS;")
+        .run_now("DEFINE INDEX by_doc ON notes FIELDS doc CONTAINS;")
         .unwrap();
 
     // Again: nothing to raise, and it says what the store holds.
-    let again = session.run("ALTER STORE FINALIZE FORMAT;").unwrap();
+    let again = session.run_now("ALTER STORE FINALIZE FORMAT;").unwrap();
     assert_eq!(answered_format(&again), current);
     assert_eq!(stamp(&backend), FormatVersion::CURRENT.get());
 }
@@ -82,7 +83,7 @@ fn a_finalize_raises_the_format_once_and_the_newer_value_is_then_written() {
 fn a_node_whose_older_build_applied_the_finalize_raises_its_stamp_when_it_opens() {
     let (backend, store) = held_at_five();
     Session::new(&store)
-        .run("ALTER STORE FINALIZE FORMAT;")
+        .run_now("ALTER STORE FINALIZE FORMAT;")
         .unwrap();
     drop(store);
     // What an older build leaves after applying the record: the record, and
@@ -97,13 +98,13 @@ fn a_node_whose_older_build_applied_the_finalize_raises_its_stamp_when_it_opens(
 fn a_finalize_waits_for_every_replica_to_run_a_build_that_writes_the_format() {
     let (backend, store) = held_at_five();
     Session::new(&store)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE REPLICA peer AT 'p:9001' NODE '{PEER_HEX}' ROLES coordinating \
              REPLICATES STORE;"
         ))
         .unwrap();
     store.hold(Epoch::new(1), Lease::taken(Duration::from_secs(60)));
-    let finalize = || Session::new(&store).run("ALTER STORE FINALIZE FORMAT;");
+    let finalize = || Session::new(&store).run_now("ALTER STORE FINALIZE FORMAT;");
 
     match finalize() {
         Err(Error::FormatPeerTooOld { name, heard, .. }) => {
@@ -135,7 +136,7 @@ fn a_follower_raises_its_stamp_when_it_applies_the_finalize() {
     let (_, leader) = held_at_five();
     let (follower_backend, follower) = held_at_five();
     Session::new(&leader)
-        .run("ALTER STORE FINALIZE FORMAT;")
+        .run_now("ALTER STORE FINALIZE FORMAT;")
         .unwrap();
     for log in leader.logs().unwrap() {
         for (sequence, record) in leader
@@ -160,14 +161,14 @@ fn info_for_the_store_says_which_format_it_holds_and_which_this_build_writes() {
     let (_backend, store) = held_at_five();
     let mut session = Session::new(&store);
 
-    let before = session.run("INFO FOR STORE;").unwrap();
+    let before = session.run_now("INFO FOR STORE;").unwrap();
     assert_eq!(answered_format(&before), 5);
     assert_eq!(
         writes(&before),
         Some(Value::Number(Number::Integer(current)))
     );
 
-    session.run("ALTER STORE FINALIZE FORMAT;").unwrap();
-    let after = session.run("INFO FOR STORE;").unwrap();
+    session.run_now("ALTER STORE FINALIZE FORMAT;").unwrap();
+    let after = session.run_now("INFO FOR STORE;").unwrap();
     assert_eq!(answered_format(&after), current);
 }

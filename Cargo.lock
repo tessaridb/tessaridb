@@ -1868,10 +1868,12 @@ dependencies = [
  "tessari-lsm",
  "tessari-ql",
  "tessari-serve",
+ "tessari-session",
  "tessari-storage",
  "tessari-types",
  "tessari-vault",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 

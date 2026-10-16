@@ -1,4 +1,5 @@
 use super::*;
+use tessari_session::RunNow;
 
 #[test]
 fn a_candidate_that_reaches_a_majority_holds_the_epoch() {
@@ -128,7 +129,7 @@ fn a_leader_that_could_not_renew_refuses_writes_before_its_lease_expires() {
     let store = tessaridb::Db::in_memory().expect("a store");
     store
         .session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
                   USE DATABASE orders; DEFINE COLLECTION users;",
         )
@@ -183,7 +184,7 @@ fn a_leader_that_could_not_renew_refuses_writes_before_its_lease_expires() {
     assert_eq!(held.epoch, Epoch::new(1));
     store
         .session()
-        .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:1 = { name: 'ada' };")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders; CREATE users:1 = { name: 'ada' };")
         .expect("a leader inside its window writes");
 
     // Now the partition: the voter is gone, so the renewal round cannot
@@ -213,7 +214,7 @@ fn a_leader_that_could_not_renew_refuses_writes_before_its_lease_expires() {
     std::thread::sleep(middle.saturating_sub(taken.elapsed()));
     let refused = store
         .session()
-        .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
         .expect_err("a leader that could not renew stops writing");
     let elapsed = taken.elapsed();
 
@@ -244,7 +245,7 @@ fn the_lease_a_round_won_is_the_lease_the_node_holds() {
     let store = tessaridb::Db::in_memory().expect("a store");
     store
         .session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
                   USE DATABASE orders; DEFINE COLLECTION users;",
         )
@@ -264,7 +265,7 @@ fn the_lease_a_round_won_is_the_lease_the_node_holds() {
     store.hold(won.epoch, won.lease());
     store
         .session()
-        .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:1 = { name: 'ada' };")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders; CREATE users:1 = { name: 'ada' };")
         .expect("a round that cost nothing hands over the whole window");
 
     // The same round, opened a whole TTL ago. Nothing else differs.
@@ -283,7 +284,7 @@ fn the_lease_a_round_won_is_the_lease_the_node_holds() {
     store.hold(won.epoch, won.lease());
     let refused = store
         .session()
-        .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
         .expect_err("a round that took the whole TTL hands over no window at all");
     let said = refused.to_string();
     assert!(said.contains("lease"), "{said}");

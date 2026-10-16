@@ -27,6 +27,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -51,7 +52,7 @@ fn store() -> Store {
 fn peopled(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION orders; DEFINE COLLECTION payroll;\n\
@@ -60,7 +61,7 @@ fn peopled(store: &Store) -> Session<'_> {
         .unwrap();
     let mut root = Session::new(store);
     root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
          DEFINE USER ada ON prod.shop ROLE owner PASSWORD 'correct horse battery';\n\
          DEFINE USER vic ON prod.shop ROLE viewer PASSWORD 'correct horse battery';\n\
@@ -76,7 +77,7 @@ fn peopled(store: &Store) -> Session<'_> {
 /// The report, as a map from user name to `(read, write)`.
 fn reported(session: &mut Session<'_>, table: &str) -> Vec<(String, bool, bool)> {
     let outcomes = session
-        .run(&format!("INFO FOR ACCESS TO TABLE {table};"))
+        .run_now(&format!("INFO FOR ACCESS TO TABLE {table};"))
         .unwrap();
     let Some(Outcome::Value(Value::Object(report))) = outcomes.last() else {
         panic!("expected a report, got {outcomes:?}");
@@ -114,14 +115,14 @@ fn attempted(store: &Store, user: &str, table: &str) -> (bool, bool) {
     let mut read = Session::new(store);
     read.sign_in(user, PASSWORD).unwrap();
     let reading = read
-        .run(&format!(
+        .run_now(&format!(
             "USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM {table};"
         ))
         .is_ok();
     let mut write = Session::new(store);
     write.sign_in(user, PASSWORD).unwrap();
     let writing = write
-        .run(&format!(
+        .run_now(&format!(
             "USE NAMESPACE prod; USE DATABASE shop; DELETE {table}:0;"
         ))
         .is_ok();
@@ -207,7 +208,7 @@ fn a_tenant_of_another_namespace_reaches_nothing_here_and_is_said_to() {
     // would say *cannot reach* and *cannot be seen* with the same silence.
     let store = store();
     let mut root = peopled(&store);
-    root.run(
+    root.run_now(
         "DEFINE NAMESPACE staging; USE NAMESPACE staging; DEFINE DATABASE shop;\n\
          USE DATABASE shop; DEFINE COLLECTION orders;\n\
          DEFINE USER nina ON staging.shop ROLE owner PASSWORD 'correct horse battery';\n\
@@ -230,7 +231,7 @@ fn a_tenant_of_another_namespace_reaches_nothing_here_and_is_said_to() {
     let mut nina = Session::new(&store);
     nina.sign_in("nina", PASSWORD).unwrap();
     let refused = nina
-        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;")
         .unwrap_err();
     assert!(
         refused.to_string().contains("outside"),
@@ -245,13 +246,16 @@ fn the_report_is_refused_to_everybody_who_does_not_administer_the_table() {
     // read it as the whole account of who may do what.
     let store = store();
     let mut root = peopled(&store);
-    drop(root.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap());
+    drop(
+        root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+            .unwrap(),
+    );
 
     for who in ["vic", "ed"] {
         let mut session = Session::new(&store);
         session.sign_in(who, PASSWORD).unwrap();
         let refused = session
-            .run("USE NAMESPACE prod; USE DATABASE shop; INFO FOR ACCESS TO TABLE orders;")
+            .run_now("USE NAMESPACE prod; USE DATABASE shop; INFO FOR ACCESS TO TABLE orders;")
             .unwrap_err();
         assert!(
             refused.to_string().contains("govern"),
@@ -263,7 +267,7 @@ fn the_report_is_refused_to_everybody_who_does_not_administer_the_table() {
     // satisfied by a statement nobody can run.
     let mut ada = Session::new(&store);
     ada.sign_in("ada", PASSWORD).unwrap();
-    ada.run("USE NAMESPACE prod; USE DATABASE shop; INFO FOR ACCESS TO TABLE orders;")
+    ada.run_now("USE NAMESPACE prod; USE DATABASE shop; INFO FOR ACCESS TO TABLE orders;")
         .unwrap();
 }
 
@@ -274,7 +278,7 @@ fn the_other_question_still_answers_from_the_same_material() {
     // than in two files that could drift.
     let store = store();
     let mut root = peopled(&store);
-    let outcomes = root.run("INFO FOR USER gina;").unwrap();
+    let outcomes = root.run_now("INFO FOR USER gina;").unwrap();
     let Some(Outcome::Value(Value::Object(report))) = outcomes.last() else {
         panic!("expected a report, got {outcomes:?}");
     };

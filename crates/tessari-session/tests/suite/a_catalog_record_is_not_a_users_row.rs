@@ -28,6 +28,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -46,7 +47,7 @@ fn store() -> Store {
 /// green and the defect back.
 fn with_an_indexed_second_table(session: &mut Session<'_>) {
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE first; USE NAMESPACE first;\n\
              DEFINE DATABASE main; USE DATABASE main;\n\
              DEFINE TABLE pad SCHEMALESS;\n\
@@ -59,7 +60,7 @@ fn with_an_indexed_second_table(session: &mut Session<'_>) {
 
 /// How many records one statement answered with.
 fn rows(session: &mut Session<'_>, statement: &str) -> usize {
-    match session.run(statement).unwrap().pop() {
+    match session.run_now(statement).unwrap().pop() {
         Some(Outcome::Records { records, .. }) => records.len(),
         other => panic!("expected records, got {other:?}"),
     }
@@ -71,10 +72,10 @@ fn two_databases_may_share_a_name_in_different_namespaces() {
     let mut session = Session::new(&store);
     with_an_indexed_second_table(&mut session);
 
-    session.run("DEFINE DATABASE shared_name;").unwrap();
+    session.run_now("DEFINE DATABASE shared_name;").unwrap();
 
-    let second =
-        session.run("DEFINE NAMESPACE second; USE NAMESPACE second; DEFINE DATABASE shared_name;");
+    let second = session
+        .run_now("DEFINE NAMESPACE second; USE NAMESPACE second; DEFINE DATABASE shared_name;");
     assert!(
         second.is_ok(),
         "a database in one namespace refused a database in another, which is the \
@@ -89,10 +90,10 @@ fn a_row_may_hold_a_value_that_is_also_a_database_name() {
     with_an_indexed_second_table(&mut session);
 
     session
-        .run("DEFINE DATABASE payroll; USE DATABASE main;")
+        .run_now("DEFINE DATABASE payroll; USE DATABASE main;")
         .unwrap();
 
-    let written = session.run("CREATE people:'p1' = { name: 'payroll' };");
+    let written = session.run_now("CREATE people:'p1' = { name: 'payroll' };");
     assert!(
         written.is_ok(),
         "an application row was refused because a DATABASE holds that name, and \
@@ -112,10 +113,10 @@ fn the_unique_index_still_refuses_a_genuine_duplicate() {
     with_an_indexed_second_table(&mut session);
 
     session
-        .run("CREATE people:'p1' = { name: 'ada' };")
+        .run_now("CREATE people:'p1' = { name: 'ada' };")
         .unwrap();
 
-    let again = session.run("CREATE people:'p2' = { name: 'ada' };");
+    let again = session.run_now("CREATE people:'p2' = { name: 'ada' };");
     assert!(
         again.is_err(),
         "two rows took one value in a UNIQUE index — the fix stopped maintaining \

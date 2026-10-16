@@ -20,6 +20,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Note, Outcome, Session};
@@ -45,7 +46,7 @@ CREATE people:4 = { name: 'edsger' };
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.run(SCHEMA).unwrap();
+    session.run_now(SCHEMA).unwrap();
     session
 }
 
@@ -63,7 +64,7 @@ fn crossed(outcome: &Outcome) -> Vec<(&'static str, &'static str)> {
 
 fn read(session: &mut Session<'_>, script: &str) -> Outcome {
     session
-        .run(script)
+        .run_now(script)
         .unwrap_or_else(|error| panic!("{script}: {error}"))
         .pop()
         .expect("one outcome")
@@ -132,7 +133,7 @@ fn a_million_mismatched_records_are_one_note() {
     for n in 1..=200 {
         script.push_str(&format!("CREATE people:{} = {{ age: '{n}' }};\n", n + 100));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     let answered = read(&mut session, "SELECT * FROM people WHERE age = 30;");
     // A comparison runs once per record, so a read that mixes two kinds has one
     // thing to say and not one thing per record. A note repeated two hundred
@@ -145,7 +146,7 @@ fn a_read_that_crosses_two_pairs_says_both() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("CREATE people:5 = { name: 7, age: true };")
+        .run_now("CREATE people:5 = { name: 7, age: true };")
         .unwrap();
     let answered = read(
         &mut session,

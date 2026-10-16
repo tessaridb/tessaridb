@@ -43,6 +43,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
@@ -57,7 +58,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE social; USE DATABASE social;",
         )
@@ -67,7 +68,7 @@ fn ready(store: &Store) -> Session<'_> {
 
 /// The report a script's last statement answered with.
 fn report(session: &mut Session<'_>, script: &str) -> Value {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     match outcomes.last() {
         Some(Outcome::Value(value)) => value.clone(),
         other => panic!("expected a report, got {other:?}"),
@@ -105,7 +106,7 @@ fn membership(session: &mut Session<'_>, table: &str) -> Option<Value> {
 fn a_graph_declared_and_never_populated_is_an_object_that_exists() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE GRAPH social;").unwrap();
+    session.run_now("DEFINE GRAPH social;").unwrap();
 
     // Existing, not absent — the distinction is the whole point of the word: a
     // graph you have just declared is a thing you hold, so the first thing
@@ -124,7 +125,7 @@ fn a_table_says_which_graph_it_belongs_to_and_the_graph_lists_it_back() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE GRAPH social;\n\
              DEFINE TABLE person (name string) IN social;\n\
              DEFINE TABLE company (name string) IN social;\n\
@@ -168,7 +169,7 @@ fn a_membership_naming_no_graph_is_refused_and_leaves_no_table_behind() {
     let mut session = ready(&store);
 
     let error = session
-        .run("DEFINE TABLE person (name string) IN nowhere;")
+        .run_now("DEFINE TABLE person (name string) IN nowhere;")
         .unwrap_err();
     let Error::Unknown { entity, name, .. } = &error else {
         panic!("{error}");
@@ -192,7 +193,7 @@ fn a_graph_refuses_to_be_dropped_while_a_table_still_belongs_to_it() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE GRAPH social;\n\
              DEFINE TABLE person (name string) IN social;",
         )
@@ -202,20 +203,20 @@ fn a_graph_refuses_to_be_dropped_while_a_table_still_belongs_to_it() {
     // membership would leave every one of them pointing at an id nothing
     // resolves, and the symptom would surface later as a walk that finds no
     // graph rather than now, as the drop that caused it.
-    let error = session.run("DROP GRAPH social;").unwrap_err();
+    let error = session.run_now("DROP GRAPH social;").unwrap_err();
     let Error::StillDepended { name, first, .. } = &error else {
         panic!("{error}");
     };
     assert_eq!(name, "social");
     assert_eq!(first, "person");
 
-    session.run("DROP TABLE person;").unwrap();
-    session.run("DROP GRAPH social;").unwrap();
+    session.run_now("DROP TABLE person;").unwrap();
+    session.run_now("DROP GRAPH social;").unwrap();
 
     // And the name is released, so the graph can be declared again. A name still
     // claimed by a dropped graph would make the second declaration fail as taken
     // by something the store no longer has.
-    session.run("DEFINE GRAPH social;").unwrap();
+    session.run_now("DEFINE GRAPH social;").unwrap();
 }
 
 #[test]
@@ -223,7 +224,7 @@ fn two_databases_may_each_hold_a_graph_of_the_same_name() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE GRAPH social;\n\
              DEFINE TABLE person (name string) IN social;\n\
              DEFINE DATABASE other; USE DATABASE other;\n\
@@ -245,7 +246,7 @@ fn two_databases_may_each_hold_a_graph_of_the_same_name() {
     listed.sort();
     assert_eq!(listed, vec!["company".to_owned(), "social".to_owned()]);
 
-    session.run("USE DATABASE social;").unwrap();
+    session.run_now("USE DATABASE social;").unwrap();
     let mut listed = members(&mut session, "social");
     listed.sort();
     assert_eq!(listed, vec!["person".to_owned(), "social".to_owned()]);
@@ -255,16 +256,18 @@ fn two_databases_may_each_hold_a_graph_of_the_same_name() {
 fn a_second_graph_of_the_same_name_in_one_database_is_refused() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE GRAPH social;").unwrap();
+    session.run_now("DEFINE GRAPH social;").unwrap();
 
-    let error = session.run("DEFINE GRAPH social;").unwrap_err();
+    let error = session.run_now("DEFINE GRAPH social;").unwrap_err();
     let Error::Store(tessari_storage::Error::NameTaken { .. }) = &error else {
         panic!("{error}");
     };
 
     // Unless the statement said it expected the name to be there already, which
     // is the same contract every other `DEFINE` keeps.
-    session.run("DEFINE GRAPH IF NOT EXISTS social;").unwrap();
+    session
+        .run_now("DEFINE GRAPH IF NOT EXISTS social;")
+        .unwrap();
 }
 
 #[test]
@@ -272,7 +275,7 @@ fn asking_about_a_graph_that_was_never_declared_refuses() {
     let store = store();
     let mut session = ready(&store);
 
-    let error = session.run("INFO FOR GRAPH nowhere;").unwrap_err();
+    let error = session.run_now("INFO FOR GRAPH nowhere;").unwrap_err();
     let Error::Unknown { entity, name, .. } = &error else {
         panic!("{error}");
     };
@@ -283,13 +286,13 @@ fn asking_about_a_graph_that_was_never_declared_refuses() {
     // empty* is a graph, *never declared* is not, and a report that answered
     // both with an empty list would make a misspelled name look like an empty
     // structure.
-    let error = session.run("DROP GRAPH nowhere;").unwrap_err();
+    let error = session.run_now("DROP GRAPH nowhere;").unwrap_err();
     assert!(matches!(error, Error::Unknown { .. }), "{error}");
 }
 
 /// How many records the script's last statement answered with.
 fn rows(session: &mut Session<'_>, script: &str) -> usize {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     match outcomes.last() {
         Some(Outcome::Records { records, .. }) => records.len(),
         other => panic!("expected records, got {other:?}"),
@@ -312,7 +315,7 @@ fn a_graph_holds_its_own_records_with_no_table_declared_by_the_caller() {
     // twice. A test that cannot fail for the reason the feature exists is not a
     // test of that feature.
     session
-        .run(
+        .run_now(
             "DEFINE GRAPH social;\n\
              CREATE social:1 = { name: 'ada', team: 'core' };\n\
              CREATE social:2 = { name: 'grace', team: 'core' };\n\
@@ -331,11 +334,13 @@ fn a_graph_holds_its_own_records_with_no_table_declared_by_the_caller() {
 
     // An identity the store produces, because a graph whose nodes must all be
     // named by the caller is only half a store.
-    session.run("CREATE social = { name: 'edith' };").unwrap();
+    session
+        .run_now("CREATE social = { name: 'edith' };")
+        .unwrap();
     assert_eq!(rows(&mut session, "SELECT * FROM social;"), 4);
 
     // Delete.
-    session.run("DELETE social:3;").unwrap();
+    session.run_now("DELETE social:3;").unwrap();
     assert_eq!(rows(&mut session, "SELECT * FROM social;"), 3);
 }
 
@@ -344,7 +349,7 @@ fn a_graph_relates_and_walks_its_own_nodes() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE GRAPH social;\n\
              CREATE social:1 = { name: 'ada' };\n\
              CREATE social:2 = { name: 'grace' };\n\
@@ -382,7 +387,7 @@ fn a_graph_holding_only_its_own_nodes_drops_cleanly() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE GRAPH social;\n\
              CREATE social:1 = { name: 'ada' };",
         )
@@ -393,13 +398,15 @@ fn a_graph_holding_only_its_own_nodes_drops_cleanly() {
     // table the caller never declared and cannot drop by name, leaving every
     // graph this store creates permanently undroppable. That is the shape the
     // bucket's companion chunk table already found once.
-    session.run("DROP GRAPH social;").unwrap();
+    session.run_now("DROP GRAPH social;").unwrap();
 
     // Both names are released, and that is two facts rather than one: the graph
     // reservation and the collection's. A drop that freed only the graph would
     // fail here on the second statement instead of the first.
-    session.run("DEFINE GRAPH social;").unwrap();
-    session.run("CREATE social:1 = { name: 'ada' };").unwrap();
+    session.run_now("DEFINE GRAPH social;").unwrap();
+    session
+        .run_now("CREATE social:1 = { name: 'ada' };")
+        .unwrap();
 }
 
 #[test]
@@ -407,7 +414,7 @@ fn a_graph_is_still_refused_a_drop_while_a_table_the_caller_attached_belongs() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE GRAPH social;\n\
              DEFINE TABLE person (name string) IN social;",
         )
@@ -418,7 +425,7 @@ fn a_graph_is_still_refused_a_drop_while_a_table_the_caller_attached_belongs() {
     // else attached, and the refusal still names one of them rather than the
     // collection — which is what tells the two apart in the message a caller
     // actually reads.
-    let error = session.run("DROP GRAPH social;").unwrap_err();
+    let error = session.run_now("DROP GRAPH social;").unwrap_err();
     let Error::StillDepended {
         name, first, count, ..
     } = &error
@@ -434,18 +441,18 @@ fn a_graph_is_still_refused_a_drop_while_a_table_the_caller_attached_belongs() {
 fn a_table_already_holding_the_graphs_name_refuses_the_declaration_whole() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE COLLECTION social;").unwrap();
+    session.run_now("DEFINE COLLECTION social;").unwrap();
 
     // The graph's node collection takes the graph's name, so a table already
     // standing there is a collision rather than something to adopt: adopting it
     // would hand the graph records written before it existed and make `DROP
     // GRAPH` delete a table the caller declared themselves.
-    session.run("DEFINE GRAPH social;").unwrap_err();
+    session.run_now("DEFINE GRAPH social;").unwrap_err();
 
     // And the graph row goes with it. A graph left behind by a half-applied
     // declaration would be a structure with no node space — exactly the state
     // this wave exists to remove — and nothing would report it as wrong.
-    let error = session.run("INFO FOR GRAPH social;").unwrap_err();
+    let error = session.run_now("INFO FOR GRAPH social;").unwrap_err();
     let Error::Unknown { entity, .. } = &error else {
         panic!("{error}");
     };
@@ -457,14 +464,14 @@ fn a_graphs_own_collection_is_not_a_table_the_caller_can_drop() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE GRAPH social;\nCREATE social:1 = { name: 'ada' };")
+        .run_now("DEFINE GRAPH social;\nCREATE social:1 = { name: 'ada' };")
         .unwrap();
 
     // One statement was enough to undo the node space: `DROP TABLE social`
     // removed the collection and left the graph declared, still answering
     // `INFO FOR GRAPH`, and able to hold no record. Nothing was in an error
     // state, which is why the refusal has to exist rather than be documented.
-    let error = session.run("DROP TABLE social;").unwrap_err();
+    let error = session.run_now("DROP TABLE social;").unwrap_err();
     let Error::TableBelongsToGraph { table, graph, .. } = &error else {
         panic!("{error}");
     };
@@ -485,7 +492,7 @@ fn a_table_the_caller_attached_still_drops_on_its_own() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE GRAPH social;\n\
              DEFINE TABLE person (name string) IN social;",
         )
@@ -494,11 +501,11 @@ fn a_table_the_caller_attached_still_drops_on_its_own() {
     // `IN` is a clause the caller wrote and may withdraw. Refusing this would
     // make the graph's boundary a trap rather than a structure, and the
     // partition in `drop_graph` already draws the same line the other way.
-    session.run("DROP TABLE person;").unwrap();
+    session.run_now("DROP TABLE person;").unwrap();
 
     // The graph outlives it, and now holds only its own collection.
-    session.run("INFO FOR GRAPH social;").unwrap();
-    session.run("DROP GRAPH social;").unwrap();
+    session.run_now("INFO FOR GRAPH social;").unwrap();
+    session.run_now("DROP GRAPH social;").unwrap();
 }
 
 #[test]
@@ -506,7 +513,7 @@ fn the_refusal_reads_the_graphs_name_rather_than_assuming_the_tables() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE GRAPH social;\n\
              DEFINE TABLE person (name string) IN social;",
         )
@@ -519,7 +526,7 @@ fn the_refusal_reads_the_graphs_name_rather_than_assuming_the_tables() {
     // Asserted here as its own claim so a future change to name reservation,
     // which is what makes the name test sound, fails loudly rather than
     // quietly widening the refusal.
-    let error = session.run("DROP TABLE social;").unwrap_err();
+    let error = session.run_now("DROP TABLE social;").unwrap_err();
     let Error::TableBelongsToGraph { table, graph, .. } = &error else {
         panic!("{error}");
     };

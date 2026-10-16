@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tessari_session::RunNow;
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_session::{Elsewhere, Outcome, Peer};
@@ -96,10 +97,10 @@ const fn the_database() -> Reach {
 fn named(follower: &Store, heard: [u8; NODE_ID_LEN], read: &str) -> Option<Peer> {
     let mut session = signed_in(follower, "root").among(Arc::new(Heard { node: heard }));
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     let before = follower.health().unwrap().not_held_here;
-    match session.run(read) {
+    match session.run_now(read) {
         Err(tessari_session::Error::NotHeldHere { table, holder, .. }) => {
             assert_eq!(table, "ledger", "{read}");
             // G053 C6: each refusal is counted once, where it is made.
@@ -211,9 +212,9 @@ fn a_moved_map_names_a_node_holding_the_whole_database() {
             .among(Arc::new(Heard { node: heard }))
             .gathering(Arc::new(Moved));
         session
-            .run("USE NAMESPACE prod; USE DATABASE shop;")
+            .run_now("USE NAMESPACE prod; USE DATABASE shop;")
             .unwrap();
-        match session.run("SELECT * FROM ledger;") {
+        match session.run_now("SELECT * FROM ledger;") {
             Err(tessari_session::Error::ShardMapMoved { table, holder, .. }) => {
                 assert_eq!(table, "ledger");
                 holder
@@ -244,7 +245,7 @@ fn a_session_reads_its_node_and_its_own_tenancy() {
     let me = leader.node_identity().unwrap().id;
     let mut session = signed_in(&leader, "reader");
     let context = |session: &mut tessari_session::Session<'_>| match session
-        .run("RETURN session::context();")
+        .run_now("RETURN session::context();")
         .unwrap()
         .pop()
     {
@@ -259,12 +260,12 @@ fn a_session_reads_its_node_and_its_own_tenancy() {
         ]))
     };
     assert_eq!(context(&mut session), expected(Value::Null, Value::Null));
-    session.run("USE NAMESPACE prod;").unwrap();
+    session.run_now("USE NAMESPACE prod;").unwrap();
     assert_eq!(
         context(&mut session),
         expected(Value::from("prod"), Value::Null)
     );
-    session.run("USE DATABASE shop;").unwrap();
+    session.run_now("USE DATABASE shop;").unwrap();
     assert_eq!(
         context(&mut session),
         expected(Value::from("prod"), Value::from("shop"))

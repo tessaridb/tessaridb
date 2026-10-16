@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use tessari_encoding::NODE_ID_LEN;
+use tessari_session::RunNow;
 use tessari_storage::{Catalog, Reach};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, ShardId, TableId};
 use tessaridb::Db;
@@ -36,7 +37,7 @@ impl Subscriptions for Granting {
 fn leader() -> (Arc<Db>, TableId) {
     let db = Db::in_memory().unwrap();
     db.session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
                  USE DATABASE shop; \
                  DEFINE TABLE ledger (n int) IDENTITY uuid SPLIT AT 'g'; \

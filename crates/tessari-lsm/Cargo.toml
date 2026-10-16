@@ -28,7 +28,7 @@ cc.workspace = true
 # need the layer that speaks it and the codec that describes what is on disk.
 # Both are already in the tree; nothing new is fetched.
 tessari-encoding.workspace = true
-tessari-session.workspace = true
+tessari-session = { workspace = true, features = ["test-support"] }
 tessari-storage.workspace = true
 tessari-types.workspace = true
 tempfile.workspace = true

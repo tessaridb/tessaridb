@@ -13,6 +13,7 @@
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
+use tessari_session::RunNow;
 
 use tessari_wire::{Became, Client, Follow, Happened, Node};
 use tessaridb::{Db, Value};
@@ -175,7 +176,7 @@ fn a_change_committed_past_the_node_reaches_its_feeds() {
 
     let mut elsewhere = db.session();
     elsewhere
-        .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:7 = { name: 'bo' };")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders; CREATE users:7 = { name: 'bo' };")
         .unwrap();
     assert_eq!(within(&feed, "a change nobody on this node made").id, "7");
 }

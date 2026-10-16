@@ -61,6 +61,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -85,7 +86,7 @@ fn store() -> Store {
 fn ready(store: &Store) {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
@@ -95,7 +96,7 @@ fn ready(store: &Store) {
         .unwrap();
     for n in 0..RECORDS {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE staff:{n} = {{ name: 'person {n}', title: 'engineer', \
                  notes: 'the analytical engine and its cards' }};"
             ))
@@ -104,7 +105,7 @@ fn ready(store: &Store) {
     // The one record the two reads are looking for, so both indexes are
     // selective and the planner has a reason to serve them.
     session
-        .run(
+        .run_now(
             "CREATE staff:9999 = { name: 'grace', title: 'admiral', \
              notes: 'a compiler and a manual of its own' };\n\
              DEFINE INDEX by_notes ON staff FIELDS notes SEARCH;\n\
@@ -114,7 +115,7 @@ fn ready(store: &Store) {
         .unwrap();
     let mut root = Session::new(store);
     root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.run_now(
         "DEFINE USER wide ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
          DEFINE USER narrow ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
          USE NAMESPACE prod; USE DATABASE shop;\n\
@@ -128,14 +129,14 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session.sign_in(name, PASSWORD).unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
 
 /// One field of the plan a read explains under.
 fn plan(session: &mut Session<'_>, script: &str, field: &str) -> String {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("a plan answered with {:?}", outcomes.last());
     };
@@ -144,7 +145,7 @@ fn plan(session: &mut Session<'_>, script: &str, field: &str) -> String {
 
 /// The records a read answered with, by identity.
 fn ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let mut found: Vec<RecordId> = outcomes
         .last()
         .unwrap()
@@ -159,7 +160,7 @@ fn ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
 
 /// Every field name present in the first record a read answered with.
 fn fields_of(session: &mut Session<'_>, script: &str) -> Vec<String> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let records = outcomes.last().unwrap().records().unwrap();
     let Some((_, Value::Object(fields))) = records.first() else {
         panic!("expected a record, got {:?}", records.first());
@@ -237,7 +238,7 @@ fn the_hidden_field_is_absent_from_what_the_caller_gets_back() {
 
 /// Every `s` a ranked read answered with, in the order it answered.
 fn scores(session: &mut Session<'_>, script: &str) -> Vec<f64> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     outcomes
         .last()
         .unwrap()
@@ -258,7 +259,7 @@ fn scores(session: &mut Session<'_>, script: &str) -> Vec<f64> {
 
 /// The suggestion a read answered with — `None` when no dictionary was asked.
 fn suggestion(session: &mut Session<'_>, script: &str) -> Option<tessari_session::Suggestion> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     outcomes.last().unwrap().suggestion().unwrap().clone()
 }
 
@@ -321,7 +322,7 @@ fn a_hidden_field_marks_nothing() {
     let read = "SELECT search::highlight(notes) AS m FROM staff \
                 WHERE notes MATCHES 'compiler' OR name = 'grace';";
     let marks = |session: &mut Session<'_>| {
-        let outcomes = session.run(read).unwrap();
+        let outcomes = session.run_now(read).unwrap();
         let records = outcomes.last().unwrap().records().unwrap();
         let Some((_, Value::Object(fields))) = records.first() else {
             panic!("expected the record reached through `name`, got {records:?}");
@@ -342,7 +343,7 @@ fn a_hidden_field_explains_nothing() {
     ready(&store);
     let read = "SELECT search::explain(notes, 'compiler pars*') AS e FROM staff;";
     let explained = |session: &mut Session<'_>| {
-        let outcomes = session.run(read).unwrap();
+        let outcomes = session.run_now(read).unwrap();
         outcomes
             .last()
             .unwrap()

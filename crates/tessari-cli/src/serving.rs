@@ -123,7 +123,10 @@ pub(crate) fn serve(
     // credentials were misconfigured should never have reached the point of
     // answering on a network, so this is a failure to start rather than a
     // warning behind a listening socket.
-    bootstrap::first_user(&db)?;
+    // The one runtime this process owns, built before the first store call: the
+    // store's entry points are asynchronous and are driven on it.
+    let runtime = runtime::build().map_err(|why| format!("the runtime would not start: {why}"))?;
+    runtime.block_on(bootstrap::first_user(&db))?;
     // What each surface presents, for `INFO FOR NODE` — the fingerprint an
     // operator pins a newcomer's row with is read off the newcomer (D9) — and
     // how the clients are served, which a serving node always has an answer to.
@@ -215,7 +218,7 @@ pub(crate) fn serve(
     // Stopped at the stage that refuses new connections and joined before the
     // store is dropped — see `consumers.rs` for why a `Drop` at the end of this
     // function is neither of those moments.
-    let running = consumers::start(std::sync::Arc::clone(&db));
+    let running = runtime.block_on(consumers::start(std::sync::Arc::clone(&db)));
     // The topic consumers (ADR-0087) run in every build, as a task on the
     // runtime; stage 1 stops them with the Kafka consumers.
     let (topics_stop, topics_stopped) = tokio::sync::watch::channel(false);
@@ -325,10 +328,8 @@ pub(crate) fn serve(
         None => None,
     };
 
-    // The one runtime this process owns, and the token a stop arrives on — both
-    // before anything serves, so a signal arriving during startup is counted
-    // rather than killing the process where it stands.
-    let runtime = runtime::build().map_err(|why| format!("the runtime would not start: {why}"))?;
+    // The token a stop arrives on, before anything serves, so a signal arriving
+    // during startup is counted rather than killing the process where it stands.
     let asked = shutdown::listen(&runtime)
         .map_err(|why| format!("stop signals could not be registered: {why}"))?;
 

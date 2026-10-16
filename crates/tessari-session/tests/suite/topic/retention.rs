@@ -2,6 +2,7 @@
 //! tells a reader what it missed.
 
 use std::thread;
+use tessari_session::RunNow;
 
 use tessari_session::Note;
 
@@ -146,7 +147,7 @@ fn a_message_larger_than_the_size_retention_is_refused() {
         let mut session = opened(&backend.store);
         run(&mut session, "DEFINE TOPIC tiny RETAIN BYTES 8;");
         let refused = session
-            .run("CREATE tiny:'big' = { body: 'far more than eight bytes' };")
+            .run_now("CREATE tiny:'big' = { body: 'far more than eight bytes' };")
             .unwrap_err();
         assert!(
             matches!(
@@ -174,7 +175,7 @@ fn a_commit_that_alone_outgrows_the_size_retention_is_refused() {
             script.push_str(&format!(" CREATE small:'m{n}' = {{ body: 'aaaaaaaaaa' }};"));
         }
         script.push_str(" COMMIT;");
-        let refused = session.run(&script).unwrap_err();
+        let refused = session.run_now(&script).unwrap_err();
         assert!(
             matches!(
                 refused,

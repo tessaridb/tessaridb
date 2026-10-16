@@ -26,6 +26,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -51,7 +52,7 @@ fn store() -> Store {
 fn governed(store: &Store) {
     let mut opening = Session::new(store);
     opening
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE orders SCHEMALESS;\n\
@@ -76,7 +77,7 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
 /// the report was the *only* observable effect a grant had for the wave between
 /// the vocabulary landing and the enforcement below it.
 fn held(session: &mut Session<'_>, user: &str) -> Vec<String> {
-    let outcomes = session.run(&format!("INFO FOR USER {user};")).unwrap();
+    let outcomes = session.run_now(&format!("INFO FOR USER {user};")).unwrap();
     let Some(Outcome::Value(Value::Object(report))) = outcomes.last() else {
         panic!("expected a report, got {outcomes:?}");
     };
@@ -142,7 +143,7 @@ fn running_the_cluster_can_stand_alone() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run("DEFINE USER ops AUTHORITIES operate PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER ops AUTHORITIES operate PASSWORD 'correct horse battery';")
         .unwrap();
 
     let mut root = signed_in(&store, "root");
@@ -159,7 +160,7 @@ fn a_namespace_authority_reaches_that_namespace_and_not_its_neighbour() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run("DEFINE USER nadia ON NAMESPACE prod AUTHORITIES manage PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER nadia ON NAMESPACE prod AUTHORITIES manage PASSWORD 'correct horse battery';")
         .unwrap();
 
     let mut root = signed_in(&store, "root");
@@ -173,7 +174,7 @@ fn reading_and_writing_a_namespace_confers_neither_creating_nor_dropping() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run(
+        .run_now(
             "DEFINE USER wilma ON NAMESPACE prod AUTHORITIES read, write \
              PASSWORD 'correct horse battery';",
         )
@@ -199,12 +200,12 @@ fn a_grant_adds_to_what_is_held_and_a_revocation_takes_only_what_it_names() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run(
+    root.run_now(
         "DEFINE USER kim ON NAMESPACE prod AUTHORITIES read PASSWORD 'correct horse battery';",
     )
     .unwrap();
 
-    root.run("GRANT manage ON DATABASE prod.shop TO kim;")
+    root.run_now("GRANT manage ON DATABASE prod.shop TO kim;")
         .unwrap();
     assert_eq!(
         held(&mut root, "kim"),
@@ -212,7 +213,8 @@ fn a_grant_adds_to_what_is_held_and_a_revocation_takes_only_what_it_names() {
         "a grant must add to what is held rather than replace it"
     );
 
-    root.run("REVOKE read ON NAMESPACE prod FROM kim;").unwrap();
+    root.run_now("REVOKE read ON NAMESPACE prod FROM kim;")
+        .unwrap();
     assert_eq!(
         held(&mut root, "kim"),
         vec!["manage@prod.shop".to_owned()],
@@ -222,7 +224,7 @@ fn a_grant_adds_to_what_is_held_and_a_revocation_takes_only_what_it_names() {
     // Removing something nobody holds is not an error: the statement asks for a
     // user without it, and a user without it is what it leaves. A revocation
     // that failed halfway down a list would be worse than an idempotent one.
-    root.run("REVOKE operate ON STORE FROM kim;").unwrap();
+    root.run_now("REVOKE operate ON STORE FROM kim;").unwrap();
     assert_eq!(held(&mut root, "kim"), vec!["manage@prod.shop".to_owned()]);
 }
 
@@ -235,7 +237,7 @@ fn a_role_and_the_set_it_names_are_the_same_declaration() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run(
+    root.run_now(
         "DEFINE USER byrole ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
          DEFINE USER byset ON DATABASE prod.shop AUTHORITIES read, write, manage \
          PASSWORD 'correct horse battery';",
@@ -255,12 +257,12 @@ fn a_set_no_role_describes_is_reported_without_one() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run(
+    root.run_now(
         "DEFINE USER nadia ON NAMESPACE prod AUTHORITIES manage PASSWORD 'correct horse battery';",
     )
     .unwrap();
 
-    let outcomes = root.run("INFO FOR USER nadia;").unwrap();
+    let outcomes = root.run_now("INFO FOR USER nadia;").unwrap();
     let Some(Outcome::Value(Value::Object(report))) = outcomes.last() else {
         panic!("expected a report");
     };
@@ -271,9 +273,9 @@ fn a_set_no_role_describes_is_reported_without_one() {
 
     // And the case that does fit still carries one, so the absence above is the
     // rule working rather than the field having been dropped.
-    root.run("DEFINE USER seen ON prod.shop ROLE viewer PASSWORD 'correct horse battery';")
+    root.run_now("DEFINE USER seen ON prod.shop ROLE viewer PASSWORD 'correct horse battery';")
         .unwrap();
-    let outcomes = root.run("INFO FOR USER seen;").unwrap();
+    let outcomes = root.run_now("INFO FOR USER seen;").unwrap();
     let Some(Outcome::Value(Value::Object(report))) = outcomes.last() else {
         panic!("expected a report");
     };
@@ -292,7 +294,7 @@ fn a_reach_is_named_by_keyword_so_a_table_can_never_be_read_as_one() {
     governed(&store);
     let mut root = signed_in(&store, "root");
     let refused = root
-        .run("DEFINE COLLECTION store;")
+        .run_now("DEFINE COLLECTION store;")
         .expect_err("`store` is a reserved word");
     // The refusal names the keyword as the lexer spells it, which is the
     // evidence that the word was taken as a keyword rather than rejected for
@@ -320,14 +322,14 @@ fn a_reach_is_named_by_keyword_so_a_table_can_never_be_read_as_one() {
 fn working<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = signed_in(store, name);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
 
 /// The refusal a statement produces, as text.
 fn refused(session: &mut Session<'_>, statement: &str) -> String {
-    match session.run(statement) {
+    match session.run_now(statement) {
         Ok(outcome) => panic!("{statement} was permitted: {outcome:?}"),
         Err(refusal) => refusal.to_string(),
     }
@@ -345,7 +347,7 @@ fn writing_a_namespace_does_not_confer_creating_a_database_in_it() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run(
+        .run_now(
             "DEFINE USER wilma ON NAMESPACE prod AUTHORITIES read, write \
              PASSWORD 'correct horse battery';",
         )
@@ -353,10 +355,10 @@ fn writing_a_namespace_does_not_confer_creating_a_database_in_it() {
 
     let mut wilma = working(&store, "wilma");
     wilma
-        .run("CREATE orders:1 = { total: 5 };")
+        .run_now("CREATE orders:1 = { total: 5 };")
         .expect("wilma writes records in the namespace she holds");
     wilma
-        .run("SELECT * FROM orders;")
+        .run_now("SELECT * FROM orders;")
         .expect("and reads them back");
 
     for statement in [
@@ -382,7 +384,7 @@ fn managing_a_namespace_does_not_confer_reading_a_record_in_it() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run(
+        .run_now(
             "DEFINE USER nadia ON NAMESPACE prod AUTHORITIES manage \
              PASSWORD 'correct horse battery';",
         )
@@ -390,7 +392,7 @@ fn managing_a_namespace_does_not_confer_reading_a_record_in_it() {
 
     let mut nadia = working(&store, "nadia");
     nadia
-        .run("DEFINE COLLECTION ledgers;")
+        .run_now("DEFINE COLLECTION ledgers;")
         .expect("nadia manages the containers of the namespace she holds");
 
     let refusal = refused(&mut nadia, "SELECT * FROM orders;");
@@ -409,7 +411,7 @@ fn an_authority_over_one_database_does_not_answer_for_its_sibling() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run(
+        .run_now(
             "USE NAMESPACE prod; DEFINE DATABASE depot; \
              DEFINE USER kim ON NAMESPACE prod AUTHORITIES read \
              PASSWORD 'correct horse battery'; \
@@ -418,10 +420,10 @@ fn an_authority_over_one_database_does_not_answer_for_its_sibling() {
         .unwrap();
 
     let mut kim = working(&store, "kim");
-    kim.run("DEFINE COLLECTION invoices;")
+    kim.run_now("DEFINE COLLECTION invoices;")
         .expect("kim manages the database she was granted");
 
-    kim.run("USE DATABASE depot;").unwrap();
+    kim.run_now("USE DATABASE depot;").unwrap();
     let refusal = refused(&mut kim, "DEFINE COLLECTION invoices;");
     assert!(
         refusal.contains("manage"),
@@ -441,7 +443,7 @@ fn a_write_only_identity_can_write_and_can_learn_nothing() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run(
+        .run_now(
             "DEFINE USER ingest ON prod.shop AUTHORITIES write \
              PASSWORD 'correct horse battery';",
         )
@@ -449,10 +451,10 @@ fn a_write_only_identity_can_write_and_can_learn_nothing() {
 
     let mut ingest = working(&store, "ingest");
     ingest
-        .run("UPSERT orders:1 = { total: 5 };")
+        .run_now("UPSERT orders:1 = { total: 5 };")
         .expect("the write that claims nothing about prior state");
     ingest
-        .run("DELETE orders:9;")
+        .run_now("DELETE orders:9;")
         .expect("and the delete that answers ok for an absent record");
 
     for statement in [
@@ -481,11 +483,11 @@ fn running_the_cluster_does_not_confer_taking_a_copy_of_it() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run("DEFINE USER ops AUTHORITIES operate PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER ops AUTHORITIES operate PASSWORD 'correct horse battery';")
         .unwrap();
 
     let mut ops = signed_in(&store, "ops");
-    ops.run("INFO FOR NODE;")
+    ops.run_now("INFO FOR NODE;")
         .expect("ops runs the node, which is what operate is");
 
     let refusal = refused(&mut ops, "BACKUP;");
@@ -503,14 +505,14 @@ fn governing_does_not_confer_reading_the_records_of_the_place_governed() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run(
+        .run_now(
             "DEFINE USER gwen ON prod.shop AUTHORITIES govern \
              PASSWORD 'correct horse battery';",
         )
         .unwrap();
 
     let mut gwen = working(&store, "gwen");
-    gwen.run("DEFINE USER junior ON prod.shop ROLE viewer PASSWORD 'correct horse battery';")
+    gwen.run_now("DEFINE USER junior ON prod.shop ROLE viewer PASSWORD 'correct horse battery';")
         .expect("gwen governs the database she holds");
 
     let refusal = refused(&mut gwen, "SELECT * FROM orders;");
@@ -531,7 +533,7 @@ fn nobody_can_hand_out_an_authority_they_do_not_hold() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run(
+        .run_now(
             "DEFINE USER paula ON NAMESPACE prod AUTHORITIES govern, manage \
              PASSWORD 'correct horse battery'; \
              DEFINE USER junior ON NAMESPACE prod AUTHORITIES read \
@@ -541,7 +543,7 @@ fn nobody_can_hand_out_an_authority_they_do_not_hold() {
 
     let mut paula = signed_in(&store, "paula");
     paula
-        .run("GRANT manage ON DATABASE prod.shop TO junior;")
+        .run_now("GRANT manage ON DATABASE prod.shop TO junior;")
         .expect("inside her own namespace, and she holds manage there");
 
     // Refused on `govern` and not on `manage`, and the order is the point: she
@@ -579,7 +581,7 @@ fn handing_out_authority_needs_governing_the_place_it_is_handed_out_in() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run(
+        .run_now(
             "DEFINE USER mo ON NAMESPACE prod AUTHORITIES read, write, manage, operate \
              PASSWORD 'correct horse battery'; \
              DEFINE USER junior ON NAMESPACE prod AUTHORITIES read \
@@ -604,7 +606,7 @@ fn a_namespace_authority_can_now_hand_out_authority_inside_it() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run(
+        .run_now(
             "DEFINE USER nia ON NAMESPACE prod AUTHORITIES govern, read, write \
              PASSWORD 'correct horse battery'; \
              DEFINE USER junior ON NAMESPACE prod AUTHORITIES read \
@@ -613,7 +615,7 @@ fn a_namespace_authority_can_now_hand_out_authority_inside_it() {
         .unwrap();
 
     let mut nia = signed_in(&store, "nia");
-    nia.run("GRANT write ON DATABASE prod.shop TO junior;")
+    nia.run_now("GRANT write ON DATABASE prod.shop TO junior;")
         .expect("a namespace authority hands out authority inside their namespace");
 
     let mut root = signed_in(&store, "root");
@@ -638,7 +640,7 @@ fn selecting_a_container_you_have_no_business_in_says_nothing_about_whether_it_e
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run(
+    root.run_now(
         "DEFINE USER kip AUTHORITIES read PASSWORD 'correct horse battery'; \
          REVOKE read ON STORE FROM kip; \
          GRANT read ON NAMESPACE prod TO kip;",
@@ -646,7 +648,7 @@ fn selecting_a_container_you_have_no_business_in_says_nothing_about_whether_it_e
     .unwrap();
 
     let mut kip = signed_in(&store, "kip");
-    kip.run("USE NAMESPACE prod;")
+    kip.run_now("USE NAMESPACE prod;")
         .expect("the namespace kip was granted");
 
     // The two refusals that must be indistinguishable. Telling them apart is
@@ -677,16 +679,16 @@ fn a_database_scoped_user_can_still_select_the_namespace_above_their_own() {
     let store = store();
     governed(&store);
     signed_in(&store, "root")
-        .run(
+        .run_now(
             "DEFINE USER dana ON prod.shop AUTHORITIES read \
              PASSWORD 'correct horse battery';",
         )
         .unwrap();
 
     let mut dana = signed_in(&store, "dana");
-    dana.run("USE NAMESPACE prod; USE DATABASE shop;")
+    dana.run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .expect("a database-scoped user reaches their own database through its namespace");
-    dana.run("SELECT * FROM orders;").expect("and reads it");
+    dana.run_now("SELECT * FROM orders;").expect("and reads it");
 }
 
 #[test]
@@ -703,7 +705,7 @@ fn a_grant_outside_the_subjects_own_tenancy_is_refused_rather_than_stored_inert(
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run(
+    root.run_now(
         "DEFINE USER nina ON NAMESPACE prod AUTHORITIES read PASSWORD 'correct horse battery';",
     )
     .unwrap();
@@ -733,12 +735,12 @@ fn a_reach_that_contains_the_subjects_tenancy_is_not_inert_and_is_allowed() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run(
+    root.run_now(
         "DEFINE USER pia ON NAMESPACE prod AUTHORITIES read PASSWORD 'correct horse battery';",
     )
     .unwrap();
 
-    root.run("GRANT manage ON STORE TO pia;").unwrap();
+    root.run_now("GRANT manage ON STORE TO pia;").unwrap();
     let mut hers = held(&mut root, "pia");
     hers.sort();
     assert_eq!(
@@ -748,7 +750,7 @@ fn a_reach_that_contains_the_subjects_tenancy_is_not_inert_and_is_allowed() {
 
     // And it works where she can reach: `manage` at the store contains `prod`.
     let mut pia = signed_in(&store, "pia");
-    pia.run("USE NAMESPACE prod; DEFINE DATABASE extra;")
+    pia.run_now("USE NAMESPACE prod; DEFINE DATABASE extra;")
         .unwrap();
 }
 
@@ -778,7 +780,7 @@ fn a_node_with_credentials_and_no_authority_may_not_take_the_log() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run("DEFINE USER node AUTHORITIES read PASSWORD 'correct horse battery';")
+    root.run_now("DEFINE USER node AUTHORITIES read PASSWORD 'correct horse battery';")
         .unwrap();
 
     let mut node = signed_in(&store, "node");
@@ -804,7 +806,7 @@ fn a_node_granted_replication_over_the_store_receives_the_log() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run(
+    root.run_now(
         "DEFINE USER node AUTHORITIES replicate PASSWORD 'correct horse battery';\n\
          USE NAMESPACE prod; USE DATABASE shop;\n\
          CREATE orders:1 = { total: 1 };",
@@ -839,7 +841,7 @@ fn reading_every_record_is_not_authority_to_take_the_log() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run("DEFINE USER watcher AUTHORITIES read PASSWORD 'correct horse battery';")
+    root.run_now("DEFINE USER watcher AUTHORITIES read PASSWORD 'correct horse battery';")
         .unwrap();
 
     let mut watcher = signed_in(&store, "watcher");
@@ -867,7 +869,7 @@ fn operating_the_node_is_not_authority_to_take_the_log() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run("DEFINE USER ops AUTHORITIES operate PASSWORD 'correct horse battery';")
+    root.run_now("DEFINE USER ops AUTHORITIES operate PASSWORD 'correct horse battery';")
         .unwrap();
 
     let mut ops = signed_in(&store, "ops");
@@ -914,7 +916,7 @@ fn a_namespace_owner_cannot_hand_out_replication_inside_their_namespace() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run(
+    root.run_now(
         "DEFINE USER tenant ON NAMESPACE prod ROLE owner PASSWORD 'correct horse battery';\n\
          DEFINE USER peer ON NAMESPACE prod AUTHORITIES read PASSWORD 'correct horse battery';",
     )
@@ -925,7 +927,7 @@ fn a_namespace_owner_cannot_hand_out_replication_inside_their_namespace() {
     // authority_inside_it` above proves they may make for every other kind.
     let mut tenant = signed_in(&store, "tenant");
     let refusal = tenant
-        .run("GRANT replicate ON NAMESPACE prod TO peer;")
+        .run_now("GRANT replicate ON NAMESPACE prod TO peer;")
         .unwrap_err();
     assert!(
         matches!(refusal, tessari_session::Error::NotAtThatReach { kind, .. } if kind == "replicate"),
@@ -944,8 +946,10 @@ fn a_namespace_owner_does_not_hold_replication_over_their_namespace() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run("DEFINE USER tenant ON NAMESPACE prod ROLE owner PASSWORD 'correct horse battery';")
-        .unwrap();
+    root.run_now(
+        "DEFINE USER tenant ON NAMESPACE prod ROLE owner PASSWORD 'correct horse battery';",
+    )
+    .unwrap();
 
     let held = held(&mut root, "tenant");
     assert!(
@@ -973,7 +977,7 @@ fn replication_cannot_be_declared_over_one_namespace() {
     governed(&store);
     let mut root = signed_in(&store, "root");
     let refusal = root
-        .run(
+        .run_now(
             "DEFINE USER partial ON NAMESPACE prod AUTHORITIES replicate \
              PASSWORD 'correct horse battery';",
         )
@@ -997,8 +1001,10 @@ fn a_role_at_a_namespace_still_declares_and_simply_carries_less() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run("DEFINE USER tenant ON NAMESPACE prod ROLE owner PASSWORD 'correct horse battery';")
-        .expect("a namespace owner is an ordinary declaration and stays one");
+    root.run_now(
+        "DEFINE USER tenant ON NAMESPACE prod ROLE owner PASSWORD 'correct horse battery';",
+    )
+    .expect("a namespace owner is an ordinary declaration and stays one");
 }
 
 /// The subscription a store-reach holder opens over one namespace still works.
@@ -1012,7 +1018,7 @@ fn a_store_reach_holder_may_still_subscribe_over_one_namespace() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run("DEFINE USER node AUTHORITIES replicate PASSWORD 'correct horse battery';")
+    root.run_now("DEFINE USER node AUTHORITIES replicate PASSWORD 'correct horse battery';")
         .unwrap();
 
     let namespace = {
@@ -1045,7 +1051,7 @@ fn a_revoked_replication_authority_stops_a_node_that_was_already_reading() {
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
-    root.run("DEFINE USER node AUTHORITIES replicate PASSWORD 'correct horse battery';")
+    root.run_now("DEFINE USER node AUTHORITIES replicate PASSWORD 'correct horse battery';")
         .unwrap();
 
     let mut node = signed_in(&store, "node");
@@ -1059,7 +1065,8 @@ fn a_revoked_replication_authority_stops_a_node_that_was_already_reading() {
     )
     .expect("granted, so the first read is served");
 
-    root.run("REVOKE replicate ON STORE FROM node;").unwrap();
+    root.run_now("REVOKE replicate ON STORE FROM node;")
+        .unwrap();
 
     let refusal = node
         .replicate_from(
@@ -1089,7 +1096,7 @@ fn an_open_store_hands_out_its_log_because_an_open_store_hands_out_everything() 
     let store = store();
     let mut opening = Session::new(&store);
     opening
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE orders SCHEMALESS; CREATE orders:1 = { total: 1 };",

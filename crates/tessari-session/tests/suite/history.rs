@@ -21,6 +21,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Session};
@@ -35,7 +36,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE library; USE DATABASE library;\n\
              DEFINE COLLECTION docs;\n\
@@ -61,7 +62,7 @@ fn now(store: &Store) -> u64 {
 }
 
 fn ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let mut found: Vec<RecordId> = outcomes[0]
         .records()
         .unwrap()
@@ -73,7 +74,7 @@ fn ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
 }
 
 fn field_of(session: &mut Session<'_>, script: &str, name: &str) -> Value {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(records.len(), 1, "{records:?}");
     let Value::Object(object) = &records[0].1 else {
@@ -90,11 +91,11 @@ fn a_read_at_an_earlier_version_answers_with_what_stood_there() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("CREATE docs:1 = { status: 'draft', title: 'on sorting' };")
+        .run_now("CREATE docs:1 = { status: 'draft', title: 'on sorting' };")
         .unwrap();
     let before = now(&store);
     session
-        .run("UPDATE docs:1 SET status = 'published';")
+        .run_now("UPDATE docs:1 SET status = 'published';")
         .unwrap();
 
     assert_eq!(
@@ -116,9 +117,13 @@ fn a_read_at_an_earlier_version_answers_with_what_stood_there() {
 fn a_record_written_after_the_version_is_not_in_the_answer() {
     let store = store();
     let mut session = ready(&store);
-    session.run("CREATE docs:1 = { status: 'draft' };").unwrap();
+    session
+        .run_now("CREATE docs:1 = { status: 'draft' };")
+        .unwrap();
     let before = now(&store);
-    session.run("CREATE docs:2 = { status: 'draft' };").unwrap();
+    session
+        .run_now("CREATE docs:2 = { status: 'draft' };")
+        .unwrap();
 
     assert_eq!(ids(&mut session, "SELECT * FROM docs;").len(), 2);
     assert_eq!(
@@ -140,10 +145,12 @@ fn a_record_written_after_the_version_is_not_in_the_answer() {
 fn a_record_that_has_since_changed_is_still_found_at_the_version_it_matched() {
     let store = store();
     let mut session = ready(&store);
-    session.run("CREATE docs:1 = { status: 'draft' };").unwrap();
+    session
+        .run_now("CREATE docs:1 = { status: 'draft' };")
+        .unwrap();
     let before = now(&store);
     session
-        .run("UPDATE docs:1 SET status = 'published';")
+        .run_now("UPDATE docs:1 SET status = 'published';")
         .unwrap();
 
     assert!(
@@ -169,10 +176,12 @@ fn a_record_that_has_since_changed_is_still_found_at_the_version_it_matched() {
 fn a_record_that_has_since_matched_is_not_in_an_earlier_answer() {
     let store = store();
     let mut session = ready(&store);
-    session.run("CREATE docs:1 = { status: 'draft' };").unwrap();
+    session
+        .run_now("CREATE docs:1 = { status: 'draft' };")
+        .unwrap();
     let before = now(&store);
     session
-        .run("UPDATE docs:1 SET status = 'published';")
+        .run_now("UPDATE docs:1 SET status = 'published';")
         .unwrap();
 
     assert_eq!(
@@ -200,15 +209,15 @@ fn a_record_that_has_since_matched_is_not_in_an_earlier_answer() {
 fn an_ordering_at_an_earlier_version_sorts_by_what_the_records_held_then() {
     let store = store();
     let mut session = ready(&store);
-    session.run("CREATE docs:1 = { status: 'a' };").unwrap();
-    session.run("CREATE docs:2 = { status: 'b' };").unwrap();
+    session.run_now("CREATE docs:1 = { status: 'a' };").unwrap();
+    session.run_now("CREATE docs:2 = { status: 'b' };").unwrap();
     let before = now(&store);
     // Swapped, so present order and historical order are exact reverses and a
     // read served from the index cannot accidentally agree.
-    session.run("UPDATE docs:1 SET status = 'z';").unwrap();
+    session.run_now("UPDATE docs:1 SET status = 'z';").unwrap();
 
     let outcomes = session
-        .run(&format!(
+        .run_now(&format!(
             "SELECT * FROM docs ORDER BY status VERSION {before};"
         ))
         .unwrap();
@@ -224,11 +233,13 @@ fn an_ordering_at_an_earlier_version_sorts_by_what_the_records_held_then() {
 fn a_version_ahead_of_the_store_is_refused() {
     let store = store();
     let mut session = ready(&store);
-    session.run("CREATE docs:1 = { status: 'draft' };").unwrap();
+    session
+        .run_now("CREATE docs:1 = { status: 'draft' };")
+        .unwrap();
     let ahead = now(&store) + 1;
 
     let refusal = session
-        .run(&format!("SELECT * FROM docs VERSION {ahead};"))
+        .run_now(&format!("SELECT * FROM docs VERSION {ahead};"))
         .unwrap_err()
         .to_string();
     assert!(refusal.contains(&ahead.to_string()), "{refusal}");
@@ -238,13 +249,15 @@ fn a_version_ahead_of_the_store_is_refused() {
 fn a_version_below_the_reclaim_floor_is_refused() {
     let store = store();
     let mut session = ready(&store);
-    session.run("CREATE docs:1 = { status: 'draft' };").unwrap();
+    session
+        .run_now("CREATE docs:1 = { status: 'draft' };")
+        .unwrap();
     let early = now(&store);
     session
-        .run("UPDATE docs:1 SET status = 'published';")
+        .run_now("UPDATE docs:1 SET status = 'published';")
         .unwrap();
     session
-        .run("UPDATE docs:1 SET status = 'retired';")
+        .run_now("UPDATE docs:1 SET status = 'retired';")
         .unwrap();
 
     // Readable until the versions behind it are removed. Asserted first, so a
@@ -267,7 +280,7 @@ fn a_version_below_the_reclaim_floor_is_refused() {
     );
 
     let refusal = session
-        .run(&format!("SELECT * FROM docs:1 VERSION {early};"))
+        .run_now(&format!("SELECT * FROM docs:1 VERSION {early};"))
         .unwrap_err()
         .to_string();
     assert!(refusal.contains("reclaim"), "{refusal}");
@@ -277,7 +290,9 @@ fn a_version_below_the_reclaim_floor_is_refused() {
 fn a_pass_that_removes_nothing_leaves_the_floor_where_it_was() {
     let store = store();
     let mut session = ready(&store);
-    session.run("CREATE docs:1 = { status: 'draft' };").unwrap();
+    session
+        .run_now("CREATE docs:1 = { status: 'draft' };")
+        .unwrap();
     let (namespace, database, table) = docs_ids(&store);
 
     // One version per record: nothing is strictly older than what a reader at
@@ -296,11 +311,13 @@ fn a_pass_that_removes_nothing_leaves_the_floor_where_it_was() {
 fn a_version_inside_a_transaction_is_refused() {
     let store = store();
     let mut session = ready(&store);
-    session.run("CREATE docs:1 = { status: 'draft' };").unwrap();
+    session
+        .run_now("CREATE docs:1 = { status: 'draft' };")
+        .unwrap();
     let before = now(&store);
 
     let refusal = session
-        .run(&format!(
+        .run_now(&format!(
             "BEGIN; SELECT * FROM docs VERSION {before}; COMMIT;"
         ))
         .unwrap_err();
@@ -315,7 +332,7 @@ fn a_traversal_cannot_be_read_at_an_earlier_version() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE social; USE DATABASE social;\n\
              DEFINE COLLECTION users;\n\
@@ -330,7 +347,7 @@ fn a_traversal_cannot_be_read_at_an_earlier_version() {
     // read would not be historical at all — the refusal below would then be
     // asserting nothing.
     session
-        .run("CREATE users:3 = { handle: 'katherine' };")
+        .run_now("CREATE users:3 = { handle: 'katherine' };")
         .unwrap();
 
     // It answers in the present, so the refusal below is about the clause and
@@ -341,7 +358,7 @@ fn a_traversal_cannot_be_read_at_an_earlier_version() {
     );
 
     let refusal = session
-        .run(&format!(
+        .run_now(&format!(
             "SELECT * FROM users:1->follows->users VERSION {before};"
         ))
         .unwrap_err();
@@ -357,7 +374,7 @@ fn version_is_still_a_field_name() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("CREATE docs:1 = { status: 'draft', version: 3 };")
+        .run_now("CREATE docs:1 = { status: 'draft', version: 3 };")
         .unwrap();
 
     assert_eq!(

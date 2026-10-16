@@ -10,6 +10,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
@@ -23,7 +24,7 @@ fn store() -> Store {
     let store = Store::open(backend).unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE app; USE DATABASE app;
              DEFINE COLLECTION notes; CREATE notes:1 = { body: 'kept' };
              BEGIN;
@@ -43,7 +44,7 @@ fn owner<'a>(store: &'a Store, folder: &Path) -> Session<'a> {
 
 /// The one value a one-statement script answered.
 fn answer(session: &mut Session<'_>, script: &str) -> Value {
-    match session.run(script).unwrap().pop() {
+    match session.run_now(script).unwrap().pop() {
         Some(Outcome::Value(value)) => value,
         other => panic!("{script} answered {other:?}"),
     }
@@ -59,7 +60,7 @@ fn field<'v>(answer: &'v Value, name: &str) -> &'v Value {
 }
 
 fn refused(session: &mut Session<'_>, script: &str) -> Error {
-    match session.run(script) {
+    match session.run_now(script) {
         Ok(answered) => panic!("{script} was not refused: {answered:?}"),
         Err(error) => error,
     }
@@ -246,7 +247,7 @@ fn a_snapshot_of_one_namespace_restores_that_namespace_and_nothing_else() {
     let store = store();
     let folder = tempfile::tempdir().unwrap();
     let mut root = owner(&store, folder.path());
-    root.run(
+    root.run_now(
         "DEFINE NAMESPACE crm; USE NAMESPACE crm; DEFINE DATABASE people; USE DATABASE people;
          DEFINE COLLECTION contacts; CREATE contacts:1 = { name: 'left behind' };",
     )
@@ -264,17 +265,17 @@ fn a_snapshot_of_one_namespace_restores_that_namespace_and_nothing_else() {
     // anybody.
     assert!(
         Session::new(&restored)
-            .run("USE NAMESPACE prod; USE DATABASE app; SELECT * FROM notes;")
+            .run_now("USE NAMESPACE prod; USE DATABASE app; SELECT * FROM notes;")
             .is_err(),
         "a restored part answered a caller who never signed in"
     );
     let mut reader = Session::new(&restored);
     reader.sign_in("root", PASSWORD).unwrap();
     let kept = reader
-        .run("USE NAMESPACE prod; USE DATABASE app; SELECT body FROM notes;")
+        .run_now("USE NAMESPACE prod; USE DATABASE app; SELECT body FROM notes;")
         .unwrap();
     assert!(format!("{kept:?}").contains("kept"), "{kept:?}");
-    let other = reader.run("USE NAMESPACE crm;");
+    let other = reader.run_now("USE NAMESPACE crm;");
     assert!(
         other.is_err(),
         "the namespace the snapshot was not of came back with it: {other:?}"
@@ -283,7 +284,7 @@ fn a_snapshot_of_one_namespace_restores_that_namespace_and_nothing_else() {
     // One database is a place too, and the records of the database beside it
     // stay out. Its definition travels, as it does to a follower subscribed at
     // one database: a database is defined in its namespace's catalog.
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; DEFINE DATABASE elsewhere; USE DATABASE elsewhere;
          DEFINE COLLECTION notes; CREATE notes:9 = { body: 'left behind' };",
     )
@@ -297,10 +298,10 @@ fn a_snapshot_of_one_namespace_restores_that_namespace_and_nothing_else() {
     let mut reader = Session::new(&restored);
     reader.sign_in("root", PASSWORD).unwrap();
     let kept = reader
-        .run("USE NAMESPACE prod; USE DATABASE app; SELECT body FROM notes;")
+        .run_now("USE NAMESPACE prod; USE DATABASE app; SELECT body FROM notes;")
         .unwrap();
     assert!(format!("{kept:?}").contains("kept"), "{kept:?}");
-    let beside = reader.run("USE DATABASE elsewhere; SELECT * FROM notes;");
+    let beside = reader.run_now("USE DATABASE elsewhere; SELECT * FROM notes;");
     assert!(
         !format!("{beside:?}").contains("left behind"),
         "the records of the database the snapshot was not of came back: {beside:?}"
@@ -342,7 +343,7 @@ fn a_streamed_snapshot_is_the_answered_one_and_a_refused_caller_streams_nothing(
     let refused_sink = Shared::default();
     let mut nina = Session::new(&store).snapshot_into(Box::new(refused_sink.clone()));
     nina.sign_in("nina", PASSWORD).unwrap();
-    assert!(nina.run("BACKUP STATE;").is_err());
+    assert!(nina.run_now("BACKUP STATE;").is_err());
     assert!(refused_sink.0.lock().unwrap().is_empty());
 }
 

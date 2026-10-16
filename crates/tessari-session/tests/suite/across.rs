@@ -3,6 +3,7 @@
 //! verified, and what this node refuses to write for them.
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_encoding::{
     Decision, Mutation, Participant, RecordValue, StampedValue, TRANSACTION_ID_LEN, TransactionId,
@@ -22,14 +23,14 @@ const PASSWORD: &str = "correct horse battery";
 fn store() -> Store {
     let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
     let mut root = Session::new(&store);
-    root.run(&format!(
+    root.run_now(&format!(
         "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
          DEFINE COLLECTION notes; DEFINE SPACE cache; CREATE notes:1 = 'old'; \
          DEFINE USER root ROLE owner PASSWORD '{PASSWORD}';"
     ))
     .unwrap();
     root.sign_in("root", PASSWORD).unwrap();
-    root.run(&format!(
+    root.run_now(&format!(
         "USE NAMESPACE prod; USE DATABASE shop; \
          DEFINE USER reader ON prod.shop ROLE editor PASSWORD '{PASSWORD}'; \
          GRANT read ON notes TO reader;"

@@ -177,7 +177,7 @@ fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken> {
                 namespace.namespace
             );
             let _ = writeln!(body, "DEFINE DATABASE {database}; USE DATABASE {database};");
-            reader.run(&selection)?;
+            reader.run_blocking(&selection)?;
             // Before every definition that may read one (ADR-0124 D2).
             for (name, value) in params_of(reader)? {
                 let _ = writeln!(
@@ -290,7 +290,7 @@ const fn holds_records(kind: &TableKind) -> bool {
 
 /// The params of the database `reader` has selected, in name order.
 fn params_of(reader: &mut Session<'_>) -> Result<Vec<(String, tessari_types::Value)>> {
-    let answered = reader.run("INFO FOR DATABASE;")?;
+    let answered = reader.run_blocking("INFO FOR DATABASE;")?;
     let Some(crate::outcome::Outcome::Value(tessari_types::Value::Object(info))) = answered.last()
     else {
         return Ok(Vec::new());

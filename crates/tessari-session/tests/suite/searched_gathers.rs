@@ -8,6 +8,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use crate::gathered_reads::{Pair, answer, follower_of_the_middle_of, leader, pair_of};
 
@@ -22,7 +23,7 @@ fn searched() -> Pair {
 fn searched_with(extra: &str) -> Pair {
     let leader = leader();
     let mut root = crate::gathered_reads::signed_in(&leader, "root");
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
          DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
          DEFINE TABLE docs (body string ANALYZER english, at geometry) IDENTITY uuid SPLIT AT 'g', 'p';\n\
@@ -38,7 +39,7 @@ fn searched_with(extra: &str) -> Pair {
     )
     .unwrap();
     if !extra.is_empty() {
-        root.run(extra).unwrap();
+        root.run_now(extra).unwrap();
     }
     let follower = follower_of_the_middle_of(&leader, "docs");
     pair_of(Arc::clone(&leader), follower)
@@ -61,7 +62,7 @@ fn suggestion(
     session: &mut tessari_session::Session<'_>,
     read: &str,
 ) -> Option<tessari_session::Suggestion> {
-    match session.run(read).unwrap().into_iter().last() {
+    match session.run_now(read).unwrap().into_iter().last() {
         Some(tessari_session::Outcome::Records { suggestion, .. }) => suggestion,
         other => panic!("{read}: {other:?}"),
     }
@@ -210,7 +211,7 @@ fn a_starred_word_is_not_scored_on_a_part_of_the_dictionary() {
     let mut follower = pair.on_the_follower("reader");
     let mut whole = pair.on_the_leader("reader");
     let scored = "SELECT id, search::score(body, 'fox*') AS s FROM docs ORDER BY s DESC, id;";
-    let refused = follower.run(scored);
+    let refused = follower.run_now(scored);
     assert!(
         matches!(refused, Err(tessari_session::Error::NotHeldHere { ref table, .. }) if table == "docs"),
         "{refused:?}"
@@ -232,7 +233,7 @@ fn a_search_over_a_split_table_is_not_ranked_on_a_part_of_it() {
     let pair = searched_with("DEFINE SEARCH tales ON docs FIELDS body ANALYZER english;");
     let mut follower = pair.on_the_follower("reader");
     let read = "SELECT search::score() AS s FROM SEARCH tales MATCHES 'fox';";
-    let refused = follower.run(read);
+    let refused = follower.run_now(read);
     assert!(
         matches!(refused, Err(tessari_session::Error::NotHeldHere { ref table, .. }) if table == "docs"),
         "{refused:?}"

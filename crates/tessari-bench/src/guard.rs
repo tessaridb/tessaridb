@@ -44,6 +44,7 @@
 
 use core::time::Duration;
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessaridb::{Db, Outcome};
 
@@ -91,7 +92,7 @@ const BEFORE_INDEX: &str = "SELECT * FROM guarded WHERE n > 0;";
 pub(crate) fn guard(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run(
+    session.run_now(
         "USE NAMESPACE bench; USE DATABASE bench;\n\
          DEFINE TABLE guarded SCHEMALESS;\n\
          DEFINE TABLE mirror SCHEMALESS;",
@@ -103,11 +104,11 @@ pub(crate) fn guard(db: &Db) -> Failable<Vec<Report>> {
     let mut written = Samples::with_capacity(usize::try_from(RECORDS).unwrap_or(0));
     for n in 0..RECORDS {
         let started = Instant::now();
-        session.run(&format!(
+        session.run_now(&format!(
             "CREATE guarded:{n} = {{ n: {n}, note: '{NOTE}' }};"
         ))?;
         written.push(started.elapsed());
-        session.run(&format!(
+        session.run_now(&format!(
             "CREATE mirror:{n} = {{ n: {n}, note: '{NOTE}' }};"
         ))?;
     }
@@ -118,28 +119,28 @@ pub(crate) fn guard(db: &Db) -> Failable<Vec<Report>> {
     // against itself, and the index build is the only event between the two
     // readings. A drop-and-re-measure would leave tombstones behind and answer
     // ambiguously in exactly the direction the question cares about.
-    session.run(BEFORE_INDEX)?;
+    session.run_now(BEFORE_INDEX)?;
     let mut before = Samples::with_capacity(QUERIES);
     let mut before_path = None;
     for _ in 0..QUERIES {
         let started = Instant::now();
-        let outcome = session.run(BEFORE_INDEX)?;
+        let outcome = session.run_now(BEFORE_INDEX)?;
         before.push(started.elapsed());
         before_path = served_by(&outcome);
     }
-    let unindexed_answer = answered(&session.run(BEFORE_INDEX)?);
+    let unindexed_answer = answered(&session.run_now(BEFORE_INDEX)?);
 
     let mut built = Samples::with_capacity(1);
     let started = Instant::now();
-    session.run("DEFINE INDEX by_n ON guarded FIELDS n;")?;
+    session.run_now("DEFINE INDEX by_n ON guarded FIELDS n;")?;
     built.push(started.elapsed());
     reports.push(built.summarise("guard-build-index"));
 
     // One untimed read of each shape, so no arm pays for being the one that
     // arrived first at a cold page.
-    session.run(GUARDED)?;
-    session.run(LIFTED)?;
-    session.run(UNINDEXED)?;
+    session.run_now(GUARDED)?;
+    session.run_now(LIFTED)?;
+    session.run_now(UNINDEXED)?;
 
     let mut guarded = Samples::with_capacity(QUERIES);
     let mut lifted = Samples::with_capacity(QUERIES);
@@ -147,12 +148,12 @@ pub(crate) fn guard(db: &Db) -> Failable<Vec<Report>> {
     let mut lifted_path = None;
     for _ in 0..QUERIES {
         let started = Instant::now();
-        let outcome = session.run(GUARDED)?;
+        let outcome = session.run_now(GUARDED)?;
         guarded.push(started.elapsed());
         guarded_path = served_by(&outcome);
 
         let started = Instant::now();
-        let outcome = session.run(LIFTED)?;
+        let outcome = session.run_now(LIFTED)?;
         lifted.push(started.elapsed());
         lifted_path = served_by(&outcome);
     }
@@ -161,7 +162,7 @@ pub(crate) fn guard(db: &Db) -> Failable<Vec<Report>> {
     let mut mirrored_path = None;
     for _ in 0..QUERIES {
         let started = Instant::now();
-        let outcome = session.run(UNINDEXED)?;
+        let outcome = session.run_now(UNINDEXED)?;
         mirrored.push(started.elapsed());
         mirrored_path = served_by(&outcome);
     }
@@ -220,9 +221,9 @@ pub(crate) fn guard(db: &Db) -> Failable<Vec<Report>> {
         ),
     ));
 
-    let by_veto = answered(&session.run(GUARDED)?);
-    let by_index = answered(&session.run(LIFTED)?);
-    let by_mirror = answered(&session.run(UNINDEXED)?);
+    let by_veto = answered(&session.run_now(GUARDED)?);
+    let by_index = answered(&session.run_now(LIFTED)?);
+    let by_mirror = answered(&session.run_now(UNINDEXED)?);
     reports.push(Report::measurement(
         "  records answered",
         &format!(

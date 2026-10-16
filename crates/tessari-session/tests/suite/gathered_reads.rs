@@ -12,6 +12,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::{Arc, Mutex};
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Asked, Gather, Gathered, Note, Outcome, Reduced, Session, Unanswered};
@@ -37,7 +38,7 @@ pub(crate) fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
 pub(crate) fn leader() -> Arc<Store> {
     let leader = store();
     Session::new(&leader)
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE ledger (total int, note string, peer record) IDENTITY uuid \
              SPLIT AT 'g', 'p';\n\
@@ -57,7 +58,7 @@ pub(crate) fn leader() -> Arc<Store> {
         )
         .unwrap();
     signed_in(&leader, "root")
-        .run(
+        .run_now(
             "DEFINE USER reader ON NAMESPACE prod AUTHORITIES read \
              PASSWORD 'correct horse battery';\n\
              DEFINE USER narrow ON NAMESPACE prod AUTHORITIES read \
@@ -292,7 +293,7 @@ impl Pair {
         let mut session = signed_in(&self.follower, user)
             .gathering(Arc::clone(&self.gatherer) as Arc<dyn Gather>);
         session
-            .run("USE NAMESPACE prod; USE DATABASE shop;")
+            .run_now("USE NAMESPACE prod; USE DATABASE shop;")
             .unwrap();
         session
     }
@@ -300,7 +301,7 @@ impl Pair {
     pub(crate) fn on_the_leader(&self, user: &str) -> Session<'_> {
         let mut session = signed_in(&self.leader, user);
         session
-            .run("USE NAMESPACE prod; USE DATABASE shop;")
+            .run_now("USE NAMESPACE prod; USE DATABASE shop;")
             .unwrap();
         session
     }
@@ -324,7 +325,7 @@ impl Pair {
 }
 
 pub(crate) fn answer(session: &mut Session<'_>, read: &str) -> (Vec<(RecordId, Value)>, Vec<Note>) {
-    match session.run(read) {
+    match session.run_now(read) {
         Ok(outcomes) => match outcomes.last() {
             Some(Outcome::Records { records, notes, .. }) => (records.clone(), notes.clone()),
             other => panic!("{read}: {other:?}"),
@@ -334,7 +335,7 @@ pub(crate) fn answer(session: &mut Session<'_>, read: &str) -> (Vec<(RecordId, V
 }
 
 pub(crate) fn refused(session: &mut Session<'_>, read: &str) -> tessari_session::Error {
-    match session.run(read) {
+    match session.run_now(read) {
         Err(error) => error,
         Ok(outcomes) => panic!("{read}: expected a refusal, got {outcomes:?}"),
     }
@@ -445,7 +446,7 @@ impl Gather for Folding024 {
 fn a_total_an_older_leader_sent_without_its_float_form_is_gathered_when_a_float_needs_it() {
     let leader = leader();
     signed_in(&leader, "root")
-        .run(
+        .run_now(
             "USE NAMESPACE prod; USE DATABASE shop;\n\
              DEFINE TABLE mixed (x number) IDENTITY uuid SPLIT AT 'g', 'p';\n\
              CREATE mixed:'a' = { x: 1 }; CREATE mixed:'b' = { x: 3 };\n\
@@ -458,7 +459,7 @@ fn a_total_an_older_leader_sent_without_its_float_form_is_gathered_when_a_float_
     let mut follower = signed_in(&pair.follower, "reader")
         .gathering(Arc::new(Folding024(Arc::clone(&pair.gatherer))));
     follower
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     let mut whole = pair.on_the_leader("reader");
     // Every remote shard is whole numbers, so the older leaders fold; this
@@ -528,7 +529,7 @@ fn a_fold_over_more_records_than_a_gather_holds_answers() {
     let pair = pair();
     let mut follower = signed_in(&pair.follower, "reader").gathering(Arc::new(FoldingMany));
     follower
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     let (rows, _) = answer(
         &mut follower,
@@ -571,7 +572,7 @@ fn a_folded_read_past_its_timeout_is_refused_between_the_leaders_folds() {
     let pair = pair();
     let mut follower = signed_in(&pair.follower, "reader").gathering(Arc::new(FoldingSlowly));
     follower
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     match refused(
         &mut follower,
@@ -607,7 +608,7 @@ fn a_fold_over_a_real_shard_past_the_ceiling_answers() {
         insert.push_str("(1, 'many')");
     }
     insert.push(';');
-    pair.on_the_leader("root").run(&insert).unwrap();
+    pair.on_the_leader("root").run_now(&insert).unwrap();
     let mut follower = pair.on_the_follower("reader");
     let mut whole = pair.on_the_leader("reader");
     let read = "SELECT note, count(*) AS n, sum(total) AS sum FROM ledger GROUP BY note;";
@@ -637,7 +638,7 @@ fn a_read_naming_a_partition_asks_only_its_shard() {
     // `customers` and gathers every read of it.
     let leader = leader();
     signed_in(&leader, "root")
-        .run(
+        .run_now(
             "USE NAMESPACE prod; USE DATABASE shop;\n\
              DEFINE TABLE customers (region string, name string) IDENTITY uuid \
              PARTITION BY region SPLIT AT 'de', 'fr';\n\
@@ -775,7 +776,7 @@ fn a_read_that_cannot_be_gathered_whole_is_refused_and_never_answered_in_part() 
         )),
         held
     );
-    follower.run("CANCEL;").ok();
+    follower.run_now("CANCEL;").ok();
     assert_eq!(
         not_held(refused(&mut follower, "SELECT * FROM ledger VERSION 5;")),
         held
@@ -788,12 +789,12 @@ fn a_read_that_cannot_be_gathered_whole_is_refused_and_never_answered_in_part() 
         .0,
         "ledger"
     );
-    follower.run("CANCEL;").ok();
+    follower.run_now("CANCEL;").ok();
     assert_eq!(pair.asked(), Vec::<Question>::new(), "none of these asked");
 
     let mut stranded = signed_in(&pair.follower, "reader").gathering(Arc::new(Unreachable));
     stranded
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     match refused(&mut stranded, "SELECT * FROM ledger;") {
         tessari_session::Error::NotGathered { table, shard, why } => {
@@ -806,7 +807,9 @@ fn a_read_that_cannot_be_gathered_whole_is_refused_and_never_answered_in_part() 
     // ADR-0095 D4: a leader holding a different map is a reason to read the map
     // again, and is said as one rather than as a leader that did not answer.
     let mut moved = signed_in(&pair.follower, "reader").gathering(Arc::new(Moved));
-    moved.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+    moved
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
     match refused(&mut moved, "SELECT * FROM ledger;") {
         tessari_session::Error::ShardMapMoved { table, shard, .. } => {
             assert_eq!((table.as_str(), shard), ("ledger", 1));
@@ -816,7 +819,7 @@ fn a_read_that_cannot_be_gathered_whole_is_refused_and_never_answered_in_part() 
 
     let mut flooded = signed_in(&pair.follower, "reader").gathering(Arc::new(Flooding));
     flooded
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     match refused(&mut flooded, "SELECT * FROM ledger;") {
         tessari_session::Error::GatheredTooMuch { table, most } => {
@@ -833,7 +836,7 @@ fn a_read_that_cannot_be_gathered_whole_is_refused_and_never_answered_in_part() 
 fn pairs() -> Pair {
     let leader = leader();
     signed_in(&leader, "root")
-        .run(
+        .run_now(
             "USE NAMESPACE prod; USE DATABASE shop;\n\
              DEFINE TABLE pairs (k int, secret int) IDENTITY uuid SPLIT AT 'g', 'p';\n\
              CREATE pairs:'a' = { k: 1, secret: 1 }; CREATE pairs:'b' = { k: 2, secret: 9 };\n\
@@ -959,7 +962,7 @@ fn a_condition_travels_to_the_leader_with_the_askers_visibility() {
     let pair = pair();
     let pushed = |user: &str, read: &str| {
         let mut follower = pair.on_the_follower(user);
-        drop(follower.run(read));
+        drop(follower.run_now(read));
         let mut sent = std::mem::take(&mut *pair.gatherer.pushed.lock().unwrap());
         sent.pop().expect("the read gathered")
     };
@@ -1022,7 +1025,7 @@ fn a_node_holding_part_of_a_split_table_refuses_to_back_it_up() {
         "BACKUP STATE OF prod.shop;",
         "BACKUP OF NAMESPACE prod;",
     ] {
-        match signed_in(&follower, "root").run(statement) {
+        match signed_in(&follower, "root").run_now(statement) {
             Err(tessari_session::Error::NotHeldHere { table, shards, .. }) => {
                 assert_eq!(
                     (table.as_str(), shards),
@@ -1041,7 +1044,7 @@ fn a_node_holding_every_shard_backs_the_database_up_complete() {
     let leader = leader();
     let follower = follower_of_the_database(&leader);
     let Some(tessari_session::Outcome::Value(Value::Bytes(file))) = signed_in(&follower, "root")
-        .run("BACKUP STATE OF prod.shop;")
+        .run_now("BACKUP STATE OF prod.shop;")
         .unwrap()
         .pop()
     else {
@@ -1068,8 +1071,8 @@ fn a_node_holding_every_shard_backs_the_database_up_complete() {
     tessari_backup::read_state(&restored, || Ok(std::io::Cursor::new(file.clone()))).unwrap();
     let read = "USE NAMESPACE prod; USE DATABASE shop; SELECT note FROM ledger;";
     assert_eq!(
-        format!("{:?}", signed_in(&restored, "root").run(read).unwrap()),
-        format!("{:?}", signed_in(&leader, "root").run(read).unwrap()),
+        format!("{:?}", signed_in(&restored, "root").run_now(read).unwrap()),
+        format!("{:?}", signed_in(&leader, "root").run_now(read).unwrap()),
         "the restored database is not the leader's"
     );
 }

@@ -15,6 +15,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -32,7 +33,7 @@ fn store() -> Store {
 fn ready(store: &Store) {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE library; USE DATABASE library;\n\
              DEFINE BUCKET media; DEFINE COLLECTION users;\n\
@@ -44,7 +45,7 @@ fn ready(store: &Store) {
 
     let mut root = Session::new(store);
     root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE library;\n\
          DEFINE USER reader ON prod.library ROLE editor PASSWORD 'correct horse battery';\n\
          DEFINE USER outsider ON prod.library ROLE editor PASSWORD 'correct horse battery';\n\
@@ -58,7 +59,7 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session.sign_in(name, PASSWORD).unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE library;")
+        .run_now("USE NAMESPACE prod; USE DATABASE library;")
         .unwrap();
     session
 }
@@ -69,7 +70,7 @@ fn a_grant_on_the_bucket_reaches_the_bytes() {
     ready(&store);
     let mut reader = signed_in(&store, "reader");
 
-    let outcomes = reader.run("READ media:'/secret.txt';").unwrap();
+    let outcomes = reader.run_now("READ media:'/secret.txt';").unwrap();
     let Outcome::Value(Value::Bytes(bytes)) = &outcomes[0] else {
         panic!("not bytes: {:?}", outcomes[0]);
     };
@@ -87,12 +88,12 @@ fn a_session_without_the_grant_reaches_neither_half() {
     let mut outsider = signed_in(&store, "outsider");
 
     let metadata = outsider
-        .run("SELECT * FROM media;")
+        .run_now("SELECT * FROM media;")
         .expect_err("an ungranted session listed a bucket");
     assert!(metadata.to_string().contains("media"), "{metadata}");
 
     let bytes = outsider
-        .run("READ media:'/secret.txt';")
+        .run_now("READ media:'/secret.txt';")
         .expect_err("an ungranted session read a file");
     assert!(bytes.to_string().contains("media"), "{bytes}");
 }
@@ -104,12 +105,12 @@ fn a_read_grant_does_not_carry_a_write() {
     let mut reader = signed_in(&store, "reader");
 
     let refused = reader
-        .run("PUT media:'/secret.txt' = 'overwritten';")
+        .run_now("PUT media:'/secret.txt' = 'overwritten';")
         .expect_err("a read grant wrote a file");
     assert!(refused.to_string().contains("media"), "{refused}");
 
     // And the file is what it was.
-    let outcomes = reader.run("READ media:'/secret.txt';").unwrap();
+    let outcomes = reader.run_now("READ media:'/secret.txt';").unwrap();
     let Outcome::Value(Value::Bytes(bytes)) = &outcomes[0] else {
         panic!("not bytes: {:?}", outcomes[0]);
     };
@@ -125,7 +126,7 @@ fn deleting_a_file_needs_the_grant_that_writing_one_needs() {
     let mut reader = signed_in(&store, "reader");
 
     let refused = reader
-        .run("DELETE media:'/secret.txt';")
+        .run_now("DELETE media:'/secret.txt';")
         .expect_err("a read grant deleted a file");
     assert!(refused.to_string().contains("media"), "{refused}");
 }
@@ -141,13 +142,13 @@ fn a_field_grant_hides_metadata_and_says_nothing_about_the_bytes() {
     ready(&store);
     let mut root = Session::new(&store);
     root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE library; GRANT read ON media FIELDS chunks TO reader;",
     )
     .unwrap();
 
     let mut reader = signed_in(&store, "reader");
-    let outcomes = reader.run("SELECT * FROM media;").unwrap();
+    let outcomes = reader.run_now("SELECT * FROM media;").unwrap();
     let Outcome::Records { records, .. } = &outcomes[0] else {
         panic!("not records: {:?}", outcomes[0]);
     };
@@ -157,7 +158,7 @@ fn a_field_grant_hides_metadata_and_says_nothing_about_the_bytes() {
     assert!(held.contains_key("chunks"), "the granted field is hidden");
     assert!(!held.contains_key("size"), "an ungranted field is visible");
 
-    let outcomes = reader.run("READ media:'/secret.txt';").unwrap();
+    let outcomes = reader.run_now("READ media:'/secret.txt';").unwrap();
     let Outcome::Value(Value::Bytes(bytes)) = &outcomes[0] else {
         panic!("not bytes: {:?}", outcomes[0]);
     };

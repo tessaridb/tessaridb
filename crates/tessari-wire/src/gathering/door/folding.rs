@@ -71,7 +71,7 @@ fn a_shard_is_folded_page_by_page_and_no_record_travels() {
 fn a_shards_search_figures_are_counted_page_by_page_and_no_record_travels() {
     let db = Db::in_memory().unwrap();
     db.session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
                  USE DATABASE shop; \
                  DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer; \
@@ -173,7 +173,7 @@ fn a_bounded_or_narrowed_gather_moves_fewer_bytes() {
     for n in 0..1100 {
         script.push_str(&format!(" CREATE ledger:'a{n:04}' = {{ n: {n} }};"));
     }
-    db.session().run(&script).unwrap();
+    db.session().run_now(&script).unwrap();
     let table = {
         let mut transaction = db.store().begin().unwrap();
         Catalog::new(&mut transaction)

@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{Keyspace, KvBackend};
 use tessari_session::Session;
@@ -71,8 +72,8 @@ fn a_restored_snapshot_answers_exactly_what_the_original_did() {
     let mut here = signed_in(&source);
     let mut there = signed_in(&target);
     for script in INTERROGATION {
-        let expected = here.run(script).unwrap();
-        let found = there.run(script).unwrap();
+        let expected = here.run_now(script).unwrap();
+        let found = there.run_now(script).unwrap();
         assert_eq!(
             format!("{expected:?}"),
             format!("{found:?}"),
@@ -114,7 +115,7 @@ fn every_derived_byte_is_the_sources_rebuilt_because_it_was_derived_again() {
         "the snapshot carries something besides the live records"
     );
     signed_in(&held)
-        .run(
+        .run_now(
             "REBUILD INDEX by_email ON people; REBUILD INDEX by_city ON people; \
              REBUILD INDEX by_bio ON people; REBUILD INDEX by_at ON people;",
         )
@@ -137,12 +138,14 @@ fn a_snapshot_is_sized_by_what_the_store_holds_not_by_how_often_it_was_written()
     let (_, source) = store();
     let mut session = Session::new(&source);
     session
-        .run("DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE COLLECTION t;")
+        .run_now("DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE COLLECTION t;")
         .unwrap();
-    session.run("UPSERT t:1 = { n: 0 };").unwrap();
+    session.run_now("UPSERT t:1 = { n: 0 };").unwrap();
     let once = snapshot(&source);
     for n in 1..=1_000 {
-        session.run(&format!("UPSERT t:1 = {{ n: {n} }};")).unwrap();
+        session
+            .run_now(&format!("UPSERT t:1 = {{ n: {n} }};"))
+            .unwrap();
     }
     let often = snapshot(&source);
     let mut log = Vec::new();
@@ -162,7 +165,7 @@ fn a_snapshot_is_sized_by_what_the_store_holds_not_by_how_often_it_was_written()
     let (_, target) = restored(&often);
     let mut there = Session::new(&target);
     let answer = there
-        .run("USE NAMESPACE n; USE DATABASE d; GET t:1;")
+        .run_now("USE NAMESPACE n; USE DATABASE d; GET t:1;")
         .unwrap();
     assert!(
         format!("{answer:?}").contains("1000"),
@@ -184,7 +187,7 @@ fn a_snapshot_and_the_log_after_it_answer_what_the_source_answers_now() {
     {
         let mut session = Session::new(&source);
         session
-            .run("DEFINE NAMESPACE five; DEFINE NAMESPACE six; USE NAMESPACE one; DEFINE DATABASE third;")
+            .run_now("DEFINE NAMESPACE five; DEFINE NAMESPACE six; USE NAMESPACE one; DEFINE DATABASE third;")
             .unwrap();
     }
     let mut after = Vec::new();
@@ -223,8 +226,8 @@ fn a_pruned_store_takes_a_snapshot_where_it_can_take_no_log_backup() {
     let mut there = signed_in(&target);
     for script in INTERROGATION {
         assert_eq!(
-            format!("{:?}", here.run(script).unwrap()),
-            format!("{:?}", there.run(script).unwrap()),
+            format!("{:?}", here.run_now(script).unwrap()),
+            format!("{:?}", there.run_now(script).unwrap()),
             "a snapshot of a pruned store disagrees about {script}"
         );
     }
@@ -283,7 +286,7 @@ fn a_snapshot_is_refused_by_a_store_that_holds_something() {
     let (_, source, _) = original();
     let (_, occupied) = store();
     Session::new(&occupied)
-        .run("DEFINE NAMESPACE other;")
+        .run_now("DEFINE NAMESPACE other;")
         .unwrap();
     let taken = snapshot(&source);
     let refused = tessari_backup::read_state(&occupied, || Ok(taken.as_slice()));
@@ -318,24 +321,26 @@ fn writes_committed_after_a_snapshot_began_are_not_in_it() {
     let (source_backend, source) = store();
     let mut session = Session::new(&source);
     session
-        .run("DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE COLLECTION t;")
+        .run_now("DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE COLLECTION t;")
         .unwrap();
     for n in 0..20 {
         session
-            .run(&format!("CREATE t:{n} = {{ n: {n} }};"))
+            .run_now(&format!("CREATE t:{n} = {{ n: {n} }};"))
             .unwrap();
     }
     let mut reader = source.read_state().unwrap();
     let at = reader.version();
     for n in 0_u32..20 {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "UPSERT t:{n} = {{ n: {}, later: true }};",
                 n.saturating_add(100)
             ))
             .unwrap();
     }
-    session.run("CREATE t:99 = { n: 99 }; DELETE t:0;").unwrap();
+    session
+        .run_now("CREATE t:99 = { n: 99 }; DELETE t:0;")
+        .unwrap();
     let mut read = BTreeMap::new();
     while let Some(chunk) = reader.next_chunk(7).unwrap() {
         for mutation in chunk.mutations() {
@@ -383,11 +388,11 @@ fn a_topic_emptied_by_retention_carries_on_numbering_after_a_restore() {
     let (_, source) = store();
     let mut session = Session::new(&source);
     session
-        .run("DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE TOPIC short RETAIN 50ms;")
+        .run_now("DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE TOPIC short RETAIN 50ms;")
         .unwrap();
     for n in 1..=4 {
         session
-            .run(&format!("CREATE short:'m{n}' = {{ n: {n} }};"))
+            .run_now(&format!("CREATE short:'m{n}' = {{ n: {n} }};"))
             .unwrap();
     }
     std::thread::sleep(std::time::Duration::from_millis(120));
@@ -399,9 +404,9 @@ fn a_topic_emptied_by_retention_carries_on_numbering_after_a_restore() {
     let (_, target) = restored(&snapshot(&source));
     let mut there = Session::new(&target);
     there
-        .run("USE NAMESPACE n; USE DATABASE d; CREATE short:'m5' = { n: 5 };")
+        .run_now("USE NAMESPACE n; USE DATABASE d; CREATE short:'m5' = { n: 5 };")
         .unwrap();
-    let answer = there.run("READ FROM short;").unwrap();
+    let answer = there.run_now("READ FROM short;").unwrap();
     let positions: Vec<u64> = answer[0]
         .records()
         .unwrap()

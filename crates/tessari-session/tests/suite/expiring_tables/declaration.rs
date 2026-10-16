@@ -1,6 +1,7 @@
 //! Declaring that a table's records expire (ADR-0122 A1, A4–A6, A8).
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_encoding::{FormatVersion, FormatVersionKey, StoreKey, StoreValue};
 use tessari_kv::{KvBackend, MemoryBackend, WriteBatch};
@@ -94,14 +95,14 @@ fn expiry_is_refused_on_every_kind_but_a_table_and_a_collection() {
     for table in ["cache", "jobs", "follows"] {
         assert!(
             matches!(
-                session.run(&format!("ALTER TABLE {table} SET EXPIRE AFTER 1h;")),
+                session.run_now(&format!("ALTER TABLE {table} SET EXPIRE AFTER 1h;")),
                 Err(Error::ExpiryNotOnThisKind { .. })
             ),
             "{table}"
         );
     }
     assert!(matches!(
-        session.run("DEFINE TABLE likes EDGE EXPIRE AFTER 1h;"),
+        session.run_now("DEFINE TABLE likes EDGE EXPIRE AFTER 1h;"),
         Err(Error::ExpiryNotOnThisKind { .. })
     ));
 }
@@ -127,7 +128,10 @@ fn a_store_holding_an_older_format_refuses_the_declaration_until_finalized() {
         "ALTER TABLE plain SET EXPIRE;",
     ] {
         assert!(
-            matches!(session.run(script), Err(Error::FormatNotFinalized { .. })),
+            matches!(
+                session.run_now(script),
+                Err(Error::FormatNotFinalized { .. })
+            ),
             "{script}"
         );
     }

@@ -20,6 +20,7 @@
 //! the log and asking the authorities already costs.
 
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessaridb::Db;
 use tessaridb::feed::{Condition, Feed, Following, Round};
@@ -42,7 +43,7 @@ const COMMITS: usize = 20;
 pub fn feeds(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION chats;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION chats;")?;
     let mut reports = vec![Report::measurement(
         "corpus",
         &format!(
@@ -96,7 +97,7 @@ fn fan_out(
     let mut samples = Samples::with_capacity(COMMITS);
     for commit in 0..COMMITS {
         let chat = commit.checked_rem(subscribers).unwrap_or(0);
-        session.run(&format!(
+        session.run_now(&format!(
             "CREATE chats = {{ chat: 'c{chat}', text: 'hi' }};"
         ))?;
         let started = Instant::now();

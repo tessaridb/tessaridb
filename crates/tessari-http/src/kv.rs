@@ -72,7 +72,7 @@ impl Aimed<'_> {
 /// Everything a request can get wrong by itself — a name, an operation, a
 /// duration, a body — is refused before a session is opened, so a malformed
 /// request costs nothing and changes nothing.
-pub(crate) fn answer(
+pub(crate) async fn answer(
     db: &Db,
     method: &axum::http::Method,
     aimed: &Aimed<'_>,
@@ -96,10 +96,13 @@ pub(crate) fn answer(
         Ok(session) => session,
         Err(answer) => return answer,
     };
-    if let Err(error) = session.run(&format!(
-        "USE NAMESPACE {}; USE DATABASE {};",
-        aimed.namespace, aimed.database
-    )) {
+    if let Err(error) = session
+        .run(&format!(
+            "USE NAMESPACE {}; USE DATABASE {};",
+            aimed.namespace, aimed.database
+        ))
+        .await
+    {
         return failure(&error);
     }
     // Asked after the `USE`, so only a caller who may reach the database learns
@@ -117,7 +120,7 @@ pub(crate) fn answer(
         }
         Err(error) => return failure(&error),
     }
-    request.run(&mut session, db, aimed.space)
+    request.run(&mut session, db, aimed.space).await
 }
 
 /// A duration a caller gave, when it is one and is in the future.

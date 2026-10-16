@@ -12,6 +12,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
@@ -23,7 +24,7 @@ fn store(script: &str) -> Store {
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
     let store = Store::open(backend).unwrap();
     Session::new(&store)
-        .run(&format!(
+        .run_now(&format!(
             "{script}
              BEGIN;
              DEFINE USER root ROLE owner PASSWORD 'a long one';
@@ -70,15 +71,19 @@ fn signed_in<'a>(store: &'a Store, name: &str, folder: &Path) -> Session<'a> {
 
 /// How many records a read answers, or `None` when the place is refused.
 fn held(session: &mut Session<'_>, place: &str, table: &str) -> Option<usize> {
-    session.run(place).ok()?;
-    match session.run(&format!("SELECT * FROM {table};")).ok()?.pop() {
+    session.run_now(place).ok()?;
+    match session
+        .run_now(&format!("SELECT * FROM {table};"))
+        .ok()?
+        .pop()
+    {
         Some(Outcome::Records { records, .. }) => Some(records.len()),
         other => panic!("SELECT answered {other:?}"),
     }
 }
 
 fn refused(session: &mut Session<'_>, statement: &str) -> Error {
-    match session.run(statement) {
+    match session.run_now(statement) {
         Ok(answered) => panic!("{statement} was not refused: {answered:?}"),
         Err(error) => error,
     }
@@ -89,12 +94,13 @@ fn a_part_restores_beside_what_the_store_holds() {
     let folder = tempfile::tempdir().unwrap();
     let from = source();
     signed_in(&from, "root", folder.path())
-        .run("BACKUP SCRIPT OF prod.orders, NAMESPACE crm TO 'part.tessariql';")
+        .run_now("BACKUP SCRIPT OF prod.orders, NAMESPACE crm TO 'part.tessariql';")
         .unwrap();
 
     let into = target();
     let mut root = signed_in(&into, "root", folder.path());
-    root.run("RESTORE SCRIPT FROM 'part.tessariql';").unwrap();
+    root.run_now("RESTORE SCRIPT FROM 'part.tessariql';")
+        .unwrap();
 
     // Restored: a database beside an existing one in `prod`, and a new namespace.
     assert_eq!(
@@ -127,7 +133,7 @@ fn a_part_restores_beside_what_the_store_holds() {
         Some(1)
     );
     // The search the analyzer serves came across with the field.
-    root.run("USE NAMESPACE prod; USE DATABASE orders;")
+    root.run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
     assert_eq!(
         held(
@@ -144,12 +150,12 @@ fn a_database_that_exists_refuses_the_whole_restore() {
     let folder = tempfile::tempdir().unwrap();
     let from = source();
     signed_in(&from, "root", folder.path())
-        .run("BACKUP SCRIPT OF prod.orders, NAMESPACE crm TO 'part.tessariql';")
+        .run_now("BACKUP SCRIPT OF prod.orders, NAMESPACE crm TO 'part.tessariql';")
         .unwrap();
 
     let into = target();
     let mut root = signed_in(&into, "root", folder.path());
-    root.run("USE NAMESPACE prod; DEFINE DATABASE orders;")
+    root.run_now("USE NAMESPACE prod; DEFINE DATABASE orders;")
         .unwrap();
 
     let error = refused(&mut root, "RESTORE SCRIPT FROM 'part.tessariql';");
@@ -244,7 +250,7 @@ fn the_file_is_read_only_from_inside_the_folder_and_only_by_an_owner() {
         "an owner of one database reached the restore itself: {error:?}"
     );
     assert!(
-        root.run("USE NAMESPACE fresh;").is_err(),
+        root.run_now("USE NAMESPACE fresh;").is_err(),
         "a refused restore wrote"
     );
 }
@@ -272,11 +278,12 @@ fn a_restore_that_fails_while_filling_leaves_nothing_behind() {
         "refused as {error:?}"
     );
     assert!(
-        root.run("USE NAMESPACE fresh;").is_err(),
+        root.run_now("USE NAMESPACE fresh;").is_err(),
         "the namespace it created is still there"
     );
     assert!(
-        root.run("USE NAMESPACE prod; USE DATABASE extra;").is_err(),
+        root.run_now("USE NAMESPACE prod; USE DATABASE extra;")
+            .is_err(),
         "the database it created in an existing namespace is still there"
     );
     assert_eq!(
@@ -304,7 +311,7 @@ fn a_sealed_script_restores_only_under_its_own_key() {
     let from = source();
     signed_in(&from, "root", folder.path())
         .sealing_backups(at_rest(7))
-        .run("BACKUP SCRIPT OF prod.orders TO 'sealed.tessariql';")
+        .run_now("BACKUP SCRIPT OF prod.orders TO 'sealed.tessariql';")
         .unwrap();
 
     let into = target();
@@ -333,7 +340,7 @@ fn a_sealed_script_restores_only_under_its_own_key() {
 
     let mut keyed = signed_in(&into, "root", folder.path()).sealing_backups(at_rest(7));
     keyed
-        .run("RESTORE SCRIPT FROM 'sealed.tessariql';")
+        .run_now("RESTORE SCRIPT FROM 'sealed.tessariql';")
         .unwrap();
     assert_eq!(
         held(

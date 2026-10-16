@@ -4,6 +4,7 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration as Wait;
+use tessari_session::RunNow;
 
 use tessari_kv::MemoryBackend;
 use tessari_session::{Error, Outcome, Session};
@@ -168,15 +169,15 @@ fn a_write_is_refused_an_expiry_its_table_does_not_take_and_writes_nothing() {
          ALTER TABLE gone DROP EXPIRE; DEFINE TABLE note (body string) EXPIRE;",
     );
     assert!(matches!(
-        session.run("CREATE plain:1 = { body: 'x' } EXPIRE 1h;"),
+        session.run_now("CREATE plain:1 = { body: 'x' } EXPIRE 1h;"),
         Err(Error::TableDoesNotExpire { .. })
     ));
     assert!(matches!(
-        session.run("CREATE gone:1 = { body: 'x' } EXPIRE 1h;"),
+        session.run_now("CREATE gone:1 = { body: 'x' } EXPIRE 1h;"),
         Err(Error::TableDoesNotExpire { .. })
     ));
     assert!(matches!(
-        session.run("CREATE note:1 = { body: 'x' } EXPIRE -1s;"),
+        session.run_now("CREATE note:1 = { body: 'x' } EXPIRE -1s;"),
         Err(Error::InvalidExpiry { .. })
     ));
     assert_eq!(rows(&mut session, "SELECT * FROM plain;"), 0);
@@ -194,7 +195,7 @@ fn about_a_week(left: &Value) -> bool {
 
 /// The outcomes of a script that holds one transaction.
 fn outcomes(session: &mut Session<'_>, script: &str) -> Vec<Outcome> {
-    session.run(script).unwrap()
+    session.run_now(script).unwrap()
 }
 
 #[test]

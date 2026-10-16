@@ -29,6 +29,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -55,7 +56,7 @@ fn notes(indexed: bool) -> Store {
     let held = store();
     let mut session = Session::new(&held);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
              DEFINE COLLECTION notes;\n\
@@ -68,7 +69,7 @@ fn notes(indexed: bool) -> Store {
         .unwrap();
     if indexed {
         session
-            .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+            .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
             .unwrap();
     }
     held
@@ -76,7 +77,7 @@ fn notes(indexed: bool) -> Store {
 
 /// The record ids one read answered with, sorted so a set is compared as a set.
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<String> {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -91,7 +92,7 @@ fn both_paths(read: &str) -> (Vec<String>, Vec<String>) {
     for indexed in [false, true] {
         let held = notes(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
         answers.push(ids(&mut session, read));
     }
     (answers[0].clone(), answers[1].clone())
@@ -197,10 +198,10 @@ fn a_query_that_excludes_without_requiring_is_refused_by_name() {
     for indexed in [false, true] {
         let held = notes(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
 
         let refused = session
-            .run("SELECT * FROM notes WHERE body MATCHES 'NOT babbage';")
+            .run_now("SELECT * FROM notes WHERE body MATCHES 'NOT babbage';")
             .expect_err("a bare negation has no index answer and is refused");
 
         let said = refused.to_string();
@@ -222,11 +223,11 @@ fn a_query_that_excludes_without_requiring_is_refused_by_name() {
 fn the_refusal_does_not_need_a_field_that_exists() {
     let held = store();
     let mut session = Session::new(&held);
-    session.run(PLACE).unwrap();
-    session.run("DEFINE COLLECTION notes;").unwrap();
+    session.run_now(PLACE).unwrap();
+    session.run_now("DEFINE COLLECTION notes;").unwrap();
 
     let refused = session
-        .run("SELECT * FROM notes WHERE nothing MATCHES 'NOT babbage';")
+        .run_now("SELECT * FROM notes WHERE nothing MATCHES 'NOT babbage';")
         .expect_err("the query is refused whatever the field turns out to be");
 
     assert!(
@@ -247,10 +248,10 @@ fn the_refusal_does_not_need_a_field_that_exists() {
 fn explain_reports_a_disjunction_under_its_own_name() {
     let held = notes(true);
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     let outcomes = session
-        .run("EXPLAIN SELECT * FROM notes WHERE body MATCHES 'ada OR lovelace';")
+        .run_now("EXPLAIN SELECT * FROM notes WHERE body MATCHES 'ada OR lovelace';")
         .unwrap();
     let said = format!("{:?}", outcomes.last());
 
@@ -271,10 +272,10 @@ fn explain_reports_a_disjunction_under_its_own_name() {
 fn explain_still_reports_terms_for_a_query_with_no_operator() {
     let held = notes(true);
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     let outcomes = session
-        .run("EXPLAIN SELECT * FROM notes WHERE body MATCHES 'ada babbage';")
+        .run_now("EXPLAIN SELECT * FROM notes WHERE body MATCHES 'ada babbage';")
         .unwrap();
     let said = format!("{:?}", outcomes.last());
 
@@ -294,7 +295,7 @@ fn titled(indexed: bool) -> Store {
     let held = store();
     let mut session = Session::new(&held);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
              DEFINE COLLECTION papers;\n\
@@ -308,7 +309,7 @@ fn titled(indexed: bool) -> Store {
         .unwrap();
     if indexed {
         session
-            .run(
+            .run_now(
                 "DEFINE INDEX by_title ON papers FIELDS title SEARCH;\n\
                  DEFINE INDEX by_body ON papers FIELDS body SEARCH;\n\
                  DEFINE INDEX by_n ON papers FIELDS n;",
@@ -326,17 +327,17 @@ fn titled_both_ways(read: &str) -> (Vec<String>, Vec<String>, String) {
     for indexed in [false, true] {
         let held = titled(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
         answers.push(ids(&mut session, read));
         if indexed {
             let explained = format!(
                 "{:?}",
-                session.run(&format!("EXPLAIN {read}")).unwrap().last()
+                session.run_now(&format!("EXPLAIN {read}")).unwrap().last()
             );
             // The plan the read itself reports, which must be the one EXPLAIN
             // says: two planners that agree today disagree the first time one
             // changes.
-            let Some(Outcome::Records { plan: taken, .. }) = session.run(read).unwrap().pop()
+            let Some(Outcome::Records { plan: taken, .. }) = session.run_now(read).unwrap().pop()
             else {
                 panic!("{read}");
             };
@@ -392,13 +393,13 @@ fn a_disjunct_no_index_serves_leaves_the_read_a_scan() {
 fn an_index_kind_that_reads_one_field_is_refused_over_several() {
     let held = titled(false);
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
     for statement in [
         "DEFINE INDEX by_both ON papers FIELDS title, body SEARCH;",
         "DEFINE INDEX by_both ON papers FIELDS title, body SPATIAL;",
         "DEFINE INDEX by_both ON papers FIELDS title, body VECTOR cosine;",
     ] {
-        match session.run(statement) {
+        match session.run_now(statement) {
             Err(tessari_session::Error::Store(tessari_storage::Error::IndexReadsOneField {
                 name,
                 fields,
@@ -411,7 +412,7 @@ fn an_index_kind_that_reads_one_field_is_refused_over_several() {
     }
     // The control: an ordinary index over two fields is a composite key.
     session
-        .run("DEFINE INDEX by_both ON papers FIELDS title, body;")
+        .run_now("DEFINE INDEX by_both ON papers FIELDS title, body;")
         .unwrap();
 }
 
@@ -423,7 +424,7 @@ fn a_space_holding_objects_is_searched_through_its_index() {
     let held = store();
     let mut session = Session::new(&held);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
              DEFINE SPACE kv;\n\
@@ -438,7 +439,7 @@ fn a_space_holding_objects_is_searched_through_its_index() {
     assert_eq!(ids(&mut session, read), ["a"]);
     let plan = format!(
         "{:?}",
-        session.run(&format!("EXPLAIN {read}")).unwrap().last()
+        session.run_now(&format!("EXPLAIN {read}")).unwrap().last()
     );
     assert!(plan.contains("by_body") && plan.contains("terms"), "{plan}");
 }
@@ -458,7 +459,7 @@ fn a_space_of_scalar_text_is_searched_through_its_value() {
             ""
         };
         session
-            .run(&format!(
+            .run_now(&format!(
                 "{PLACE}\
                  DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
                  DEFINE SPACE kv;\n\
@@ -475,13 +476,13 @@ fn a_space_of_scalar_text_is_searched_through_its_value() {
         if indexed {
             let plan = format!(
                 "{:?}",
-                session.run(&format!("EXPLAIN {read}")).unwrap().last()
+                session.run_now(&format!("EXPLAIN {read}")).unwrap().last()
             );
             assert!(
                 plan.contains("by_value") && plan.contains("terms"),
                 "{plan}"
             );
-            let projected = session.run("SELECT value FROM kv:'a';").unwrap();
+            let projected = session.run_now("SELECT value FROM kv:'a';").unwrap();
             assert!(
                 format!("{:?}", projected.last()).contains("the quick foxes"),
                 "{projected:?}"
@@ -506,7 +507,7 @@ fn a_quoted_run_of_ideographs_is_found_as_written() {
             ""
         };
         session
-            .run(&format!(
+            .run_now(&format!(
                 "{PLACE}\
                  DEFINE ANALYZER plain FILTERS lowercase;\n\
                  DEFINE COLLECTION notes;\n\

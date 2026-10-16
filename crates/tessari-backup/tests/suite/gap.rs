@@ -31,6 +31,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_encoding::{AppliedPositionKey, LogId, LogKey, StoreKey, StoreValue};
 use tessari_kv::{KvBackend, MemoryBackend, WriteBatch};
@@ -91,7 +92,7 @@ fn store() -> (Arc<dyn KvBackend>, Store) {
 fn session(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
     session
 }
@@ -101,7 +102,7 @@ fn leader() -> (Arc<dyn KvBackend>, Store) {
     let (backend, store) = store();
     {
         let mut opening = Session::new(&store);
-        opening.run(LEADER).unwrap();
+        opening.run_now(LEADER).unwrap();
     }
     // The numbers this file addresses records by, asserted rather than trusted:
     // a fixture that grew a statement would otherwise move `MISSING` onto an
@@ -170,7 +171,7 @@ fn cut(backend: &Arc<dyn KvBackend>, home: LogId, sequence: u64) {
 }
 
 fn answers(store: &Store, script: &str) -> String {
-    format!("{:?}", session(store).run(script).unwrap())
+    format!("{:?}", session(store).run_now(script).unwrap())
 }
 
 #[test]

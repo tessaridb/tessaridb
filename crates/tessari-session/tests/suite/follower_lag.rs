@@ -21,6 +21,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
@@ -40,7 +41,7 @@ fn leader() -> Store {
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     let mut opening = Session::new(&store);
     opening
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE orders SCHEMALESS;\n\
@@ -48,7 +49,7 @@ fn leader() -> Store {
         )
         .unwrap();
     let mut root = signed_in(&store, "root");
-    root.run(&format!(
+    root.run_now(&format!(
         "DEFINE USER node AUTHORITIES replicate PASSWORD '{PASSWORD}';"
     ))
     .unwrap();
@@ -71,9 +72,10 @@ fn signed_in<'store>(store: &'store Store, name: &str) -> Session<'store> {
 /// Commit `count` records, so the leader's tail moves.
 fn writes(store: &Store, count: usize, from: usize) {
     let mut root = signed_in(store, "root");
-    root.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+    root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
     for offset in 0..count {
-        root.run(&format!(
+        root.run_now(&format!(
             "CREATE orders:{} = {{ total: 1 }};",
             from.saturating_add(offset)
         ))
@@ -122,7 +124,7 @@ struct Reported {
 
 /// The follower rows `INFO FOR NODE` publishes, by node id.
 fn followers(store: &Store) -> Vec<([u8; 16], Reported)> {
-    let outcomes = signed_in(store, "root").run("INFO FOR NODE;").unwrap();
+    let outcomes = signed_in(store, "root").run_now("INFO FOR NODE;").unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.first() else {
         panic!("not a report: {outcomes:?}");
     };

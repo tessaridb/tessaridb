@@ -10,6 +10,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session, maintain_views};
@@ -24,7 +25,7 @@ pub(super) fn store() -> Store {
 pub(super) fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION orders;",
@@ -38,17 +39,17 @@ pub(super) fn ready(store: &Store) -> Session<'_> {
             n.wrapping_mul(7) % 50
         ));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     session
 }
 
 pub(super) fn records(session: &mut Session<'_>, script: &str) -> Vec<(RecordId, Value)> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     outcomes.last().unwrap().records().unwrap().to_vec()
 }
 
 fn refusal(session: &mut Session<'_>, script: &str) -> Error {
-    match session.run(script) {
+    match session.run_now(script) {
         Err(refused) => refused,
         Ok(outcomes) => panic!("`{script}` answered {outcomes:?}"),
     }
@@ -56,7 +57,7 @@ fn refusal(session: &mut Session<'_>, script: &str) -> Error {
 
 /// `INFO FOR TABLE <view>`'s `materialized` object.
 fn kept(session: &mut Session<'_>, view: &str) -> std::collections::BTreeMap<String, Value> {
-    let outcomes = session.run(&format!("INFO FOR TABLE {view};")).unwrap();
+    let outcomes = session.run_now(&format!("INFO FOR TABLE {view};")).unwrap();
     let Some(Outcome::Value(Value::Object(info))) = outcomes.last() else {
         panic!("{outcomes:?}");
     };
@@ -100,7 +101,7 @@ fn a_kept_view_holds_its_read_as_soon_as_it_is_declared() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(&format!("DEFINE VIEW big MATERIALIZED AS {BIG};"))
+        .run_now(&format!("DEFINE VIEW big MATERIALIZED AS {BIG};"))
         .unwrap();
     let stored = records(&mut session, "SELECT * FROM big;");
     // Pinned to content: 40 orders, total = n*7 % 50, more than 30.
@@ -120,10 +121,10 @@ fn a_per_record_view_follows_writes_updates_and_deletes() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(&format!("DEFINE VIEW big MATERIALIZED AS {BIG};"))
+        .run_now(&format!("DEFINE VIEW big MATERIALIZED AS {BIG};"))
         .unwrap();
     session
-        .run(
+        .run_now(
             "UPDATE orders:1 SET total = 49;\n\
              UPDATE orders:5 SET total = 1;\n\
              DELETE orders:12;\n\
@@ -158,7 +159,7 @@ fn a_grouped_view_keeps_min_and_max_through_a_delete() {
     let read = "SELECT band, count(*) AS orders, max(total) AS top, min(total) AS least \
                 FROM orders GROUP BY band";
     session
-        .run(&format!("DEFINE VIEW bands MATERIALIZED AS {read};"))
+        .run_now(&format!("DEFINE VIEW bands MATERIALIZED AS {read};"))
         .unwrap();
     // Remove every band-1 order holding that band's largest total — the case a
     // delta cannot undo without the next largest.
@@ -168,7 +169,7 @@ fn a_grouped_view_keeps_min_and_max_through_a_delete() {
     );
     let (top, _) = rows[0].clone();
     session
-        .run(&format!(
+        .run_now(&format!(
             "DELETE orders:{};",
             match top {
                 RecordId::Int(n) => n,
@@ -180,7 +181,7 @@ fn a_grouped_view_keeps_min_and_max_through_a_delete() {
     equals_its_read(&mut session, "bands", read, false);
     // A whole group goes: the view loses a row rather than keeping a stale one.
     session
-        .run("DELETE FROM orders WHERE band = 3 LIMIT ALL;")
+        .run_now("DELETE FROM orders WHERE band = 3 LIMIT ALL;")
         .unwrap();
     maintain_views(&store).unwrap();
     assert_eq!(records(&mut session, "SELECT * FROM bands;").len(), 3);
@@ -193,9 +194,9 @@ fn an_ordered_bounded_view_keeps_its_order() {
     let mut session = ready(&store);
     let read = "SELECT n, total FROM orders ORDER BY total DESC LIMIT 3";
     session
-        .run(&format!("DEFINE VIEW top MATERIALIZED AS {read};"))
+        .run_now(&format!("DEFINE VIEW top MATERIALIZED AS {read};"))
         .unwrap();
-    session.run("UPDATE orders:2 SET total = 99;").unwrap();
+    session.run_now("UPDATE orders:2 SET total = 99;").unwrap();
     maintain_views(&store).unwrap();
     let first = records(&mut session, "SELECT * FROM top LIMIT 1;");
     let Value::Object(row) = &first[0].1 else {
@@ -209,7 +210,7 @@ fn an_ordered_bounded_view_keeps_its_order() {
 fn a_read_a_kept_view_cannot_follow_is_refused_where_it_is_declared() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE COLLECTION people;").unwrap();
+    session.run_now("DEFINE COLLECTION people;").unwrap();
     for (script, what) in [
         (
             "DEFINE VIEW v1 MATERIALIZED AS SELECT * FROM orders WHERE n < time::now();",
@@ -235,7 +236,7 @@ fn a_read_a_kept_view_cannot_follow_is_refused_where_it_is_declared() {
         );
     }
     session
-        .run("DEFINE VIEW plain AS SELECT * FROM orders;")
+        .run_now("DEFINE VIEW plain AS SELECT * FROM orders;")
         .unwrap();
     assert!(matches!(
         refusal(
@@ -251,7 +252,7 @@ fn nothing_but_its_maintainer_writes_a_kept_view() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(&format!("DEFINE VIEW big MATERIALIZED AS {BIG};"))
+        .run_now(&format!("DEFINE VIEW big MATERIALIZED AS {BIG};"))
         .unwrap();
     for script in [
         "CREATE big:1 = { n: 1 };",
@@ -270,11 +271,11 @@ fn dropping_a_kept_view_takes_its_rows_and_its_state() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(&format!("DEFINE VIEW big MATERIALIZED AS {BIG};"))
+        .run_now(&format!("DEFINE VIEW big MATERIALIZED AS {BIG};"))
         .unwrap();
-    session.run("DROP VIEW big;").unwrap();
+    session.run_now("DROP VIEW big;").unwrap();
     session
-        .run("DEFINE VIEW big MATERIALIZED AS SELECT n FROM orders WHERE n < 3;")
+        .run_now("DEFINE VIEW big MATERIALIZED AS SELECT n FROM orders WHERE n < 3;")
         .unwrap();
     assert_eq!(records(&mut session, "SELECT * FROM big;").len(), 3);
     assert_eq!(maintain_views(&store).unwrap().views, 0);
@@ -285,14 +286,14 @@ fn a_reader_who_may_see_only_part_of_the_source_is_refused() {
     let store = store();
     let mut owner = ready(&store);
     owner
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE VIEW big MATERIALIZED AS {BIG};\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';"
         ))
         .unwrap();
     let mut root = Session::new(&store);
     root.sign_in("root", "correct horse battery").unwrap();
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
          DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
          DEFINE USER bo ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
@@ -304,7 +305,7 @@ fn a_reader_who_may_see_only_part_of_the_source_is_refused() {
         let mut session = Session::new(&store);
         session.sign_in(name, "correct horse battery").unwrap();
         session
-            .run("USE NAMESPACE prod; USE DATABASE shop;")
+            .run_now("USE NAMESPACE prod; USE DATABASE shop;")
             .unwrap();
         session
     };
@@ -321,7 +322,7 @@ fn under_concurrent_writes_every_read_equals_the_view_at_its_version() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(&format!("DEFINE VIEW big MATERIALIZED AS {BIG};"))
+        .run_now(&format!("DEFINE VIEW big MATERIALIZED AS {BIG};"))
         .unwrap();
     std::thread::scope(|scope| {
         for writer in 0..2_i64 {
@@ -329,7 +330,7 @@ fn under_concurrent_writes_every_read_equals_the_view_at_its_version() {
             scope.spawn(move || {
                 let mut session = Session::new(store);
                 session
-                    .run("USE NAMESPACE prod; USE DATABASE shop;")
+                    .run_now("USE NAMESPACE prod; USE DATABASE shop;")
                     .unwrap();
                 for step in 0..150_i64 {
                     let n = (step * 13 + writer * 7) % 60;
@@ -344,7 +345,7 @@ fn under_concurrent_writes_every_read_equals_the_view_at_its_version() {
                     };
                     // Contention is the caller's to retry; a lost step only
                     // changes what is written, never what must hold.
-                    let _ = session.run(&script);
+                    let _ = session.run_now(&script);
                 }
             });
         }
@@ -377,17 +378,17 @@ fn a_store_reopened_mid_maintenance_holds_its_view_at_its_version_and_catches_up
         let disk = open();
         let mut session = ready(&disk);
         session
-            .run(&format!("DEFINE VIEW big MATERIALIZED AS {BIG};"))
+            .run_now(&format!("DEFINE VIEW big MATERIALIZED AS {BIG};"))
             .unwrap();
         session
-            .run("UPDATE orders:5 SET total = 1; DELETE orders:12;")
+            .run_now("UPDATE orders:5 SET total = 1; DELETE orders:12;")
             .unwrap();
         // Ended with changes the view has not taken.
     }
     let disk = open();
     let mut session = Session::new(&disk);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     equals_its_read(&mut session, "big", BIG, true);
     maintain_views(&disk).unwrap();

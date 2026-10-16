@@ -8,6 +8,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
@@ -21,13 +22,15 @@ fn store() -> Store {
 fn tenancy(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;")
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;",
+        )
         .unwrap();
     session
 }
 
 fn report(session: &mut Session<'_>, script: &str) -> Value {
-    match session.run(script).unwrap().last() {
+    match session.run_now(script).unwrap().last() {
         Some(Outcome::Value(value)) => value.clone(),
         other => panic!("expected a report, got {other:?}"),
     }
@@ -70,7 +73,7 @@ fn shards_of(report: &Value) -> Option<Vec<Reported>> {
 }
 
 fn refusal(session: &mut Session<'_>, script: &str) -> tessari_storage::Error {
-    match session.run(script) {
+    match session.run_now(script) {
         Err(Error::Store(refused)) => refused,
         other => panic!("{script}\n  expected a store refusal, got {other:?}"),
     }
@@ -81,7 +84,7 @@ fn a_split_table_reports_its_shards_in_key_order_with_both_ends() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';")
+        .run_now("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';")
         .unwrap();
     let described = report(&mut session, "INFO FOR TABLE orders;");
     assert_eq!(
@@ -101,7 +104,7 @@ fn a_reported_bound_is_the_literal_the_clause_takes_back() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE events (n int) IDENTITY uuid \
              SPLIT AT uuid '0195e0a1-7c2e-7000-8000-000000000000';",
         )
@@ -109,7 +112,7 @@ fn a_reported_bound_is_the_literal_the_clause_takes_back() {
     let first = shards_of(&report(&mut session, "INFO FOR TABLE events;")).unwrap();
     let bound = first[0].2.clone().unwrap();
     session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE TABLE again (n int) IDENTITY uuid SPLIT AT {bound};"
         ))
         .unwrap();
@@ -121,7 +124,7 @@ fn a_reported_bound_is_the_literal_the_clause_takes_back() {
 fn a_table_that_is_not_split_reports_no_shards() {
     let store = store();
     let mut session = tenancy(&store);
-    session.run("DEFINE TABLE plain (n int);").unwrap();
+    session.run_now("DEFINE TABLE plain (n int);").unwrap();
     assert_eq!(
         shards_of(&report(&mut session, "INFO FOR TABLE plain;")),
         None
@@ -141,7 +144,7 @@ fn a_counter_identity_cannot_be_split() {
         "{refused:?}"
     );
     // And nothing was left behind: the refusal took the whole statement.
-    assert!(session.run("INFO FOR TABLE orders;").is_err());
+    assert!(session.run_now("INFO FOR TABLE orders;").is_err());
 }
 
 #[test]
@@ -201,7 +204,7 @@ fn the_definition_a_report_carries_re_creates_the_same_shards() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';")
+        .run_now("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';")
         .unwrap();
     let described = report(&mut session, "INFO FOR TABLE orders;");
     let Value::Object(fields) = &described else {
@@ -213,7 +216,7 @@ fn the_definition_a_report_carries_re_creates_the_same_shards() {
     let restored = store_with(&script.replace("orders", "restored"));
     let mut reader = Session::new(&restored);
     reader
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     assert_eq!(
         shards_of(&report(&mut reader, "INFO FOR TABLE restored;")),
@@ -226,7 +229,7 @@ fn the_definition_a_report_carries_re_creates_the_same_shards() {
 fn store_with(script: &str) -> Store {
     let fresh = store();
     let mut session = tenancy(&fresh);
-    session.run(script).unwrap();
+    session.run_now(script).unwrap();
     fresh
 }
 
@@ -241,7 +244,7 @@ fn a_split_tables_record_history_merges_its_shard_and_database_logs_in_commit_or
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
              CREATE orders:'h' = { total: 1 }; CREATE orders:'a' = { total: 0 }; \
              UPDATE orders:'h' MERGE { total: 2 }; \
@@ -292,7 +295,7 @@ fn a_split_tables_record_history_merges_its_shard_and_database_logs_in_commit_or
     // The control: an unsplit table's history answers as it always did, with
     // no log named on its events.
     session
-        .run("DEFINE TABLE plain (n int); CREATE plain:1 = { n: 1 };")
+        .run_now("DEFINE TABLE plain (n int); CREATE plain:1 = { n: 1 };")
         .unwrap();
     let Value::Object(plain) = report(&mut session, "INFO FOR HISTORY OF plain:1;") else {
         panic!("not a report");
@@ -340,7 +343,7 @@ fn a_peer_subscribes_to_one_shard_and_the_report_spells_it_back() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p'; \
              DEFINE REPLICA part AT 'b:9001' NODE '9f2c4e1a70bb43d5a1c6e2f480937d55' \
                  REPLICATES SHARD prod.shop.orders 2;",
@@ -362,14 +365,14 @@ fn a_subscription_to_a_shard_that_does_not_exist_is_refused() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; DEFINE TABLE plain (n int);")
+        .run_now("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; DEFINE TABLE plain (n int);")
         .unwrap();
     for (clause, shown) in [
         ("SHARD prod.shop.orders 3", "prod.shop.orders 3"),
         ("SHARD prod.shop.plain 1", "prod.shop.plain 1"),
         ("SHARD prod.shop.nowhere 1", "prod.shop.nowhere 1"),
     ] {
-        match session.run(&format!(
+        match session.run_now(&format!(
             "DEFINE REPLICA r AT 'b:9001' NODE '9f2c4e1a70bb43d5a1c6e2f480937d55' REPLICATES {clause};"
         )) {
             Err(Error::Unknown { entity, name, .. }) => {
@@ -387,7 +390,7 @@ fn a_graphs_node_table_cannot_be_split() {
     // every traversal from the part.
     let store = store();
     let mut session = tenancy(&store);
-    session.run("DEFINE GRAPH social;").unwrap();
+    session.run_now("DEFINE GRAPH social;").unwrap();
     let refused = refusal(
         &mut session,
         "DEFINE TABLE person (n int) IN social IDENTITY uuid SPLIT AT 'g';",
@@ -411,7 +414,7 @@ fn a_peer_placed_to_lead_a_range_reports_it_in_the_clauses_spelling() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p'; \
              DEFINE REPLICA b AT 'b:9001' NODE '9f2c4e1a70bb43d5a1c6e2f480937d55' \
                  LEADS SHARD prod.shop.orders 2; \
@@ -438,7 +441,7 @@ fn a_peer_row_reports_where_clients_reach_it() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run(
+        .run_now(
             "DEFINE REPLICA b AT 'b:9180' CLIENTS AT 'b.example:9080' \
                  HTTP AT 'https://b.example:8000'; \
              DEFINE REPLICA d AT 'd:9180';",
@@ -459,7 +462,7 @@ fn a_peer_row_reports_where_clients_reach_it() {
         ]
     );
     let refused = session
-        .run("DEFINE REPLICA e AT 'e:9180' CLIENTS 'e:9080';")
+        .run_now("DEFINE REPLICA e AT 'e:9180' CLIENTS 'e:9080';")
         .unwrap_err();
     assert!(
         refused
@@ -474,9 +477,9 @@ fn a_placement_on_a_shard_the_table_lacks_is_refused() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g';")
+        .run_now("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g';")
         .unwrap();
-    match session.run("DEFINE REPLICA b AT 'b:9001' LEADS SHARD prod.shop.orders 3;") {
+    match session.run_now("DEFINE REPLICA b AT 'b:9001' LEADS SHARD prod.shop.orders 3;") {
         Err(Error::Unknown { entity, name, .. }) => {
             assert_eq!((entity, name.as_str()), ("shard", "prod.shop.orders 3"));
         }
@@ -496,7 +499,7 @@ fn a_row_that_places_a_leader_cannot_be_dropped_and_one_that_does_not_can() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
              DEFINE REPLICA b AT 'b:9001' LEADS SHARD prod.shop.orders 1; \
              DEFINE REPLICA d AT 'd:9001';",
@@ -509,7 +512,7 @@ fn a_row_that_places_a_leader_cannot_be_dropped_and_one_that_does_not_can() {
     );
     // The refusal names the way out this build has: give the range back.
     assert!(refused.to_string().contains("`LEADS NONE`"), "{refused}");
-    session.run("DROP REPLICA d;").unwrap();
+    session.run_now("DROP REPLICA d;").unwrap();
     assert_eq!(
         peer_field(&mut session, "leads"),
         vec![("b".to_owned(), Some("SHARD prod.shop.orders 1".to_owned()))]
@@ -527,7 +530,7 @@ fn a_bound_peer_row_is_amended_in_place_and_keeps_its_node() {
     // One transaction, judged against a catalog that names no peer yet: once a
     // row names a node this store is a cluster member and writes on a lease.
     session
-        .run(
+        .run_now(
             "BEGIN; \
              DEFINE REPLICA b AT 'b:9001' NODE '9f2c4e1a70bb43d5a1c6e2f480937d55' \
              ROLES serving REPLICATES STORE; \
@@ -559,7 +562,7 @@ fn a_bound_peer_row_is_amended_in_place_and_keeps_its_node() {
         ("ALTER REPLICA nobody AT 'x:1';", "nobody"),
         ("ALTER REPLICA b ROLES flying;", "flying"),
     ] {
-        let why = format!("{:?}", session.run(refused));
+        let why = format!("{:?}", session.run_now(refused));
         assert!(
             why.starts_with("Err") && why.contains(names),
             "{refused}: {why}"
@@ -572,14 +575,14 @@ fn a_placement_is_handed_to_another_row_and_taken_from_the_first() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
              DEFINE REPLICA a AT 'a:9001' LEADS SHARD prod.shop.orders 1; \
              DEFINE REPLICA b AT 'b:9001';",
         )
         .unwrap();
     session
-        .run("ALTER REPLICA b LEADS SHARD prod.shop.orders 1; ALTER REPLICA a LEADS NONE;")
+        .run_now("ALTER REPLICA b LEADS SHARD prod.shop.orders 1; ALTER REPLICA a LEADS NONE;")
         .unwrap();
     assert_eq!(
         peer_field(&mut session, "leads"),
@@ -590,7 +593,7 @@ fn a_placement_is_handed_to_another_row_and_taken_from_the_first() {
     );
     // A row that is no longer the last candidate can be dropped.
     session
-        .run("ALTER REPLICA a LEADS SHARD prod.shop.orders 1; DROP REPLICA b;")
+        .run_now("ALTER REPLICA a LEADS SHARD prod.shop.orders 1; DROP REPLICA b;")
         .unwrap();
     assert_eq!(
         peer_field(&mut session, "leads"),
@@ -603,7 +606,7 @@ fn the_last_placement_on_a_range_is_not_taken_away() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
              DEFINE REPLICA a AT 'a:9001' LEADS SHARD prod.shop.orders 1;",
         )
@@ -618,13 +621,13 @@ fn the_last_placement_on_a_range_is_not_taken_away() {
             "{taking}: {refused:?}"
         );
     }
-    match session.run("ALTER REPLICA z LEADS NONE;") {
+    match session.run_now("ALTER REPLICA z LEADS NONE;") {
         Err(Error::Unknown { entity, name, .. }) => {
             assert_eq!((entity, name.as_str()), ("replica", "z"));
         }
         other => panic!("expected an unknown replica, got {other:?}"),
     }
-    match session.run("ALTER REPLICA a LEADS SHARD prod.shop.orders 3;") {
+    match session.run_now("ALTER REPLICA a LEADS SHARD prod.shop.orders 3;") {
         Err(Error::Unknown { entity, .. }) => assert_eq!(entity, "shard"),
         other => panic!("expected an unknown shard, got {other:?}"),
     }
@@ -673,12 +676,12 @@ fn the_last_placement_given_up_is_released_to_the_store_line_and_still_carved() 
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
              DEFINE REPLICA a AT 'a:9001' LEADS SHARD prod.shop.orders 1;",
         )
         .unwrap();
-    session.run("ALTER REPLICA a LEADS NONE;").unwrap();
+    session.run_now("ALTER REPLICA a LEADS NONE;").unwrap();
     assert_eq!(
         peer_field(&mut session, "leads"),
         vec![("a".to_owned(), Some("SHARD prod.shop.orders 1".to_owned()))]
@@ -686,12 +689,12 @@ fn the_last_placement_given_up_is_released_to_the_store_line_and_still_carved() 
     assert_eq!(releasing(&mut session), vec![("a".to_owned(), true)]);
     // Asked again, the row is taken back from releasing.
     session
-        .run("ALTER REPLICA a LEADS SHARD prod.shop.orders 1;")
+        .run_now("ALTER REPLICA a LEADS SHARD prod.shop.orders 1;")
         .unwrap();
     assert_eq!(releasing(&mut session), vec![("a".to_owned(), false)]);
     // A row that is not the last candidate gives its placement up outright.
     session
-        .run("DEFINE REPLICA b AT 'b:9001' LEADS SHARD prod.shop.orders 1; ALTER REPLICA a LEADS NONE;")
+        .run_now("DEFINE REPLICA b AT 'b:9001' LEADS SHARD prod.shop.orders 1; ALTER REPLICA a LEADS NONE;")
         .unwrap();
     assert_eq!(
         peer_field(&mut session, "leads"),
@@ -713,7 +716,7 @@ fn a_candidate_is_preferred_where_it_is_placed_and_restating_without_it_clears_i
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
              DEFINE REPLICA a AT 'a:9001' LEADS SHARD prod.shop.orders 1; \
              DEFINE REPLICA b AT 'b:9001' LEADS SHARD prod.shop.orders 1 PREFERRED;",
@@ -724,13 +727,13 @@ fn a_candidate_is_preferred_where_it_is_placed_and_restating_without_it_clears_i
         vec![("a".to_owned(), false), ("b".to_owned(), true)]
     );
     session
-        .run("ALTER REPLICA a LEADS SHARD prod.shop.orders 1 PREFERRED; ALTER REPLICA b LEADS SHARD prod.shop.orders 1;")
+        .run_now("ALTER REPLICA a LEADS SHARD prod.shop.orders 1 PREFERRED; ALTER REPLICA b LEADS SHARD prod.shop.orders 1;")
         .unwrap();
     assert_eq!(
         flag(&mut session, "preferred"),
         vec![("a".to_owned(), true), ("b".to_owned(), false)]
     );
-    session.run("ALTER REPLICA a LEADS NONE;").unwrap();
+    session.run_now("ALTER REPLICA a LEADS NONE;").unwrap();
     assert_eq!(
         flag(&mut session, "preferred"),
         vec![("a".to_owned(), false), ("b".to_owned(), false)]
@@ -753,9 +756,9 @@ fn alter_table_split_at_retires_the_shard_and_mints_two_in_its_place() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';")
+        .run_now("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';")
         .unwrap();
-    session.run("ALTER TABLE orders SPLIT AT 'm';").unwrap();
+    session.run_now("ALTER TABLE orders SPLIT AT 'm';").unwrap();
     assert_eq!(
         orders(&mut session),
         vec![
@@ -772,7 +775,7 @@ fn a_moved_map_reports_its_version_and_what_it_retired() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';")
+        .run_now("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';")
         .unwrap();
     let declared = report(&mut session, "INFO FOR TABLE orders;");
     let field = |report: &Value, name: &str| match report {
@@ -781,7 +784,7 @@ fn a_moved_map_reports_its_version_and_what_it_retired() {
     };
     assert_eq!(field(&declared, "version"), Some(Value::from(0_i64)));
     assert_eq!(field(&declared, "retired"), Some(Value::Array(Vec::new())));
-    session.run("ALTER TABLE orders SPLIT AT 'm';").unwrap();
+    session.run_now("ALTER TABLE orders SPLIT AT 'm';").unwrap();
     let moved = report(&mut session, "INFO FOR TABLE orders;");
     assert_eq!(field(&moved, "version"), Some(Value::from(1_i64)));
     let retired = Value::Object(
@@ -803,9 +806,11 @@ fn alter_table_merge_shard_joins_two_neighbours_into_one_new_shard() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';")
+        .run_now("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';")
         .unwrap();
-    session.run("ALTER TABLE orders MERGE SHARD 3, 2;").unwrap();
+    session
+        .run_now("ALTER TABLE orders MERGE SHARD 3, 2;")
+        .unwrap();
     assert_eq!(
         orders(&mut session),
         vec![(1, None, text("g")), (4, text("g"), None)]
@@ -817,21 +822,25 @@ fn every_record_reads_back_after_a_split_and_a_merge_moved_the_map() {
     let store = store();
     let mut session = tenancy(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p'; \
              CREATE orders:'h' = { total: 1 }; CREATE orders:'n' = { total: 2 };",
         )
         .unwrap();
-    session.run("ALTER TABLE orders SPLIT AT 'm';").unwrap();
+    session.run_now("ALTER TABLE orders SPLIT AT 'm';").unwrap();
     session
-        .run("CREATE orders:'k' = { total: 3 }; CREATE orders:'o' = { total: 4 };")
+        .run_now("CREATE orders:'k' = { total: 3 }; CREATE orders:'o' = { total: 4 };")
         .unwrap();
-    session.run("ALTER TABLE orders MERGE SHARD 4, 5;").unwrap();
-    session.run("CREATE orders:'j' = { total: 5 };").unwrap();
+    session
+        .run_now("ALTER TABLE orders MERGE SHARD 4, 5;")
+        .unwrap();
+    session
+        .run_now("CREATE orders:'j' = { total: 5 };")
+        .unwrap();
     // `h` 1, `j` 5, `k` 3, `n` 2, `o` 4 — written before, between and after the
     // two changes, and every one answered in identity order.
     let Some(Outcome::Records { records, .. }) = session
-        .run("SELECT total FROM orders ORDER BY id;")
+        .run_now("SELECT total FROM orders ORDER BY id;")
         .unwrap()
         .last()
         .cloned()
@@ -861,7 +870,9 @@ fn every_record_reads_back_after_a_split_and_a_merge_moved_the_map() {
 fn a_split_of_a_table_that_is_not_split_is_refused_by_name() {
     let store = store();
     let mut session = tenancy(&store);
-    session.run("DEFINE TABLE notes (body string);").unwrap();
+    session
+        .run_now("DEFINE TABLE notes (body string);")
+        .unwrap();
     assert!(matches!(
         refusal(&mut session, "ALTER TABLE notes SPLIT AT 'm';"),
         tessari_storage::Error::NotASplitTable { .. }

@@ -57,7 +57,7 @@ pub type Running = Option<std::convert::Infallible>;
 /// broker must not keep a database from answering the queries that have nothing
 /// to do with it.
 #[cfg(feature = "kafka")]
-pub fn start(db: Arc<Db>) -> Running {
+pub async fn start(db: Arc<Db>) -> Running {
     let broker: Arc<dyn tessari_ingest::Broker> = Arc::new(tessari_ingest::Kafka);
     match tessari_ingest::Runner::start(db.store(), broker) {
         Ok(started) => {
@@ -78,10 +78,11 @@ pub fn start(db: Arc<Db>) -> Running {
 /// Printed rather than silent, because "the consumer is declared and no records
 /// are arriving" is otherwise a mystery whose answer is which binary is running.
 #[cfg(not(feature = "kafka"))]
-pub fn start(db: Arc<Db>) -> Running {
+pub async fn start(db: Arc<Db>) -> Running {
     let mut session = tessari_session::Session::new(db.store());
     let declared = session
         .run("INFO FOR KAFKA CONSUMERS;")
+        .await
         .is_ok_and(|answered| format!("{answered:?}").contains("name"));
     if declared {
         tracing::warn!(

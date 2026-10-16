@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_encoding::{
     Decision, Mutation, Participant, RecordValue, StampedValue, TRANSACTION_ID_LEN, TransactionId,
@@ -22,7 +23,7 @@ const USE: &str = "USE NAMESPACE prod; USE DATABASE shop;";
 fn store(script: &str) -> Store {
     let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
     Session::new(&store)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; {USE} {script}"
         ))
         .unwrap();
@@ -90,7 +91,10 @@ fn object(fields: &[(&str, Value)]) -> Value {
 fn said(session: &mut Session<'_>, statement: &str) -> String {
     format!(
         "{:?}",
-        session.run(&format!("{USE} {statement}")).unwrap().last()
+        session
+            .run_now(&format!("{USE} {statement}"))
+            .unwrap()
+            .last()
     )
 }
 
@@ -154,7 +158,7 @@ fn a_traversal_over_edges_part_way_here_is_refused_as_retriable() {
     );
     let mut session = Session::new(&store);
     let refused = session
-        .run(&format!("{USE} SELECT * FROM users:1->follows->users;"))
+        .run_now(&format!("{USE} SELECT * FROM users:1->follows->users;"))
         .unwrap_err();
     assert!(
         matches!(refused, tessari_session::Error::AcrossSettling { .. }),

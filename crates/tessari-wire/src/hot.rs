@@ -54,7 +54,10 @@ pub(crate) enum Cooled {
 
 /// Answer `first` and every statement that follows it closely.
 ///
-/// Runs on a thread that may block; `stream` is in blocking mode.
+/// Runs on a thread that may block; `stream` is in blocking mode. `runtime`
+/// drives each answer to its end on this thread, which is outside the
+/// runtime's workers (transitional, while the store's entry points are
+/// asynchronous over a synchronous body).
 ///
 /// # Errors
 ///
@@ -65,6 +68,7 @@ pub(crate) fn serve(
     stream: TcpStream,
     first: Request,
     theirs: u8,
+    runtime: &tokio::runtime::Handle,
 ) -> Result<Cooled> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream.try_clone()?);
@@ -78,7 +82,12 @@ pub(crate) fn serve(
     loop {
         let answer = match talk.bridge.slot() {
             Some(slot) => {
-                let answer = conversation::respond(&talk.db, &mut attached, &request, theirs);
+                let answer = runtime.block_on(conversation::respond(
+                    &talk.db,
+                    &mut attached,
+                    &request,
+                    theirs,
+                ));
                 drop(slot);
                 answer
             }
@@ -181,6 +190,7 @@ mod tests {
     use std::time::Duration;
 
     use tessari_serve::{Bridge, Stopping};
+    use tessari_session::RunNow;
     use tessaridb::feed::Commits;
     use tessaridb::{Db, Parameters};
     use tokio::sync::Semaphore;
@@ -238,7 +248,17 @@ mod tests {
         let first = request(first);
         let (ended, outcome) = mpsc::channel();
         drop(std::thread::spawn(move || {
-            drop(ended.send(serve(&talk, session, server, first, frame::MINOR)));
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("a runtime to drive the answers");
+            drop(ended.send(serve(
+                &talk,
+                session,
+                server,
+                first,
+                frame::MINOR,
+                runtime.handle(),
+            )));
         }));
         (client, outcome, db)
     }
@@ -282,7 +302,7 @@ mod tests {
         // back whole rather than being opened again.
         let mut session = back.attach(db.store());
         let read = session
-            .run_with("SELECT * FROM items;", &Parameters::new())
+            .run_with_now("SELECT * FROM items;", &Parameters::new())
             .expect("the selection the spell made");
         assert_eq!(read.len(), 1);
     }

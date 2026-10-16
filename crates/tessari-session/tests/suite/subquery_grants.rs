@@ -20,6 +20,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -36,7 +37,7 @@ fn store() -> Store {
 fn ready(store: &Store) {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION public; CREATE public:1 = { n: 1 };\n\
@@ -46,7 +47,7 @@ fn ready(store: &Store) {
         .unwrap();
     let mut root = Session::new(store);
     root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
          DEFINE USER spy ON prod.shop ROLE viewer PASSWORD 'correct horse battery staple';\n\
          GRANT read ON public TO spy;\n\
@@ -60,7 +61,7 @@ fn spy(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session.sign_in("spy", PASSWORD).unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -78,9 +79,9 @@ fn refused_as(store: &Store, who: &str, script: &str) {
     let mut session = Session::new(store);
     session.sign_in(who, PASSWORD).unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
-    let failed = session.run(script);
+    let failed = session.run_now(script);
     let message = match failed {
         Err(failure) => format!("{failure}"),
         Ok(answered) => panic!("{script}\nwas allowed, and answered {answered:?}"),
@@ -221,6 +222,6 @@ fn the_granted_table_still_reads() {
     let store = store();
     ready(&store);
     let mut session = spy(&store);
-    let outcomes = session.run("SELECT * FROM public;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM public;").unwrap();
     assert_eq!(outcomes[0].records().map(<[_]>::len), Some(1));
 }

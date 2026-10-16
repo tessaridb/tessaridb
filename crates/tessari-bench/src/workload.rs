@@ -16,6 +16,7 @@
 //! cost is visible rather than hidden inside the measurement.
 
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessaridb::Db;
 
@@ -224,7 +225,7 @@ pub fn by_name(name: &str) -> Option<&'static Workload> {
 
 /// A namespace and database to work in.
 pub(crate) fn prepared(db: &Db) -> Failable<()> {
-    db.session().run(
+    db.session().run_now(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench;\n\
          DEFINE DATABASE bench; USE DATABASE bench;",
     )?;
@@ -255,13 +256,13 @@ mod reads;
 fn write(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION people;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION people;")?;
 
     let mut samples = Samples::with_capacity(usize::try_from(RECORDS).unwrap_or(0));
     for n in 0..RECORDS {
         timed!(
             samples,
-            session.run(&format!(
+            session.run_now(&format!(
                 "CREATE people:{n} = {{ name: 'person {n}', city: 'city {}', age: {} }};",
                 n % 50,
                 n % 90
@@ -274,13 +275,13 @@ fn write(db: &Db) -> Failable<Vec<Report>> {
 fn read_by_id(db: &Db) -> Failable<Vec<Report>> {
     let mut reports = write(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench;")?;
 
     let mut samples = Samples::with_capacity(usize::try_from(READS).unwrap_or(0));
     for n in 0..READS {
         timed!(
             samples,
-            session.run(&format!("SELECT * FROM people:{};", n % RECORDS))?
+            session.run_now(&format!("SELECT * FROM people:{};", n % RECORDS))?
         );
     }
     reports.push(samples.summarise("read-by-id"));
@@ -290,13 +291,13 @@ fn read_by_id(db: &Db) -> Failable<Vec<Report>> {
 fn vector(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION items;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION items;")?;
 
     let mut written = Samples::with_capacity(usize::try_from(RECORDS).unwrap_or(0));
     for n in 0..RECORDS {
         timed!(
             written,
-            session.run(&format!(
+            session.run_now(&format!(
                 "CREATE items:{n} = {{ embedding: {} }};",
                 embedding(n)
             ))?
@@ -311,7 +312,7 @@ fn vector(db: &Db) -> Failable<Vec<Report>> {
     for n in 0..100 {
         timed!(
             nearest,
-            session.run(&format!(
+            session.run_now(&format!(
                 "SELECT * FROM items ORDER BY vector::cosine(embedding, {}) LIMIT 10;",
                 embedding(n)
             ))?
@@ -338,7 +339,7 @@ fn vector(db: &Db) -> Failable<Vec<Report>> {
 fn capacity(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION load;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION load;")?;
 
     let mut reports = Vec::new();
     let mut written = 0_u64;
@@ -348,7 +349,7 @@ fn capacity(db: &Db) -> Failable<Vec<Report>> {
             let n = written;
             timed!(
                 samples,
-                session.run(&format!(
+                session.run_now(&format!(
                     "CREATE load:{n} = {{ name: 'record {n}', city: 'city {}', \
                      note: 'a line of prose long enough to be a real payload rather than a token' }};",
                     n % 100

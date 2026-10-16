@@ -57,7 +57,7 @@ fn expiries(out: &mut String, census: &Census) {
 /// name mean two different things depending on how the node was started. A
 /// scraper copes with a series that is missing; it cannot cope with one that
 /// silently changes what it measures.
-pub(crate) fn metrics(
+pub(crate) async fn metrics(
     db: &Db,
     census: Option<&Census>,
     mine: &Stopping,
@@ -65,11 +65,11 @@ pub(crate) fn metrics(
     presented: &Presented,
 ) -> Answer {
     // First, so a refused credential is answered before anything is written.
-    let topics = match super::topics::topic_series(db, tokens, presented) {
+    let topics = match super::topics::topic_series(db, tokens, presented).await {
         Ok(series) => series,
         Err(refused) => return refused,
     };
-    let cluster = sees_the_cluster(db, tokens, presented);
+    let cluster = sees_the_cluster(db, tokens, presented).await;
     let mut out = String::new();
 
     if let Some(census) = census {
@@ -263,9 +263,11 @@ pub(crate) fn metrics(
 /// NODE`, as that caller — rather than by a second rule here: one evaluator of
 /// who may see the topology. An open store answers yes to everyone, as it does
 /// to every statement.
-fn sees_the_cluster(db: &Db, tokens: &Tokens, presented: &Presented) -> bool {
-    super::session_for(db, tokens, presented)
-        .is_ok_and(|mut session| session.run("INFO FOR NODE;").is_ok())
+async fn sees_the_cluster(db: &Db, tokens: &Tokens, presented: &Presented) -> bool {
+    match super::session_for(db, tokens, presented) {
+        Ok(mut session) => session.run("INFO FOR NODE;").await.is_ok(),
+        Err(_) => false,
+    }
 }
 
 /// Where this node stands against the peer it collects from, and how far

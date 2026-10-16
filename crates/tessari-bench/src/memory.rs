@@ -42,6 +42,7 @@
 
 use std::collections::BTreeMap;
 
+use tessari_session::RunNow;
 use tessari_types::{Number, RecordId, Value};
 use tessaridb::{Db, Outcome};
 
@@ -83,11 +84,11 @@ pub fn memory(db: &Db) -> Failable<Vec<Report>> {
     reports.push(written.summarise("memory-write"));
 
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench;")?;
 
     let before = counting::live();
     counting::reset_peak();
-    let outcome = session.run(&format!(
+    let outcome = session.run_now(&format!(
         "SELECT * FROM spans WHERE n >= 0 AND n < {RECORDS};"
     ))?;
     let peak = counting::peak();
@@ -214,7 +215,7 @@ fn reads_that_keep_less_than_they_touch(
     for (what, read) in asked {
         let before = counting::live();
         counting::reset_peak();
-        let outcome = session.run(&read)?;
+        let outcome = session.run_now(&read)?;
         let peak = counting::peak();
         let (answered, path) = match outcome.last() {
             Some(Outcome::Records { records, plan, .. }) => (records.len(), plan.access.name()),

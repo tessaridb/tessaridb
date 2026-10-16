@@ -10,6 +10,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_encoding::{
     CausalStamp, LogId, LogRecord, Mutation, NODE_ID_LEN, RecordKey, RecordValue, StampedValue,
@@ -139,7 +140,7 @@ pub(crate) fn one_log() -> (Arc<dyn KvBackend>, Store, Vec<u8>) {
     {
         let mut session = Session::new(&store);
         session
-            .run(
+            .run_now(
                 "DEFINE NAMESPACE one;\n\
                  DEFINE NAMESPACE two;\n\
                  DEFINE NAMESPACE three;\n\
@@ -185,7 +186,7 @@ pub(crate) fn signed_in(store: &Store) -> Session<'_> {
     // so anything reading it afterwards has to say who it is.
     session.sign_in("root", "a long one").ok();
     session
-        .run("USE NAMESPACE prod; USE DATABASE orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
     session
 }
@@ -211,7 +212,7 @@ pub(crate) fn original() -> (Arc<dyn KvBackend>, Store, Vec<u8>) {
     let (backend, store) = store();
     {
         let mut session = Session::new(&store);
-        session.run(EVERYTHING).unwrap();
+        session.run_now(EVERYTHING).unwrap();
     }
     let mut taken = Vec::new();
     let written = tessari_backup::write(&store, &mut taken).unwrap();
@@ -233,8 +234,8 @@ fn a_restored_store_answers_exactly_what_the_original_did() {
     let mut here = signed_in(&source);
     let mut there = signed_in(&restored);
     for script in INTERROGATION {
-        let expected = here.run(script).unwrap();
-        let found = there.run(script).unwrap();
+        let expected = here.run_now(script).unwrap();
+        let found = there.run_now(script).unwrap();
         assert_eq!(
             format!("{expected:?}"),
             format!("{found:?}"),
@@ -268,7 +269,7 @@ fn the_record_counter_survives_a_restore_rather_than_starting_again() {
     {
         let mut session = Session::new(&source);
         session
-            .run(
+            .run_now(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod;\
                  DEFINE DATABASE orders; USE DATABASE orders;\
                  DEFINE COLLECTION users;\
@@ -286,9 +287,9 @@ fn the_record_counter_survives_a_restore_rather_than_starting_again() {
 
     let mut there = Session::new(&restored);
     there
-        .run("USE NAMESPACE prod; USE DATABASE orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
-    let mut answers = there.run("CREATE users = { name: 'alan' };").unwrap();
+    let mut answers = there.run_now("CREATE users = { name: 'alan' };").unwrap();
     let outcome = answers.pop().expect("one statement, one answer");
     let Outcome::Keys(keys) = outcome else {
         panic!("a generated write answers with the identity it produced, got {outcome:?}");
@@ -496,7 +497,7 @@ fn a_restore_carries_the_peer_list_and_not_the_identity() {
     // because what a second node needs is the *answer*, not the bytes.
     let mut asking = Session::new(&restored);
     asking.sign_in("root", "a long one").unwrap();
-    let reported = asking.run("INFO FOR NODE;").unwrap();
+    let reported = asking.run_now("INFO FOR NODE;").unwrap();
     let described = format!("{reported:?}");
     assert!(
         described.contains("second") && described.contains("peer:9001"),
@@ -559,7 +560,7 @@ fn a_restore_into_a_store_that_holds_something_is_refused() {
     let (target, occupied) = store();
     {
         let mut session = Session::new(&occupied);
-        session.run("DEFINE NAMESPACE other;").unwrap();
+        session.run_now("DEFINE NAMESPACE other;").unwrap();
     }
     let before = dump(&target, Keyspace::LOG);
 
@@ -713,7 +714,7 @@ fn a_restored_store_can_be_written_to_and_backed_up_again() {
     {
         let mut session = signed_in(&restored);
         session
-            .run("CREATE people:9 = { name: 'after', email: 'e@x', at: [3.0, 0.0] };")
+            .run_now("CREATE people:9 = { name: 'after', email: 'e@x', at: [3.0, 0.0] };")
             .unwrap();
     }
     assert!(crate::records_held(&restored) > first.records);
@@ -789,7 +790,7 @@ fn an_incremental_backup_plus_its_base_is_the_whole_store() {
     {
         let mut session = signed_in(&held);
         session
-            .run(
+            .run_now(
                 "CREATE people:9 = { name: 'later', email: 'z@x', bio: 'after the base', \
                  address: { city: 'york' }, at: [3.0, 3.0] };\n\
                  PUT media:'/added.txt' = 'written after the base was taken';",
@@ -826,8 +827,8 @@ fn an_incremental_backup_plus_its_base_is_the_whole_store() {
     let mut here = signed_in(&rebuilt);
     for question in INTERROGATION {
         assert_eq!(
-            format!("{:?}", there.run(question)),
-            format!("{:?}", here.run(question)),
+            format!("{:?}", there.run_now(question)),
+            format!("{:?}", here.run_now(question)),
             "{question}"
         );
     }
@@ -841,7 +842,7 @@ fn an_increment_refuses_a_store_that_is_not_where_it_continues_from() {
     {
         let mut session = signed_in(&held);
         session
-            .run("CREATE people:9 = { name: 'later', email: 'z@x' };")
+            .run_now("CREATE people:9 = { name: 'later', email: 'z@x' };")
             .unwrap();
     }
     let (home, base_tail) = moved_since(&base, &held);

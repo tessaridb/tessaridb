@@ -14,6 +14,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Parameters, Session};
@@ -29,7 +30,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION users; DEFINE COLLECTION orders;\n\
@@ -43,7 +44,7 @@ fn ready(store: &Store) -> Session<'_> {
 }
 
 fn rows(session: &mut Session<'_>, script: &str) -> Vec<(RecordId, Value)> {
-    match session.run(script).unwrap().last().unwrap() {
+    match session.run_now(script).unwrap().last().unwrap() {
         Outcome::Records { records, .. } => records.clone(),
         other => panic!("not records: {other:?}"),
     }
@@ -120,13 +121,13 @@ fn two_sides_under_one_name_are_still_refused() {
 
     assert!(
         session
-            .run("SELECT * FROM users JOIN users ON users.boss = users.code;")
+            .run_now("SELECT * FROM users JOIN users ON users.boss = users.code;")
             .is_err(),
         "a self-join without aliases has one name for both sides"
     );
     assert!(
         session
-            .run("SELECT * FROM users AS x JOIN orders AS x ON x.name = x.who;")
+            .run_now("SELECT * FROM users AS x JOIN orders AS x ON x.name = x.who;")
             .is_err(),
         "two different tables under one name is the same row with one half"
     );
@@ -139,7 +140,7 @@ fn a_name_given_where_there_is_no_join_is_refused() {
     let store = store();
     let mut session = ready(&store);
 
-    assert!(session.run("SELECT * FROM users AS u;").is_err());
+    assert!(session.run_now("SELECT * FROM users AS u;").is_err());
 }
 
 #[test]
@@ -183,7 +184,7 @@ fn a_source_read_must_state_its_ceiling() {
     let mut session = ready(&store);
 
     let refused = session
-        .run("SELECT * FROM (SELECT * FROM orders);")
+        .run_now("SELECT * FROM (SELECT * FROM orders);")
         .expect_err("a refusal");
     assert!(refused.to_string().contains("LIMIT"), "{refused}");
 }
@@ -221,7 +222,7 @@ fn a_joined_read_must_name_itself() {
 
     assert!(
         session
-            .run(
+            .run_now(
                 "SELECT * FROM users AS u \
                  JOIN (SELECT * FROM orders LIMIT 10) ON u.name = o.who;"
             )
@@ -230,7 +231,7 @@ fn a_joined_read_must_name_itself() {
     );
     assert!(
         session
-            .run(
+            .run_now(
                 "SELECT * FROM (SELECT * FROM users LIMIT 10) \
                  JOIN orders AS o ON u.name = o.who;"
             )
@@ -244,7 +245,7 @@ fn a_joined_read_states_its_ceiling_too() {
     let mut session = ready(&store);
 
     let refused = session
-        .run("SELECT * FROM users AS u JOIN (SELECT * FROM orders) AS o ON u.name = o.who;")
+        .run_now("SELECT * FROM users AS u JOIN (SELECT * FROM orders) AS o ON u.name = o.who;")
         .expect_err("a refusal");
     assert!(refused.to_string().contains("LIMIT"), "{refused}");
 }
@@ -260,7 +261,7 @@ fn a_parameter_still_reaches_inside_a_materialised_read() {
     let mut parameters = Parameters::new();
     parameters.insert("floor".to_owned(), Value::from(5_i64));
     let outcomes = session
-        .run_with(
+        .run_with_now(
             "SELECT * FROM (SELECT * FROM orders WHERE total > $floor LIMIT 10);",
             &parameters,
         )
@@ -279,7 +280,7 @@ fn a_condition_over_a_materialised_read_asks_about_what_it_produced() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("CREATE orders:3 = { who: 'ada', total: 1 };")
+        .run_now("CREATE orders:3 = { who: 'ada', total: 1 };")
         .unwrap();
 
     let found = rows(
@@ -298,7 +299,7 @@ fn a_traversal_becomes_filterable_by_being_materialised() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE follows EDGE;\n\
              RELATE users:1 -> follows -> users:2;",
         )

@@ -25,6 +25,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tessari_session::RunNow;
 
 use tessari_kv::{
     Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
@@ -119,7 +120,7 @@ fn counted() -> (Store, Arc<Counting>) {
 fn searchable(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod;\n\
              USE NAMESPACE prod;\n\
              DEFINE DATABASE orders;\n\
@@ -140,7 +141,7 @@ fn searchable(store: &Store) -> Session<'_> {
             format!("a note number {n} about nothing in particular")
         };
         session
-            .run(&format!("CREATE notes:{n} = {{ body: '{body}' }};"))
+            .run_now(&format!("CREATE notes:{n} = {{ body: '{body}' }};"))
             .unwrap();
     }
     session
@@ -150,7 +151,7 @@ fn searchable(store: &Store) -> Session<'_> {
 /// identity.
 fn answer(session: &mut Session<'_>, read: &str) -> Vec<(RecordId, Value)> {
     session
-        .run(read)
+        .run_now(read)
         .unwrap()
         .last()
         .unwrap()
@@ -162,13 +163,13 @@ fn answer(session: &mut Session<'_>, read: &str) -> Vec<(RecordId, Value)> {
 /// How many entries one read costs, with the counter zeroed first.
 fn cost(session: &mut Session<'_>, counting: &Counting, read: &str) -> usize {
     counting.reset();
-    session.run(read).unwrap();
+    session.run_now(read).unwrap();
     counting.entries()
 }
 
 /// What the plan says a read takes.
 fn plan(session: &mut Session<'_>, read: &str) -> Value {
-    let outcomes = session.run(&format!("EXPLAIN {read}")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read}")).unwrap();
     match outcomes.last().unwrap() {
         tessari_session::Outcome::Value(held) => held.clone(),
         other => panic!("not a plan: {other:?}"),
@@ -320,7 +321,7 @@ fn a_term_that_cannot_reach_the_answer_has_its_postings_left_unread() {
 fn contested(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod;\n\
              USE NAMESPACE prod;\n\
              DEFINE DATABASE orders;\n\
@@ -336,7 +337,7 @@ fn contested(store: &Store) -> Session<'_> {
         let repeats = usize::try_from(n % 4).unwrap().saturating_add(1);
         let body = vec![word; repeats].join(" ");
         session
-            .run(&format!("CREATE pairs:{n} = {{ body: '{body}' }};"))
+            .run_now(&format!("CREATE pairs:{n} = {{ body: '{body}' }};"))
             .unwrap();
     }
     session
@@ -390,7 +391,7 @@ fn records_that_score_the_same_are_ordered_by_the_answer_and_not_by_the_walk() {
     let (store, _counting) = counted();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod;\n\
              USE NAMESPACE prod;\n\
              DEFINE DATABASE orders;\n\
@@ -405,7 +406,7 @@ fn records_that_score_the_same_are_ordered_by_the_answer_and_not_by_the_walk() {
     // in the order they were created would not accidentally agree with the scan.
     for n in [7_u64, 3, 11, 1, 9, 5, 12, 2, 8, 4, 10, 6] {
         session
-            .run(&format!("CREATE notes:{n} = {{ body: 'quorum quorum' }};"))
+            .run_now(&format!("CREATE notes:{n} = {{ body: 'quorum quorum' }};"))
             .unwrap();
     }
 
@@ -435,7 +436,7 @@ fn a_pruned_read_calls_itself_exact_and_is_entitled_to() {
     let mut session = searchable(&store);
 
     let outcomes = session
-        .run("SELECT * FROM notes ORDER BY search::score(body, 'quorum note') DESC LIMIT 2;")
+        .run_now("SELECT * FROM notes ORDER BY search::score(body, 'quorum note') DESC LIMIT 2;")
         .unwrap();
     let Some(tessari_session::Outcome::Records { plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());

@@ -9,6 +9,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -46,7 +47,7 @@ fn administered(store: &Store) -> Vec<(String, String, String)> {
 
 fn owned(store: &Store) -> Session<'_> {
     Session::new(store)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE work; USE DATABASE work;
              DEFINE TABLE orders SCHEMALESS;
              DEFINE USER root ROLE owner PASSWORD '{PASSWORD}';"
@@ -54,7 +55,8 @@ fn owned(store: &Store) -> Session<'_> {
         .unwrap();
     let mut root = Session::new(store);
     root.sign_in("root", PASSWORD).unwrap();
-    root.run("USE NAMESPACE prod; USE DATABASE work;").unwrap();
+    root.run_now("USE NAMESPACE prod; USE DATABASE work;")
+        .unwrap();
     root
 }
 
@@ -62,7 +64,7 @@ fn owned(store: &Store) -> Session<'_> {
 fn a_change_of_authority_is_recorded_naming_who_what_and_whom() {
     let store = store();
     let mut root = owned(&store);
-    root.run(&format!(
+    root.run_now(&format!(
         "DEFINE USER ada ON prod.work ROLE editor PASSWORD '{PASSWORD}';
          GRANT read ON orders TO ada;
          ALTER USER ada SET ROLE viewer;
@@ -109,7 +111,7 @@ fn a_cancelled_change_leaves_no_entry_and_a_committed_one_does() {
     let mut root = owned(&store);
     let before = administered(&store).len();
 
-    root.run(&format!(
+    root.run_now(&format!(
         "BEGIN; DEFINE USER gone ON prod.work ROLE viewer PASSWORD '{PASSWORD}'; CANCEL;"
     ))
     .unwrap();
@@ -119,7 +121,7 @@ fn a_cancelled_change_leaves_no_entry_and_a_committed_one_does() {
         "a change that never happened was recorded"
     );
 
-    root.run(&format!(
+    root.run_now(&format!(
         "BEGIN; DEFINE USER kept ON prod.work ROLE viewer PASSWORD '{PASSWORD}'; COMMIT;"
     ))
     .unwrap();
@@ -139,7 +141,7 @@ fn a_cancelled_change_leaves_no_entry_and_a_committed_one_does() {
 fn the_entry_names_the_change_and_never_carries_the_password() {
     let store = store();
     let mut root = owned(&store);
-    root.run(&format!(
+    root.run_now(&format!(
         "DEFINE USER ada ON prod.work ROLE editor PASSWORD '{PLANTED}';
          ALTER USER ada SET PASSWORD '{PLANTED}';"
     ))
@@ -163,13 +165,13 @@ fn a_refused_change_leaves_no_entry() {
     // writes. It is kept because that is the property an auditor relies on.
     let store = store();
     let mut root = owned(&store);
-    root.run(&format!(
+    root.run_now(&format!(
         "DEFINE USER ada ON prod.work ROLE viewer PASSWORD '{PASSWORD}';"
     ))
     .unwrap();
     let before = administered(&store).len();
     assert!(
-        root.run(&format!(
+        root.run_now(&format!(
             "BEGIN; DEFINE USER ada ON prod.work ROLE owner PASSWORD '{PASSWORD}'; COMMIT;"
         ))
         .is_err(),
@@ -188,7 +190,7 @@ fn a_revoked_certificate_is_recorded_with_who_revoked_it() {
     let store = store();
     let mut root = owned(&store);
     let fingerprint = "ab".repeat(32);
-    root.run(&format!("REVOKE CERTIFICATE '{fingerprint}';"))
+    root.run_now(&format!("REVOKE CERTIFICATE '{fingerprint}';"))
         .unwrap();
     assert!(
         administered(&store).contains(&(

@@ -82,6 +82,7 @@ tokio-rustls = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
+tessari-session = { workspace = true, features = ["test-support"] }
 tessari-constants.workspace = true
 # The reporting test captures what a served connection says, as a subscriber.
 tracing-subscriber.workspace = true

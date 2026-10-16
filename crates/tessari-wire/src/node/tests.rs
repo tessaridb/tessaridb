@@ -2,6 +2,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessari_encoding::{NODE_ID_LEN, NodeVersion, Roles};
 use tessari_types::{Epoch, Sequence};
@@ -61,13 +62,13 @@ fn a_node_whose_peer_claims(roles: Roles) -> String {
         // this node's own copy outside every bound.
         let mut session = db.session();
         session
-            .run(
+            .run_now(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
                      USE DATABASE orders; DEFINE COLLECTION users;",
             )
             .expect("the schema");
         session
-            .run("DEFINE NODE ROLES serving;")
+            .run_now("DEFINE NODE ROLES serving;")
             .expect("the role that stops this node writing");
     }
 
@@ -190,7 +191,7 @@ fn a_node_on_one_worker_answers_while_a_slow_statement_runs() {
     const PASSWORD: &str = "correct horse battery";
     let db = Arc::new(Db::in_memory().expect("an in-memory store"));
     db.session()
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE USER root ROLE owner PASSWORD '{PASSWORD}';"
         ))
         .expect("the store closed");

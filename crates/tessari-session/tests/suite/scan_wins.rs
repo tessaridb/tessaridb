@@ -26,6 +26,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use tessari_session::RunNow;
 
 use tessari_kv::{
     Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result as KvResult, ScanRequest,
@@ -52,7 +53,7 @@ const RECORDS: i64 = 4_000;
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION events;\n\
@@ -69,15 +70,15 @@ fn ready(store: &Store) -> Session<'_> {
              CREATE mirror:{n} = {{ n: {n}, half: {half}, most: {most} }};\n"
         ));
         if n % 100 == 0 {
-            session.run(&script).unwrap();
+            session.run_now(&script).unwrap();
             script.clear();
         }
     }
     if !script.is_empty() {
-        session.run(&script).unwrap();
+        session.run_now(&script).unwrap();
     }
     session
-        .run(
+        .run_now(
             "DEFINE INDEX by_n ON events FIELDS n;\n\
              DEFINE INDEX by_half ON events FIELDS half;\n\
              DEFINE INDEX by_most ON events FIELDS most;",
@@ -157,7 +158,7 @@ impl KvBackend for Counting {
 
 /// The identities a read answers with, sorted, and the path it took.
 fn answered(session: &mut Session<'_>, read: &str) -> (Vec<RecordId>, AccessPath) {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -168,7 +169,7 @@ fn answered(session: &mut Session<'_>, read: &str) -> (Vec<RecordId>, AccessPath
 
 /// The path `EXPLAIN` reports for a read, which must be the path it takes.
 fn explained(session: &mut Session<'_>, read: &str) -> String {
-    let outcomes = session.run(&format!("EXPLAIN {read}")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read}")).unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("a plan answered with {:?}", outcomes.last());
     };
@@ -319,7 +320,7 @@ fn a_table_below_the_floor_plans_exactly_as_it_did_before() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION small;\n\
@@ -338,7 +339,7 @@ fn a_table_below_the_floor_plans_exactly_as_it_did_before() {
     // And the language's own way of saying so is satisfied, which is the test
     // the conformance corpus writes.
     session
-        .run("SELECT * FROM small WHERE n >= 2 USING INDEX by_n;")
+        .run_now("SELECT * FROM small WHERE n >= 2 USING INDEX by_n;")
         .unwrap();
 }
 

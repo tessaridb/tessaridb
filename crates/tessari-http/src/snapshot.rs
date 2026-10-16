@@ -74,9 +74,9 @@ pub(crate) async fn backup(
     tokio::spawn(async move {
         let bridged = working
             .bridge
-            .call(Arc::clone(&working), move |node| {
-                let spooled = spool(&node, &presented);
-                send(spooled, &pieces);
+            .call_async(Arc::clone(&working), move |node| async move {
+                let spooled = spool(&node, &presented).await;
+                send(spooled, &pieces).await;
             })
             .await;
         if let Bridged::Busy(_) | Bridged::Panicked = bridged {
@@ -127,7 +127,10 @@ pub(crate) async fn backup(
 
 /// Write the snapshot the caller may take into an unlinked file, and answer
 /// the file and its length, or the refusal.
-fn spool(node: &Shared, presented: &basic::Presented) -> Result<(std::fs::File, u64), Answer> {
+async fn spool(
+    node: &Shared,
+    presented: &basic::Presented,
+) -> Result<(std::fs::File, u64), Answer> {
     let unwritable = |why: &std::io::Error| {
         Answer::new(
             500,
@@ -152,12 +155,12 @@ fn spool(node: &Shared, presented: &basic::Presented) -> Result<(std::fs::File, 
     // this request whether it ends in a refusal, a cut connection or a crash.
     std::fs::remove_file(&path).map_err(|why| unwritable(&why))?;
     let writer = file.try_clone().map_err(|why| unwritable(&why))?;
-    session_for(&node.db, &node.tokens, presented).and_then(|session| {
-        session
-            .snapshot_into(Box::new(std::io::BufWriter::new(writer)))
-            .run("BACKUP STATE;")
-            .map_err(|error| failure(&error))
-    })?;
+    let mut session = session_for(&node.db, &node.tokens, presented)?
+        .snapshot_into(Box::new(std::io::BufWriter::new(writer)));
+    session
+        .run("BACKUP STATE;")
+        .await
+        .map_err(|error| failure(&error))?;
     let length = file
         .seek(std::io::SeekFrom::End(0))
         .and_then(|length| file.rewind().map(|()| length))
@@ -166,15 +169,15 @@ fn spool(node: &Shared, presented: &basic::Presented) -> Result<(std::fs::File, 
 }
 
 /// Hand the route the length and then the file, a piece at a time.
-fn send(spooled: Result<(std::fs::File, u64), Answer>, pieces: &mpsc::Sender<Piece>) {
+async fn send(spooled: Result<(std::fs::File, u64), Answer>, pieces: &mpsc::Sender<Piece>) {
     let (mut file, length) = match spooled {
         Ok(spooled) => spooled,
         Err(answer) => {
-            drop(pieces.blocking_send(Piece::Refused(answer)));
+            drop(pieces.send(Piece::Refused(answer)).await);
             return;
         }
     };
-    if pieces.blocking_send(Piece::Length(length)).is_err() {
+    if pieces.send(Piece::Length(length)).await.is_err() {
         return;
     }
     let mut buffer = vec![0_u8; CHUNK_BYTES];
@@ -184,18 +187,22 @@ fn send(spooled: Result<(std::fs::File, u64), Answer>, pieces: &mpsc::Sender<Pie
             Ok(read) => {
                 let piece = buffer.get(..read).map(<[u8]>::to_vec).unwrap_or_default();
                 // A caller that stopped reading has gone; nothing is left to do.
-                if pieces.blocking_send(Piece::Bytes(piece)).is_err() {
+                if pieces.send(Piece::Bytes(piece)).await.is_err() {
                     return;
                 }
             }
             Err(why) => {
-                drop(pieces.blocking_send(Piece::Refused(Answer::new(
-                    500,
-                    format!(
-                        r#"{{"error":"reading the spooled backup failed: {}"}}"#,
-                        why.kind()
-                    ),
-                ))));
+                drop(
+                    pieces
+                        .send(Piece::Refused(Answer::new(
+                            500,
+                            format!(
+                                r#"{{"error":"reading the spooled backup failed: {}"}}"#,
+                                why.kind()
+                            ),
+                        )))
+                        .await,
+                );
                 return;
             }
         }

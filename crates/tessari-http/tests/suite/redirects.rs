@@ -25,6 +25,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_storage::{Catalog, LEASE_TTL, Lease, Reach, ReplicaDefinition};
@@ -44,7 +45,7 @@ const THEIR_EPOCH: u64 = 7;
 fn one_of_two(addressed: bool) -> Arc<Db> {
     let db = Db::in_memory().unwrap();
     db.session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE mine; USE NAMESPACE mine; DEFINE DATABASE d; USE DATABASE d; \
              DEFINE COLLECTION c; \
              DEFINE NAMESPACE theirs; USE NAMESPACE theirs; DEFINE DATABASE d; USE DATABASE d; \

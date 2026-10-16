@@ -13,6 +13,7 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tessari_session::RunNow;
 
 use tessari_kv::{KeyRange, Keyspace, KvBackend, ScanRequest};
 use tessari_lsm::{LsmBackend, StoreConfig};
@@ -69,7 +70,7 @@ fn write(
             ));
         }
         script.push_str(" COMMIT;");
-        session.run(&script)?;
+        session.run_now(&script)?;
         written = upto;
     }
     Ok(())
@@ -77,7 +78,7 @@ fn write(
 
 /// The identities the series answers with, in order.
 fn answer(session: &mut tessaridb::Session) -> Result<Vec<String>, Box<dyn Error>> {
-    let outcomes = session.run("SELECT * FROM readings;")?;
+    let outcomes = session.run_now("SELECT * FROM readings;")?;
     Ok(outcomes
         .first()
         .and_then(tessaridb::Outcome::records)
@@ -93,7 +94,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let db = Db::open(dir)?;
     let mut session = db.session();
-    session.run(
+    session.run_now(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench; DEFINE DATABASE bench; \
          USE DATABASE bench; DEFINE SERIES readings RETAIN 30d;",
     )?;

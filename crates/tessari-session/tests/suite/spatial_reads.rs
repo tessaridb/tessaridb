@@ -29,6 +29,7 @@
 
 #![allow(clippy::panic, clippy::unwrap_used)]
 
+use tessari_session::RunNow;
 use tessari_session::{Outcome, Session};
 use tessari_storage::Store;
 use tessari_types::{RecordId, Value};
@@ -64,12 +65,12 @@ CREATE places:'blank' = { name: 'no geometry at all' };
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.run(PLACES).unwrap();
+    session.run_now(PLACES).unwrap();
     session
 }
 
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let mut found: Vec<RecordId> = outcomes
         .last()
         .unwrap()
@@ -84,7 +85,7 @@ fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
 
 /// One field of the plan a read would take.
 fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
-    let outcomes = session.run(&format!("EXPLAIN {read}")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read}")).unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("a plan answered with {:?}", outcomes.last());
     };
@@ -116,7 +117,7 @@ fn same_either_way(read: &str) -> String {
 
     let indexed = store();
     let mut with = ready(&indexed);
-    with.run(INDEX).unwrap();
+    with.run_now(INDEX).unwrap();
     let served = ids(&mut with, read);
 
     assert_eq!(
@@ -190,7 +191,7 @@ fn a_record_larger_than_the_query_is_still_in_the_answer() {
 
     let indexed = store();
     let mut session = ready(&indexed);
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
     let found = ids(&mut session, &read);
     for expected in ["landmass", "province", "town", "quarter", "corner", "spot"] {
         assert!(
@@ -233,7 +234,7 @@ fn the_field_may_be_either_argument() {
 
         let indexed = store();
         let mut session = ready(&indexed);
-        session.run(INDEX).unwrap();
+        session.run_now(INDEX).unwrap();
         assert_eq!(
             ids(&mut session, &first),
             ids(&mut session, &second),
@@ -302,7 +303,7 @@ fn the_plan_names_the_shape_and_how_much_of_the_key_space_it_touches() {
     // invented here.
     let indexed = store();
     let mut session = ready(&indexed);
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
 
     let small = format!(
         "SELECT * FROM places WHERE geo::intersects(at, {});",
@@ -330,9 +331,9 @@ fn an_ordered_index_still_wins_the_question_it_is_for() {
     // served by that index and not lose a tie to a spatial one on another field.
     let indexed = store();
     let mut session = ready(&indexed);
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
     session
-        .run("DEFINE INDEX by_name ON places FIELDS name;")
+        .run_now("DEFINE INDEX by_name ON places FIELDS name;")
         .unwrap();
 
     let read = "SELECT * FROM places WHERE name = 'a city';";
@@ -371,7 +372,7 @@ fn an_ordered_index_on_the_field_does_not_capture_a_geometry_test() {
     // An ordered index on the very field the geometry test names, and no
     // spatial one anywhere.
     session
-        .run("DEFINE INDEX by_at ON places FIELDS at;")
+        .run_now("DEFINE INDEX by_at ON places FIELDS at;")
         .unwrap();
     assert_eq!(
         plan(&mut session, &read, "access"),
@@ -392,9 +393,9 @@ fn a_region_and_an_equality_in_one_condition_choose_the_equality() {
     );
     let indexed = store();
     let mut session = ready(&indexed);
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
     session
-        .run("DEFINE INDEX by_name ON places FIELDS name;")
+        .run_now("DEFINE INDEX by_name ON places FIELDS name;")
         .unwrap();
     assert_eq!(plan(&mut session, &read, "shape"), "equality");
     assert_eq!(ids(&mut session, &read), vec![RecordId::from("town")]);
@@ -414,6 +415,6 @@ fn a_record_with_no_geometry_is_never_in_a_geometric_answer() {
     assert_eq!(access, "index");
     let indexed = store();
     let mut session = ready(&indexed);
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
     assert!(!ids(&mut session, &read).contains(&RecordId::from("blank")));
 }

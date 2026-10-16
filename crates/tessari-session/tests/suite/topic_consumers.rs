@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Parameters, Session};
@@ -25,7 +26,7 @@ fn shaped() -> Store {
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE other; \
              USE DATABASE other; DEFINE COLLECTION elsewhere; \
              DEFINE DATABASE shop; USE DATABASE shop; \
@@ -42,7 +43,7 @@ fn shaped() -> Store {
 fn inside(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -65,9 +66,13 @@ fn object<'a>(report: &'a BTreeMap<String, Value>, name: &str) -> &'a BTreeMap<S
 fn a_declared_topic_consumer_is_described_with_its_guarantee() {
     let store = shaped();
     let mut session = inside(&store);
-    session.run(DECLARE).unwrap();
+    session.run_now(DECLARE).unwrap();
 
-    let report = reported(&session.run("INFO FOR TOPIC CONSUMER orders_in;").unwrap());
+    let report = reported(
+        &session
+            .run_now("INFO FOR TOPIC CONSUMER orders_in;")
+            .unwrap(),
+    );
     let declared = object(&report, "declared");
     assert_eq!(declared.get("topic"), Some(&Value::from("orders")));
     assert_eq!(declared.get("group"), Some(&Value::from("rows")));
@@ -86,7 +91,7 @@ fn a_declared_topic_consumer_is_described_with_its_guarantee() {
         "nothing runs it inside a bare session"
     );
 
-    let topic = reported(&session.run("INFO FOR TOPIC orders;").unwrap());
+    let topic = reported(&session.run_now("INFO FOR TOPIC orders;").unwrap());
     let ingested = object(object(&topic, "ingested_by"), "orders_in");
     assert_eq!(ingested.get("into"), Some(&Value::from("order_rows")));
     assert_eq!(ingested.get("group"), Some(&Value::from("rows")));
@@ -96,7 +101,7 @@ fn a_declared_topic_consumer_is_described_with_its_guarantee() {
 fn what_a_topic_consumer_names_is_checked_before_it_is_declared() {
     let store = shaped();
     let mut session = inside(&store);
-    let refused = |session: &mut Session<'_>, source: &str| session.run(source).unwrap_err();
+    let refused = |session: &mut Session<'_>, source: &str| session.run_now(source).unwrap_err();
 
     assert!(matches!(
         refused(
@@ -128,7 +133,7 @@ fn what_a_topic_consumer_names_is_checked_before_it_is_declared() {
     );
     // `stop` needs neither, because it never hands a message back.
     session
-        .run(
+        .run_now(
             &DECLARE
                 .replace("'rows'", "'plain'")
                 .replace("quarantine", "stop"),
@@ -136,7 +141,7 @@ fn what_a_topic_consumer_names_is_checked_before_it_is_declared() {
         .unwrap();
     // Nothing above claimed the name.
     session
-        .run(&DECLARE.replace("orders_in", "second"))
+        .run_now(&DECLARE.replace("orders_in", "second"))
         .unwrap();
 }
 
@@ -144,9 +149,9 @@ fn what_a_topic_consumer_names_is_checked_before_it_is_declared() {
 fn the_two_kinds_are_not_confused_and_dropping_forgets_it() {
     let store = shaped();
     let mut session = inside(&store);
-    session.run(DECLARE).unwrap();
+    session.run_now(DECLARE).unwrap();
     session
-        .run(
+        .run_now(
             "DEFINE KAFKA CONSUMER from_broker FROM 'b:9092' TOPIC 't' GROUP 'g' FORMAT json \
              INTO order_rows IDENTITY k MAP a AS b ON FAILURE stop;",
         )
@@ -170,27 +175,30 @@ fn the_two_kinds_are_not_confused_and_dropping_forgets_it() {
             "INFO FOR KAFKA CONSUMER from_broker",
         ),
     ] {
-        let failure = session.run(source).unwrap_err();
+        let failure = session.run_now(source).unwrap_err();
         assert!(
             matches!(&failure, Error::WrongConsumerKind { instead: said, .. } if said == instead),
             "{source}: {failure}"
         );
     }
     // The Kafka listing lists Kafka consumers only.
-    let listing = format!("{:?}", session.run("INFO FOR KAFKA CONSUMERS;").unwrap());
+    let listing = format!(
+        "{:?}",
+        session.run_now("INFO FOR KAFKA CONSUMERS;").unwrap()
+    );
     assert!(
         listing.contains("from_broker") && !listing.contains("orders_in"),
         "{listing}"
     );
 
-    session.run("DROP TOPIC CONSUMER orders_in;").unwrap();
+    session.run_now("DROP TOPIC CONSUMER orders_in;").unwrap();
     assert!(matches!(
         session
-            .run("INFO FOR TOPIC CONSUMER orders_in;")
+            .run_now("INFO FOR TOPIC CONSUMER orders_in;")
             .unwrap_err(),
         Error::Unknown { .. }
     ));
-    let topic = reported(&session.run("INFO FOR TOPIC orders;").unwrap());
+    let topic = reported(&session.run_now("INFO FOR TOPIC orders;").unwrap());
     assert!(object(&topic, "ingested_by").is_empty(), "{topic:?}");
 }
 
@@ -207,11 +215,14 @@ fn atomically_commits_several_scripts_together_or_none_of_them() {
             Ok(())
         })
         .unwrap();
-    let count =
-        |session: &mut Session<'_>| match session.run("SELECT * FROM order_rows;").unwrap().pop() {
-            Some(Outcome::Records { records, .. }) => records.len(),
-            other => panic!("not records: {other:?}"),
-        };
+    let count = |session: &mut Session<'_>| match session
+        .run_now("SELECT * FROM order_rows;")
+        .unwrap()
+        .pop()
+    {
+        Some(Outcome::Records { records, .. }) => records.len(),
+        other => panic!("not records: {other:?}"),
+    };
     assert_eq!(count(&mut session), 2);
 
     let failed: tessari_session::Result<()> = session.atomically(|work| {

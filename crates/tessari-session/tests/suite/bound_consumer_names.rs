@@ -8,6 +8,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Parameters, Session};
@@ -23,7 +24,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE QUEUE jobs TIMEOUT 1m;\n\
@@ -51,7 +52,11 @@ fn billing() -> Parameters {
 
 /// The last statement's outcome.
 fn last(session: &mut Session<'_>, script: &str, supplied: &Parameters) -> Outcome {
-    session.run_with(script, supplied).unwrap().pop().unwrap()
+    session
+        .run_with_now(script, supplied)
+        .unwrap()
+        .pop()
+        .unwrap()
 }
 
 fn ids(outcome: &Outcome) -> Vec<String> {
@@ -180,7 +185,7 @@ fn a_group_named_by_a_parameter_is_the_group_the_literal_names() {
         "DROP GROUP $name ON TOPIC events;",
         &billing(),
     );
-    let gone = session.run("ACK events FOR CONSUMER 'billing' AT 3;");
+    let gone = session.run_now("ACK events FOR CONSUMER 'billing' AT 3;");
     assert!(
         gone.is_err(),
         "the group outlived DROP GROUP $name: {gone:?}"
@@ -196,7 +201,7 @@ fn a_name_bound_to_anything_but_a_string_with_something_in_it_is_refused() {
         Value::String(String::new()),
         Value::None,
     ] {
-        let refused = session.run_with("USE CONSUMER $name;", &named(held.clone()));
+        let refused = session.run_with_now("USE CONSUMER $name;", &named(held.clone()));
         assert!(
             matches!(
                 refused,
@@ -205,7 +210,7 @@ fn a_name_bound_to_anything_but_a_string_with_something_in_it_is_refused() {
             "{held:?} was taken as a consumer name: {refused:?}"
         );
     }
-    let unbound = session.run("READ FROM events FOR CONSUMER $name;");
+    let unbound = session.run_now("READ FROM events FOR CONSUMER $name;");
     assert!(
         matches!(
             unbound,

@@ -32,6 +32,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use tessari_session::RunNow;
 
 use tessari_kv::{
     Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
@@ -134,7 +135,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION events;",
@@ -151,18 +152,18 @@ fn ready(store: &Store) -> Session<'_> {
             n % 100
         ));
         if n % 100 == 0 {
-            session.run(&script).unwrap();
+            session.run_now(&script).unwrap();
             script.clear();
         }
     }
     if !script.is_empty() {
-        session.run(&script).unwrap();
+        session.run_now(&script).unwrap();
     }
     session
 }
 
 fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
-    let outcomes = session.run(&format!("EXPLAIN {read}")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read}")).unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("a plan answered with {:?}", outcomes.last());
     };
@@ -174,7 +175,7 @@ fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
 /// Not sorted by the test: the order is what is under test.
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
     session
-        .run(read)
+        .run_now(read)
         .unwrap()
         .last()
         .unwrap()
@@ -186,7 +187,7 @@ fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
 }
 
 fn path(session: &mut Session<'_>, read: &str) -> AccessPath {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -224,7 +225,7 @@ fn the_answers_are_the_ones_a_scan_gives() {
     let mut without = ready(&plain);
     let indexed = store();
     let mut with = ready(&indexed);
-    with.run(INDEX).unwrap();
+    with.run_now(INDEX).unwrap();
 
     for read in READS {
         assert_eq!(ids(&mut with, read), ids(&mut without, read), "{read}");
@@ -247,7 +248,7 @@ fn a_selective_condition_takes_the_order_from_the_index() {
     let indexed = store();
     let mut with = ready(&indexed);
     assert_eq!(path(&mut with, READS[0]), AccessPath::Scan);
-    with.run(INDEX).unwrap();
+    with.run_now(INDEX).unwrap();
     assert_eq!(path(&mut with, READS[0]), AccessPath::Ordered);
     assert_eq!(plan(&mut with, READS[0], "access"), r#"String("ordered")"#);
     assert_eq!(plan(&mut with, READS[0], "index"), r#"String("by_at")"#);
@@ -263,7 +264,7 @@ fn a_condition_too_thin_for_the_order_gives_it_up_and_scans() {
     let counting = Counting::new();
     let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
     let mut with = ready(&store);
-    with.run(INDEX).unwrap();
+    with.run_now(INDEX).unwrap();
     assert_eq!(path(&mut with, READS[3]), AccessPath::Scan);
     // …while the plan still reports the path the planner chose, which is the
     // same imprecision the unconditioned case has and for the same reason:
@@ -301,7 +302,7 @@ fn a_served_order_does_not_read_the_whole_table() {
     let counting = Counting::new();
     let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
     let mut session = ready(&store);
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
 
     counting.reset();
     let answered = ids(&mut session, READS[0]);
@@ -348,7 +349,7 @@ fn every_shape_the_order_cannot_be_taken_from_the_index_still_scans() {
     let mut without = ready(&plain);
     let indexed = store();
     let mut with = ready(&indexed);
-    with.run(INDEX).unwrap();
+    with.run_now(INDEX).unwrap();
 
     for read in refused {
         assert_ne!(path(&mut with, read), AccessPath::Ordered, "{read}");
@@ -364,9 +365,9 @@ fn a_write_in_the_same_transaction_gives_the_order_up() {
     // because this path reaches the same walk by a different route.
     let indexed = store();
     let mut with = ready(&indexed);
-    with.run(INDEX).unwrap();
+    with.run_now(INDEX).unwrap();
     let outcomes = with
-        .run(&format!(
+        .run_now(&format!(
             "BEGIN; CREATE events:{} = {{ at: 99999, slot: 0, rare: 0 }}; {} COMMIT;",
             RECORDS + 1,
             READS[0]
@@ -419,7 +420,7 @@ fn a_write_in_the_same_transaction_gives_the_order_up() {
 fn ready_required(store: &Store) -> Session<'_> {
     let mut session = ready(store);
     session
-        .run("DEFINE FIELD at ON events TYPE int REQUIRED;")
+        .run_now("DEFINE FIELD at ON events TYPE int REQUIRED;")
         .unwrap();
     session
 }
@@ -440,7 +441,7 @@ fn an_ascending_order_under_a_condition_is_served_over_a_required_field() {
     let indexed = store();
     let mut with = ready_required(&indexed);
     assert_eq!(path(&mut with, ASCENDING[0]), AccessPath::Scan);
-    with.run(INDEX).unwrap();
+    with.run_now(INDEX).unwrap();
     assert_eq!(path(&mut with, ASCENDING[0]), AccessPath::Ordered);
     assert_eq!(
         plan(&mut with, ASCENDING[0], "access"),
@@ -458,7 +459,7 @@ fn the_ascending_answers_are_the_ones_a_scan_gives() {
     let mut without = ready_required(&plain);
     let indexed = store();
     let mut with = ready_required(&indexed);
-    with.run(INDEX).unwrap();
+    with.run_now(INDEX).unwrap();
 
     for read in ASCENDING {
         let expected = ids(&mut without, read);
@@ -471,7 +472,7 @@ fn an_ascending_served_order_does_not_read_the_whole_table() {
     let counting = Counting::new();
     let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
     let mut session = ready_required(&store);
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
 
     counting.reset();
     let answered = ids(&mut session, ASCENDING[0]);
@@ -499,7 +500,7 @@ fn an_ascending_walk_that_runs_out_of_entries_answers_completely() {
     fn build(store: &Store) -> Session<'_> {
         let mut session = Session::new(store);
         session
-            .run(
+            .run_now(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
                  DEFINE DATABASE shop; USE DATABASE shop;\n\
                  DEFINE COLLECTION events;",
@@ -512,9 +513,9 @@ fn an_ascending_walk_that_runs_out_of_entries_answers_completely() {
                 i64::from(n % 13 == 0)
             ));
         }
-        session.run(&script).unwrap();
+        session.run_now(&script).unwrap();
         session
-            .run("DEFINE FIELD at ON events TYPE int REQUIRED;")
+            .run_now("DEFINE FIELD at ON events TYPE int REQUIRED;")
             .unwrap();
         session
     }
@@ -523,7 +524,7 @@ fn an_ascending_walk_that_runs_out_of_entries_answers_completely() {
     let mut without = build(&plain);
     let indexed = store();
     let mut with = build(&indexed);
-    with.run(INDEX).unwrap();
+    with.run_now(INDEX).unwrap();
 
     let read = "SELECT * FROM events WHERE slot = 1 ORDER BY at LIMIT 10;";
     let expected = ids(&mut without, read);

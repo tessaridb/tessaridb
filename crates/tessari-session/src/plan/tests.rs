@@ -8,6 +8,7 @@
 
 #![allow(clippy::panic)]
 
+use crate::run_now::RunNow;
 use std::sync::Arc;
 
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -30,7 +31,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
              DEFINE ANALYZER simple FILTERS lowercase;\n\

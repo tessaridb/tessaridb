@@ -139,7 +139,7 @@ fn undo(created: &[String], defined: &BTreeSet<String>) -> String {
 /// that is refused too — the caller is answered with the refusal that stopped
 /// the restore, and the operator is the one who can remove what is left.
 fn undone(restorer: &mut Session<'_>, created: &[String], defined: &BTreeSet<String>) {
-    if let Err(failure) = restorer.run(&undo(created, defined)) {
+    if let Err(failure) = restorer.run_blocking(&undo(created, defined)) {
         tracing::warn!(
             created = %created.join(", "),
             defined = %defined.iter().cloned().collect::<Vec<_>>().join(", "),

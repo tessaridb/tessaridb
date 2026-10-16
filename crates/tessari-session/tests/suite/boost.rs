@@ -28,6 +28,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -54,7 +55,7 @@ fn notes() -> Store {
     let held = store();
     let mut session = Session::new(&held);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
              DEFINE COLLECTION notes;\n\
@@ -72,7 +73,7 @@ fn notes() -> Store {
 
 /// The record ids one read answered with, in the order returned.
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<String> {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -81,7 +82,7 @@ fn ids(session: &mut Session<'_>, read: &str) -> Vec<String> {
 
 /// The number one read answered with under `relevance`, per record.
 fn scores(session: &mut Session<'_>, read: &str) -> Vec<(String, f64)> {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -114,7 +115,7 @@ fn weighting_a_field_changes_the_order() {
     let held = notes();
     let mut session = Session::new(&held);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
 
     let boosted = ids(
@@ -144,7 +145,7 @@ fn a_boost_multiplies_a_score_the_record_earned_and_never_manufactures_one() {
     let held = notes();
     let mut session = Session::new(&held);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
 
     let ranked = scores(
@@ -182,7 +183,7 @@ fn boosting_the_other_field_reverses_the_answer() {
     let held = notes();
     let mut session = Session::new(&held);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
 
     let boosted = ids(

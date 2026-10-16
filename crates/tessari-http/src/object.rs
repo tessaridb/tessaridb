@@ -132,7 +132,7 @@ fn refused(error: &Error) -> Answer {
     answer
 }
 
-pub(crate) fn put(
+pub(crate) async fn put(
     db: &Db,
     target: &Target<'_>,
     bytes: Vec<u8>,
@@ -153,14 +153,19 @@ pub(crate) fn put(
     given.insert("path".to_owned(), Value::String(path));
     given.insert("held".to_owned(), Value::Bytes(bytes));
     let script = format!("{} PUT {}:$path = $held;", target.tenancy(), target.bucket);
-    match session.run_with(&script, &given) {
+    match session.run_with(&script, &given).await {
         Ok(_) => Answer::new(201, r#"{"written":true}"#.to_owned()),
         Err(error) => refused(&error),
     }
 }
 
 /// `GET /files/…/{path}` — a file's bytes, or the bucket's listing.
-pub(crate) fn get(db: &Db, target: &Target<'_>, tokens: &Tokens, presented: &Presented) -> Answer {
+pub(crate) async fn get(
+    db: &Db,
+    target: &Target<'_>,
+    tokens: &Tokens,
+    presented: &Presented,
+) -> Answer {
     if !target.named_properly() {
         return Answer::bad_request("a namespace, database and bucket are ordinary names");
     }
@@ -191,7 +196,7 @@ pub(crate) fn get(db: &Db, target: &Target<'_>, tokens: &Tokens, presented: &Pre
             target.bucket,
             target.bucket,
         );
-        return match session.run_with(&script, &Parameters::new()) {
+        return match session.run_with(&script, &Parameters::new()).await {
             Ok(outcomes) => crate::respond::listing(&outcomes),
             Err(error) => refused(&error),
         };
@@ -199,7 +204,7 @@ pub(crate) fn get(db: &Db, target: &Target<'_>, tokens: &Tokens, presented: &Pre
     let mut given = Parameters::new();
     given.insert("path".to_owned(), Value::String(path));
     let script = format!("{} READ {}:$path;", target.tenancy(), target.bucket);
-    match session.run_with(&script, &given) {
+    match session.run_with(&script, &given).await {
         Ok(outcomes) => match outcomes.last() {
             Some(Outcome::Value(Value::Bytes(bytes))) => Answer::octets(200, bytes.clone()),
             // `READ` answers `NONE` where there is no file, which is the store
@@ -212,7 +217,7 @@ pub(crate) fn get(db: &Db, target: &Target<'_>, tokens: &Tokens, presented: &Pre
 }
 
 /// `DELETE /files/…/{path}` — remove a file and its bytes.
-pub(crate) fn delete(
+pub(crate) async fn delete(
     db: &Db,
     target: &Target<'_>,
     tokens: &Tokens,
@@ -252,7 +257,7 @@ pub(crate) fn delete(
         target.bucket,
         target.bucket,
     );
-    match session.run_with(&script, &given) {
+    match session.run_with(&script, &given).await {
         Ok(_) => Answer::new(204, String::new()),
         Err(error) => refused(&error),
     }

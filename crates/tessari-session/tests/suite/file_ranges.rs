@@ -15,6 +15,7 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -33,7 +34,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE work; USE DATABASE work;\n\
              DEFINE BUCKET media;",
@@ -55,7 +56,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn read(session: &mut Session<'_>, script: &str) -> Vec<u8> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     match outcomes.last() {
         Some(Outcome::Value(Value::Bytes(held))) => held.clone(),
         other => panic!("a read answered with {other:?}"),
@@ -65,7 +66,7 @@ fn read(session: &mut Session<'_>, script: &str) -> Vec<u8> {
 /// Write `bytes` as the whole file at `/big.bin`.
 fn write_whole(session: &mut Session<'_>, bytes: &[u8]) {
     session
-        .run(&format!("PUT media:'/big.bin' = 0x{};", hex(bytes)))
+        .run_now(&format!("PUT media:'/big.bin' = 0x{};", hex(bytes)))
         .unwrap();
 }
 
@@ -142,7 +143,7 @@ fn a_ranged_write_replaces_those_bytes_and_leaves_the_rest() {
     let held = seeded(4096);
     write_whole(&mut session, &held);
     session
-        .run("PUT media:'/big.bin' START 100 = 0xdeadbeef;")
+        .run_now("PUT media:'/big.bin' START 100 = 0xdeadbeef;")
         .unwrap();
 
     let mut expected = held.clone();
@@ -160,7 +161,7 @@ fn a_ranged_write_across_a_chunk_boundary_keeps_both_sides() {
     let from = CHUNK - 2;
     let written = [1_u8, 2, 3, 4];
     session
-        .run(&format!(
+        .run_now(&format!(
             "PUT media:'/big.bin' START {from} = 0x{};",
             hex(&written)
         ))
@@ -180,7 +181,7 @@ fn a_ranged_write_that_runs_past_the_end_grows_the_file() {
     let held = seeded(100);
     write_whole(&mut session, &held);
     session
-        .run("PUT media:'/big.bin' START 98 = 0xaabbccdd;")
+        .run_now("PUT media:'/big.bin' START 98 = 0xaabbccdd;")
         .unwrap();
 
     let found = read(&mut session, "READ media:'/big.bin';");
@@ -188,7 +189,7 @@ fn a_ranged_write_that_runs_past_the_end_grows_the_file() {
     assert_eq!(found[..98], held[..98]);
     assert_eq!(found[98..], [0xaa, 0xbb, 0xcc, 0xdd]);
     // …and the metadata kept up, which is what a read trusts for the chunk count.
-    let outcomes = session.run("SELECT * FROM media:'/big.bin';").unwrap();
+    let outcomes = session.run_now("SELECT * FROM media:'/big.bin';").unwrap();
     let records = outcomes.last().unwrap().records().unwrap();
     let Value::Object(fields) = &records[0].1 else {
         panic!("not an object");
@@ -208,7 +209,7 @@ fn a_write_that_would_leave_a_hole_is_refused_and_changes_nothing() {
     let held = seeded(100);
     write_whole(&mut session, &held);
 
-    let refused = session.run("PUT media:'/big.bin' START 200 = 0xff;");
+    let refused = session.run_now("PUT media:'/big.bin' START 200 = 0xff;");
     assert!(refused.is_err(), "{refused:?}");
     assert_eq!(
         read(&mut session, "READ media:'/big.bin';"),
@@ -218,9 +219,11 @@ fn a_write_that_would_leave_a_hole_is_refused_and_changes_nothing() {
 
     // The same rule on a file that does not exist yet: only offset zero is a
     // beginning.
-    let refused = session.run("PUT media:'/new.bin' START 8 = 0xff;");
+    let refused = session.run_now("PUT media:'/new.bin' START 8 = 0xff;");
     assert!(refused.is_err(), "{refused:?}");
-    session.run("PUT media:'/new.bin' START 0 = 0xff;").unwrap();
+    session
+        .run_now("PUT media:'/new.bin' START 0 = 0xff;")
+        .unwrap();
     assert_eq!(read(&mut session, "READ media:'/new.bin';"), vec![0xff]);
 }
 
@@ -233,7 +236,7 @@ fn start_zero_writes_at_the_beginning_rather_than_replacing_the_file() {
     let held = seeded(50);
     write_whole(&mut session, &held);
     session
-        .run("PUT media:'/big.bin' START 0 = 0x0102;")
+        .run_now("PUT media:'/big.bin' START 0 = 0x0102;")
         .unwrap();
 
     let found = read(&mut session, "READ media:'/big.bin';");
@@ -251,7 +254,7 @@ fn a_ranged_read_of_a_file_that_is_not_there_is_still_none() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("READ media:'/missing.bin' START 10 LIMIT 10;")
+        .run_now("READ media:'/missing.bin' START 10 LIMIT 10;")
         .unwrap();
     assert!(matches!(outcomes.last(), Some(Outcome::Value(Value::None))));
 }

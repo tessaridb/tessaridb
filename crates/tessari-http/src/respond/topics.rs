@@ -105,8 +105,11 @@ fn names(report: &BTreeMap<String, Value>, field: &str) -> Vec<String> {
 }
 
 /// The report a script's last statement answered, or nothing.
-fn report(session: &mut tessaridb::Session<'_>, script: &str) -> Option<BTreeMap<String, Value>> {
-    match session.run(script).ok()?.pop()? {
+async fn report(
+    session: &mut tessaridb::Session<'_>,
+    script: &str,
+) -> Option<BTreeMap<String, Value>> {
+    match session.run(script).await.ok()?.pop()? {
         Outcome::Value(Value::Object(report)) => Some(report),
         _ => None,
     }
@@ -117,7 +120,7 @@ fn report(session: &mut tessaridb::Session<'_>, script: &str) -> Option<BTreeMap
 /// A credential that is refused is answered as any other route answers it, so
 /// a scraper configured with a wrong password is told rather than quietly
 /// given fewer series.
-pub(crate) fn topic_series(
+pub(crate) async fn topic_series(
     db: &Db,
     tokens: &Tokens,
     presented: &Presented,
@@ -128,6 +131,7 @@ pub(crate) fn topic_series(
     let mut session = session_for(db, tokens, presented)?;
     let store = session
         .run("INFO FOR STORE;")
+        .await
         .map_err(|error| failure(&error))?;
     let Some(Outcome::Value(Value::Object(store))) = store.last() else {
         return Ok(String::new());
@@ -137,18 +141,23 @@ pub(crate) fn topic_series(
         let Some(held) = report(
             &mut session,
             &format!("USE NAMESPACE {namespace}; INFO FOR NAMESPACE;"),
-        ) else {
+        )
+        .await
+        else {
             continue;
         };
         for database in names(&held, "databases") {
             let Some(held) = report(
                 &mut session,
                 &format!("USE DATABASE {database}; INFO FOR DATABASE;"),
-            ) else {
+            )
+            .await
+            else {
                 continue;
             };
             for topic in names(&held, "topics") {
-                let Some(held) = report(&mut session, &format!("INFO FOR TOPIC {topic};")) else {
+                let Some(held) = report(&mut session, &format!("INFO FOR TOPIC {topic};")).await
+                else {
                     continue;
                 };
                 let base = format!(

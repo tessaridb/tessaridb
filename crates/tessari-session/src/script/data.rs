@@ -91,7 +91,10 @@ pub(super) fn records(
     body: &mut String,
 ) -> Result<u64> {
     let name = &table.name;
-    let rows = match reader.run(&format!("SELECT * FROM {name};"))?.pop() {
+    let rows = match reader
+        .run_blocking(&format!("SELECT * FROM {name};"))?
+        .pop()
+    {
         Some(Outcome::Records { records, .. }) => records,
         _ => return Ok(0),
     };
@@ -107,7 +110,7 @@ pub(super) fn records(
         let held = tessari_ql::literal::value(value, names);
         match table.kind {
             TableKind::Bucket(_) => {
-                let bytes = match reader.run(&format!("READ {target};"))?.pop() {
+                let bytes = match reader.run_blocking(&format!("READ {target};"))?.pop() {
                     Some(Outcome::Value(bytes @ Value::Bytes(_))) => bytes,
                     _ => Value::Bytes(Vec::new()),
                 };
@@ -152,12 +155,12 @@ fn write_instant(
     names: &tessari_ql::literal::Names,
     body: &mut String,
 ) -> Result<()> {
-    let left = match reader.run(&format!("RETURN TTL {target};"))?.pop() {
+    let left = match reader.run_blocking(&format!("RETURN TTL {target};"))?.pop() {
         Some(Outcome::Value(left @ Value::Duration(_))) => left,
         _ => return Ok(()),
     };
     let (Value::Duration(left), Some(Outcome::Value(Value::Datetime(now)))) =
-        (left, reader.run("RETURN time::now();")?.pop())
+        (left, reader.run_blocking("RETURN time::now();")?.pop())
     else {
         return Ok(());
     };

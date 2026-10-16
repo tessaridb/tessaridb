@@ -91,6 +91,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Outcome, Session};
@@ -201,7 +202,7 @@ const SHAPES: &[&str] = &[
 fn ready<'a>(store: &'a Store, indexes: &[&str]) -> Session<'a> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION people;",
@@ -218,12 +219,12 @@ fn ready<'a>(store: &'a Store, indexes: &[&str]) -> Session<'a> {
             n % 8
         ));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     // After the records, so every configuration indexes the same data — a
     // build and a maintained index must agree, which `REBUILD INDEX` asserts
     // elsewhere and this file therefore need not.
     for statement in indexes {
-        session.run(statement).unwrap();
+        session.run_now(statement).unwrap();
     }
     session
 }
@@ -235,7 +236,7 @@ fn store() -> Store {
 
 /// What a read answered and how it was served, in answer order.
 fn run(session: &mut Session<'_>, read: &str) -> (Vec<RecordId>, AccessPath) {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -254,7 +255,7 @@ fn run(session: &mut Session<'_>, read: &str) -> (Vec<RecordId>, AccessPath) {
 /// Four of seven configurations were indistinguishable to a matrix comparing
 /// that. The index name and the shape are what tell them apart.
 fn planned(session: &mut Session<'_>, read: &str) -> String {
-    let outcomes = session.run(&format!("EXPLAIN {read}")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read}")).unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("a plan answered with {:?}", outcomes.last());
     };

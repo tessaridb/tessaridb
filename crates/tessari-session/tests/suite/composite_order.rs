@@ -32,6 +32,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use tessari_session::RunNow;
 
 use tessari_kv::{
     Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
@@ -125,7 +126,7 @@ impl KvBackend for Counting {
 fn ready<'a>(store: &'a Store, index: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE events SCHEMALESS;\n\
@@ -140,15 +141,15 @@ fn ready<'a>(store: &'a Store, index: &str) -> Session<'a> {
             RECORDS.saturating_sub(n)
         ));
         if n % 100 == 0 {
-            session.run(&script).unwrap();
+            session.run_now(&script).unwrap();
             script.clear();
         }
     }
     if !script.is_empty() {
-        session.run(&script).unwrap();
+        session.run_now(&script).unwrap();
     }
     if !index.is_empty() {
-        session.run(index).unwrap();
+        session.run_now(index).unwrap();
     }
     session
 }
@@ -157,7 +158,7 @@ fn ready<'a>(store: &'a Store, index: &str) -> Session<'a> {
 const COMPOSITE: &str = "DEFINE INDEX by_at_tag ON events FIELDS at, tag;";
 
 fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
-    let outcomes = session.run(&format!("EXPLAIN {read}")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read}")).unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("a plan answered with {:?}", outcomes.last());
     };
@@ -167,7 +168,7 @@ fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
 /// The identities a read answers with, **in the order it answered**, and the
 /// path it took.
 fn answered(session: &mut Session<'_>, read: &str) -> (Vec<RecordId>, AccessPath) {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -250,7 +251,7 @@ fn a_served_composite_order_reads_its_group_and_not_the_table() {
     assert_eq!(ids.len(), LIMIT);
 
     counting.reset();
-    session.run("SELECT * FROM events;").unwrap();
+    session.run_now("SELECT * FROM events;").unwrap();
     let whole = counting.rows();
 
     // A drained group is not free — it reads the whole group rather than the
@@ -292,7 +293,7 @@ fn a_single_field_index_is_preferred_to_a_composite_holding_the_same_order() {
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     let mut session = ready(&store, COMPOSITE);
     session
-        .run("DEFINE INDEX by_at ON events FIELDS at;")
+        .run_now("DEFINE INDEX by_at ON events FIELDS at;")
         .unwrap();
     assert_eq!(plan(&mut session, ASCENDING, "index"), r#"String("by_at")"#);
     assert_eq!(
@@ -309,7 +310,7 @@ fn an_ascending_composite_order_is_still_refused_over_an_optional_leading_field(
     let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE events SCHEMALESS;\n\

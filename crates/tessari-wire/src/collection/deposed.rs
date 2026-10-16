@@ -62,6 +62,7 @@ pub(super) fn refused(into: &Store, fetched: Vec<Result<Collected>>) -> Vec<Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tessari_session::RunNow;
     use tessari_storage::{LEASE_TTL, Lease, LogId};
     use tessari_types::{Epoch, Sequence};
     use tessaridb::Db;
@@ -80,7 +81,7 @@ mod tests {
 
     /// The one log `db` has written, after one statement.
     fn written(db: &Db, statement: &str) -> LogId {
-        db.session().run(statement).expect("the write commits");
+        db.session().run_now(statement).expect("the write commits");
         *db.store()
             .logs()
             .expect("the logs")
@@ -144,7 +145,7 @@ mod tests {
         let db = Db::in_memory().expect("an in-memory store");
         db.store().hold(Epoch::new(3), Lease::taken(LEASE_TTL));
         db.session()
-            .run("DEFINE NAMESPACE s3; USE NAMESPACE s3; DEFINE DATABASE us; USE DATABASE us; DEFINE TABLE o SCHEMALESS; CREATE o:1 = { a: 1 };")
+            .run_now("DEFINE NAMESPACE s3; USE NAMESPACE s3; DEFINE DATABASE us; USE DATABASE us; DEFINE TABLE o SCHEMALESS; CREATE o:1 = { a: 1 };")
             .expect("the writes commit");
         let us = tessari_types::Reach::Database(
             tessari_types::NamespaceId::new(1),

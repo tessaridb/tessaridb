@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tessari_session::RunNow;
 
 use tessari_kv::{Key, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value, WriteBatch};
 use tessari_session::Session;
@@ -80,11 +81,11 @@ fn backup_of_many() -> Vec<u8> {
     let source = Store::open(Arc::new(MemoryBackend::new())).unwrap();
     let mut session = Session::new(&source);
     session
-        .run("DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE TABLE t SCHEMALESS;")
+        .run_now("DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE TABLE t SCHEMALESS;")
         .unwrap();
     for at in 0..RECORDS {
         session
-            .run(&format!("CREATE t:{at} = {{ n: {at} }};"))
+            .run_now(&format!("CREATE t:{at} = {{ n: {at} }};"))
             .unwrap();
     }
     let mut taken = Vec::new();

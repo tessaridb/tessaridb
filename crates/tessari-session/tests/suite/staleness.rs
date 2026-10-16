@@ -28,6 +28,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use core::time::Duration;
 
@@ -46,7 +47,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE orders SCHEMALESS;\n\
@@ -131,7 +132,7 @@ fn a_bound_above_the_floor_is_answered_here() {
     let mut session = ready(&store);
 
     let outcomes = session
-        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .run_now(&format!("SELECT * FROM orders STALENESS {};", allowed()))
         .expect("this node is within any bound it can accept");
 
     assert_eq!(outcomes.len(), 1);
@@ -143,7 +144,7 @@ fn a_bound_below_the_floor_is_refused_and_the_floor_is_named() {
     let mut session = ready(&store);
 
     let refusal = session
-        .run("SELECT * FROM orders STALENESS 1s;")
+        .run_now("SELECT * FROM orders STALENESS 1s;")
         .unwrap_err();
 
     let Error::StalenessBelowFloor { floor, written, .. } = &refusal else {
@@ -167,7 +168,7 @@ fn the_floor_itself_is_accepted() {
     let mut session = ready(&store);
 
     session
-        .run(&format!(
+        .run_now(&format!(
             "SELECT * FROM orders STALENESS {STALENESS_FLOOR_SECONDS}s;"
         ))
         .expect("the floor is the tightest bound that is accepted, not the tightest refused");
@@ -182,7 +183,7 @@ fn a_bound_of_nothing_is_refused_where_the_statement_is_read() {
     let mut session = ready(&store);
 
     let refusal = session
-        .run("SELECT * FROM orders STALENESS 0s;")
+        .run_now("SELECT * FROM orders STALENESS 0s;")
         .unwrap_err();
     assert!(
         refusal.to_string().contains("staleness"),
@@ -204,7 +205,7 @@ fn a_staleness_bound_cannot_qualify_a_read_that_names_a_version() {
     let mut session = ready(&store);
 
     let refusal = session
-        .run(&format!(
+        .run_now(&format!(
             "SELECT * FROM orders VERSION 1 STALENESS {};",
             allowed()
         ))
@@ -223,7 +224,7 @@ fn a_field_called_staleness_is_still_a_field() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE readings SCHEMALESS;\n\
@@ -232,7 +233,7 @@ fn a_field_called_staleness_is_still_a_field() {
         .unwrap();
 
     session
-        .run("SELECT staleness FROM readings;")
+        .run_now("SELECT staleness FROM readings;")
         .expect("`staleness` with no duration after it is an ordinary field name");
 }
 
@@ -248,14 +249,14 @@ fn a_node_whose_copy_has_no_known_age_refuses_a_bounded_read() {
     // answering reads altogether.
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE NODE ROLES serving;").unwrap();
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
 
     session
-        .run("SELECT * FROM orders;")
+        .run_now("SELECT * FROM orders;")
         .expect("a read that names no tolerance is unaffected");
 
     let refusal = session
-        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .run_now(&format!("SELECT * FROM orders STALENESS {};", allowed()))
         .expect_err("a copy with no known age is beyond every bound");
 
     assert!(
@@ -272,16 +273,18 @@ fn a_leader_whose_lease_lapsed_is_no_longer_a_copy_within_any_bound() {
     // from it would serve data that somebody else may already have written past.
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE NODE ROLES serving, writable;").unwrap();
+    session
+        .run_now("DEFINE NODE ROLES serving, writable;")
+        .unwrap();
 
     session
-        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .run_now(&format!("SELECT * FROM orders STALENESS {};", allowed()))
         .expect("while the fence is open this node is its own origin");
 
     store.hold_lease(core::time::Duration::ZERO);
 
     let refusal = session
-        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .run_now(&format!("SELECT * FROM orders STALENESS {};", allowed()))
         .expect_err("a lapsed leader is no longer the origin of what it holds");
 
     assert!(
@@ -301,10 +304,10 @@ fn the_bounded_refusal_blames_the_cluster_and_not_the_statement() {
     // leader is now carrying their read.
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE NODE ROLES serving;").unwrap();
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
 
     let refusal = session
-        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .run_now(&format!("SELECT * FROM orders STALENESS {};", allowed()))
         .expect_err("a copy with no known age is beyond every bound");
     let said = refusal.to_string();
 
@@ -338,10 +341,10 @@ fn a_bounded_read_this_node_cannot_answer_is_sent_to_a_peer_that_can() {
     // behalf.
     let store = store();
     let mut session = ready(&store).among(one_peer(Duration::from_secs(1)));
-    session.run("DEFINE NODE ROLES serving;").unwrap();
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
 
     let sent = session
-        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .run_now(&format!("SELECT * FROM orders STALENESS {};", allowed()))
         .expect_err("a redirect is an answer, and it arrives as one of these");
 
     let Error::ReadIsElsewhere {
@@ -375,10 +378,10 @@ fn a_redirect_says_that_this_node_did_not_fetch_on_the_callers_behalf() {
     // read open against a peer.
     let store = store();
     let mut session = ready(&store).among(one_peer(Duration::from_secs(1)));
-    session.run("DEFINE NODE ROLES serving;").unwrap();
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
 
     let said = session
-        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .run_now(&format!("SELECT * FROM orders STALENESS {};", allowed()))
         .expect_err("this node cannot answer it")
         .to_string();
 
@@ -404,10 +407,10 @@ fn a_peer_beyond_the_bound_leaves_the_read_refused_and_not_redirected() {
     let store = store();
     let bound = Duration::from_secs(STALENESS_FLOOR_SECONDS.saturating_mul(3));
     let mut session = ready(&store).among(one_peer(bound.saturating_add(Duration::from_secs(1))));
-    session.run("DEFINE NODE ROLES serving;").unwrap();
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
 
     let refusal = session
-        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .run_now(&format!("SELECT * FROM orders STALENESS {};", allowed()))
         .expect_err("no copy in reach is within the bound");
 
     assert!(
@@ -427,7 +430,7 @@ fn a_node_that_can_answer_here_is_not_redirected_to_a_fresher_peer() {
     let mut session = ready(&store).among(one_peer(Duration::ZERO));
 
     session
-        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .run_now(&format!("SELECT * FROM orders STALENESS {};", allowed()))
         .expect("this node is its own origin and satisfies any bound it accepts");
 }
 
@@ -437,10 +440,10 @@ fn a_node_told_about_no_peers_refuses_exactly_as_it_did_before() {
     // added a third answer and must not have moved the second one.
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE NODE ROLES serving;").unwrap();
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
 
     let refusal = session
-        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .run_now(&format!("SELECT * FROM orders STALENESS {};", allowed()))
         .expect_err("a copy with no known age is beyond every bound");
 
     assert!(
@@ -464,7 +467,7 @@ fn a_node_told_about_no_peers_refuses_exactly_as_it_did_before() {
 fn reader(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -490,11 +493,11 @@ fn a_copy_whose_age_is_known_and_inside_the_bound_is_answered_here() {
     // about.
     let store = store();
     let mut session = ready(&store).among(one_peer(Duration::ZERO));
-    session.run("DEFINE NODE ROLES serving;").unwrap();
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
     level(&store, 1);
 
     let outcomes = session
-        .run(&format!("SELECT * FROM orders STALENESS {};", allowed()))
+        .run_now(&format!("SELECT * FROM orders STALENESS {};", allowed()))
         .expect("a copy level a moment ago is inside a bound three floors wide");
 
     assert_eq!(outcomes.len(), 1, "and it is answered here, not redirected");
@@ -516,7 +519,7 @@ fn a_copy_that_has_really_aged_past_the_bound_is_routed_away_from() {
     // them, and they differ only in what this node knows about anybody else.
     let store = store();
     let mut opening = ready(&store);
-    opening.run("DEFINE NODE ROLES serving;").unwrap();
+    opening.run_now("DEFINE NODE ROLES serving;").unwrap();
     level(&store, 1);
 
     // The bound is the floor itself — the tightest this API admits, so the
@@ -529,7 +532,7 @@ fn a_copy_that_has_really_aged_past_the_bound_is_routed_away_from() {
 
     let mut with_a_peer = reader(&store).among(one_peer(Duration::from_secs(1)));
     let sent = with_a_peer
-        .run(&format!("SELECT * FROM orders STALENESS {bound};"))
+        .run_now(&format!("SELECT * FROM orders STALENESS {bound};"))
         .expect_err("this node's own copy has aged past the bound it was given");
     let Error::ReadIsElsewhere { endpoint, node, .. } = &sent else {
         panic!("a node beyond the bound answered the read itself: {sent}");
@@ -542,7 +545,7 @@ fn a_copy_that_has_really_aged_past_the_bound_is_routed_away_from() {
 
     let mut alone = reader(&store);
     let refusal = alone
-        .run(&format!("SELECT * FROM orders STALENESS {bound};"))
+        .run_now(&format!("SELECT * FROM orders STALENESS {bound};"))
         .expect_err("nothing this node knows of is inside the bound");
     assert!(
         matches!(refusal, Error::NoCopyWithinStaleness { .. }),
@@ -554,6 +557,6 @@ fn a_copy_that_has_really_aged_past_the_bound_is_routed_away_from() {
     // it, answered here.
     let generous = format!("{}s", STALENESS_FLOOR_SECONDS.saturating_mul(60));
     alone
-        .run(&format!("SELECT * FROM orders STALENESS {generous};"))
+        .run_now(&format!("SELECT * FROM orders STALENESS {generous};"))
         .expect("a bound wide enough for this copy is answered here");
 }

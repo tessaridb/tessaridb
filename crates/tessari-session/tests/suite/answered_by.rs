@@ -22,6 +22,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
 
 use core::time::Duration;
 
@@ -39,7 +40,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE orders SCHEMALESS;\n\
@@ -101,7 +102,7 @@ fn a_node_that_leads_answers_the_read_itself() {
     let mut session = ready(&store);
 
     let outcomes = session
-        .run("SELECT * FROM orders ANSWERED BY LEADER;")
+        .run_now("SELECT * FROM orders ANSWERED BY LEADER;")
         .expect("a node that may write is the leader of its own records");
 
     assert_eq!(outcomes.len(), 1);
@@ -113,10 +114,10 @@ fn any_copy_is_the_default_and_writing_it_changes_nothing() {
     let mut session = ready(&store);
 
     let written = session
-        .run("SELECT * FROM orders ANSWERED BY ANY;")
+        .run_now("SELECT * FROM orders ANSWERED BY ANY;")
         .expect("any copy includes this one");
     let unwritten = session
-        .run("SELECT * FROM orders;")
+        .run_now("SELECT * FROM orders;")
         .expect("the default is the same thing unsaid");
 
     assert_eq!(written.len(), unwritten.len());
@@ -128,10 +129,10 @@ fn a_follower_asked_for_the_leader_redirects_to_the_peer_that_claims_it() {
     let mut session = ready(&store).among(peer(true));
     // Drained of the writable role, this node is a follower — which is the only
     // state in which the clause has anything to do.
-    session.run("DEFINE NODE ROLES serving;").unwrap();
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
 
     let sent = session
-        .run("SELECT * FROM orders ANSWERED BY LEADER;")
+        .run_now("SELECT * FROM orders ANSWERED BY LEADER;")
         .expect_err("a redirect is an answer, and it arrives as one of these");
 
     let Error::ReadIsElsewhere {
@@ -163,10 +164,10 @@ fn a_follower_asked_for_the_leader_redirects_to_the_peer_that_claims_it() {
 fn a_follower_that_knows_of_no_leader_refuses_and_names_the_remedy() {
     let store = store();
     let mut session = ready(&store).among(peer(false));
-    session.run("DEFINE NODE ROLES serving;").unwrap();
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
 
     let refusal = session
-        .run("SELECT * FROM orders ANSWERED BY LEADER;")
+        .run_now("SELECT * FROM orders ANSWERED BY LEADER;")
         .unwrap_err();
 
     assert!(
@@ -187,10 +188,10 @@ fn a_follower_with_no_peers_at_all_refuses_rather_than_answering_locally() {
     // quiet wrong answer the whole clause exists to prevent.
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE NODE ROLES serving;").unwrap();
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
 
     let refusal = session
-        .run("SELECT * FROM orders ANSWERED BY LEADER;")
+        .run_now("SELECT * FROM orders ANSWERED BY LEADER;")
         .unwrap_err();
 
     assert!(matches!(refusal, Error::NoLeaderKnown { .. }), "{refusal}");
@@ -209,10 +210,10 @@ fn the_two_axes_compose_and_authority_is_decided_first() {
     // leader.
     let store = store();
     let mut session = ready(&store).among(peer(true));
-    session.run("DEFINE NODE ROLES serving;").unwrap();
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
 
     let sent = session
-        .run(&format!(
+        .run_now(&format!(
             "SELECT * FROM orders STALENESS {}s ANSWERED BY LEADER;",
             tessari_constants::STALENESS_FLOOR_SECONDS.saturating_mul(3)
         ))
@@ -236,7 +237,7 @@ fn an_unknown_answerer_is_refused_where_the_statement_is_read() {
     let mut session = ready(&store);
 
     let refusal = session
-        .run("SELECT * FROM orders ANSWERED BY MASTER;")
+        .run_now("SELECT * FROM orders ANSWERED BY MASTER;")
         .unwrap_err();
 
     let message = refusal.to_string();
@@ -256,7 +257,7 @@ fn answered_by_with_no_node_is_refused_rather_than_ignored() {
     let mut session = ready(&store);
 
     session
-        .run("SELECT * FROM orders ANSWERED BY;")
+        .run_now("SELECT * FROM orders ANSWERED BY;")
         .expect_err("a clause opened and left unfinished is a mistake in the statement");
 }
 
@@ -267,7 +268,7 @@ fn a_field_called_answered_is_still_a_field() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE tickets SCHEMALESS;\n\
@@ -276,7 +277,7 @@ fn a_field_called_answered_is_still_a_field() {
         .unwrap();
 
     session
-        .run("SELECT answered FROM tickets;")
+        .run_now("SELECT answered FROM tickets;")
         .expect("a word that opens a clause only in a clause's position");
 }
 
@@ -290,11 +291,11 @@ fn a_read_answered_by_the_leader_is_not_promised_to_be_repeatable() {
     let mut session = ready(&store);
 
     let first = session
-        .run("SELECT * FROM orders ANSWERED BY LEADER;")
+        .run_now("SELECT * FROM orders ANSWERED BY LEADER;")
         .unwrap();
-    session.run("CREATE orders:2 = { total: 20 };").unwrap();
+    session.run_now("CREATE orders:2 = { total: 20 };").unwrap();
     let second = session
-        .run("SELECT * FROM orders ANSWERED BY LEADER;")
+        .run_now("SELECT * FROM orders ANSWERED BY LEADER;")
         .unwrap();
 
     assert_ne!(
