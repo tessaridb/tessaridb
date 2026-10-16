@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BinaryHeap};
 use std::ops::ControlFlow;
 
 use tessari_encoding::decode_payload;
-use tessari_storage::{QueueDeclaration, Transaction};
+use tessari_storage::{QueueDeclaration, RecordAddress, Transaction};
 use tessari_types::{Datetime, Path, RecordId, Value};
 
 use super::claimable;
@@ -63,6 +63,11 @@ impl Ord for Candidate {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.rank.cmp(&other.rank)
     }
+}
+
+/// Where a queued record lives.
+fn address(context: Context, table: tessari_types::TableId, id: &RecordId) -> RecordAddress {
+    RecordAddress::new(context.namespace, context.database, table, id.clone())
 }
 
 /// The record's rank, when it can be claimed now; a spent one goes to `dead`
@@ -126,6 +131,7 @@ impl Session<'_> {
                     if let Some(candidate) =
                         ranked(id.clone(), bytes, (now, declared, field), &mut dead)?
                         && self.matches(transaction, matching, &candidate.id, &candidate.fields)?
+                        && !transaction.claimed_elsewhere(&address(context, table, &candidate.id))
                     {
                         taken.push(candidate);
                     }
@@ -158,6 +164,7 @@ impl Session<'_> {
             |walking, id, bytes| -> Result<ControlFlow<()>> {
                 if let Some(candidate) = ranked(id, &bytes, (now, declared, field), &mut dead)?
                     && self.matches(walking, matching, &candidate.id, &candidate.fields)?
+                    && !walking.claimed_elsewhere(&address(context, table, &candidate.id))
                 {
                     if kept.len() < limit {
                         kept.push(Reverse(candidate));
@@ -209,14 +216,15 @@ impl Session<'_> {
         )?;
         let mut taken = Vec::with_capacity(head.len());
         for (id, mut fields) in head {
+            let address = address(context, table, &id);
+            // Taken here rather than while the head was ranked, so a record
+            // ranked and then displaced is never held back from another claim;
+            // one taken since by another claim is passed over (ADR-0126 D5).
+            if !transaction.take_for_claim(&address) {
+                continue;
+            }
             super::hold(&mut fields, until, self.consumer.as_ref());
             let payload = Value::Object(fields);
-            let address = tessari_storage::RecordAddress::new(
-                context.namespace,
-                context.database,
-                table,
-                id.clone(),
-            );
             self.put_engine_record(transaction, address, payload.clone(), span)?;
             taken.push((id, payload));
         }

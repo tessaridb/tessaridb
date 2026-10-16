@@ -280,6 +280,9 @@ pub struct Store {
     /// waiting for a majority reads (ADR-0106 D6). In memory for the same reason
     /// as `followers`.
     holds: Arc<crate::holds::Holds>,
+    /// The records open claims are taking (ADR-0126 D5). In memory for the
+    /// reason `holds` is: each entry is a fact about a live transaction.
+    claiming: Arc<crate::claiming::Claiming>,
     /// What this node has collected for itself, and when it was last level.
     ///
     /// Held in memory for the reason `crate::collections` gives in its own

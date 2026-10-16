@@ -33,6 +33,7 @@ mod cardinality;
 mod catalog;
 #[cfg(test)]
 mod catalog_rows_tests;
+mod claiming;
 mod collections;
 mod covering;
 mod decisions;

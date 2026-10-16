@@ -1508,3 +1508,77 @@ fn a_queue_reports_its_dead_letter_by_name() {
         "{described}"
     );
 }
+
+/// A second session in the database `ready` and `mixed` declare.
+fn worker(store: &Store) -> Session<'_> {
+    let mut session = Session::new(store);
+    session
+        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    session
+}
+
+/// The identities a claim run inside an open transaction answered with.
+fn claimed_in(open: &mut tessari_session::Atomic<'_, '_>, script: &str) -> Vec<String> {
+    claimed(
+        &open
+            .run_with(script, &tessari_session::Parameters::new())
+            .unwrap()
+            .pop()
+            .unwrap(),
+    )
+}
+
+/// Two workers on one queue at once take different records: a claim passes
+/// over a record another unfinished transaction is claiming, rather than both
+/// taking it and the later commit being refused (ADR-0126 D5).
+#[test]
+fn a_claim_passes_over_a_record_another_claim_is_taking() {
+    let store = store();
+    let mut first = ready(&store, "TIMEOUT 1m");
+    let mut second = worker(&store);
+    first
+        .atomically(|open| -> Result<(), tessari_session::Error> {
+            assert_eq!(claimed_in(open, "CLAIM FROM jobs;"), vec!["1"]);
+            assert_eq!(
+                claimed(&run(&mut second, "CLAIM FROM jobs;")),
+                vec!["2"],
+                "the record the open transaction is taking was handed out again"
+            );
+            Ok(())
+        })
+        .unwrap();
+    // Once the first transaction has ended, nothing it took is held back.
+    assert_eq!(claimed(&run(&mut second, "CLAIM FROM jobs;")), vec!["3"]);
+}
+
+/// A transaction that ends without committing gives back what it was taking.
+#[test]
+fn a_cancelled_claim_gives_its_records_back() {
+    let store = store();
+    let mut first = ready(&store, "TIMEOUT 1m");
+    let mut second = worker(&store);
+    let cancelled = first.atomically(|open| -> Result<(), tessari_session::Error> {
+        claimed_in(open, "CLAIM FROM jobs;");
+        Err(tessari_session::Error::UnclosedTransaction {
+            span: tessari_ql::Span::new(0, 0),
+        })
+    });
+    assert!(cancelled.is_err());
+    assert_eq!(claimed(&run(&mut second, "CLAIM FROM jobs;")), vec!["1"]);
+}
+
+/// A priority claim passes over a record another claim is taking too.
+#[test]
+fn a_priority_claim_passes_over_a_record_another_claim_is_taking() {
+    let store = store();
+    let mut first = mixed(&store, "TIMEOUT 1m PRIORITY BY weight");
+    let mut second = worker(&store);
+    first
+        .atomically(|open| -> Result<(), tessari_session::Error> {
+            assert_eq!(claimed_in(open, "CLAIM FROM media;"), vec!["3"]);
+            assert_eq!(claimed(&run(&mut second, "CLAIM FROM media;")), vec!["4"]);
+            Ok(())
+        })
+        .unwrap();
+}

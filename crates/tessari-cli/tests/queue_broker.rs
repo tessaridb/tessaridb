@@ -347,10 +347,17 @@ fn competing_processes_drain_a_queue_and_no_record_is_handed_out_twice() {
         );
     }
 
-    // Printed rather than asserted: contention is near-certain with four
-    // consumers on a strictly ordered queue, but it is not guaranteed, and a
-    // test that failed on a fast enough machine would be asserting the
-    // scheduler. What the losses look like is the evidence this run carries.
+    // A claim passes over a record another open claim is taking (ADR-0126 D5),
+    // so a loss is only the narrow race the register cannot see — a snapshot
+    // taken before a rival committed and walked after it let go. Measured
+    // 2026-10-16 at load 9: 0-1 losses per run with the register, 2487-2616
+    // with it ignored. The bound is far from both, so it asserts the register
+    // rather than the scheduler.
+    assert!(
+        lost.len() < JOBS,
+        "{} lost races over {JOBS} records: claims are racing for the same record",
+        lost.len()
+    );
     println!(
         "[broker] {} hand-outs, {} finished, {} lost races; first loss: {}",
         claimed.len(),

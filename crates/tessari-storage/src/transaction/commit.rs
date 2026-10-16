@@ -59,6 +59,12 @@ impl Drop for Transaction<'_> {
         self.store
             .snapshot_registry()
             .release(self.snapshot, self.registered);
+        // Committed or not, what this transaction was claiming is decided now:
+        // held by its commit, or free again (ADR-0126 D5).
+        let taken = self.claiming.get_mut();
+        if !taken.is_empty() {
+            self.store.claiming().release(self.claim_token.get(), taken);
+        }
     }
 }
 

@@ -41,6 +41,14 @@
 //! — but a worker loop has to ask again, and a caller that treats a refusal as a
 //! fault will stop on a healthy queue.
 //!
+//! **Since ADR-0126 D5 the walk passes over a record another open claim is
+//! taking**, through the store's claim register, so the race above is the rare
+//! case rather than the steady state: the same harness measured 2487-2616
+//! refusals a run with the register ignored and 0-1 with it. What is left is a
+//! snapshot taken before a rival committed and walked after it let go, and the
+//! commit still decides it — refused, as above. `CLAIM q:id` does not consult
+//! the register: naming a record is asking for that one.
+//!
 //! # What this does not do
 //!
 //! Nothing happens when a claimant dies. There is no liveness detection, no
@@ -166,6 +174,14 @@ impl Session<'_> {
                 if !claimable(&fields, now, &declared)
                     || !self.matches(walking, matching.as_ref(), &record, &fields)?
                 {
+                    return Ok(ControlFlow::Continue(()));
+                }
+                // Another open claim is taking it: passed over, so this claim
+                // takes the next record rather than racing for this one
+                // (ADR-0126 D5).
+                let address =
+                    RecordAddress::new(context.namespace, context.database, id, record.clone());
+                if !walking.take_for_claim(&address) {
                     return Ok(ControlFlow::Continue(()));
                 }
                 fields.insert(QUEUE_CLAIMED_UNTIL.to_owned(), Value::Datetime(until));
