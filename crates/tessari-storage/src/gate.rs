@@ -240,6 +240,12 @@ impl WriteGate {
         self.pending.staged()
     }
 
+    /// Whether no batch is staged or in flight — when the turn's holder reads
+    /// the engine alone, as [`Overlaid`] decides it.
+    pub(crate) fn nothing_pending(&self) -> bool {
+        self.pending.quiet()
+    }
+
     /// Whether this thread holds the turn, and so may read batches that have
     /// not landed.
     pub(crate) fn holding(&self) -> bool {

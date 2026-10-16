@@ -15,7 +15,7 @@ use tessari_encoding::{
     StoreValue,
 };
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
-use tessari_types::{DatabaseId, NamespaceId, Sequence, TableId};
+use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
 use super::{RecordAddress, Transaction};
 use crate::error::Result;
@@ -128,6 +128,27 @@ impl<'a> Transaction<'a> {
     /// Whether this transaction has written the record itself.
     pub(crate) fn has_written(&self, address: &RecordAddress) -> bool {
         self.writes.contains_key(address)
+    }
+
+    /// Whether this transaction has written any record of one table — a seek,
+    /// not a walk of its writes, because a transaction can hold thousands.
+    pub(crate) fn has_written_in(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+    ) -> bool {
+        // `Int(i64::MIN)` is the first identity a table can hold (`RecordId`'s
+        // variant order is the key order).
+        let first = RecordAddress::new(namespace, database, table, RecordId::Int(i64::MIN));
+        self.writes
+            .range(first..)
+            .next()
+            .is_some_and(|(written, _)| {
+                written.namespace == namespace
+                    && written.database == database
+                    && written.table == table
+            })
     }
 
     /// [`Self::get`] without the retention floor.

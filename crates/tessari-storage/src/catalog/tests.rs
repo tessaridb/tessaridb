@@ -202,3 +202,129 @@ fn a_tables_definitions_found_by_its_names_are_the_whole_catalogs_answer() {
         "no live table's id was a digit prefix of another's"
     );
 }
+
+/// A table's indexes and fields, held between statements once one reader has
+/// read them (`rows`), are still what each reader's own snapshot holds: a
+/// change committed elsewhere is seen by the next reader, a reader begun before
+/// it keeps the old answer, a transaction sees its own definitions, and a
+/// definition it cancelled is seen by nobody.
+#[test]
+fn a_held_definition_is_the_one_each_snapshot_holds() {
+    use crate::{FieldShape, IndexShape, Store, TableShape};
+    use std::sync::Arc;
+    use tessari_types::{FieldKind, Path};
+
+    let store = Store::open(Arc::new(tessari_kv::MemoryBackend::new())).unwrap();
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").unwrap().id;
+    let database = catalog.create_database(namespace, "shop").unwrap().id;
+    let table = catalog
+        .create_table(namespace, database, "users", TableShape::default())
+        .unwrap()
+        .id;
+    let declare = |catalog: &mut Catalog<'_, '_>, name: &str| {
+        catalog
+            .create_index(
+                table,
+                &format!("by_{name}"),
+                vec![Path::field(name)],
+                IndexShape::default(),
+            )
+            .unwrap();
+        catalog
+            .create_field(table, name, FieldKind::Any, FieldShape::default())
+            .unwrap();
+    };
+    declare(&mut catalog, "a");
+    transaction.commit().unwrap();
+    let answer = |catalog: &Catalog<'_, '_>| {
+        let indexes: Vec<String> = catalog
+            .indexes_on(namespace, database, table)
+            .unwrap()
+            .into_iter()
+            .map(|index| index.name)
+            .collect();
+        let fields: Vec<String> = catalog
+            .fields_on(namespace, database, table)
+            .unwrap()
+            .into_iter()
+            .map(|field| field.name)
+            .collect();
+        (indexes, fields)
+    };
+    let read = || {
+        let mut transaction = store.begin().unwrap();
+        answer(&Catalog::new(&mut transaction))
+    };
+    let named = |names: &[&str], prefix: &str| -> Vec<String> {
+        names.iter().map(|name| format!("{prefix}{name}")).collect()
+    };
+
+    assert_eq!(read(), (named(&["a"], "by_"), named(&["a"], "")));
+    // Read twice: the second is answered from what the first held.
+    assert_eq!(read(), (named(&["a"], "by_"), named(&["a"], "")));
+    let mut before = store.begin().unwrap();
+
+    let mut transaction = store.begin().unwrap();
+    declare(&mut Catalog::new(&mut transaction), "b");
+    transaction.commit().unwrap();
+    assert_eq!(
+        read(),
+        (named(&["a", "b"], "by_"), named(&["a", "b"], "")),
+        "a definition committed elsewhere is not seen by the next reader"
+    );
+    assert_eq!(
+        answer(&Catalog::new(&mut before)),
+        (named(&["a"], "by_"), named(&["a"], "")),
+        "a reader begun before the change is answered with what came after it"
+    );
+
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    declare(&mut catalog, "c");
+    assert_eq!(
+        answer(&catalog),
+        (named(&["a", "b", "c"], "by_"), named(&["a", "b", "c"], "")),
+        "a transaction does not see its own definitions"
+    );
+    drop(transaction);
+    assert_eq!(
+        read(),
+        (named(&["a", "b"], "by_"), named(&["a", "b"], "")),
+        "a cancelled definition is seen"
+    );
+
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let first = catalog.indexes_on(namespace, database, table).unwrap()[0].id;
+    catalog.drop_index(first).unwrap();
+    transaction.commit().unwrap();
+    assert_eq!(
+        read().0,
+        named(&["b"], "by_"),
+        "a dropped index is still found"
+    );
+
+    // A definition rewritten in place — `REBUILD INDEX` writes the index row
+    // and claims no name — is seen by the next reader too.
+    let unique_now = |store: &Store| {
+        let mut transaction = store.begin().unwrap();
+        Catalog::new(&mut transaction)
+            .indexes_on(namespace, database, table)
+            .unwrap()[0]
+            .unique
+    };
+    let held = unique_now(&store);
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let mut rewritten = catalog.indexes_on(namespace, database, table).unwrap()[0].clone();
+    rewritten.unique = !held;
+    catalog.rebuild_index(&rewritten);
+    transaction.commit().unwrap();
+    assert_eq!(
+        unique_now(&store),
+        !held,
+        "an index row rewritten without its name is answered as it was"
+    );
+}

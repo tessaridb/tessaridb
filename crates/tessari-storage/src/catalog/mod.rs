@@ -371,8 +371,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         Ok(true)
     }
 
-    /// A name or table row at this transaction's snapshot, from the rows held
-    /// between statements when the snapshot allows it (`rows`).
+    /// A catalog row at this transaction's snapshot, from the rows held
+    /// between statements when it is one of theirs and the snapshot allows it
+    /// (`rows`); any other row is read through the transaction.
     fn row(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
         if !CatalogRows::holds(address) || self.transaction.has_written(address) {
             return self.transaction.get(address);
@@ -385,15 +386,28 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             rows::Lookup::Held(row) => return Ok(row),
             rows::Lookup::Missing(fill) => fill,
         };
+        let reads_landed = self.reads_only_landed();
         let row = self.transaction.get(address)?;
         if let Some(generation) = fill
-            && !store.write_gate().holding()
+            && reads_landed
         {
             store
                 .catalog_rows()
                 .fill(address.clone(), generation, row.clone());
         }
         Ok(row)
+    }
+
+    /// Whether what this transaction reads now is what every reader at its
+    /// snapshot reads, so that a row read here may be held for all of them.
+    ///
+    /// Not on the thread holding the write turn while batches are staged behind
+    /// it: it reads them before they land, and one that never lands would leave
+    /// held a change nobody made (`crate::gate`). Asked BEFORE the read, because
+    /// only the holder stages and it stages after these reads, never during them.
+    pub(super) fn reads_only_landed(&self) -> bool {
+        let gate = self.transaction.store().write_gate();
+        !gate.holding() || gate.nothing_pending()
     }
 
     /// The store's vault root record, when one has been created.
@@ -434,7 +448,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
 
     fn read(&self, table: TableId, id: u32) -> Result<Option<Value>> {
         let address: RecordAddress = system::address(table, RecordId::Int(id_key(id)));
-        let Some(bytes) = self.transaction.get(&address)? else {
+        let Some(bytes) = self.row(&address)? else {
             return Ok(None);
         };
         Ok(Some(decode_payload(&bytes)?))
