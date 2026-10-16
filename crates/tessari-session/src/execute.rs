@@ -1003,7 +1003,8 @@ impl Session<'_> {
                 table,
                 condition,
                 limit,
-            } => self.delete_where(transaction, table, condition, *limit),
+                answer,
+            } => self.delete_where(transaction, table, condition, (*limit, *answer)),
             StatementKind::DeleteSpan {
                 table,
                 lower,
@@ -1011,6 +1012,7 @@ impl Session<'_> {
                 inclusive,
                 span: at,
                 limit,
+                answer,
             } => self.delete_span(
                 transaction,
                 table,
@@ -1020,7 +1022,7 @@ impl Session<'_> {
                     inclusive: *inclusive,
                     at: *at,
                 },
-                *limit,
+                (*limit, *answer),
             ),
             StatementKind::DefineBucket {
                 name,

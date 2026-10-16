@@ -1,10 +1,12 @@
 //! Deleting what a condition or a span selects.
 
-use tessari_ql::{DeleteBound, Expr, TableRef};
+use tessari_ql::{Answer, DeleteBound, Expr, TableRef};
 use tessari_storage::{RecordAddress, Transaction};
 
 use crate::condition::boolean;
 use crate::error::Result;
+use crate::outcome::{AccessPath, Outcome};
+use crate::plan::Plan;
 use crate::session::Session;
 
 use super::{Asked, Candidates, IdentitySpan, Scope};
@@ -46,8 +48,8 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         table: &TableRef,
         condition: &Expr,
-        limit: DeleteBound,
-    ) -> Result<crate::outcome::Outcome> {
+        (limit, answer): (DeleteBound, Answer),
+    ) -> Result<Outcome> {
         let ceiling = match limit {
             DeleteBound::AtMost(count) => count,
             DeleteBound::All => u64::MAX,
@@ -59,8 +61,8 @@ impl Session<'_> {
         // of the whole table does.
         self.refuse_reading_a_part(transaction, id, super::Part::Whole)?;
         let searched = self.searched_for(transaction, id, &[condition])?;
-        // No plan is reported: a delete answers with a count and has no plan to
-        // carry one on, so the table it would name is not asked for.
+        // A plan is reported only when the removed records are the answer
+        // (`RETURN BEFORE`); a count has no plan to carry one on.
         //
         // Nor is the read's own verdict on whether it answered the condition.
         // The same argument would hold here, but nothing has measured the
@@ -75,32 +77,36 @@ impl Session<'_> {
         // that means. The read's saving does not arise here in any case — a
         // delete has no `LIMIT` that stops the source, it has a ceiling on how
         // many it removes, and it must see every candidate to know it is done.
+        let mut plan = Plan::new(AccessPath::Scan).on(&table.name.text);
         let candidates =
             // `false`: a delete carries no read tail, so there is no clause to lift
             // the guard and nothing here to read one from.
             match self.candidates(transaction, id, context, condition, &searched, Asked::nothing())? {
-                Some(reached) => match reached.records {
-                    Candidates::Held(held) => held,
-                    // Read whole here, deliberately, for the reason the scan
-                    // above is read whole: a delete has no bound that stops the
-                    // source, and it must see every candidate to know it is
-                    // done. The walk exists for a read that can stop.
-                    Candidates::Range {
-                        index,
-                        fixed,
-                        lower,
-                        upper,
-                    } => {
-                        let visible = self.visible_in(transaction, id)?;
-                        let found = transaction.records_in_range(
-                            &index,
-                            &fixed,
-                            lower.as_ref(),
-                            upper.as_ref(),
-                        )?;
-                        self.records_of(found, &visible)?
+                Some(reached) => {
+                    plan = reached.plan;
+                    match reached.records {
+                        Candidates::Held(held) => held,
+                        // Read whole here, deliberately, for the reason the scan
+                        // above is read whole: a delete has no bound that stops the
+                        // source, and it must see every candidate to know it is
+                        // done. The walk exists for a read that can stop.
+                        Candidates::Range {
+                            index,
+                            fixed,
+                            lower,
+                            upper,
+                        } => {
+                            let visible = self.visible_in(transaction, id)?;
+                            let found = transaction.records_in_range(
+                                &index,
+                                &fixed,
+                                lower.as_ref(),
+                                upper.as_ref(),
+                            )?;
+                            self.records_of(found, &visible)?
+                        }
                     }
-                },
+                }
                 None => {
                     let visible = self.visible_in(transaction, id)?;
                     let scanned =
@@ -109,9 +115,9 @@ impl Session<'_> {
                 }
             };
 
-        let mut removed = 0_u64;
+        let mut removed = Removed::new(answer);
         for (record_id, record) in candidates {
-            if removed >= ceiling {
+            if removed.count >= ceiling {
                 break;
             }
             // Tested against the whole condition, exactly as a read is: the
@@ -125,14 +131,14 @@ impl Session<'_> {
             if !boolean(&held, condition.span)? {
                 continue;
             }
+            removed.add(&record_id, record);
             self.delete_record(
                 transaction,
                 RecordAddress::new(context.namespace, context.database, id, record_id),
                 condition.span,
             )?;
-            removed = removed.saturating_add(1);
         }
-        Ok(crate::outcome::Outcome::Removed { count: removed })
+        Ok(removed.outcome(plan))
     }
 
     /// Every record in a span of identities, removed.
@@ -162,8 +168,8 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         table: &TableRef,
         span: IdentitySpan<'_>,
-        limit: DeleteBound,
-    ) -> Result<crate::outcome::Outcome> {
+        (limit, answer): (DeleteBound, Answer),
+    ) -> Result<Outcome> {
         let ceiling = match limit {
             DeleteBound::AtMost(count) => count,
             DeleteBound::All => u64::MAX,
@@ -191,18 +197,66 @@ impl Session<'_> {
             span.inclusive,
         )?;
 
-        let mut removed = 0_u64;
-        for (record_id, _) in found {
-            if removed >= ceiling {
+        let mut removed = Removed::new(answer);
+        // Decoded only when answered, and through the redaction every read
+        // goes through, so the answer is the record as this session may see it.
+        let visible = match removed.records {
+            Some(_) => self.visible_in(transaction, id)?,
+            None => None,
+        };
+        for (record_id, bytes) in found {
+            if removed.count >= ceiling {
                 break;
             }
+            let record = match removed.records {
+                Some(_) => self.record_of(&bytes, &visible)?,
+                None => tessari_types::Value::None,
+            };
+            removed.add(&record_id, record);
             self.delete_record(
                 transaction,
                 RecordAddress::new(context.namespace, context.database, id, record_id),
                 span.at,
             )?;
-            removed = removed.saturating_add(1);
         }
-        Ok(crate::outcome::Outcome::Removed { count: removed })
+        Ok(removed.outcome(Plan::new(AccessPath::Span).on(&table.name.text)))
+    }
+}
+
+/// What a delete of many has removed: how many, and — when the statement said
+/// `RETURN BEFORE` — each record as it stood.
+struct Removed {
+    count: u64,
+    records: Option<Vec<(tessari_types::RecordId, tessari_types::Value)>>,
+}
+
+impl Removed {
+    fn new(answer: Answer) -> Self {
+        Self {
+            count: 0,
+            records: matches!(answer, Answer::Before).then(Vec::new),
+        }
+    }
+
+    /// Counts one removal; the identity is copied only when it is answered.
+    fn add(&mut self, id: &tessari_types::RecordId, record: tessari_types::Value) {
+        self.count = self.count.saturating_add(1);
+        if let Some(records) = &mut self.records {
+            records.push((id.clone(), record));
+        }
+    }
+
+    /// The answer: the records with the plan that reached them, or the count.
+    fn outcome(self, plan: Plan) -> Outcome {
+        match self.records {
+            Some(records) => Outcome::Records {
+                records,
+                plan,
+                notes: Vec::new(),
+                suggestion: None,
+                only: false,
+            },
+            None => Outcome::Removed { count: self.count },
+        }
     }
 }

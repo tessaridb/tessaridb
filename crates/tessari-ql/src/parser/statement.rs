@@ -147,6 +147,7 @@ impl Parser<'_> {
                             upper,
                             inclusive,
                             limit: self.delete_bound()?,
+                            answer: self.answer(Keyword::Delete)?,
                         }
                     } else {
                         self.expect_keyword(Keyword::Where, "`WHERE` and what to remove")?;
@@ -157,6 +158,7 @@ impl Parser<'_> {
                             table,
                             condition: Box::new(condition),
                             limit: self.delete_bound()?,
+                            answer: self.answer(Keyword::Delete)?,
                         }
                     }
                 } else {

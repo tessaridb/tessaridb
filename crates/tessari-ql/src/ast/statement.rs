@@ -1901,6 +1901,9 @@ pub enum StatementKind {
         /// unbounded form exist in the tree, and the whole point of the clause
         /// is that removing a table has to be *said*.
         limit: DeleteBound,
+        /// `RETURN BEFORE` answers the records removed, as they stood; no
+        /// clause answers how many.
+        answer: Answer,
     },
     /// `DELETE FROM events:1000..2000 LIMIT ALL` — every record in a span of
     /// identities.
@@ -1935,6 +1938,9 @@ pub enum StatementKind {
         span: Span,
         /// How much this statement may remove.
         limit: DeleteBound,
+        /// `RETURN BEFORE` answers the records removed, as `DELETE FROM … WHERE`
+        /// does.
+        answer: Answer,
     },
     /// `GET sessions:'abc'` as a statement of its own.
     Get {

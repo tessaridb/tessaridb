@@ -4791,6 +4791,11 @@ retention statement: "removed 12 043 readings" is an operator checking their
 policy did what they meant, and `done` is that operator running a `count(*)`
 before and after to find out.
 
+**`RETURN BEFORE` answers the records it removed instead**, each with its
+identity and as it stood, in the order they were removed — `DELETE FROM uploads
+WHERE expires < time::now() LIMIT ALL RETURN BEFORE`. Both the conditional and
+the span form take it; `RETURN AFTER` is refused, as on a single-record delete.
+
 **It finds its records the way a read does**, so an index serves the condition
 when one exists — a policy over an indexed timestamp is a bounded scan rather
 than a walk of the table. And the candidates an index offers are still tested

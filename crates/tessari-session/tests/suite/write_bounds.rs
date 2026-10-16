@@ -186,3 +186,73 @@ fn a_condition_nothing_satisfies_still_needs_its_bound() {
         .unwrap();
     assert_eq!(removed(outcome.last().expect("an outcome")), 0);
 }
+
+/// The ids a statement answered with and each record's `value`, in order.
+fn returned(outcome: &Outcome) -> Vec<(String, i64)> {
+    let records = outcome.records().expect("records");
+    records
+        .iter()
+        .map(|(id, record)| {
+            let tessari_types::Value::Object(fields) = record else {
+                panic!("a record answered {record:?}");
+            };
+            let Some(tessari_types::Value::Number(tessari_types::Number::Integer(value))) =
+                fields.get("value")
+            else {
+                panic!("no value in {fields:?}");
+            };
+            (id.to_string(), *value)
+        })
+        .collect()
+}
+
+/// `RETURN BEFORE` on a delete of many answers what it removed, as each record
+/// stood, so a caller acting on the removed set needs no read before it.
+#[test]
+fn a_conditional_delete_returning_before_answers_the_records_it_removed() {
+    let store = store();
+    let mut session = ready(&store);
+    let outcome = session
+        .run("DELETE FROM readings WHERE stale = true LIMIT 2 RETURN BEFORE;")
+        .unwrap();
+    assert_eq!(
+        returned(outcome.last().expect("an outcome")),
+        vec![("1".to_owned(), 1), ("3".to_owned(), 3)]
+    );
+    let outcome = session
+        .run("DELETE FROM readings WHERE stale = true LIMIT ALL RETURN BEFORE;")
+        .unwrap();
+    assert_eq!(
+        returned(outcome.last().expect("an outcome")),
+        vec![("5".to_owned(), 5), ("6".to_owned(), 6)]
+    );
+    assert_eq!(rows(&mut session, "SELECT * FROM readings;"), 2);
+}
+
+#[test]
+fn a_span_delete_returning_before_answers_the_records_it_removed() {
+    let store = store();
+    let mut session = ready(&store);
+    let outcome = session
+        .run("DELETE FROM readings:1..=2 LIMIT ALL RETURN BEFORE;")
+        .unwrap();
+    assert_eq!(
+        returned(outcome.last().expect("an outcome")),
+        vec![("1".to_owned(), 1), ("2".to_owned(), 2)]
+    );
+    assert_eq!(rows(&mut session, "SELECT * FROM readings;"), 4);
+}
+
+/// A delete has no record after it, so `RETURN AFTER` could only answer
+/// nothing — refused naming the word that works, as the single-record form is.
+#[test]
+fn a_delete_of_many_refuses_return_after() {
+    let store = store();
+    let mut session = ready(&store);
+    let refused = session
+        .run("DELETE FROM readings WHERE stale = true LIMIT ALL RETURN AFTER;")
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("`BEFORE`"), "{refused}");
+    assert_eq!(rows(&mut session, "SELECT * FROM readings;"), 6);
+}
