@@ -133,12 +133,19 @@ pub(super) fn exchange(
 ) -> Result<(Hello, Answered)> {
     let mut link = rustls::Stream::new(session, socket);
     say(&mut link, said)?;
+    // The ask goes out with the greeting rather than a round trip after it: it
+    // depends on nothing the door says, the door's identity was proven by the
+    // handshake, and every door reads the greeting, greets back and only then
+    // reads the ask. A renewal's ballot is one round trip cheaper, which is
+    // what lets a lease hold across a region (G075 C3).
+    if let Some((tag, body)) = asked(&asking) {
+        frame::write_tagged(&mut link, tag, &body)?;
+    }
     let heard = hear(&mut link)?;
 
     match asking {
         Ask::Nothing => Ok((heard, Answered::Nothing)),
-        Ask::Ballot(ballot) => {
-            frame::write_tagged(&mut link, PeerFrame::Ballot.tag(), &ballot.encode())?;
+        Ask::Ballot(_) => {
             let (tag, body) = answer(&mut link)?;
             match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::Vote) => Ok((heard, Answered::Voted(Vote::decode(&body)?))),
@@ -146,8 +153,7 @@ pub(super) fn exchange(
                 None => Err(Error::UnknownFrame { tag }),
             }
         }
-        Ask::Records(collect) => {
-            frame::write_tagged(&mut link, PeerFrame::Collect.tag(), &collect.encode())?;
+        Ask::Records(_) => {
             let (tag, body) = answer(&mut link)?;
             match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::Collected) => {
@@ -166,8 +172,7 @@ pub(super) fn exchange(
                 None => Err(Error::UnknownFrame { tag }),
             }
         }
-        Ask::Join(token) => {
-            frame::write_tagged(&mut link, PeerFrame::Join.tag(), token.as_slice())?;
+        Ask::Join(_) => {
             let (tag, body) = answer(&mut link)?;
             match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::Joined) => match body.as_slice() {
@@ -178,8 +183,7 @@ pub(super) fn exchange(
                 None => Err(Error::UnknownFrame { tag }),
             }
         }
-        Ask::Attempt(asked) => {
-            frame::write_tagged(&mut link, PeerFrame::Attempt.tag(), &asked.encode())?;
+        Ask::Attempt(_) => {
             let (tag, body) = answer(&mut link)?;
             match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::Attempted) => match body.as_slice() {
@@ -190,8 +194,7 @@ pub(super) fn exchange(
                 None => Err(Error::UnknownFrame { tag }),
             }
         }
-        Ask::Across(carried) => {
-            frame::write_tagged(&mut link, PeerFrame::Across.tag(), &carried.encode())?;
+        Ask::Across(_) => {
             let (tag, body) = answer(&mut link)?;
             match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::AcrossDone) => Ok((
@@ -210,8 +213,7 @@ pub(super) fn exchange(
                 None => Err(Error::UnknownFrame { tag }),
             }
         }
-        Ask::Coordinate(request) => {
-            frame::write_tagged(&mut link, PeerFrame::Coordinate.tag(), &request.encode())?;
+        Ask::Coordinate(_) => {
             let (tag, body) = answer(&mut link)?;
             match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::Coordinated) => Ok((
@@ -225,8 +227,7 @@ pub(super) fn exchange(
                 None => Err(Error::UnknownFrame { tag }),
             }
         }
-        Ask::Gather(gather) => {
-            frame::write_tagged(&mut link, PeerFrame::Gather.tag(), &gather.encode())?;
+        Ask::Gather(_) => {
             let (tag, body) = answer(&mut link)?;
             match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::Gathered) => Ok((heard, Answered::Gathered(Page::decode(&body)?))),
@@ -240,6 +241,20 @@ pub(super) fn exchange(
                 None => Err(Error::UnknownFrame { tag }),
             }
         }
+    }
+}
+
+/// The frame `asking` puts on the link, or `None` when nothing is asked.
+fn asked(asking: &Ask<'_>) -> Option<(u8, Vec<u8>)> {
+    match asking {
+        Ask::Nothing => None,
+        Ask::Ballot(ballot) => Some((PeerFrame::Ballot.tag(), ballot.encode())),
+        Ask::Records(collect) => Some((PeerFrame::Collect.tag(), collect.encode())),
+        Ask::Join(token) => Some((PeerFrame::Join.tag(), token.to_vec())),
+        Ask::Attempt(attempt) => Some((PeerFrame::Attempt.tag(), attempt.encode())),
+        Ask::Across(carried) => Some((PeerFrame::Across.tag(), carried.encode())),
+        Ask::Coordinate(request) => Some((PeerFrame::Coordinate.tag(), request.encode())),
+        Ask::Gather(gather) => Some((PeerFrame::Gather.tag(), gather.encode())),
     }
 }
 

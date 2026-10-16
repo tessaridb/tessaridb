@@ -10,7 +10,7 @@ fn a_node_nobody_subscribed_is_refused_the_log_it_asks_for() {
     let leader = granting("");
     let (address, door) = declaring(&authority, &leader);
 
-    let refused = collect(&authority, address, 1, 64)
+    let refused = collect(&authority, &address, 1, 64)
         .expect_err("a peer nobody subscribed may not take the log");
     door.join().expect("the door's thread");
 
@@ -171,7 +171,7 @@ fn a_round_applies_a_writers_logs_in_the_order_it_committed_them() {
     let follower = Db::in_memory().expect("an in-memory store");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let collector = collector(&mine, &said, address, 1024);
+    let collector = collector(&mine, &said, &address, 1024);
     let store = collector
         .collect(follower.store(), Reach::Store, Sequence::new(1))
         .expect("the store's log");
@@ -295,7 +295,7 @@ fn writes_across_a_split_and_a_merge_are_all_kept_and_all_collected() {
     let follower = Db::in_memory().expect("an in-memory store");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let collector = collector(&mine, &said, address, 1024);
+    let collector = collector(&mine, &said, &address, 1024);
     let mut reached: BTreeMap<Reach, Sequence> = BTreeMap::new();
     let mut used = 0_usize;
     let mut settled = false;

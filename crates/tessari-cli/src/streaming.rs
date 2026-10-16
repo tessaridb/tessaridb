@@ -102,7 +102,7 @@ impl Streams {
         &mut self,
         db: Arc<Db>,
         keys: tessari_wire::PeerKeys,
-        (line, address): (Line, std::net::SocketAddr),
+        (line, address): (Line, String),
         (homes, still): (Homes, Still),
         (stop, wakes): (CancellationToken, Arc<crate::peers::Wakes>),
     ) {
@@ -115,7 +115,7 @@ impl Streams {
         let started = std::thread::Builder::new()
             .name(format!("stream-{}", hex(&leader)))
             .spawn(move || {
-                let ended = follow(&db, &keys, (leader, address), (&*homes, &*still), &stop);
+                let ended = follow(&db, &keys, (leader, &address), (&*homes, &*still), &stop);
                 match ended {
                     Ok(()) => tracing::info!(
                         leader = %hex(&leader),
@@ -159,7 +159,7 @@ impl Streams {
 fn follow(
     db: &Db,
     keys: &tessari_wire::PeerKeys,
-    (leader, address): ([u8; NODE_ID_LEN], std::net::SocketAddr),
+    (leader, address): ([u8; NODE_ID_LEN], &str),
     (homes, still): (&HomesFor, &StillFor),
     stop: &CancellationToken,
 ) -> Result<(), String> {

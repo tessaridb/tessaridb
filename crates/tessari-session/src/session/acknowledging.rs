@@ -31,7 +31,7 @@
 
 use tessari_ql::Span;
 use tessari_storage::{Catalog, Failover, NODE_ID_LEN, Reach, Roles, Store, Transaction};
-use tessari_types::{Acknowledge, Replication};
+use tessari_types::{Acknowledge, Acknowledgement, Replication};
 
 use super::{Session, advised};
 use crate::error::{Error, Result};
@@ -104,20 +104,11 @@ impl Session<'_> {
             | Reach::Database(namespace, _)
             | Reach::Shard(namespace, ..) => catalog.namespace(namespace)?,
         };
-        let stated = definition.as_ref().and_then(|held| held.acknowledge);
-        if let (Some(asked), Some(stated), Some(held)) = (asked, stated, definition.as_ref())
-            && !stated.admits(asked)
-        {
-            return Err(Error::AcknowledgeBelowNamespace {
-                asked,
-                stated,
-                namespace: held.name.clone(),
-                span,
-            });
-        }
         // Unstated, the level follows the replication: a namespace kept on more
         // than one node waits for a majority of them, one kept on one node is
         // its own majority (D1). A store-wide write waits only when asked to.
+        // A request is judged against that default exactly as against a stated
+        // level, so silence is never a licence to ask for less (G075 C2a).
         let replicated = definition
             .as_ref()
             .and_then(|held| held.replication)
@@ -125,14 +116,32 @@ impl Session<'_> {
                 Replication::Factor(factor) => factor.get() > 1,
                 Replication::None => false,
             });
-        let level = asked
-            .or(stated.map(|stated| stated.level))
-            .unwrap_or(if replicated {
-                Acknowledge::Majority
-            } else {
-                Acknowledge::Leader
+        let namespaces = definition
+            .as_ref()
+            .and_then(|held| held.acknowledge)
+            .unwrap_or(Acknowledgement {
+                level: if replicated {
+                    Acknowledge::Majority
+                } else {
+                    Acknowledge::Leader
+                },
+                or_weaker: false,
             });
-        let voting = if level == Acknowledge::LocalMajority {
+        if let (Some(asked), Some(held)) = (asked, definition.as_ref())
+            && !namespaces.admits(asked)
+        {
+            return Err(Error::AcknowledgeBelowNamespace {
+                asked,
+                stated: namespaces,
+                namespace: held.name.clone(),
+                span,
+            });
+        }
+        let level = asked.unwrap_or(namespaces.level);
+        // With no other voter this node is its whole region, as it is its whole
+        // majority, so `LOCAL MAJORITY` is met wherever `MAJORITY` is and needs
+        // no region named (G075 C2b).
+        let voting = if level == Acknowledge::LocalMajority && !voting.is_empty() {
             let mine = Catalog::new(transaction)
                 .replicas()?
                 .into_iter()

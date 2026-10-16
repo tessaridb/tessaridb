@@ -241,19 +241,14 @@ fn stand_for_the_store(
         );
         return;
     }
-    // A member whose endpoint will not parse is dropped from the set it
-    // is a member of, not silently skipped inside the round: a majority
-    // counted over members that cannot be asked is a majority of a
-    // fiction. The operator hears about it either way.
-    let mut peers = Vec::with_capacity(voting.len());
-    for (node, endpoint) in voting {
-        match endpoint.parse() {
-            Ok(address) => peers.push((*node, address)),
-            Err(why) => {
-                tracing::warn!(endpoint = %endpoint, error = %why, "the voting peer's endpoint is not an address");
-            }
-        }
-    }
+    // Each member's `AT` as declared, an address or a host name, resolved
+    // where its ballot is dialled (G075 C1). A member that cannot be reached
+    // — its name included — stays in the set and gives no vote, so the
+    // majority is counted over the membership the operator declared.
+    let peers: Vec<_> = voting
+        .iter()
+        .map(|(node, endpoint)| (*node, endpoint.clone()))
+        .collect();
     if peers.is_empty() {
         return;
     }
@@ -396,7 +391,7 @@ pub(crate) fn stand_for_a_placed_range(
     let peers: Vec<_> = candidate
         .voting
         .iter()
-        .filter_map(|(node, endpoint)| endpoint.parse().ok().map(|address| (*node, address)))
+        .map(|(node, endpoint)| (*node, endpoint.clone()))
         .collect();
     if peers.is_empty() {
         return;

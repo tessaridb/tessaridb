@@ -35,7 +35,6 @@
 //! **No follower loop.** Nothing pulls a replica forward on a timer. Same
 //! missing shape, different criterion.
 
-use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use tessari_encoding::NODE_ID_LEN;
@@ -88,10 +87,12 @@ pub struct Standing<'a> {
     pub said: &'a Hello,
     /// The voting members, and where to reach each one.
     ///
-    /// Addresses are already resolved: a cluster's membership is configuration
-    /// rather than something to look up again under the pressure of a closing
-    /// fence.
-    pub peers: &'a [([u8; NODE_ID_LEN], SocketAddr)],
+    /// Each is the member row's `AT` as declared — an address or a host name —
+    /// and is resolved where it is dialled. A literal address is parsed and
+    /// costs no lookup under the pressure of a closing fence; a name is asked of
+    /// the system's resolver every round, so it follows its record when the
+    /// peer moves (G075 C1).
+    pub peers: &'a [([u8; NODE_ID_LEN], String)],
     /// How long a round takes on this network, end to end.
     pub round: Duration,
     /// Which election line this standing is for — [`Reach::Store`] for the
@@ -262,11 +263,11 @@ impl Standing<'_> {
     async fn canvass(&self, ballot: Ballot) -> Vec<([u8; NODE_ID_LEN], Vote)> {
         let mut asked = tokio::task::JoinSet::new();
         for (peer, address) in self.peers {
-            let (peer, address, said, round) = (*peer, *address, *self.said, self.round);
+            let (peer, address, said, round) = (*peer, address.clone(), *self.said, self.round);
             let keys = self.keys.clone();
             asked.spawn_blocking(move || {
                 match call_within(
-                    address,
+                    address.as_str(),
                     (&keys, keys.duplicate()),
                     peer,
                     &said,

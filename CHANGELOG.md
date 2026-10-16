@@ -13,6 +13,23 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.35.3 — 2026-10-16
+
+### Changed
+
+- **A request below a namespace's default acknowledgement is refused** (`AcknowledgeBelowNamespace`) as one below a
+  stated level is: a namespace kept on more than one node defaults to `MAJORITY`, so `ACKNOWLEDGE LEADER` or
+  `LOCAL MAJORITY` there needs `ALTER NAMESPACE … ACKNOWLEDGE MAJORITY OR WEAKER`.
+
+### Fixed
+
+- **A member row's `AT` may name a host.** The cluster rounds dialled only a literal address and left a peer declared
+  by name unasked, so a cluster declared by names elected nobody; each round now resolves the name when it dials.
+- **A lease holds across about 90 ms between voters.** A peer call sends its ask with its greeting, one round trip
+  sooner, so a renewal no longer lands after the fence at 80 ms (it lapsed there on 0.35.2).
+- **A store with no other voter meets `ACKNOWLEDGE LOCAL MAJORITY`** as it meets `MAJORITY`; it was refused
+  `LocalMajorityWithoutRegion`.
+
 ## 0.35.2 — 2026-10-16
 
 ### Security

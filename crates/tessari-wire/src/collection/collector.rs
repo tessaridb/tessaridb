@@ -5,7 +5,6 @@ use crate::error::{Error, Result};
 use crate::keys::PeerKeys;
 use crate::link::{Answered, Ask, call};
 use crate::peer::Hello;
-use std::net::SocketAddr;
 use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::{Catalog, Currency, Horizon, Reach, Store};
 use tessari_types::Sequence;
@@ -20,8 +19,9 @@ pub struct Collector<'a> {
     pub keys: &'a PeerKeys,
     /// The greeting that opens the connection.
     pub said: &'a Hello,
-    /// The peer to collect from, by id and address.
-    pub peer: ([u8; NODE_ID_LEN], SocketAddr),
+    /// The peer to collect from, by id and its member row's `AT` — an address
+    /// or a host name, resolved when it is dialled.
+    pub peer: ([u8; NODE_ID_LEN], &'a str),
     /// The most records one collection may carry.
     ///
     /// It is also what makes *level* observable: a peer serves

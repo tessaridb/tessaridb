@@ -60,7 +60,8 @@ fn commit_levels_replication_and_failover_across_injected_distance() {
         .run(
             &format!(
                 "ALTER REPLICA n{leader} REGION 'eu'; ALTER REPLICA n{} REGION 'us'; \
-                 ALTER REPLICA n{} REGION 'us';",
+                 ALTER REPLICA n{} REGION 'us'; \
+                 ALTER NAMESPACE prod ACKNOWLEDGE MAJORITY OR WEAKER;",
                 followers[0], followers[1]
             ),
             None,

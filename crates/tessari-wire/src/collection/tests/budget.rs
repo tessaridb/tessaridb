@@ -99,7 +99,7 @@ fn a_follower_whose_leader_stopped_on_the_budget_does_not_record_itself_current(
 
     // A generous count: the answer comes back short of it, which is the
     // reading that used to mean *the peer had no more* and now does not.
-    collector(&mine, &said, address, 64)
+    collector(&mine, &said, &address, 64)
         .collect(follower.store(), Reach::Store, Sequence::new(1))
         .expect("the collection");
     door.join().expect("the door's thread");
@@ -143,7 +143,7 @@ fn a_node_holding_a_tenancy_of_its_own_is_refused_until_it_removes_it() {
         .expect("a node that holds something of its own");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
-    let collector = collector(&mine, &said, address, 64);
+    let collector = collector(&mine, &said, &address, 64);
 
     let refused = collector
         .collect(follower.store(), Reach::Store, Sequence::new(1))

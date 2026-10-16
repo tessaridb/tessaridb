@@ -48,7 +48,7 @@
 //! stream from where the follower stands, and the leader marks the restart
 //! ([`PeerFrame::Restarted`]) so the rounds cut before it can be thrown away.
 
-use std::net::{SocketAddr, TcpStream};
+use std::net::TcpStream;
 
 use rustls::ClientConnection;
 use tessari_encoding::NODE_ID_LEN;
@@ -255,7 +255,7 @@ impl Following {
     ///
     /// Whatever the handshake refuses with, exactly as a collection round's dial.
     pub fn open(
-        peer: ([u8; NODE_ID_LEN], SocketAddr),
+        peer: ([u8; NODE_ID_LEN], &str),
         keys: &PeerKeys,
         said: &Hello,
         silence: std::time::Duration,

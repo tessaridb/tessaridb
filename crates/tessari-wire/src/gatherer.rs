@@ -28,7 +28,6 @@
 //! records, as it did before.
 
 use std::collections::BTreeSet;
-use std::net::SocketAddr;
 use std::sync::{Arc, Weak};
 
 use tessari_encoding::{NODE_ID_LEN, NodeVersion};
@@ -147,11 +146,6 @@ impl Gathers for Gathering {
                 "this node leads that shard's line and does not hold the shard".to_owned(),
             ));
         }
-        let address: SocketAddr = endpoint.parse().map_err(|_| {
-            Unanswered::Refused(format!(
-                "the leader's endpoint is not an address: {endpoint}"
-            ))
-        })?;
         if let Some(reduce) = asked.reduce {
             let heard = self
                 .routing
@@ -189,16 +183,22 @@ impl Gathers for Gathering {
         let mut partials = Vec::new();
         let mut counted: Option<tessari_storage::SearchCounts> = None;
         loop {
-            let (_, answered) = call(address, &self.keys, node, &said, Ask::Gather(&page))
-                .map_err(|why| match why {
-                    // The leader's map differs from the one this ask was built
-                    // from: said as itself, so the asker reads its map again
-                    // rather than looking for a leader that did not answer.
-                    crate::Error::NotGathered(crate::gathering::Ungathered::MapMoved) => {
-                        Unanswered::Moved
-                    }
-                    other => Unanswered::Refused(format!("{endpoint}: {other}")),
-                })?;
+            let (_, answered) = call(
+                endpoint.as_str(),
+                &self.keys,
+                node,
+                &said,
+                Ask::Gather(&page),
+            )
+            .map_err(|why| match why {
+                // The leader's map differs from the one this ask was built
+                // from: said as itself, so the asker reads its map again
+                // rather than looking for a leader that did not answer.
+                crate::Error::NotGathered(crate::gathering::Ungathered::MapMoved) => {
+                    Unanswered::Moved
+                }
+                other => Unanswered::Refused(format!("{endpoint}: {other}")),
+            })?;
             let Answered::Gathered(answered) = answered else {
                 return Err(Unanswered::Refused(format!(
                     "{endpoint} answered something other than a page"

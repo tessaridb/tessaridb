@@ -174,13 +174,6 @@ pub(crate) async fn collect_from_upstream(
         if streamed_from.take().is_some() {
             collecting = tessari_wire::Collecting::new();
         }
-        let address = match endpoint.parse() {
-            Ok(address) => address,
-            Err(why) => {
-                tracing::warn!(endpoint = %endpoint, error = %why, "the writable peer's endpoint is not an address");
-                return Ok(collection);
-            }
-        };
         let said = match greeting(db) {
             Ok(said) => said,
             Err(why) => {
@@ -193,7 +186,7 @@ pub(crate) async fn collect_from_upstream(
         let collector = tessari_wire::Collector {
             keys,
             said: &said,
-            peer: (node, address),
+            peer: (node, endpoint.as_str()),
             limit: tessari_constants::COLLECTION_RECORDS,
         };
         // Every log this node should hold, store's own first, derived from
@@ -299,7 +292,7 @@ pub(crate) async fn collect_from_upstream(
             streams.start(
                 std::sync::Arc::clone(&handle),
                 keys.clone(),
-                ((node, None), address),
+                ((node, None), endpoint.clone()),
                 (homes, still),
                 (stopped.clone(), std::sync::Arc::clone(&wakes)),
             );
@@ -353,14 +346,14 @@ fn holders_of(
         [u8; tessari_storage::NODE_ID_LEN],
         [u8; tessari_storage::NODE_ID_LEN],
     ),
-) -> Vec<([u8; tessari_storage::NODE_ID_LEN], std::net::SocketAddr)> {
+) -> Vec<([u8; tessari_storage::NODE_ID_LEN], String)> {
     declared
         .iter()
         .filter(|peer| {
             peer.replicates
                 .is_some_and(|over| over.contains(range) || range.contains(over))
         })
-        .filter_map(|peer| Some((peer.node?, peer.endpoint.parse().ok()?)))
+        .filter_map(|peer| Some((peer.node?, peer.endpoint.clone())))
         .filter(|(node, _)| *node != me && *node != leader)
         .collect()
 }
@@ -376,14 +369,14 @@ fn holders_of(
 fn catch_up_from(
     store: &tessari_storage::Store,
     (keys, said): (&tessari_wire::PeerKeys, &tessari_wire::Hello),
-    (holder, at): ([u8; tessari_storage::NODE_ID_LEN], &std::net::SocketAddr),
+    (holder, at): ([u8; tessari_storage::NODE_ID_LEN], &str),
     range: tessari_types::Reach,
     logs: &[tessari_types::Reach],
 ) {
     let collector = tessari_wire::Collector {
         keys,
         said,
-        peer: (holder, *at),
+        peer: (holder, at),
         limit: tessari_constants::COLLECTION_RECORDS,
     };
     let asks: Vec<_> = logs

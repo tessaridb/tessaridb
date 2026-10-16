@@ -9129,6 +9129,12 @@ DEFINE REPLICA second AT 'db-2.internal:9000' ROLES serving, writable;
 INFO FOR NODE;
 ```
 
+**`AT` may name a host or an address.** A name is resolved each time it is
+dialled and every address it answers is tried in turn, so a peer that moves keeps
+its row. A name that does not resolve is a failed dial: the member gives no vote
+and the node's log names the endpoint. A literal address costs no lookup;
+declare addresses where a slow resolver could delay a lease renewal.
+
 **Say where clients reach each member, beside where peers do.** `AT` is the
 address other nodes dial — in a cluster run with peer credentials it is the peer
 door, which a client cannot speak to. A redirect names a node to go to, and it
@@ -9825,7 +9831,8 @@ BEGIN; CREATE event:2 = { kind: 'login' }; COMMIT ACKNOWLEDGE MAJORITY;
   **It is not promised to survive a failover**: the majority that elects the next
   leader need not include a node of that region holding the write. On a node
   whose own row names no region it is refused before anything is written
-  (`LocalMajorityWithoutRegion`).
+  (`LocalMajorityWithoutRegion`); a store with no other voter is its own region,
+  as it is its own majority.
 - `MAJORITY` answers once a majority of the range's **voters** — the
   `coordinating` members, the leader among them — hold it durably. Whichever
   majority elects the next leader holds the write, so a lost leader loses
@@ -9837,8 +9844,8 @@ level admits any request at or above it, and one below only with `OR WEAKER`.
 **`MAJORITY` is the default for a namespace kept on more than one node**; a
 namespace with `REPLICATION NONE`, or a store standing alone, is its own
 majority and waits for nobody. A write or a `COMMIT` may name its own level, and
-asking for **less** than the namespace's is refused (`AcknowledgeBelowNamespace`)
-unless the namespace says `OR WEAKER` — a default any caller could lower is not
+asking for **less** than the namespace's — stated or the default — is refused
+(`AcknowledgeBelowNamespace`) unless the namespace says `OR WEAKER` — a default any caller could lower is not
 one anybody can rely on.
 
 **Two refusals, and they mean opposite things.** `MajorityUnreachable` comes
@@ -9899,6 +9906,12 @@ the direction named** rather than accepted:
 - `CAMPAIGN` is at most twice `ROUND`;
 - `LEASE` is greater than the write fence plus twice `ROUND`;
 - `COLLECTION` is less than twice `AWARENESS`.
+
+**Voters far apart.** A renewal opens when two `ROUND`s of the lease are left
+and costs about three round trips between voters, so the defaults hold a lease
+up to about 90 ms apart (measured: held at 80 ms, lapsed at 100 ms). Further
+apart, keep `ROUND` above 2.2 round trips and `LEASE` above the write fence plus
+seven — at 150 ms, `ROUND 400ms CAMPAIGN 200ms LEASE 1500ms`.
 
 The lease guard is deliberately **not** settable. It is the margin between the
 moment this node stops writing and the moment the cluster may hand the leadership
@@ -10217,7 +10230,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.35.2", "build": "0.35.2", "endpoints": ["db-1.internal:9000"],
+ "version": "0.35.3", "build": "0.35.3", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

@@ -9,7 +9,6 @@ use crate::grant::Deciding;
 use crate::link::tests::{Authority, THERE, hello, settled};
 use crate::link::{Answered, Ask};
 use crate::peer::Purpose;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -142,7 +141,7 @@ fn spelled(node: [u8; NODE_ID_LEN]) -> String {
 
 /// A peer door for `LEADER` serving one connection, asking `db`'s own
 /// catalog who may collect.
-fn declaring(authority: &Authority, db: &Arc<Db>) -> (SocketAddr, JoinHandle<()>) {
+fn declaring(authority: &Authority, db: &Arc<Db>) -> (String, JoinHandle<()>) {
     declaring_for(authority, db, 1)
 }
 
@@ -152,18 +151,14 @@ fn declaring(authority: &Authority, db: &Arc<Db>) -> (SocketAddr, JoinHandle<()>
 /// store's log down to its own reach makes one per log — so a test about the
 /// chain has to say how many, and has to then make exactly that many or the
 /// join waits on an accept nobody ever performs.
-fn declaring_for(
-    authority: &Authority,
-    db: &Arc<Db>,
-    rounds: usize,
-) -> (SocketAddr, JoinHandle<()>) {
+fn declaring_for(authority: &Authority, db: &Arc<Db>, rounds: usize) -> (String, JoinHandle<()>) {
     let peers = crate::link::tests::bind_with(
         "127.0.0.1:0",
         authority.issue(LEADER, Purpose::Peer),
         &authority.der(),
     )
     .expect("a peer door on loopback");
-    let address = peers.address().expect("the door's address");
+    let address = peers.address().expect("the door's address").to_string();
     let mine = hello(LEADER);
     let db = Arc::clone(db);
     let door = std::thread::spawn(move || {
@@ -180,7 +175,7 @@ fn declaring_for(
 }
 
 /// A peer door for `LEADER` that serves `rounds` connections out of `db`.
-fn serving(authority: &Authority, db: &Arc<Db>, rounds: usize) -> (SocketAddr, JoinHandle<()>) {
+fn serving(authority: &Authority, db: &Arc<Db>, rounds: usize) -> (String, JoinHandle<()>) {
     serving_within(authority, db, rounds, COLLECTION_BUDGET_BYTES)
 }
 
@@ -190,14 +185,14 @@ fn serving_within(
     db: &Arc<Db>,
     rounds: usize,
     budget: usize,
-) -> (SocketAddr, JoinHandle<()>) {
+) -> (String, JoinHandle<()>) {
     let peers = crate::link::tests::bind_with(
         "127.0.0.1:0",
         authority.issue(LEADER, Purpose::Peer),
         &authority.der(),
     )
     .expect("a peer door on loopback");
-    let address = peers.address().expect("the door's address");
+    let address = peers.address().expect("the door's address").to_string();
     let mine = hello(LEADER);
     let db = Arc::clone(db);
     let door = std::thread::spawn(move || {
@@ -216,7 +211,7 @@ fn serving_within(
 /// Ask the door at `address` for the store log's records after `from`.
 fn collect(
     authority: &Authority,
-    address: SocketAddr,
+    address: &str,
     from: u64,
     limit: u64,
 ) -> crate::error::Result<Answered> {
@@ -226,7 +221,7 @@ fn collect(
 /// The same, naming the log.
 fn collect_from(
     authority: &Authority,
-    address: SocketAddr,
+    address: &str,
     home: Reach,
     from: u64,
     limit: u64,
@@ -262,7 +257,7 @@ fn served(answered: Answered) -> Option<Collected> {
 fn collector<'a>(
     keys: &'a crate::keys::PeerKeys,
     said: &'a crate::peer::Hello,
-    address: SocketAddr,
+    address: &'a str,
     limit: u64,
 ) -> Collector<'a> {
     Collector {
