@@ -36,7 +36,7 @@ impl Session<'_> {
     /// narrow case where the read *is* the answer — see [`Session::trusts`] for
     /// what has to hold before it can be said, and `plan::Candidate::answers`
     /// for the part of it the planner contributes.
-    pub(super) fn candidates(
+    pub(crate) fn candidates(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,

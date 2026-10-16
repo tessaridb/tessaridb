@@ -7081,7 +7081,12 @@ language's ordinary condition, bound like any other, and a record it does not
 match is passed over as a held one is — so the claim takes the first claimable
 records, in the queue's own order, that also satisfy it. A worker that handles
 only images says so in the claim rather than in a second queue, and two worker
-kinds share one queue without taking each other's work.
+kinds share one queue without taking each other's work. A value index that
+covers the condition serves it, as it would serve a `SELECT` with the same
+`WHERE`: the claim reports `index` with the index's name, takes the same records
+in the same order, and costs the matching records rather than the queue. On a
+`PRIORITY BY` queue the order's own index decides the walk and the condition
+filters it.
 
 **`CLAIM jobs:7` holds the record you name**, for a caller that has already
 chosen its work rather than asking for whatever is next. It is the same write —
@@ -7392,7 +7397,8 @@ attempts are spent and whose last hold has lapsed appends it to the topic `t` as
 `{ queue, id, attempts, value }` — `value` without the three fields the store
 writes — and deletes it from the queue, in that claim's own transaction. The
 move happens whatever the claim's `WHERE` asks, because a spent record is
-nobody's work any more. It uses the words a topic group already uses, and the
+nobody's work any more — among the records the claim meets, which for a claim
+an index serves are the ones the index named. It uses the words a topic group already uses, and the
 dead letters are read the way any topic is read: a position, a group, a
 `READ FROM`.
 
