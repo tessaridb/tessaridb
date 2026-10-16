@@ -25,6 +25,8 @@ compares carries no pre-release suffix.
 
 - **A member row's `AT` may name a host.** The cluster rounds dialled only a literal address and left a peer declared
   by name unasked, so a cluster declared by names elected nobody; each round now resolves the name when it dials.
+- **A store with no other voter meets `ACKNOWLEDGE LOCAL MAJORITY`** as it meets `MAJORITY`; it was refused
+  `LocalMajorityWithoutRegion`.
 
 ## 0.35.2 — 2026-10-16
 

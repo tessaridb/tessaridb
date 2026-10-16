@@ -138,7 +138,10 @@ impl Session<'_> {
             });
         }
         let level = asked.unwrap_or(namespaces.level);
-        let voting = if level == Acknowledge::LocalMajority {
+        // With no other voter this node is its whole region, as it is its whole
+        // majority, so `LOCAL MAJORITY` is met wherever `MAJORITY` is and needs
+        // no region named (G075 C2b).
+        let voting = if level == Acknowledge::LocalMajority && !voting.is_empty() {
             let mine = Catalog::new(transaction)
                 .replicas()?
                 .into_iter()

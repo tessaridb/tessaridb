@@ -102,6 +102,37 @@ fn a_single_node_is_its_own_majority_and_waits_for_nobody() {
     );
 }
 
+/// G075 C2b (DB-19): a store standing alone is its own region as it is its own
+/// majority, so `LOCAL MAJORITY` — weaker than `MAJORITY` — is met wherever
+/// `MAJORITY` is, and waits for nobody.
+///
+/// Red on 0.35.2: refused `LocalMajorityWithoutRegion`, a weaker level refused
+/// where the stronger one was accepted.
+#[test]
+fn a_single_node_is_its_own_region_and_meets_a_local_majority() {
+    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod REPLICATION FACTOR 3 ACKNOWLEDGE MAJORITY OR WEAKER; \
+             USE NAMESPACE prod; DEFINE DATABASE app; USE DATABASE app; \
+             DEFINE COLLECTION t;",
+        )
+        .unwrap();
+    session
+        .run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;")
+        .unwrap_or_else(|why| panic!("a lone store is its own region: {why}"));
+    session
+        .run("BEGIN; CREATE t:2 = { a: 2 }; COMMIT ACKNOWLEDGE LOCAL MAJORITY;")
+        .unwrap();
+    assert_eq!(held(&mut session), 2);
+    assert_eq!(
+        store.health().unwrap().acknowledgement_waits,
+        0,
+        "it waited for nobody"
+    );
+}
+
 #[test]
 fn a_write_held_by_a_majority_is_acknowledged() {
     let store = clustered("ACKNOWLEDGE MAJORITY", "prod");

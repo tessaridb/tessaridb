@@ -9831,7 +9831,8 @@ BEGIN; CREATE event:2 = { kind: 'login' }; COMMIT ACKNOWLEDGE MAJORITY;
   **It is not promised to survive a failover**: the majority that elects the next
   leader need not include a node of that region holding the write. On a node
   whose own row names no region it is refused before anything is written
-  (`LocalMajorityWithoutRegion`).
+  (`LocalMajorityWithoutRegion`); a store with no other voter is its own region,
+  as it is its own majority.
 - `MAJORITY` answers once a majority of the range's **voters** — the
   `coordinating` members, the leader among them — hold it durably. Whichever
   majority elects the next leader holds the write, so a lost leader loses
