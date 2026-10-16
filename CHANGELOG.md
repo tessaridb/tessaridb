@@ -13,6 +13,15 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.35.2 — unreleased
+
+### Changed
+
+- **A name declared twice is refused by kind and name** — `a topic named events already exists` — rather than by the
+  catalog's internal key.
+- **`string::concat` takes two or more strings** and joins them in order.
+- **1611 conformance cases** define the language and run in the build.
+
 ## 0.35.1 — 2026-10-16
 
 ### Changed

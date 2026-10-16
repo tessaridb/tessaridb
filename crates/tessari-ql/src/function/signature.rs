@@ -6,12 +6,22 @@ impl Function {
     /// How many arguments it takes.
     /// Whether a call with this many arguments is well formed.
     ///
-    /// The declared [`Self::arity`], and one exception: `search::score()` with
+    /// The declared [`Self::arity`], and two exceptions: `search::score()` with
     /// no argument is the score a `FROM SEARCH` read gave its record
-    /// (ADR-0105), where the two-argument form measures one field.
+    /// (ADR-0105), where the two-argument form measures one field; and a
+    /// [variadic](Self::variadic) function takes its arity or more.
     #[must_use]
     pub const fn accepts(self, count: usize) -> bool {
-        count == self.arity() || matches!((self, count), (Self::SearchScore, 0))
+        count == self.arity()
+            || matches!((self, count), (Self::SearchScore, 0))
+            || (self.variadic() && count > self.arity())
+    }
+
+    /// Whether its arity is a least rather than an exact count —
+    /// `string::concat('a', 'b', 'c')` (G074 C2).
+    #[must_use]
+    pub const fn variadic(self) -> bool {
+        matches!(self, Self::StringConcat)
     }
 
     #[must_use]

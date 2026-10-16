@@ -104,7 +104,7 @@ pub enum Function {
     StringUpper,
     /// `string::trim(text)` — whitespace from both ends.
     StringTrim,
-    /// `string::concat(a, b)`
+    /// `string::concat(a, b, …)` — the strings in order; two or more.
     StringConcat,
     /// `string::split(text, separator)` — the parts between occurrences.
     StringSplit,

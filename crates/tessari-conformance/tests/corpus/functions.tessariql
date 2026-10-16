@@ -475,3 +475,11 @@ RETURN object::has({ a: 1 }, 'b');
 --- case: merging, with the second object winning a collision
 RETURN object::merge({ a: 1, b: 2 }, { b: 9, c: 3 }) = { a: 1, b: 9, c: 3 };
 --- expect: value true
+
+--- case: string::concat joins any number of strings, in order
+RETURN string::concat('a', 'b', 'c', 'd') = 'abcd';
+--- expect: value true
+
+--- case: and still needs two, because one string is already itself
+RETURN string::concat('a');
+--- expect: error WrongArity

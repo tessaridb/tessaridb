@@ -5736,6 +5736,7 @@ SELECT array::first(string::split(email, '@')) AS handle FROM people;
 | `array::flatten(items)` | one level of nesting removed |
 | `array::join(items, sep)` | the elements as one text |
 | `array::slice(items, start, count)` | a run of elements |
+| `string::concat(a, b, …)` | the strings joined in order — two or more |
 | `string::split(text, sep)` | the parts between occurrences |
 | `string::slice(text, start, count)` | a run of characters |
 | `string::lines(text, start, count)` | a run of lines |
@@ -10195,7 +10196,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.35.1", "build": "0.35.1", "endpoints": ["db-1.internal:9000"],
+ "version": "0.35.2", "build": "0.35.2", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

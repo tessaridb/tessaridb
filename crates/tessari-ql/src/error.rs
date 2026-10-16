@@ -551,10 +551,12 @@ pub enum Error {
     /// Refused when the statement is read rather than when it runs: the set of
     /// functions is known then, so this is a mistake that never needs a record
     /// to see.
-    #[error("{function} takes {expected} argument(s), not {found} (at {span})")]
+    #[error("{function} takes {least}{expected} argument(s), not {found} (at {span})")]
     WrongArity {
         /// The function called.
         function: Function,
+        /// `at least ` when the function is variadic (G074 C2), else nothing.
+        least: &'static str,
         /// How many it takes.
         expected: usize,
         /// How many were written.
