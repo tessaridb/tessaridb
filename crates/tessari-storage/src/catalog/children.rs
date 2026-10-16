@@ -14,6 +14,7 @@
 use tessari_encoding::decode_payload;
 use tessari_types::{DatabaseId, FieldId, IndexId, NamespaceId, RecordId, TableId};
 
+use super::rows::Lookup;
 use super::system::{Level, SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 use super::{
     Catalog, DatabaseDefinition, FieldDefinition, IndexDefinition, TableDefinition, definition,
@@ -25,8 +26,41 @@ use crate::transaction::Window;
 impl Catalog<'_, '_> {
     /// The ids `level`'s names claim under `parents`, in id order — the order a
     /// read of the whole definition table answers in.
+    ///
+    /// Held between statements as a row is (`rows`): a write asks this for its
+    /// table's indexes and fields at every commit and every statement.
     fn claimed(&self, level: Level, parents: &[u32]) -> Result<Vec<u32>> {
         let prefix = qualify(level, parents, "");
+        // This transaction's own names are read through it, never from what is
+        // held for everybody's snapshot.
+        if self
+            .transaction
+            .has_written_in(SYSTEM_NAMESPACE, SYSTEM_DATABASE, system::NAMES)
+        {
+            return self.read_claimed(prefix);
+        }
+        let store = self.transaction.store();
+        let fill = match store
+            .catalog_rows()
+            .lookup_span(&prefix, self.transaction.snapshot())
+        {
+            Lookup::Held(ids) => return Ok(ids),
+            Lookup::Missing(fill) => fill,
+        };
+        let reads_landed = self.reads_only_landed();
+        let ids = self.read_claimed(prefix.clone())?;
+        if let Some(generation) = fill
+            && reads_landed
+        {
+            store
+                .catalog_rows()
+                .fill_span(prefix, generation, ids.clone());
+        }
+        Ok(ids)
+    }
+
+    /// [`Self::claimed`] read from `NAMES` at this transaction's snapshot.
+    fn read_claimed(&self, prefix: String) -> Result<Vec<u32>> {
         // The prefix ends in `/`, so the first text past every name that begins
         // with it ends in the next byte, `0` — and a parent whose id merely
         // begins with this one's digits (`…/30/`) starts at or after it.

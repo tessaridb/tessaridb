@@ -66,6 +66,7 @@ struct Counting {
     scans: AtomicUsize,
     point_reads: AtomicUsize,
     largest: AtomicUsize,
+    definition_reads: AtomicUsize,
 }
 
 impl Counting {
@@ -76,6 +77,7 @@ impl Counting {
             scans: AtomicUsize::new(0),
             point_reads: AtomicUsize::new(0),
             largest: AtomicUsize::new(0),
+            definition_reads: AtomicUsize::new(0),
         })
     }
 
@@ -85,6 +87,7 @@ impl Counting {
         self.scans.store(0, Ordering::Relaxed);
         self.point_reads.store(0, Ordering::Relaxed);
         self.largest.store(0, Ordering::Relaxed);
+        self.definition_reads.store(0, Ordering::Relaxed);
     }
 
     fn entries(&self) -> usize {
@@ -100,6 +103,12 @@ impl Counting {
     /// two apart, so it cannot fail when the bound is removed.
     fn largest_fetch(&self) -> usize {
         self.largest.load(Ordering::Relaxed)
+    }
+
+    /// Scans of the catalog tables a table's definitions live in — its table
+    /// row, the names its indexes and fields claim, and their rows.
+    fn definition_reads(&self) -> usize {
+        self.definition_reads.load(Ordering::Relaxed)
     }
 
     /// Every question put to the backend: a scan call or a point lookup.
@@ -122,6 +131,9 @@ impl KvBackend for Counting {
 
     fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, KvValue)>> {
         self.scans.fetch_add(1, Ordering::Relaxed);
+        if reads_definitions(request) {
+            self.definition_reads.fetch_add(1, Ordering::Relaxed);
+        }
         let found = self.inner.scan(request)?;
         self.entries.fetch_add(found.len(), Ordering::Relaxed);
         self.largest.fetch_max(found.len(), Ordering::Relaxed);
@@ -163,6 +175,21 @@ impl KvBackend for Counting {
     fn apply(&self, batch: WriteBatch) -> Result<()> {
         self.inner.apply(batch)
     }
+}
+
+/// Whether a scan starts inside `TABLES`, `NAMES`, `INDEXES` or `FIELDS`: a
+/// record key of namespace 0, database 0 and one of those table ids (3, 4, 6, 7).
+fn reads_definitions(request: &ScanRequest) -> bool {
+    let std::ops::Bound::Included(start) = request.range.start() else {
+        return false;
+    };
+    let bytes = start.as_slice();
+    let mut prefix = vec![1_u8];
+    prefix.extend_from_slice(&[0; 8]);
+    bytes.len() > 12
+        && bytes.starts_with(&prefix)
+        && bytes[9..12] == [0, 0, 0]
+        && [3, 4, 6, 7].contains(&bytes[12])
 }
 
 struct Fixture {
@@ -1294,5 +1321,80 @@ fn listing_a_databases_tables_reads_no_more_beside_other_databases() {
         few, many,
         "listing one database's tables read {many} entries beside 200 tables elsewhere \
          and {few} beside 2"
+    );
+}
+
+// ------------------------------------------------------------------- G072
+
+/// A store with one table holding `declared` indexes and as many fields, and
+/// the definition reads one record write costs before and after a first write
+/// has read them (Q-G071-2).
+fn definition_reads_with(declared: usize) -> (usize, usize) {
+    let counting = Counting::new();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").unwrap();
+    let database = catalog.create_database(namespace.id, "shop").unwrap();
+    let table = catalog
+        .create_table(namespace.id, database.id, "users", TableShape::default())
+        .unwrap();
+    for nth in 0..declared {
+        let field = format!("f{nth}");
+        catalog
+            .create_index(
+                table.id,
+                &format!("by_{field}"),
+                vec![Path::field(&field)],
+                IndexShape::default(),
+            )
+            .unwrap();
+        catalog
+            .create_field(table.id, &field, FieldKind::Any, FieldShape::default())
+            .unwrap();
+    }
+    transaction.commit().unwrap();
+    let write = |nth: usize| {
+        let mut transaction = store.begin().unwrap();
+        let id = RecordId::from(format!("u{nth:06}"));
+        let at = RecordAddress::new(namespace.id, database.id, table.id, id);
+        transaction.put(
+            at,
+            encode_payload(&Value::Object(BTreeMap::new())).into_bytes(),
+        );
+        transaction.commit().unwrap();
+    };
+    counting.reset();
+    write(0);
+    let cold = counting.definition_reads();
+    counting.reset();
+    write(1);
+    (cold, counting.definition_reads())
+}
+
+/// Once one write has read a table's definitions, the next write reads none of
+/// them again, however many the table declares.
+///
+/// The number that fails this is a scan per definition per write: what a write
+/// paid from 0.34.1, when a table's definitions were found through its names
+/// and read one by one at every commit (+10…+31 % p50 on a small store). Each
+/// index's change counter is read per write too, and is not counted here — it
+/// is a statistic the write keeps, not a definition it looks up.
+#[test]
+fn a_record_write_reads_its_tables_definitions_once_and_not_per_write() {
+    let (cold_one, warm_one) = definition_reads_with(1);
+    let (cold_six, warm_six) = definition_reads_with(6);
+
+    assert!(
+        cold_six > cold_one && cold_one > 0,
+        "the control: a first write was meant to read the definitions it is \
+         given ({cold_one} catalog scans with one, {cold_six} with six)"
+    );
+    assert_eq!(
+        (warm_one, warm_six),
+        (0, 0),
+        "a second write scanned the catalog {warm_one} times beside one \
+         definition and {warm_six} beside six — every write is reading its \
+         table's definitions"
     );
 }

@@ -13,6 +13,15 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.34.4 — 2026-10-16
+
+The first version without a pre-release label; still before 1.0.
+
+### Fixed
+
+- **A write no longer re-reads its table's index and field definitions** at every commit. From 0.34.1 that cost a
+  small store 10–31 % on every write path; writes are back to the 0.34.0 cost.
+
 ## 0.34.3-beta — 2026-10-16
 
 ### Changed
