@@ -97,6 +97,63 @@ fn an_acknowledged_message_is_never_handed_out_again() {
     });
 }
 
+/// `AT` takes one bound array of positions as well as positions written out,
+/// so a worker acknowledging a batch it read binds the batch rather than
+/// spelling one parameter per message (ADR-0126 D3).
+#[test]
+fn a_batch_of_positions_is_acknowledged_from_one_bound_array() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        run(
+            &mut session,
+            "DEFINE GROUP 'billing' ON TOPIC events ACK DEADLINE 30s IN FLIGHT 3;",
+        );
+        appended(&mut session, 3);
+        assert_eq!(
+            given(&mut session, READ),
+            vec![(1, 1), (2, 1), (3, 1)],
+            "{}",
+            backend.name
+        );
+        let mut supplied = tessari_session::Parameters::new();
+        supplied.insert(
+            "batch".to_owned(),
+            Value::Array(vec![
+                Value::Number(Number::Integer(1)),
+                Value::Number(Number::Integer(3)),
+            ]),
+        );
+        let acknowledged = session
+            .run_with("ACK events FOR CONSUMER 'billing' AT $batch;", &supplied)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            acknowledged,
+            Outcome::Value(Value::Number(Number::Integer(2))),
+            "{}",
+            backend.name
+        );
+        // The one left in flight is the one the array did not name.
+        assert_eq!(
+            count(&mut session, "ACK events FOR CONSUMER 'billing' AT 2;"),
+            1,
+            "{}",
+            backend.name
+        );
+        let mut supplied = tessari_session::Parameters::new();
+        supplied.insert(
+            "batch".to_owned(),
+            Value::Array(vec![Value::String("one".to_owned())]),
+        );
+        let refused = session.run_with("NACK events FOR CONSUMER 'billing' AT $batch;", &supplied);
+        assert!(
+            matches!(refused, Err(Error::InvalidPosition { .. })),
+            "a position that is not a whole number was taken: {refused:?}"
+        );
+    });
+}
+
 #[test]
 fn an_unacknowledged_message_is_handed_out_again_after_its_deadline() {
     on_each_backend(|backend| {

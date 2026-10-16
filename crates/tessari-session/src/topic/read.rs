@@ -187,17 +187,33 @@ impl Session<'_> {
         expr: &Expr,
         reason: &'static str,
     ) -> Result<u64> {
+        position_of(self.evaluate(transaction, expr)?, reason, expr.span)
+    }
+
+    /// The positions one expression names: a whole number, or an array of them
+    /// — a batch read and bound as one parameter (ADR-0126 D3).
+    pub(super) fn positions(
+        &self,
+        transaction: &mut Transaction<'_>,
+        expr: &Expr,
+        reason: &'static str,
+    ) -> Result<Vec<u64>> {
         match self.evaluate(transaction, expr)? {
-            Value::Number(Number::Integer(held)) => {
-                u64::try_from(held).map_err(|_| Error::InvalidPosition {
-                    reason,
-                    span: expr.span,
-                })
-            }
-            _ => Err(Error::InvalidPosition {
-                reason,
-                span: expr.span,
-            }),
+            Value::Array(items) => items
+                .into_iter()
+                .map(|item| position_of(item, reason, expr.span))
+                .collect(),
+            value => Ok(vec![position_of(value, reason, expr.span)?]),
         }
+    }
+}
+
+/// A whole number at or above zero, or the refusal naming `reason`.
+fn position_of(value: Value, reason: &'static str, span: Span) -> Result<u64> {
+    match value {
+        Value::Number(Number::Integer(held)) => {
+            u64::try_from(held).map_err(|_| Error::InvalidPosition { reason, span })
+        }
+        _ => Err(Error::InvalidPosition { reason, span }),
     }
 }

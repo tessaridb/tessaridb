@@ -407,7 +407,7 @@ impl Session<'_> {
         };
         let mut named = Vec::with_capacity(positions.len());
         for position in positions {
-            named.push(self.whole(
+            named.extend(self.positions(
                 transaction,
                 position,
                 "a position is a whole number at or above zero",
