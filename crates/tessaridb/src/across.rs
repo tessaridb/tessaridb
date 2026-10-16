@@ -58,7 +58,7 @@ impl Db {
         // forgetting asks every participant, and a pass that has just
         // resolved here would only be told so a moment later.
         self.forget_decided(&mut settled, &mut silent).await?;
-        let pending = store.pending_across()?;
+        let pending = store.pending_across().await?;
         let pending_seen = pending.len();
         for (transaction, record) in pending {
             let Some(coordinator) = record.participants.first().map(|part| part.range) else {
@@ -87,7 +87,7 @@ impl Db {
                 Err(why) => settled.last_refusal = Some(why.to_string()),
             }
         }
-        let standing = store.standing_across()?;
+        let standing = store.standing_across().await?;
         let standing_seen = standing.len();
         let young = self.young_standing(&standing, now).await?;
         for (transaction, coordinator) in standing {
@@ -229,7 +229,7 @@ impl Db {
         silent: &mut BTreeSet<[u8; tessari_storage::NODE_ID_LEN]>,
     ) -> Result<()> {
         let store = self.store();
-        for (transaction, record) in store.decided_across()? {
+        for (transaction, record) in store.decided_across().await? {
             let Some(coordinator) = record.participants.first().map(|part| part.range) else {
                 continue;
             };

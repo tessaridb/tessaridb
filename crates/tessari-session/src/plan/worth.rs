@@ -118,7 +118,9 @@ pub(crate) async fn worth_serving(
         }
         (Rows::About(held), _) if held >= cap.saturating_add(cap / 2) => return Ok(None),
         (Rows::About(_) | Rows::Unknown, Served::Equality(values)) => {
-            transaction.count_in_range(&chosen.index, values, None, None, cap)?
+            transaction
+                .count_in_range(&chosen.index, values, None, None, cap)
+                .await?
         }
         (
             Rows::About(_) | Rows::Unknown,
@@ -128,7 +130,9 @@ pub(crate) async fn worth_serving(
                 upper,
             },
         ) => {
-            transaction.count_in_range(&chosen.index, fixed, lower.as_ref(), upper.as_ref(), cap)?
+            transaction
+                .count_in_range(&chosen.index, fixed, lower.as_ref(), upper.as_ref(), cap)
+                .await?
         }
         // A string prefix, a search expansion and a region are each read
         // through a path of their own, so none of them is a range this probe

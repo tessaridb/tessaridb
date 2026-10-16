@@ -12,14 +12,14 @@ use super::*;
 /// # Errors
 ///
 /// Returns an error when the store or the stream fails.
-pub fn write(store: &Store, out: &mut impl Write) -> Result<Written> {
+pub async fn write(store: &Store, out: &mut impl Write) -> Result<Written> {
     let homes = store.logs()?;
     let sections = u32::try_from(homes.len()).unwrap_or(u32::MAX);
     let writer = write_head(out, sections)?;
     let mut records = 0_u64;
     let mut logs = Vec::with_capacity(homes.len());
     for home in homes {
-        let (written, span) = write_section(store, out, home, Sequence::new(1))?;
+        let (written, span) = write_section(store, out, home, Sequence::new(1)).await?;
         records = records.saturating_add(written);
         logs.push(span);
     }
@@ -45,14 +45,14 @@ pub fn write(store: &Store, out: &mut impl Write) -> Result<Written> {
 /// # Errors
 ///
 /// Returns an error when the store or the stream fails.
-pub fn write_from(
+pub async fn write_from(
     store: &Store,
     out: &mut impl Write,
     log: LogId,
     from: Sequence,
 ) -> Result<Written> {
     let writer = write_head(out, 1)?;
-    let (records, span) = write_section(store, out, log, from)?;
+    let (records, span) = write_section(store, out, log, from).await?;
     Ok(Written {
         records,
         logs: vec![span],
@@ -106,7 +106,7 @@ fn write_head(out: &mut impl Write, sections: u32) -> Result<NodeVersion> {
 }
 
 /// Write one log's section, and answer how many records went into it.
-fn write_section(
+async fn write_section(
     store: &Store,
     out: &mut impl Write,
     log: LogId,
@@ -136,7 +136,7 @@ fn write_section(
     let mut written = 0_u64;
     let mut from = start;
     loop {
-        let page = store.log_records(log, from, PAGE)?;
+        let page = store.log_records(log, from, PAGE).await?;
         if page.is_empty() {
             break;
         }

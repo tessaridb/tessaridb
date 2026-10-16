@@ -96,7 +96,7 @@ impl Store {
         store.catch_up_with_the_finalized_format().await?;
         // After the stamp is settled: a store holding format 8 keeps retired
         // index entries from the first commit after this open (Q-S3-34).
-        store.begin_keeping_retired_entries()?;
+        store.begin_keeping_retired_entries().await?;
         // Rows are held only for readers at or above this: history before the
         // open is not known to have left them unchanged.
         store.catalog_rows.changed(store.committed_version()?);

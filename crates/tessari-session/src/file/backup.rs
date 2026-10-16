@@ -66,7 +66,7 @@ impl Session<'_> {
         // answering with a file that reads as whole and is missing the rest
         // (Q-624).
         match from.filter(|from| *from > 1) {
-            None => tessari_backup::write(self.store, &mut held),
+            None => tessari_backup::write(self.store, &mut held).await,
             Some(from) => {
                 let home =
                     tessari_backup::only_log(self.store).map_err(|error| Error::BackupFailed {
@@ -78,6 +78,7 @@ impl Session<'_> {
                     home,
                     tessari_types::Sequence::new(from),
                 )
+                .await
             }
         }
         .map_err(|error| Error::BackupFailed {

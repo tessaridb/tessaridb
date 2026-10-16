@@ -8,6 +8,7 @@ use tessari_encoding::{
     IndexAddress, IndexValues, SpatialRefinement, SpatialRefinementKey, StoreKey, StoreValue,
     VectorRecall, VectorRecallKey,
 };
+use tessari_kv::AsyncKvBackend as _;
 use tessari_types::{RecordId, Value};
 
 impl Transaction<'_> {
@@ -75,7 +76,10 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails.
-    pub fn vector_node_bytes(&self, index: &IndexDefinition) -> Result<Option<(u64, u64, u64)>> {
+    pub async fn vector_node_bytes(
+        &self,
+        index: &IndexDefinition,
+    ) -> Result<Option<(u64, u64, u64)>> {
         if index.vector.is_none() {
             return Ok(None);
         }
@@ -88,7 +92,7 @@ impl Transaction<'_> {
             limit: None,
         };
         let (mut nodes, mut bytes, mut vector) = (0_u64, 0_u64, 0_u64);
-        for (_, value) in self.store.backend().scan(&request)? {
+        for (_, value) in self.store.backend().scan(&request).await? {
             let node = tessari_encoding::VectorNode::decode(value.as_slice())?;
             nodes = nodes.saturating_add(1);
             bytes = bytes.saturating_add(u64::try_from(value.as_slice().len()).unwrap_or(u64::MAX));
@@ -114,13 +118,14 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or the stored value cannot be
     /// decoded.
-    pub fn vector_recall(&self, index: &IndexDefinition) -> Result<Option<VectorRecall>> {
+    pub async fn vector_recall(&self, index: &IndexDefinition) -> Result<Option<VectorRecall>> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let key = VectorRecallKey::new(address).encode();
         match self
             .store
             .backend()
-            .get(VectorRecallKey::keyspace(), &key)?
+            .get(VectorRecallKey::keyspace(), &key)
+            .await?
         {
             Some(bytes) => Ok(Some(VectorRecall::decode(bytes.as_slice())?)),
             None => Ok(None),
@@ -140,13 +145,17 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or the stored value cannot be
     /// decoded.
-    pub fn spatial_refinement(&self, index: &IndexDefinition) -> Result<Option<SpatialRefinement>> {
+    pub async fn spatial_refinement(
+        &self,
+        index: &IndexDefinition,
+    ) -> Result<Option<SpatialRefinement>> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let key = SpatialRefinementKey::new(address).encode();
         match self
             .store
             .backend()
-            .get(SpatialRefinementKey::keyspace(), &key)?
+            .get(SpatialRefinementKey::keyspace(), &key)
+            .await?
         {
             Some(bytes) => Ok(Some(SpatialRefinement::decode(bytes.as_slice())?)),
             None => Ok(None),

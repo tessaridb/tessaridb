@@ -118,6 +118,7 @@ fn a_restore_settles_what_its_cut_decided_and_nothing_else() {
 
     let standing: Vec<_> = restored
         .standing_across()
+        .now()
         .unwrap()
         .into_iter()
         .map(|(transaction, _)| transaction)
@@ -126,6 +127,7 @@ fn a_restore_settles_what_its_cut_decided_and_nothing_else() {
     assert_eq!(
         restored
             .transaction_record(staged)
+            .now()
             .unwrap()
             .map(|record| record.decision),
         Some(Decision::Committed)

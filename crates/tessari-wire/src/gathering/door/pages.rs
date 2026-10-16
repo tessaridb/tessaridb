@@ -98,7 +98,7 @@ async fn a_peer_holding_nothing_of_the_table_is_refused_by_name() {
 async fn a_holder_lacking_the_shard_or_the_table_says_which() {
     let authority = Authority::new();
     let (db, table) = leader().await;
-    db.store().record_served(shard(table, 2)).unwrap();
+    db.store().record_served(shard(table, 2)).await.unwrap();
     let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 2);
     let not_held = ask(&authority, address, &asking(table, 1));
     let no_table = ask(&authority, address, &asking(TableId::new(999), 1));

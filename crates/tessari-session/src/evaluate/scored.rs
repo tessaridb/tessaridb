@@ -104,8 +104,9 @@ impl Session<'_> {
                 if address.table != table || transaction.get(&address).await?.is_none() {
                     return Ok(Walked::NotServed);
                 }
-                let Some(held) =
-                    self.scored_from_postings(transaction, ranked, corpus, &address.id)?
+                let Some(held) = self
+                    .scored_from_postings(transaction, ranked, corpus, &address.id)
+                    .await?
                 else {
                     return Ok(Walked::NotServed);
                 };
@@ -166,8 +167,9 @@ impl Session<'_> {
                 // scan's own work paid inside the walk that exists to avoid it —
                 // so the read goes back to the scan rather than losing its
                 // threshold and finishing as an unpruned union.
-                let Some(held) =
-                    self.scored_from_postings(transaction, ranked, corpus, &address.id)?
+                let Some(held) = self
+                    .scored_from_postings(transaction, ranked, corpus, &address.id)
+                    .await?
                 else {
                     return Ok(Walked::NotServed);
                 };
@@ -193,7 +195,7 @@ impl Session<'_> {
     /// there and not how often. Only the record's own text answers then, and
     /// re-analysing it here would be the scan's cost paid inside the walk that
     /// exists to avoid it — so the caller stops pruning instead.
-    pub(super) fn scored_from_postings(
+    pub(super) async fn scored_from_postings(
         &self,
         transaction: &mut Transaction<'_>,
         ranked: &crate::search::Ranked,
@@ -203,7 +205,7 @@ impl Session<'_> {
         let mut occurrences = BTreeMap::new();
         let mut length = 0_u32;
         for term in corpus.terms.keys() {
-            match transaction.posting(&ranked.index, term, id)? {
+            match transaction.posting(&ranked.index, term, id).await? {
                 None => {}
                 Some(Posting::Counted {
                     frequency,
@@ -248,7 +250,7 @@ impl Session<'_> {
         if transaction.writes_in(context.namespace, context.database, table) {
             return Ok(None);
         }
-        if !transaction.indexes_are_current_for(table)? {
+        if !transaction.indexes_are_current_for(table).await? {
             return Ok(None);
         }
         Ok(Some(visible))
@@ -296,7 +298,7 @@ impl Session<'_> {
         if transaction.writes_in(context.namespace, context.database, table) {
             return Ok(None);
         }
-        if !transaction.indexes_are_current_for(table)? {
+        if !transaction.indexes_are_current_for(table).await? {
             return Ok(None);
         }
         Ok(Some((index, visible)))

@@ -32,7 +32,7 @@ impl Session<'_> {
         for member in &resolved.members {
             let mut per_probe = Vec::new();
             for probe in query.probes() {
-                per_probe.push(expand(transaction, member, probe)?);
+                per_probe.push(expand(transaction, member, probe).await?);
             }
             expansions.push(per_probe);
         }
@@ -53,7 +53,7 @@ impl Session<'_> {
                 let mut documents = 0_u64;
                 for member in &resolved.members {
                     documents = documents
-                        .saturating_add(transaction.document_frequency(&member.index, term)?);
+                        .saturating_add(transaction.document_frequency(&member.index, term).await?);
                 }
                 largest = largest.max(documents);
             }
@@ -74,7 +74,7 @@ impl Session<'_> {
         // Q-870: whether the postings can decide this read, member by member.
         let decidable = condition.is_none()
             && super::super::postings::decidable(&query)
-            && indexes_agree(transaction, &resolved.members)?;
+            && indexes_agree(transaction, &resolved.members).await?;
         let mut from_postings = decidable;
         let mut found = Vec::new();
         for (at, member) in resolved.members.iter().enumerate() {

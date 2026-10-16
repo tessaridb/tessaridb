@@ -122,7 +122,7 @@ fn follower_of(leader: &Store, over: Reach) -> Store {
             previous = record.epoch();
         }
     }
-    follower.record_served(over).unwrap();
+    follower.record_served(over).now().unwrap();
     follower
 }
 
@@ -1038,7 +1038,7 @@ fn follower_of_the_database(leader: &Store) -> Store {
             previous = record.epoch();
         }
     }
-    follower.record_served(over).unwrap();
+    follower.record_served(over).now().unwrap();
     follower
 }
 

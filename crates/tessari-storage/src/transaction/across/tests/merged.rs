@@ -49,7 +49,7 @@ fn a_begin_writes_the_record_and_the_intents_in_one_log_record() -> Result<()> {
             .is_some_and(|provenance| provenance.provisional)
     }));
     assert_eq!(
-        fixture.store.transaction_record(TRANSACTION)?,
+        fixture.store.transaction_record(TRANSACTION).now()?,
         Some(fixture.record(Decision::Staging))
     );
     assert_eq!(fixture.read()?, Some(b"old".to_vec()));
@@ -68,7 +68,7 @@ fn a_begin_is_refused_for_a_record_written_after_what_its_node_had_seen() -> Res
         matches!(refused, Err(Error::Conflict { .. })),
         "{refused:?}"
     );
-    assert_eq!(fixture.store.transaction_record(TRANSACTION)?, None);
+    assert_eq!(fixture.store.transaction_record(TRANSACTION).now()?, None);
     // Control: from the newer position the same begin is admitted.
     fixture.begin(fixture.seen()?)?;
     Ok(())
@@ -83,7 +83,7 @@ fn a_begin_after_its_absent_record_was_aborted_is_refused() -> Result<()> {
         matches!(refused, Err(Error::AcrossDecided { decided: "aborted" })),
         "{refused:?}"
     );
-    assert!(fixture.store.intents_of(TRANSACTION)?.is_empty());
+    assert!(fixture.store.intents_of(TRANSACTION).now()?.is_empty());
     Ok(())
 }
 
@@ -105,11 +105,11 @@ fn a_conclude_decides_and_resolves_in_one_log_record() -> Result<()> {
         .collect();
     assert_eq!(carried, vec![(false, fixture.prepared())]);
     assert_eq!(
-        fixture.store.transaction_record(TRANSACTION)?,
+        fixture.store.transaction_record(TRANSACTION).now()?,
         Some(fixture.concluded(Decision::Committed))
     );
     assert_eq!(fixture.read()?, Some(b"new".to_vec()));
-    assert!(fixture.store.intents_of(TRANSACTION)?.is_empty());
+    assert!(fixture.store.intents_of(TRANSACTION).now()?.is_empty());
     Ok(())
 }
 
@@ -159,10 +159,10 @@ fn a_follower_applies_the_leaders_begin_and_conclusion_as_written() -> Result<()
     }
     assert_eq!(follower.read()?, Some(b"new".to_vec()));
     assert_eq!(
-        follower.store.transaction_record(TRANSACTION)?,
+        follower.store.transaction_record(TRANSACTION).now()?,
         Some(leader.concluded(Decision::Committed))
     );
-    assert!(follower.store.intents_of(TRANSACTION)?.is_empty());
+    assert!(follower.store.intents_of(TRANSACTION).now()?.is_empty());
     Ok(())
 }
 

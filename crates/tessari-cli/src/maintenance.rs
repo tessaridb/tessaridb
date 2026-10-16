@@ -21,7 +21,7 @@ pub(crate) async fn backup(
         // incremental path, and a store holding several logs refuses it rather than
         // writing a file that reads as whole and is missing the rest (Q-624).
         match from {
-            None | Some(0 | 1) => tessari_backup::write(db.store(), &mut out),
+            None | Some(0 | 1) => tessari_backup::write(db.store(), &mut out).await,
             Some(from) => {
                 let home = tessari_backup::only_log(db.store()).map_err(|why| why.to_string())?;
                 tessari_backup::write_from(
@@ -30,6 +30,7 @@ pub(crate) async fn backup(
                     home,
                     tessaridb::Sequence::new(from),
                 )
+                .await
             }
         }
         .map_err(|failure| match failure {

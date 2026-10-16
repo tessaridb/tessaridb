@@ -21,6 +21,7 @@ use tessari_encoding::{
     Across, Decision, IntentOfKey, LogRecord, Mutation, Part, Participant, Provenance, RecordKey,
     ResolvedOfKey, StampedValue, StoreKey, StoreValue, TransactionId, TransactionRecord,
 };
+use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::Sequence;
 
@@ -53,8 +54,8 @@ impl Store {
     /// codec returns.
     pub async fn settle_restored(&self) -> Result<usize> {
         let mut settled = 0_usize;
-        for (transaction, coordinator) in self.standing_across()? {
-            let Some(outcome) = self.fixed_by_the_cut(transaction)? else {
+        for (transaction, coordinator) in self.standing_across().await? {
+            let Some(outcome) = self.fixed_by_the_cut(transaction).await? else {
                 continue;
             };
             let participants = match outcome {
@@ -73,8 +74,8 @@ impl Store {
                 }
                 Outcome::Aborted => None,
             };
-            for address in self.intents_of(transaction)? {
-                let Some(intent) = self.intent_held(transaction, &address)? else {
+            for address in self.intents_of(transaction).await? {
+                let Some(intent) = self.intent_held(transaction, &address).await? else {
                     continue;
                 };
                 let value = match &participants {
@@ -110,8 +111,8 @@ impl Store {
 
     /// The outcome the cut fixes for `transaction`, or `None` when it leaves
     /// it undecided.
-    fn fixed_by_the_cut(&self, transaction: TransactionId) -> Result<Option<Outcome>> {
-        let record = self.transaction_record(transaction)?;
+    async fn fixed_by_the_cut(&self, transaction: TransactionId) -> Result<Option<Outcome>> {
+        let record = self.transaction_record(transaction).await?;
         match record {
             Some(record) if record.decision == Decision::Committed => {
                 return Ok(Some(Outcome::Committed {
@@ -123,7 +124,7 @@ impl Store {
                 return Ok(Some(Outcome::Aborted));
             }
             Some(ref staging) if staging.decision == Decision::Staging => {
-                if let Some(participants) = self.every_part_landed(transaction, staging)? {
+                if let Some(participants) = self.every_part_landed(transaction, staging).await? {
                     return Ok(Some(Outcome::Committed {
                         record: Some(TransactionRecord {
                             decision: Decision::Committed,
@@ -138,7 +139,7 @@ impl Store {
         }
         // A resolved version is written only once the record has committed,
         // and names every participant itself (D6a).
-        let Some(participants) = self.resolved_participants(transaction)? else {
+        let Some(participants) = self.resolved_participants(transaction).await? else {
             return Ok(None);
         };
         Ok(Some(Outcome::Committed {
@@ -153,14 +154,14 @@ impl Store {
 
     /// `staging`'s participants with where each part landed, when every one
     /// landed here.
-    fn every_part_landed(
+    async fn every_part_landed(
         &self,
         transaction: TransactionId,
         staging: &TransactionRecord,
     ) -> Result<Option<Vec<Participant>>> {
         let mut landed = Vec::with_capacity(staging.participants.len());
         for participant in &staging.participants {
-            let Some(at) = self.part_landed(transaction, participant.range)? else {
+            let Some(at) = self.part_landed(transaction, participant.range).await? else {
                 return Ok(None);
             };
             landed.push(Participant {
@@ -172,16 +173,19 @@ impl Store {
     }
 
     /// The participants a resolved version of `transaction` held here names.
-    fn resolved_participants(
+    async fn resolved_participants(
         &self,
         transaction: TransactionId,
     ) -> Result<Option<Vec<Participant>>> {
-        let found = self.backend().scan(&ScanRequest {
-            keyspace: ResolvedOfKey::keyspace(),
-            range: KeyRange::prefix(&ResolvedOfKey::prefix_of(transaction)),
-            direction: ScanDirection::Forward,
-            limit: None,
-        })?;
+        let found = self
+            .backend()
+            .scan(&ScanRequest {
+                keyspace: ResolvedOfKey::keyspace(),
+                range: KeyRange::prefix(&ResolvedOfKey::prefix_of(transaction)),
+                direction: ScanDirection::Forward,
+                limit: None,
+            })
+            .await?;
         for (key, version) in found {
             let held = ResolvedOfKey::decode(key.as_slice())?;
             let stored = RecordKey::new(
@@ -193,7 +197,8 @@ impl Store {
             );
             let Some(value) = self
                 .backend()
-                .get(RecordKey::keyspace(), &stored.encode())?
+                .get(RecordKey::keyspace(), &stored.encode())
+                .await?
             else {
                 continue;
             };
@@ -207,7 +212,7 @@ impl Store {
     }
 
     /// The intent `transaction` holds on `address`, by its index.
-    fn intent_held(
+    async fn intent_held(
         &self,
         transaction: TransactionId,
         address: &RecordAddress,
@@ -221,7 +226,8 @@ impl Store {
         };
         let Some(version) = self
             .backend()
-            .get(IntentOfKey::keyspace(), &indexed.encode())?
+            .get(IntentOfKey::keyspace(), &indexed.encode())
+            .await?
         else {
             return Ok(None);
         };
@@ -233,7 +239,8 @@ impl Store {
             Sequence::decode(version.as_slice())?,
         );
         self.backend()
-            .get(RecordKey::keyspace(), &stored.encode())?
+            .get(RecordKey::keyspace(), &stored.encode())
+            .await?
             .map(|value| StampedValue::decode(value.as_slice()))
             .transpose()
             .map_err(Into::into)

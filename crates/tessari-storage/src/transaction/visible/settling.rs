@@ -15,11 +15,12 @@ use crate::store::Store;
 /// standalone restore settles it.
 async fn restored(fixture: &Fixture) -> Result<Store> {
     let onto = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).await?;
-    let mut reader = fixture.store.read_state()?;
+    let mut reader = fixture.store.read_state().await?;
     while let Some(chunk) = reader.next_chunk(64).await? {
         onto.restore_state_chunk(&chunk).await?;
     }
-    onto.finish_state(reader.positions(), &reader.topic_heads()?)?;
+    onto.finish_state(reader.positions(), &reader.topic_heads().await?)
+        .await?;
     onto.settle_restored().await?;
     Ok(onto)
 }
@@ -32,9 +33,10 @@ async fn reads(fixture: &Fixture, store: &Store) -> Result<[String; 2]> {
     ])
 }
 
-fn decision(store: &Store) -> Result<Option<Decision>> {
+async fn decision(store: &Store) -> Result<Option<Decision>> {
     Ok(store
-        .transaction_record(TRANSACTION)?
+        .transaction_record(TRANSACTION)
+        .await?
         .map(|record| record.decision))
 }
 
@@ -54,7 +56,7 @@ async fn both_prepared(decision: Decision) -> Result<Fixture> {
 async fn a_committed_record_leaves_no_intent_and_its_log_still_applies_on_top() -> Result<()> {
     let fixture = both_prepared(Decision::Committed).await?;
     let restored = restored(&fixture).await?;
-    assert!(restored.standing_across()?.is_empty());
+    assert!(restored.standing_across().await?.is_empty());
     assert_eq!(reads(&fixture, &restored).await?, ["new", "new"]);
     // The source's own resolutions and forgetting arrive later, onto the same
     // positions, and change nothing a reader sees.
@@ -71,7 +73,7 @@ async fn a_committed_record_leaves_no_intent_and_its_log_still_applies_on_top() 
         )
         .await?;
     assert_eq!(reads(&fixture, &restored).await?, ["new", "new"]);
-    assert!(restored.standing_across()?.is_empty());
+    assert!(restored.standing_across().await?.is_empty());
     Ok(())
 }
 
@@ -81,8 +83,8 @@ async fn a_staging_record_holding_every_part_restores_committed() -> Result<()> 
     let restored = restored(&fixture).await?;
     // Committed implicitly the moment its last part landed (D14a): the caller
     // was told so, and the restore says the same (D14f).
-    assert!(restored.standing_across()?.is_empty());
-    assert_eq!(decision(&restored)?, Some(Decision::Committed));
+    assert!(restored.standing_across().await?.is_empty());
+    assert_eq!(decision(&restored).await?, Some(Decision::Committed));
     assert_eq!(reads(&fixture, &restored).await?, ["new", "new"]);
     // The source's conclusion arrives later and agrees.
     fixture
@@ -107,8 +109,8 @@ async fn a_resolved_version_is_enough_when_the_record_is_gone() -> Result<()> {
     fixture.resolve(0).await?;
     fixture.forget().await?;
     let restored = restored(&fixture).await?;
-    assert_eq!(decision(&restored)?, None);
-    assert!(restored.standing_across()?.is_empty());
+    assert_eq!(decision(&restored).await?, None);
+    assert!(restored.standing_across().await?.is_empty());
     assert_eq!(reads(&fixture, &restored).await?, ["new", "new"]);
     Ok(())
 }
@@ -117,7 +119,7 @@ async fn a_resolved_version_is_enough_when_the_record_is_gone() -> Result<()> {
 async fn an_aborted_record_drops_its_intents() -> Result<()> {
     let fixture = both_prepared(Decision::Aborted).await?;
     let restored = restored(&fixture).await?;
-    assert!(restored.standing_across()?.is_empty());
+    assert!(restored.standing_across().await?.is_empty());
     assert_eq!(reads(&fixture, &restored).await?, ["old", "old"]);
     let mut writing = restored.begin()?;
     for home in 0..2 {
@@ -136,8 +138,8 @@ async fn a_staging_record_missing_a_part_stays_for_the_log_above() -> Result<()>
     let restored = restored(&fixture).await?;
     // The missing prepare may still land on the source: nothing is decided,
     // nothing is barred, and nothing is visible.
-    assert_eq!(restored.standing_across()?.len(), 1);
-    assert_eq!(decision(&restored)?, Some(Decision::Staging));
+    assert_eq!(restored.standing_across().await?.len(), 1);
+    assert_eq!(decision(&restored).await?, Some(Decision::Staging));
     assert_eq!(reads(&fixture, &restored).await?, ["old", "old"]);
     fixture.prepare_on(&restored, 1).await?;
     fixture
@@ -154,7 +156,7 @@ async fn a_staging_record_missing_a_part_stays_for_the_log_above() -> Result<()>
         .await?;
     fixture.resolve_on(&restored, 0).await?;
     fixture.resolve_on(&restored, 1).await?;
-    assert!(restored.standing_across()?.is_empty());
+    assert!(restored.standing_across().await?.is_empty());
     assert_eq!(reads(&fixture, &restored).await?, ["new", "new"]);
     Ok(())
 }
@@ -164,16 +166,16 @@ async fn a_pending_or_absent_record_stays_for_the_log_above() -> Result<()> {
     let absent = Fixture::new().await?;
     absent.prepare(0).await?;
     let restored_absent = restored(&absent).await?;
-    assert_eq!(restored_absent.standing_across()?.len(), 1);
-    assert_eq!(decision(&restored_absent)?, None);
+    assert_eq!(restored_absent.standing_across().await?.len(), 1);
+    assert_eq!(decision(&restored_absent).await?, None);
     assert_eq!(reads(&absent, &restored_absent).await?, ["old", "old"]);
 
     let pending = Fixture::new().await?;
     pending.prepare(0).await?;
     pending.decide(Decision::Pending).await?;
     let restored = restored(&pending).await?;
-    assert_eq!(restored.standing_across()?.len(), 1);
-    assert_eq!(decision(&restored)?, Some(Decision::Pending));
+    assert_eq!(restored.standing_across().await?.len(), 1);
+    assert_eq!(decision(&restored).await?, Some(Decision::Pending));
     assert_eq!(reads(&pending, &restored).await?, ["old", "old"]);
     // The source later commits it, and its log applies as it would have.
     pending.prepare_on(&restored, 1).await?;

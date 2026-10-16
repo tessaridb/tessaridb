@@ -233,7 +233,7 @@ pub(crate) async fn maintain(
     batch: WriteBatch,
     version: Sequence,
 ) -> Result<WriteBatch> {
-    let retiring = crate::retired::retiring_at(store, version)?;
+    let retiring = crate::retired::retiring_at(store, version).await?;
     maintain_from(store, store.begin_local()?, record, batch, retiring).await
 }
 
@@ -349,7 +349,8 @@ pub(crate) async fn maintain_from(
                 previous.as_deref(),
                 (&declared, named_now),
                 &mut pending,
-            )?;
+            )
+            .await?;
         }
     }
 
@@ -361,8 +362,8 @@ pub(crate) async fn maintain_from(
             batch = build(store, batch, &mut view, record, &definition, &mut pending).await?;
         }
     }
-    let batch = crate::statistics::count_changes(store, batch, &changed)?;
-    settle(store, batch, &pending)
+    let batch = crate::statistics::count_changes(store, batch, &changed).await?;
+    settle(store, batch, &pending).await
 }
 
 /// A record's value before and after one mutation, decoded once for every index.

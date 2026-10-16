@@ -45,7 +45,7 @@ pub async fn read_until(
     // A failed sync is answered first, because a record it could not make
     // durable must not be reported as restored.
     let synced = store.sync_landed();
-    synced?;
+    synced.await?;
     replayed
 }
 
@@ -137,7 +137,7 @@ async fn replay(
                     .await?;
                 applied = applied.saturating_add(1);
                 if applied.is_multiple_of(crate::RESTORE_CHUNK) {
-                    store.sync_landed()?;
+                    store.sync_landed().await?;
                 }
                 *reached = sequence;
             }

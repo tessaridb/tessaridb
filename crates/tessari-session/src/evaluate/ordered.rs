@@ -259,7 +259,7 @@ impl Session<'_> {
         if transaction.writes_in(context.namespace, context.database, table) {
             return Ok(None);
         }
-        if !transaction.indexes_are_current_for(table)? {
+        if !transaction.indexes_are_current_for(table).await? {
             return Ok(None);
         }
         Ok(Some((index, visible)))
@@ -400,7 +400,9 @@ impl Session<'_> {
                         asked,
                         &at.id,
                         &payload,
-                    )? {
+                    )
+                    .await?
+                    {
                         rows.push((at.id, payload));
                     }
                 }

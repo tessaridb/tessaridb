@@ -5,6 +5,7 @@ use tessari_encoding::{
     IntentOfKey, RecordKey, StampedValue, StoreKey, StoreValue, TransactionRecord,
     TransactionRecordKey,
 };
+use tessari_kv::AsyncKvBackend as _;
 use tessari_types::Sequence;
 
 use crate::error::Result;
@@ -16,14 +17,15 @@ impl Store {
     /// # Errors
     ///
     /// Whatever the backend or the codec returns.
-    pub fn transaction_record(
+    pub async fn transaction_record(
         &self,
         transaction: tessari_encoding::TransactionId,
     ) -> Result<Option<TransactionRecord>> {
         let key = TransactionRecordKey { transaction };
         Ok(self
             .backend()
-            .get(TransactionRecordKey::keyspace(), &key.encode())?
+            .get(TransactionRecordKey::keyspace(), &key.encode())
+            .await?
             .map(|value| TransactionRecord::decode(value.as_slice()))
             .transpose()?)
     }
@@ -34,7 +36,7 @@ impl Store {
     /// # Errors
     ///
     /// Whatever the backend or the codec returns.
-    pub fn part_landed(
+    pub async fn part_landed(
         &self,
         transaction: tessari_encoding::TransactionId,
         range: tessari_types::Reach,
@@ -42,7 +44,8 @@ impl Store {
         let key = tessari_encoding::AcrossPartKey { transaction, range };
         Ok(self
             .backend()
-            .get(tessari_encoding::AcrossPartKey::keyspace(), &key.encode())?
+            .get(tessari_encoding::AcrossPartKey::keyspace(), &key.encode())
+            .await?
             .map(|value| Sequence::decode(value.as_slice()))
             .transpose()?)
     }
@@ -52,16 +55,19 @@ impl Store {
     /// # Errors
     ///
     /// Whatever the backend or the codec returns.
-    pub(crate) fn intents_of(
+    pub(crate) async fn intents_of(
         &self,
         transaction: tessari_encoding::TransactionId,
     ) -> Result<Vec<crate::transaction::RecordAddress>> {
-        let found = self.backend().scan(&tessari_kv::ScanRequest {
-            keyspace: IntentOfKey::keyspace(),
-            range: tessari_kv::KeyRange::prefix(&IntentOfKey::prefix_of(transaction)),
-            direction: tessari_kv::ScanDirection::Forward,
-            limit: None,
-        })?;
+        let found = self
+            .backend()
+            .scan(&tessari_kv::ScanRequest {
+                keyspace: IntentOfKey::keyspace(),
+                range: tessari_kv::KeyRange::prefix(&IntentOfKey::prefix_of(transaction)),
+                direction: tessari_kv::ScanDirection::Forward,
+                limit: None,
+            })
+            .await?;
         found
             .into_iter()
             .map(|(key, _)| {
@@ -83,15 +89,18 @@ impl Store {
     /// # Errors
     ///
     /// Whatever the backend or the codec returns.
-    pub fn standing_across(
+    pub async fn standing_across(
         &self,
     ) -> Result<Vec<(tessari_encoding::TransactionId, tessari_types::Reach)>> {
-        let found = self.backend().scan(&tessari_kv::ScanRequest {
-            keyspace: IntentOfKey::keyspace(),
-            range: tessari_kv::KeyRange::prefix(&IntentOfKey::prefix()),
-            direction: tessari_kv::ScanDirection::Forward,
-            limit: None,
-        })?;
+        let found = self
+            .backend()
+            .scan(&tessari_kv::ScanRequest {
+                keyspace: IntentOfKey::keyspace(),
+                range: tessari_kv::KeyRange::prefix(&IntentOfKey::prefix()),
+                direction: tessari_kv::ScanDirection::Forward,
+                limit: None,
+            })
+            .await?;
         let mut standing: Vec<(tessari_encoding::TransactionId, tessari_types::Reach)> = Vec::new();
         for (key, version) in found {
             let held = IntentOfKey::decode(key.as_slice())?;
@@ -110,7 +119,8 @@ impl Store {
             );
             let Some(stored) = self
                 .backend()
-                .get(RecordKey::keyspace(), &intent.encode())?
+                .get(RecordKey::keyspace(), &intent.encode())
+                .await?
             else {
                 continue;
             };
@@ -128,7 +138,7 @@ impl Store {
     /// # Errors
     ///
     /// Whatever the backend returns.
-    pub fn bars_across(&self) -> Result<usize> {
+    pub async fn bars_across(&self) -> Result<usize> {
         Ok(self
             .backend()
             .scan(&tessari_kv::ScanRequest {
@@ -138,7 +148,8 @@ impl Store {
                 ]),
                 direction: tessari_kv::ScanDirection::Forward,
                 limit: None,
-            })?
+            })
+            .await?
             .len())
     }
 
@@ -147,13 +158,19 @@ impl Store {
     /// # Errors
     ///
     /// Whatever the backend returns.
-    pub fn holds_intents_of(&self, transaction: tessari_encoding::TransactionId) -> Result<bool> {
-        let found = self.backend().scan(&tessari_kv::ScanRequest {
-            keyspace: IntentOfKey::keyspace(),
-            range: tessari_kv::KeyRange::prefix(&IntentOfKey::prefix_of(transaction)),
-            direction: tessari_kv::ScanDirection::Forward,
-            limit: Some(1),
-        })?;
+    pub async fn holds_intents_of(
+        &self,
+        transaction: tessari_encoding::TransactionId,
+    ) -> Result<bool> {
+        let found = self
+            .backend()
+            .scan(&tessari_kv::ScanRequest {
+                keyspace: IntentOfKey::keyspace(),
+                range: tessari_kv::KeyRange::prefix(&IntentOfKey::prefix_of(transaction)),
+                direction: tessari_kv::ScanDirection::Forward,
+                limit: Some(1),
+            })
+            .await?;
         Ok(!found.is_empty())
     }
 
@@ -163,11 +180,12 @@ impl Store {
     /// # Errors
     ///
     /// Whatever the backend or the codec returns.
-    pub fn decided_across(
+    pub async fn decided_across(
         &self,
     ) -> Result<Vec<(tessari_encoding::TransactionId, TransactionRecord)>> {
         Ok(self
-            .records_across()?
+            .records_across()
+            .await?
             .into_iter()
             .filter(|(_, record)| record.decision.is_decided())
             .collect())
@@ -179,26 +197,32 @@ impl Store {
     /// # Errors
     ///
     /// Whatever the backend or the codec returns.
-    pub fn pending_across(
+    pub async fn pending_across(
         &self,
     ) -> Result<Vec<(tessari_encoding::TransactionId, TransactionRecord)>> {
         Ok(self
-            .records_across()?
+            .records_across()
+            .await?
             .into_iter()
             .filter(|(_, record)| !record.decision.is_decided())
             .collect())
     }
 
     /// Every transaction record this node holds.
-    fn records_across(&self) -> Result<Vec<(tessari_encoding::TransactionId, TransactionRecord)>> {
-        let found = self.backend().scan(&tessari_kv::ScanRequest {
-            keyspace: TransactionRecordKey::keyspace(),
-            range: tessari_kv::KeyRange::prefix(&[
-                tessari_encoding::KeyKind::TransactionRecord.tag()
-            ]),
-            direction: tessari_kv::ScanDirection::Forward,
-            limit: None,
-        })?;
+    async fn records_across(
+        &self,
+    ) -> Result<Vec<(tessari_encoding::TransactionId, TransactionRecord)>> {
+        let found = self
+            .backend()
+            .scan(&tessari_kv::ScanRequest {
+                keyspace: TransactionRecordKey::keyspace(),
+                range: tessari_kv::KeyRange::prefix(&[
+                    tessari_encoding::KeyKind::TransactionRecord.tag(),
+                ]),
+                direction: tessari_kv::ScanDirection::Forward,
+                limit: None,
+            })
+            .await?;
         found
             .into_iter()
             .map(|(key, value)| {

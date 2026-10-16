@@ -8,6 +8,7 @@ mod equality;
 mod vectors;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{
@@ -139,7 +140,8 @@ impl Transaction<'_> {
         // lost since (Q-S3-34). Resolved at the snapshot like every candidate;
         // the caller re-tests the condition that asked.
         let retired: Vec<RecordAddress> = self
-            .retired_candidates(index, &start, &end)?
+            .retired_candidates(index, &start, &end)
+            .await?
             .into_iter()
             .map(|id| RecordAddress::new(index.namespace, index.database, index.table, id))
             .collect();
@@ -158,7 +160,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(RANGE_SCAN_BATCH_ENTRIES),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = self.store.backend().scan(&request).await?;
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             // The entries name the records; the records are then read together.
             // Reading each one as it is named would be the same answer at one
@@ -222,7 +224,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or an index entry cannot be
     /// decoded.
-    pub fn ids_in_range(
+    pub async fn ids_in_range(
         &self,
         index: &IndexDefinition,
         fixed: &[Value],
@@ -250,7 +252,7 @@ impl Transaction<'_> {
 
         // Behind the tail, the records the range held at this snapshot and has
         // lost since (Q-S3-34); the caller re-tests every identity it names.
-        let mut found: BTreeSet<RecordId> = self.retired_candidates(index, &start, &end)?;
+        let mut found: BTreeSet<RecordId> = self.retired_candidates(index, &start, &end).await?;
         let mut from = start;
         loop {
             let request = ScanRequest {
@@ -259,7 +261,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(RANGE_SCAN_BATCH_ENTRIES),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = self.store.backend().scan(&request).await?;
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             for (key, value) in &batch {
                 let id = if index.unique {
@@ -317,7 +319,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails.
-    pub fn count_in_range(
+    pub async fn count_in_range(
         &self,
         index: &IndexDefinition,
         fixed: &[Value],
@@ -352,7 +354,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(RANGE_SCAN_BATCH_ENTRIES),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = self.store.backend().scan(&request).await?;
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             found = found.saturating_add(u64::try_from(batch.len()).unwrap_or(u64::MAX));
             if found > cap {
@@ -416,7 +418,7 @@ impl Transaction<'_> {
         {
             return self.walk_complete_equality(index, fixed, hand).await;
         }
-        let ids = self.ids_in_range(index, fixed, lower, upper)?;
+        let ids = self.ids_in_range(index, fixed, lower, upper).await?;
         // Copied out before the walk rather than read in step with it: `hand`
         // takes the transaction, so nothing may hold a borrow of it across the
         // call. A pending write's payload is the one this transaction wrote, and

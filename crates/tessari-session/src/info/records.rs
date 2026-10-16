@@ -47,7 +47,7 @@ impl Session<'_> {
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
         let (_, address) = self.address(transaction, target).await?;
-        let (surviving, concurrent) = transaction.surviving_writers(&address)?;
+        let (surviving, concurrent) = transaction.surviving_writers(&address).await?;
         let Some((newest, writer)) = surviving.first() else {
             return Err(Error::NoSuchRecord {
                 id: address.id.to_string(),
@@ -161,7 +161,10 @@ impl Session<'_> {
                 ))?,
                 self.store.own_log(home)?,
             ];
-            let history = self.store.history_across(&logs, &subject, HISTORY_EVENTS)?;
+            let history = self
+                .store
+                .history_across(&logs, &subject, HISTORY_EVENTS)
+                .await?;
             let events: Vec<Value> = history
                 .events
                 .iter()
@@ -182,7 +185,7 @@ impl Session<'_> {
             ]));
         }
         let log = self.store.own_log(home)?;
-        let history = self.store.history_of(log, &subject, HISTORY_EVENTS)?;
+        let history = self.store.history_of(log, &subject, HISTORY_EVENTS).await?;
         let events: Vec<Value> = history
             .events
             .iter()

@@ -2,6 +2,7 @@
 //! resolve — each one log record, each checked where it lands.
 
 use std::sync::Arc;
+use tessari_kv::AsyncKvBackend as _;
 
 use std::collections::BTreeMap;
 use tessari_encoding::{
@@ -142,29 +143,37 @@ impl Fixture {
     }
 
     /// Every entry of the index keyspace, as bytes.
-    fn index_entries(&self) -> Result<Vec<(Key, Stored)>> {
-        Ok(self.store.backend().scan(&ScanRequest {
-            keyspace: Keyspace::INDEX,
-            range: KeyRange::all(),
-            direction: ScanDirection::Forward,
-            limit: None,
-        })?)
+    async fn index_entries(&self) -> Result<Vec<(Key, Stored)>> {
+        Ok(self
+            .store
+            .backend()
+            .scan(&ScanRequest {
+                keyspace: Keyspace::INDEX,
+                range: KeyRange::all(),
+                direction: ScanDirection::Forward,
+                limit: None,
+            })
+            .await?)
     }
 
     /// Whether any intent is left under the record's key.
-    fn intent_left(&self) -> Result<bool> {
+    async fn intent_left(&self) -> Result<bool> {
         let prefix = RecordKey::versions_prefix(
             self.namespace,
             self.database,
             self.table,
             &RecordId::from("r"),
         );
-        let found = self.store.backend().scan(&ScanRequest {
-            keyspace: RecordKey::keyspace(),
-            range: KeyRange::prefix(&prefix),
-            direction: ScanDirection::Forward,
-            limit: None,
-        })?;
+        let found = self
+            .store
+            .backend()
+            .scan(&ScanRequest {
+                keyspace: RecordKey::keyspace(),
+                range: KeyRange::prefix(&prefix),
+                direction: ScanDirection::Forward,
+                limit: None,
+            })
+            .await?;
         for (_, value) in found {
             let stored = <StampedValue as tessari_encoding::StoreValue>::decode(value.as_slice())?;
             if super::is_intent(&stored) {
@@ -176,7 +185,7 @@ impl Fixture {
 }
 
 /// The transaction's record as this node holds it.
-fn record_of(store: &Store) -> Result<Option<TransactionRecord>> {
+async fn record_of(store: &Store) -> Result<Option<TransactionRecord>> {
     let key = tessari_encoding::TransactionRecordKey {
         transaction: TRANSACTION,
     };
@@ -185,7 +194,8 @@ fn record_of(store: &Store) -> Result<Option<TransactionRecord>> {
         .get(
             tessari_encoding::TransactionRecordKey::keyspace(),
             &key.encode(),
-        )?
+        )
+        .await?
         .map(|value| <TransactionRecord as tessari_encoding::StoreValue>::decode(value.as_slice()))
         .transpose()?)
 }
@@ -210,7 +220,7 @@ async fn a_committed_transaction_becomes_the_value_and_leaves_no_intent() -> Res
         Some(doc("old")),
         "an intent is not a value"
     );
-    assert!(fixture.intent_left()?);
+    assert!(fixture.intent_left().await?);
     // A record is written PENDING before it is decided, as the coordinator
     // writes it.
     fixture
@@ -220,7 +230,7 @@ async fn a_committed_transaction_becomes_the_value_and_leaves_no_intent() -> Res
         .apply(Part::Decide(decided(Decision::Committed)), vec![])
         .await?;
     assert_eq!(
-        record_of(&fixture.store)?,
+        record_of(&fixture.store).await?,
         Some(decided(Decision::Committed))
     );
     let resolved = fixture.write(fixture.new_value(false));
@@ -228,7 +238,10 @@ async fn a_committed_transaction_becomes_the_value_and_leaves_no_intent() -> Res
         .apply(Part::Resolve { committed: true }, vec![resolved])
         .await?;
     assert_eq!(fixture.read().await?, Some(doc("new")));
-    assert!(!fixture.intent_left()?, "the resolution removes its intent");
+    assert!(
+        !fixture.intent_left().await?,
+        "the resolution removes its intent"
+    );
     Ok(())
 }
 
@@ -251,7 +264,7 @@ async fn an_aborted_transaction_leaves_the_old_value_and_no_intent() -> Result<(
         .apply(Part::Resolve { committed: false }, vec![named])
         .await?;
     assert_eq!(fixture.read().await?, Some(doc("old")));
-    assert!(!fixture.intent_left()?);
+    assert!(!fixture.intent_left().await?);
     Ok(())
 }
 
@@ -276,7 +289,7 @@ async fn a_prepare_carrying_a_plain_write_is_refused_and_lands_nothing() -> Resu
     assert_eq!(fixture.read().await?, Some(doc("old")));
     // The position did not move: the same record number is still free.
     fixture.prepare().await?;
-    assert!(fixture.intent_left()?);
+    assert!(fixture.intent_left().await?);
     Ok(())
 }
 
@@ -291,14 +304,14 @@ async fn a_decision_carrying_writes_is_refused() -> Result<()> {
         matches!(refused, Err(Error::AcrossMalformed { part: "decide", .. })),
         "{refused:?}"
     );
-    assert_eq!(record_of(&fixture.store)?, None);
+    assert_eq!(record_of(&fixture.store).await?, None);
     Ok(())
 }
 
 #[tokio::test]
 async fn an_intent_derives_no_index_entry_and_its_resolution_does() -> Result<()> {
     let mut fixture = Fixture::new().await?;
-    let before = fixture.index_entries()?;
+    let before = fixture.index_entries().await?;
     fixture.prepare().await?;
     // A record is written PENDING before it is decided, as the coordinator
     // writes it.
@@ -309,7 +322,7 @@ async fn an_intent_derives_no_index_entry_and_its_resolution_does() -> Result<()
         .apply(Part::Decide(decided(Decision::Committed)), vec![])
         .await?;
     assert_eq!(
-        fixture.index_entries()?,
+        fixture.index_entries().await?,
         before,
         "a prepare and a decision leave every index byte as it was"
     );
@@ -318,7 +331,7 @@ async fn an_intent_derives_no_index_entry_and_its_resolution_does() -> Result<()
         .apply(Part::Resolve { committed: true }, vec![resolved])
         .await?;
     assert_ne!(
-        fixture.index_entries()?,
+        fixture.index_entries().await?,
         before,
         "the resolution moves the entry"
     );

@@ -149,6 +149,7 @@ fn the_change_feed_reaches_the_surface() {
             Sequence::ZERO,
             1024,
         )
+        .now()
         .unwrap();
     let kinds: Vec<&ChangeKind> = answer.changes.iter().map(|c| &c.kind).collect();
     assert_eq!(kinds.len(), 2, "{kinds:?}");
@@ -170,7 +171,7 @@ fn a_subscription_is_a_value_the_caller_keeps() {
     session
         .run_now("CREATE users:1 = { name: 'ada' };")
         .unwrap();
-    let first: Vec<Change> = db.poll(&mut watching, 1024).unwrap();
+    let first: Vec<Change> = db.poll(&mut watching, 1024).now().unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(
         name_of(match &first[0].kind {
@@ -190,9 +191,10 @@ fn a_subscription_is_a_value_the_caller_keeps() {
         .unwrap();
     let skipped = db
         .skip(&mut watching, Sequence::new(tail.get() + 1))
+        .now()
         .unwrap();
     assert_eq!(skipped, 1);
-    assert!(db.poll(&mut watching, 1024).unwrap().is_empty());
+    assert!(db.poll(&mut watching, 1024).now().unwrap().is_empty());
     assert_eq!(watching.delivered(), 1);
     assert_eq!(watching.dropped(), 1);
 }

@@ -339,31 +339,32 @@ impl Session<'_> {
                 self.refuse_reading_a_part(transaction, table, Part::Whole)
                     .await?;
             }
-            let statistics = transaction.search_statistics(&index)?;
+            let statistics = transaction.search_statistics(&index).await?;
             let mut terms = BTreeMap::new();
             for term in &asked {
                 if terms.contains_key(term) {
                     continue;
                 }
-                let held = transaction.term_statistics(&index, term)?;
+                let held = transaction.term_statistics(&index, term).await?;
                 terms.insert(term.clone(), held);
             }
             let mut blends = Vec::with_capacity(starred.len());
             for alternatives in &starred {
-                let blend = blended(transaction, &index, alternatives)?;
+                let blend = blended(transaction, &index, alternatives).await?;
                 for term in &blend.expansions {
                     if !terms.contains_key(term) {
-                        let held = transaction.term_statistics(&index, term)?;
+                        let held = transaction.term_statistics(&index, term).await?;
                         terms.insert(term.clone(), held);
                     }
                 }
                 blends.push(blend);
             }
             for alternatives in &near {
-                let blend = super::weighted::fuzzy_blended(transaction, &index, alternatives)?;
+                let blend =
+                    super::weighted::fuzzy_blended(transaction, &index, alternatives).await?;
                 for term in &blend.expansions {
                     if !terms.contains_key(term) {
-                        let held = transaction.term_statistics(&index, term)?;
+                        let held = transaction.term_statistics(&index, term).await?;
                         terms.insert(term.clone(), held);
                     }
                 }
@@ -429,7 +430,7 @@ impl Session<'_> {
             None
         } else {
             let indexes = Catalog::new(transaction).field_indexes_on(table).await?;
-            suggested(transaction, &indexes, &analyzers, &matched)?
+            suggested(transaction, &indexes, &analyzers, &matched).await?
         };
 
         // A field the grant hides is a field with no index as far as this caller

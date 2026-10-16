@@ -145,7 +145,7 @@ impl Transaction<'_> {
                 let tail = self.store.committed_tail(log)?;
                 // A prepare's half of the conflict check that its own node
                 // could not make (ADR-0112 D3a), under the same turn.
-                self.written_since_seen(log)?;
+                self.written_since_seen(log).await?;
                 self.check_for_conflicts().await?;
                 // Beside the conflict check, inside the loop, and for the same
                 // reason: both ask whether the committed state this attempt builds
@@ -244,7 +244,8 @@ impl Transaction<'_> {
                     written,
                     commit_version,
                     Some((log, commit_at)),
-                )?;
+                )
+                .await?;
                 let batch = if crate::intents::derives_nothing(carried) {
                     written
                 } else {
@@ -280,7 +281,8 @@ impl Transaction<'_> {
                     let batch = crate::topic::maintain(self.store, carried, batch).await?;
                     // And this node's format stamp, when the record finalizes it
                     // (ADR-0118) — on the leader as on every follower.
-                    crate::format_stamp::maintain(self.store, carried, batch, commit_version)?
+                    crate::format_stamp::maintain(self.store, carried, batch, commit_version)
+                        .await?
                 };
                 // Everything above this ran. This is the whole difference between a
                 // rehearsal and a write, and it is one line so that it can only ever
@@ -312,7 +314,7 @@ impl Transaction<'_> {
                 // device, and whoever finds no landing running lands every staged
                 // batch in one write (`crate::gate`). A backend with no sync to
                 // share is applied under the turn, as grouping would only cost it.
-                let backend = self.store.backend().as_ref();
+                let backend = self.store.engine().as_ref();
                 let landed = if backend.groups_writes() {
                     let ticket = self.store.write_gate().stage(batch);
                     drop(turn);

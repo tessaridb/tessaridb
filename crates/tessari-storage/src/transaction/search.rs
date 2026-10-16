@@ -12,6 +12,7 @@ mod statistics;
 pub use counts::SearchCounts;
 pub use fielded::FieldedPostings;
 use std::collections::BTreeSet;
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{
@@ -86,7 +87,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(RANGE_SCAN_BATCH_ENTRIES),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = self.store.backend().scan(&request).await?;
             for (key, value) in &batch {
                 take(key, value).await?;
             }

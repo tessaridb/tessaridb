@@ -27,6 +27,7 @@ use tessari_encoding::{
     CausalStamp, LogRecord, Mutation, NODE_ID_LEN, RecordValue, StampedValue, StoreKey, StoreValue,
     TopicBytesKey, TopicOffsetKey,
 };
+use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{RecordId, Sequence};
 
@@ -65,12 +66,15 @@ async fn oldest_first(
     let prefix = TopicOffsetKey::table_prefix(namespace, database, table);
     let mut range = KeyRange::prefix(&prefix);
     loop {
-        let batch = store.backend().scan(&ScanRequest {
-            keyspace: TopicOffsetKey::keyspace(),
-            range: range.clone(),
-            direction: ScanDirection::Forward,
-            limit: Some(PAGE),
-        })?;
+        let batch = store
+            .backend()
+            .scan(&ScanRequest {
+                keyspace: TopicOffsetKey::keyspace(),
+                range: range.clone(),
+                direction: ScanDirection::Forward,
+                limit: Some(PAGE),
+            })
+            .await?;
         let Some((last, _)) = batch.last() else {
             return Ok(());
         };
@@ -110,7 +114,8 @@ pub(crate) async fn held_bytes(store: &Store, view: &Transaction<'_>, topic: Top
     };
     if let Some(bytes) = store
         .backend()
-        .get(TopicBytesKey::keyspace(), &key.encode())?
+        .get(TopicBytesKey::keyspace(), &key.encode())
+        .await?
     {
         return Ok(Sequence::decode(bytes.as_slice())?.get());
     }

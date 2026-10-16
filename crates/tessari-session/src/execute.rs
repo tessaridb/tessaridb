@@ -413,7 +413,10 @@ impl Session<'_> {
                 roles,
                 endpoints,
                 retain,
-            } => self.define_node(roles.as_deref(), endpoints.as_deref(), *retain),
+            } => {
+                self.define_node(roles.as_deref(), endpoints.as_deref(), *retain)
+                    .await
+            }
             StatementKind::FinalizeFormat => self.finalize_format(transaction).await,
             StatementKind::DefineFailover {
                 awareness,

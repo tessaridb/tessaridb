@@ -107,7 +107,8 @@ impl Session<'_> {
                     &resolved,
                     (*operator, &text, query.span),
                     condition.is_none(),
-                )?
+                )
+                .await?
             }
             SearchAsk::Complete { .. } => (true, false),
         };
@@ -136,7 +137,8 @@ impl Session<'_> {
             let beginning = ask_beginning(ask);
             let text = asked_text(self, transaction, beginning).await?;
             return Ok((
-                self.complete(transaction, &resolved, &text, beginning.span)?,
+                self.complete(transaction, &resolved, &text, beginning.span)
+                    .await?,
                 Self::search_plan(&name.text, true, false),
             ));
         };
@@ -200,7 +202,9 @@ impl Session<'_> {
         let SearchAsk::Matches { operator, query } = ask else {
             let beginning = ask_beginning(ask);
             let text = asked_text(self, transaction, beginning).await?;
-            let completed = self.complete(transaction, &resolved, &text, beginning.span)?;
+            let completed = self
+                .complete(transaction, &resolved, &text, beginning.span)
+                .await?;
             let plan = Self::search_plan(&name.text, true, false);
             let mut answered = Vec::new();
             for (id, record) in completed.into_iter().skip(skip).take(keep) {

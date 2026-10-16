@@ -71,7 +71,7 @@ fn leader() -> (Store, Vec<u8>) {
         opening.run_now(LEADER).unwrap();
     }
     let mut prefix = Vec::new();
-    let written = tessari_backup::write(&store, &mut prefix).unwrap();
+    let written = tessari_backup::write(&store, &mut prefix).now().unwrap();
     assert!(written.records > 0);
     (store, prefix)
 }
@@ -146,7 +146,9 @@ fn a_bootstrapped_node_follows_from_where_it_stopped_and_neither_replays_nor_ski
     let mut sent_in_all = 0_u64;
     for (home, from) in following(&follower) {
         let mut next = Vec::new();
-        let sent = tessari_backup::write_from(&held, &mut next, home, from).unwrap();
+        let sent = tessari_backup::write_from(&held, &mut next, home, from)
+            .now()
+            .unwrap();
         let caught_up = tessari_backup::bootstrap(&follower, &mut next.as_slice())
             .now()
             .unwrap();
@@ -196,7 +198,7 @@ fn the_change_feed_is_not_the_replication_channel() {
         .iter()
         .max_by_key(|(_, at)| at.get())
         .unwrap();
-    let seen = held.changes_since(home, from, 100).unwrap().changes;
+    let seen = held.changes_since(home, from, 100).now().unwrap().changes;
     assert!(
         seen.is_empty(),
         "the feed carried a catalog change, so this boundary has moved and the \
@@ -204,7 +206,7 @@ fn the_change_feed_is_not_the_replication_channel() {
     );
     // The log did carry it, which is what makes the omission a property of the
     // feed rather than of the commit.
-    assert_eq!(held.log_records(home, from, 100).unwrap().len(), 1);
+    assert_eq!(held.log_records(home, from, 100).now().unwrap().len(), 1);
 }
 
 #[test]

@@ -51,7 +51,7 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
     ) -> Result<BTreeMap<String, Value>> {
         let identity = self.store.node_identity()?;
-        let (retention, retained_by) = self.store.effective_retention()?;
+        let (retention, retained_by) = self.store.effective_retention().await?;
         let catalog = Catalog::new(transaction);
         let mut peers = Vec::new();
         for replica in &catalog.replicas().await? {

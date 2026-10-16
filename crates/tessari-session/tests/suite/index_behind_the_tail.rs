@@ -184,7 +184,7 @@ fn a_unique_index_is_still_withheld_behind_the_tail() {
 fn a_new_store_keeps_retired_entries_from_its_first_version() {
     let store = store();
     assert_eq!(
-        store.retired_since().unwrap(),
+        store.retired_since().now().unwrap(),
         Some(tessari_types::Sequence::ZERO)
     );
 }
@@ -205,7 +205,7 @@ fn retired_entries_are_kept_while_a_reader_needs_them_and_reclaimed_after() {
         // `t:1` lost `a` and `t:4` lost `c`: two retired entries, and a reader
         // older than both is still open, so neither may go.
         assert_eq!(retired(&backend), 2);
-        assert_eq!(store.reclaim_retired_entries().unwrap(), 0);
+        assert_eq!(store.reclaim_retired_entries().await.unwrap(), 0);
         assert_eq!(retired(&backend), 2);
         Ok(())
     })
@@ -213,7 +213,7 @@ fn retired_entries_are_kept_while_a_reader_needs_them_and_reclaimed_after() {
     .unwrap();
 
     // The reader is gone; no snapshot predates the removals any more.
-    assert_eq!(store.reclaim_retired_entries().unwrap(), 2);
+    assert_eq!(store.reclaim_retired_entries().now().unwrap(), 2);
     assert_eq!(retired(&backend), 0);
 }
 
@@ -239,7 +239,7 @@ fn a_historical_read_below_what_reclamation_removed_takes_the_scan_and_stays_exa
     session.run_now(SCHEMA).unwrap();
     let before = store.committed_version().unwrap().get();
     session.run_now(MOVES).unwrap();
-    assert!(store.reclaim_retired_entries().unwrap() > 0);
+    assert!(store.reclaim_retired_entries().now().unwrap() > 0);
 
     let read = format!("SELECT * FROM t WHERE k = 'a' VERSION {before};");
     assert_eq!(ids(&session.run_now(&read).unwrap()), vec!["1".to_owned()]);

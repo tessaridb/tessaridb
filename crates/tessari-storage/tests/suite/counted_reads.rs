@@ -574,6 +574,7 @@ fn a_document_frequency_reads_no_postings_at_all() {
     fixture.counting.reset();
     let frequency = transaction
         .document_frequency(&fixture.index, "lock")
+        .now()
         .unwrap();
     assert_eq!(
         frequency,
@@ -770,6 +771,7 @@ impl Hub {
         self.counting.reset();
         let found = transaction
             .neighbours(&self.kind, self.people, &self.hub, Direction::Out)
+            .now()
             .unwrap();
         (
             found.len(),

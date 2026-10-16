@@ -8,6 +8,7 @@ use tessari_encoding::{
     IndexAddress, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchSurfaceKey,
     SearchTermKey, StoreKey, StoreValue, TermStatistics,
 };
+use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::WriteBatch;
 
 /// How one log record moves an index's collection statistics.
@@ -57,7 +58,7 @@ impl Delta {
 /// record values above were read at, so the two cannot describe different
 /// moments. A store with one writer (ADR-0007) makes that read-modify-write safe
 /// without a counter primitive.
-pub(crate) fn settle(
+pub(crate) async fn settle(
     store: &Store,
     mut batch: WriteBatch,
     pending: &Pending,
@@ -80,7 +81,7 @@ pub(crate) fn settle(
         let (held, fields) = if built.contains(address) {
             (SearchStatistics::default(), Vec::new())
         } else {
-            match store.backend().get(keyspace, &key)? {
+            match store.backend().get(keyspace, &key).await? {
                 Some(bytes) => SearchStatistics::fielded(bytes.as_slice())?,
                 None => (SearchStatistics::default(), Vec::new()),
             }
@@ -104,7 +105,7 @@ pub(crate) fn settle(
         };
         batch = batch.put(keyspace, key, value);
     }
-    settle_terms(store, batch, pending)
+    settle_terms(store, batch, pending).await
 }
 
 /// Fold the accumulated per-term deltas into the dictionary, one write per term
@@ -123,7 +124,7 @@ pub(crate) fn settle(
 /// on the same reasoning [`settle`] gives for the collection statistics: a build
 /// counted every row the index has, so its figure is a total and starting from
 /// the stored one would count each document twice.
-pub(crate) fn settle_terms(
+pub(crate) async fn settle_terms(
     store: &Store,
     mut batch: WriteBatch,
     pending: &Pending,
@@ -145,7 +146,7 @@ pub(crate) fn settle_terms(
             let held = if rebuilt {
                 TermStatistics::default()
             } else {
-                match store.backend().get(keyspace, &key)? {
+                match store.backend().get(keyspace, &key).await? {
                     Some(bytes) => TermStatistics::decode(bytes.as_slice())?,
                     None => TermStatistics::default(),
                 }
@@ -184,14 +185,18 @@ pub(crate) fn settle_terms(
             };
         }
     }
-    settle_surfaces(store, batch, pending)
+    settle_surfaces(store, batch, pending).await
 }
 
 /// Fold the per-pair surface deltas into the surface dictionary (Q-867): one
 /// read and one write per pair that moved, deleted at zero so a fuzzy walk
 /// never reaches a spelling no record holds. A built index's figure is a total,
 /// for the reason [`settle`] gives.
-fn settle_surfaces(store: &Store, mut batch: WriteBatch, pending: &Pending) -> Result<WriteBatch> {
+async fn settle_surfaces(
+    store: &Store,
+    mut batch: WriteBatch,
+    pending: &Pending,
+) -> Result<WriteBatch> {
     let keyspace = SearchSurfaceKey::keyspace();
     for (address, moved) in &pending.surfaces {
         let rebuilt = pending.built.contains(address);
@@ -203,7 +208,7 @@ fn settle_surfaces(store: &Store, mut batch: WriteBatch, pending: &Pending) -> R
             let held = if rebuilt {
                 0
             } else {
-                match store.backend().get(keyspace, &key)? {
+                match store.backend().get(keyspace, &key).await? {
                     Some(bytes) => SearchSurfaceKey::counted(bytes.as_slice())?,
                     None => 0,
                 }

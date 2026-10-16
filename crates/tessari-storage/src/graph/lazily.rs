@@ -4,6 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::IndexAddress;
 use tessari_kv::{KvBackend, MemoryBackend, WriteBatch};
@@ -65,7 +66,7 @@ async fn both(count: usize, width: usize) -> (Graph, Store) {
         .await
         .unwrap();
     let batch = write(WriteBatch::new(), &address(), &written);
-    store.backend().apply(batch).unwrap();
+    store.backend().apply(batch).await.unwrap();
     (whole, store)
 }
 

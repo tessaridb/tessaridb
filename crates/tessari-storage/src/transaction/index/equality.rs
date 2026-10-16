@@ -30,6 +30,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{
@@ -91,6 +92,7 @@ impl Transaction<'_> {
                 .store
                 .backend()
                 .scan(&request)
+                .await
                 .map_err(crate::error::Error::from)?;
             let full = entries.len() >= batch;
             let mut named = Vec::with_capacity(entries.len());

@@ -117,14 +117,15 @@ impl Source {
     /// # Errors
     ///
     /// Returns the store's failure, phrased for the subscriber.
-    pub(super) fn next(
+    pub(super) async fn next(
         &mut self,
         db: &Db,
         limit: usize,
     ) -> Result<Vec<(Change, Option<String>)>, FeedRefused> {
         match self {
             Self::One(subscription) => Ok(db
-                .poll(subscription, limit)?
+                .poll(subscription, limit)
+                .await?
                 .into_iter()
                 .map(|change| (change, None))
                 .collect()),
@@ -133,7 +134,7 @@ impl Source {
                 tenancy: (namespace, database),
                 at,
             } => {
-                let found = merged.poll(db.store(), limit)?;
+                let found = merged.poll(db.store(), limit).await?;
                 Ok(found
                     .into_iter()
                     .map(|(log, change)| {

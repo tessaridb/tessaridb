@@ -17,6 +17,7 @@
 //! the very same pair rather than judging an instant against its own clock.
 
 use std::collections::BTreeSet;
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     IndexAddress, IndexTarget, LogRecord, Mutation, RecordValue, StampedValue, StoreKey,
@@ -85,7 +86,11 @@ pub(crate) async fn release_expired_holders(
             );
             for values in project(definition, &value) {
                 let key = UniqueIndexKey::new(address, values).encode();
-                let Some(entry) = store.backend().get(UniqueIndexKey::keyspace(), &key)? else {
+                let Some(entry) = store
+                    .backend()
+                    .get(UniqueIndexKey::keyspace(), &key)
+                    .await?
+                else {
                     continue;
                 };
                 let holder = IndexTarget::decode(entry.as_slice())?.id;

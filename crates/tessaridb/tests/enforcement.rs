@@ -1530,11 +1530,11 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ),
     (
         "tessari-wire/src/collection/serving.rs",
-        "let page = match self.log.log_records_within(",
+        ".log_records_within(over, log, cursor, room.min(COLLECTION_PAGE_RECORDS))",
     ),
     (
         "tessari-wire/src/collection/serving.rs",
-        "let held = match store.log_records_within(over, log, before, 1) {",
+        "let held = match store.log_records_within(over, log, before, 1).await {",
     ),
 ];
 
@@ -1575,6 +1575,17 @@ fn no_serving_surface_reaches_the_raw_change_feed() {
          error while it happens.",
         reached.join("\n  "),
     );
+}
+
+/// The name of the function a line declares, whatever its visibility, and
+/// whether it is `const` or `async`; `None` for any other line.
+fn declared_fn(line: &str) -> Option<String> {
+    let mut rest = line.trim_start();
+    for prefix in ["pub(crate) ", "pub(super) ", "pub ", "const ", "async "] {
+        rest = rest.strip_prefix(prefix).unwrap_or(rest);
+    }
+    rest.strip_prefix("fn ")
+        .map(|name| name.split(['(', '<']).next().unwrap_or_default().to_owned())
 }
 
 /// Where an epoch may be turned back into an [`Epoch`] from something that
@@ -1624,14 +1635,7 @@ fn the_campaign_is_the_only_place_an_epoch_is_created() {
                 let enclosing = lines[..=number]
                     .iter()
                     .rev()
-                    .find_map(|above| {
-                        above
-                            .trim_start()
-                            .trim_start_matches("pub ")
-                            .trim_start_matches("const ")
-                            .strip_prefix("fn ")
-                            .map(|rest| rest.split('(').next().unwrap_or_default().to_owned())
-                    })
+                    .find_map(|above| declared_fn(above))
                     .unwrap_or_default();
                 if DECODERS.contains(&enclosing.as_str()) {
                     continue;
@@ -1720,14 +1724,7 @@ fn a_write_claims_no_epoch_it_was_not_already_carrying() {
                 let enclosing = lines[..=number]
                     .iter()
                     .rev()
-                    .find_map(|above| {
-                        above
-                            .trim_start()
-                            .trim_start_matches("pub ")
-                            .trim_start_matches("const ")
-                            .strip_prefix("fn ")
-                            .map(|rest| rest.split('(').next().unwrap_or_default().to_owned())
-                    })
+                    .find_map(|above| declared_fn(above))
                     .unwrap_or_default();
                 // The epoch argument is classified by SHAPE, the way the
                 // producer ratchet classifies by name: a call that reads the

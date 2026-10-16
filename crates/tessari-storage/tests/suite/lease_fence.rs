@@ -546,6 +546,7 @@ fn deciding() -> Store {
             None,
             None,
         )
+        .now()
         .unwrap();
     store
 }

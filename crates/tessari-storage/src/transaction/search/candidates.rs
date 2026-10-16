@@ -1,4 +1,5 @@
 use super::*;
+use tessari_kv::AsyncKvBackend as _;
 
 impl Transaction<'_> {
     /// The records one term is posted against.
@@ -41,7 +42,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or the stored value cannot be
     /// decoded.
-    pub fn posting(
+    pub async fn posting(
         &self,
         index: &IndexDefinition,
         term: &str,
@@ -50,7 +51,12 @@ impl Transaction<'_> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let encoded = IndexValues::of(&[Value::from(term)]);
         let key = PostingKey::new(address, encoded, id.clone()).encode();
-        match self.store.backend().get(PostingKey::keyspace(), &key)? {
+        match self
+            .store
+            .backend()
+            .get(PostingKey::keyspace(), &key)
+            .await?
+        {
             Some(bytes) => Ok(Some(Posting::decode(bytes.as_slice())?)),
             None => Ok(None),
         }
@@ -64,7 +70,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or the stored value cannot be
     /// decoded.
-    pub fn located(
+    pub async fn located(
         &self,
         index: &IndexDefinition,
         term: &str,
@@ -73,7 +79,12 @@ impl Transaction<'_> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let encoded = IndexValues::of(&[Value::from(term)]);
         let key = PostingKey::new(address, encoded, id.clone()).encode();
-        match self.store.backend().get(PostingKey::keyspace(), &key)? {
+        match self
+            .store
+            .backend()
+            .get(PostingKey::keyspace(), &key)
+            .await?
+        {
             Some(bytes) => Ok(Some(Posting::located(bytes.as_slice())?)),
             None => Ok(None),
         }
@@ -96,7 +107,11 @@ impl Transaction<'_> {
         if index.unique {
             if complete {
                 let key = UniqueIndexKey::new(*address, IndexValues::of(values)).encode();
-                let found = self.store.backend().get(UniqueIndexKey::keyspace(), &key)?;
+                let found = self
+                    .store
+                    .backend()
+                    .get(UniqueIndexKey::keyspace(), &key)
+                    .await?;
                 return found
                     .map(|bytes| Ok(IndexTarget::decode(bytes.as_slice())?.id))
                     .transpose()
@@ -133,7 +148,7 @@ impl Transaction<'_> {
         // lost it since are named by retired entries (Q-S3-34); each candidate
         // is confirmed at the snapshot like every other.
         let end = crate::transaction::address::after(prefix.clone());
-        found.extend(self.retired_candidates(index, &prefix, &end)?);
+        found.extend(self.retired_candidates(index, &prefix, &end).await?);
         Ok(found)
     }
 

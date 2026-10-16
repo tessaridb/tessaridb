@@ -299,7 +299,7 @@ impl Session<'_> {
         }
         members.sort_by_key(|member| tables.get(&member.id).cloned());
         for member in &members {
-            let (statistics, _) = transaction.member_statistics(member)?;
+            let (statistics, _) = transaction.member_statistics(member).await?;
             let fields = member
                 .fields
                 .iter()

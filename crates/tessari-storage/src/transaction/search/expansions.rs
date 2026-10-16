@@ -9,6 +9,7 @@ use tessari_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, PostingKey, SearchSuffixKey, SearchSurfaceKey,
     SearchTermKey, SecondaryIndexKey, StoreKey, StoreValue, decode_payload,
 };
+use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{RecordId, Value, within_edits};
 
@@ -37,7 +38,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn terms_with_prefix(
+    pub async fn terms_with_prefix(
         &self,
         index: &IndexDefinition,
         prefix: &str,
@@ -51,7 +52,7 @@ impl Transaction<'_> {
             direction: ScanDirection::Forward,
             limit: Some(cap.saturating_add(1)),
         };
-        let found = self.store.backend().scan(&request)?;
+        let found = self.store.backend().scan(&request).await?;
         let capped = found.len() > cap;
         let mut terms = Vec::with_capacity(found.len().min(cap));
         for (key, _) in found.iter().take(cap) {
@@ -97,7 +98,7 @@ impl Transaction<'_> {
     /// capped expansion is simply not offered as a candidate — the scan answers
     /// instead, with the identical result. A cap that refused would make a query
     /// succeed without an index and fail once somebody added one.
-    pub fn terms_within_distance(
+    pub async fn terms_within_distance(
         &self,
         index: &IndexDefinition,
         word: &str,
@@ -114,7 +115,7 @@ impl Transaction<'_> {
             direction: ScanDirection::Forward,
             limit: Some(SEARCH_FUZZY_EXAMINATION_CAP.saturating_add(1)),
         };
-        let found = self.store.backend().scan(&request)?;
+        let found = self.store.backend().scan(&request).await?;
         let mut capped = found.len() > SEARCH_FUZZY_EXAMINATION_CAP;
         let mut examined = 0usize;
         let mut terms = Vec::new();
@@ -156,7 +157,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn terms_by_surface(
+    pub async fn terms_by_surface(
         &self,
         index: &IndexDefinition,
         word: &str,
@@ -171,7 +172,8 @@ impl Transaction<'_> {
             .get(
                 SearchSurfaceKey::keyspace(),
                 &SearchSurfaceKey::marker(address),
-            )?
+            )
+            .await?
             .is_none()
         {
             return Ok(None);
@@ -183,7 +185,7 @@ impl Transaction<'_> {
             direction: ScanDirection::Forward,
             limit: Some(SEARCH_FUZZY_EXAMINATION_CAP.saturating_add(1)),
         };
-        let found = self.store.backend().scan(&request)?;
+        let found = self.store.backend().scan(&request).await?;
         let mut capped = found.len() > SEARCH_FUZZY_EXAMINATION_CAP;
         let mut terms = BTreeSet::new();
         for (key, _) in found.iter().take(SEARCH_FUZZY_EXAMINATION_CAP) {
@@ -213,7 +215,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn terms_with_infix(
+    pub async fn terms_with_infix(
         &self,
         index: &IndexDefinition,
         piece: &str,
@@ -224,7 +226,8 @@ impl Transaction<'_> {
         if self
             .store
             .backend()
-            .get(SearchSuffixKey::keyspace(), &marker)?
+            .get(SearchSuffixKey::keyspace(), &marker)
+            .await?
             .is_none()
         {
             return Ok(None);
@@ -235,7 +238,7 @@ impl Transaction<'_> {
             direction: ScanDirection::Forward,
             limit: Some(SEARCH_FUZZY_EXAMINATION_CAP.saturating_add(1)),
         };
-        let found = self.store.backend().scan(&request)?;
+        let found = self.store.backend().scan(&request).await?;
         let mut capped = found.len() > SEARCH_FUZZY_EXAMINATION_CAP;
         let mut terms = BTreeSet::new();
         for (key, _) in found.iter().take(SEARCH_FUZZY_EXAMINATION_CAP) {
@@ -328,7 +331,7 @@ impl Transaction<'_> {
         // Behind the tail, the records that matched at this snapshot and have
         // changed since are named by retired entries (Q-S3-34).
         let end = crate::transaction::address::after(bounds.clone());
-        for id in self.retired_candidates(index, &bounds, &end)? {
+        for id in self.retired_candidates(index, &bounds, &end).await? {
             let record = RecordAddress::new(index.namespace, index.database, index.table, id);
             if let Some(payload) = self.confirm_prefix(index, &record, prefix).await? {
                 found.insert(record.id, payload);

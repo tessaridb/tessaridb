@@ -17,6 +17,7 @@
 //! nothing reads its markers any more.
 
 use std::collections::{BTreeMap, BTreeSet};
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     AcrossPartKey, RecordKey, ResolvedOfKey, StampedValue, StoreKey, StoreValue, TransactionId,
@@ -35,9 +36,9 @@ impl Store {
     /// # Errors
     ///
     /// Whatever the backend or the codec returns.
-    pub(crate) fn fold_settled_across(&self, floor: Sequence) -> Result<usize> {
+    pub(crate) async fn fold_settled_across(&self, floor: Sequence) -> Result<usize> {
         let mut markers: BTreeMap<TransactionId, Vec<(Key, Reach, Sequence)>> = BTreeMap::new();
-        for (key, value) in self.scan_kind(&[AcrossPartKey::KIND.tag()])? {
+        for (key, value) in self.scan_kind(&[AcrossPartKey::KIND.tag()]).await? {
             let part = AcrossPartKey::decode(key.as_slice())?;
             let landed = Sequence::decode(value.as_slice())?;
             markers
@@ -48,14 +49,15 @@ impl Store {
         let mut folded = 0_usize;
         for (transaction, parts) in markers {
             if parts.iter().any(|(_, _, landed)| *landed > floor)
-                || self.holds_intents_of(transaction)?
+                || self.holds_intents_of(transaction).await?
                 || self
-                    .transaction_record(transaction)?
+                    .transaction_record(transaction)
+                    .await?
                     .is_some_and(|record| !record.decision.is_decided())
             {
                 continue;
             }
-            let Some(mut batch) = self.settle_versions(transaction, &parts)? else {
+            let Some(mut batch) = self.settle_versions(transaction, &parts).await? else {
                 continue;
             };
             for (key, _, _) in parts {
@@ -63,13 +65,13 @@ impl Store {
             }
             // In the same batch, as reclamation raises it with its removals: a
             // read below the floor could still tell the provenance was there.
-            let raised = self.reclaim_floor()?.max(floor);
+            let raised = self.reclaim_floor().await?.max(floor);
             batch = batch.put(
                 tessari_encoding::ReclaimFloorKey::keyspace(),
                 tessari_encoding::ReclaimFloorKey.encode(),
                 raised.encode(),
             );
-            self.backend().apply(batch)?;
+            self.backend().apply(batch).await?;
             folded = folded.saturating_add(1);
         }
         Ok(folded)
@@ -78,7 +80,7 @@ impl Store {
     /// The batch rewriting `transaction`'s resolved versions without their
     /// provenance, or `None` while a part of a range this node holds has not
     /// landed here — a reader of one of them still needs every marker.
-    fn settle_versions(
+    async fn settle_versions(
         &self,
         transaction: TransactionId,
         parts: &[(Key, Reach, Sequence)],
@@ -86,7 +88,10 @@ impl Store {
         let landed: BTreeSet<Reach> = parts.iter().map(|(_, range, _)| *range).collect();
         let served = self.served();
         let mut batch = WriteBatch::new();
-        for (key, value) in self.scan_kind(&ResolvedOfKey::prefix_of(transaction))? {
+        for (key, value) in self
+            .scan_kind(&ResolvedOfKey::prefix_of(transaction))
+            .await?
+        {
             let held = ResolvedOfKey::decode(key.as_slice())?;
             let version = Sequence::decode(value.as_slice())?;
             batch = batch.delete(ResolvedOfKey::keyspace(), key);
@@ -94,7 +99,7 @@ impl Store {
                 RecordKey::new(held.namespace, held.database, held.table, held.id, version)
                     .encode();
             // Reclaimed already: nothing left to rewrite.
-            let Some(stored) = self.backend().get(RecordKey::keyspace(), &address)? else {
+            let Some(stored) = self.backend().get(RecordKey::keyspace(), &address).await? else {
                 continue;
             };
             let stored = StampedValue::decode(stored.as_slice())?;
@@ -113,12 +118,15 @@ impl Store {
     }
 
     /// Every entry under `prefix`, in key order.
-    fn scan_kind(&self, prefix: &[u8]) -> Result<Vec<(Key, tessari_kv::Value)>> {
-        Ok(self.backend().scan(&ScanRequest {
-            keyspace: AcrossPartKey::keyspace(),
-            range: KeyRange::prefix(prefix),
-            direction: ScanDirection::Forward,
-            limit: None,
-        })?)
+    async fn scan_kind(&self, prefix: &[u8]) -> Result<Vec<(Key, tessari_kv::Value)>> {
+        Ok(self
+            .backend()
+            .scan(&ScanRequest {
+                keyspace: AcrossPartKey::keyspace(),
+                range: KeyRange::prefix(prefix),
+                direction: ScanDirection::Forward,
+                limit: None,
+            })
+            .await?)
     }
 }

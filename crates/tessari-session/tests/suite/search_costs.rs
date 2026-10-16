@@ -234,6 +234,7 @@ fn the_index_stores_the_lists_it_promises() {
             .remove(0);
         let found = transaction
             .located(&index, "ada", &tessari_types::RecordId::Int(1))
+            .now()
             .unwrap()
             .unwrap();
         assert_eq!(found.positions, positions, "SEARCH{options}");
@@ -271,12 +272,17 @@ fn the_index_stores_the_lists_it_promises() {
             .unwrap()
             .remove(0);
         assert_eq!(
-            transaction.search_statistics(&index).unwrap().documents,
+            transaction
+                .search_statistics(&index)
+                .now()
+                .unwrap()
+                .documents,
             documents,
             "SEARCH{options}"
         );
         let posting = transaction
             .posting(&index, "ada", &tessari_types::RecordId::Int(1))
+            .now()
             .unwrap()
             .unwrap();
         assert_eq!(

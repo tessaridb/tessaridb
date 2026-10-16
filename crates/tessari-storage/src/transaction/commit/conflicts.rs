@@ -73,7 +73,7 @@ impl Transaction<'_> {
             if !admits {
                 continue;
             }
-            let surviving = self.surviving_versions(address)?;
+            let surviving = self.surviving_versions(address).await?;
             let (Some((ours, our_stamp)), Some((theirs, their_stamp))) =
                 (surviving.first(), surviving.get(1))
             else {
@@ -137,7 +137,7 @@ impl Transaction<'_> {
         for address in self.writes.keys().chain(guarded.iter()) {
             // The newest version as stored, intents included — one read, as
             // before intents existed.
-            let Some((version, provenance, _)) = self.newest_stored_value(address)? else {
+            let Some((version, provenance, _)) = self.newest_stored_value(address).await? else {
                 continue;
             };
             // A resolution writes over its own intents; anybody else's intent,

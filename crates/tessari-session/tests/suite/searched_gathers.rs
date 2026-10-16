@@ -189,14 +189,20 @@ fn counting_every_record_agrees_with_the_index_it_stands_in_for() {
         .search_counts(&index, &every, &terms)
         .now()
         .unwrap();
-    let statistics = transaction.search_statistics(&index).unwrap();
+    let statistics = transaction.search_statistics(&index).now().unwrap();
     assert_eq!(
         (counted.documents, counted.tokens),
         (statistics.documents, statistics.terms)
     );
     let held: Vec<u64> = terms
         .iter()
-        .map(|term| transaction.term_statistics(&index, term).unwrap().documents)
+        .map(|term| {
+            transaction
+                .term_statistics(&index, term)
+                .now()
+                .unwrap()
+                .documents
+        })
         .collect();
     assert_eq!(counted.holding, held);
     // Pinned, so the equality is not two copies of one mistake: eight

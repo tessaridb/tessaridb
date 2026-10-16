@@ -192,7 +192,7 @@ impl Session<'_> {
             // A page can hold nothing of the source and still be followed by
             // more, so the end is where the feed stops moving, not an empty page.
             let before = feed.positions().to_vec();
-            let page = feed.poll_until(self.store, FEED_PAGE, snapshot)?;
+            let page = feed.poll_until(self.store, FEED_PAGE, snapshot).await?;
             for (_, change) in page {
                 if change.namespace != kept.context.namespace
                     || change.database != kept.context.database

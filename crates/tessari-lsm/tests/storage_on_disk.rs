@@ -167,7 +167,7 @@ fn a_log_replayed_between_two_stores_on_disk_reproduces_them_byte_for_byte() {
     // Every log, not the store's alone: a replay that read one would reproduce
     // part of a store and compare it against the whole (S6.2).
     for log in source.logs().unwrap() {
-        for (sequence, record) in source.log_records(log, Sequence::ZERO, 1024).unwrap() {
+        for (sequence, record) in source.log_records(log, Sequence::ZERO, 1024).now().unwrap() {
             replica
                 .apply_record(log.writer, sequence, &record)
                 .now()

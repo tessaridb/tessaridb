@@ -144,6 +144,7 @@ fn a_follower_raises_its_stamp_when_it_applies_the_finalize() {
     for log in leader.logs().unwrap() {
         for (sequence, record) in leader
             .log_records(log, tessari_types::Sequence::ZERO, 4096)
+            .now()
             .unwrap()
         {
             follower

@@ -193,7 +193,7 @@ impl Fixture {
             } else {
                 f64::INFINITY
             };
-            let Some((floor, id)) = walk.next(&transaction, beyond).unwrap() else {
+            let Some((floor, id)) = walk.next(&transaction, beyond).now().unwrap() else {
                 break;
             };
             let payload = transaction.get(&self.at_id(&id)).now().unwrap().unwrap();

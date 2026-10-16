@@ -224,6 +224,7 @@ impl Vocabulary {
         let transaction = self.store.begin().unwrap();
         let found = transaction
             .terms_with_prefix(&self.index, "zzq", CAP)
+            .now()
             .unwrap();
         assert!(!found.capped, "the probe was cut — the cap is too small");
         (found.terms, self.counting.entries(), self.counting.scans())
@@ -239,6 +240,7 @@ impl Vocabulary {
         let transaction = self.store.begin().unwrap();
         let found = transaction
             .terms_within_distance(&self.index, word, 2, 3, CAP)
+            .now()
             .unwrap();
         (
             found.terms,
@@ -255,6 +257,7 @@ impl Vocabulary {
         for _ in 0..REPEATS {
             let found = transaction
                 .terms_with_prefix(&self.index, "zzq", CAP)
+                .now()
                 .unwrap();
             assert_eq!(found.terms.len(), MATCHES);
         }
@@ -325,6 +328,7 @@ fn an_expansion_that_runs_out_of_room_says_so_rather_than_reporting_a_subset() {
 
     let room = transaction
         .terms_with_prefix(&vocabulary.index, "zzq", 5)
+        .now()
         .unwrap();
     assert_eq!(room.terms.len(), MATCHES);
     assert!(!room.capped);
@@ -332,12 +336,14 @@ fn an_expansion_that_runs_out_of_room_says_so_rather_than_reporting_a_subset() {
     // Exactly the cap: the boundary a naive implementation reports as complete.
     let exact = transaction
         .terms_with_prefix(&vocabulary.index, "zzq", MATCHES)
+        .now()
         .unwrap();
     assert_eq!(exact.terms.len(), MATCHES);
     assert!(!exact.capped, "a complete expansion was reported as cut");
 
     let cut = transaction
         .terms_with_prefix(&vocabulary.index, "zzq", 2)
+        .now()
         .unwrap();
     assert_eq!(cut.terms.len(), 2);
     assert!(cut.capped, "a cut expansion was reported as complete");
@@ -345,6 +351,7 @@ fn an_expansion_that_runs_out_of_room_says_so_rather_than_reporting_a_subset() {
     // And a prefix nothing begins with is an empty answer rather than a cut one.
     let none = transaction
         .terms_with_prefix(&vocabulary.index, "qqq", CAP)
+        .now()
         .unwrap();
     assert!(none.terms.is_empty());
     assert!(!none.capped);

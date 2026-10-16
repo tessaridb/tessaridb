@@ -79,6 +79,7 @@ pub(crate) fn replay(source: &tessari_storage::Store, target: &tessari_storage::
     for log in source.logs().unwrap() {
         for (sequence, record) in source
             .log_records(log, tessari_types::Sequence::ZERO, 4096)
+            .now()
             .unwrap()
         {
             target

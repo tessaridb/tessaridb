@@ -158,7 +158,7 @@ pub(crate) fn one_log() -> (Arc<dyn KvBackend>, Store, Vec<u8>) {
         "the fixture was supposed to hold one log"
     );
     let mut taken = Vec::new();
-    tessari_backup::write(&store, &mut taken).unwrap();
+    tessari_backup::write(&store, &mut taken).now().unwrap();
     (backend, store, taken)
 }
 
@@ -216,7 +216,7 @@ pub(crate) fn original() -> (Arc<dyn KvBackend>, Store, Vec<u8>) {
         session.run_now(EVERYTHING).unwrap();
     }
     let mut taken = Vec::new();
-    let written = tessari_backup::write(&store, &mut taken).unwrap();
+    let written = tessari_backup::write(&store, &mut taken).now().unwrap();
     assert!(written.records > 0);
     crate::covers(&written.logs, &store);
     (backend, store, taken)
@@ -283,7 +283,7 @@ fn the_record_counter_survives_a_restore_rather_than_starting_again() {
             .unwrap();
     }
     let mut taken = Vec::new();
-    tessari_backup::write(&source, &mut taken).unwrap();
+    tessari_backup::write(&source, &mut taken).now().unwrap();
 
     let (_, restored) = store();
     tessari_backup::read(&restored, &mut taken.as_slice())
@@ -347,7 +347,7 @@ fn a_stamped_record_survives_a_backup_and_a_restore() {
         .unwrap();
 
     let mut taken = Vec::new();
-    tessari_backup::write(&source, &mut taken).unwrap();
+    tessari_backup::write(&source, &mut taken).now().unwrap();
     let (target_backend, restored) = store();
     tessari_backup::read(&restored, &mut taken.as_slice())
         .now()
@@ -721,7 +721,7 @@ fn an_empty_store_backs_up_and_restores_to_an_empty_store() {
     // The degenerate case, which is also the one an automated backup hits first.
     let (_, source) = store();
     let mut taken = Vec::new();
-    let written = tessari_backup::write(&source, &mut taken).unwrap();
+    let written = tessari_backup::write(&source, &mut taken).now().unwrap();
     assert_eq!(written.records, 0);
 
     let (_, restored) = store();
@@ -752,7 +752,7 @@ fn a_restored_store_can_be_written_to_and_backed_up_again() {
     assert!(crate::records_held(&restored) > first.records);
 
     let mut again = Vec::new();
-    let written = tessari_backup::write(&restored, &mut again).unwrap();
+    let written = tessari_backup::write(&restored, &mut again).now().unwrap();
     assert_eq!(written.records, first.records.saturating_add(1));
 }
 
@@ -846,6 +846,7 @@ fn an_incremental_backup_plus_its_base_is_the_whole_store() {
         home,
         tessari_types::Sequence::new(base_tail.get() + 1),
     )
+    .now()
     .unwrap();
     assert_eq!(crate::only(&written.logs).from.get(), base_tail.get() + 1);
     assert!(written.records > 0, "the increment holds nothing");
@@ -891,6 +892,7 @@ fn an_increment_refuses_a_store_that_is_not_where_it_continues_from() {
         home,
         tessari_types::Sequence::new(base_tail.get() + 1),
     )
+    .now()
     .unwrap();
 
     // Onto an empty store, which is not where it continues from.

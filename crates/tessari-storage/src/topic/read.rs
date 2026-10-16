@@ -2,6 +2,7 @@
 
 use std::ops::Bound;
 use tessari_encoding::{StoreKey, TopicOffsetKey, decode_payload};
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
@@ -63,8 +64,8 @@ impl Transaction<'_> {
     ) -> Result<Messages> {
         let topic = (namespace, database, table);
         let mut found = Messages {
-            first: super::edge(self.store(), topic, ScanDirection::Forward)?,
-            last: Some(super::head(self.store(), topic)?).filter(|head| *head > 0),
+            first: super::edge(self.store(), topic, ScanDirection::Forward).await?,
+            last: Some(super::head(self.store(), topic).await?).filter(|head| *head > 0),
             ..Messages::default()
         };
         let Some(mut from) = after.checked_add(1) else {
@@ -81,7 +82,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(PAGE),
             };
-            let page = self.store().backend().scan(&request)?;
+            let page = self.store().backend().scan(&request).await?;
             if page.is_empty() {
                 break;
             }

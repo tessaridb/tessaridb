@@ -9,6 +9,7 @@ use tessari_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, SecondaryIndexKey, StoreKey, StoreValue,
     UniqueIndexKey,
 };
+use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 use tessari_types::RecordId;
 
@@ -124,7 +125,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Reverse,
                 limit: Some(ORDERED_SCAN_BATCH_ENTRIES),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = self.store.backend().scan(&request).await?;
             let last = batch.last().map(|(key, _)| key.clone());
             // Decoded before anything is resolved, because deciding *what* to
             // resolve reads the entry's key and never its record: the boundary
@@ -271,7 +272,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(ORDERED_SCAN_BATCH_ENTRIES),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = self.store.backend().scan(&request).await?;
             let last = batch.last().map(|(key, _)| key.clone());
             let mut entries: Vec<(IndexValues, RecordId)> = Vec::with_capacity(batch.len());
             for (key, value) in &batch {

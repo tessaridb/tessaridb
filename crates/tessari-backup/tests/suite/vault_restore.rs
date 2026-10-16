@@ -111,7 +111,7 @@ fn a_vault_survives_a_backup_and_opens_again_with_only_the_passphrase() {
 
     let backup_started = Instant::now();
     let mut artifact = Vec::new();
-    let written = tessari_backup::write(&source, &mut artifact).unwrap();
+    let written = tessari_backup::write(&source, &mut artifact).now().unwrap();
     let backup_took = backup_started.elapsed();
     assert!(written.records > 0, "a backup that wrote nothing");
 

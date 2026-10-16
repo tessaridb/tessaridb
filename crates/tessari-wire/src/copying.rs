@@ -57,7 +57,7 @@ pub(crate) async fn serve(
         message: why.to_string(),
         class: None,
     };
-    let mut reader = store.read_state_within(over).map_err(refused)?;
+    let mut reader = store.read_state_within(over).await.map_err(refused)?;
     let positions = reader.positions().to_vec();
     // Taken before the first byte leaves, released the moment this returns
     // early — a copy that failed is one nobody will collect after.
@@ -83,7 +83,7 @@ pub(crate) async fn serve(
         )
         .await?;
     }
-    let topics = reader.topic_heads().map_err(refused)?;
+    let topics = reader.topic_heads().await.map_err(refused)?;
     let mut end = Vec::new();
     frame::put_u64(&mut end, records);
     frame::put_u32(&mut end, u32::try_from(topics.len()).unwrap_or(u32::MAX));
@@ -157,7 +157,9 @@ async fn receive(link: &mut impl std::io::Read, into: &Store) -> Result<Copied> 
                 return Err(Error::Malformed);
             }
             let removed = into.sweep_unreplaced(over, before).await.map_err(refused)?;
-            into.finish_state(&positions, &topics).map_err(refused)?;
+            into.finish_state(&positions, &topics)
+                .await
+                .map_err(refused)?;
             return Ok(Copied {
                 over,
                 version,

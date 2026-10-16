@@ -1,6 +1,7 @@
 //! Applying records that arrive from another node.
 
 use std::sync::atomic::Ordering;
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{LogId, LogKey, LogRecord, StoreKey, StoreValue, Writer};
 use tessari_types::{Epoch, Sequence};
@@ -132,8 +133,8 @@ impl Store {
     ///
     /// The backend's failure to sync; what it could not make durable is then
     /// not to be reported as restored.
-    pub fn sync_landed(&self) -> Result<()> {
-        self.backend().sync_applied()?;
+    pub async fn sync_landed(&self) -> Result<()> {
+        self.backend().sync_applied().await?;
         Ok(())
     }
 
@@ -261,7 +262,7 @@ impl Store {
     ) -> Result<()> {
         // A record of a transaction across leaders is checked and settled here,
         // and an intent derives nothing until its resolution does (ADR-0112).
-        let batch = crate::intents::settle(self, record, batch, version, written)?;
+        let batch = crate::intents::settle(self, record, batch, version, written).await?;
         if crate::intents::derives_nothing(record) {
             self.writing.apply(batch, self.backend.as_ref(), landing)?;
             return Ok(());
@@ -291,7 +292,7 @@ impl Store {
         let batch = crate::bounded::maintain(self, record, batch, version).await?;
         let batch = crate::topic::maintain(self, record, batch).await?;
         // A finalize raises this node's own stamp as it lands (ADR-0118).
-        let batch = crate::format_stamp::maintain(self, record, batch, version)?;
+        let batch = crate::format_stamp::maintain(self, record, batch, version).await?;
         // The map a split carries, taught under the turn this apply holds and
         // before it lands, exactly as the leader's commit teaches it (ADR-0095
         // D8): a follower that wrote under the old map after applying the split

@@ -122,7 +122,7 @@ impl<'a> Session<'a> {
                     Err(Error::VersionInsideTransaction { span: version.span })
                 }
                 (Some(version), None) => {
-                    let mut transaction = store.begin_at(Sequence::new(version.at))?;
+                    let mut transaction = store.begin_at(Sequence::new(version.at)).await?;
                     // A past state is one snapshot, and a gathered part would be
                     // another node's present (G033): withheld, so the read
                     // refuses as it always has.

@@ -7,6 +7,7 @@ use crate::error::Result;
 use std::collections::BTreeMap;
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{RecordKey, RecordValue, StampedValue, StoreKey, StoreValue};
+use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
@@ -133,8 +134,8 @@ impl Transaction<'_> {
                 }),
             };
             let batch = match reading {
-                Reading::Serving => self.store.backend().scan(&request)?,
-                Reading::Sweep => self.store.backend().sweep(&request)?,
+                Reading::Serving => self.store.backend().scan(&request).await?,
+                Reading::Sweep => self.store.backend().sweep(&request).await?,
             };
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             let entries = batch.len();
@@ -238,17 +239,21 @@ impl Transaction<'_> {
     /// Its own method so that a caller whose error type is not this crate's can
     /// still write `?` over the scan: everything fallible about the walk is on
     /// this side of the boundary, and the callback's side converts once.
-    pub(crate) fn batch_of(
+    pub(crate) async fn batch_of(
         &self,
         from: &[u8],
         end: &[u8],
         limit: Option<usize>,
     ) -> Result<Vec<(Key, tessari_kv::Value)>> {
-        Ok(self.store.backend().scan(&ScanRequest {
-            keyspace: RecordKey::keyspace(),
-            range: KeyRange::between(Key::from(from.to_vec()), Key::from(end.to_vec())),
-            direction: ScanDirection::Forward,
-            limit,
-        })?)
+        Ok(self
+            .store
+            .backend()
+            .scan(&ScanRequest {
+                keyspace: RecordKey::keyspace(),
+                range: KeyRange::between(Key::from(from.to_vec()), Key::from(end.to_vec())),
+                direction: ScanDirection::Forward,
+                limit,
+            })
+            .await?)
     }
 }

@@ -154,7 +154,7 @@ fn a_snapshot_is_sized_by_what_the_store_holds_not_by_how_often_it_was_written()
     }
     let often = snapshot(&source);
     let mut log = Vec::new();
-    tessari_backup::write(&source, &mut log).unwrap();
+    tessari_backup::write(&source, &mut log).now().unwrap();
     let before = tessari_backup::verify_state(&mut once.as_slice()).unwrap();
     let after = tessari_backup::verify_state(&mut often.as_slice()).unwrap();
     assert_eq!(
@@ -202,6 +202,7 @@ fn a_snapshot_and_the_log_after_it_answer_what_the_source_answers_now() {
         *log,
         Sequence::new(at.get().saturating_add(1)),
     )
+    .now()
     .unwrap();
 
     let (target_backend, target) = restored(&taken);
@@ -221,11 +222,11 @@ fn a_pruned_store_takes_a_snapshot_where_it_can_take_no_log_backup() {
     let (_, source, _) = original();
     for log in source.logs().unwrap() {
         let tail = source.committed_tail(log).unwrap();
-        source.prune_log(log, tail).unwrap();
+        source.prune_log(log, tail).now().unwrap();
     }
     let mut refused = Vec::new();
     assert!(
-        tessari_backup::write(&source, &mut refused).is_err(),
+        tessari_backup::write(&source, &mut refused).now().is_err(),
         "a pruned store produced a log backup that would restore without the pruned records"
     );
     let (_, target) = restored(&snapshot(&source));
@@ -349,7 +350,7 @@ fn writes_committed_after_a_snapshot_began_are_not_in_it() {
             .run_now(&format!("CREATE t:{n} = {{ n: {n} }};"))
             .unwrap();
     }
-    let mut reader = source.read_state().unwrap();
+    let mut reader = source.read_state().now().unwrap();
     let at = reader.version();
     for n in 0_u32..20 {
         session

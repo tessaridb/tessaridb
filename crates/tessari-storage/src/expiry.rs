@@ -33,6 +33,7 @@
 //! entries naming records that no longer exist.
 
 use std::time::{SystemTime, UNIX_EPOCH};
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     LogRecord, Mutation, RecordKey, RecordValue, StampedValue, StoreKey, StoreValue,
@@ -93,12 +94,15 @@ impl Store {
         let start: Key = RecordKey::table_prefix(namespace, database, table).into();
         let end: Key = RecordKey::versions_prefix(namespace, database, table, &floor).into();
         let range = KeyRange::between(start.clone(), end.clone());
-        let first = self.backend().scan(&ScanRequest {
-            keyspace: RecordKey::keyspace(),
-            range: range.clone(),
-            direction: ScanDirection::Forward,
-            limit: Some(1),
-        })?;
+        let first = self
+            .backend()
+            .scan(&ScanRequest {
+                keyspace: RecordKey::keyspace(),
+                range: range.clone(),
+                direction: ScanDirection::Forward,
+                limit: Some(1),
+            })
+            .await?;
         if first.is_empty() {
             return Ok(Expired::default());
         }
@@ -112,7 +116,9 @@ impl Store {
         } else {
             0
         };
-        self.backend().delete_range(RecordKey::keyspace(), &range)?;
+        self.backend()
+            .delete_range(RecordKey::keyspace(), &range)
+            .await?;
         Ok(Expired { ranges: 1, indexed })
     }
 
@@ -161,12 +167,15 @@ impl Store {
         let mut unindexed = 0_usize;
         let mut from = KeyRange::between(start, end.clone());
         loop {
-            let pairs = self.backend().sweep(&ScanRequest {
-                keyspace: RecordKey::keyspace(),
-                range: from.clone(),
-                direction: ScanDirection::Forward,
-                limit: Some(BATCH_RECORDS),
-            })?;
+            let pairs = self
+                .backend()
+                .sweep(&ScanRequest {
+                    keyspace: RecordKey::keyspace(),
+                    range: from.clone(),
+                    direction: ScanDirection::Forward,
+                    limit: Some(BATCH_RECORDS),
+                })
+                .await?;
             let Some((last, _)) = pairs.last() else {
                 return Ok(unindexed);
             };
@@ -219,7 +228,7 @@ impl Store {
                 None,
             )
             .await?;
-            self.backend().apply(batch)?;
+            self.backend().apply(batch).await?;
         }
     }
 }

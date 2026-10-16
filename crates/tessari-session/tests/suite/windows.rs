@@ -407,7 +407,10 @@ fn what_retention_removes_is_reclaimed_rather_than_left_behind() {
 
     let (namespace, database, table) = tenancy(&store);
     let before = versions(&backend, namespace, database, table);
-    let reclaimed = store.reclaim_table(namespace, database, table).unwrap();
+    let reclaimed = store
+        .reclaim_table(namespace, database, table)
+        .now()
+        .unwrap();
     let after = versions(&backend, namespace, database, table);
 
     assert!(

@@ -205,7 +205,7 @@ impl Session<'_> {
                     for index in serving(declared, seek.path, true) {
                         // Past the expansion cap the candidate is not offered
                         // and the scan answers, as for `MATCHES PREFIX`.
-                        let Some(groups) = expanded(transaction, index, &words)? else {
+                        let Some(groups) = expanded(transaction, index, &words).await? else {
                             continue;
                         };
                         // A query with no `OR` and no star is a conjunction of
@@ -223,7 +223,7 @@ impl Session<'_> {
                         for group in &groups {
                             let mut reach: u64 = 0;
                             for term in group {
-                                let held = transaction.document_frequency(index, term)?;
+                                let held = transaction.document_frequency(index, term).await?;
                                 reach = reach.saturating_add(held);
                             }
                             smallest = smallest.min(reach);
@@ -307,11 +307,14 @@ impl Session<'_> {
                                     // An index built before the suffix
                                     // keyspace existed cannot enumerate, and
                                     // the scan answers instead.
-                                    match transaction.terms_with_infix(
-                                        index,
-                                        spelling,
-                                        SEARCH_PREFIX_EXPANSION_CAP,
-                                    )? {
+                                    match transaction
+                                        .terms_with_infix(
+                                            index,
+                                            spelling,
+                                            SEARCH_PREFIX_EXPANSION_CAP,
+                                        )
+                                        .await?
+                                    {
                                         Some(found) => found,
                                         None => {
                                             serviceable = false;
@@ -321,23 +324,27 @@ impl Session<'_> {
                                 } else if fuzzy {
                                     // The terms near the spelling, and the
                                     // terms of the surfaces near it (Q-867).
-                                    let mut found = transaction.terms_within_distance(
-                                        index,
-                                        spelling,
-                                        budget(spelling),
-                                        SEARCH_FUZZY_PREFIX,
-                                        SEARCH_FUZZY_EXPANSION_CAP,
-                                    )?;
+                                    let mut found = transaction
+                                        .terms_within_distance(
+                                            index,
+                                            spelling,
+                                            budget(spelling),
+                                            SEARCH_FUZZY_PREFIX,
+                                            SEARCH_FUZZY_EXPANSION_CAP,
+                                        )
+                                        .await?;
                                     // An index built before surfaces
                                     // existed holds none, and the scan
                                     // answers instead.
-                                    let Some(surfaced) = transaction.terms_by_surface(
-                                        index,
-                                        spelling,
-                                        budget(spelling),
-                                        SEARCH_FUZZY_PREFIX,
-                                        SEARCH_FUZZY_EXPANSION_CAP,
-                                    )?
+                                    let Some(surfaced) = transaction
+                                        .terms_by_surface(
+                                            index,
+                                            spelling,
+                                            budget(spelling),
+                                            SEARCH_FUZZY_PREFIX,
+                                            SEARCH_FUZZY_EXPANSION_CAP,
+                                        )
+                                        .await?
                                     else {
                                         serviceable = false;
                                         break;
@@ -346,11 +353,13 @@ impl Session<'_> {
                                     found.terms.extend(surfaced.terms);
                                     found
                                 } else {
-                                    transaction.terms_with_prefix(
-                                        index,
-                                        spelling,
-                                        SEARCH_PREFIX_EXPANSION_CAP,
-                                    )?
+                                    transaction
+                                        .terms_with_prefix(
+                                            index,
+                                            spelling,
+                                            SEARCH_PREFIX_EXPANSION_CAP,
+                                        )
+                                        .await?
                                 };
                                 if found.capped {
                                     serviceable = false;
@@ -388,8 +397,9 @@ impl Session<'_> {
                             // than sets of ids, so the ceiling stays cheap.
                             let mut union: u64 = 0;
                             for term in &reached {
-                                union = union
-                                    .saturating_add(transaction.document_frequency(index, term)?);
+                                union = union.saturating_add(
+                                    transaction.document_frequency(index, term).await?,
+                                );
                             }
                             ceiling = ceiling.min(union);
                             expansions.push(reached.into_iter().collect());
@@ -450,7 +460,7 @@ impl Session<'_> {
 /// `None` when a starred word reaches past [`SEARCH_PREFIX_EXPANSION_CAP`]: the
 /// index cannot enumerate that part of the answer, so it serves none of it and
 /// the scan answers — not a refusal, for the reason `MATCHES PREFIX` gives.
-fn expanded(
+async fn expanded(
     transaction: &Transaction<'_>,
     index: &IndexDefinition,
     groups: &[Vec<crate::search::Word>],
@@ -466,11 +476,9 @@ fn expanded(
                 crate::search::Word::Prefix(alternatives) => {
                     let mut beginning: BTreeSet<String> = BTreeSet::new();
                     for spelling in alternatives {
-                        let found = transaction.terms_with_prefix(
-                            index,
-                            spelling,
-                            SEARCH_PREFIX_EXPANSION_CAP,
-                        )?;
+                        let found = transaction
+                            .terms_with_prefix(index, spelling, SEARCH_PREFIX_EXPANSION_CAP)
+                            .await?;
                         if found.capped {
                             return Ok(None);
                         }

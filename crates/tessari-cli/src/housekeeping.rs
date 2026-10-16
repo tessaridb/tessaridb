@@ -31,7 +31,7 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
         std::time::Duration::from_secs(tessari_constants::AWARENESS_SECONDS),
         &stop,
         async move |_| {
-            match db.store().trim_logs() {
+            match db.store().trim_logs().await {
                 Ok(Some(trimmed)) if trimmed.records > 0 => tracing::info!(
                     records = trimmed.records,
                     logs = trimmed.logs,
@@ -110,7 +110,7 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
             // This node's own storage work, leader or not; a pass that lags
             // costs space and never an answer — a surplus retired entry is one
             // more candidate a re-test discards.
-            match db.store().reclaim_retired_entries() {
+            match db.store().reclaim_retired_entries().await {
                 Ok(removed) if removed > 0 => {
                     tracing::debug!(entries = removed, "reclaimed retired index entries");
                 }

@@ -90,7 +90,7 @@ fn backup_of_many() -> Vec<u8> {
             .unwrap();
     }
     let mut taken = Vec::new();
-    tessari_backup::write(&source, &mut taken).unwrap();
+    tessari_backup::write(&source, &mut taken).now().unwrap();
     taken
 }
 

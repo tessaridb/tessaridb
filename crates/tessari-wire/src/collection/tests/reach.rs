@@ -111,7 +111,7 @@ fn a_follower_asks_only_for_logs_its_served_reach_touches() {
         .copied()
         .find(|home| matches!(home, Reach::Shard(_, _, _, shard) if shard.get() == 2))
         .expect("shard 2 is a log");
-    db.store().record_served(second).expect("recorded");
+    db.store().record_served(second).now().expect("recorded");
     let narrowed = logs_to_collect(db.store())
         .now()
         .expect("this node's own logs");

@@ -308,7 +308,7 @@ impl Feed {
             narrowed.still_visible(&held)?;
             self.visible.insert(*about, held);
         }
-        let changes = self.source.next(db, MOUTHFUL)?;
+        let changes = self.source.next(db, MOUTHFUL).await?;
         if changes.is_empty() {
             return Ok(Round::Empty);
         }

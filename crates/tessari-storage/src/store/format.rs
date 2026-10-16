@@ -2,6 +2,7 @@
 //! (ADR-0118).
 
 use std::sync::Arc;
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{FormatVersion, FormatVersionKey, StoreKey, StoreValue};
 use tessari_kv::WriteBatch;
@@ -26,7 +27,7 @@ impl Store {
         // Every store is stamped at open before anything else is written to
         // it, so an absent stamp is a store this process is creating: it holds
         // what this build writes.
-        Ok(read_format_version(Arc::clone(self.backend()))?.unwrap_or(FormatVersion::CURRENT))
+        Ok(read_format_version(Arc::clone(self.engine()))?.unwrap_or(FormatVersion::CURRENT))
     }
 
     /// Raise the stamp to the format the catalog says this store was finalized
@@ -43,11 +44,13 @@ impl Store {
             .await?;
         drop(transaction);
         if let Some(raised) = crate::format_stamp::caught_up(self.held_format()?, finalized) {
-            self.backend().apply(WriteBatch::new().put(
-                FormatVersionKey::keyspace(),
-                FormatVersionKey.encode(),
-                raised.encode(),
-            ))?;
+            self.backend()
+                .apply(WriteBatch::new().put(
+                    FormatVersionKey::keyspace(),
+                    FormatVersionKey.encode(),
+                    raised.encode(),
+                ))
+                .await?;
         }
         Ok(())
     }

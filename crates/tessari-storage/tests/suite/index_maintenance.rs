@@ -436,6 +436,7 @@ fn a_reader_behind_the_tail_finds_the_value_through_retired_entries() {
     assert!(
         reader
             .plain_indexes_serve_behind_the_tail(fixture.index.table)
+            .now()
             .unwrap(),
         "a store created at format 8 keeps retired entries from its first version"
     );

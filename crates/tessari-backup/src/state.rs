@@ -98,7 +98,7 @@ pub async fn write_state_within(
     within: Reach,
     out: &mut impl Write,
 ) -> Result<StateTaken> {
-    let mut reader = store.read_state_within(within)?;
+    let mut reader = store.read_state_within(within).await?;
     let writer = NodeVersion::current();
     out.write_all(STATE_MAGIC)?;
     out.write_all(&[STATE_FORMAT, tessari_encoding::CODEC_VERSION])?;
@@ -133,7 +133,7 @@ pub async fn write_state_within(
         let held = u64::try_from(chunk.mutations().len()).unwrap_or(u64::MAX);
         records = records.saturating_add(held);
     }
-    let topics = reader.topic_heads()?;
+    let topics = reader.topic_heads().await?;
     for topic in &topics {
         out.write_all(&[FRAME_TOPIC])?;
         out.write_all(&topic.namespace.get().to_be_bytes())?;
@@ -207,7 +207,7 @@ pub async fn read_state<R: Read>(
             Frame::End(taken) => break taken,
         }
     };
-    store.finish_state(&taken.positions, &topics)?;
+    store.finish_state(&taken.positions, &topics).await?;
     // Restored on its own, nobody else will finish what the cut decided: the
     // store settles it, leaving the undecided for the log above (Q-922b).
     store.settle_restored().await?;

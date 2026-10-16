@@ -20,6 +20,7 @@
 //! alone adds more keys than the limit is refused rather than trimmed.
 
 use std::collections::{BTreeMap, BTreeSet};
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     CausalStamp, ExpiryMark, LogRecord, ModifiedKey, Mutation, NODE_ID_LEN, RecordValue,
@@ -158,7 +159,7 @@ async fn oldest(
         limit: Some(wanted.saturating_add(written.len())),
     };
     let mut found = Vec::with_capacity(wanted);
-    for (key, _) in store.backend().scan(&request)? {
+    for (key, _) in store.backend().scan(&request).await? {
         if found.len() >= wanted {
             break;
         }

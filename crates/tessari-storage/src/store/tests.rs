@@ -23,7 +23,7 @@ fn a_fresh_store_writes_its_format_and_starts_at_sequence_zero() {
     );
     assert!(store.logs().unwrap().is_empty(), "nothing written yet");
     assert_eq!(
-        read_format_version(Arc::clone(store.backend())).unwrap(),
+        read_format_version(Arc::clone(store.engine())).unwrap(),
         Some(FormatVersion::CURRENT)
     );
 }
@@ -70,7 +70,7 @@ fn reopening_a_store_does_not_rewrite_its_metadata() {
     drop(first);
     let second = Store::open(shared).now().unwrap();
     assert_eq!(
-        read_format_version(Arc::clone(second.backend())).unwrap(),
+        read_format_version(Arc::clone(second.engine())).unwrap(),
         Some(FormatVersion::CURRENT)
     );
 }
@@ -94,7 +94,7 @@ fn a_store_written_before_the_epoch_opens_and_reads_as_the_first_leadership() {
 
     let store = Store::open(Arc::clone(&shared)).now().unwrap();
     assert_eq!(
-        read_format_version(Arc::clone(store.backend())).unwrap(),
+        read_format_version(Arc::clone(store.engine())).unwrap(),
         Some(FormatVersion::CURRENT),
         "an older log is given its home at open, and the version says so"
     );
@@ -109,6 +109,7 @@ fn a_store_written_before_the_epoch_opens_and_reads_as_the_first_leadership() {
         .unwrap();
     let (_, record) = store
         .log_records(LogId::unattributed(Reach::Store), Sequence::new(1), 1)
+        .now()
         .unwrap()
         .pop()
         .expect("the record just applied");
@@ -176,6 +177,7 @@ fn a_log_written_before_it_had_writers_is_rewritten_and_attributed_to_nobody() {
     assert_eq!(store.committed_tail(migrated).unwrap(), Sequence::new(3));
     let positions: Vec<Sequence> = store
         .log_records(migrated, Sequence::new(1), 16)
+        .now()
         .unwrap()
         .into_iter()
         .map(|(sequence, _)| sequence)
@@ -191,13 +193,14 @@ fn a_log_written_before_it_had_writers_is_rewritten_and_attributed_to_nobody() {
     drop(store);
     let reopened = Store::open(shared).now().unwrap();
     assert_eq!(
-        read_format_version(Arc::clone(reopened.backend())).unwrap(),
+        read_format_version(Arc::clone(reopened.engine())).unwrap(),
         Some(FormatVersion::CURRENT)
     );
     assert_eq!(reopened.logs().unwrap(), vec![migrated]);
     assert_eq!(
         reopened
             .log_records(migrated, Sequence::new(1), 16)
+            .now()
             .unwrap()
             .len(),
         3
@@ -335,6 +338,7 @@ fn a_log_written_before_it_had_homes_is_rewritten_into_the_store_home() {
     );
     let positions: Vec<Sequence> = store
         .log_records(LogId::unattributed(Reach::Store), Sequence::new(1), 16)
+        .now()
         .unwrap()
         .into_iter()
         .map(|(sequence, _)| sequence)
@@ -352,6 +356,7 @@ fn a_log_written_before_it_had_homes_is_rewritten_into_the_store_home() {
     assert_eq!(
         reopened
             .log_records(LogId::unattributed(Reach::Store), Sequence::new(1), 16)
+            .now()
             .unwrap()
             .len(),
         3

@@ -385,7 +385,7 @@ impl Store {
         if desired == identity.roles {
             return Ok(None);
         }
-        self.configure_node(Some(desired), None, None)?;
+        self.configure_node(Some(desired), None, None).await?;
         Ok(Some(desired))
     }
 }

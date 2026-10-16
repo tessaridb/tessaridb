@@ -225,7 +225,7 @@ impl Session<'_> {
                         let plan = chosen.plan(Some(named)).seen_by(&chosen.index, &visible);
                         let range = chosen.ranged();
                         let ceiling = tessari_storage::filtered_ceiling(walk.wanted, walk.effort);
-                        if super::narrows_to(transaction, &plan, range, ceiling)? {
+                        if super::narrows_to(transaction, &plan, range, ceiling).await? {
                             return Ok(plan);
                         }
                     }

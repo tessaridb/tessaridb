@@ -213,7 +213,7 @@ impl Session<'_> {
         coordinator: Reach,
     ) -> Result<AcrossAnswer> {
         let store = self.store;
-        let standing = store.transaction_record(transaction)?;
+        let standing = store.transaction_record(transaction).await?;
         let record = match standing {
             Some(record) if record.decision.is_decided() => record,
             // Decided by status recovery and nothing else (D14c): it may be
@@ -264,7 +264,7 @@ impl Session<'_> {
         transaction: TransactionId,
         coordinator: Reach,
     ) -> Result<AcrossAnswer> {
-        match self.store.transaction_record(transaction)? {
+        match self.store.transaction_record(transaction).await? {
             Some(record) if record.decision.is_decided() => {
                 self.settle_across(transaction, coordinator).await
             }
@@ -288,7 +288,7 @@ impl Session<'_> {
         span: Span,
     ) -> Result<AcrossAnswer> {
         let store = self.store;
-        if store.holds_intents_of(transaction)? {
+        if store.holds_intents_of(transaction).await? {
             return Ok(AcrossAnswer::Holding(true));
         }
         self.hold_tail(range, span).await?;
@@ -308,7 +308,7 @@ impl Session<'_> {
         span: Span,
     ) -> Result<AcrossAnswer> {
         let store = self.store;
-        if let Some(at) = store.part_landed(transaction, range)? {
+        if let Some(at) = store.part_landed(transaction, range).await? {
             self.hold_tail(range, span).await?;
             return Ok(AcrossAnswer::Landed(Some(at)));
         }

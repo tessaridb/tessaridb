@@ -222,7 +222,11 @@ fn settling_a_record_nobody_wrote_aborts_it_for_good() {
     let store = store();
     let mut owner = signed_in(&store, "root");
     assert_eq!(settle(&mut owner, &store), Decision::Aborted);
-    let held = store.transaction_record(TRANSACTION).unwrap().unwrap();
+    let held = store
+        .transaction_record(TRANSACTION)
+        .now()
+        .unwrap()
+        .unwrap();
     assert_eq!(held.decision, Decision::Aborted);
     // A coordinator arriving late with its PENDING record is refused: the
     // abort stands.
@@ -250,6 +254,7 @@ fn settling_an_overdue_pending_record_aborts_it() {
     assert_eq!(
         store
             .transaction_record(TRANSACTION)
+            .now()
             .unwrap()
             .unwrap()
             .decision,
@@ -274,6 +279,7 @@ fn settling_a_live_pending_record_leaves_it_pending() {
     assert_eq!(
         store
             .transaction_record(TRANSACTION)
+            .now()
             .unwrap()
             .unwrap()
             .decision,
@@ -354,7 +360,11 @@ fn a_readers_lookup_never_aborts_and_answers_a_decision() {
     let mut owner = signed_in(&store, "root");
     assert_eq!(look_up(&mut owner, &store), Decision::Pending);
     assert!(
-        store.transaction_record(TRANSACTION).unwrap().is_none(),
+        store
+            .transaction_record(TRANSACTION)
+            .now()
+            .unwrap()
+            .is_none(),
         "a lookup wrote a record"
     );
     owner
@@ -368,6 +378,7 @@ fn a_readers_lookup_never_aborts_and_answers_a_decision() {
     assert_eq!(
         store
             .transaction_record(TRANSACTION)
+            .now()
             .unwrap()
             .unwrap()
             .decision,

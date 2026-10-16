@@ -85,7 +85,7 @@ pub(crate) type Ranged<'a> = (
 /// # Errors
 ///
 /// Returns an error when the index cannot be read.
-pub(crate) fn narrows_to(
+pub(crate) async fn narrows_to(
     transaction: &Transaction<'_>,
     plan: &Plan,
     range: Option<Ranged<'_>>,
@@ -97,7 +97,8 @@ pub(crate) fn narrows_to(
     }
     Ok(match range {
         Some((index, fixed, lower, upper)) => transaction
-            .count_in_range(index, fixed, lower, upper, ceiling)?
+            .count_in_range(index, fixed, lower, upper, ceiling)
+            .await?
             .is_some(),
         None => false,
     })
@@ -120,7 +121,7 @@ async fn estimated(
         if candidate.rows != Rows::Unknown {
             continue;
         }
-        let Some(statistics) = transaction.fresh_statistics(&candidate.index)? else {
+        let Some(statistics) = transaction.fresh_statistics(&candidate.index).await? else {
             continue;
         };
         let counted = match &candidate.served {

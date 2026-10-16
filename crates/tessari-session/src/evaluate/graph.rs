@@ -221,7 +221,7 @@ impl Session<'_> {
                 span: hop.edges.span,
             });
         }
-        edges_settled(transaction, edge_table, &hop.edges)?;
+        edges_settled(transaction, edge_table, &hop.edges).await?;
         let Some(index) = self
             .index_on_path(
                 transaction,
@@ -308,7 +308,7 @@ impl Session<'_> {
                 table: hop.edges.name.text.clone(),
                 span: hop.edges.span,
             })?;
-        edges_settled(transaction, declared.edges, &hop.edges)?;
+        edges_settled(transaction, declared.edges, &hop.edges).await?;
         let along = match direction {
             Direction::Outgoing => AdjacencyDirection::Out,
             Direction::Incoming => AdjacencyDirection::In,
@@ -316,7 +316,10 @@ impl Session<'_> {
 
         let mut edges = Vec::new();
         for anchor in anchors {
-            for neighbour in transaction.neighbours(&declared, anchor.table, &anchor.id, along)? {
+            for neighbour in transaction
+                .neighbours(&declared, anchor.table, &anchor.id, along)
+                .await?
+            {
                 edges.push((anchor.clone(), neighbour));
             }
         }
@@ -391,12 +394,12 @@ impl Session<'_> {
 /// other half, per edge table: a transaction across leaders part-way in it
 /// here, whose edges the table's indexes and its readers disagree about
 /// (Q-919). A traversal has no scan to fall back to, so either is a refusal.
-pub(super) fn edges_settled(
+pub(super) async fn edges_settled(
     transaction: &Transaction<'_>,
     table: TableId,
     named: &tessari_ql::TableRef,
 ) -> Result<()> {
-    if transaction.indexes_are_current_for(table)? {
+    if transaction.indexes_are_current_for(table).await? {
         return Ok(());
     }
     let table = named.name.text.clone();

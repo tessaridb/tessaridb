@@ -3039,7 +3039,7 @@ fn what_is_stored_is_a_hash_and_no_plaintext_reaches_the_log() {
     // plaintext everywhere.
     // Every log, because a plaintext hiding in one of several is a plaintext.
     for log in store.logs().unwrap() {
-        for (_, record) in store.log_records(log, Sequence::ZERO, 4096).unwrap() {
+        for (_, record) in store.log_records(log, Sequence::ZERO, 4096).now().unwrap() {
             let bytes = format!("{record:?}");
             assert!(
                 !bytes.contains("correct horse"),

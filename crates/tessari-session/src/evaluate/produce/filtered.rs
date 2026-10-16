@@ -79,7 +79,7 @@ impl Session<'_> {
                         )),
                         Candidates::Held(_) => None,
                     };
-                    plan::narrows_to(transaction, chosen, range, ceiling)?
+                    plan::narrows_to(transaction, chosen, range, ceiling).await?
                 }
                 None => false,
             };

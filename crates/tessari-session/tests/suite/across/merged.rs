@@ -56,6 +56,7 @@ fn a_begun_write_is_the_value_only_once_concluded() {
     assert_eq!(
         store
             .transaction_record(TRANSACTION)
+            .now()
             .unwrap()
             .map(|standing| standing.decision),
         Some(Decision::Staging)
@@ -69,7 +70,7 @@ fn a_begun_write_is_the_value_only_once_concluded() {
         "{concluded:?}"
     );
     assert_eq!(note(&store), Value::from("new"));
-    assert!(!store.holds_intents_of(TRANSACTION).unwrap());
+    assert!(!store.holds_intents_of(TRANSACTION).now().unwrap());
 }
 
 #[test]
@@ -82,7 +83,7 @@ fn a_user_without_the_write_grant_cannot_begin() {
         matches!(refused, Err(Error::NotGranted { .. })),
         "{refused:?}"
     );
-    assert_eq!(store.transaction_record(TRANSACTION).unwrap(), None);
+    assert_eq!(store.transaction_record(TRANSACTION).now().unwrap(), None);
 }
 
 #[test]
@@ -110,7 +111,7 @@ fn a_begin_whose_record_a_participant_aborted_is_refused() {
         "{refused:?}"
     );
     assert_eq!(note(&store), Value::from("old"));
-    assert!(!store.holds_intents_of(TRANSACTION).unwrap());
+    assert!(!store.holds_intents_of(TRANSACTION).now().unwrap());
 }
 
 #[test]
@@ -141,6 +142,7 @@ fn a_staging_record_is_answered_as_it_stands_and_never_aborted() {
     assert_eq!(
         store
             .transaction_record(TRANSACTION)
+            .now()
             .unwrap()
             .map(|standing| standing.decision),
         Some(Decision::Staging),
@@ -179,7 +181,7 @@ fn a_part_is_reported_where_it_landed_and_barred_where_it_did_not() {
     );
     assert!(at.get() > 0);
     assert!(
-        store.holds_intents_of(TRANSACTION).unwrap(),
+        store.holds_intents_of(TRANSACTION).now().unwrap(),
         "the prepare stands"
     );
 }

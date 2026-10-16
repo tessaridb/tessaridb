@@ -22,6 +22,7 @@
 use tessari_encoding::{
     AcrossPartKey, Decision, Participant, Provenance, StampedValue, StoreKey, StoreValue,
 };
+use tessari_kv::AsyncKvBackend as _;
 use tessari_types::Sequence;
 
 use super::Transaction;
@@ -52,9 +53,14 @@ impl Transaction<'_> {
         let seen = if provenance.provisional {
             // An intent is a value only once its record says so, and the
             // record is where its participants are written down.
-            match self.store.transaction_record(provenance.transaction)? {
+            match self
+                .store
+                .transaction_record(provenance.transaction)
+                .await?
+            {
                 Some(record) if record.decision == Decision::Committed => {
-                    self.holds_every_part(provenance, &record.participants)?
+                    self.holds_every_part(provenance, &record.participants)
+                        .await?
                 }
                 Some(record) if record.decision == Decision::Aborted => false,
                 // Undecided here, or not here yet: the caller may already
@@ -67,7 +73,8 @@ impl Transaction<'_> {
                     .await
                 {
                     Some(record) if record.decision == Decision::Committed => {
-                        self.holds_every_part(provenance, &record.participants)?
+                        self.holds_every_part(provenance, &record.participants)
+                            .await?
                     }
                     _ => false,
                 },
@@ -75,7 +82,8 @@ impl Transaction<'_> {
         } else {
             // A resolved version exists only after the decision, and carries
             // the participants itself.
-            self.holds_every_part(provenance, &provenance.participants)?
+            self.holds_every_part(provenance, &provenance.participants)
+                .await?
         };
         self.decided
             .borrow_mut()
@@ -85,7 +93,7 @@ impl Transaction<'_> {
 
     /// Whether this snapshot holds the transaction's part in every range of
     /// `participants` this node holds.
-    fn holds_every_part(
+    async fn holds_every_part(
         &self,
         provenance: &Provenance,
         participants: &[Participant],
@@ -102,7 +110,8 @@ impl Transaction<'_> {
             let landed = self
                 .store
                 .backend()
-                .get(AcrossPartKey::keyspace(), &part.encode())?
+                .get(AcrossPartKey::keyspace(), &part.encode())
+                .await?
                 .map(|at| Sequence::decode(at.as_slice()))
                 .transpose()?;
             if !landed.is_some_and(|at| at <= self.snapshot) {

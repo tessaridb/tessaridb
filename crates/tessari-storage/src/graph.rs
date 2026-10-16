@@ -247,7 +247,7 @@ impl Graph {
         quantized: bool,
     ) -> Result<Self> {
         Ok(Self {
-            nodes: Nodes::stored(std::sync::Arc::clone(store.backend()), *address),
+            nodes: Nodes::stored(std::sync::Arc::clone(store.engine()), *address),
             distance,
             quantized,
         })

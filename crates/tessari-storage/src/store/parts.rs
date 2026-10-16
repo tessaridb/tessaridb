@@ -145,7 +145,7 @@ impl Store {
     ///
     /// Returns [`Error::NoIdentity`] when the store holds none, and the
     /// substrate's failure when the write is refused.
-    pub fn configure_node(
+    pub async fn configure_node(
         &self,
         roles: Option<Roles>,
         endpoints: Option<Vec<String>>,
@@ -157,7 +157,7 @@ impl Store {
         // every store written by a newer build unreadable by an older one for a
         // number neither of them needs to agree on.
         if let Some(keep) = retain {
-            self.set_log_retention(keep)?;
+            self.set_log_retention(keep).await?;
         }
         crate::node::configure(Arc::clone(&self.backend), roles, endpoints)
     }
@@ -204,8 +204,8 @@ impl Store {
     /// Returns [`Error::VersionReclaimed`] when `at` is below the reclaim floor,
     /// [`Error::VersionInTheFuture`] when it is above the newest version
     /// written, or a backend error when either bound cannot be read.
-    pub fn begin_at(&self, at: Sequence) -> Result<Transaction<'_>> {
-        let floor = self.reclaim_floor()?;
+    pub async fn begin_at(&self, at: Sequence) -> Result<Transaction<'_>> {
+        let floor = self.reclaim_floor().await?;
         if at < floor {
             return Err(Error::VersionReclaimed {
                 asked: at.get(),
@@ -332,8 +332,14 @@ impl Store {
             .is_some_and(tessari_types::ReplicationClass::admits_two_writers))
     }
 
-    /// The backend, for the transaction's read and commit paths.
-    pub(crate) fn backend(&self) -> &Arc<dyn KvBackend> {
+    /// The backend, for the transaction's read and commit paths: its reads and
+    /// writes are futures, so no store call blocks the thread that drives it.
+    pub(crate) fn backend(&self) -> &(impl tessari_kv::AsyncKvBackend + ?Sized) {
+        &*self.backend
+    }
+
+    /// The backend as shared, for what holds it beyond one call.
+    pub(crate) fn engine(&self) -> &Arc<dyn KvBackend> {
         &self.backend
     }
 

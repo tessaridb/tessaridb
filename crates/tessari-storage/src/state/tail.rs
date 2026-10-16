@@ -21,6 +21,7 @@
 //! versions keep their order and each lands above the version a reader sees.
 
 use std::collections::{BTreeMap, VecDeque};
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     Across, AcrossPartKey, Decision, LogRecord, Mutation, Part, StoreKey, StoreValue,
@@ -61,7 +62,7 @@ impl Tail {
     }
 
     /// The next record of the tail, or `None` once it is all out.
-    pub(super) fn next(
+    pub(super) async fn next(
         &mut self,
         store: &Store,
         version: Sequence,
@@ -72,11 +73,14 @@ impl Tail {
                 return Ok(Some(record));
             }
             match self.phase {
-                Phase::Records => match self.step(
-                    store,
-                    TransactionRecordKey::keyspace(),
-                    TransactionRecordKey::KIND.tag(),
-                )? {
+                Phase::Records => match self
+                    .step(
+                        store,
+                        TransactionRecordKey::keyspace(),
+                        TransactionRecordKey::KIND.tag(),
+                    )
+                    .await?
+                {
                     Some((key, value)) => {
                         let transaction = TransactionRecordKey::decode(key.as_slice())?.transaction;
                         let record = TransactionRecord::decode(value.as_slice())?;
@@ -88,7 +92,10 @@ impl Tail {
                     None => self.next_phase(Phase::Landed),
                 },
                 Phase::Landed => {
-                    match self.step(store, AcrossPartKey::keyspace(), AcrossPartKey::KIND.tag())? {
+                    match self
+                        .step(store, AcrossPartKey::keyspace(), AcrossPartKey::KIND.tag())
+                        .await?
+                    {
                         Some((key, value)) => {
                             let part = AcrossPartKey::decode(key.as_slice())?;
                             let landed = Sequence::decode(value.as_slice())?;
@@ -139,7 +146,7 @@ impl Tail {
     /// The next stored entry of the kind tagged `tag`, one at a time: a store
     /// keeps a marker per part of every transaction across leaders it ever
     /// held, which is not to be read into memory at once.
-    fn step(
+    async fn step(
         &mut self,
         store: &Store,
         keyspace: tessari_kv::Keyspace,
@@ -157,7 +164,8 @@ impl Tail {
                 range,
                 direction: ScanDirection::Forward,
                 limit: Some(1),
-            })?
+            })
+            .await?
             .into_iter()
             .next();
         if let Some((key, _)) = &found {

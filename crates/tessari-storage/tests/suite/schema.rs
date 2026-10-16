@@ -542,6 +542,7 @@ fn a_replica_reaches_the_same_verdict_about_a_required_field() {
     assert_eq!(
         replica
             .log_records(crate::fixture_log(&fixture.store), Sequence::ZERO, 1024)
+            .now()
             .unwrap()
             .len(),
         fixture
@@ -551,6 +552,7 @@ fn a_replica_reaches_the_same_verdict_about_a_required_field() {
                 Sequence::ZERO,
                 1024
             )
+            .now()
             .unwrap()
             .len()
     );

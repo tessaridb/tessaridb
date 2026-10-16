@@ -10,6 +10,7 @@ fn a_collection_stops_at_the_byte_budget_and_says_that_it_did() {
     let serving = Serving::within(db.store(), &Everything, one_record() * 2);
     let (records, stopped_early) = serving
         .fill(Reach::Store, store_log(&db), Sequence::new(1), usize::MAX)
+        .now()
         .expect("a store-reach read of its own log");
 
     assert_eq!(
@@ -29,6 +30,7 @@ fn the_answer_after_a_budgeted_one_resumes_where_it_stopped() {
     let serving = Serving::within(db.store(), &Everything, one_record() * 2);
     let (first, _) = serving
         .fill(Reach::Store, store_log(&db), Sequence::new(1), usize::MAX)
+        .now()
         .expect("a store-reach read of its own log");
     let next = Sequence::new(
         first
@@ -45,6 +47,7 @@ fn the_answer_after_a_budgeted_one_resumes_where_it_stopped() {
     let roomy = Serving::within(db.store(), &Everything, one_record() * 64);
     let (second, stopped_early) = roomy
         .fill(Reach::Store, store_log(&db), next, usize::MAX)
+        .now()
         .expect("a store-reach read of its own log");
 
     assert_eq!(second.len(), 4, "the rest of the log, and none of it twice");
@@ -61,6 +64,7 @@ fn a_record_that_alone_exceeds_the_budget_is_still_carried() {
     let serving = Serving::within(db.store(), &Everything, 0);
     let (records, stopped_early) = serving
         .fill(Reach::Store, store_log(&db), Sequence::new(1), usize::MAX)
+        .now()
         .expect("a store-reach read of its own log");
 
     // A budget that could answer nothing would leave a follower asking for
@@ -75,6 +79,7 @@ fn an_answer_that_reached_the_end_of_the_log_did_not_stop_early() {
     let serving = Serving::within(db.store(), &Everything, one_record() * 64);
     let (records, stopped_early) = serving
         .fill(Reach::Store, store_log(&db), Sequence::new(1), usize::MAX)
+        .now()
         .expect("a store-reach read of its own log");
 
     assert_eq!(records.len(), 3);

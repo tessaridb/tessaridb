@@ -105,7 +105,7 @@ impl Fixture {
                 version.encode(),
             );
         }
-        self.store.backend().apply(batch)?;
+        self.store.engine().apply(batch)?;
         Ok(())
     }
 
@@ -200,7 +200,8 @@ fn reclaiming_below_an_intent_keeps_the_version_every_reader_reads() -> Result<(
     writer.commit().now()?;
     fixture
         .store
-        .reclaim_table(fixture.namespace, fixture.database, fixture.table)?;
+        .reclaim_table(fixture.namespace, fixture.database, fixture.table)
+        .now()?;
     let old = Some(b"old".to_vec());
     assert_eq!(fixture.seen()?, [old.clone(), old.clone(), old]);
     Ok(())

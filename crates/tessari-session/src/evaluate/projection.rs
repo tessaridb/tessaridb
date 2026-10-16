@@ -184,7 +184,9 @@ impl Session<'_> {
             scope.id,
             whole_terms(analyzer, wanted),
         ) {
-            (Some(index), Some(id), Some(terms)) => stored_marks(transaction, index, &terms, id)?,
+            (Some(index), Some(id), Some(terms)) => {
+                stored_marks(transaction, index, &terms, id).await?
+            }
             _ => None,
         };
         let marks = match stored {
@@ -267,7 +269,7 @@ impl Session<'_> {
         // one of them is scored from its text (ADR-0103 D2).
         let mut membership = ranked.from_text;
         for term in corpus.terms.keys().filter(|_| !ranked.from_text) {
-            match transaction.posting(&ranked.index, term, id)? {
+            match transaction.posting(&ranked.index, term, id).await? {
                 None => {}
                 Some(Posting::Counted {
                     frequency,
@@ -308,7 +310,7 @@ impl Session<'_> {
 ///
 /// `None` when a posting of this record carries no offsets, so the caller
 /// analyses the text instead of marking from a partial list.
-fn stored_marks(
+async fn stored_marks(
     transaction: &Transaction<'_>,
     index: &tessari_storage::IndexDefinition,
     terms: &std::collections::BTreeSet<String>,
@@ -316,7 +318,7 @@ fn stored_marks(
 ) -> Result<Option<Vec<core::ops::Range<usize>>>> {
     let mut marks = Vec::new();
     for term in terms {
-        let Some(located) = transaction.located(index, term, id)? else {
+        let Some(located) = transaction.located(index, term, id).await? else {
             continue;
         };
         if located.offsets.is_empty() {

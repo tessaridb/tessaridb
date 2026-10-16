@@ -57,7 +57,10 @@ impl Graph<'_> {
     ) -> Result<&[(RecordId, f64)]> {
         if !self.steps.contains_key(node) {
             let mut out = Vec::new();
-            for neighbour in transaction.neighbours(&self.kind, self.table, node, self.along)? {
+            for neighbour in transaction
+                .neighbours(&self.kind, self.table, node, self.along)
+                .await?
+            {
                 if neighbour.table != self.table || neighbour.id == *node {
                     continue;
                 }
@@ -153,7 +156,7 @@ impl Session<'_> {
                 table: hop.edges.name.text.clone(),
                 span: hop.edges.span,
             })?;
-        super::graph::edges_settled(transaction, kind.edges, &hop.edges)?;
+        super::graph::edges_settled(transaction, kind.edges, &hop.edges).await?;
         let Some(target) = hop.target.as_ref() else {
             return Ok((Vec::new(), None));
         };

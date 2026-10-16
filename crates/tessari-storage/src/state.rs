@@ -44,6 +44,7 @@ mod tail;
 use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::sync::Arc;
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     LogId, LogRecord, Mutation, RecordKey, RecordValue, StampedValue, StoreKey, StoreValue,
@@ -98,7 +99,7 @@ pub struct StateReader<'a> {
 impl<'a> StateReader<'a> {
     /// Begin reading `store`'s state as a peer subscribed at `within` would be
     /// given it; [`Reach::Store`] is all of it. See [`Store::read_state`].
-    pub(crate) fn open(store: &'a Store, within: Reach) -> Result<Self> {
+    pub(crate) async fn open(store: &'a Store, within: Reach) -> Result<Self> {
         loop {
             let before = store.committed_version()?;
             let mut positions = Vec::new();
@@ -109,7 +110,7 @@ impl<'a> StateReader<'a> {
                     positions.push((log, store.committed_tail(log)?));
                 }
             }
-            let view = store.begin_at(before)?;
+            let view = store.begin_at(before).await?;
             if store.committed_version()? == before {
                 return Ok(Self {
                     store,
@@ -147,7 +148,7 @@ impl StateReader<'_> {
     /// # Errors
     ///
     /// Returns an error when the index keyspace cannot be read.
-    pub fn topic_heads(&self) -> Result<Vec<TopicHead>> {
+    pub async fn topic_heads(&self) -> Result<Vec<TopicHead>> {
         let request = ScanRequest {
             keyspace: TopicHeadKey::keyspace(),
             range: KeyRange::prefix(&[TopicHeadKey::KIND.tag()]),
@@ -155,7 +156,7 @@ impl StateReader<'_> {
             limit: None,
         };
         let mut heads = Vec::new();
-        for (key, value) in self.store.backend().scan(&request)? {
+        for (key, value) in self.store.backend().scan(&request).await? {
             let key = TopicHeadKey::decode(key.as_slice())?;
             if !self
                 .within
@@ -192,7 +193,7 @@ impl StateReader<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(PAGE),
             };
-            let page = self.store.backend().sweep(&request)?;
+            let page = self.store.backend().sweep(&request).await?;
             // The last page, but only once it has been walked to its end: a
             // chunk that stops part-way resumes after the key it stopped at.
             let last = page.len() < PAGE;
@@ -260,7 +261,7 @@ impl StateReader<'_> {
             }
         }
         if mutations.is_empty() {
-            return self.tail.next(self.store, self.version, self.within);
+            return self.tail.next(self.store, self.version, self.within).await;
         }
         Ok(Some(LogRecord::new(mutations)))
     }

@@ -90,7 +90,7 @@ impl Session<'_> {
             } else {
                 f64::INFINITY
             };
-            let Some((_, id)) = walk.next(transaction, beyond)? else {
+            let Some((_, id)) = walk.next(transaction, beyond).await? else {
                 break;
             };
             taken = taken.saturating_add(1);

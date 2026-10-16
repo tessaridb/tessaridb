@@ -4,6 +4,7 @@
 //! follower applies it.
 
 use tessari_encoding::{AcrossPartKey, Decision, Part, Participant, StoreKey, TransactionRecord};
+use tessari_kv::AsyncKvBackend as _;
 use tessari_types::{Reach, Sequence};
 
 use super::{Fixture, TRANSACTION, doc, record_of};
@@ -30,7 +31,7 @@ impl Fixture {
     }
 
     /// Whether this node marks the coordinator's own part landed.
-    fn landed_here(&self) -> Result<bool> {
+    async fn landed_here(&self) -> Result<bool> {
         let part = AcrossPartKey {
             transaction: TRANSACTION,
             range: Reach::Database(self.namespace, self.database),
@@ -38,7 +39,8 @@ impl Fixture {
         Ok(self
             .store
             .backend()
-            .get(AcrossPartKey::keyspace(), &part.encode())?
+            .get(AcrossPartKey::keyspace(), &part.encode())
+            .await?
             .is_some())
     }
 }
@@ -46,15 +48,15 @@ impl Fixture {
 #[tokio::test]
 async fn a_begin_lands_the_staging_record_and_its_intents_together() -> Result<()> {
     let mut fixture = Fixture::new().await?;
-    let before = fixture.index_entries()?;
+    let before = fixture.index_entries().await?;
     fixture.begin().await?;
     assert_eq!(
-        record_of(&fixture.store)?,
+        record_of(&fixture.store).await?,
         Some(fixture.decided(Decision::Staging))
     );
-    assert!(fixture.intent_left()?, "the writes stand as intents");
+    assert!(fixture.intent_left().await?, "the writes stand as intents");
     assert!(
-        fixture.landed_here()?,
+        fixture.landed_here().await?,
         "where the part landed is marked (D6a)"
     );
     assert_eq!(
@@ -63,7 +65,7 @@ async fn a_begin_lands_the_staging_record_and_its_intents_together() -> Result<(
         "an intent is not a value"
     );
     assert_eq!(
-        fixture.index_entries()?,
+        fixture.index_entries().await?,
         before,
         "an intent derives nothing"
     );
@@ -84,11 +86,11 @@ async fn a_begin_finding_its_record_already_aborted_lands_nothing() -> Result<()
         "{refused:?}"
     );
     assert_eq!(
-        record_of(&fixture.store)?,
+        record_of(&fixture.store).await?,
         Some(fixture.decided(Decision::Aborted))
     );
-    assert!(!fixture.intent_left()?);
-    assert!(!fixture.landed_here()?);
+    assert!(!fixture.intent_left().await?);
+    assert!(!fixture.landed_here().await?);
     Ok(())
 }
 
@@ -105,7 +107,7 @@ async fn a_begin_carrying_a_plain_write_is_refused() -> Result<()> {
         matches!(refused, Err(Error::AcrossMalformed { part: "begin", .. })),
         "{refused:?}"
     );
-    assert_eq!(record_of(&fixture.store)?, None);
+    assert_eq!(record_of(&fixture.store).await?, None);
     Ok(())
 }
 
@@ -125,15 +127,15 @@ async fn a_begin_that_does_not_stage_is_refused() -> Result<()> {
         matches!(refused, Err(Error::AcrossMalformed { part: "begin", .. })),
         "{refused:?}"
     );
-    assert_eq!(record_of(&fixture.store)?, None);
-    assert!(!fixture.intent_left()?);
+    assert_eq!(record_of(&fixture.store).await?, None);
+    assert!(!fixture.intent_left().await?);
     Ok(())
 }
 
 #[tokio::test]
 async fn a_conclude_commits_the_record_and_its_intents_in_one_record() -> Result<()> {
     let mut fixture = Fixture::new().await?;
-    let before = fixture.index_entries()?;
+    let before = fixture.index_entries().await?;
     fixture.begin().await?;
     let resolved = fixture.write(fixture.new_value(false));
     fixture
@@ -143,13 +145,16 @@ async fn a_conclude_commits_the_record_and_its_intents_in_one_record() -> Result
         )
         .await?;
     assert_eq!(
-        record_of(&fixture.store)?,
+        record_of(&fixture.store).await?,
         Some(fixture.decided(Decision::Committed))
     );
     assert_eq!(fixture.read().await?, Some(doc("new")));
-    assert!(!fixture.intent_left()?, "the resolution removes its intent");
+    assert!(
+        !fixture.intent_left().await?,
+        "the resolution removes its intent"
+    );
     assert_ne!(
-        fixture.index_entries()?,
+        fixture.index_entries().await?,
         before,
         "a committed value derives"
     );
@@ -159,7 +164,7 @@ async fn a_conclude_commits_the_record_and_its_intents_in_one_record() -> Result
 #[tokio::test]
 async fn a_conclude_that_aborts_drops_the_intents() -> Result<()> {
     let mut fixture = Fixture::new().await?;
-    let before = fixture.index_entries()?;
+    let before = fixture.index_entries().await?;
     fixture.begin().await?;
     let named = fixture.write(fixture.new_value(true));
     fixture
@@ -169,12 +174,12 @@ async fn a_conclude_that_aborts_drops_the_intents() -> Result<()> {
         )
         .await?;
     assert_eq!(
-        record_of(&fixture.store)?,
+        record_of(&fixture.store).await?,
         Some(fixture.decided(Decision::Aborted))
     );
     assert_eq!(fixture.read().await?, Some(doc("old")));
-    assert!(!fixture.intent_left()?);
-    assert_eq!(fixture.index_entries()?, before);
+    assert!(!fixture.intent_left().await?);
+    assert_eq!(fixture.index_entries().await?, before);
     Ok(())
 }
 
@@ -198,7 +203,7 @@ async fn a_conclude_against_a_lapsed_record_resolves_nothing() -> Result<()> {
     );
     assert_eq!(fixture.read().await?, Some(doc("old")));
     assert!(
-        fixture.intent_left()?,
+        fixture.intent_left().await?,
         "the abort's own resolution drops it"
     );
     Ok(())
@@ -218,7 +223,7 @@ async fn a_staging_record_is_never_reopened_as_pending() -> Result<()> {
         "{refused:?}"
     );
     assert_eq!(
-        record_of(&fixture.store)?,
+        record_of(&fixture.store).await?,
         Some(fixture.decided(Decision::Staging))
     );
     Ok(())

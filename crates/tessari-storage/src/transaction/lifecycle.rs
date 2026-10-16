@@ -9,6 +9,7 @@ mod versions;
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::ops::Bound;
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     CausalStamp, CausalVersions, NODE_ID_LEN, RecordKey, RecordValue, StampedValue, StoreKey,
@@ -252,7 +253,8 @@ impl<'a> Transaction<'a> {
         let found = self
             .store
             .backend()
-            .first_of_each(RecordKey::keyspace(), &ranges)?;
+            .first_of_each(RecordKey::keyspace(), &ranges)
+            .await?;
         for (index, pair) in asked.into_iter().zip(found) {
             let Some((_, value)) = pair else { continue };
             let mut stored = StampedValue::decode(value.as_slice())?;
@@ -324,8 +326,8 @@ impl<'a> Transaction<'a> {
     /// # Errors
     ///
     /// Returns an error when the committed version or the mark cannot be read.
-    pub fn indexes_are_current_for(&self, table: TableId) -> Result<bool> {
-        Ok(self.indexes_are_current()? && !self.store.across_unsettled(table)?)
+    pub async fn indexes_are_current_for(&self, table: TableId) -> Result<bool> {
+        Ok(self.indexes_are_current()? && !self.store.across_unsettled(table).await?)
     }
 
     /// Whether this transaction has written to one table without committing.

@@ -254,7 +254,7 @@ impl Serving<'_> {
                 message: why.to_string(),
                 class: None,
             })?;
-        let previous = preceding(self.log, over, served, asked.from)?;
+        let previous = preceding(self.log, over, served, asked.from).await?;
         // The ask is the acknowledgement (ADR-0106 D6): a follower asks for the
         // first position it does not hold, once it has applied and synced what
         // it was sent. Counted only as far as this leader sent it — see
@@ -284,7 +284,7 @@ impl Serving<'_> {
         // nothing here, and says so by stating no leadership.
         let epoch = self.log.writing_epoch(asked.home).await.map_err(refused)?;
         let epoch = (epoch > Epoch::ZERO).then_some(epoch);
-        let (records, stopped_early) = self.fill(over, served, asked.from, limit)?;
+        let (records, stopped_early) = self.fill(over, served, asked.from, limit).await?;
         // What the follower now holds: the last position it was handed, or —
         // when it was handed nothing — the one it told us it was at. The same
         // rule the leader's own door uses, because it is the same event.
@@ -337,7 +337,7 @@ impl Serving<'_> {
     ///
     /// The budget is [`Serving`]'s own field so that a test can observe the
     /// bound without writing four megabytes to reach it — see [`Serving::within`].
-    pub(super) fn fill(
+    pub(super) async fn fill(
         &self,
         over: Reach,
         log: LogId,
@@ -359,12 +359,11 @@ impl Serving<'_> {
             // what this follower may SEE, and `log` is which log the cursor
             // counts in. They were one value while a frame carried no log, and
             // that made every ask a read of one link of the chain (Q-618).
-            let page = match self.log.log_records_within(
-                over,
-                log,
-                cursor,
-                room.min(COLLECTION_PAGE_RECORDS),
-            ) {
+            let page = match self
+                .log
+                .log_records_within(over, log, cursor, room.min(COLLECTION_PAGE_RECORDS))
+                .await
+            {
                 Ok(page) => page,
                 Err(tessari_storage::Error::BelowLogStart { .. }) => {
                     return Err(Error::Uncollectable { from: from.get() });
@@ -400,7 +399,12 @@ impl Serving<'_> {
 /// # Errors
 ///
 /// Returns [`Error::Uncollectable`] when this node holds nothing at `from - 1`.
-pub(super) fn preceding(store: &Store, over: Reach, log: LogId, from: Sequence) -> Result<Epoch> {
+pub(super) async fn preceding(
+    store: &Store,
+    over: Reach,
+    log: LogId,
+    from: Sequence,
+) -> Result<Epoch> {
     if from.get() <= 1 {
         // Nothing precedes the first position, and a store that never elected
         // anybody writes exactly this epoch — so the answer is the same value a
@@ -414,7 +418,7 @@ pub(super) fn preceding(store: &Store, over: Reach, log: LogId, from: Sequence) 
     // are the same value either way. Reading wider bought exactly the disclosure
     // the subscription exists to prevent, in the one place a reach was not
     // threaded through — which is how a rule acquires a hole.
-    let held = match store.log_records_within(over, log, before, 1) {
+    let held = match store.log_records_within(over, log, before, 1).await {
         Ok(held) => held,
         Err(tessari_storage::Error::BelowLogStart { .. }) => {
             return Err(Error::Uncollectable { from: from.get() });

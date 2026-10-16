@@ -1,4 +1,5 @@
 use super::*;
+use tessari_kv::AsyncKvBackend as _;
 
 impl Transaction<'_> {
     /// Resolve `transaction`'s intents on `records` as the record decided:
@@ -76,7 +77,7 @@ impl Transaction<'_> {
         let every_held = records.is_empty();
         let held;
         let records = if every_held {
-            held = self.store.intents_of(transaction)?;
+            held = self.store.intents_of(transaction).await?;
             held.as_slice()
         } else {
             records
@@ -85,7 +86,7 @@ impl Transaction<'_> {
         // every prepare stamped with it: a resolution cannot name another.
         let mut coordinator = None;
         for address in records {
-            let Some((intent, named)) = self.intent_of(address, transaction)? else {
+            let Some((intent, named)) = self.intent_of(address, transaction).await? else {
                 continue;
             };
             coordinator.get_or_insert(named);
@@ -127,12 +128,12 @@ impl Transaction<'_> {
 
     /// The value `transaction` holds as an intent on `address`, and the
     /// coordinator's range the intent names, if it holds one.
-    fn intent_of(
+    async fn intent_of(
         &self,
         address: &RecordAddress,
         transaction: TransactionId,
     ) -> Result<Option<(RecordValue, Reach)>> {
-        let Some((_, provenance, value)) = self.newest_stored_value(address)? else {
+        let Some((_, provenance, value)) = self.newest_stored_value(address).await? else {
             return Ok(None);
         };
         Ok(provenance
@@ -275,11 +276,11 @@ impl Transaction<'_> {
     /// The second half of a prepare's conflict check (ADR-0112 D3a): refuse
     /// if any record of `log` after the position the transaction had seen
     /// writes one of these records.
-    pub(in crate::transaction) fn written_since_seen(&self, log: LogId) -> Result<()> {
+    pub(in crate::transaction) async fn written_since_seen(&self, log: LogId) -> Result<()> {
         let Some(seen) = self.across.as_ref().and_then(|work| work.seen) else {
             return Ok(());
         };
-        let start = self.store.log_start(log)?;
+        let start = self.store.log_start(log).await?;
         let next = Sequence::new(seen.get().saturating_add(1));
         if start > next {
             return Err(Error::AcrossReadTooOld { seen, start });
@@ -289,12 +290,16 @@ impl Transaction<'_> {
             std::ops::Bound::Included(LogKey::new(log, next).encode()),
             KeyRange::prefix(&prefix).end().clone(),
         );
-        let entries = self.store.backend().scan(&ScanRequest {
-            keyspace: LogKey::keyspace(),
-            range,
-            direction: ScanDirection::Forward,
-            limit: None,
-        })?;
+        let entries = self
+            .store
+            .backend()
+            .scan(&ScanRequest {
+                keyspace: LogKey::keyspace(),
+                range,
+                direction: ScanDirection::Forward,
+                limit: None,
+            })
+            .await?;
         for (key, value) in entries {
             let record = LogRecord::decode(value.as_slice())?;
             for mutation in record.mutations() {

@@ -148,13 +148,16 @@ fn follower_at(leader: &Store, upto: u64) -> Store {
         leader.own_log(Reach::Store).unwrap(),
         Sequence::new(1),
     )
+    .now()
     .unwrap();
     tessari_backup::read(&store, &mut definitions.as_slice())
         .now()
         .unwrap();
 
     let mut records = Vec::new();
-    tessari_backup::write_from(leader, &mut records, home, Sequence::new(1)).unwrap();
+    tessari_backup::write_from(leader, &mut records, home, Sequence::new(1))
+        .now()
+        .unwrap();
     tessari_backup::read_until(&store, &mut records.as_slice(), Some(Sequence::new(upto)))
         .now()
         .unwrap();
@@ -188,7 +191,10 @@ fn a_log_that_no_longer_reaches_the_follower_is_refused_and_names_the_missing_se
     cut(&leader_backend, home, MISSING);
     // Vacuity guard: if the cut removed nothing, everything below passes while
     // showing nothing at all.
-    let after_the_cut = held.log_records(home, Sequence::new(MISSING), 1).unwrap();
+    let after_the_cut = held
+        .log_records(home, Sequence::new(MISSING), 1)
+        .now()
+        .unwrap();
     assert_ne!(
         after_the_cut[0].0,
         Sequence::new(MISSING),
@@ -204,6 +210,7 @@ fn a_log_that_no_longer_reaches_the_follower_is_refused_and_names_the_missing_se
         home,
         Sequence::new(FOLLOWER_STOPS_AT.saturating_add(1)),
     )
+    .now()
     .unwrap();
 
     let refused = tessari_backup::bootstrap(&follower, &mut truncated.as_slice())
@@ -261,6 +268,7 @@ fn the_same_truncated_log_is_refused_again_rather_than_accepted_on_retry() {
         home,
         Sequence::new(FOLLOWER_STOPS_AT.saturating_add(1)),
     )
+    .now()
     .unwrap();
 
     tessari_backup::bootstrap(&follower, &mut truncated.as_slice())
@@ -308,7 +316,7 @@ fn file_the_data_in_the_store_log(backend: &Arc<dyn KvBackend>, store: &Store) {
     let data = data_log(store);
     let own = store.own_log(Reach::Store).unwrap();
     let mut batch = WriteBatch::new();
-    for (at, _) in store.log_records(data, Sequence::new(1), 64).unwrap() {
+    for (at, _) in store.log_records(data, Sequence::new(1), 64).now().unwrap() {
         let body = backend
             .get(LogKey::keyspace(), &LogKey::new(data, at).encode())
             .unwrap()
@@ -349,7 +357,7 @@ fn a_record_is_restored_into_the_log_it_was_backed_up_from() {
     );
 
     let mut whole = Vec::new();
-    tessari_backup::write(&held, &mut whole).unwrap();
+    tessari_backup::write(&held, &mut whole).now().unwrap();
     let (_backend, restored) = store();
     tessari_backup::read(&restored, &mut whole.as_slice())
         .now()

@@ -254,6 +254,7 @@ fn the_log_record_says_which_shard_each_mutation_is_in() {
     let (_, record) = split
         .store
         .log_records(log, split.tail(split.database()), 1)
+        .now()
         .unwrap()
         .into_iter()
         .next()
@@ -562,7 +563,7 @@ fn a_follower_that_applies_a_split_files_its_next_write_in_the_new_shard() {
     let writer = leader.store.writer().unwrap();
     let replay = |home: Reach, from: Sequence| {
         let log = leader.store.own_log(home).unwrap();
-        for (at, record) in leader.store.log_records(log, from, 1024).unwrap() {
+        for (at, record) in leader.store.log_records(log, from, 1024).now().unwrap() {
             follower.apply_record(writer, at, &record).now().unwrap();
         }
     };

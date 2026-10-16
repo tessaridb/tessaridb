@@ -1,6 +1,7 @@
 //! The records a containment index offers for a document asked for (ADR-0116).
 
 use std::collections::{BTreeMap, BTreeSet};
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{ContainmentKey, IndexAddress, IndexValues, RecordValue, StoreKey};
@@ -55,7 +56,7 @@ impl Transaction<'_> {
                     direction: ScanDirection::Forward,
                     limit: Some(RANGE_SCAN_BATCH_ENTRIES),
                 };
-                let batch = self.store.backend().scan(&request)?;
+                let batch = self.store.backend().scan(&request).await?;
                 for (key, _) in &batch {
                     let id = ContainmentKey::decode(key.as_slice())?.id;
                     // Narrowing: only a record every earlier pair offered is kept.

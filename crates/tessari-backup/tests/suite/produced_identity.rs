@@ -79,7 +79,7 @@ fn leader() -> (Store, Vec<RecordId>, Vec<u8>) {
     assert_eq!(answered.len(), 3);
 
     let mut prefix = Vec::new();
-    let written = tessari_backup::write(&store, &mut prefix).unwrap();
+    let written = tessari_backup::write(&store, &mut prefix).now().unwrap();
     assert!(written.records > 0, "a log that carried nothing");
     (store, answered, prefix)
 }

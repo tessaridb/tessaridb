@@ -31,7 +31,7 @@ pub(crate) fn restore(db: &Db) -> Failable<Vec<Report>> {
 
     let mut taken = Samples::with_capacity(1);
     let mut held = Vec::new();
-    let written = timed!(taken, tessari_backup::write(db.store(), &mut held))?;
+    let written = timed!(taken, tessari_backup::write(db.store(), &mut held).now())?;
     let mut reports = vec![taken.summarise("backup")];
     reports.push(Report::measurement(
         "backup size",

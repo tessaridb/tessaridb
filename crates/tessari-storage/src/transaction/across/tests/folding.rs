@@ -45,7 +45,7 @@ impl Fixture {
     fn count(&self, kind: KeyKind) -> Result<usize> {
         Ok(self
             .store
-            .backend()
+            .engine()
             .scan(&ScanRequest {
                 keyspace: kind.keyspace(),
                 range: KeyRange::prefix(&[kind.tag()]),
@@ -58,7 +58,7 @@ impl Fixture {
     /// Whether any stored version of the table still names a transaction
     /// across leaders.
     fn names_a_transaction(&self) -> Result<bool> {
-        let stored = self.store.backend().scan(&ScanRequest {
+        let stored = self.store.engine().scan(&ScanRequest {
             keyspace: RecordKey::keyspace(),
             range: KeyRange::prefix(&RecordKey::table_prefix(
                 self.namespace,
@@ -95,7 +95,8 @@ fn reclaiming_past_settled_transactions_forgets_their_markers() -> Result<()> {
 
     fixture
         .store
-        .reclaim_table(fixture.namespace, fixture.database, fixture.table)?;
+        .reclaim_table(fixture.namespace, fixture.database, fixture.table)
+        .now()?;
 
     assert_eq!(
         fixture.count(AcrossPartKey::KIND)?,
@@ -129,7 +130,8 @@ fn a_reader_still_below_a_marker_keeps_it() -> Result<()> {
     }
     fixture
         .store
-        .reclaim_table(fixture.namespace, fixture.database, fixture.table)?;
+        .reclaim_table(fixture.namespace, fixture.database, fixture.table)
+        .now()?;
     assert_eq!(
         fixture.count(AcrossPartKey::KIND)?,
         2,

@@ -68,12 +68,16 @@ fn logged(records: usize) -> (Store, RecordAddress, LogId) {
 fn a_log_nobody_has_pruned_begins_at_zero_and_reads_from_anywhere() {
     let (store, _, log) = logged(3);
     assert_eq!(
-        store.log_start(log).unwrap(),
+        store.log_start(log).now().unwrap(),
         Sequence::ZERO,
         "absence means the log is WHOLE, not that it is empty"
     );
     assert_eq!(
-        store.log_records(log, Sequence::ZERO, 64).unwrap().len(),
+        store
+            .log_records(log, Sequence::ZERO, 64)
+            .now()
+            .unwrap()
+            .len(),
         3,
         "and a read from the beginning is answered"
     );
@@ -85,12 +89,12 @@ fn a_prune_removes_the_records_below_it_and_records_where_the_log_now_begins() {
     let tail = store.committed_tail(log).unwrap();
     assert_eq!(tail, Sequence::new(5));
 
-    let pruned = store.prune_log(log, Sequence::new(2)).unwrap();
+    let pruned = store.prune_log(log, Sequence::new(2)).now().unwrap();
     assert_eq!(pruned.records, 2);
     assert_eq!(pruned.start, Sequence::new(3));
-    assert_eq!(store.log_start(log).unwrap(), Sequence::new(3));
+    assert_eq!(store.log_start(log).now().unwrap(), Sequence::new(3));
 
-    let held = store.log_records(log, Sequence::new(3), 64).unwrap();
+    let held = store.log_records(log, Sequence::new(3), 64).now().unwrap();
     assert_eq!(
         held.iter().map(|(at, _)| at.get()).collect::<Vec<_>>(),
         vec![3, 4, 5],
@@ -101,10 +105,11 @@ fn a_prune_removes_the_records_below_it_and_records_where_the_log_now_begins() {
 #[test]
 fn a_read_below_the_start_is_refused_in_words_that_name_the_repair() {
     let (store, _, log) = logged(5);
-    store.prune_log(log, Sequence::new(2)).unwrap();
+    store.prune_log(log, Sequence::new(2)).now().unwrap();
 
     let refused = store
         .log_records(log, Sequence::new(1), 64)
+        .now()
         .expect_err("a read below the start must not be answered");
     let Error::BelowLogStart { asked, start } = refused else {
         panic!("a pruned span must refuse as itself: {refused:?}");
@@ -136,13 +141,13 @@ fn a_read_below_the_start_is_refused_in_words_that_name_the_repair() {
 #[test]
 fn a_pruned_span_is_never_answered_as_a_short_read() {
     let (store, _, log) = logged(5);
-    store.prune_log(log, Sequence::new(2)).unwrap();
+    store.prune_log(log, Sequence::new(2)).now().unwrap();
     assert!(
-        store.log_records(log, Sequence::ZERO, 64).is_err(),
+        store.log_records(log, Sequence::ZERO, 64).now().is_err(),
         "a replay from the beginning of a pruned log must refuse"
     );
     assert!(
-        store.log_records(log, Sequence::new(3), 64).is_ok(),
+        store.log_records(log, Sequence::new(3), 64).now().is_ok(),
         "and the first surviving position must still be readable"
     );
 }
@@ -150,7 +155,7 @@ fn a_pruned_span_is_never_answered_as_a_short_read() {
 #[test]
 fn the_last_record_survives_however_much_is_asked_for() {
     let (store, _, log) = logged(4);
-    let pruned = store.prune_log(log, Sequence::new(9_999)).unwrap();
+    let pruned = store.prune_log(log, Sequence::new(9_999)).now().unwrap();
     assert_eq!(
         pruned.start,
         Sequence::new(4),
@@ -158,7 +163,11 @@ fn the_last_record_survives_however_much_is_asked_for() {
          the record BEFORE the position it asks for"
     );
     assert_eq!(
-        store.log_records(log, Sequence::new(4), 64).unwrap().len(),
+        store
+            .log_records(log, Sequence::new(4), 64)
+            .now()
+            .unwrap()
+            .len(),
         1
     );
 }
@@ -166,22 +175,22 @@ fn the_last_record_survives_however_much_is_asked_for() {
 #[test]
 fn pruning_twice_to_the_same_point_changes_nothing() {
     let (store, _, log) = logged(5);
-    let first = store.prune_log(log, Sequence::new(2)).unwrap();
-    let second = store.prune_log(log, Sequence::new(2)).unwrap();
+    let first = store.prune_log(log, Sequence::new(2)).now().unwrap();
+    let second = store.prune_log(log, Sequence::new(2)).now().unwrap();
     assert_eq!(first.start, second.start);
     assert_eq!(
         second.records, 0,
         "a retried prune is idempotent, because a prune interrupted by a crash \
          is retried by definition"
     );
-    assert_eq!(store.log_start(log).unwrap(), Sequence::new(3));
+    assert_eq!(store.log_start(log).now().unwrap(), Sequence::new(3));
 }
 
 #[test]
 fn a_prune_below_where_the_log_already_begins_does_not_move_it_backwards() {
     let (store, _, log) = logged(5);
-    store.prune_log(log, Sequence::new(3)).unwrap();
-    let back = store.prune_log(log, Sequence::new(1)).unwrap();
+    store.prune_log(log, Sequence::new(3)).now().unwrap();
+    let back = store.prune_log(log, Sequence::new(1)).now().unwrap();
     assert_eq!(
         back.start,
         Sequence::new(4),
@@ -195,14 +204,14 @@ fn a_prune_below_where_the_log_already_begins_does_not_move_it_backwards() {
 fn a_history_read_over_a_pruned_log_no_longer_claims_to_be_complete() {
     let (store, at, log) = logged(4);
     let subject = tessari_storage::Subject::new(at.namespace, at.database, at.table, at.id.clone());
-    let whole = store.history_of(log, &subject, 64).unwrap();
+    let whole = store.history_of(log, &subject, 64).now().unwrap();
     assert!(
         whole.complete,
         "an unpruned log's history is complete when the walk reaches its start"
     );
 
-    store.prune_log(log, Sequence::new(2)).unwrap();
-    let after = store.history_of(log, &subject, 64).unwrap();
+    store.prune_log(log, Sequence::new(2)).now().unwrap();
+    let after = store.history_of(log, &subject, 64).now().unwrap();
     assert!(
         !after.complete,
         "the walk still ends early, and now it ends at the horizon rather than \
@@ -222,6 +231,7 @@ fn a_prune_is_bounded_to_the_log_it_names() {
     let store_log = store.own_log(tessari_types::Reach::Store).unwrap();
     let beside = store
         .log_records(store_log, Sequence::ZERO, 64)
+        .now()
         .unwrap()
         .len();
     assert!(
@@ -230,17 +240,18 @@ fn a_prune_is_bounded_to_the_log_it_names() {
     );
     assert_ne!(log, store_log);
 
-    store.prune_log(log, Sequence::new(3)).unwrap();
+    store.prune_log(log, Sequence::new(3)).now().unwrap();
 
     assert_eq!(
         store
             .log_records(store_log, Sequence::ZERO, 64)
+            .now()
             .unwrap()
             .len(),
         beside,
         "the store's own log is untouched, and its start never moved"
     );
-    assert_eq!(store.log_start(store_log).unwrap(), Sequence::ZERO);
+    assert_eq!(store.log_start(store_log).now().unwrap(), Sequence::ZERO);
     assert_eq!(FIXTURE_HOME, log.home);
 }
 
@@ -248,12 +259,12 @@ fn a_prune_is_bounded_to_the_log_it_names() {
 fn a_store_nobody_configured_keeps_the_default_window() {
     let (store, _, log) = logged(5);
     assert_eq!(
-        store.log_retention().unwrap(),
+        store.log_retention().now().unwrap(),
         None,
         "nothing is stored until somebody says DEFINE NODE RETAIN"
     );
     assert_eq!(
-        store.effective_retention().unwrap(),
+        store.effective_retention().now().unwrap(),
         (
             Retention::Keep(Sequence::new(
                 tessari_constants::DEFAULT_LOG_RETENTION_RECORDS
@@ -265,10 +276,11 @@ fn a_store_nobody_configured_keeps_the_default_window() {
     );
     let trimmed = store
         .trim_logs()
+        .now()
         .unwrap()
         .expect("the default window applies");
     assert_eq!(trimmed.records, 0, "five records are inside the window");
-    assert_eq!(store.log_start(log).unwrap(), Sequence::ZERO);
+    assert_eq!(store.log_start(log).now().unwrap(), Sequence::ZERO);
 }
 
 #[test]
@@ -276,7 +288,7 @@ fn the_process_default_overrides_the_constant() {
     let (store, _, log) = logged(10);
     store.retain_by_default(Retention::Keep(Sequence::new(4)));
     assert_eq!(
-        store.effective_retention().unwrap(),
+        store.effective_retention().now().unwrap(),
         (
             Retention::Keep(Sequence::new(4)),
             RetentionSource::Environment
@@ -284,10 +296,11 @@ fn the_process_default_overrides_the_constant() {
     );
     let trimmed = store
         .trim_logs()
+        .now()
         .unwrap()
         .expect("the process default applies");
     assert_eq!(trimmed.records, 6);
-    assert_eq!(store.log_start(log).unwrap(), Sequence::new(7));
+    assert_eq!(store.log_start(log).now().unwrap(), Sequence::new(7));
 }
 
 #[test]
@@ -295,23 +308,26 @@ fn an_unbounded_process_default_trims_nothing() {
     let (store, _, log) = logged(10);
     store.retain_by_default(Retention::Unbounded);
     assert_eq!(
-        store.effective_retention().unwrap(),
+        store.effective_retention().now().unwrap(),
         (Retention::Unbounded, RetentionSource::Environment)
     );
     assert!(
-        store.trim_logs().unwrap().is_none(),
+        store.trim_logs().now().unwrap().is_none(),
         "*nobody wants a bound* is a different answer from *there was nothing to do*"
     );
-    assert_eq!(store.log_start(log).unwrap(), Sequence::ZERO);
+    assert_eq!(store.log_start(log).now().unwrap(), Sequence::ZERO);
 }
 
 #[test]
 fn a_statement_overrides_the_process_default() {
     let (store, _, log) = logged(10);
     store.retain_by_default(Retention::Unbounded);
-    store.set_log_retention(Some(Sequence::new(4))).unwrap();
+    store
+        .set_log_retention(Some(Sequence::new(4)))
+        .now()
+        .unwrap();
     assert_eq!(
-        store.effective_retention().unwrap(),
+        store.effective_retention().now().unwrap(),
         (
             Retention::Keep(Sequence::new(4)),
             RetentionSource::Statement
@@ -319,49 +335,57 @@ fn a_statement_overrides_the_process_default() {
     );
     store
         .trim_logs()
+        .now()
         .unwrap()
         .expect("the statement's window applies");
-    assert_eq!(store.log_start(log).unwrap(), Sequence::new(7));
+    assert_eq!(store.log_start(log).now().unwrap(), Sequence::new(7));
 }
 
 #[test]
 fn retain_none_is_remembered_as_a_choice_and_beats_the_default() {
     let (store, _, log) = logged(10);
     store.retain_by_default(Retention::Keep(Sequence::new(4)));
-    store.set_log_retention(None).unwrap();
+    store.set_log_retention(None).now().unwrap();
     assert_eq!(
-        store.log_retention().unwrap(),
+        store.log_retention().now().unwrap(),
         Some(Retention::Unbounded),
         "RETAIN NONE is stored, so an operator's unbounded log is not mistaken \
          for one nobody configured"
     );
     assert_eq!(
-        store.effective_retention().unwrap(),
+        store.effective_retention().now().unwrap(),
         (Retention::Unbounded, RetentionSource::Statement)
     );
-    assert!(store.trim_logs().unwrap().is_none());
-    assert_eq!(store.log_start(log).unwrap(), Sequence::ZERO);
+    assert!(store.trim_logs().now().unwrap().is_none());
+    assert_eq!(store.log_start(log).now().unwrap(), Sequence::ZERO);
 }
 
 #[test]
 fn a_retained_count_is_what_the_log_is_trimmed_to() {
     let (store, _, log) = logged(10);
-    store.set_log_retention(Some(Sequence::new(4))).unwrap();
+    store
+        .set_log_retention(Some(Sequence::new(4)))
+        .now()
+        .unwrap();
     assert_eq!(
-        store.log_retention().unwrap(),
+        store.log_retention().now().unwrap(),
         Some(Retention::Keep(Sequence::new(4)))
     );
 
-    let trimmed = store.trim_logs().unwrap().expect("retention is set");
+    let trimmed = store.trim_logs().now().unwrap().expect("retention is set");
     assert!(trimmed.logs >= 1, "every log this node holds is looked at");
     assert_eq!(trimmed.records, 6);
     assert_eq!(
-        store.log_start(log).unwrap(),
+        store.log_start(log).now().unwrap(),
         Sequence::new(7),
         "ten records keeping four leaves seven through ten"
     );
     assert_eq!(
-        store.log_records(log, Sequence::new(7), 64).unwrap().len(),
+        store
+            .log_records(log, Sequence::new(7), 64)
+            .now()
+            .unwrap()
+            .len(),
         4
     );
 }
@@ -369,28 +393,41 @@ fn a_retained_count_is_what_the_log_is_trimmed_to() {
 #[test]
 fn trimming_again_at_the_same_tail_removes_nothing_more() {
     let (store, _, log) = logged(10);
-    store.set_log_retention(Some(Sequence::new(4))).unwrap();
-    store.trim_logs().unwrap();
-    let again = store.trim_logs().unwrap().expect("retention is still set");
+    store
+        .set_log_retention(Some(Sequence::new(4)))
+        .now()
+        .unwrap();
+    store.trim_logs().now().unwrap();
+    let again = store
+        .trim_logs()
+        .now()
+        .unwrap()
+        .expect("retention is still set");
     assert_eq!(
         again.records, 0,
         "the cadence runs every few seconds, so a trim that found nothing has \
          to cost nothing and say nothing"
     );
-    assert_eq!(store.log_start(log).unwrap(), Sequence::new(7));
+    assert_eq!(store.log_start(log).now().unwrap(), Sequence::new(7));
 }
 
 #[test]
 fn clearing_the_retention_stops_the_trimming_without_restoring_anything() {
     let (store, _, log) = logged(10);
-    store.set_log_retention(Some(Sequence::new(4))).unwrap();
-    store.trim_logs().unwrap();
-    store.set_log_retention(None).unwrap();
+    store
+        .set_log_retention(Some(Sequence::new(4)))
+        .now()
+        .unwrap();
+    store.trim_logs().now().unwrap();
+    store.set_log_retention(None).now().unwrap();
 
-    assert_eq!(store.log_retention().unwrap(), Some(Retention::Unbounded));
-    assert!(store.trim_logs().unwrap().is_none());
     assert_eq!(
-        store.log_start(log).unwrap(),
+        store.log_retention().now().unwrap(),
+        Some(Retention::Unbounded)
+    );
+    assert!(store.trim_logs().now().unwrap().is_none());
+    assert_eq!(
+        store.log_start(log).now().unwrap(),
         Sequence::new(7),
         "records that are gone do not come back, and the start goes on saying so"
     );
@@ -406,12 +443,17 @@ fn a_window_wider_than_the_log_removes_nothing() {
     let (store, _, log) = logged(5);
     store
         .set_log_retention(Some(Sequence::new(100_000)))
+        .now()
         .unwrap();
-    let trimmed = store.trim_logs().unwrap().expect("retention is set");
+    let trimmed = store.trim_logs().now().unwrap().expect("retention is set");
     assert_eq!(trimmed.records, 0);
-    assert_eq!(store.log_start(log).unwrap(), Sequence::ZERO);
+    assert_eq!(store.log_start(log).now().unwrap(), Sequence::ZERO);
     assert_eq!(
-        store.log_records(log, Sequence::ZERO, 64).unwrap().len(),
+        store
+            .log_records(log, Sequence::ZERO, 64)
+            .now()
+            .unwrap()
+            .len(),
         5,
         "and a read from the beginning is still answered"
     );
@@ -423,30 +465,36 @@ fn a_window_wider_than_the_log_removes_nothing() {
 #[test]
 fn a_held_position_is_not_pruned_past_until_its_hold_is_released() {
     let (store, _, log) = logged(10);
-    store.set_log_retention(Some(Sequence::new(2))).unwrap();
+    store
+        .set_log_retention(Some(Sequence::new(2)))
+        .now()
+        .unwrap();
     let hold = store.hold_logs(&[(log, Sequence::new(5))]);
-    store.trim_logs().unwrap();
+    store.trim_logs().now().unwrap();
     assert_eq!(
-        store.log_start(log).unwrap(),
+        store.log_start(log).now().unwrap(),
         Sequence::new(5),
         "the held position and everything after it survive the window"
     );
     drop(hold);
-    store.trim_logs().unwrap();
+    store.trim_logs().now().unwrap();
     assert_eq!(
-        store.log_start(log).unwrap(),
+        store.log_start(log).now().unwrap(),
         Sequence::new(9),
         "a released hold leaves the window to decide"
     );
 
     let (store, _, log) = logged(10);
-    store.set_log_retention(Some(Sequence::new(2))).unwrap();
+    store
+        .set_log_retention(Some(Sequence::new(2)))
+        .now()
+        .unwrap();
     store
         .hold_logs(&[(log, Sequence::new(5))])
         .keep_for(std::time::Duration::from_secs(3600));
-    store.trim_logs().unwrap();
+    store.trim_logs().now().unwrap();
     assert_eq!(
-        store.log_start(log).unwrap(),
+        store.log_start(log).now().unwrap(),
         Sequence::new(5),
         "a finished copy keeps its hold for the follower's first collect"
     );

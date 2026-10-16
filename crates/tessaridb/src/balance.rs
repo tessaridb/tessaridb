@@ -103,7 +103,7 @@ impl Db {
         }
         let named = self.tables_balancing().await?;
         let tables: Vec<TableDefinition> = named.iter().map(|(_, table)| table.clone()).collect();
-        let rates = self.writes_since(&tables, samples)?;
+        let rates = self.writes_since(&tables, samples).await?;
         let mut published = Vec::with_capacity(named.len());
         for (name, table) in named {
             let (Some(policy), Some(map)) = (table.auto_split, table.shards.as_ref()) else {
@@ -211,7 +211,7 @@ impl Db {
     /// Writes a second into each shard of `tables` since the last pass: every
     /// log a write into one of them can land in, read from where the last pass
     /// left it. The first pass only learns where each log stands.
-    fn writes_since(
+    async fn writes_since(
         &self,
         tables: &[TableDefinition],
         samples: &mut ShardSamples,
@@ -233,7 +233,7 @@ impl Db {
             // opened by the first write into it — holds only writes since.
             let next = match samples.read_to.insert(log, tail) {
                 Some(from) => Sequence::new(from.get().saturating_add(1)),
-                None if samples.at.is_some() => store.log_start(log)?,
+                None if samples.at.is_some() => store.log_start(log).await?,
                 None => continue,
             };
             if next > tail {
@@ -241,7 +241,7 @@ impl Db {
             }
             // A log pruned past where the last pass left it has lost what it
             // would have counted; the pass counts nothing from it this time.
-            let Ok(records) = store.log_records(log, next, LOG_READ) else {
+            let Ok(records) = store.log_records(log, next, LOG_READ).await else {
                 continue;
             };
             for (_, record) in records {

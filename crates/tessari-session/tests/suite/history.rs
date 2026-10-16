@@ -273,10 +273,13 @@ fn a_version_below_the_reclaim_floor_is_refused() {
     );
 
     let (namespace, database, table) = docs_ids(&store);
-    let reclaimed = store.reclaim_table(namespace, database, table).unwrap();
+    let reclaimed = store
+        .reclaim_table(namespace, database, table)
+        .now()
+        .unwrap();
     assert!(reclaimed.versions > 0, "the pass must remove something");
     assert!(
-        store.reclaim_floor().unwrap().get() > early,
+        store.reclaim_floor().now().unwrap().get() > early,
         "a pass that removed versions raises the floor above what it removed"
     );
 
@@ -298,10 +301,13 @@ fn a_pass_that_removes_nothing_leaves_the_floor_where_it_was() {
 
     // One version per record: nothing is strictly older than what a reader at
     // the floor sees, so there is nothing to remove and no history is lost.
-    let reclaimed = store.reclaim_table(namespace, database, table).unwrap();
+    let reclaimed = store
+        .reclaim_table(namespace, database, table)
+        .now()
+        .unwrap();
     assert_eq!(reclaimed.versions, 0);
     assert_eq!(
-        store.reclaim_floor().unwrap().get(),
+        store.reclaim_floor().now().unwrap().get(),
         0,
         "a floor raised by a pass that removed nothing would refuse reads that \
          are still exactly answerable"

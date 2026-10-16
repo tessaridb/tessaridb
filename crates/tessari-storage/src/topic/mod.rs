@@ -25,6 +25,7 @@ mod size;
 pub(crate) use rate::PublicRates;
 
 use std::collections::{BTreeMap, BTreeSet};
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     ExpiryMark, LogRecord, RecordValue, StoreKey, StoreValue, TopicEntryKey, TopicHeadKey,
@@ -68,7 +69,7 @@ async fn topics_in(
 }
 
 /// The position a message holds, if it holds one.
-pub(crate) fn position_of(
+pub(crate) async fn position_of(
     store: &Store,
     (namespace, database, table): Topic,
     id: &RecordId,
@@ -81,14 +82,14 @@ pub(crate) fn position_of(
         direction: ScanDirection::Forward,
         limit: Some(1),
     };
-    match store.backend().scan(&request)?.first() {
+    match store.backend().scan(&request).await?.first() {
         Some((key, _)) => Ok(Some(TopicEntryKey::decode(key.as_slice())?.offset)),
         None => Ok(None),
     }
 }
 
 /// The last position a topic has given, or 0 when it has given none.
-pub(crate) fn head(store: &Store, (namespace, database, table): Topic) -> Result<u64> {
+pub(crate) async fn head(store: &Store, (namespace, database, table): Topic) -> Result<u64> {
     let key = TopicHeadKey {
         namespace,
         database,
@@ -96,7 +97,8 @@ pub(crate) fn head(store: &Store, (namespace, database, table): Topic) -> Result
     };
     match store
         .backend()
-        .get(TopicHeadKey::keyspace(), &key.encode())?
+        .get(TopicHeadKey::keyspace(), &key.encode())
+        .await?
     {
         Some(bytes) => Ok(Sequence::decode(bytes.as_slice())?.get()),
         None => Ok(0),
@@ -104,7 +106,7 @@ pub(crate) fn head(store: &Store, (namespace, database, table): Topic) -> Result
 }
 
 /// The first or last position a topic holds, or `None` when it holds none.
-pub(crate) fn edge(
+pub(crate) async fn edge(
     store: &Store,
     (namespace, database, table): Topic,
     direction: ScanDirection,
@@ -115,7 +117,7 @@ pub(crate) fn edge(
         direction,
         limit: Some(1),
     };
-    match store.backend().scan(&request)?.first() {
+    match store.backend().scan(&request).await?.first() {
         Some((key, _)) => Ok(Some(TopicOffsetKey::decode(key.as_slice())?.offset)),
         None => Ok(None),
     }
@@ -239,12 +241,13 @@ pub(crate) async fn maintain(
         if !topics.contains_key(&topic) {
             continue;
         }
-        let held = position_of(store, topic, &mutation.id)?;
+        let held = position_of(store, topic, &mutation.id).await?;
         match (held, mutation.value.value()) {
             (None, RecordValue::Present(_)) => {
                 let offset = match next.get(&topic) {
                     Some(offset) => *offset,
-                    None => head(store, topic)?
+                    None => head(store, topic)
+                        .await?
                         .checked_add(1)
                         .ok_or(Error::TopicPositionsExhausted)?,
                 };

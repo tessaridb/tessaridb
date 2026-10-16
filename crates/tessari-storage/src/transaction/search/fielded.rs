@@ -1,6 +1,7 @@
 //! A search member's postings read with their per-field counts (Q-870).
 
 use std::collections::BTreeMap;
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{IndexAddress, IndexValues, KeyKind, Posting, PostingKey, StoreKey};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
@@ -68,7 +69,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or the posting cannot be read.
-    pub fn member_fielded(&self, index: &IndexDefinition) -> Result<bool> {
+    pub async fn member_fielded(&self, index: &IndexDefinition) -> Result<bool> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let request = ScanRequest {
             keyspace: PostingKey::keyspace(),
@@ -76,7 +77,7 @@ impl Transaction<'_> {
             direction: ScanDirection::Forward,
             limit: Some(1),
         };
-        match self.store.backend().scan(&request)?.first() {
+        match self.store.backend().scan(&request).await?.first() {
             Some((_, value)) => Ok(!Posting::located(value.as_slice())?.fields.is_empty()),
             None => Ok(true),
         }

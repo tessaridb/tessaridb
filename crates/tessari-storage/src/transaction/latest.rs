@@ -10,6 +10,7 @@
 use tessari_encoding::{
     IndexAddress, IndexTarget, KeyKind, SecondaryIndexKey, StoreKey, StoreValue,
 };
+use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 
 use super::address::after;
@@ -52,7 +53,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Reverse,
                 limit: Some(1),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = self.store.backend().scan(&request).await?;
             let Some((key, value)) = batch.first() else {
                 break;
             };

@@ -18,6 +18,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{ExpiryKey, StoreKey};
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
@@ -72,12 +73,15 @@ impl Store {
                     whole.end().clone(),
                 ),
             };
-            let page = self.backend().scan(&ScanRequest {
-                keyspace: ExpiryKey::keyspace(),
-                range,
-                direction: ScanDirection::Forward,
-                limit: Some(BATCH_ENTRIES),
-            })?;
+            let page = self
+                .backend()
+                .scan(&ScanRequest {
+                    keyspace: ExpiryKey::keyspace(),
+                    range,
+                    direction: ScanDirection::Forward,
+                    limit: Some(BATCH_ENTRIES),
+                })
+                .await?;
             let Some((last, _)) = page.last() else {
                 return Ok(lapsed);
             };

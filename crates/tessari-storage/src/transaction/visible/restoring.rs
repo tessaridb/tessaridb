@@ -22,8 +22,8 @@ async fn restore(fixture: &Fixture) -> Result<(Store, [String; 2])> {
 /// [`restore`] onto a store that may already hold some of it, as a follower
 /// copying its leader's state again does.
 async fn restore_onto(fixture: &Fixture, onto: &Store) -> Result<[String; 2]> {
-    let mut reader = fixture.store.read_state()?;
-    let at = fixture.store.begin_at(reader.version())?;
+    let mut reader = fixture.store.read_state().await?;
+    let at = fixture.store.begin_at(reader.version()).await?;
     let seen = [
         read(&at, &fixture.address(0)).await?,
         read(&at, &fixture.address(1)).await?,
@@ -31,7 +31,8 @@ async fn restore_onto(fixture: &Fixture, onto: &Store) -> Result<[String; 2]> {
     while let Some(chunk) = reader.next_chunk(64).await? {
         onto.restore_state_chunk(&chunk).await?;
     }
-    onto.finish_state(reader.positions(), &reader.topic_heads()?)?;
+    onto.finish_state(reader.positions(), &reader.topic_heads().await?)
+        .await?;
     Ok(seen)
 }
 
@@ -78,14 +79,14 @@ async fn a_transaction_part_way_at_the_cut_is_finished_by_the_log_above_it() -> 
     // The first home's index holds the resolution its readers do not see yet,
     // so it is not believed there, as on the source (D6b).
     let table = fixture.homes[0].table;
-    assert!(fixture.store.across_unsettled(table)?);
-    assert!(restored.across_unsettled(table)?);
+    assert!(fixture.store.across_unsettled(table).await?);
+    assert!(restored.across_unsettled(table).await?);
     // The second part arrives as it would have on the source.
     fixture.prepare_on(&restored, 1).await?;
     fixture.resolve_on(&restored, 1).await?;
     assert_eq!(reads(&fixture, &restored).await?, ["new", "new"]);
-    assert!(restored.standing_across()?.is_empty());
-    assert!(!restored.across_unsettled(table)?);
+    assert!(restored.standing_across().await?.is_empty());
+    assert!(!restored.across_unsettled(table).await?);
     Ok(())
 }
 
@@ -99,10 +100,10 @@ async fn an_intent_restores_as_an_intent_its_resolution_can_remove() -> Result<(
     let (restored, seen) = restore(&fixture).await?;
     assert_eq!(seen, ["new", "new"]);
     assert_eq!(reads(&fixture, &restored).await?, ["new", "new"]);
-    assert_eq!(restored.standing_across()?.len(), 1);
+    assert_eq!(restored.standing_across().await?.len(), 1);
     fixture.resolve_on(&restored, 0).await?;
     fixture.resolve_on(&restored, 1).await?;
-    assert!(restored.standing_across()?.is_empty());
+    assert!(restored.standing_across().await?.is_empty());
     assert_eq!(reads(&fixture, &restored).await?, ["new", "new"]);
     Ok(())
 }
@@ -125,7 +126,7 @@ async fn a_state_copied_again_onto_a_store_holding_it_changes_nothing() -> Resul
     assert_eq!(reads(&fixture, &restored).await?, ["new", "new"]);
     fixture.resolve_on(&restored, 0).await?;
     fixture.resolve_on(&restored, 1).await?;
-    assert!(restored.standing_across()?.is_empty());
+    assert!(restored.standing_across().await?.is_empty());
     // Nothing of the transaction is left to refuse a later write.
     let mut writing = restored.begin()?;
     for home in 0..2 {

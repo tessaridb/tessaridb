@@ -1707,7 +1707,7 @@ fn rewrite_note(store: &Store, id: &str, body: &str) {
 /// their records.
 fn replay(source: &Store, target: &Store, home: Reach) {
     for log in source.logs_of(home).unwrap() {
-        for (at, record) in source.log_records(log, Sequence::ZERO, 1024).unwrap() {
+        for (at, record) in source.log_records(log, Sequence::ZERO, 1024).now().unwrap() {
             target
                 .apply_record(log.writer, at, &record)
                 .now()

@@ -130,7 +130,7 @@ fn a_follower_holds_the_leaders_instant_and_hides_the_record_after_it() {
     let mut session = opened(&leader);
     run(&mut session, SCHEMA);
     for log in leader.logs().unwrap() {
-        for (sequence, record) in leader.log_records(log, Sequence::ZERO, 4096).unwrap() {
+        for (sequence, record) in leader.log_records(log, Sequence::ZERO, 4096).now().unwrap() {
             follower
                 .apply_record(log.writer, sequence, &record)
                 .now()

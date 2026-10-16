@@ -215,6 +215,7 @@ fn reclaiming_removes_older_versions_and_keeps_what_a_reader_at_the_floor_sees()
 
     let removed = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert_eq!(removed.versions, 2, "two versions nobody can reach");
     assert_eq!(removed.records, 0);
@@ -240,6 +241,7 @@ fn a_held_snapshot_keeps_every_version_it_can_still_reach() {
 
     let removed = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert_eq!(
         removed.versions, 0,
@@ -251,6 +253,7 @@ fn a_held_snapshot_keeps_every_version_it_can_still_reach() {
     drop(reader);
     let removed = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert_eq!(removed.versions, 2);
 
@@ -272,6 +275,7 @@ fn a_deleted_record_stops_costing_space() {
 
     let removed = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert_eq!(removed.records, 1, "the tombstone itself went too");
     assert_eq!(removed.versions, 3, "two writes and the tombstone");
@@ -292,10 +296,12 @@ fn reclaiming_twice_removes_nothing_the_second_time() {
 
     let first = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert!(first.versions > 0);
     let second = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert_eq!(second.versions, 0);
 }
@@ -313,6 +319,7 @@ fn reclaiming_does_not_disturb_a_neighbouring_record() {
 
     let removed = store
         .reclaim_table(first.namespace, first.database, first.table)
+        .now()
         .unwrap();
     assert_eq!(removed.versions, 1, "only the superseded one");
 
@@ -350,13 +357,14 @@ fn a_read_below_the_reclaim_floor_is_refused_rather_than_answered_from_what_surv
 
     let removed = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert_eq!(removed.versions, 2);
 
     // `first` is now unanswerable: the version that would have answered it is
     // gone. The failure this refusal prevents is not an error — it is the read
     // quietly resolving to "hopper" and being believed as the past.
-    match store.begin_at(first) {
+    match store.begin_at(first).now() {
         Err(tessari_storage::Error::VersionReclaimed { asked, floor }) => {
             assert_eq!(asked, first.get());
             assert!(
@@ -384,7 +392,7 @@ fn a_read_above_the_committed_tail_is_refused_rather_than_answered_with_the_pres
 
     // Answering with the present would make this succeed now and return a
     // different answer the next time it is asked, which is worse than refusing.
-    match store.begin_at(ahead) {
+    match store.begin_at(ahead).now() {
         Err(tessari_storage::Error::VersionInTheFuture {
             asked,
             tail: at_tail,
@@ -408,13 +416,14 @@ fn a_read_at_the_reclaim_floor_itself_is_answerable_and_exact() {
     write(&store, &at, "hopper");
     store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
 
     // The boundary is inclusive, and it has to be: reclamation keeps the newest
     // version at or below the floor, so the floor is exactly the oldest sequence
     // that still resolves to the right value rather than the first that does not.
-    let floor = store.reclaim_floor().unwrap();
-    let reader = store.begin_at(floor).unwrap();
+    let floor = store.reclaim_floor().now().unwrap();
+    let reader = store.begin_at(floor).now().unwrap();
     assert_eq!(name_seen_by(&reader, &at).as_deref(), Some("hopper"));
 }
 
@@ -435,15 +444,16 @@ fn a_store_that_has_never_reclaimed_answers_a_read_at_any_past_sequence() {
     // historical read fails the moment a newer write lands.
     let removed = store
         .reclaim_table(first.namespace, first.database, first.table)
+        .now()
         .unwrap();
     assert_eq!(removed.versions, 0, "one version each, nothing superseded");
-    assert_eq!(store.reclaim_floor().unwrap(), Sequence::ZERO);
+    assert_eq!(store.reclaim_floor().now().unwrap(), Sequence::ZERO);
     assert!(
         store.retention_floor().unwrap() > earlier,
         "the live bound has moved past the sequence being read, which is the point"
     );
 
-    let reader = store.begin_at(earlier).unwrap();
+    let reader = store.begin_at(earlier).now().unwrap();
     assert_eq!(name_seen_by(&reader, &first).as_deref(), Some("ada"));
     assert_eq!(
         name_seen_by(&reader, &second),
@@ -467,6 +477,7 @@ fn a_live_reader_bounds_how_far_the_floor_rises_and_that_bound_outlives_the_read
 
     let removed = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert_eq!(
         removed.versions, 1,
@@ -482,12 +493,12 @@ fn a_live_reader_bounds_how_far_the_floor_rises_and_that_bound_outlives_the_read
     // finished, having removed nothing in between.
     drop(held);
     assert!(store.retention_floor().unwrap() > second);
-    assert_eq!(store.reclaim_floor().unwrap(), second);
+    assert_eq!(store.reclaim_floor().now().unwrap(), second);
 
-    let reader = store.begin_at(second).unwrap();
+    let reader = store.begin_at(second).now().unwrap();
     assert_eq!(name_seen_by(&reader, &at).as_deref(), Some("grace"));
     assert!(matches!(
-        store.begin_at(first),
+        store.begin_at(first).now(),
         Err(tessari_storage::Error::VersionReclaimed { .. })
     ));
 }

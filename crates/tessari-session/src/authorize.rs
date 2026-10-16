@@ -207,7 +207,7 @@ impl<'a> Session<'a> {
         limit: usize,
     ) -> Result<Vec<(Sequence, LogRecord)>> {
         self.may_replicate(store, over).await?;
-        let records = store.log_records_within(over, log, from, limit)?;
+        let records = store.log_records_within(over, log, from, limit).await?;
         // What the follower now holds: the last sequence it was handed, or —
         // when it was handed nothing — the position it told us it was at.
         let reached = records.last().map_or_else(

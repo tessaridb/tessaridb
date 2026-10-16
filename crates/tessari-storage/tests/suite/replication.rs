@@ -85,6 +85,7 @@ fn every_commit_leaves_exactly_one_log_record_at_its_own_sequence() {
 
     let records = store
         .log_records(mine(&store), Sequence::ZERO, PLENTY)
+        .now()
         .unwrap();
     let sequences: Vec<Sequence> = records.iter().map(|(sequence, _)| *sequence).collect();
     assert_eq!(sequences, vec![first, second, third]);
@@ -99,6 +100,7 @@ fn the_log_is_gap_free_and_reads_oldest_first() {
 
     let records = store
         .log_records(mine(&store), Sequence::ZERO, PLENTY)
+        .now()
         .unwrap();
     assert_eq!(records.len(), 10);
     for (index, (sequence, _)) in records.iter().enumerate() {
@@ -116,6 +118,7 @@ fn a_log_read_can_resume_from_a_position() {
 
     let tail = store
         .log_records(mine(&store), Sequence::new(4), PLENTY)
+        .now()
         .unwrap();
     let sequences: Vec<u64> = tail.iter().map(|(sequence, _)| sequence.get()).collect();
     assert_eq!(sequences, vec![4, 5]);
@@ -127,6 +130,7 @@ fn an_empty_transaction_never_reaches_the_log() {
     write(&store, "r", b"v");
     let before = store
         .log_records(mine(&store), Sequence::ZERO, PLENTY)
+        .now()
         .unwrap()
         .len();
 
@@ -136,6 +140,7 @@ fn an_empty_transaction_never_reaches_the_log() {
     assert_eq!(
         store
             .log_records(mine(&store), Sequence::ZERO, PLENTY)
+            .now()
             .unwrap()
             .len(),
         before,
@@ -200,6 +205,7 @@ fn a_replica_reads_what_the_source_reads_including_the_history_behind_it() {
     let mut replica_held_first = None;
     for (index, (sequence, record)) in source
         .log_records(mine(&source), Sequence::ZERO, PLENTY)
+        .now()
         .unwrap()
         .into_iter()
         .enumerate()
@@ -229,12 +235,14 @@ fn a_replica_reads_what_the_source_reads_including_the_history_behind_it() {
     assert_eq!(
         replica
             .begin_at(replica_held_first)
+            .now()
             .unwrap()
             .get(&at("r"))
             .now()
             .unwrap(),
         source
             .begin_at(source_held_first)
+            .now()
             .unwrap()
             .get(&at("r"))
             .now()
@@ -244,6 +252,7 @@ fn a_replica_reads_what_the_source_reads_including_the_history_behind_it() {
     assert_eq!(
         replica
             .begin_at(replica_held_first)
+            .now()
             .unwrap()
             .get(&at("r"))
             .now()
@@ -261,6 +270,7 @@ fn applying_the_same_log_twice_changes_nothing_the_second_time() {
     write(&source, "b", b"2");
     let log = source
         .log_records(mine(&source), Sequence::ZERO, PLENTY)
+        .now()
         .unwrap();
 
     let replica_backend = backend();
@@ -303,6 +313,7 @@ fn a_gap_in_the_log_is_refused_rather_than_skipped() {
     write(&source, "c", b"3");
     let log = source
         .log_records(mine(&source), Sequence::ZERO, PLENTY)
+        .now()
         .unwrap();
 
     let replica = store_on(&backend());
@@ -596,7 +607,11 @@ fn a_follower_that_becomes_the_leader_continues_the_one_log() {
     let line = leader.line_log(crate::FIXTURE_HOME).now().unwrap();
 
     let follower = store_on(&backend());
-    for (sequence, record) in leader.log_records(line, Sequence::ZERO, PLENTY).unwrap() {
+    for (sequence, record) in leader
+        .log_records(line, Sequence::ZERO, PLENTY)
+        .now()
+        .unwrap()
+    {
         follower
             .apply_record(line.writer, sequence, &record)
             .now()
@@ -627,7 +642,11 @@ fn a_follower_renames_its_copy_of_the_leaders_log_the_way_the_leader_did() {
     let theirs = mine(&leader);
 
     let follower = store_on(&backend());
-    for (sequence, record) in leader.log_records(theirs, Sequence::ZERO, PLENTY).unwrap() {
+    for (sequence, record) in leader
+        .log_records(theirs, Sequence::ZERO, PLENTY)
+        .now()
+        .unwrap()
+    {
         follower
             .apply_record(theirs.writer, sequence, &record)
             .now()
@@ -648,7 +667,11 @@ fn a_follower_renames_its_copy_of_the_leaders_log_the_way_the_leader_did() {
         !follower.adopt_into_line(theirs).now().unwrap(),
         "and only once: the copy is gone and the line's log holds records"
     );
-    for (sequence, record) in leader.log_records(line, Sequence::new(2), PLENTY).unwrap() {
+    for (sequence, record) in leader
+        .log_records(line, Sequence::new(2), PLENTY)
+        .now()
+        .unwrap()
+    {
         follower
             .apply_record(line.writer, sequence, &record)
             .now()
@@ -671,10 +694,12 @@ fn two_unled_records_at_one_line_position_are_one_record_only_if_they_are_the_sa
     write(&other, "a", b"other");
     let (_, ours) = one
         .log_records(mine(&one), Sequence::ZERO, PLENTY)
+        .now()
         .unwrap()
         .remove(0);
     let (_, theirs) = other
         .log_records(mine(&other), Sequence::ZERO, PLENTY)
+        .now()
         .unwrap()
         .remove(0);
     assert_eq!(ours.epoch(), Epoch::ZERO);
@@ -734,11 +759,19 @@ fn two_writers_on_one_home_each_keep_their_own_positions() {
     // And the positions do not collide: the same number in two logs is two
     // records, which is the whole of what the writer in the key buys.
     assert_eq!(
-        store.log_records(one, Sequence::new(1), 1).unwrap().len(),
+        store
+            .log_records(one, Sequence::new(1), 1)
+            .now()
+            .unwrap()
+            .len(),
         1
     );
     assert_eq!(
-        store.log_records(other, Sequence::new(1), 1).unwrap().len(),
+        store
+            .log_records(other, Sequence::new(1), 1)
+            .now()
+            .unwrap()
+            .len(),
         1
     );
 }
@@ -922,6 +955,7 @@ fn a_replica_that_applied_a_record_can_still_commit_of_its_own_accord() {
     assert_eq!(
         replica
             .log_records(mine(&replica), Sequence::ZERO, PLENTY)
+            .now()
             .unwrap()
             .len(),
         2,
@@ -1073,7 +1107,10 @@ fn a_follower_catches_a_leader_that_is_still_writing() {
                 .get()
                 .saturating_add(1),
         );
-        let batch = leader.log_records(mine(&leader), from, BATCH).unwrap();
+        let batch = leader
+            .log_records(mine(&leader), from, BATCH)
+            .now()
+            .unwrap();
         if batch.is_empty() {
             if writer.is_finished()
                 && replica.committed_tail(mine(&leader)).unwrap()
@@ -1120,6 +1157,7 @@ fn a_follower_catches_a_leader_that_is_still_writing() {
             ),
             PLENTY,
         )
+        .now()
         .unwrap()
     {
         replica
@@ -1488,7 +1526,11 @@ fn put_in(
 /// records.
 fn replay_range(source: &Store, target: &Store, home: Reach) {
     for log in source.logs_of(home).unwrap() {
-        for (at, record) in source.log_records(log, Sequence::ZERO, PLENTY).unwrap() {
+        for (at, record) in source
+            .log_records(log, Sequence::ZERO, PLENTY)
+            .now()
+            .unwrap()
+        {
             target
                 .apply_record(log.writer, at, &record)
                 .now()
@@ -1502,6 +1544,7 @@ fn stamp_in(store: &Store, log: LogId, id: &str) -> CausalStamp {
     let wanted = RecordId::from(id);
     store
         .log_records(log, Sequence::ZERO, PLENTY)
+        .now()
         .unwrap()
         .into_iter()
         .rev()
@@ -2023,7 +2066,10 @@ fn two_writers_on_one_range_produce_no_epoch_the_campaign_did_not_grant() {
         (first.own_log(home).unwrap(), led_by_first),
         (second.own_log(home).unwrap(), led_by_second),
     ] {
-        let records = third.log_records(log, Sequence::ZERO, PLENTY).unwrap();
+        let records = third
+            .log_records(log, Sequence::ZERO, PLENTY)
+            .now()
+            .unwrap();
         assert!(
             !records.is_empty(),
             "the replay carried nothing into {log:?}, so nothing below is a test"

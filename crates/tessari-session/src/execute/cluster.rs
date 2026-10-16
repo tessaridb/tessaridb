@@ -28,18 +28,20 @@ impl Session<'_> {
     /// An unknown role is refused here rather than in the grammar, for the
     /// reason a vector distance is: which roles exist is the store's question,
     /// and this is where the store knows what it knows.
-    pub(super) fn define_node(
+    pub(super) async fn define_node(
         &self,
         roles: Option<&[Name]>,
         endpoints: Option<&[String]>,
         retain: Option<Option<u64>>,
     ) -> Result<Outcome> {
         let named = roles.map(named_roles).transpose()?;
-        self.store.configure_node(
-            named,
-            endpoints.map(<[String]>::to_vec),
-            retain.map(|keep| keep.map(tessari_types::Sequence::new)),
-        )?;
+        self.store
+            .configure_node(
+                named,
+                endpoints.map(<[String]>::to_vec),
+                retain.map(|keep| keep.map(tessari_types::Sequence::new)),
+            )
+            .await?;
         Ok(Outcome::Done)
     }
 

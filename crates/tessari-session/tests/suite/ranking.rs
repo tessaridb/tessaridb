@@ -260,7 +260,7 @@ fn held(store: &Store) -> (u64, u64) {
         .into_iter()
         .find(|index| index.name == "by_body")
         .expect("the index");
-    let statistics = transaction.search_statistics(&index).unwrap();
+    let statistics = transaction.search_statistics(&index).now().unwrap();
     (statistics.documents, statistics.terms)
 }
 

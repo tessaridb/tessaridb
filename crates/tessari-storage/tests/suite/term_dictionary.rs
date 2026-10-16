@@ -438,12 +438,14 @@ fn a_term_held_by_several_records_counts_them_and_not_its_occurrences() {
     assert_eq!(
         transaction
             .document_frequency(&fixture.index, "lock")
+            .now()
             .unwrap(),
         3
     );
     assert_eq!(
         transaction
             .document_frequency(&fixture.index, "contention")
+            .now()
             .unwrap(),
         1
     );
@@ -451,6 +453,7 @@ fn a_term_held_by_several_records_counts_them_and_not_its_occurrences() {
     assert_eq!(
         transaction
             .document_frequency(&fixture.index, "unheardof")
+            .now()
             .unwrap(),
         0
     );
@@ -502,12 +505,14 @@ fn an_index_with_no_dictionary_still_answers_the_frequency_it_always_did() {
     assert_eq!(
         transaction
             .document_frequency(&fixture.index, "lock")
+            .now()
             .unwrap(),
         2
     );
     assert_eq!(
         transaction
             .document_frequency(&fixture.index, "index")
+            .now()
             .unwrap(),
         1
     );

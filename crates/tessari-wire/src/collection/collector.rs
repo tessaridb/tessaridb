@@ -179,10 +179,11 @@ impl Collector<'_> {
                     .collect();
             }
         };
-        fetched
-            .into_iter()
-            .zip(asks)
-            .map(|(answer, (_, from))| {
+        let mut answers = Vec::with_capacity(asks.len());
+        for (answer, (_, from)) in fetched.into_iter().zip(asks) {
+            // One answer at a time, as the map before it: a refused answer
+            // takes no place in `applied`, so the next one's is still its own.
+            let answered = async {
                 let collected = answer?;
                 let held = Sequence::new(from.get().saturating_sub(1));
                 let reached = applied.next().flatten();
@@ -192,7 +193,7 @@ impl Collector<'_> {
                 // applied: a refusal above leaves the old answer standing, which
                 // errs toward answering fewer reads rather than more.
                 if let Some(over) = collected.over {
-                    into.record_served(over).map_err(refused)?;
+                    into.record_served(over).await.map_err(refused)?;
                 }
                 // Level only when the leader had no more AND this node applied
                 // all of it. A short answer is the one moment a node can observe
@@ -210,8 +211,11 @@ impl Collector<'_> {
                 let reached = reached.unwrap_or(held);
                 into.collected(reached, currency);
                 Ok(reached)
-            })
-            .collect()
+            }
+            .await;
+            answers.push(answered);
+        }
+        answers
     }
 
     /// What one answer proves about its log.

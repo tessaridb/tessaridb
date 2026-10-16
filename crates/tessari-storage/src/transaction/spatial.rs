@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{
@@ -124,7 +125,7 @@ impl Transaction<'_> {
                         direction: ScanDirection::Forward,
                         limit: Some(RANGE_SCAN_BATCH_ENTRIES),
                     };
-                    let batch = self.store.backend().scan(&request)?;
+                    let batch = self.store.backend().scan(&request).await?;
                     let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
                     for (key, value) in &batch {
                         entries = entries.saturating_add(1);

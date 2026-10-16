@@ -64,7 +64,7 @@ fn with_a_secret_and_its_backup() -> (Store, Vec<u8>) {
             .unwrap();
     }
     let mut artifact = Vec::new();
-    tessari_backup::write(&store, &mut artifact).unwrap();
+    tessari_backup::write(&store, &mut artifact).now().unwrap();
     (store, artifact)
 }
 
@@ -127,7 +127,9 @@ fn a_backup_taken_after_the_drop_carries_nothing_that_opens() {
     // narrowed rather than withdrawn. Everything from here on is unopenable,
     // including this artifact, because the key it would need is destroyed.
     let mut after_the_drop = Vec::new();
-    tessari_backup::write(&source, &mut after_the_drop).unwrap();
+    tessari_backup::write(&source, &mut after_the_drop)
+        .now()
+        .unwrap();
 
     let restored = store();
     tessari_backup::bootstrap(&restored, &mut after_the_drop.as_slice())

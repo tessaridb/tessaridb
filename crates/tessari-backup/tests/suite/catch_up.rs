@@ -90,7 +90,7 @@ fn leader() -> (Store, Vec<u8>) {
         opening.run_now(LEADER).unwrap();
     }
     let mut prefix = Vec::new();
-    let written = tessari_backup::write(&store, &mut prefix).unwrap();
+    let written = tessari_backup::write(&store, &mut prefix).now().unwrap();
     assert!(written.records > 0);
     (store, prefix)
 }
@@ -179,7 +179,9 @@ fn a_follower_that_was_down_catches_up_on_what_it_missed_without_replaying() {
     let mut sent_in_all = 0_u64;
     for (home, from) in resume_from(&reopened) {
         let mut missed = Vec::new();
-        let sent = tessari_backup::write_from(&held, &mut missed, home, from).unwrap();
+        let sent = tessari_backup::write_from(&held, &mut missed, home, from)
+            .now()
+            .unwrap();
         let caught = tessari_backup::bootstrap(&reopened, &mut missed.as_slice())
             .now()
             .unwrap();

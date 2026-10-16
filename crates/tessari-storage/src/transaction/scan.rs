@@ -7,6 +7,7 @@
 mod records;
 mod spans;
 use std::ops::{Bound, ControlFlow};
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{RecordKey, RecordValue};
@@ -257,7 +258,9 @@ impl Transaction<'_> {
             // anyway; here a single unbounded request would read the table
             // before the first record could ask to stop, which is the cost this
             // walk exists to remove.
-            let batch = self.batch_of(&from, &end, Some(RANGE_SCAN_BATCH_ENTRIES))?;
+            let batch = self
+                .batch_of(&from, &end, Some(RANGE_SCAN_BATCH_ENTRIES))
+                .await?;
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             let entries = batch.len();
             for (id, value) in self.settled(batch, &mut resolved).await? {
@@ -310,7 +313,7 @@ impl Transaction<'_> {
     ///
     /// The batching is the backend's request limit rather than the caller's, so a
     /// caller asking for everything does not ask for it in one allocation.
-    pub(super) fn scan_once(
+    pub(super) async fn scan_once(
         &self,
         keyspace: Keyspace,
         span: KeyRange,
@@ -323,12 +326,19 @@ impl Transaction<'_> {
             Bound::Unbounded => Vec::new(),
         };
         while taken.len() < limit {
-            let batch = self.store.backend().scan(&ScanRequest {
-                keyspace,
-                range: KeyRange::from_bounds(Bound::Included(Key::from(from)), span.end().clone()),
-                direction: ScanDirection::Forward,
-                limit: Some(RANGE_SCAN_BATCH_ENTRIES.min(limit.saturating_sub(taken.len()))),
-            })?;
+            let batch = self
+                .store
+                .backend()
+                .scan(&ScanRequest {
+                    keyspace,
+                    range: KeyRange::from_bounds(
+                        Bound::Included(Key::from(from)),
+                        span.end().clone(),
+                    ),
+                    direction: ScanDirection::Forward,
+                    limit: Some(RANGE_SCAN_BATCH_ENTRIES.min(limit.saturating_sub(taken.len()))),
+                })
+                .await?;
             let full = batch.len() >= RANGE_SCAN_BATCH_ENTRIES;
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             taken.extend(batch);

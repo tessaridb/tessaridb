@@ -313,8 +313,8 @@ impl Subscription {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a record cannot be decoded.
-    pub fn poll(&mut self, store: &Store, limit: usize) -> Result<Vec<Change>> {
-        let answer = store.changes_since(self.log, self.position, limit)?;
+    pub async fn poll(&mut self, store: &Store, limit: usize) -> Result<Vec<Change>> {
+        let answer = store.changes_since(self.log, self.position, limit).await?;
         let watch = self.watch;
         let matched: Vec<Change> = answer
             .changes
@@ -341,10 +341,12 @@ impl Subscription {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a record cannot be decoded.
-    pub fn skip_to(&mut self, store: &Store, target: Sequence) -> Result<u64> {
+    pub async fn skip_to(&mut self, store: &Store, target: Sequence) -> Result<u64> {
         let mut skipped = 0_u64;
         while self.position < target {
-            let answer = store.changes_since(self.log, self.position, SKIP_BATCH_RECORDS)?;
+            let answer = store
+                .changes_since(self.log, self.position, SKIP_BATCH_RECORDS)
+                .await?;
             if answer.next == self.position {
                 // Nothing left in the log: the target is beyond its end, and the
                 // subscriber has skipped everything there was to skip.

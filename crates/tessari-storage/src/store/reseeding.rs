@@ -9,6 +9,7 @@
 //! so it is written as a tombstone through the same validate-and-derive path.
 
 use std::ops::Bound;
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{
     LogRecord, Mutation, RecordKey, RecordValue, StampedValue, StoreKey, StoreValue,
@@ -52,7 +53,7 @@ impl Store {
                 direction: ScanDirection::Forward,
                 limit: Some(PAGE),
             };
-            let page = self.backend().sweep(&request)?;
+            let page = self.backend().sweep(&request).await?;
             let last = page.len() < PAGE;
             for (key, value) in page {
                 after = Some(key.clone());

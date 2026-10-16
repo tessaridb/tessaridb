@@ -104,8 +104,9 @@ fn a_follower_below_a_pruned_log_copies_the_state_and_then_collects() {
     leader
         .store()
         .set_log_retention(Some(Sequence::new(1)))
+        .now()
         .expect("a retention");
-    leader.store().trim_logs().expect("the leader prunes");
+    leader.store().trim_logs().now().expect("the leader prunes");
 
     // Three connections: the refused collect, the copy, the collect after.
     let (address, door) = declaring_for(&authority, &leader, 3);
@@ -210,6 +211,7 @@ fn a_record_read_out_of_one_log_is_applied_into_that_same_log() {
     let at = |db: &Db, log| -> Vec<Sequence> {
         db.store()
             .log_records(log, Sequence::ZERO, 64)
+            .now()
             .expect("a log reads back")
             .into_iter()
             .map(|(sequence, _)| sequence)
@@ -354,6 +356,7 @@ fn a_follower_that_collects_applies_what_it_was_given() {
         follower
             .store()
             .log_records(store_log(&leader), Sequence::new(1), 64)
+            .now()
             .expect("the log can be read")
             .len(),
         3,
@@ -426,6 +429,7 @@ fn a_collection_whose_predecessor_disagrees_is_refused() {
         follower
             .store()
             .log_records(store_log(&leader), Sequence::new(1), 64)
+            .now()
             .expect("the log can be read")
             .len(),
         2,

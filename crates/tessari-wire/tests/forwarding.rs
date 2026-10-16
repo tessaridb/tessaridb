@@ -60,7 +60,9 @@ fn replicate(leader: &Db, follower: &Db) -> u64 {
                 .saturating_add(1),
         );
         let mut carried = Vec::new();
-        let sent = tessari_backup::write_from(leader.store(), &mut carried, home, from).unwrap();
+        let sent = tessari_backup::write_from(leader.store(), &mut carried, home, from)
+            .now()
+            .unwrap();
         let applied = tessari_backup::bootstrap(follower.store(), &mut carried.as_slice())
             .now()
             .unwrap();

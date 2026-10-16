@@ -15,6 +15,7 @@ use tessari_encoding::{
     FormatVersion, FormatVersionKey, IndexAddress, IndexValues, KeyKind, LogRecord, PostingKey,
     RecordValue, SearchSuffixKey, SearchSurfaceKey, StoreKey, StoreValue, decode_payload,
 };
+use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::RecordId;
 
@@ -54,7 +55,7 @@ pub(crate) async fn build(
         definition.table,
         definition.id,
     );
-    batch = clear(store, batch, &address)?;
+    batch = clear(store, batch, &address).await?;
     pending.built.insert(address);
     // Anything the per-mutation pass moved for this index is discarded with the
     // entries it described: the rows below include this record's own mutations,
@@ -130,7 +131,8 @@ pub(crate) async fn build(
         // that never declares one stays open to the builds before it.
         let stamped = store
             .backend()
-            .get(FormatVersionKey::keyspace(), &FormatVersionKey.encode())?
+            .get(FormatVersionKey::keyspace(), &FormatVersionKey.encode())
+            .await?
             .map(|held| FormatVersion::decode(held.as_slice()))
             .transpose()?;
         if stamped.is_none_or(|held| held < FormatVersion::CONTAINMENT_INDEX) {
@@ -223,7 +225,8 @@ pub(crate) async fn build(
                 &values,
                 id,
                 &mut claimed,
-            )?;
+            )
+            .await?;
         }
     }
     Ok(batch)
@@ -245,7 +248,7 @@ pub(crate) async fn build(
 /// covering that no longer exists, which is exactly the stale number the
 /// measurements were introduced to prevent, arriving from inside. Neither fails
 /// a test until somebody reads it.
-pub(crate) fn clear(
+pub(crate) async fn clear(
     store: &Store,
     mut batch: WriteBatch,
     address: &IndexAddress,
@@ -274,7 +277,7 @@ pub(crate) fn clear(
             direction: ScanDirection::Forward,
             limit: None,
         };
-        for (key, _) in store.backend().scan(&request)? {
+        for (key, _) in store.backend().scan(&request).await? {
             batch = batch.delete(keyspace, key);
         }
     }

@@ -12,6 +12,7 @@ use tessari_encoding::{
     Provenance, RecordKey, StampedValue, StoreKey, StoreValue, TransactionRecord,
     TransactionRecordKey,
 };
+use tessari_kv::AsyncKvBackend as _;
 use tessari_kv::WriteBatch;
 use tessari_types::Sequence;
 
@@ -65,7 +66,7 @@ pub(crate) fn derives_nothing(record: &LogRecord) -> bool {
 ///
 /// [`Error::AcrossMalformed`] for a record that contradicts itself, and
 /// whatever the backend or the codec returns.
-pub(crate) fn settle(
+pub(crate) async fn settle(
     store: &Store,
     record: &LogRecord,
     batch: WriteBatch,
@@ -77,9 +78,9 @@ pub(crate) fn settle(
     };
     match &across.part {
         Part::Prepare { .. } => {
-            unbarred(store, across, record)?;
-            let batch = prepared(store, across, record, batch, version, "prepare")?;
-            unsettled::reconcile(store, across, record, batch)
+            unbarred(store, across, record).await?;
+            let batch = prepared(store, across, record, batch, version, "prepare").await?;
+            unsettled::reconcile(store, across, record, batch).await
         }
         Part::Decide(decided) => {
             if !record.mutations().is_empty() {
@@ -88,12 +89,12 @@ pub(crate) fn settle(
                     problem: "a decision that carries writes",
                 });
             }
-            let batch = recorded(store, across, decided, batch)?;
-            unsettled::reconcile(store, across, record, batch)
+            let batch = recorded(store, across, decided, batch).await?;
+            unsettled::reconcile(store, across, record, batch).await
         }
         Part::Resolve { committed } => {
-            let batch = resolved(store, across, record, batch, *committed, "resolve")?;
-            unsettled::reconcile(store, across, record, batch)
+            let batch = resolved(store, across, record, batch, *committed, "resolve").await?;
+            unsettled::reconcile(store, across, record, batch).await
         }
         // D13a: the record first, so a begin that finds it standing — a
         // participant aborted it while this record was on its way — writes
@@ -105,9 +106,9 @@ pub(crate) fn settle(
                     problem: "a record begun other than staging",
                 });
             }
-            let batch = recorded(store, across, begun, batch)?;
-            let batch = prepared(store, across, record, batch, version, "begin")?;
-            unsettled::reconcile(store, across, record, batch)
+            let batch = recorded(store, across, begun, batch).await?;
+            let batch = prepared(store, across, record, batch, version, "begin").await?;
+            unsettled::reconcile(store, across, record, batch).await
         }
         // D13b: the outcome and this range's resolution, or neither.
         Part::Conclude(decided) => {
@@ -117,10 +118,10 @@ pub(crate) fn settle(
                     problem: "a record concluded undecided",
                 });
             }
-            let batch = recorded(store, across, decided, batch)?;
+            let batch = recorded(store, across, decided, batch).await?;
             let committed = decided.decision == Decision::Committed;
-            let batch = resolved(store, across, record, batch, committed, "conclude")?;
-            unsettled::reconcile(store, across, record, batch)
+            let batch = resolved(store, across, record, batch, committed, "conclude").await?;
+            unsettled::reconcile(store, across, record, batch).await
         }
         Part::Forget { .. } => {
             if !record.mutations().is_empty() {
@@ -138,7 +139,8 @@ pub(crate) fn settle(
             };
             let standing = store
                 .backend()
-                .get(TransactionRecordKey::keyspace(), &key.encode())?
+                .get(TransactionRecordKey::keyspace(), &key.encode())
+                .await?
                 .map(|value| TransactionRecord::decode(value.as_slice()))
                 .transpose()?;
             if standing.is_some_and(|record| !record.decision.is_decided()) {
@@ -163,8 +165,8 @@ pub(crate) fn settle(
                 transaction: across.transaction,
                 range: *range,
             };
-            let batch = landed(store, &part, batch, version)?;
-            unsettled::reconcile(store, across, record, batch)
+            let batch = landed(store, &part, batch, version).await?;
+            unsettled::reconcile(store, across, record, batch).await
         }
         // D14c: a part is barred only where its prepare has not landed, and
         // then for good — the prepare meeting the bar is refused.
@@ -181,7 +183,8 @@ pub(crate) fn settle(
             };
             if store
                 .backend()
-                .get(AcrossPartKey::keyspace(), &part.encode())?
+                .get(AcrossPartKey::keyspace(), &part.encode())
+                .await?
                 .is_some()
             {
                 return Err(Error::AcrossDecided {
@@ -195,7 +198,8 @@ pub(crate) fn settle(
             .encode();
             if store
                 .backend()
-                .get(AcrossBarredKey::keyspace(), &barred)?
+                .get(AcrossBarredKey::keyspace(), &barred)
+                .await?
                 .is_some()
             {
                 return Ok(batch);
@@ -210,14 +214,15 @@ pub(crate) fn settle(
 }
 
 /// Refuse a prepare whose part status recovery barred here (ADR-0112 D14c).
-fn unbarred(store: &Store, across: &Across, record: &LogRecord) -> Result<()> {
+async fn unbarred(store: &Store, across: &Across, record: &LogRecord) -> Result<()> {
     let barred = AcrossBarredKey {
         transaction: across.transaction,
         range: crate::catalog::home_of(record)?,
     };
     if store
         .backend()
-        .get(AcrossBarredKey::keyspace(), &barred.encode())?
+        .get(AcrossBarredKey::keyspace(), &barred.encode())
+        .await?
         .is_some()
     {
         return Err(Error::AcrossDecided { decided: "barred" });
@@ -243,7 +248,7 @@ fn carries(across: &Across, record: &LogRecord, provisional: bool) -> bool {
 /// renewed or decided, and a decided one never changes — so a coordinator and
 /// a lapse racing to decide record one outcome, and the loser is told it. A
 /// begun record must find none at all.
-fn recorded(
+async fn recorded(
     store: &Store,
     across: &Across,
     decided: &TransactionRecord,
@@ -254,7 +259,8 @@ fn recorded(
     };
     let standing = store
         .backend()
-        .get(TransactionRecordKey::keyspace(), &key.encode())?
+        .get(TransactionRecordKey::keyspace(), &key.encode())
+        .await?
         .map(|value| TransactionRecord::decode(value.as_slice()))
         .transpose()?;
     // Absent may become ABORTED as well as PENDING: a record a lapse finds
@@ -288,7 +294,7 @@ fn recorded(
 
 /// Hold `record`'s writes as intents: where the part landed and each intent's
 /// index entry, in the batch that lands them.
-fn prepared(
+async fn prepared(
     store: &Store,
     across: &Across,
     record: &LogRecord,
@@ -308,7 +314,7 @@ fn prepared(
         transaction: across.transaction,
         range: crate::catalog::home_of(record)?,
     };
-    let batch = landed(store, &landing, batch, version)?;
+    let batch = landed(store, &landing, batch, version).await?;
     // Each intent indexed under its transaction, in the batch that lands it
     // (D7): what lets this node resolve its own intents later. A state copied
     // onto a store that held it (D9a) lands the intent again, above the record
@@ -325,7 +331,7 @@ fn prepared(
 
 /// Delete the intents `record` resolves; a committed resolution's values are
 /// the versions the record itself writes.
-fn resolved(
+async fn resolved(
     store: &Store,
     across: &Across,
     record: &LogRecord,
@@ -344,7 +350,11 @@ fn resolved(
         // its own key; a node that never held it — a copy seeded past the
         // prepare — finds no index entry and deletes nothing.
         let indexed = intent_of(across.transaction, mutation).encode();
-        let Some(held) = store.backend().get(IntentOfKey::keyspace(), &indexed)? else {
+        let Some(held) = store
+            .backend()
+            .get(IntentOfKey::keyspace(), &indexed)
+            .await?
+        else {
             continue;
         };
         let intent = RecordKey::new(
@@ -365,7 +375,7 @@ fn resolved(
 /// where the part first landed here, and moving it up — a state copied onto a
 /// store that held it (D9a) — would hide the transaction from a snapshot that
 /// already saw it.
-fn landed(
+async fn landed(
     store: &Store,
     part: &AcrossPartKey,
     batch: WriteBatch,
@@ -374,7 +384,8 @@ fn landed(
     let key = part.encode();
     if store
         .backend()
-        .get(AcrossPartKey::keyspace(), &key)?
+        .get(AcrossPartKey::keyspace(), &key)
+        .await?
         .is_some()
     {
         return Ok(batch);

@@ -33,8 +33,8 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when a position or the version cannot be read.
-    pub fn read_state(&self) -> Result<crate::state::StateReader<'_>> {
-        crate::state::StateReader::open(self, tessari_types::Reach::Store)
+    pub async fn read_state(&self) -> Result<crate::state::StateReader<'_>> {
+        crate::state::StateReader::open(self, tessari_types::Reach::Store).await
     }
 
     /// Begin reading the part of this store a peer subscribed at `within` is
@@ -44,11 +44,11 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when a position or the version cannot be read.
-    pub fn read_state_within(
+    pub async fn read_state_within(
         &self,
         within: tessari_types::Reach,
     ) -> Result<crate::state::StateReader<'_>> {
-        crate::state::StateReader::open(self, within)
+        crate::state::StateReader::open(self, within).await
     }
 
     /// Whether nothing has ever been written into this store.
@@ -111,7 +111,7 @@ impl Store {
     /// # Errors
     ///
     /// Returns a backend error when the batch cannot land.
-    pub fn finish_state(
+    pub async fn finish_state(
         &self,
         positions: &[(LogId, Sequence)],
         topics: &[TopicHead],
@@ -138,7 +138,8 @@ impl Store {
                 database: topic.database,
                 table: topic.table,
             };
-            let held = crate::topic::head(self, (topic.namespace, topic.database, topic.table))?;
+            let held =
+                crate::topic::head(self, (topic.namespace, topic.database, topic.table)).await?;
             if topic.last > held {
                 batch = batch.put(
                     TopicHeadKey::keyspace(),

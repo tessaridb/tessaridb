@@ -145,11 +145,14 @@ fn reclaiming_keeps_the_version_under_one_a_reader_may_pass_over() -> Result<()>
         b"y".to_vec(),
     );
     writer.commit().now()?;
-    fixture.store.reclaim_table(
-        fixture.namespace,
-        fixture.homes[0].database,
-        fixture.homes[0].table,
-    )?;
+    fixture
+        .store
+        .reclaim_table(
+            fixture.namespace,
+            fixture.homes[0].database,
+            fixture.homes[0].table,
+        )
+        .now()?;
     assert_eq!(
         read(&fixture.store.begin()?, &fixture.address(0)).now()?,
         "old"

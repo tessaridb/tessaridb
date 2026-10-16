@@ -117,8 +117,8 @@ impl Session<'_> {
             .find(|index| index.vector.is_some());
         let (measured, footprint, quantized) = match index {
             Some(index) => (
-                transaction.vector_recall(&index)?,
-                transaction.vector_node_bytes(&index)?,
+                transaction.vector_recall(&index).await?,
+                transaction.vector_node_bytes(&index).await?,
                 index.quantized,
             ),
             None => (None, None, false),
@@ -192,7 +192,7 @@ impl Session<'_> {
             .into_iter()
             .find(|index| index.spatial);
         let measured = match &index {
-            Some(index) => transaction.spatial_refinement(index)?,
+            Some(index) => transaction.spatial_refinement(index).await?,
             None => None,
         };
         Ok(BTreeMap::from([

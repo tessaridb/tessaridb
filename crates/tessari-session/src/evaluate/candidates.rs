@@ -398,13 +398,16 @@ pub(crate) async fn declared_for(
     transaction: &mut Transaction<'_>,
     table: TableId,
 ) -> Result<(Vec<tessari_storage::IndexDefinition>, bool)> {
-    if transaction.indexes_are_current_for(table)? {
+    if transaction.indexes_are_current_for(table).await? {
         return Ok((
             Catalog::new(transaction).field_indexes_on(table).await?,
             true,
         ));
     }
-    if transaction.plain_indexes_serve_behind_the_tail(table)? {
+    if transaction
+        .plain_indexes_serve_behind_the_tail(table)
+        .await?
+    {
         let plain = Catalog::new(transaction)
             .field_indexes_on(table)
             .await?

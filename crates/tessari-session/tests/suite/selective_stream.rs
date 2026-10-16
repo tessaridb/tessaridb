@@ -661,7 +661,7 @@ fn a_shard_subscriber_holds_its_shards_records_and_not_its_siblings() {
 fn a_shard_follower_refuses_a_read_that_needs_what_it_does_not_hold() {
     let (leader, second, _) = sharded_tenant();
     let follower = follow(&leader, second, "node");
-    follower.record_served(second).unwrap();
+    follower.record_served(second).now().unwrap();
     let mut reader = signed_in(&follower, "prod_reader");
     reader
         .run_now("USE NAMESPACE prod; USE DATABASE shop;")
@@ -718,7 +718,7 @@ fn a_follower_served_the_whole_database_answers_every_read_as_before() {
     let (leader, _, _) = sharded_tenant();
     let over = Reach::Namespace(NamespaceId::new(1));
     let follower = follow(&leader, over, "node");
-    follower.record_served(over).unwrap();
+    follower.record_served(over).now().unwrap();
     let mut reader = signed_in(&follower, "prod_reader");
     let outcomes = reader
         .run_now("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM ledger;")
@@ -755,7 +755,7 @@ fn a_field_grant_narrows_its_user_on_a_selective_follower_as_on_the_leader() {
         (second, "SELECT * FROM ledger:'h';"),
     ] {
         let follower = follow(&leader, over, "node");
-        follower.record_served(over).unwrap();
+        follower.record_served(over).now().unwrap();
         let mut reader = signed_in(&follower, "narrow");
         let outcomes = reader
             .run_now(&format!("USE NAMESPACE prod; USE DATABASE shop; {read}"))
@@ -795,7 +795,7 @@ fn a_record_written_alone_then_across_shards_ends_at_the_same_value_on_a_followe
     assert!(on_leader.contains('4'), "{on_leader}");
     let over = Reach::Namespace(NamespaceId::new(1));
     let follower = follow(&leader, over, "node");
-    follower.record_served(over).unwrap();
+    follower.record_served(over).now().unwrap();
     assert_eq!(read(&follower), on_leader);
 }
 
@@ -825,7 +825,7 @@ fn a_record_written_alone_then_across_databases_ends_at_the_same_value_on_a_foll
     assert!(on_leader.contains('4'), "{on_leader}");
     let over = Reach::Namespace(NamespaceId::new(1));
     let follower = follow(&leader, over, "node");
-    follower.record_served(over).unwrap();
+    follower.record_served(over).now().unwrap();
     assert_eq!(read(&follower), on_leader);
 }
 
@@ -930,7 +930,7 @@ fn a_follower_holds_the_params_its_database_defines() {
         .unwrap();
     let over = Reach::Namespace(NamespaceId::new(1));
     let follower = follow(&leader, over, "node");
-    follower.record_served(over).unwrap();
+    follower.record_served(over).now().unwrap();
     let mut reader = signed_in(&follower, "prod_reader");
     let outcomes = reader
         .run_now("USE NAMESPACE prod; USE DATABASE shop; RETURN $grace;")

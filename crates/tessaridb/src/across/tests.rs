@@ -109,7 +109,7 @@ fn an_overdue_pending_record_is_aborted_and_its_intent_dropped() {
         }
     );
     assert_eq!(note(&db, &address), Value::from("old"));
-    assert!(db.store().standing_across().unwrap().is_empty());
+    assert!(db.store().standing_across().now().unwrap().is_empty());
     assert_eq!(
         db.settle_across().now().unwrap(),
         SettledAcross {
@@ -133,9 +133,12 @@ fn a_record_nobody_wrote_is_aborted_by_the_participant_holding_its_intent() {
     let now = super::now_millis();
     let first = db.settle_across_at(now).now().unwrap();
     assert_eq!(first.resolved, 0, "{first:?}");
-    assert_eq!(db.store().transaction_record(TRANSACTION).unwrap(), None);
+    assert_eq!(
+        db.store().transaction_record(TRANSACTION).now().unwrap(),
+        None
+    );
     assert!(
-        db.store().holds_intents_of(TRANSACTION).unwrap(),
+        db.store().holds_intents_of(TRANSACTION).now().unwrap(),
         "the intent stands"
     );
     // A lapse later the absence is an abort (D7).
@@ -151,6 +154,7 @@ fn a_record_nobody_wrote_is_aborted_by_the_participant_holding_its_intent() {
     assert_eq!(
         db.store()
             .transaction_record(TRANSACTION)
+            .now()
             .unwrap()
             .map(|held| held.decision),
         Some(Decision::Aborted)
@@ -169,7 +173,7 @@ fn a_committed_record_whose_resolution_was_lost_is_finished_here() {
         }
     );
     assert_eq!(note(&db, &address), Value::from("new"));
-    assert!(db.store().standing_across().unwrap().is_empty());
+    assert!(db.store().standing_across().now().unwrap().is_empty());
 }
 
 #[test]
@@ -183,7 +187,12 @@ fn a_pass_publishes_what_it_left_standing_and_nothing_before_the_first() {
     );
     // The coordinator is alive and renewed its record: nothing is overdue,
     // so the pass leaves both the record and the intent standing.
-    let mut record = db.store().transaction_record(TRANSACTION).unwrap().unwrap();
+    let mut record = db
+        .store()
+        .transaction_record(TRANSACTION)
+        .now()
+        .unwrap()
+        .unwrap();
     record.deadline = u64::MAX;
     db.session()
         .answer_across(&AcrossAsk::Decide {
@@ -245,12 +254,16 @@ fn a_decided_record_is_forgotten_only_once_no_intent_of_it_stands() {
     assert!(
         db.store()
             .transaction_record(TRANSACTION)
+            .now()
             .unwrap()
             .is_some()
     );
     let second = db.settle_across().now().unwrap();
     assert_eq!(second.forgotten, 1, "{second:?}");
-    assert_eq!(db.store().transaction_record(TRANSACTION).unwrap(), None);
+    assert_eq!(
+        db.store().transaction_record(TRANSACTION).now().unwrap(),
+        None
+    );
     // What readers see is untouched by forgetting.
     assert_eq!(note(&db, &address), Value::from("new"));
 }
@@ -378,7 +391,7 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
         .now();
     assert!(matches!(again, Ok(None)), "{again:?}");
     assert!(
-        store.holds_intents_of(TRANSACTION).unwrap(),
+        store.holds_intents_of(TRANSACTION).now().unwrap(),
         "the other leader's copy is left to follow it"
     );
 }

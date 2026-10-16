@@ -26,6 +26,7 @@
 //! so it does not bound the round.
 
 use std::collections::BTreeMap;
+use tessari_kv::AsyncKvBackend as _;
 
 use tessari_encoding::{LogId, LogRecord, Writer};
 use tessari_types::{Epoch, Sequence};
@@ -160,7 +161,7 @@ impl Store {
     /// failed sync is returned in place of the answer.
     pub async fn apply_in_writer_order(&self, pages: &[Page<'_>]) -> Result<Vec<Option<Sequence>>> {
         let applied = self.apply_pages(pages).await;
-        self.backend().sync_applied()?;
+        self.backend().sync_applied().await?;
         applied
     }
 
@@ -222,7 +223,7 @@ impl Store {
     ///
     /// Returns an error when the backend fails or a stored record cannot be
     /// decoded.
-    pub fn history_across(
+    pub async fn history_across(
         &self,
         logs: &[LogId],
         subject: &Subject,
@@ -235,7 +236,7 @@ impl Store {
         for log in logs {
             let records = self.log_records_newest_first(*log, HISTORY_SCAN_RECORDS)?;
             walked = walked.saturating_add(records.len());
-            if records.len() >= HISTORY_SCAN_RECORDS || self.log_start(*log)?.get() > 1 {
+            if records.len() >= HISTORY_SCAN_RECORDS || self.log_start(*log).await?.get() > 1 {
                 complete = false;
                 if let Some((_, oldest)) = records.last() {
                     floor = floor.max(key_of(oldest));

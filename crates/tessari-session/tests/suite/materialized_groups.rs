@@ -58,6 +58,7 @@ fn writes_of(store: &Store, view: &str, id: &RecordId) -> usize {
         .map(|log| {
             store
                 .history_of(log, &subject, usize::MAX)
+                .now()
                 .unwrap()
                 .events
                 .len()

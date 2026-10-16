@@ -53,7 +53,7 @@ fn taken() -> Vec<u8> {
             .unwrap();
     }
     let mut bytes = Vec::new();
-    let written = tessari_backup::write(&store, &mut bytes).unwrap();
+    let written = tessari_backup::write(&store, &mut bytes).now().unwrap();
     assert_eq!(written.writer, NodeVersion::current());
     assert!(written.records > 0);
     bytes
