@@ -3,7 +3,7 @@
 use super::Parser;
 use tessari_types::{Duration, Number};
 
-use crate::ast::{ConsumerSource, FieldMapping, Name, OnFailure, StatementKind};
+use crate::ast::{ConsumerSource, FieldMapping, Name, OnFailure, StatementKind, TableRef};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Span, Token};
 
@@ -225,6 +225,7 @@ impl Parser<'_> {
         let mut priority: Option<Name> = None;
         let mut not_before: Option<Name> = None;
         let mut deduplicate: Option<Duration> = None;
+        let mut dead_letter: Option<TableRef> = None;
         loop {
             // `PRIORITY BY` and `NOT BEFORE` name a field of the records, and
             // `priority`, `by` and `before` stay ordinary names (G055 C8).
@@ -241,6 +242,19 @@ impl Parser<'_> {
                 deduplicate = Some(self.positive_duration(
                     "a duration above zero, like `5m` — how long a written identity is remembered",
                 )?);
+            } else if dead_letter.is_none() && self.eat_word("dead") {
+                // A group's spelling, so one word means one thing (ADR-0126 D2).
+                // A bare name: the letter is appended in the queue's own
+                // database, so a name qualified with another one would be a
+                // topic the move could not reach.
+                self.expect_word("letter", "`LETTER TO` and the topic dead letters go to")?;
+                self.expect_keyword(Keyword::To, "`TO` and the topic dead letters go to")?;
+                let topic = self.name()?;
+                dead_letter = Some(TableRef {
+                    database: None,
+                    span: topic.span,
+                    name: topic,
+                });
             } else if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
                 strictness = Some(true);
             } else if strictness.is_none() && self.eat_keyword(Keyword::Schemaless) {
@@ -250,6 +264,12 @@ impl Parser<'_> {
             } else {
                 break;
             }
+        }
+        if dead_letter.is_some() && attempts.is_none() {
+            return Err(self.error_here(
+                "`ATTEMPTS n` — a queue with a dead letter must say after how many \
+                 attempts a record goes there",
+            ));
         }
         Ok(StatementKind::DefineQueue {
             name,
@@ -263,6 +283,7 @@ impl Parser<'_> {
             priority,
             not_before,
             deduplicate,
+            dead_letter,
             if_not_exists,
         })
     }

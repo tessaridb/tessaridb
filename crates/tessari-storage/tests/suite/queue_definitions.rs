@@ -67,6 +67,8 @@ fn a_queue_definition_round_trips_with_both_clauses() {
         not_before: Some("due".to_owned()),
         // ADR-0124 D8: written only when declared, so declared here.
         deduplicate: Some(Duration::new(300, 0).unwrap()),
+        // ADR-0126 D2: a topic's id, written only when declared.
+        dead_letter: Some(TableId::new(9)),
     };
     let definition = TableDefinition {
         id: TableId::new(7),
@@ -100,6 +102,7 @@ fn a_queue_declared_without_a_ceiling_reads_back_as_unlimited() {
         priority: None,
         not_before: None,
         deduplicate: None,
+        dead_letter: None,
     };
     let definition = TableDefinition {
         id: TableId::new(8),
@@ -142,6 +145,7 @@ fn a_definition_claiming_to_be_a_queue_and_an_edge_is_refused() {
             priority: None,
             not_before: None,
             deduplicate: None,
+            dead_letter: None,
         }),
         identity: IdentityKind::default(),
         graph: None,

@@ -226,6 +226,14 @@ impl Session<'_> {
         indexes.retain(|index| readable_index(&visible, index));
         let whole = declared == (fields.len(), indexes.len());
         let mut report = shape_of(&definition);
+        // The topic a spent record is moved to (ADR-0126 D2), by name, because
+        // the declaration below cannot say it: the catalog holds its id.
+        if let TableKind::Queue(declared) = &definition.kind
+            && let Some(letters) = declared.dead_letter
+            && let Some(topic) = Catalog::new(transaction).table(letters)?
+        {
+            report.insert("dead_letter".to_owned(), Value::from(topic.name.as_str()));
+        }
         // What the balancing pass last measured of its shards (ADR-0113 D4),
         // present only on the node that measures them — the store line's
         // leader — and only once a pass has run.

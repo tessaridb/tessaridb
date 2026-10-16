@@ -1120,8 +1120,16 @@ impl Session<'_> {
                 priority,
                 not_before,
                 deduplicate,
+                dead_letter,
                 if_not_exists,
             } => {
+                // A topic, in this database, before the queue exists: a queue
+                // whose dead letter names nothing would move spent work nowhere
+                // (ADR-0126 D2).
+                let dead_letter = match dead_letter {
+                    Some(topic) => Some(self.group_topic(transaction, topic, span)?.1),
+                    None => None,
+                };
                 // Resolved before the queue is created, on `DEFINE TABLE`'s own
                 // rule and for its reason: a table left standing with a
                 // membership nothing resolves belongs to no graph anyone can
@@ -1143,6 +1151,7 @@ impl Session<'_> {
                             priority: priority.as_ref().map(|field| field.text.clone()),
                             not_before: not_before.as_ref().map(|field| field.text.clone()),
                             deduplicate: *deduplicate,
+                            dead_letter,
                         }),
                         identity: IdentityKind::default(),
                         graph,

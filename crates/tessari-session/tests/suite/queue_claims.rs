@@ -1383,3 +1383,128 @@ fn a_claims_condition_binds_its_values_and_must_be_a_question() {
         "a bare path was taken as a condition: {refused:?}"
     );
 }
+
+/// A queue with a dead letter, three records and one held past its last attempt.
+fn lettered<'a>(store: &'a Store, declaration: &str) -> Session<'a> {
+    let mut session = Session::new(store);
+    session
+        .run(&format!(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE TOPIC dead;\n\
+             DEFINE QUEUE jobs {declaration};\n\
+             CREATE jobs:1 = {{ url: 'a' }};\n\
+             CREATE jobs:2 = {{ url: 'b' }};\n\
+             CREATE jobs:3 = {{ url: 'c' }};"
+        ))
+        .unwrap();
+    session
+}
+
+/// The letters the dead letter holds, oldest first: each message's value.
+fn letters(session: &mut Session<'_>) -> Vec<Value> {
+    match run(session, "READ FROM dead;") {
+        Outcome::Records { records, .. } => records
+            .into_iter()
+            .map(|(_, message)| match message {
+                Value::Object(mut fields) => fields.remove("value").unwrap(),
+                other => panic!("not a message: {other:?}"),
+            })
+            .collect(),
+        other => panic!("expected records, got {other:?}"),
+    }
+}
+
+/// A record whose attempts are spent, met by a claim's walk, leaves the queue
+/// for the declared topic in that claim's transaction — so it stops costing
+/// every later claim a read — and the letter says where it came from.
+#[test]
+fn a_spent_record_moves_to_the_dead_letter_with_the_claim_that_meets_it() {
+    let store = store();
+    let mut session = lettered(&store, "TIMEOUT 1ns ATTEMPTS 2 DEAD LETTER TO dead");
+    assert_eq!(claimed(&run(&mut session, "CLAIM FROM jobs;")), vec!["1"]);
+    assert_eq!(claimed(&run(&mut session, "CLAIM FROM jobs;")), vec!["1"]);
+    // Nothing is moved while the record still had an attempt in hand.
+    assert!(letters(&mut session).is_empty());
+
+    assert_eq!(claimed(&run(&mut session, "CLAIM FROM jobs;")), vec!["2"]);
+    let Outcome::Records { records, .. } = run(&mut session, "SELECT * FROM jobs:1;") else {
+        panic!("expected records");
+    };
+    assert!(records.is_empty(), "the spent record is still queued");
+    let moved = letters(&mut session);
+    assert_eq!(moved.len(), 1, "{moved:?}");
+    let Value::Object(letter) = &moved[0] else {
+        panic!("{moved:?}");
+    };
+    assert_eq!(letter.get("queue"), Some(&Value::from("jobs")));
+    assert_eq!(letter.get("id"), Some(&Value::from(1_i64)));
+    assert_eq!(letter.get("attempts"), Some(&Value::from(2_i64)));
+    let Some(Value::Object(value)) = letter.get("value") else {
+        panic!("{letter:?}");
+    };
+    assert_eq!(value.get("url"), Some(&Value::from("a")));
+    // The engine's own fields stay behind: the letter's value is the work.
+    assert!(!value.contains_key("attempts") && !value.contains_key("claimed_until"));
+}
+
+/// Without the clause a spent record stays where it is, as before.
+#[test]
+fn without_a_dead_letter_a_spent_record_stays_in_the_queue() {
+    let store = store();
+    let mut session = lettered(&store, "TIMEOUT 1ns ATTEMPTS 1");
+    run(&mut session, "CLAIM FROM jobs;");
+    assert_eq!(claimed(&run(&mut session, "CLAIM FROM jobs;")), vec!["2"]);
+    let Outcome::Records { records, .. } = run(&mut session, "SELECT * FROM jobs:1;") else {
+        panic!("expected records");
+    };
+    assert_eq!(records.len(), 1);
+    assert!(letters(&mut session).is_empty());
+}
+
+/// The priority claim meets spent records too, and moves them the same way.
+#[test]
+fn a_priority_claim_moves_a_spent_record_too() {
+    let store = store();
+    let mut session = lettered(
+        &store,
+        "TIMEOUT 1ns ATTEMPTS 1 PRIORITY BY p DEAD LETTER TO dead",
+    );
+    run(&mut session, "CLAIM FROM jobs;");
+    run(&mut session, "CLAIM FROM jobs;");
+    assert_eq!(letters(&mut session).len(), 1);
+}
+
+/// A dead letter names a topic, and says after how many attempts.
+#[test]
+fn a_dead_letter_needs_attempts_and_a_topic() {
+    let store = store();
+    let mut session = lettered(&store, "TIMEOUT 1m");
+    let refused = session.run("DEFINE QUEUE other TIMEOUT 1m DEAD LETTER TO dead;");
+    assert!(
+        matches!(&refused, Err(tessari_session::Error::Script(found)) if found.to_string().contains("ATTEMPTS")),
+        "{refused:?}"
+    );
+    let refused = session.run("DEFINE QUEUE other TIMEOUT 1m ATTEMPTS 2 DEAD LETTER TO jobs;");
+    assert!(
+        matches!(refused, Err(tessari_session::Error::NotATopic { .. })),
+        "{refused:?}"
+    );
+}
+
+/// The report names the dead letter, and a declaration that could not name it
+/// says so rather than restoring a queue whose spent work stays put.
+#[test]
+fn a_queue_reports_its_dead_letter_by_name() {
+    let store = store();
+    let mut session = lettered(&store, "TIMEOUT 30s ATTEMPTS 3 DEAD LETTER TO dead");
+    let described = format!("{:?}", run(&mut session, "INFO FOR TABLE jobs;"));
+    assert!(
+        described.contains("\"dead_letter\": String(\"dead\")"),
+        "{described}"
+    );
+    assert!(
+        described.contains("names a dead letter this writer cannot name"),
+        "{described}"
+    );
+}

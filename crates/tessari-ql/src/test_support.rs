@@ -103,9 +103,6 @@ fn erase_statement(statement: &mut Statement) {
         // than written in the statement.
         | StatementKind::DefineVault { name, .. }
         | StatementKind::DropVault { name }
-        // The name-only list, because a queue's two clauses are literals with no
-        // span of their own to erase.
-        | StatementKind::DefineQueue { name, .. }
         | StatementKind::DropQueue { name }
         // A series joins it for the same reason: its retention is a literal.
         | StatementKind::DefineSeries { name, .. }
@@ -561,6 +558,16 @@ fn erase_statement(statement: &mut Statement) {
             erase_table(topic);
             for bound in [after, limit].into_iter().flatten() {
                 erase_expr(bound);
+            }
+        }
+        // A queue's clauses are literals with no span of their own; its dead
+        // letter is a table reference and has one.
+        StatementKind::DefineQueue {
+            name, dead_letter, ..
+        } => {
+            erase_name(name);
+            if let Some(dead_letter) = dead_letter.as_mut() {
+                erase_table(dead_letter);
             }
         }
         StatementKind::DefineGroup { topic, clauses, .. } => {

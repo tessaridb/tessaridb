@@ -188,6 +188,14 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
                 "queue `{name}` names records in a way its declaring word cannot say"
             )));
         }
+        // Held as a topic's id, which this writer cannot name — the graph
+        // membership's reason. Written without it, the script would restore a
+        // queue whose spent work stays put (ADR-0126 D2).
+        if declared.dead_letter.is_some() {
+            return Err(Unwritable::at(format!(
+                "queue `{name}` names a dead letter this writer cannot name"
+            )));
+        }
         let _ = write!(
             script,
             "DEFINE QUEUE {name} TIMEOUT {}",

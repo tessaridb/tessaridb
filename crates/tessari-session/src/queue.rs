@@ -56,6 +56,7 @@
 //! neither is discovered.
 
 mod claims;
+mod dead;
 mod delay;
 mod priority;
 use std::collections::BTreeMap;
@@ -132,8 +133,7 @@ impl Session<'_> {
             return self.claim_by_priority(
                 transaction,
                 (context, id, table),
-                &declared,
-                &field,
+                (&declared, &field),
                 (limit, now, until),
                 matching.as_ref(),
                 span,
@@ -142,6 +142,7 @@ impl Session<'_> {
 
         let mut taken: Vec<(RecordId, Value)> = Vec::new();
         let mut writes: Vec<(RecordId, Value)> = Vec::new();
+        let mut buried: Vec<dead::Spent> = Vec::new();
         transaction.walk_table(
             context.namespace,
             context.database,
@@ -156,6 +157,12 @@ impl Session<'_> {
                     // record must not stop every worker on the table.
                     return Ok(ControlFlow::Continue(()));
                 };
+                // Met by the walk whatever the condition asks, because a spent
+                // record is nobody's work any more (ADR-0126 D2).
+                if declared.dead_letter.is_some() && dead::spent(&fields, now, &declared) {
+                    buried.push((record, fields));
+                    return Ok(ControlFlow::Continue(()));
+                }
                 if !claimable(&fields, now, &declared)
                     || !self.matches(walking, matching.as_ref(), &record, &fields)?
                 {
@@ -183,6 +190,7 @@ impl Session<'_> {
             let address = RecordAddress::new(context.namespace, context.database, id, record);
             self.put_engine_record(transaction, address, payload, span)?;
         }
+        self.bury(transaction, (context, id, table), &declared, buried, span)?;
 
         Ok(Outcome::Records {
             records: taken,
