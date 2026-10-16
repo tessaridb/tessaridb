@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.35.1"
+version = "0.35.2"
 edition = "2024"
 rust-version = "1.98"
 license = "BUSL-1.1"
@@ -12,23 +12,23 @@ repository = "https://github.com/tessaridb/tessaridb"
 publish = false
 
 [workspace.dependencies]
-tessari-types = { path = "crates/tessari-types", version = "0.35.1" }
-tessari-constants = { path = "crates/tessari-constants", version = "0.35.1" }
-tessari-kv = { path = "crates/tessari-kv", version = "0.35.1" }
-tessari-encoding = { path = "crates/tessari-encoding", version = "0.35.1" }
-tessari-geo = { path = "crates/tessari-geo", version = "0.35.1" }
-tessari-storage = { path = "crates/tessari-storage", version = "0.35.1" }
-tessari-lsm = { path = "crates/tessari-lsm", version = "0.35.1" }
-tessari-ql = { path = "crates/tessari-ql", version = "0.35.1" }
-tessari-session = { path = "crates/tessari-session", version = "0.35.1" }
-tessari-conformance = { path = "crates/tessari-conformance", version = "0.35.1" }
-tessaridb = { path = "crates/tessaridb", version = "0.35.1" }
-tessari-backup = { path = "crates/tessari-backup", version = "0.35.1" }
-tessari-wire = { path = "crates/tessari-wire", version = "0.35.1" }
-tessari-http = { path = "crates/tessari-http", version = "0.35.1" }
-tessari-ingest = { path = "crates/tessari-ingest", version = "0.35.1" }
-tessari-serve = { path = "crates/tessari-serve", version = "0.35.1" }
-tessari-vault = { path = "crates/tessari-vault", version = "0.35.1" }
+tessari-types = { path = "crates/tessari-types", version = "0.35.2" }
+tessari-constants = { path = "crates/tessari-constants", version = "0.35.2" }
+tessari-kv = { path = "crates/tessari-kv", version = "0.35.2" }
+tessari-encoding = { path = "crates/tessari-encoding", version = "0.35.2" }
+tessari-geo = { path = "crates/tessari-geo", version = "0.35.2" }
+tessari-storage = { path = "crates/tessari-storage", version = "0.35.2" }
+tessari-lsm = { path = "crates/tessari-lsm", version = "0.35.2" }
+tessari-ql = { path = "crates/tessari-ql", version = "0.35.2" }
+tessari-session = { path = "crates/tessari-session", version = "0.35.2" }
+tessari-conformance = { path = "crates/tessari-conformance", version = "0.35.2" }
+tessaridb = { path = "crates/tessaridb", version = "0.35.2" }
+tessari-backup = { path = "crates/tessari-backup", version = "0.35.2" }
+tessari-wire = { path = "crates/tessari-wire", version = "0.35.2" }
+tessari-http = { path = "crates/tessari-http", version = "0.35.2" }
+tessari-ingest = { path = "crates/tessari-ingest", version = "0.35.2" }
+tessari-serve = { path = "crates/tessari-serve", version = "0.35.2" }
+tessari-vault = { path = "crates/tessari-vault", version = "0.35.2" }
 
 thiserror = "2"
 # The serving runtime (ADR-0085). Default features off here, so every crate names

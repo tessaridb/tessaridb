@@ -529,8 +529,11 @@ fn a_body_sees_only_the_fields_the_writer_may_read() {
     let mut clerk = Session::new(&store);
     clerk.sign_in("clerk", PASSWORD).unwrap();
     clerk.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+    // `UPSERT`: the write a write-only grant runs. A `CREATE` at a chosen
+    // identity also reads — its refusal says whether the record exists — and
+    // asks for the read grant the clerk does not hold (ADR-0128).
     clerk
-        .run("CREATE orders:1 = { v: 1, secret: 42 };")
+        .run("UPSERT orders:1 = { v: 1, secret: 42 };")
         .unwrap();
     let copied = rows(&mut root, "SELECT * FROM log;");
     assert_eq!(copied.len(), 1);

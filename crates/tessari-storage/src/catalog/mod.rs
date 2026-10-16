@@ -100,7 +100,7 @@ pub use words::{WordSet, WordSetKind};
 
 use crate::error::{Error, Result};
 use crate::transaction::{RecordAddress, Transaction};
-use qualified::parse_qualified;
+use qualified::{name_of, parse_qualified, with_article};
 use system::Level;
 
 /// The field an edge's source endpoint is written to.

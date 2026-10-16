@@ -27,6 +27,7 @@ impl<'a> Session<'a> {
             // to a queue, reaches no namespace and no database, and a scoped
             // user naming one is not reaching outside anything.
             consumer: _,
+            consumer_parameter: _,
         } = kind
         else {
             return Ok(());

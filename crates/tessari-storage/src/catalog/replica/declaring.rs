@@ -44,7 +44,8 @@ impl Catalog<'_, '_> {
     ) -> Result<ReplicaDefinition> {
         if self.replica_row(&definition.name)?.is_some() {
             return Err(Error::NameTaken {
-                qualified: qualify(Level::Replica, &[], &definition.name),
+                holder: crate::catalog::with_article(Level::Replica.noun()),
+                name: definition.name.clone(),
             });
         }
         if let Some(node) = definition.node

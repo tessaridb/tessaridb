@@ -492,10 +492,12 @@ pub enum Error {
     /// enforcement: uniqueness is enforced by both transactions writing the same
     /// name record, so a creation that races past this check still loses at
     /// commit with [`Error::Conflict`].
-    #[error("the name {qualified} is already in use")]
+    #[error("{holder} named {name} already exists")]
     NameTaken {
-        /// The qualified name, including its level tag and parent ids.
-        qualified: String,
+        /// What already holds the name, with its article: `a topic`, `an index`.
+        holder: String,
+        /// The name as the caller wrote it.
+        name: String,
     },
 
     /// An index was declared over no fields.

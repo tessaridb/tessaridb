@@ -40,7 +40,7 @@ use tessari_types::{Number, RecordId, Value};
 
 use super::authority::{Reach, ReachCodec};
 use super::definition::{field_name, number, object};
-use super::{Catalog, Level, qualify, system};
+use super::{Catalog, Level, system};
 use crate::error::{Error, Result};
 pub use peers::{another_node_may_write, names_a_peer, the_row_a_greeting_binds};
 

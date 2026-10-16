@@ -542,3 +542,37 @@ fn a_grant_governed_user_cannot_declare_any_of_the_four_table_words() {
         assert!(said.contains("governed by grants"), "{statement}: {said}");
     }
 }
+
+/// A write that also reads — one that answers a record, or decides what to
+/// change by reading — needs the read grant as well as the write, as its
+/// authority does. A write-only grant answered whole records through `RETURN
+/// BEFORE` while the same user's `SELECT` was refused (ADR-0128).
+#[test]
+fn a_write_only_grant_does_not_answer_or_select_records_through_a_write() {
+    let store = store();
+    ready(&store);
+    let mut root = signed_in(&store, "root");
+    root.run("DEFINE COLLECTION staff; CREATE staff:1 = { name: 'ada', salary: 120000 };")
+        .unwrap();
+    root.run("GRANT write ON staff TO ada;").unwrap();
+    let mut ada = signed_in(&store, "ada");
+    for statement in [
+        "DELETE staff:1 RETURN BEFORE;",
+        "UPDATE staff:1 SET salary = 1 RETURN BEFORE;",
+        "DELETE FROM staff WHERE salary > 100000 LIMIT ALL;",
+    ] {
+        let refused = ada.run(statement);
+        assert!(
+            matches!(
+                refused,
+                Err(tessari_session::Error::NotGranted { needs: "read", .. })
+            ),
+            "{statement} ran on a write-only grant: {refused:?}"
+        );
+    }
+    // A write silent about what was there before still runs on the write alone.
+    ada.run("UPSERT staff:2 = { name: 'grace' };").unwrap();
+    // And the record nobody was allowed to read is still there, untouched.
+    let held = root.run("SELECT * FROM staff:1;").unwrap();
+    assert_eq!(held.last().unwrap().records().unwrap().len(), 1);
+}

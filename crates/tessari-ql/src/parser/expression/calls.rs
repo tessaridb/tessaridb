@@ -110,6 +110,7 @@ impl Parser<'_> {
         if !function.accepts(arguments.len()) {
             return Err(Error::WrongArity {
                 function,
+                least: if function.variadic() { "at least " } else { "" },
                 expected: function.arity(),
                 found: arguments.len(),
                 span,

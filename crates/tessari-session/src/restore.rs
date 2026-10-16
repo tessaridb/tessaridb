@@ -235,6 +235,7 @@ fn vetted(session: &Session<'_>, script: Script, text: &str) -> Result<(Script, 
                 namespace: chosen_namespace,
                 database: chosen_database,
                 consumer: None,
+                consumer_parameter: _,
             } => {
                 if let Some(chosen) = chosen_namespace {
                     if !namespaces.contains(&chosen.text) {

@@ -3,16 +3,33 @@
 use super::Parser;
 use tessari_types::{Duration, Number};
 
-use crate::ast::{ConsumerSource, FieldMapping, Name, OnFailure, StatementKind, TableRef};
+use crate::ast::{
+    ConsumerSource, FieldMapping, Name, OnFailure, ParameterSlot, StatementKind, TableRef,
+};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Span, Token};
 
+/// A consumer name as written: the literal, or an empty name and the parameter
+/// binding will fill it from (ADR-0127).
+pub(in crate::parser) type NamedConsumer = (String, Option<ParameterSlot>);
+
 impl Parser<'_> {
-    /// The quoted name a session claims under.
+    /// The quoted name a session claims under, or the parameter that will
+    /// supply it.
     ///
     /// A literal rather than an identifier: it is the client's own string, not a
-    /// catalog object, and nothing declares it first.
-    pub(in crate::parser) fn consumer_name(&mut self) -> Result<String> {
+    /// catalog object, and nothing declares it first. Being data, it may be a
+    /// parameter, which binding replaces with the string it holds (ADR-0127);
+    /// until then the name is empty and the slot says where it comes from.
+    pub(in crate::parser) fn consumer_name(&mut self) -> Result<NamedConsumer> {
+        if let Some(Token::Parameter(name)) = self.peek() {
+            let parameter = ParameterSlot {
+                name: name.clone(),
+                span: self.span_here(),
+            };
+            self.advance();
+            return Ok((String::new(), Some(parameter)));
+        }
         let Some(Token::Str(name)) = self.peek() else {
             return Err(self.error_here("a quoted consumer name"));
         };
@@ -24,27 +41,29 @@ impl Parser<'_> {
             // of one state is how a reader ends up asking which was meant.
             return Err(self.error_here("a consumer name with something in it"));
         }
-        Ok(name)
+        Ok((name, None))
     }
 
     /// `RELEASE jobs:7` · `RELEASE ALL FROM jobs [FOR CONSUMER 'billing']`
     pub(super) fn release_statement(&mut self, start: Span) -> Result<StatementKind> {
         if !self.eat_word("all") {
             let target = self.record_target()?;
-            let consumer = self.for_consumer()?;
+            let (consumer, consumer_parameter) = self.for_consumer()?;
             return Ok(StatementKind::Release {
                 target,
                 consumer,
+                consumer_parameter,
                 not_before: self.release_not_before()?,
                 span: start.to(self.span_behind()),
             });
         }
         self.expect_keyword(Keyword::From, "`FROM` and the queue to release")?;
         let table = self.table_ref()?;
-        let consumer = self.for_consumer()?;
+        let (consumer, consumer_parameter) = self.for_consumer()?;
         Ok(StatementKind::ReleaseAll {
             table,
             consumer,
+            consumer_parameter,
             not_before: self.release_not_before()?,
             span: start.to(self.span_behind()),
         })
@@ -65,12 +84,15 @@ impl Parser<'_> {
     /// neither `for` nor `consumer` is taken away from an application's own
     /// schema. One function rather than two copies, because the two statements
     /// mean the same thing by it: *the group's hold, not this instance's*.
-    pub(in crate::parser) fn for_consumer(&mut self) -> Result<Option<String>> {
+    pub(in crate::parser) fn for_consumer(
+        &mut self,
+    ) -> Result<(Option<String>, Option<ParameterSlot>)> {
         if !self.eat_word("for") {
-            return Ok(None);
+            return Ok((None, None));
         }
         self.expect_word("consumer", "`CONSUMER` and a quoted name after `FOR`")?;
-        Ok(Some(self.consumer_name()?))
+        let (name, parameter) = self.consumer_name()?;
+        Ok((Some(name), parameter))
     }
 
     /// `CLAIM FROM jobs` · `CLAIM 10 FROM jobs`
@@ -99,7 +121,7 @@ impl Parser<'_> {
         // `CLAIM $n FROM jobs`: the count binding supplies, checked then
         // exactly as a written one is (ADR-0124 D5).
         if let Some(Token::Parameter(name)) = self.peek() {
-            let parameter = crate::ast::CountParameter {
+            let parameter = crate::ast::ParameterSlot {
                 name: name.clone(),
                 span: self.span_here(),
             };

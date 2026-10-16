@@ -21,6 +21,31 @@ use super::*;
 /// The name itself is deliberately not returned. The one caller needs the
 /// tenancy and nothing else, and handing back a borrowed name would invite a
 /// second caller to compare strings the catalog compares by id.
+/// The name a qualified name was built from, for a message to the person who
+/// wrote it — compared by nobody; the catalog compares ids.
+pub(super) fn name_of(qualified: &str) -> &str {
+    let mut rest = qualified
+        .split_once(':')
+        .map_or(qualified, |(_, rest)| rest);
+    while let Some((head, tail)) = rest.split_once('/') {
+        if head.parse::<u32>().is_err() {
+            break;
+        }
+        rest = tail;
+    }
+    rest
+}
+
+/// A noun with its indefinite article: `a topic`, `an index`.
+pub(crate) fn with_article(noun: &str) -> String {
+    let article = if noun.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    };
+    format!("{article} {noun}")
+}
+
 pub(super) fn parse_qualified(qualified: &str) -> Option<(Level, Vec<u32>)> {
     let (tag, rest) = qualified.split_once(':')?;
     let level = Level::from_tag(tag)?;

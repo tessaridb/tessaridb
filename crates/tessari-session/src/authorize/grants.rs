@@ -181,16 +181,11 @@ impl<'a> Session<'a> {
             });
         }
 
-        // A grant is a verb on a table and there are two verbs, so the kinds
-        // collapse here: a demand answered by reading alone asks for the read,
-        // and everything else asks for the write. The statements with no table
-        // to grant on are refused above by name — a granted user cannot back up
-        // or declare — so this mapping is about the reach rather than about them.
-        let verb = if Needs::of(kind).only_reads() {
-            Verb::Read
-        } else {
-            Verb::Write
-        };
+        // The verbs a statement needs on each table it names — both for a write
+        // that also reads (ADR-0128). The statements with no table to grant on
+        // are refused above by name — a granted user cannot back up or declare —
+        // so this mapping is about the reach rather than about them.
+        let verbs: Vec<Verb> = Needs::of(kind).grant_verbs().collect();
         for table in crate::reach::tables_named(kind) {
             let mut transaction = store.begin()?;
             // A materialized view is named, not expanded, and a grant on a view
@@ -207,16 +202,18 @@ impl<'a> Session<'a> {
             // A table that does not resolve is refused by whatever resolves it,
             // with a message about the table rather than about a grant.
             let Ok((_, id)) = resolved else { continue };
-            let granted = grants
-                .iter()
-                .any(|grant| grant.table == id && grant.verbs.contains(&verb));
-            if !granted {
-                return Err(Error::NotGranted {
-                    user: user.name.clone(),
-                    table: table.name.text.clone(),
-                    needs: verb.name(),
-                    span,
-                });
+            for verb in &verbs {
+                let granted = grants
+                    .iter()
+                    .any(|grant| grant.table == id && grant.verbs.contains(verb));
+                if !granted {
+                    return Err(Error::NotGranted {
+                        user: user.name.clone(),
+                        table: table.name.text.clone(),
+                        needs: verb.name(),
+                        span,
+                    });
+                }
             }
         }
         Ok(())

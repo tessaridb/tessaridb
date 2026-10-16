@@ -551,10 +551,12 @@ pub enum Error {
     /// Refused when the statement is read rather than when it runs: the set of
     /// functions is known then, so this is a mistake that never needs a record
     /// to see.
-    #[error("{function} takes {expected} argument(s), not {found} (at {span})")]
+    #[error("{function} takes {least}{expected} argument(s), not {found} (at {span})")]
     WrongArity {
         /// The function called.
         function: Function,
+        /// `at least ` when the function is variadic (G074 C2), else nothing.
+        least: &'static str,
         /// How many it takes.
         expected: usize,
         /// How many were written.
@@ -784,6 +786,21 @@ pub enum Error {
         span: Span,
     },
 
+    /// A consumer or group name bound to something that is not a string with
+    /// something in it (ADR-0127). Refused where it was bound, for the reason
+    /// the literal `''` is: an empty name would read as *nobody said*.
+    #[error(
+        "`${name}` is bound to {found}, and a consumer name is a string with something in it (at {span})"
+    )]
+    NotAConsumerName {
+        /// The parameter's name, without its marker.
+        name: String,
+        /// What it held — its type, or `an empty string`.
+        found: String,
+        /// Where the name was written.
+        span: Span,
+    },
+
     /// A statement [`crate::render`] does not write back out as text.
     ///
     /// The renderer covers `SELECT` at this milestone. Every other form names
@@ -908,6 +925,7 @@ impl Error {
             | Self::JoinKeyIsNotAField { span, .. }
             | Self::UnboundParameter { span, .. }
             | Self::CountNotAWholeNumber { span, .. }
+            | Self::NotAConsumerName { span, .. }
             | Self::BoundTwice { span, .. }
             | Self::BindingCollidesWithParameter { span, .. }
             | Self::ReturnedTwice { span }

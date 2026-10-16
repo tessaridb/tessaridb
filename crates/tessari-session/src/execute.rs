@@ -234,6 +234,7 @@ impl Session<'_> {
             StatementKind::ReadTopic {
                 topic,
                 consumer,
+                consumer_parameter: _,
                 after,
                 limit,
             } => self.read_topic(
@@ -248,26 +249,32 @@ impl Session<'_> {
             ),
             StatementKind::DefineGroup {
                 name,
+                name_parameter: _,
                 topic,
                 if_not_exists,
                 clauses,
             } => self.define_group(transaction, name, topic, *if_not_exists, clauses, span),
-            StatementKind::DropGroup { name, topic } => {
-                self.drop_group(transaction, name, topic, span)
-            }
+            StatementKind::DropGroup {
+                name,
+                name_parameter: _,
+                topic,
+            } => self.drop_group(transaction, name, topic, span),
             StatementKind::AlterGroup {
                 name,
+                name_parameter: _,
                 topic,
                 start_at,
             } => self.alter_group(transaction, name, topic, start_at, span),
             StatementKind::AckTopic {
                 topic,
                 consumer,
+                consumer_parameter: _,
                 positions,
             } => self.ack_topic(transaction, topic, consumer, positions, span),
             StatementKind::NackTopic {
                 topic,
                 consumer,
+                consumer_parameter: _,
                 positions,
                 delay,
             } => self.nack_topic(transaction, topic, consumer, (positions, *delay), span),
@@ -996,7 +1003,8 @@ impl Session<'_> {
                 table,
                 condition,
                 limit,
-            } => self.delete_where(transaction, table, condition, *limit),
+                answer,
+            } => self.delete_where(transaction, table, condition, (*limit, *answer)),
             StatementKind::DeleteSpan {
                 table,
                 lower,
@@ -1004,6 +1012,7 @@ impl Session<'_> {
                 inclusive,
                 span: at,
                 limit,
+                answer,
             } => self.delete_span(
                 transaction,
                 table,
@@ -1013,7 +1022,7 @@ impl Session<'_> {
                     inclusive: *inclusive,
                     at: *at,
                 },
-                *limit,
+                (*limit, *answer),
             ),
             StatementKind::DefineBucket {
                 name,
@@ -1310,6 +1319,7 @@ impl Session<'_> {
             StatementKind::Release {
                 target,
                 consumer,
+                consumer_parameter: _,
                 not_before,
                 span,
             } => {
@@ -1319,6 +1329,7 @@ impl Session<'_> {
             StatementKind::ReleaseAll {
                 table,
                 consumer,
+                consumer_parameter: _,
                 not_before,
                 span,
             } => {

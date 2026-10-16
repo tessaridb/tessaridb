@@ -301,6 +301,15 @@ impl Level {
         }
     }
 
+    /// What a person calls a thing at this level, for a sentence that names one.
+    #[must_use]
+    pub const fn noun(self) -> &'static str {
+        match self {
+            Self::EdgeKind => "edge kind",
+            other => other.counter(),
+        }
+    }
+
     /// The prefix a qualified name carries at this level.
     ///
     /// Without it a namespace named `5/orders` and the database `orders` inside

@@ -267,7 +267,8 @@ mod tests {
             // The data says no to a request written right.
             (
                 store(tessari_storage::Error::NameTaken {
-                    qualified: "ns/db/t".to_owned(),
+                    holder: "a table".to_owned(),
+                    name: "t".to_owned(),
                 }),
                 RefusalClass::Conflict,
             ),

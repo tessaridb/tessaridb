@@ -541,3 +541,58 @@ fn a_default_outside_the_union_is_refused_at_declaration() {
         "DEFINE TABLE posts (status 'draft' | 'published' DEFAULT 'draft');",
     );
 }
+
+/// A name declared twice is refused saying what already holds it, by the name
+/// the caller wrote — never the catalog's internal key (G074 C4, Q-G042-1).
+#[test]
+fn a_name_declared_twice_is_refused_by_kind_and_name() {
+    let store = store();
+    let mut session = Session::new(&store);
+    ok(
+        &mut session,
+        "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
+         DEFINE TOPIC events RETAIN 1d; DEFINE QUEUE jobs TIMEOUT 30s; DEFINE COLLECTION notes;\n\
+         DEFINE INDEX by_kind ON notes FIELDS kind; DEFINE ANALYZER plain FILTERS lowercase;",
+    );
+    for (script, said) in [
+        (
+            "DEFINE TOPIC events RETAIN 1d;",
+            "a topic named events already exists",
+        ),
+        (
+            "DEFINE COLLECTION events;",
+            "a topic named events already exists",
+        ),
+        (
+            "DEFINE TABLE jobs SCHEMALESS;",
+            "a queue named jobs already exists",
+        ),
+        (
+            "DEFINE QUEUE notes TIMEOUT 1m;",
+            "a collection named notes already exists",
+        ),
+        (
+            "DEFINE INDEX by_kind ON notes FIELDS kind;",
+            "an index named by_kind already exists",
+        ),
+        (
+            "DEFINE ANALYZER plain FILTERS lowercase;",
+            "an analyzer named plain already exists",
+        ),
+        (
+            "DEFINE DATABASE shop;",
+            "a database named shop already exists",
+        ),
+        (
+            "DEFINE NAMESPACE prod;",
+            "a namespace named prod already exists",
+        ),
+    ] {
+        let message = refusal(&mut session, script);
+        assert!(message.contains(said), "{script}: {message}");
+        assert!(
+            !message.contains("tb:") && !message.contains("ns:"),
+            "{script}: {message}"
+        );
+    }
+}

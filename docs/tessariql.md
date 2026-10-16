@@ -676,6 +676,12 @@ DEFINE USER nadia ON NAMESPACE prod AUTHORITIES manage PASSWORD 'a long one';
 cannot define a table there. `nadia` creates and drops databases in `prod` and
 reads nothing in them — the headline rule, said in one statement.
 
+**A write that answers a record also needs `read`.** `ingest` may `UPSERT` and
+`DELETE`, but `DELETE orders:1 RETURN BEFORE` hands back the record as it stood,
+so it asks for `read` as well — as `CREATE` at a chosen identity, `UPDATE` and
+`DELETE FROM … WHERE` already do. A table grant follows the same rule: a write
+that reads needs both `read` and `write` on the table.
+
 `replicate` is the one kind nothing else implies, and the reason is what the log
 holds. It is not the records: it carries the definitions too, and the users,
 credentials and grants that a subscriber needs in order to admit anybody. So a
@@ -4785,6 +4791,11 @@ retention statement: "removed 12 043 readings" is an operator checking their
 policy did what they meant, and `done` is that operator running a `count(*)`
 before and after to find out.
 
+**`RETURN BEFORE` answers the records it removed instead**, each with its
+identity and as it stood, in the order they were removed — `DELETE FROM uploads
+WHERE expires < time::now() LIMIT ALL RETURN BEFORE`. Both the conditional and
+the span form take it; `RETURN AFTER` is refused, as on a single-record delete.
+
 **It finds its records the way a read does**, so an index serves the condition
 when one exists — a policy over an indexed timestamp is a bounded scan rather
 than a walk of the table. And the candidates an index offers are still tested
@@ -5289,7 +5300,9 @@ number is written in when the script is bound, so every rule a written number
 meets — the ceilings, the bound handed to the source — is met by the bound one,
 and a value that is not a whole number is refused naming the parameter
 (`CountNotAWholeNumber`). `CLAIM $n FROM jobs` takes one the same way and keeps
-its ceiling of 500.
+its ceiling of 500. A consumer or group name takes one too (`USE CONSUMER $w`,
+§6c); a table, a topic or a field never does, because a name in the catalog is
+grammar.
 
 ### Resuming a page from a record
 
@@ -5736,6 +5749,7 @@ SELECT array::first(string::split(email, '@')) AS handle FROM people;
 | `array::flatten(items)` | one level of nesting removed |
 | `array::join(items, sep)` | the elements as one text |
 | `array::slice(items, start, count)` | a run of elements |
+| `string::concat(a, b, …)` | the strings joined in order — two or more |
 | `string::split(text, sep)` | the parts between occurrences |
 | `string::slice(text, start, count)` | a run of characters |
 | `string::lines(text, start, count)` | a run of lines |
@@ -7216,6 +7230,11 @@ they divide the work between them and none displaces another. Only the
 session that declares a name, so two workers cannot collide however they are
 configured.
 
+**The name may be a bound parameter** — `USE CONSUMER $worker`, `RELEASE jobs:7
+FOR CONSUMER $worker` — because it is a string you chose, not a name in the
+catalog. The value must be a string with something in it; anything else is
+refused naming the parameter (`NotAConsumerName`).
+
 **`RELEASE ALL FROM jobs` reaches this session's own holds**, and answers the
 records it freed rather than a count. That is the safe form, and it is the one a
 worker uses when it is shutting down.
@@ -7696,6 +7715,9 @@ NACK events FOR CONSUMER 'billing' AT 43 DELAY 10s;
 ALTER GROUP 'billing' ON TOPIC events START AT 40;
 DROP GROUP 'billing' ON TOPIC events;
 ```
+
+A group's name, like a consumer's, may be a bound parameter: `DEFINE GROUP $group
+ON TOPIC events …`, `ACK events FOR CONSUMER $group AT $positions`.
 
 Once a group is declared under a name, `READ FROM … FOR CONSUMER` that name
 **hands the messages out** instead of moving a position: each one is held in
@@ -10195,7 +10217,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.35.1", "build": "0.35.1", "endpoints": ["db-1.internal:9000"],
+ "version": "0.35.2", "build": "0.35.2", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

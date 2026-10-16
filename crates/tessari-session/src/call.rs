@@ -220,9 +220,11 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
             Ok(Value::Object(held))
         }
         Function::StringConcat => {
-            let first = text_at(function, arguments, 0, span)?;
-            let second = text_at(function, arguments, 1, span)?;
-            Ok(Value::from(format!("{first}{second}").as_str()))
+            let mut joined = String::new();
+            for at in 0..arguments.len() {
+                joined.push_str(text_at(function, arguments, at, span)?);
+            }
+            Ok(Value::from(joined.as_str()))
         }
         Function::ArrayLen => {
             let items = array_at(function, arguments, 0, span)?;

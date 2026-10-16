@@ -13,6 +13,24 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.35.2 — 2026-10-16
+
+### Security
+
+- **A write that answers a record needs `read` as well as `write`.** A write-only identity or table grant could read
+  a record through `DELETE … RETURN BEFORE` or `UPSERT … RETURN …`, and a table grant asked only `write` of a write
+  that also reads (`UPDATE`, `DELETE FROM … WHERE`); both now ask for both.
+
+### Changed
+
+- **A name declared twice is refused by kind and name** — `a topic named events already exists` — rather than by the
+  catalog's internal key.
+- **`string::concat` takes two or more strings** and joins them in order.
+- **`DELETE FROM … WHERE … LIMIT … RETURN BEFORE`** answers the records it removed; the span form takes it too.
+- **A consumer or group name may be a bound parameter** — `USE CONSUMER $worker`, `DEFINE GROUP $group ON TOPIC
+  events …`, `ACK events FOR CONSUMER $group AT …`. A value that is not a non-empty string is `NotAConsumerName`.
+- **1611 conformance cases** define the language and run in the build.
+
 ## 0.35.1 — 2026-10-16
 
 ### Changed
