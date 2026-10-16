@@ -1442,6 +1442,7 @@
     for (const flag of ["collection", "vault", "bucket", "edge"]) {
       if (about[flag] === true) return flag;
     }
+    if (typeof about["dead_letter"] === "string") return "queue";
     const definition2 = about["definition"];
     for (const declared of ["series", "space", "queue"]) {
       if (typeof definition2 === "string" && definition2.startsWith(`DEFINE ${declared.toUpperCase()} `)) {
@@ -1570,7 +1571,8 @@
       identity: one2.about["identity"] ?? "",
       fields: named("fields") || "none declared",
       indexes: named("indexes") || "none",
-      events: named("events") || "none"
+      events: named("events") || "none",
+      ...typeof one2.about["dead_letter"] === "string" ? { "dead letter": one2.about["dead_letter"] } : {}
     });
     write("table-definition", typeof one2.about["definition"] === "string" ? one2.about["definition"] : "");
     openDialog("table-dialog");

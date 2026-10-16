@@ -38,6 +38,9 @@ function kind(about: Record<string, unknown>): string {
   for (const flag of ["collection", "vault", "bucket", "edge"]) {
     if (about[flag] === true) return flag;
   }
+  // A queue with a dead letter has no statement to read (its topic is held by
+  // id), and only a queue reports one.
+  if (typeof about["dead_letter"] === "string") return "queue";
   // A series, a space and a queue carry no flag of their own; the statement that
   // declared them says which, as the Series and Spaces panes already read it.
   const definition = about["definition"];
@@ -192,6 +195,7 @@ function openTable(one: Described): void {
     fields: named("fields") || "none declared",
     indexes: named("indexes") || "none",
     events: named("events") || "none",
+    ...(typeof one.about["dead_letter"] === "string" ? { "dead letter": one.about["dead_letter"] } : {}),
   });
   write("table-definition", typeof one.about["definition"] === "string" ? one.about["definition"] : "");
   openDialog("table-dialog");
