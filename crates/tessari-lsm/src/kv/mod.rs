@@ -23,6 +23,7 @@ use tessari_kv::{
 };
 use tessari_vault::AtRestKey;
 use tessarikv::{Db, DbOptions, KeyProvider, KeyspaceId, RootKey};
+use zeroize::Zeroizing;
 
 use crate::error::BACKEND_NAME;
 use crate::options::keyspace_options;
@@ -76,12 +77,13 @@ impl Drop for TessariKvBackend {
     }
 }
 
-/// The store's one key, handed to the engine when it opens a file.
-struct StoreKey([u8; tessarikv::ROOT_KEY_BYTES]);
+/// The store's one key, handed to the engine when it opens a file, and wiped when the engine
+/// lets it go.
+struct StoreKey(Zeroizing<[u8; tessarikv::ROOT_KEY_BYTES]>);
 
 impl KeyProvider for StoreKey {
     fn root_key(&self, key_id: u32) -> Option<RootKey> {
-        (key_id == KEY_ID).then(|| RootKey::new(self.0))
+        (key_id == KEY_ID).then(|| RootKey::new(*self.0))
     }
 }
 
@@ -248,7 +250,10 @@ fn database_options(
         builder = builder.keyspace(keyspace.name(), options);
     }
     if let Some(key) = key {
-        builder = builder.encryption(Arc::new(StoreKey(*key.engine().expose())), KEY_ID);
+        builder = builder.encryption(
+            Arc::new(StoreKey(Zeroizing::new(*key.engine().expose()))),
+            KEY_ID,
+        );
     }
     builder.build().map_err(|error| from_engine(&error))
 }

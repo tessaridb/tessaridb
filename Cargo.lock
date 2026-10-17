@@ -1870,6 +1870,8 @@ dependencies = [
  "tessarikv",
  "thiserror",
  "tokio",
+ "tracing",
+ "zeroize",
 ]
 
 [[package]]

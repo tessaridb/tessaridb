@@ -33,7 +33,13 @@ pub(super) fn close_in_background(runtime: &Handle, path: &Path, db: Db) {
     // and the files are what a kill would have left, which the next open recovers.
     drop(runtime.spawn(async move {
         // A close that fails leaves the files a kill would; the next open recovers from them.
-        let _ = db.close().await;
+        if let Err(failed) = db.close().await {
+            tracing::warn!(
+                store = %key.display(),
+                error = %failed,
+                "a dropped store did not close cleanly; the next open recovers from its log"
+            );
+        }
         CLOSING.remove_if(&key, |_, waiting| waiting.same_channel(&closed));
         let _ = done.send(true);
     }));
