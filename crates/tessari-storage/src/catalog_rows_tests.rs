@@ -173,3 +173,45 @@ fn a_dropped_table_is_gone_for_new_readers_and_kept_for_old_ones() {
         "a reader from before the drop lost the table its snapshot holds"
     );
 }
+
+/// What a commit asks about the namespace it writes into.
+fn namespace(fixture: &Fixture) -> Option<NamespaceId> {
+    let mut transaction = fixture.store.begin().now().unwrap();
+    Catalog::new(&mut transaction)
+        .namespace(fixture.namespace)
+        .now()
+        .unwrap()
+        .map(|definition| definition.id)
+}
+
+#[test]
+fn a_namespace_read_once_is_not_read_again() {
+    let fixture = fixture();
+    assert_eq!(namespace(&fixture), Some(fixture.namespace));
+    let before = fixture.backend.reads();
+    assert_eq!(namespace(&fixture), Some(fixture.namespace));
+    assert_eq!(
+        fixture.backend.reads() - before,
+        0,
+        "a second read of the namespace reached the backend"
+    );
+}
+
+#[test]
+fn a_dropped_namespace_is_gone_for_new_readers() {
+    let fixture = fixture();
+    assert_eq!(namespace(&fixture), Some(fixture.namespace), "warm");
+    let mut transaction = fixture.store.begin().now().unwrap();
+    assert!(
+        Catalog::new(&mut transaction)
+            .drop_namespace(fixture.namespace)
+            .now()
+            .unwrap()
+    );
+    transaction.commit().now().unwrap();
+    assert_eq!(
+        namespace(&fixture),
+        None,
+        "a reader after the drop was served the dropped namespace"
+    );
+}
