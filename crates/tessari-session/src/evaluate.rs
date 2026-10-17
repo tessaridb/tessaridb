@@ -113,16 +113,7 @@ impl Session<'_> {
         scope: Scope<'_>,
     ) -> Result<Value> {
         match &expr.kind {
-            ExprKind::Path(field) => {
-                let Some(record) = scope.record else {
-                    return Err(Error::NoRecordInScope { span: field.span });
-                };
-                // A route that reaches nothing **is** `none`: the field is not
-                // there, which is precisely what `none` says. That is what makes
-                // `WHERE email = NONE` find the records without an email
-                // without the language needing an `IS NULL` operator at all.
-                Ok(field.path.resolve(record).cloned().unwrap_or(Value::None))
-            }
+            ExprKind::Path(field) => field_value(field, scope.record),
             // A fold is replaced by the value it produced before the enclosing
             // expression is evaluated, so one reaching here is one that stood
             // somewhere a fold may not stand. The parser refuses those, which
@@ -405,13 +396,21 @@ impl Session<'_> {
     /// [`Self::evaluate_in`] for a sub-expression: an async function cannot
     /// hold itself inline, so the recursion goes through a boxed future here,
     /// once per nested sub-expression.
+    ///
+    /// A literal and a field are answered on the spot instead, with no future
+    /// to box: they are most of a condition's leaves, and a condition is
+    /// evaluated once per record a read passes over.
     pub(crate) fn evaluate_child<'s>(
         &'s self,
         transaction: &'s mut Transaction<'_>,
         expr: &'s Expr,
         scope: Scope<'s>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 's>> {
-        Box::pin(self.evaluate_in(transaction, expr, scope))
+    ) -> Child<'s> {
+        match &expr.kind {
+            ExprKind::Literal(value) => Child::Literal(value),
+            ExprKind::Path(field) => Child::Field(field, scope.record),
+            _ => Child::Nested(Box::pin(self.evaluate_in(transaction, expr, scope))),
+        }
     }
 
     async fn values(
@@ -426,6 +425,48 @@ impl Session<'_> {
         }
         Ok(values)
     }
+}
+
+/// The future [`Session::evaluate_child`] hands back.
+///
+/// A leaf holds only what answering it reads and is answered when first
+/// polled, so it is no larger than the boxed future beside it: every future
+/// awaiting a sub-expression holds one of these, and those futures are moved.
+pub(crate) enum Child<'s> {
+    /// A literal, answered on the spot.
+    Literal(&'s Value),
+    /// A field of the record in scope, answered on the spot.
+    Field(&'s FieldPath, Option<&'s Value>),
+    /// Anything that recurses.
+    Nested(std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 's>>),
+}
+
+impl std::future::Future for Child<'_> {
+    type Output = Result<Value>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        match self.get_mut() {
+            Self::Literal(value) => std::task::Poll::Ready(Ok((*value).clone())),
+            Self::Field(field, record) => std::task::Poll::Ready(field_value(field, *record)),
+            Self::Nested(nested) => nested.as_mut().poll(context),
+        }
+    }
+}
+
+/// The value a field path reaches in the record in scope.
+///
+/// A route that reaches nothing **is** `none`: the field is not there, which is
+/// precisely what `none` says. That is what makes `WHERE email = NONE` find the
+/// records without an email without the language needing an `IS NULL` operator
+/// at all.
+fn field_value(field: &FieldPath, record: Option<&Value>) -> Result<Value> {
+    let Some(record) = record else {
+        return Err(Error::NoRecordInScope { span: field.span });
+    };
+    Ok(field.path.resolve(record).cloned().unwrap_or(Value::None))
 }
 
 /// What a read's projection produces, worked out once above the records.
