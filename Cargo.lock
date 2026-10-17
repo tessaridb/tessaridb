@@ -502,7 +502,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1382,7 +1382,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1494,7 +1494,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b55fb86dfd3a2f5f76ea78310a88f96c4ea21a3031f8d212443d56123fd0521"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1705,7 +1705,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2020,8 +2020,8 @@ dependencies = [
 
 [[package]]
 name = "tessarikv"
-version = "0.0.1"
-source = "git+ssh://git@github.com/TessariDB/tessarikv.git?rev=99271078050c19a5f8e5ef234e93bcda2f912eec#99271078050c19a5f8e5ef234e93bcda2f912eec"
+version = "0.0.2"
+source = "git+ssh://git@github.com/TessariDB/tessarikv.git?tag=v0.0.2#e5d1aa99482e42fb8e310d146dc14ed44ba97e22"
 dependencies = [
  "arc-swap",
  "papaya",
@@ -2036,13 +2036,13 @@ dependencies = [
 
 [[package]]
 name = "tessarikv-constants"
-version = "0.0.1"
-source = "git+ssh://git@github.com/TessariDB/tessarikv.git?rev=99271078050c19a5f8e5ef234e93bcda2f912eec#99271078050c19a5f8e5ef234e93bcda2f912eec"
+version = "0.0.2"
+source = "git+ssh://git@github.com/TessariDB/tessarikv.git?tag=v0.0.2#e5d1aa99482e42fb8e310d146dc14ed44ba97e22"
 
 [[package]]
 name = "tessarikv-format"
-version = "0.0.1"
-source = "git+ssh://git@github.com/TessariDB/tessarikv.git?rev=99271078050c19a5f8e5ef234e93bcda2f912eec#99271078050c19a5f8e5ef234e93bcda2f912eec"
+version = "0.0.2"
+source = "git+ssh://git@github.com/TessariDB/tessarikv.git?tag=v0.0.2#e5d1aa99482e42fb8e310d146dc14ed44ba97e22"
 dependencies = [
  "aes-gcm",
  "chacha20poly1305",
@@ -2062,8 +2062,8 @@ dependencies = [
 
 [[package]]
 name = "tessarikv-sync"
-version = "0.0.1"
-source = "git+ssh://git@github.com/TessariDB/tessarikv.git?rev=99271078050c19a5f8e5ef234e93bcda2f912eec#99271078050c19a5f8e5ef234e93bcda2f912eec"
+version = "0.0.2"
+source = "git+ssh://git@github.com/TessariDB/tessarikv.git?tag=v0.0.2#e5d1aa99482e42fb8e310d146dc14ed44ba97e22"
 dependencies = [
  "crossbeam-utils",
  "loom",
@@ -2072,8 +2072,8 @@ dependencies = [
 
 [[package]]
 name = "tessarikv-types"
-version = "0.0.1"
-source = "git+ssh://git@github.com/TessariDB/tessarikv.git?rev=99271078050c19a5f8e5ef234e93bcda2f912eec#99271078050c19a5f8e5ef234e93bcda2f912eec"
+version = "0.0.2"
+source = "git+ssh://git@github.com/TessariDB/tessarikv.git?tag=v0.0.2#e5d1aa99482e42fb8e310d146dc14ed44ba97e22"
 dependencies = [
  "tessarikv-constants",
  "thiserror",

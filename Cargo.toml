@@ -16,7 +16,7 @@ tessari-types = { path = "crates/tessari-types", version = "0.35.3" }
 tessari-constants = { path = "crates/tessari-constants", version = "0.35.3" }
 tessari-kv = { path = "crates/tessari-kv", version = "0.35.3" }
 # The storage engine, by git tag until it is on crates.io (G077 D6).
-tessarikv = { git = "ssh://git@github.com/TessariDB/tessarikv.git", rev = "99271078050c19a5f8e5ef234e93bcda2f912eec" }
+tessarikv = { git = "ssh://git@github.com/TessariDB/tessarikv.git", tag = "v0.0.2" }
 tessari-encoding = { path = "crates/tessari-encoding", version = "0.35.3" }
 tessari-geo = { path = "crates/tessari-geo", version = "0.35.3" }
 tessari-storage = { path = "crates/tessari-storage", version = "0.35.3" }
