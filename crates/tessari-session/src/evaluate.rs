@@ -409,6 +409,25 @@ impl Session<'_> {
         match &expr.kind {
             ExprKind::Literal(value) => Child::Literal(value),
             ExprKind::Path(field) => Child::Field(field, scope.record),
+            // A comparison between two leaves, which is what most conditions
+            // are made of, compares the values where they lie.
+            ExprKind::Binary { op, left, right }
+                if !matches!(
+                    op,
+                    BinaryOp::Matches
+                        | BinaryOp::MatchesPrefix
+                        | BinaryOp::MatchesFuzzy
+                        | BinaryOp::MatchesInfix
+                ) =>
+            {
+                match (leaf(left, scope.record), leaf(right, scope.record)) {
+                    (Some(held), Some(other)) => {
+                        scope.compared_by(*op, held, other);
+                        Child::Answered(apply(*op, held, other))
+                    }
+                    _ => Child::Nested(Box::pin(self.evaluate_in(transaction, expr, scope))),
+                }
+            }
             _ => Child::Nested(Box::pin(self.evaluate_in(transaction, expr, scope))),
         }
     }
@@ -437,6 +456,8 @@ pub(crate) enum Child<'s> {
     Literal(&'s Value),
     /// A field of the record in scope, answered on the spot.
     Field(&'s FieldPath, Option<&'s Value>),
+    /// A comparison already answered.
+    Answered(bool),
     /// Anything that recurses.
     Nested(std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 's>>),
 }
@@ -451,8 +472,24 @@ impl std::future::Future for Child<'_> {
         match self.get_mut() {
             Self::Literal(value) => std::task::Poll::Ready(Ok((*value).clone())),
             Self::Field(field, record) => std::task::Poll::Ready(field_value(field, *record)),
+            Self::Answered(holds) => std::task::Poll::Ready(Ok(Value::Bool(*holds))),
             Self::Nested(nested) => nested.as_mut().poll(context),
         }
+    }
+}
+
+/// What a leaf denotes, borrowed where it lies: a literal, or a field of the
+/// record in scope that reaches one value. Anything else, including a field
+/// with no record to read, is answered by the full evaluation instead.
+fn leaf<'s>(expr: &'s Expr, record: Option<&'s Value>) -> Option<&'s Value> {
+    /// What a route that reaches nothing denotes.
+    static NONE: Value = Value::None;
+    match &expr.kind {
+        ExprKind::Literal(value) => Some(value),
+        ExprKind::Path(field) if !field.path.is_several() => {
+            record.map(|record| field.path.resolve(record).unwrap_or(&NONE))
+        }
+        _ => None,
     }
 }
 
