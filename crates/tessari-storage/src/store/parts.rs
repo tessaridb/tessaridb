@@ -174,7 +174,21 @@ impl Store {
     ///
     /// Returns an error when the version position cannot be read or decoded.
     pub async fn begin(&self) -> Result<Transaction<'_>> {
-        Ok(Transaction::new(self, self.committed_version().await?))
+        // The turn's holder derives on what is staged behind it, which only the
+        // engine's view through the gate shows; every other reader begins at
+        // the newest version landed, held in memory (`crate::landed`).
+        let at = if self.writing.holding() {
+            self.committed_version().await?
+        } else {
+            self.landed.version()
+        };
+        Ok(Transaction::new(self, at))
+    }
+
+    /// Record that the batch at `version` has landed, before whoever wrote it
+    /// is answered (`crate::landed`).
+    pub(crate) fn landed_at(&self, version: Sequence) {
+        self.landed.publish(version);
     }
 
     /// [`Self::begin`], deciding every intent from this node's own copy —
@@ -228,17 +242,19 @@ impl Store {
     ///
     /// Versions strictly older than the newest version at or below this may be
     /// reclaimed; nothing at or above it may be. With no reader live the floor is
-    /// the newest version written, because a transaction that begins next will
+    /// the newest version landed, because a transaction that begins next will
     /// begin there.
     ///
     /// # Errors
     ///
-    /// Returns an error when the version position cannot be read, which is only
-    /// consulted when no snapshot is live.
+    /// None today; the signature keeps a floor that is read rather than held.
     pub async fn retention_floor(&self) -> Result<Sequence> {
         match self.snapshots.oldest() {
             Some(oldest) => Ok(oldest),
-            None => self.committed_version().await,
+            // What a transaction beginning next would begin at, which may be
+            // below the engine's tail for a moment after a landing: a floor
+            // above it would reclaim what that transaction reads.
+            None => Ok(self.landed.version()),
         }
     }
 

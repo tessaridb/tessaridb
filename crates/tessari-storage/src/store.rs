@@ -195,6 +195,9 @@ impl Health {
 pub struct Store {
     backend: Arc<dyn KvBackend>,
     snapshots: Arc<Registry>,
+    /// The newest version landed, which a transaction begins at
+    /// (`crate::landed`). Shared like the registry: one store, one tail.
+    landed: Arc<crate::landed::Landed>,
     /// What this process is doing with the declared consumers.
     ///
     /// Shared like the snapshot registry and for the same reason: a session

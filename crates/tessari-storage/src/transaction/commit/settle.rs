@@ -336,6 +336,7 @@ impl Transaction<'_> {
                 };
                 match landed {
                     Ok(()) => {
+                        self.store.landed_at(commit_version);
                         // Counted HERE and not where it was decided. The decision is
                         // re-taken on every attempt, so an attempt that loses its
                         // batch would otherwise count a loss it never caused — and

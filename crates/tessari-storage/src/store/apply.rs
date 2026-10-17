@@ -266,6 +266,7 @@ impl Store {
             self.writing
                 .apply(batch, self.backend.as_ref(), landing)
                 .await?;
+            self.landed_at(version);
             return Ok(());
         }
         let batch = crate::index::maintain(self, record, batch, version).await?;
@@ -311,6 +312,7 @@ impl Store {
             self.shards.forget(&taught);
             return Err(failed.into());
         }
+        self.landed_at(version);
         Ok(())
     }
 
