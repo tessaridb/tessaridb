@@ -402,9 +402,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// A catalog row at this transaction's snapshot, from the rows held
     /// between statements when it is one of theirs and the snapshot allows it
     /// (`rows`); any other row is read through the transaction.
-    async fn row(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
+    async fn row(&self, address: &RecordAddress) -> Result<Option<std::sync::Arc<[u8]>>> {
         if !CatalogRows::holds(address) || self.transaction.has_written(address) {
-            return self.transaction.get(address).await;
+            return Ok(self.transaction.get(address).await?.map(Into::into));
         }
         let store = self.transaction.store();
         let fill = match store
@@ -415,7 +415,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             rows::Lookup::Missing(fill) => fill,
         };
         let reads_landed = self.reads_only_landed();
-        let row = self.transaction.get(address).await?;
+        let row: Option<std::sync::Arc<[u8]>> =
+            self.transaction.get(address).await?.map(Into::into);
         if let Some(generation) = fill
             && reads_landed
         {

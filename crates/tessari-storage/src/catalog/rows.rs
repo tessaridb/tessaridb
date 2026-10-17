@@ -41,7 +41,7 @@
 //! refilled, as in `decoded`.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use tessari_encoding::LogRecord;
 use tessari_types::{DatabaseId, NamespaceId, Sequence, TableId};
@@ -66,7 +66,8 @@ pub(crate) struct CatalogRows {
 struct Held {
     changed_at: Sequence,
     generation: u64,
-    rows: HashMap<RecordAddress, Option<Vec<u8>>>,
+    /// Shared rather than copied out: a statement reads several of these.
+    rows: HashMap<RecordAddress, Option<Arc<[u8]>>>,
     /// The ids claimed under one prefix of `NAMES`, in id order (`children`).
     spans: HashMap<String, Vec<u32>>,
 }
@@ -98,7 +99,7 @@ impl CatalogRows {
         &self,
         address: &RecordAddress,
         snapshot: Sequence,
-    ) -> Lookup<Option<Vec<u8>>> {
+    ) -> Lookup<Option<Arc<[u8]>>> {
         self.find(snapshot, |held| held.rows.get(address).cloned())
     }
 
@@ -123,7 +124,7 @@ impl CatalogRows {
 
     /// Keep a row read at a snapshot [`Self::lookup`] allowed to fill, unless the
     /// catalog changed since.
-    pub(crate) fn fill(&self, address: RecordAddress, generation: u64, row: Option<Vec<u8>>) {
+    pub(crate) fn fill(&self, address: RecordAddress, generation: u64, row: Option<Arc<[u8]>>) {
         self.keep(generation, |held| {
             held.rows.insert(address, row);
         });
