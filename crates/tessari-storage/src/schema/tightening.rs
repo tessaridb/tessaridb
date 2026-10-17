@@ -54,7 +54,7 @@ pub(crate) async fn declared_schema(
     view: &mut Transaction<'_>,
     table: TableId,
 ) -> Result<TableSchema> {
-    let defined = Catalog::new(view).table(table).await?;
+    let defined = Catalog::new(view).table_shared(table).await?;
     let name = defined
         .as_ref()
         .map(|found| found.name.clone())

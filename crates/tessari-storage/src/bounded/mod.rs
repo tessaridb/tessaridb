@@ -47,14 +47,14 @@ async fn limits_in(
         if !seen.insert(space) {
             continue;
         }
-        let Some(definition) = Catalog::new(view).table(mutation.table).await? else {
+        let Some(definition) = Catalog::new(view).table_shared(mutation.table).await? else {
             continue;
         };
         if definition.namespace != mutation.namespace || definition.database != mutation.database {
             continue;
         }
         if let TableKind::Space(SpaceDeclaration { limit: Some(limit) }) = definition.kind {
-            found.insert(space, (definition.name, limit));
+            found.insert(space, (definition.name.clone(), limit));
         }
     }
     Ok(found)

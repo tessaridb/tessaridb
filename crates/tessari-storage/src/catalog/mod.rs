@@ -153,9 +153,26 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     ///
     /// Returns an error when the stored definition cannot be read.
     pub async fn table(&self, id: TableId) -> Result<Option<TableDefinition>> {
-        // The row is read here, at this transaction's snapshot, as every catalog
-        // read is — held between statements when the snapshot allows (`rows`) —
-        // and decoding it is shared (`decoded`).
+        Ok(self
+            .table_shared(id)
+            .await?
+            .map(std::sync::Arc::unwrap_or_clone))
+    }
+
+    /// [`Catalog::table`] without the copy, for a caller that only reads it.
+    ///
+    /// The row is read here, at this transaction's snapshot, as every catalog
+    /// read is (held between statements when the snapshot allows, `rows`),
+    /// and decoding it is shared (`decoded`), so the definition handed back is
+    /// the one every other reader of the same bytes holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub async fn table_shared(
+        &self,
+        id: TableId,
+    ) -> Result<Option<std::sync::Arc<TableDefinition>>> {
         let address: RecordAddress =
             system::address(system::TABLES, RecordId::Int(id_key(id.get())));
         let Some(stored) = self.row(&address).await? else {
@@ -164,7 +181,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         self.transaction
             .store()
             .decoded_tables()
-            .definition(&stored)
+            .definition(id, &stored)
             .map(Some)
     }
 

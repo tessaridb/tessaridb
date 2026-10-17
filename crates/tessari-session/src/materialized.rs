@@ -358,7 +358,7 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         view: TableId,
     ) -> Result<Option<Kept>> {
-        let Some(definition) = Catalog::new(transaction).table(view).await? else {
+        let Some(definition) = Catalog::new(transaction).table_shared(view).await? else {
             return Ok(None);
         };
         let TableKind::View(declared) = &definition.kind else {

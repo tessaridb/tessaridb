@@ -214,7 +214,7 @@ impl Session<'_> {
         // The same refusal `Session::writable` gives, reached directly for the
         // same reason `insert` reaches it directly: that one takes a record
         // target and this statement names no record.
-        let definition = Catalog::new(transaction).table(id).await?;
+        let definition = Catalog::new(transaction).table_shared(id).await?;
         if definition.as_ref().is_some_and(|found| found.is_bucket()) {
             return Err(Error::NotWrittenByHand {
                 table: table.name.text.clone(),
@@ -230,7 +230,13 @@ impl Session<'_> {
         // A topic's repeated key, asked before an identity is spent on it
         // (ADR-0124 D8); a record the store names has no identity to repeat.
         let marker = self
-            .dedup_marker(transaction, definition.as_ref(), None, &payload, table.span)
+            .dedup_marker(
+                transaction,
+                definition.as_deref(),
+                None,
+                &payload,
+                table.span,
+            )
             .await?;
         if let Some(marker) = &marker
             && marker.seen(transaction).await?
@@ -325,10 +331,13 @@ impl Session<'_> {
                 });
             }
         }
-        let (kind, partition, spread) = Catalog::new(transaction).table(table).await?.map_or_else(
-            || (IdentityKind::default(), None, false),
-            |found| (found.identity, found.partition, found.spread),
-        );
+        let (kind, partition, spread) = Catalog::new(transaction)
+            .table_shared(table)
+            .await?
+            .map_or_else(
+                || (IdentityKind::default(), None, false),
+                |found| (found.identity, found.partition.clone(), found.spread),
+            );
         loop {
             let identity = match kind {
                 // A partitioned table names a record by its field's value and a
@@ -429,7 +438,7 @@ impl Session<'_> {
         // hand can lie about them. The same refusal `Session::writable` gives,
         // for the same reason — reached here directly because that one takes a
         // record target and an insert names no record.
-        let definition = Catalog::new(transaction).table(id).await?;
+        let definition = Catalog::new(transaction).table_shared(id).await?;
         if definition.as_ref().is_some_and(|found| found.is_bucket()) {
             return Err(Error::NotWrittenByHand {
                 table: table.name.text.clone(),
@@ -452,7 +461,13 @@ impl Session<'_> {
             // A row repeating a topic's key is skipped, its siblings appended
             // (ADR-0124 D8).
             let marker = self
-                .dedup_marker(transaction, definition.as_ref(), None, &payload, table.span)
+                .dedup_marker(
+                    transaction,
+                    definition.as_deref(),
+                    None,
+                    &payload,
+                    table.span,
+                )
                 .await?;
             if let Some(marker) = &marker
                 && marker.seen(transaction).await?

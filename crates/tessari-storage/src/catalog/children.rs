@@ -173,7 +173,7 @@ impl Catalog<'_, '_> {
     ///
     /// Returns an error when a stored definition cannot be read.
     pub async fn declared_fields(&self, table: TableId) -> Result<Vec<FieldDefinition>> {
-        match self.table(table).await? {
+        match self.table_shared(table).await? {
             Some(defined) => {
                 self.fields_on(defined.namespace, defined.database, table)
                     .await

@@ -54,14 +54,14 @@ async fn topics_in(
         if !seen.insert(topic) {
             continue;
         }
-        let Some(definition) = Catalog::new(view).table(mutation.table).await? else {
+        let Some(definition) = Catalog::new(view).table_shared(mutation.table).await? else {
             continue;
         };
         if definition.namespace != mutation.namespace || definition.database != mutation.database {
             continue;
         }
-        if let TableKind::Topic(declared) = definition.kind {
-            found.insert(topic, (definition.name, declared));
+        if let TableKind::Topic(declared) = &definition.kind {
+            found.insert(topic, (definition.name.clone(), declared.clone()));
         }
     }
     Ok(found)

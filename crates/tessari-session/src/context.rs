@@ -160,7 +160,7 @@ impl Session<'_> {
         // correct empty result. The statements that legitimately name a view —
         // `DROP VIEW` and `INFO` — ask the catalog directly, the way
         // `drop_vault` already does.
-        if let Some(definition) = Catalog::new(transaction).table(id).await?
+        if let Some(definition) = Catalog::new(transaction).table_shared(id).await?
             && matches!(definition.kind, TableKind::View(_))
         {
             return Err(Error::ViewIsNotATable {
@@ -182,7 +182,7 @@ impl Session<'_> {
         table: &TableRef,
     ) -> Result<(Context, TableId)> {
         let (context, id) = self.resolve_any_table(transaction, table).await?;
-        if let Some(definition) = Catalog::new(transaction).table(id).await?
+        if let Some(definition) = Catalog::new(transaction).table_shared(id).await?
             && let TableKind::View(declared) = &definition.kind
             && !declared.materialized
         {
