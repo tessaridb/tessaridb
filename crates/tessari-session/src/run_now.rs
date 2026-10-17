@@ -28,12 +28,14 @@ pub trait RunNow {
     fn run_with_now(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>>;
 }
 
+// Boxed: a statement's future is large, and handing it to the runtime by value
+// copies it on the way in, which a harness timing a statement would count.
 impl RunNow for Session<'_> {
     fn run_now(&mut self, source: &str) -> Result<Vec<Outcome>> {
-        now(self.run(source))
+        now(Box::pin(self.run(source)))
     }
 
     fn run_with_now(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
-        now(self.run_with(source, parameters))
+        now(Box::pin(self.run_with(source, parameters)))
     }
 }
