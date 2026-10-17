@@ -16,6 +16,8 @@ use std::path::{Component, Path, PathBuf};
 use tessari_ql::{BackupForm, ReachRef};
 use tessari_types::{Number, Value};
 
+use tessari_vault::off_the_worker;
+
 use crate::error::{Error, Result};
 use crate::outcome::Outcome;
 use crate::session::Session;
@@ -43,10 +45,10 @@ impl Session<'_> {
         let size = if form == BackupForm::State {
             let within = self.state_scope(of).await?;
             self.refuse_a_partial_snapshot(within).await?;
-            let mut partial = Partial::create(&target);
+            let mut partial = off_the_worker(|| Partial::create(&target));
             let wrote = async {
                 let file = partial.file()?;
-                let out = std::io::BufWriter::new(file);
+                let out = std::io::BufWriter::with_capacity(WRITE_BUFFER_BYTES, OffTheWorker(file));
                 match &self.at_rest {
                     Some(key) => {
                         let mut sealing =
@@ -69,7 +71,7 @@ impl Session<'_> {
                 }
             }
             .await;
-            partial.land(form, self.at_rest.as_deref(), wrote)?
+            off_the_worker(|| partial.land(form, self.at_rest.as_deref(), wrote))?
         } else {
             let bytes = match self.backup(from, form, of).await? {
                 Outcome::Value(Value::Bytes(bytes)) => bytes,
@@ -80,12 +82,11 @@ impl Session<'_> {
                     });
                 }
             };
-            let mut partial = Partial::create(&target);
+            let mut partial = off_the_worker(|| Partial::create(&target));
             let wrote = partial.file().and_then(|file| {
-                file.write_all(&bytes)
-                    .map_err(|failure| failure.to_string())
+                off_the_worker(|| file.write_all(&bytes)).map_err(|failure| failure.to_string())
             });
-            partial.land(form, self.at_rest.as_deref(), wrote)?
+            off_the_worker(|| partial.land(form, self.at_rest.as_deref(), wrote))?
         };
         let mut answer = std::collections::BTreeMap::new();
         answer.insert(
@@ -273,6 +274,25 @@ pub(crate) fn readable(folder: &Path, name: &str) -> Result<PathBuf> {
             "it is not a file, and a link is not followed",
         )),
         Err(_) => Err(name_refused(name, "no such file in the backup folder")),
+    }
+}
+
+/// How much of a streamed snapshot is held before it is written: each write is
+/// a hand-off of the worker (`off_the_worker`), so it is paid per mebibyte
+/// rather than per record.
+const WRITE_BUFFER_BYTES: usize = 1 << 20;
+
+/// A file written from a statement's task, each write taken off the worker
+/// the task runs on.
+struct OffTheWorker<W>(W);
+
+impl<W: std::io::Write> std::io::Write for OffTheWorker<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        off_the_worker(|| self.0.write(bytes))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        off_the_worker(|| self.0.flush())
     }
 }
 

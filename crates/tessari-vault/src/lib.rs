@@ -80,10 +80,12 @@ pub mod error;
 pub mod keys;
 pub mod seal;
 pub mod secret;
+mod worker;
 
 pub use at_rest::AtRestKey;
 pub use envelope::{Binding, Level};
 pub use error::{Error, Result};
-pub use keys::{Root, Wrapped, off_the_worker};
+pub use keys::{Root, Wrapped};
 pub use seal::Keyring;
 pub use secret::{KEY_BYTES, KeyId, SecretBytes};
+pub use worker::off_the_worker;

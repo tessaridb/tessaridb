@@ -38,12 +38,14 @@ impl Session<'_> {
         // A sealed script opens with this node's key and is read whole before
         // any of it is vetted, so a file cut or altered refuses here.
         let mut text = String::new();
-        fs::File::open(&path)
-            .and_then(|file| tessari_vault::at_rest::reading(self.at_rest.as_deref(), file))
-            .and_then(|mut opened| std::io::Read::read_to_string(&mut opened, &mut text))
-            .map_err(|failure| Error::BackupFailed {
-                reason: format!("{}: {failure}", path.display()),
-            })?;
+        tessari_vault::off_the_worker(|| {
+            fs::File::open(&path)
+                .and_then(|file| tessari_vault::at_rest::reading(self.at_rest.as_deref(), file))
+                .and_then(|mut opened| std::io::Read::read_to_string(&mut opened, &mut text))
+        })
+        .map_err(|failure| Error::BackupFailed {
+            reason: format!("{}: {failure}", path.display()),
+        })?;
         let script = tessari_ql::parse(&text)
             .and_then(|script| script.bind(&Parameters::new()))
             .map_err(|failure| {
