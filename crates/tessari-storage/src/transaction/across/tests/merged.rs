@@ -1,6 +1,7 @@
 //! The coordinator's range written in two commits rather than four (ADR-0112
 //! D13a, D13b): begun with its own writes, concluded with their resolution.
 
+use crate::now::Now;
 use tessari_encoding::{Decision, Part, TransactionRecord};
 use tessari_types::Sequence;
 
@@ -10,15 +11,19 @@ use crate::transaction::Committed;
 
 impl Fixture {
     fn begin(&self, seen: Sequence) -> Result<Committed> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().now()?;
         transaction.put(self.address(), b"new".to_vec());
-        transaction.begin_across(TRANSACTION, self.record(Decision::Staging), seen)
+        transaction
+            .begin_across(TRANSACTION, self.record(Decision::Staging), seen)
+            .now()
     }
 
     fn conclude(&self, decided: TransactionRecord) -> Result<Committed> {
         self.store
-            .begin()?
+            .begin()
+            .now()?
             .conclude_across(TRANSACTION, decided, &[self.address()])
+            .now()
     }
 
     fn concluded(&self, decision: Decision) -> TransactionRecord {
@@ -45,7 +50,7 @@ fn a_begin_writes_the_record_and_the_intents_in_one_log_record() -> Result<()> {
             .is_some_and(|provenance| provenance.provisional)
     }));
     assert_eq!(
-        fixture.store.transaction_record(TRANSACTION)?,
+        fixture.store.transaction_record(TRANSACTION).now()?,
         Some(fixture.record(Decision::Staging))
     );
     assert_eq!(fixture.read()?, Some(b"old".to_vec()));
@@ -56,15 +61,15 @@ fn a_begin_writes_the_record_and_the_intents_in_one_log_record() -> Result<()> {
 fn a_begin_is_refused_for_a_record_written_after_what_its_node_had_seen() -> Result<()> {
     let fixture = Fixture::new()?;
     let seen = fixture.seen()?;
-    let mut other = fixture.store.begin()?;
+    let mut other = fixture.store.begin().now()?;
     other.put(fixture.address(), b"meanwhile".to_vec());
-    other.commit()?;
+    other.commit().now()?;
     let refused = fixture.begin(seen);
     assert!(
         matches!(refused, Err(Error::Conflict { .. })),
         "{refused:?}"
     );
-    assert_eq!(fixture.store.transaction_record(TRANSACTION)?, None);
+    assert_eq!(fixture.store.transaction_record(TRANSACTION).now()?, None);
     // Control: from the newer position the same begin is admitted.
     fixture.begin(fixture.seen()?)?;
     Ok(())
@@ -79,7 +84,7 @@ fn a_begin_after_its_absent_record_was_aborted_is_refused() -> Result<()> {
         matches!(refused, Err(Error::AcrossDecided { decided: "aborted" })),
         "{refused:?}"
     );
-    assert!(fixture.store.intents_of(TRANSACTION)?.is_empty());
+    assert!(fixture.store.intents_of(TRANSACTION).now()?.is_empty());
     Ok(())
 }
 
@@ -101,11 +106,11 @@ fn a_conclude_decides_and_resolves_in_one_log_record() -> Result<()> {
         .collect();
     assert_eq!(carried, vec![(false, fixture.prepared())]);
     assert_eq!(
-        fixture.store.transaction_record(TRANSACTION)?,
+        fixture.store.transaction_record(TRANSACTION).now()?,
         Some(fixture.concluded(Decision::Committed))
     );
     assert_eq!(fixture.read()?, Some(b"new".to_vec()));
-    assert!(fixture.store.intents_of(TRANSACTION)?.is_empty());
+    assert!(fixture.store.intents_of(TRANSACTION).now()?.is_empty());
     Ok(())
 }
 
@@ -115,9 +120,9 @@ fn a_conclude_that_aborts_frees_the_record() -> Result<()> {
     fixture.begin(fixture.seen()?)?;
     fixture.conclude(fixture.record(Decision::Aborted))?;
     assert_eq!(fixture.read()?, Some(b"old".to_vec()));
-    let mut next = fixture.store.begin()?;
+    let mut next = fixture.store.begin().now()?;
     next.put(fixture.address(), b"later".to_vec());
-    next.commit()?;
+    next.commit().now()?;
     assert_eq!(fixture.read()?, Some(b"later".to_vec()));
     Ok(())
 }
@@ -150,14 +155,15 @@ fn a_follower_applies_the_leaders_begin_and_conclusion_as_written() -> Result<()
     for at in [begun.sequence, concluded.sequence] {
         follower
             .store
-            .apply_record_in(follower.log, at, &leader.logged(at)?)?;
+            .apply_record_in(follower.log, at, &leader.logged(at)?)
+            .now()?;
     }
     assert_eq!(follower.read()?, Some(b"new".to_vec()));
     assert_eq!(
-        follower.store.transaction_record(TRANSACTION)?,
+        follower.store.transaction_record(TRANSACTION).now()?,
         Some(leader.concluded(Decision::Committed))
     );
-    assert!(follower.store.intents_of(TRANSACTION)?.is_empty());
+    assert!(follower.store.intents_of(TRANSACTION).now()?.is_empty());
     Ok(())
 }
 
@@ -173,10 +179,10 @@ impl crate::Decisions for Counting {
         &self,
         _: tessari_encoding::TransactionId,
         _: tessari_types::Reach,
-    ) -> Option<TransactionRecord> {
+    ) -> crate::Deciding<'_> {
         self.asked
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Some(self.record.clone())
+        Box::pin(std::future::ready(Some(self.record.clone())))
     }
 }
 
@@ -200,7 +206,8 @@ fn applying_a_conclusion_never_asks_the_records_leader() -> Result<()> {
     for at in [begun.sequence, concluded.sequence] {
         follower
             .store
-            .apply_record_in(follower.log, at, &leader.logged(at)?)?;
+            .apply_record_in(follower.log, at, &leader.logged(at)?)
+            .now()?;
     }
     assert_eq!(
         counting.asked.load(std::sync::atomic::Ordering::Relaxed),
@@ -219,8 +226,10 @@ fn a_bar_lands_in_the_range_and_refuses_the_prepare_after_it() -> Result<()> {
     let seen = fixture.seen()?;
     let barred = fixture
         .store
-        .begin()?
-        .prevent_across(TRANSACTION, fixture.coordinator())?;
+        .begin()
+        .now()?
+        .prevent_across(TRANSACTION, fixture.coordinator())
+        .now()?;
     let logged = fixture.logged(barred.sequence)?;
     assert_eq!(
         logged.part_of().map(|across| &across.part),

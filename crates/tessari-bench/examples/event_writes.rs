@@ -11,6 +11,8 @@
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -21,9 +23,9 @@ const ROUNDS: u32 = 7;
 
 fn round(table: &str) -> Result<(f64, usize), Box<dyn Error>> {
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
-    let store = Store::open(backend)?;
+    let store = Store::open(backend).now()?;
     let mut session = Session::new(&store);
-    session.run(
+    session.run_now(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench; DEFINE DATABASE e; USE DATABASE e; \
          DEFINE COLLECTION plain; DEFINE COLLECTION orders; DEFINE COLLECTION audit; \
          DEFINE EVENT noted ON orders FOR CREATE THEN { \
@@ -31,10 +33,10 @@ fn round(table: &str) -> Result<(f64, usize), Box<dyn Error>> {
     )?;
     let began = Instant::now();
     for n in 0..WRITES {
-        session.run(&format!("CREATE {table}:{n} = {{ total: {n} }};"))?;
+        session.run_now(&format!("CREATE {table}:{n} = {{ total: {n} }};"))?;
     }
     let spent = began.elapsed().as_secs_f64() * 1e6 / f64::from(WRITES);
-    let rows = session.run("SELECT * FROM audit;")?;
+    let rows = session.run_now("SELECT * FROM audit;")?;
     let audited = rows
         .last()
         .and_then(|outcome| outcome.records())

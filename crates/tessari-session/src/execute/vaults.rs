@@ -35,7 +35,7 @@ impl Session<'_> {
     /// creating a vault nothing can ever write to, and a declaration that
     /// succeeded and left the key for later would be a vault that refuses every
     /// write while `INFO` reports it as ready.
-    pub(super) fn define_vault(
+    pub(super) async fn define_vault(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
@@ -49,9 +49,12 @@ impl Session<'_> {
         // vault that accepts every write and opens nothing, with both halves
         // looking correct in isolation.
         let custody = match passphrase {
-            Some(passphrase) => self.own_vault_custody(transaction, name, passphrase, span)?,
+            Some(passphrase) => {
+                self.own_vault_custody(transaction, name, passphrase, span)
+                    .await?
+            }
             None => {
-                let context = self.context(transaction, None, span)?;
+                let context = self.context(transaction, None, span).await?;
                 VaultCustody::Store(tessari_storage::mint_vault_key(
                     self.store,
                     context.namespace,
@@ -91,6 +94,7 @@ impl Session<'_> {
             if_not_exists,
             span,
         )
+        .await
     }
 
     /// `DROP VAULT team` — the crypto-shred.
@@ -105,28 +109,30 @@ impl Session<'_> {
     /// It does **not** require an unsealed store. Destroying a key needs no key,
     /// and demanding one would mean a store that cannot be unsealed can never be
     /// cleaned up — which is exactly the store an operator most wants to shred.
-    pub(super) fn drop_vault(
+    pub(super) async fn drop_vault(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         let missing = || Error::Unknown {
             entity: "vault",
             name: name.text.clone(),
             span,
         };
         let id = Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &name.text)?
+            .table_id(context.namespace, context.database, &name.text)
+            .await?
             .ok_or_else(missing)?;
         let is_vault = Catalog::new(transaction)
-            .table(id)?
+            .table(id)
+            .await?
             .is_some_and(|definition| definition.is_vault());
         if !is_vault {
             return Err(missing());
         }
-        Catalog::new(transaction).drop_table(id)?;
+        Catalog::new(transaction).drop_table(id).await?;
         Ok(Outcome::Done)
     }
 
@@ -145,14 +151,14 @@ impl Session<'_> {
     /// who expected *unsealed* and reads *initialised* knows immediately, while
     /// the store still holds nothing. Q-415 carries the open question of whether
     /// initialisation should be its own statement anyway.
-    pub(super) fn unseal_vault(
+    pub(super) async fn unseal_vault(
         &self,
         transaction: &mut Transaction<'_>,
         passphrase: &str,
         span: Span,
     ) -> Result<Outcome> {
         let _ = span;
-        if let Some(root) = Catalog::new(transaction).vault_root()? {
+        if let Some(root) = Catalog::new(transaction).vault_root().await? {
             unseal_throttled(self.store, &root, passphrase)?;
             return Ok(Outcome::Value(Value::from("unsealed")));
         }
@@ -167,7 +173,7 @@ impl Session<'_> {
     /// the same master key is wrapped under the new one and the root record
     /// replaced in this transaction. Nothing else moves: the process stays
     /// sealed or unsealed as it was, and every secret keeps its bytes.
-    pub(super) fn change_passphrase(
+    pub(super) async fn change_passphrase(
         &self,
         transaction: &mut Transaction<'_>,
         current: &str,
@@ -175,7 +181,7 @@ impl Session<'_> {
         span: Span,
     ) -> Result<Outcome> {
         let _ = span;
-        let Some(root) = Catalog::new(transaction).vault_root()? else {
+        let Some(root) = Catalog::new(transaction).vault_root().await? else {
             return Err(Error::NoVaultRoot);
         };
         let moved = guessed(self.store, &root, || {
@@ -212,7 +218,7 @@ impl Session<'_> {
     /// may not reach a table learns nothing from these verbs that `SELECT`
     /// would not have told them, and one who may reach it gets a message naming
     /// the word they should have used.
-    pub(crate) fn vault_record(
+    pub(crate) async fn vault_record(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
@@ -223,14 +229,15 @@ impl Session<'_> {
             name: target.table.name.text.clone(),
             span,
         };
-        let (_context, address) = self.address(transaction, target)?;
+        let (_context, address) = self.address(transaction, target).await?;
         let definition = Catalog::new(transaction)
-            .table(address.table)?
+            .table(address.table)
+            .await?
             .ok_or_else(missing)?;
         if !definition.is_vault() {
             return Err(missing());
         }
-        let Some(stored) = transaction.get(&address)? else {
+        let Some(stored) = transaction.get(&address).await? else {
             return Err(Error::NoSuchRecord {
                 id: address.id.to_string(),
                 span,
@@ -248,13 +255,13 @@ impl Session<'_> {
     /// a field reference here would otherwise have the store quote whatever that
     /// field holds back at them, and on a vault's record that is the one thing
     /// this feature exists to keep unquoted.
-    pub(super) fn recipient_name(
+    pub(super) async fn recipient_name(
         &self,
         transaction: &mut Transaction<'_>,
         expression: &tessari_ql::Expr,
         span: Span,
     ) -> Result<String> {
-        match self.evaluate(transaction, expression)? {
+        match self.evaluate(transaction, expression).await? {
             Value::String(name) => Ok(name),
             other => Err(Error::RecipientIsNotAName {
                 found: other.type_name(),
@@ -280,7 +287,7 @@ impl Session<'_> {
     /// refused at declaration, and no indexed value changes. The test that
     /// holds this true reads through an index on a plain field after a
     /// recipient is added.
-    pub(super) fn change_recipients(
+    pub(super) async fn change_recipients(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
@@ -290,7 +297,7 @@ impl Session<'_> {
             &str,
         ) -> std::result::Result<(), tessari_storage::Error>,
     ) -> Result<Outcome> {
-        let (address, definition, mut held) = self.vault_record(transaction, target, span)?;
+        let (address, definition, mut held) = self.vault_record(transaction, target, span).await?;
         change(&mut held, &definition.name)?;
         transaction.put(address, encode_payload(&Value::Object(held)).into_bytes());
         Ok(Outcome::Done)
@@ -315,37 +322,40 @@ impl Session<'_> {
     /// A trail that cannot be written **refuses**, including refusing to report
     /// the refusal it was trying to record. That is deliberate: the alternative
     /// leaks whether a record exists to a caller who has disabled the trail.
-    pub(super) fn reveal(
+    pub(super) async fn reveal(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
         fields: &[Name],
         span: Span,
     ) -> Result<Outcome> {
-        let (_context, address) = self.address(transaction, target)?;
-        let opened = self.open_secrets(transaction, target, fields, span);
+        let (_context, address) = self.address(transaction, target).await?;
+        let opened = self.open_secrets(transaction, target, fields, span).await;
         let asked: Vec<String> = fields.iter().map(|field| field.text.clone()).collect();
         let record = address.id.to_literal();
-        self.store.audit().record(
-            self.store,
-            &tessari_storage::VaultRead {
-                actor: self
-                    .identity
-                    .user()
-                    .map_or("anonymous", |user| user.name.as_str()),
-                namespace: address.namespace,
-                database: address.database,
-                vault: &target.table.name.text,
-                record: &record,
-                fields: &asked,
-                served: opened.is_ok(),
-            },
-        )?;
+        self.store
+            .audit()
+            .record(
+                self.store,
+                &tessari_storage::VaultRead {
+                    actor: self
+                        .identity
+                        .user()
+                        .map_or("anonymous", |user| user.name.as_str()),
+                    namespace: address.namespace,
+                    database: address.database,
+                    vault: &target.table.name.text,
+                    record: &record,
+                    fields: &asked,
+                    served: opened.is_ok(),
+                },
+            )
+            .await?;
         opened
     }
 
     /// The opening itself, with no knowledge that it is being recorded.
-    pub(super) fn open_secrets(
+    pub(super) async fn open_secrets(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
@@ -357,15 +367,19 @@ impl Session<'_> {
             name: target.table.name.text.clone(),
             span,
         };
-        let (_context, address) = self.address(transaction, target)?;
+        let (_context, address) = self.address(transaction, target).await?;
         let id = address.table;
-        let definition = Catalog::new(transaction).table(id)?.ok_or_else(missing)?;
+        let definition = Catalog::new(transaction)
+            .table(id)
+            .await?
+            .ok_or_else(missing)?;
         if !definition.is_vault() {
             return Err(missing());
         }
 
         let secrets: BTreeMap<String, ()> = Catalog::new(transaction)
-            .declared_fields(id)?
+            .declared_fields(id)
+            .await?
             .into_iter()
             .filter(|field| field.secret)
             .map(|field| (field.name, ()))
@@ -389,7 +403,7 @@ impl Session<'_> {
             fields.iter().map(|field| field.text.clone()).collect()
         };
 
-        let Some(stored) = transaction.get(&address)? else {
+        let Some(stored) = transaction.get(&address).await? else {
             return Ok(Outcome::Value(Value::None));
         };
         let Value::Object(held) = decode_payload(&stored)? else {
@@ -420,7 +434,7 @@ impl Session<'_> {
     /// alternative — noticing at index-build time — would accept the statement
     /// and fail later, by which point the declaration is in the catalog and the
     /// failure looks like the data's fault.
-    pub(super) fn refuse_indexing_a_secret(
+    pub(super) async fn refuse_indexing_a_secret(
         &self,
         transaction: &mut Transaction<'_>,
         id: TableId,
@@ -428,13 +442,15 @@ impl Session<'_> {
         fields: &[tessari_ql::FieldPath],
     ) -> Result<()> {
         if !Catalog::new(transaction)
-            .table(id)?
+            .table(id)
+            .await?
             .is_some_and(|definition| definition.is_vault())
         {
             return Ok(());
         }
         let secrets: Vec<String> = Catalog::new(transaction)
-            .declared_fields(id)?
+            .declared_fields(id)
+            .await?
             .into_iter()
             .filter(|field| field.secret)
             .map(|field| field.name)

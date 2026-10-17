@@ -24,13 +24,17 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Error, Outcome, Session};
 use tessari_storage::Store;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// The same rows, the same analyzer, and an index only when asked for.
@@ -41,7 +45,7 @@ fn peopled(indexed: bool) -> Store {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
@@ -56,7 +60,7 @@ fn peopled(indexed: bool) -> Store {
         .unwrap();
     if indexed {
         session
-            .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+            .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
             .unwrap();
     }
     store
@@ -65,7 +69,7 @@ fn peopled(indexed: bool) -> Store {
 /// The ids a read answered with, sorted so two paths compare as sets, and the
 /// path it took.
 fn answered(session: &mut Session<'_>, read: &str) -> (Vec<String>, AccessPath) {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -85,9 +89,10 @@ fn both(statement: &str) -> Vec<String> {
     let scanned = peopled(false);
     let mut with = Session::new(&indexed);
     let mut without = Session::new(&scanned);
-    with.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+    with.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
     without
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     let (left, path) = answered(&mut with, statement);
     let (right, _) = answered(&mut without, statement);
@@ -161,9 +166,9 @@ fn a_prefix_shorter_than_the_contract_is_refused_and_the_refusal_names_the_limit
             let store = peopled(indexed);
             let mut session = Session::new(&store);
             session
-                .run("USE NAMESPACE prod; USE DATABASE shop;")
+                .run_now("USE NAMESPACE prod; USE DATABASE shop;")
                 .unwrap();
-            let error = session.run(statement).unwrap_err();
+            let error = session.run_now(statement).unwrap_err();
             assert!(
                 matches!(error, Error::PrefixTooShort { .. }),
                 "indexed={indexed} {statement:?}: {error:?}"
@@ -194,7 +199,7 @@ fn a_prefix_past_the_expansion_cap_is_answered_by_the_scan_and_not_refused() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER plain FILTERS lowercase;\n\
@@ -204,7 +209,7 @@ fn a_prefix_past_the_expansion_cap_is_answered_by_the_scan_and_not_refused() {
         .unwrap();
     for n in 0..65_u32 {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE notes:{n} = {{ body: 'wide{n:04} common' }};"
             ))
             .unwrap();
@@ -212,7 +217,7 @@ fn a_prefix_past_the_expansion_cap_is_answered_by_the_scan_and_not_refused() {
     // A narrow prefix reaching two of them, to prove the cap is what changed the
     // path and not the fixture.
     session
-        .run("CREATE notes:900 = { body: 'narrowly common' };")
+        .run_now("CREATE notes:900 = { body: 'narrowly common' };")
         .unwrap();
 
     let (before, path) = answered(
@@ -223,7 +228,7 @@ fn a_prefix_past_the_expansion_cap_is_answered_by_the_scan_and_not_refused() {
     assert_eq!(before.len(), 65);
 
     session
-        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
         .unwrap();
 
     let (after, path) = answered(
@@ -259,7 +264,7 @@ fn the_index_serves_a_prefix_and_the_scan_serves_it_when_there_is_none() {
     let indexed = peopled(true);
     let mut session = Session::new(&indexed);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     let (found, path) = answered(
         &mut session,
@@ -271,7 +276,7 @@ fn the_index_serves_a_prefix_and_the_scan_serves_it_when_there_is_none() {
     let scanned = peopled(false);
     let mut session = Session::new(&scanned);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     let (found, path) = answered(
         &mut session,
@@ -317,7 +322,7 @@ fn a_starred_word_is_served_by_the_index() {
     let indexed = peopled(true);
     let mut session = Session::new(&indexed);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     let (_, path) = answered(
         &mut session,
@@ -336,9 +341,9 @@ fn a_starred_word_shorter_than_three_letters_is_refused_on_both_paths() {
         let held = peopled(indexed);
         let mut session = Session::new(&held);
         session
-            .run("USE NAMESPACE prod; USE DATABASE shop;")
+            .run_now("USE NAMESPACE prod; USE DATABASE shop;")
             .unwrap();
-        let refused = session.run("SELECT id FROM notes WHERE body MATCHES 'search ve*';");
+        let refused = session.run_now("SELECT id FROM notes WHERE body MATCHES 'search ve*';");
         assert!(
             matches!(refused, Err(Error::PrefixTooShort { ref prefix, .. }) if prefix == "ve"),
             "indexed {indexed}: {refused:?}"
@@ -354,7 +359,7 @@ fn blended() -> Store {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
@@ -373,7 +378,7 @@ fn blended() -> Store {
 }
 
 fn ranked(session: &mut Session<'_>, read: &str) -> Vec<(String, f64)> {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -402,7 +407,7 @@ fn a_starred_word_is_scored_as_one_blended_term() {
     let held = blended();
     let mut session = Session::new(&held);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     // The last form has no `WHERE`: it is the read the pruned top-k walk serves.
     for (filter, limit) in [
@@ -460,7 +465,7 @@ fn a_blended_prefix_keeps_its_most_held_expansions() {
             "CREATE notes:{common} = {{ body: 'pfxcommon' }};\n"
         ));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     let found = ranked(
         &mut session,
         "SELECT id, search::score(body, 'pfx*') AS score FROM notes WHERE body MATCHES 'pfxcommon';",

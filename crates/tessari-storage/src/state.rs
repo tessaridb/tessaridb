@@ -98,19 +98,19 @@ pub struct StateReader<'a> {
 impl<'a> StateReader<'a> {
     /// Begin reading `store`'s state as a peer subscribed at `within` would be
     /// given it; [`Reach::Store`] is all of it. See [`Store::read_state`].
-    pub(crate) fn open(store: &'a Store, within: Reach) -> Result<Self> {
+    pub(crate) async fn open(store: &'a Store, within: Reach) -> Result<Self> {
         loop {
-            let before = store.committed_version()?;
+            let before = store.committed_version().await?;
             let mut positions = Vec::new();
-            for log in store.logs()? {
+            for log in store.logs().await? {
                 // The logs a collect at this reach may read: inside it, or
                 // above it carrying the definitions it needs.
                 if within.contains(log.home) || log.home.contains(within) {
-                    positions.push((log, store.committed_tail(log)?));
+                    positions.push((log, store.committed_tail(log).await?));
                 }
             }
-            let view = store.begin_at(before)?;
-            if store.committed_version()? == before {
+            let view = store.begin_at(before).await?;
+            if store.committed_version().await? == before {
                 return Ok(Self {
                     store,
                     within,
@@ -147,7 +147,7 @@ impl StateReader<'_> {
     /// # Errors
     ///
     /// Returns an error when the index keyspace cannot be read.
-    pub fn topic_heads(&self) -> Result<Vec<TopicHead>> {
+    pub async fn topic_heads(&self) -> Result<Vec<TopicHead>> {
         let request = ScanRequest {
             keyspace: TopicHeadKey::keyspace(),
             range: KeyRange::prefix(&[TopicHeadKey::KIND.tag()]),
@@ -155,7 +155,7 @@ impl StateReader<'_> {
             limit: None,
         };
         let mut heads = Vec::new();
-        for (key, value) in self.store.backend().scan(&request)? {
+        for (key, value) in self.store.backend().scan(&request).await? {
             let key = TopicHeadKey::decode(key.as_slice())?;
             if !self
                 .within
@@ -182,7 +182,7 @@ impl StateReader<'_> {
     /// # Errors
     ///
     /// Returns an error when the store cannot be read or a stored value decoded.
-    pub fn next_chunk(&mut self, limit: usize) -> Result<Option<LogRecord>> {
+    pub async fn next_chunk(&mut self, limit: usize) -> Result<Option<LogRecord>> {
         let mut mutations: Vec<Mutation> = self.held.take().into_iter().collect();
         while mutations.len() < limit && !self.finished && self.held.is_none() {
             let lower = self.after.clone().map_or(Bound::Unbounded, Bound::Excluded);
@@ -192,7 +192,7 @@ impl StateReader<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(PAGE),
             };
-            let page = self.store.backend().sweep(&request)?;
+            let page = self.store.backend().sweep(&request).await?;
             // The last page, but only once it has been walked to its end: a
             // chunk that stops part-way resumes after the key it stopped at.
             let last = page.len() < PAGE;
@@ -221,14 +221,14 @@ impl StateReader<'_> {
                 // passed over for the one under it, as a reader passes over
                 // it; an intent the snapshot does show is the record, but
                 // restored as the intent it is. Both go after the records.
-                let shown = !self.view.passes_over(&value)?;
+                let shown = !self.view.passes_over(&value).await?;
                 let provisional = crate::intents::is_intent(&value);
                 if shown {
                     self.decided = Some(prefix);
                 }
                 if !shown || provisional {
                     let at = stored.version;
-                    if let Some(mutation) = self.carried(stored, value)? {
+                    if let Some(mutation) = self.carried(stored, value).await? {
                         self.tail.hold(at, mutation);
                     }
                     continue;
@@ -236,7 +236,7 @@ impl StateReader<'_> {
                 if matches!(value.value(), RecordValue::Tombstone) {
                     continue;
                 }
-                let Some(mutation) = self.carried(stored, value)? else {
+                let Some(mutation) = self.carried(stored, value).await? else {
                     continue;
                 };
                 // The catalog is restored in chunks of its own, and all of it
@@ -260,15 +260,19 @@ impl StateReader<'_> {
             }
         }
         if mutations.is_empty() {
-            return self.tail.next(self.store, self.version, self.within);
+            return self.tail.next(self.store, self.version, self.within).await;
         }
         Ok(Some(LogRecord::new(mutations)))
     }
 
     /// `stored` as a mutation of the state, or `None` when it falls outside
     /// the part of the store read.
-    fn carried(&mut self, stored: RecordKey, value: StampedValue) -> Result<Option<Mutation>> {
-        let shard = self.shard_of(&stored)?;
+    async fn carried(
+        &mut self,
+        stored: RecordKey,
+        value: StampedValue,
+    ) -> Result<Option<Mutation>> {
+        let shard = self.shard_of(&stored).await?;
         let mutation = Mutation {
             namespace: stored.namespace,
             database: stored.database,
@@ -287,7 +291,7 @@ impl StateReader<'_> {
 
     /// The shard of a split table a record falls in, as the catalog at the
     /// version read says.
-    fn shard_of(&mut self, stored: &RecordKey) -> Result<Option<ShardId>> {
+    async fn shard_of(&mut self, stored: &RecordKey) -> Result<Option<ShardId>> {
         if stored.namespace == system::SYSTEM_NAMESPACE {
             return Ok(None);
         }
@@ -295,7 +299,8 @@ impl StateReader<'_> {
             Some(known) => known.clone(),
             None => {
                 let found = crate::catalog::Catalog::new(&mut self.view)
-                    .table(stored.table)?
+                    .table(stored.table)
+                    .await?
                     .and_then(|definition| definition.shards)
                     .map(Arc::new);
                 self.maps.insert(stored.table, found.clone());

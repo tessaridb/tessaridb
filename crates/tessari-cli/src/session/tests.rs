@@ -1,6 +1,7 @@
 #![allow(clippy::panic)]
 
 use std::io::Cursor;
+use tessari_storage::Now;
 
 use tessaridb::{Db, Parameters};
 
@@ -32,7 +33,7 @@ fn abandoning_throws_away_the_half_typed_statement_and_nothing_else() {
     // fragment joining the next statement, and what must also not happen is
     // "input ended inside an unfinished statement" at the end — the input
     // did not end, it was withdrawn.
-    let db = Db::in_memory().expect("a database");
+    let db = Db::in_memory().now().expect("a database");
     let mut store = Embedded::new(&db, None, Parameters::new()).expect("a session");
     let mut input = Scripted(
         [
@@ -60,7 +61,7 @@ fn abandoning_throws_away_the_half_typed_statement_and_nothing_else() {
 }
 
 fn ran(script: &str, mode: Mode) -> (String, Ended) {
-    let db = Db::in_memory().expect("a database");
+    let db = Db::in_memory().now().expect("a database");
     let mut store = Embedded::new(&db, None, Parameters::new()).expect("a session");
     let mut input = Piped::new(Cursor::new(script.as_bytes().to_vec()));
     let mut out = Vec::new();

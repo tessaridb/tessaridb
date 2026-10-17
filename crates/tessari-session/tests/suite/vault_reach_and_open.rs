@@ -22,6 +22,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -39,11 +41,13 @@ const USING: &str = "USE NAMESPACE prod; USE DATABASE work;";
 /// statement names finds nothing to refuse — so a test built on one would assert
 /// nothing at all.
 fn store() -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     {
         let mut session = Session::new(&store);
         session
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod;
                  DEFINE DATABASE work; USE DATABASE work;
                  UNSEAL VAULT WITH 'an operator passphrase';
@@ -55,8 +59,8 @@ fn store() -> Store {
             ))
             .unwrap();
         let mut root = Session::new(&store);
-        root.sign_in("root", PASSWORD).unwrap();
-        root.run(&format!(
+        root.sign_in("root", PASSWORD).now().unwrap();
+        root.run_now(&format!(
             "{USING}
              DEFINE USER ada ON prod.work ROLE editor PASSWORD '{PASSWORD}';
              GRANT read, write ON notes TO ada;"
@@ -68,8 +72,8 @@ fn store() -> Store {
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
-    session.run(USING).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
+    session.run_now(USING).unwrap();
     session
 }
 
@@ -80,13 +84,13 @@ fn every_grant_and_no_key_is_refused_at_decryption() {
 
     // The control first: with the keyring open, this exact user reads the
     // secret. So the refusal below is about the key and not about the user.
-    let opened = root.run("REVEAL token FROM team:'github';").unwrap();
+    let opened = root.run_now("REVEAL token FROM team:'github';").unwrap();
     assert!(format!("{opened:?}").contains(PLANTED));
 
-    root.run("SEAL VAULT;").unwrap();
+    root.run_now("SEAL VAULT;").unwrap();
 
     let refused = root
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .expect_err("a sealed store served a secret to an owner")
         .to_string();
 
@@ -111,7 +115,7 @@ fn the_key_without_the_grant_is_refused_at_the_door() {
     let mut ada = signed_in(&store, "ada");
 
     let refused = ada
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .expect_err("an ungranted user read a vault")
         .to_string();
 
@@ -130,8 +134,8 @@ fn the_grant_alone_does_not_carry_the_key() {
     let store = store();
     {
         let mut root = signed_in(&store, "root");
-        root.run("GRANT read, write ON team TO ada;").unwrap();
-        root.run("SEAL VAULT;").unwrap();
+        root.run_now("GRANT read, write ON team TO ada;").unwrap();
+        root.run_now("SEAL VAULT;").unwrap();
     }
 
     // Ada now holds the grant the previous test said she lacked, and the store
@@ -139,7 +143,7 @@ fn the_grant_alone_does_not_carry_the_key() {
     // rows in the ledger and separate mechanisms in the code.
     let mut ada = signed_in(&store, "ada");
     let refused = ada
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .expect_err("a granted user opened a sealed vault")
         .to_string();
     assert!(refused.contains("sealed"), "{refused}");
@@ -153,10 +157,10 @@ fn the_key_alone_does_not_carry_the_grant() {
         // an act somebody took rather than left over from the fixture. Unsealing
         // is store-wide and is the operator's, not any one user's.
         let mut root = signed_in(&store, "root");
-        root.run("SEAL VAULT; UNSEAL VAULT WITH 'an operator passphrase';")
+        root.run_now("SEAL VAULT; UNSEAL VAULT WITH 'an operator passphrase';")
             .unwrap();
         // The control: the keyring really is open now.
-        let opened = root.run("REVEAL token FROM team:'github';").unwrap();
+        let opened = root.run_now("REVEAL token FROM team:'github';").unwrap();
         assert!(format!("{opened:?}").contains(PLANTED));
     }
 
@@ -164,7 +168,7 @@ fn the_key_alone_does_not_carry_the_grant() {
     // address this one. The unsealing changed nothing about who may reach what.
     let mut ada = signed_in(&store, "ada");
     let refused = ada
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .expect_err("an ungranted user read a vault on an unsealed store")
         .to_string();
     assert!(refused.contains("team"), "{refused}");

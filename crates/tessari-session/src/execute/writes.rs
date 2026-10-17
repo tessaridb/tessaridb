@@ -34,7 +34,7 @@ impl Session<'_> {
     /// transformation and the payload is downstream of it. It also returns early
     /// for a table whose schema constrains nothing, which is exactly the table
     /// most geometry will be written to.
-    pub(crate) fn put_record(
+    pub(crate) async fn put_record(
         &self,
         transaction: &mut Transaction<'_>,
         address: RecordAddress,
@@ -42,6 +42,7 @@ impl Session<'_> {
         span: Span,
     ) -> Result<()> {
         self.put_record_sealing(transaction, address, payload, None, span)
+            .await
     }
 
     /// The same write, made by the engine rather than by a caller.
@@ -51,7 +52,7 @@ impl Session<'_> {
     /// refuses. A named path rather than a flag, so that "this write may set the
     /// engine's fields" is a thing the reader can see at the call site instead of
     /// a `true` in an argument list.
-    pub(crate) fn put_engine_record(
+    pub(crate) async fn put_engine_record(
         &self,
         transaction: &mut Transaction<'_>,
         address: RecordAddress,
@@ -59,6 +60,7 @@ impl Session<'_> {
         span: Span,
     ) -> Result<()> {
         self.write_record(transaction, address, payload, None, span)
+            .await
     }
 
     /// The same write, told which fields a partial vault edit supplied.
@@ -69,7 +71,7 @@ impl Session<'_> {
     /// envelopes and only the named fields are plaintext, so the record's own
     /// data key and key set are reused — which is what keeps a recipient's wrap
     /// valid across an edit.
-    pub(super) fn put_record_sealing(
+    pub(super) async fn put_record_sealing(
         &self,
         transaction: &mut Transaction<'_>,
         address: RecordAddress,
@@ -90,33 +92,39 @@ impl Session<'_> {
         // engine's fields, and carry forward the ones a whole-record write
         // simply left out.
         let mut payload = payload;
-        crate::queue::hold_engine_fields(transaction, &address, &mut payload, span)?;
-        crate::series::hold_event_time(transaction, &address, &payload, span)?;
+        crate::queue::hold_engine_fields(transaction, &address, &mut payload, span).await?;
+        crate::series::hold_event_time(transaction, &address, &payload, span).await?;
         // A table with events runs them after the write, in this same
         // transaction (ADR-0110); one without pays the definition read.
-        let events = self.events_before(transaction, &address)?;
+        let events = self.events_before(transaction, &address).await?;
         let evented = events.as_ref().map(|_| address.clone());
         // A series with rollups keeps them in this same transaction (ADR-0088
         // §6); every other table pays one registry lookup for asking.
-        match self.rollups_before(transaction, &address, span)? {
-            None => self.write_record(transaction, address, payload, partial, span)?,
+        match self.rollups_before(transaction, &address, span).await? {
+            None => {
+                self.write_record(transaction, address, payload, partial, span)
+                    .await?
+            }
             Some(held) => {
-                self.write_record(transaction, address.clone(), payload.clone(), partial, span)?;
-                self.rollups_after(transaction, &address, held, Some(&payload), span)?;
+                self.write_record(transaction, address.clone(), payload.clone(), partial, span)
+                    .await?;
+                self.rollups_after(transaction, &address, held, Some(&payload), span)
+                    .await?;
             }
         }
         if let (Some(pending), Some(at)) = (events, evented) {
             // What the write stored, read back rather than the payload handed
             // in: defaults, snapping and the engine's carried fields are all
             // applied by now, and `$after` is the record as a reader finds it.
-            let stored = match transaction.get(&at)? {
+            let stored = match transaction.get(&at).await? {
                 Some(bytes) => Some(
                     tessari_encoding::decode_payload(&bytes)
                         .map_err(tessari_storage::Error::from)?,
                 ),
                 None => None,
             };
-            self.events_after(transaction, &at, pending, stored.as_ref())?;
+            self.events_after(transaction, &at, pending, stored.as_ref())
+                .await?;
         }
         Ok(())
     }
@@ -128,7 +136,7 @@ impl Session<'_> {
     /// funnel refuses — have a path that is *named* rather than a flag passed
     /// into a shared one. A reader at the call site can see which kind of write
     /// it is without following an argument.
-    pub(super) fn write_record(
+    pub(super) async fn write_record(
         &self,
         transaction: &mut Transaction<'_>,
         address: RecordAddress,
@@ -144,14 +152,17 @@ impl Session<'_> {
         // the backup in one move. A vault write reaching the encoder unsealed is
         // the failure this placement exists to make unreachable.
         let payload = match partial {
-            Some(edit) => tessari_storage::reseal_named(
-                transaction,
-                &address,
-                payload,
-                &edit.keys,
-                &edit.named,
-            )?,
-            None => tessari_storage::seal_secrets(transaction, &address, payload)?,
+            Some(edit) => {
+                tessari_storage::reseal_named(
+                    transaction,
+                    &address,
+                    payload,
+                    &edit.keys,
+                    &edit.named,
+                )
+                .await?
+            }
+            None => tessari_storage::seal_secrets(transaction, &address, payload).await?,
         };
         // Checked on exactly what is encoded, after sealing, because that is
         // what the decoder will be asked to follow on every read.
@@ -189,7 +200,7 @@ impl Session<'_> {
     /// with for the same reason. One shape for one idea, so the surface that
     /// renders it has one arm to add rather than two to keep in step — this
     /// project's own scar on that is `plan/reported.rs`.
-    pub(super) fn create_named_by_the_store(
+    pub(super) async fn create_named_by_the_store(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
@@ -198,12 +209,12 @@ impl Session<'_> {
         expire: Option<&tessari_ql::WriteExpiry>,
         span: Span,
     ) -> Result<Outcome> {
-        let (context, id) = self.resolve_table(transaction, table)?;
-        let settled = self.resolve_write_expiry(transaction, id, expire)?;
+        let (context, id) = self.resolve_table(transaction, table).await?;
+        let settled = self.resolve_write_expiry(transaction, id, expire).await?;
         // The same refusal `Session::writable` gives, reached directly for the
         // same reason `insert` reaches it directly: that one takes a record
         // target and this statement names no record.
-        let definition = Catalog::new(transaction).table(id)?;
+        let definition = Catalog::new(transaction).table_shared(id).await?;
         if definition.as_ref().is_some_and(|found| found.is_bucket()) {
             return Err(Error::NotWrittenByHand {
                 table: table.name.text.clone(),
@@ -214,14 +225,21 @@ impl Session<'_> {
         // does not spend a number. The counter is transactional and would roll
         // back anyway; not spending it keeps the sequence gapless for a reader,
         // and a gap in a sequence reads as a deletion.
-        let payload = self.evaluate(transaction, value)?;
-        let payload = self.with_defaults(transaction, id, payload)?;
+        let payload = self.evaluate(transaction, value).await?;
+        let payload = self.with_defaults(transaction, id, payload).await?;
         // A topic's repeated key, asked before an identity is spent on it
         // (ADR-0124 D8); a record the store names has no identity to repeat.
-        let marker =
-            self.dedup_marker(transaction, definition.as_ref(), None, &payload, table.span)?;
+        let marker = self
+            .dedup_marker(
+                transaction,
+                definition.as_deref(),
+                None,
+                &payload,
+                table.span,
+            )
+            .await?;
         if let Some(marker) = &marker
-            && marker.seen(transaction)?
+            && marker.seen(transaction).await?
         {
             return Ok(match answer {
                 Answer::After => Outcome::Value(Value::None),
@@ -230,9 +248,12 @@ impl Session<'_> {
         }
         // Free by construction — `free_identity` does the read that establishes
         // it, so nothing here writes over a record that was already there.
-        let identity = self.free_identity(transaction, &context, id, &payload, table.span)?;
+        let identity = self
+            .free_identity(transaction, &context, id, &payload, table.span)
+            .await?;
         let address = RecordAddress::new(context.namespace, context.database, id, identity.clone());
-        self.put_record(transaction, address.clone(), payload.clone(), span)?;
+        self.put_record(transaction, address.clone(), payload.clone(), span)
+            .await?;
         super::expiry::settle_write_expiry(transaction, &address, settled);
         if let Some(marker) = marker {
             marker.leave(transaction);
@@ -278,7 +299,7 @@ impl Session<'_> {
     /// A repeated **UUID** is not walked past. It cannot happen unless the
     /// machine's randomness is broken, and a store that quietly drew again would
     /// be hiding that rather than reporting it.
-    pub(crate) fn free_identity(
+    pub(crate) async fn free_identity(
         &self,
         transaction: &mut Transaction<'_>,
         context: &Context,
@@ -294,11 +315,12 @@ impl Session<'_> {
         // that instant is drawn again rather than refused.
         let mut attempts = 0_u32;
         while let Some(identity) =
-            crate::series::event_identity(transaction, context.namespace, table, payload, span)?
+            crate::series::event_identity(transaction, context.namespace, table, payload, span)
+                .await?
         {
             let address =
                 RecordAddress::new(context.namespace, context.database, table, identity.clone());
-            if transaction.get(&address)?.is_none() {
+            if transaction.get(&address).await?.is_none() {
                 return Ok(identity);
             }
             attempts = attempts.saturating_add(1);
@@ -309,10 +331,13 @@ impl Session<'_> {
                 });
             }
         }
-        let (kind, partition, spread) = Catalog::new(transaction).table(table)?.map_or_else(
-            || (IdentityKind::default(), None, false),
-            |found| (found.identity, found.partition, found.spread),
-        );
+        let (kind, partition, spread) = Catalog::new(transaction)
+            .table_shared(table)
+            .await?
+            .map_or_else(
+                || (IdentityKind::default(), None, false),
+                |found| (found.identity, found.partition.clone(), found.spread),
+            );
         loop {
             let identity = match kind {
                 // A partitioned table names a record by its field's value and a
@@ -344,7 +369,7 @@ impl Session<'_> {
                     }
                 }
                 IdentityKind::Int => {
-                    let number = Catalog::new(transaction).next_record_number(table)?;
+                    let number = Catalog::new(transaction).next_record_number(table).await?;
                     // The counter is a `u64` and a record identity is an `i64`,
                     // so the boundary is crossed with a check rather than an
                     // `as`. It cannot refuse — the counter declines to *store* a
@@ -362,7 +387,7 @@ impl Session<'_> {
             };
             let address =
                 RecordAddress::new(context.namespace, context.database, table, identity.clone());
-            if transaction.get(&address)?.is_none() {
+            if transaction.get(&address).await?.is_none() {
                 return Ok(identity);
             }
             if matches!(kind, IdentityKind::Uuid) {
@@ -398,7 +423,7 @@ impl Session<'_> {
     /// choose the identity and cannot choose the next one, so this is not the
     /// existence oracle that keeps `CREATE` at `read` + `write`. `INSERT` needs
     /// `write` alone — see `identity::Needs::of`.
-    pub(super) fn insert(
+    pub(super) async fn insert(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
@@ -407,13 +432,13 @@ impl Session<'_> {
         expire: Option<&tessari_ql::WriteExpiry>,
         span: Span,
     ) -> Result<Outcome> {
-        let (context, id) = self.resolve_table(transaction, table)?;
-        let settled = self.resolve_write_expiry(transaction, id, expire)?;
+        let (context, id) = self.resolve_table(transaction, table).await?;
+        let settled = self.resolve_write_expiry(transaction, id, expire).await?;
         // A bucket's records describe bytes the store holds, so one written by
         // hand can lie about them. The same refusal `Session::writable` gives,
         // for the same reason — reached here directly because that one takes a
         // record target and an insert names no record.
-        let definition = Catalog::new(transaction).table(id)?;
+        let definition = Catalog::new(transaction).table_shared(id).await?;
         if definition.as_ref().is_some_and(|found| found.is_bucket()) {
             return Err(Error::NotWrittenByHand {
                 table: table.name.text.clone(),
@@ -425,23 +450,38 @@ impl Session<'_> {
         for row in rows {
             let mut fields = BTreeMap::new();
             for (column, value) in columns.iter().zip(row) {
-                fields.insert(column.text.clone(), self.evaluate(transaction, value)?);
+                fields.insert(
+                    column.text.clone(),
+                    self.evaluate(transaction, value).await?,
+                );
             }
-            let payload = self.with_defaults(transaction, id, Value::Object(fields))?;
+            let payload = self
+                .with_defaults(transaction, id, Value::Object(fields))
+                .await?;
             // A row repeating a topic's key is skipped, its siblings appended
             // (ADR-0124 D8).
-            let marker =
-                self.dedup_marker(transaction, definition.as_ref(), None, &payload, table.span)?;
+            let marker = self
+                .dedup_marker(
+                    transaction,
+                    definition.as_deref(),
+                    None,
+                    &payload,
+                    table.span,
+                )
+                .await?;
             if let Some(marker) = &marker
-                && marker.seen(transaction)?
+                && marker.seen(transaction).await?
             {
                 continue;
             }
 
-            let identity = self.free_identity(transaction, &context, id, &payload, table.span)?;
+            let identity = self
+                .free_identity(transaction, &context, id, &payload, table.span)
+                .await?;
             let address =
                 RecordAddress::new(context.namespace, context.database, id, identity.clone());
-            self.put_record(transaction, address.clone(), payload, span)?;
+            self.put_record(transaction, address.clone(), payload, span)
+                .await?;
             super::expiry::settle_write_expiry(transaction, &address, settled);
             if let Some(marker) = marker {
                 marker.leave(transaction);

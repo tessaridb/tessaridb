@@ -36,16 +36,17 @@ pub(super) struct Fixture {
 
 impl Fixture {
     /// Two databases, each with a table holding `r = "old"`.
-    pub(super) fn new() -> Result<Self> {
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)?;
-        let mut transaction = store.begin()?;
+    pub(super) async fn new() -> Result<Self> {
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).await?;
+        let mut transaction = store.begin().await?;
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("ns")?.id;
+        let namespace = catalog.create_namespace("ns").await?.id;
         let mut homes = Vec::new();
         for name in ["one", "two"] {
-            let database = catalog.create_database(namespace, name)?.id;
+            let database = catalog.create_database(namespace, name).await?.id;
             let table = catalog
-                .create_table(namespace, database, "t", TableShape::default())?
+                .create_table(namespace, database, "t", TableShape::default())
+                .await?
                 .id;
             homes.push(Home {
                 database,
@@ -54,7 +55,7 @@ impl Fixture {
                 at: std::cell::Cell::new(0),
             });
         }
-        transaction.commit()?;
+        transaction.commit().await?;
         let [first, second]: [Home; 2] = homes.try_into().map_err(|_| Error::AcrossMalformed {
             part: "fixture",
             problem: "two homes",
@@ -64,11 +65,11 @@ impl Fixture {
             namespace,
             homes: [first, second],
         };
-        let mut writing = fixture.store.begin()?;
+        let mut writing = fixture.store.begin().await?;
         for home in 0..2 {
             writing.put(fixture.address(home), b"old".to_vec());
         }
-        writing.commit()?;
+        writing.commit().await?;
         Ok(fixture)
     }
 
@@ -118,13 +119,18 @@ impl Fixture {
     }
 
     /// Apply one record of the transaction in `home`'s log, as a follower does.
-    pub(super) fn apply(&self, home: usize, part: Part, mutations: Vec<Mutation>) -> Result<()> {
-        self.apply_on(&self.store, home, part, mutations)
+    pub(super) async fn apply(
+        &self,
+        home: usize,
+        part: Part,
+        mutations: Vec<Mutation>,
+    ) -> Result<()> {
+        self.apply_on(&self.store, home, part, mutations).await
     }
 
     /// [`Self::apply`] onto `store` — a copy restored from this one, which
     /// continues each log from where it stood.
-    pub(super) fn apply_on(
+    pub(super) async fn apply_on(
         &self,
         store: &Store,
         home: usize,
@@ -136,50 +142,55 @@ impl Fixture {
             part,
         });
         let at = self.homes[home].at.get().saturating_add(1);
-        store.apply_record_in(self.homes[home].log, Sequence::new(at), &record)?;
+        store
+            .apply_record_in(self.homes[home].log, Sequence::new(at), &record)
+            .await?;
         self.homes[home].at.set(at);
         Ok(())
     }
 
-    pub(super) fn prepare(&self, home: usize) -> Result<()> {
-        self.prepare_on(&self.store, home)
+    pub(super) async fn prepare(&self, home: usize) -> Result<()> {
+        self.prepare_on(&self.store, home).await
     }
 
-    pub(super) fn prepare_on(&self, store: &Store, home: usize) -> Result<()> {
+    pub(super) async fn prepare_on(&self, store: &Store, home: usize) -> Result<()> {
         let coordinator = self.range(0);
         let write = self.write(home, true);
         self.apply_on(store, home, Part::Prepare { coordinator }, vec![write])
+            .await
     }
 
-    pub(super) fn decide(&self, decision: Decision) -> Result<()> {
+    pub(super) async fn decide(&self, decision: Decision) -> Result<()> {
         let record = TransactionRecord {
             decision,
             deadline: 0,
             participants: self.participants(),
         };
-        self.apply(0, Part::Decide(record), Vec::new())
+        self.apply(0, Part::Decide(record), Vec::new()).await
     }
 
-    pub(super) fn forget(&self) -> Result<()> {
+    pub(super) async fn forget(&self) -> Result<()> {
         let coordinator = self.range(0);
         self.apply(0, Part::Forget { coordinator }, Vec::new())
+            .await
     }
 
-    pub(super) fn resolve(&self, home: usize) -> Result<()> {
-        self.resolve_on(&self.store, home)
+    pub(super) async fn resolve(&self, home: usize) -> Result<()> {
+        self.resolve_on(&self.store, home).await
     }
 
-    pub(super) fn resolve_on(&self, store: &Store, home: usize) -> Result<()> {
+    pub(super) async fn resolve_on(&self, store: &Store, home: usize) -> Result<()> {
         let write = self.write(home, false);
         self.apply_on(store, home, Part::Resolve { committed: true }, vec![write])
+            .await
     }
 }
 
-pub(super) fn read(
+pub(super) async fn read(
     reader: &crate::transaction::Transaction<'_>,
     address: &RecordAddress,
 ) -> Result<String> {
-    Ok(reader.get(address)?.map_or_else(
+    Ok(reader.get(address).await?.map_or_else(
         || "nothing".to_owned(),
         |bytes| String::from_utf8_lossy(&bytes).into_owned(),
     ))

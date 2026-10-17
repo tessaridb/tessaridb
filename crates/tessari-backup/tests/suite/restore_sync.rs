@@ -7,7 +7,10 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tessari_session::RunNow;
+use tessari_storage::Now;
 
+use tessari_kv::KvFuture;
 use tessari_kv::{Key, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value, WriteBatch};
 use tessari_session::Session;
 use tessari_storage::Store;
@@ -29,29 +32,35 @@ impl KvBackend for Counted {
         "counted"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> tessari_kv::Result<Option<Value>> {
-        self.inner.get(keyspace, key)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<Value>> {
+        Box::pin(async move { self.inner.get(keyspace, key).await })
     }
 
-    fn scan(&self, request: &ScanRequest) -> tessari_kv::Result<Vec<(Key, Value)>> {
-        self.inner.scan(request)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
+        Box::pin(async move { self.inner.scan(request).await })
     }
 
-    fn apply(&self, batch: WriteBatch) -> tessari_kv::Result<()> {
-        self.synced.fetch_add(1, Ordering::Relaxed);
-        self.inner.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move {
+            self.synced.fetch_add(1, Ordering::Relaxed);
+            self.inner.apply(batch).await
+        })
     }
 
-    fn apply_unsynced(&self, batch: WriteBatch) -> tessari_kv::Result<()> {
-        self.unsynced.fetch_add(1, Ordering::Relaxed);
-        self.exposed.fetch_add(1, Ordering::Relaxed);
-        self.inner.apply(batch)
+    fn apply_unsynced(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move {
+            self.unsynced.fetch_add(1, Ordering::Relaxed);
+            self.exposed.fetch_add(1, Ordering::Relaxed);
+            self.inner.apply(batch).await
+        })
     }
 
-    fn sync_applied(&self) -> tessari_kv::Result<()> {
-        self.syncs.fetch_add(1, Ordering::Relaxed);
-        self.exposed.store(0, Ordering::Relaxed);
-        Ok(())
+    fn sync_applied(&self) -> KvFuture<'_, ()> {
+        Box::pin(async move {
+            self.syncs.fetch_add(1, Ordering::Relaxed);
+            self.exposed.store(0, Ordering::Relaxed);
+            Ok(())
+        })
     }
 
     // As a power-loss-safe engine does, so the store reaches it through the
@@ -77,18 +86,18 @@ impl Counted {
 const RECORDS: usize = 2_500;
 
 fn backup_of_many() -> Vec<u8> {
-    let source = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let source = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = Session::new(&source);
     session
-        .run("DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE TABLE t SCHEMALESS;")
+        .run_now("DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE TABLE t SCHEMALESS;")
         .unwrap();
     for at in 0..RECORDS {
         session
-            .run(&format!("CREATE t:{at} = {{ n: {at} }};"))
+            .run_now(&format!("CREATE t:{at} = {{ n: {at} }};"))
             .unwrap();
     }
     let mut taken = Vec::new();
-    tessari_backup::write(&source, &mut taken).unwrap();
+    tessari_backup::write(&source, &mut taken).now().unwrap();
     taken
 }
 
@@ -100,7 +109,9 @@ fn counted() -> (Arc<Counted>, Store) {
         syncs: AtomicUsize::new(0),
         exposed: AtomicUsize::new(0),
     });
-    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     (backend, store)
 }
 
@@ -110,7 +121,9 @@ fn a_restore_lands_each_record_unsynced_and_syncs_per_chunk() {
     let (backend, restored) = counted();
     let (synced, unsynced, syncs) = backend.landed();
 
-    let outcome = tessari_backup::read(&restored, &mut taken.as_slice()).unwrap();
+    let outcome = tessari_backup::read(&restored, &mut taken.as_slice())
+        .now()
+        .unwrap();
 
     let records = usize::try_from(outcome.records).unwrap();
     assert!(records >= RECORDS, "the backup held {records} records");
@@ -141,7 +154,11 @@ fn a_restore_refused_part_way_syncs_what_it_applied() {
     let (backend, restored) = counted();
     let (_, unsynced, syncs) = backend.landed();
 
-    assert!(tessari_backup::read(&restored, &mut taken.as_slice()).is_err());
+    assert!(
+        tessari_backup::read(&restored, &mut taken.as_slice())
+            .now()
+            .is_err()
+    );
 
     let (_, unsynced_after, syncs_after) = backend.landed();
     assert!(

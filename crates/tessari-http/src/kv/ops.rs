@@ -149,7 +149,7 @@ impl Request {
     }
 
     /// Run the statement this request stands for, in `session`, against `space`.
-    pub(crate) fn run(self, session: &mut Session<'_>, db: &Db, space: &str) -> Answer {
+    pub(crate) async fn run(self, session: &mut Session<'_>, db: &Db, space: &str) -> Answer {
         let mut given = Parameters::new();
         let script = match &self {
             Self::Read { key } => {
@@ -245,15 +245,15 @@ impl Request {
                 format!("{script} LIMIT {limit};")
             }
         };
-        let outcomes = match session.run_with(&script, &given) {
+        let outcomes = match session.run_with(&script, &given).await {
             Ok(outcomes) => outcomes,
             Err(error) => return failure(&error),
         };
-        self.answer(db, &outcomes)
+        self.answer(db, &outcomes).await
     }
 
     /// What the statement's outcomes say, in this route's words.
-    fn answer(&self, db: &Db, outcomes: &[Outcome]) -> Answer {
+    async fn answer(&self, db: &Db, outcomes: &[Outcome]) -> Answer {
         let values: Vec<&Value> = outcomes
             .iter()
             .filter_map(|outcome| match outcome {
@@ -271,6 +271,7 @@ impl Request {
                 Some(value) => {
                     let names = db
                         .names_in(&[(tessaridb::RecordId::Int(0), value.clone())])
+                        .await
                         .unwrap_or_default();
                     let mut body = String::from(r#"{"value":"#);
                     json::write(&mut body, value, &names);

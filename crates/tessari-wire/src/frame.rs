@@ -287,33 +287,6 @@ pub(crate) fn write(out: &mut impl Write, kind: Kind, body: &[u8]) -> Result<()>
 /// small enough that neither side holds more than this of the file at once.
 pub(crate) const PART_BYTES: usize = 1024 * 1024;
 
-/// Send a spooled snapshot from its start as [`Kind::Part`] frames (ADR-0125).
-///
-/// The outer error is the socket's, which ends the connection; the inner one is
-/// the spool's, which the caller answers with a refusal so the client discards
-/// the parts it already has.
-///
-/// # Errors
-///
-/// Returns the stream's failure when a part cannot be written.
-pub(crate) fn write_parts(
-    out: &mut impl Write,
-    spool: &std::fs::File,
-) -> Result<std::io::Result<()>> {
-    let mut reading = spool;
-    if let Err(why) = std::io::Seek::rewind(&mut reading) {
-        return Ok(Err(why));
-    }
-    let mut part = vec![0_u8; PART_BYTES];
-    loop {
-        match reading.read(&mut part) {
-            Ok(0) => return Ok(Ok(())),
-            Ok(read) => write(out, Kind::Part, part.get(..read).unwrap_or_default())?,
-            Err(why) => return Ok(Err(why)),
-        }
-    }
-}
-
 /// Write one frame under a tag this module does not interpret.
 ///
 /// The peer link has its own tag space (see [`crate::peer::PeerFrame`]) and the

@@ -19,6 +19,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_session::{Elsewhere, Outcome, Peer};
@@ -67,7 +69,7 @@ impl Elsewhere for Heard {
 
 /// Declare a peer at `WHOLE_AT` that is `node` and collects `reach`.
 fn declare(store: &Store, node: [u8; NODE_ID_LEN], reach: Reach) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .create_replica_with(ReplicaDefinition {
             name: "whole".to_owned(),
@@ -84,8 +86,9 @@ fn declare(store: &Store, node: [u8; NODE_ID_LEN], reach: Reach) {
             preferred: false,
             region: None,
         })
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 }
 
 const fn the_database() -> Reach {
@@ -96,15 +99,15 @@ const fn the_database() -> Reach {
 fn named(follower: &Store, heard: [u8; NODE_ID_LEN], read: &str) -> Option<Peer> {
     let mut session = signed_in(follower, "root").among(Arc::new(Heard { node: heard }));
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
-    let before = follower.health().unwrap().not_held_here;
-    match session.run(read) {
+    let before = follower.health().now().unwrap().not_held_here;
+    match session.run_now(read) {
         Err(tessari_session::Error::NotHeldHere { table, holder, .. }) => {
             assert_eq!(table, "ledger", "{read}");
             // G053 C6: each refusal is counted once, where it is made.
             assert_eq!(
-                Some(follower.health().unwrap().not_held_here),
+                Some(follower.health().now().unwrap().not_held_here),
                 before.checked_add(1),
                 "{read}"
             );
@@ -153,9 +156,10 @@ fn a_partial_holder_names_a_node_holding_the_whole_database() {
 fn a_node_holding_one_shard_is_not_named() {
     let leader = leader();
     let follower = follower_of_the_middle(&leader);
-    let mut transaction = leader.begin().unwrap();
+    let mut transaction = leader.begin().now().unwrap();
     let ledger = Catalog::new(&mut transaction)
         .table_id(NamespaceId::new(1), DatabaseId::new(1), "ledger")
+        .now()
         .unwrap()
         .unwrap();
     drop(transaction);
@@ -191,7 +195,7 @@ fn a_node_is_never_named_as_the_holder_it_is_not() {
     // served reach is one shard: naming it would send the client back here.
     let leader = leader();
     let follower = follower_of_the_middle(&leader);
-    let me = follower.node_identity().unwrap().id;
+    let me = follower.node_identity().now().unwrap().id;
     declare(&follower, me, the_database());
     for read in REFUSED {
         assert_eq!(named(&follower, me, read), None, "{read}");
@@ -211,9 +215,9 @@ fn a_moved_map_names_a_node_holding_the_whole_database() {
             .among(Arc::new(Heard { node: heard }))
             .gathering(Arc::new(Moved));
         session
-            .run("USE NAMESPACE prod; USE DATABASE shop;")
+            .run_now("USE NAMESPACE prod; USE DATABASE shop;")
             .unwrap();
-        match session.run("SELECT * FROM ledger;") {
+        match session.run_now("SELECT * FROM ledger;") {
             Err(tessari_session::Error::ShardMapMoved { table, holder, .. }) => {
                 assert_eq!(table, "ledger");
                 holder
@@ -241,10 +245,10 @@ fn a_moved_map_names_a_node_holding_the_whole_database() {
 #[test]
 fn a_session_reads_its_node_and_its_own_tenancy() {
     let leader = leader();
-    let me = leader.node_identity().unwrap().id;
+    let me = leader.node_identity().now().unwrap().id;
     let mut session = signed_in(&leader, "reader");
     let context = |session: &mut tessari_session::Session<'_>| match session
-        .run("RETURN session::context();")
+        .run_now("RETURN session::context();")
         .unwrap()
         .pop()
     {
@@ -259,12 +263,12 @@ fn a_session_reads_its_node_and_its_own_tenancy() {
         ]))
     };
     assert_eq!(context(&mut session), expected(Value::Null, Value::Null));
-    session.run("USE NAMESPACE prod;").unwrap();
+    session.run_now("USE NAMESPACE prod;").unwrap();
     assert_eq!(
         context(&mut session),
         expected(Value::from("prod"), Value::Null)
     );
-    session.run("USE DATABASE shop;").unwrap();
+    session.run_now("USE DATABASE shop;").unwrap();
     assert_eq!(
         context(&mut session),
         expected(Value::from("prod"), Value::from("shop"))

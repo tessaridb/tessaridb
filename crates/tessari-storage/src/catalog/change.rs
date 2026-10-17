@@ -7,6 +7,7 @@
 
 use tessari_encoding::{Mutation, RecordValue, decode_payload};
 
+use super::analyzer::AnalyzerDefinition;
 use super::definition::IndexDefinition;
 use super::field::FieldDefinition;
 use super::{SYSTEM_DATABASE, SYSTEM_NAMESPACE, TableDefinition, system};
@@ -82,4 +83,27 @@ pub(crate) fn defined_index(mutation: &Mutation) -> Result<Option<IndexDefinitio
         return Ok(None);
     };
     IndexDefinition::from_value(&decode_payload(payload)?).map(Some)
+}
+
+/// The analyzer this mutation declares, if it declares one.
+///
+/// Read so that index maintenance can see an analyzer declared in the same log
+/// record as the field naming it and the rows it reads: the committed catalog
+/// does not hold it yet.
+///
+/// # Errors
+///
+/// Returns [`crate::Error::CatalogMalformed`] when the record in the analyzer
+/// table is not a definition, and a decoding failure otherwise.
+pub(crate) fn defined_analyzer(mutation: &Mutation) -> Result<Option<AnalyzerDefinition>> {
+    if mutation.namespace != SYSTEM_NAMESPACE
+        || mutation.database != SYSTEM_DATABASE
+        || mutation.table != system::ANALYZERS
+    {
+        return Ok(None);
+    }
+    let RecordValue::Present(payload) = mutation.value.value() else {
+        return Ok(None);
+    };
+    AnalyzerDefinition::from_value(&decode_payload(payload)?).map(Some)
 }

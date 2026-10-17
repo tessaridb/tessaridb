@@ -19,6 +19,7 @@
 use std::fmt::Write as _;
 use std::sync::Barrier;
 use std::time::{Duration, Instant};
+use tessari_session::RunNow;
 
 use tessaridb::Db;
 
@@ -41,7 +42,7 @@ const READERS: [u64; 5] = [1, 2, 4, 8, 16];
 pub(crate) fn readers(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION shelf;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION shelf;")?;
     let mut first = 0_u64;
     while first < RECORDS {
         let mut script = String::from("BEGIN;");
@@ -52,7 +53,7 @@ pub(crate) fn readers(db: &Db) -> Failable<Vec<Report>> {
             )?;
         }
         script.push_str(" COMMIT;");
-        session.run(&script)?;
+        session.run_now(&script)?;
         first = first.saturating_add(SEED_BATCH);
     }
 
@@ -102,7 +103,7 @@ fn round(db: &Db, readers: u64) -> Failable<(Samples, Duration)> {
 fn one_reader(db: &Db, reader: u64, start: &Barrier) -> Result<Vec<Duration>, String> {
     let mut session = db.session();
     session
-        .run("USE NAMESPACE bench; USE DATABASE bench;")
+        .run_now("USE NAMESPACE bench; USE DATABASE bench;")
         .map_err(|failure| failure.to_string())?;
     let mut taken = Vec::with_capacity(usize::try_from(PER_READER).unwrap_or(0));
     start.wait();
@@ -114,7 +115,7 @@ fn one_reader(db: &Db, reader: u64, start: &Barrier) -> Result<Vec<Duration>, St
             % RECORDS;
         let started = Instant::now();
         let outcomes = session
-            .run(&format!("SELECT * FROM shelf:{id};"))
+            .run_now(&format!("SELECT * FROM shelf:{id};"))
             .map_err(|failure| failure.to_string())?;
         taken.push(started.elapsed());
         let found = outcomes

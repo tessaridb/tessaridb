@@ -22,6 +22,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -36,7 +38,9 @@ const PASSPHRASE: &str = "an operator passphrase";
 const USING: &str = "USE NAMESPACE prod; USE DATABASE work;";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// Tenancy, an unsealed store, two vaults and one record holding the secret.
@@ -54,7 +58,7 @@ fn store() -> Store {
 fn holding(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;
              DEFINE DATABASE work; USE DATABASE work;
              UNSEAL VAULT WITH '{PASSPHRASE}';
@@ -72,7 +76,7 @@ fn holding(store: &Store) -> Session<'_> {
 /// Everything a refusal renders: the sentence and the structure behind it.
 fn refusal(session: &mut Session<'_>, statement: &str) -> String {
     let error = session
-        .run(statement)
+        .run_now(statement)
         .expect_err("the statement was accepted");
     format!("{error} :: {error:?}")
 }
@@ -97,14 +101,14 @@ fn the_scan_would_find_the_secret_if_a_refusal_carried_it() {
 fn no_refusal_of_a_write_quotes_the_secret_it_refused() {
     let store = store();
     let mut session = holding(&store);
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
 
     // A write the store cannot seal, holding the value it cannot seal.
     let sealed = format!("CREATE team:'gitlab' = {{ login: 'boog', token: '{PLANTED}' }};");
     withholds(&refusal(&mut session, &sealed), &sealed);
 
     session
-        .run(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
         .unwrap();
 
     // The declared type is checked on the way in, where the value still is one.
@@ -132,7 +136,7 @@ fn no_refusal_of_a_read_quotes_the_secret_it_withheld() {
     withholds(&refusal(&mut session, projected), projected);
 
     // Sealed: the ciphertext is in hand, the key is not.
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
     let revealed = "REVEAL token FROM team:'github';";
     withholds(&refusal(&mut session, revealed), revealed);
 
@@ -140,28 +144,28 @@ fn no_refusal_of_a_read_quotes_the_secret_it_withheld() {
     // `notes` deliberately — a user with no grants at all passes the reach
     // check vacuously, so a refusal collected from one would prove nothing.
     session
-        .run(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
         .unwrap();
 
     // Declaring the first user closes this anonymous session, so it is the last
     // thing this one does.
     session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE TABLE notes SCHEMALESS;
              DEFINE USER root ROLE owner PASSWORD '{PASSWORD}';"
         ))
         .unwrap();
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run(&format!(
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now(&format!(
         "{USING}
          DEFINE USER ada ON prod.work ROLE editor PASSWORD '{PASSWORD}';
          GRANT read, write ON notes TO ada;"
     ))
     .unwrap();
     let mut ada = Session::new(&store);
-    ada.sign_in("ada", PASSWORD).unwrap();
-    ada.run(USING).unwrap();
+    ada.sign_in("ada", PASSWORD).now().unwrap();
+    ada.run_now(USING).unwrap();
     withholds(&refusal(&mut ada, revealed), revealed);
 }
 
@@ -205,7 +209,7 @@ fn no_refusal_of_a_recipient_change_quotes_what_the_record_holds() {
 fn a_wrong_passphrase_is_not_echoed_by_the_refusal() {
     let store = store();
     let mut session = holding(&store);
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
 
     // A passphrase is a secret submitted by a caller who already knows it, so
     // by the usual argument echoing it costs nothing. It is echoed into a log

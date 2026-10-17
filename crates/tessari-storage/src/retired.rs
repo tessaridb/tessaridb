@@ -67,10 +67,11 @@ impl Store {
     /// # Errors
     ///
     /// Returns the substrate's failure, or a decoding failure for the value.
-    pub fn retired_since(&self) -> Result<Option<Sequence>> {
+    pub async fn retired_since(&self) -> Result<Option<Sequence>> {
         match self
             .backend()
-            .get(RetiredSinceKey::keyspace(), &RetiredSinceKey.encode())?
+            .get(RetiredSinceKey::keyspace(), &RetiredSinceKey.encode())
+            .await?
         {
             Some(bytes) => Ok(Some(Sequence::decode(bytes.as_slice())?)),
             None => Ok(None),
@@ -83,16 +84,20 @@ impl Store {
     ///
     /// Asked at the end of every open, so whichever path raised the stamp, the
     /// first commit after it already retires.
-    pub(crate) fn begin_keeping_retired_entries(&self) -> Result<()> {
-        if self.held_format()? < FormatVersion::RETIRED_INDEX || self.retired_since()?.is_some() {
+    pub(crate) async fn begin_keeping_retired_entries(&self) -> Result<()> {
+        if self.held_format().await? < FormatVersion::RETIRED_INDEX
+            || self.retired_since().await?.is_some()
+        {
             return Ok(());
         }
-        let since = self.committed_version()?;
-        self.backend().apply(WriteBatch::new().put(
-            RetiredSinceKey::keyspace(),
-            RetiredSinceKey.encode(),
-            since.encode(),
-        ))?;
+        let since = self.committed_version().await?;
+        self.backend()
+            .apply(WriteBatch::new().put(
+                RetiredSinceKey::keyspace(),
+                RetiredSinceKey.encode(),
+                since.encode(),
+            ))
+            .await?;
         Ok(())
     }
 
@@ -106,22 +111,24 @@ impl Store {
     /// # Errors
     ///
     /// Returns the substrate's failure, or a decoding failure for a key.
-    pub fn reclaim_retired_entries(&self) -> Result<usize> {
-        let Some(since) = self.retired_since()? else {
+    pub async fn reclaim_retired_entries(&self) -> Result<usize> {
+        let Some(since) = self.retired_since().await? else {
             return Ok(0);
         };
-        let floor = self.retention_floor()?;
+        let floor = self.retention_floor().await?;
         // First, and before anything is removed: the entries about to go are
         // the ones a snapshot below the floor would need, so from here on a
         // read below the floor — a `VERSION` read, which may open one — is not
         // served from them. Raised before the removals so a crash between the
         // two leaves the conservative state: entries kept, none trusted below.
         if floor > since {
-            self.backend().apply(WriteBatch::new().put(
-                RetiredSinceKey::keyspace(),
-                RetiredSinceKey.encode(),
-                floor.encode(),
-            ))?;
+            self.backend()
+                .apply(WriteBatch::new().put(
+                    RetiredSinceKey::keyspace(),
+                    RetiredSinceKey.encode(),
+                    floor.encode(),
+                ))
+                .await?;
         }
         let tag = [KeyKind::RetiredIndex.tag()];
         let mut range = KeyRange::prefix(&tag);
@@ -133,7 +140,7 @@ impl Store {
                 direction: ScanDirection::Forward,
                 limit: Some(RANGE_SCAN_BATCH_ENTRIES),
             };
-            let entries = self.backend().scan(&request)?;
+            let entries = self.backend().scan(&request).await?;
             let mut batch = WriteBatch::new();
             let mut doomed = 0_usize;
             for (key, _) in &entries {
@@ -143,7 +150,7 @@ impl Store {
                 }
             }
             if doomed > 0 {
-                self.backend().apply(batch)?;
+                self.backend().apply(batch).await?;
                 removed = removed.saturating_add(doomed);
             }
             let Some((last, _)) = entries
@@ -159,8 +166,8 @@ impl Store {
 
 /// The version a commit that applies `record` retires at, when the store keeps
 /// retired entries.
-pub(crate) fn retiring_at(store: &Store, version: Sequence) -> Result<Option<Sequence>> {
-    Ok(store.retired_since()?.map(|_| version))
+pub(crate) async fn retiring_at(store: &Store, version: Sequence) -> Result<Option<Sequence>> {
+    Ok(store.retired_since().await?.map(|_| version))
 }
 
 /// Keep what a removed plain entry said, stamped with the removing version.
@@ -180,13 +187,13 @@ pub(crate) fn retire(
 
 /// The key that starts keeping retired entries, in the batch of the commit that
 /// finalizes a store to format 8 — so the first removal after it is retired.
-pub(crate) fn keep_from(
+pub(crate) async fn keep_from(
     store: &Store,
     batch: WriteBatch,
     raised_to: FormatVersion,
     version: Sequence,
 ) -> Result<WriteBatch> {
-    if raised_to < FormatVersion::RETIRED_INDEX || store.retired_since()?.is_some() {
+    if raised_to < FormatVersion::RETIRED_INDEX || store.retired_since().await?.is_some() {
         return Ok(batch);
     }
     Ok(batch.put(
@@ -198,14 +205,16 @@ pub(crate) fn keep_from(
 
 impl Transaction<'_> {
     /// Whether this transaction's snapshot is behind the committed tail.
-    pub(crate) fn behind_the_tail(&self) -> Result<bool> {
-        Ok(self.snapshot() < self.store().committed_version()?)
+    pub(crate) async fn behind_the_tail(&self) -> Result<bool> {
+        Ok(self.snapshot() < self.store().committed_version().await?)
     }
 
     /// Whether this transaction's index reads merge retired entries — set when
     /// [`Self::plain_indexes_serve_behind_the_tail`] answered yes, and only then.
     pub(crate) fn reads_retired_entries(&self) -> bool {
-        self.retired_reads.get()
+        // Relaxed: a flag of this transaction's own task; it publishes nothing.
+        self.retired_reads
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Whether a PLAIN index of `table` may serve a read taken through this
@@ -219,15 +228,16 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the stored marks cannot be read.
-    pub fn plain_indexes_serve_behind_the_tail(&self, table: TableId) -> Result<bool> {
-        let Some(since) = self.store().retired_since()? else {
+    pub async fn plain_indexes_serve_behind_the_tail(&self, table: TableId) -> Result<bool> {
+        let Some(since) = self.store().retired_since().await? else {
             return Ok(false);
         };
-        let serves = self.behind_the_tail()?
+        let serves = self.behind_the_tail().await?
             && self.snapshot() >= since
-            && !self.store().across_unsettled(table)?;
+            && !self.store().across_unsettled(table).await?;
         if serves {
-            self.retired_reads.set(true);
+            self.retired_reads
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(serves)
     }
@@ -241,7 +251,7 @@ impl Transaction<'_> {
     /// range is the same bytes after the first. Empty for a transaction at the
     /// tail and for an index that keeps none — the live entries are the whole
     /// candidate set there.
-    pub(crate) fn retired_candidates(
+    pub(crate) async fn retired_candidates(
         &self,
         index: &IndexDefinition,
         start: &[u8],
@@ -266,7 +276,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(RANGE_SCAN_BATCH_ENTRIES),
             };
-            let entries = self.store().backend().scan(&request)?;
+            let entries = self.store().backend().scan(&request).await?;
             for (key, _) in &entries {
                 let retired = RetiredIndexKey::decode(key.as_slice())?;
                 if retired.retired_at > self.snapshot() {

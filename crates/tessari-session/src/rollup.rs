@@ -62,19 +62,21 @@ impl Session<'_> {
     ///
     /// [`Error::RollupNeedsSeries`], [`Error::RollupFold`], [`Error::RollupWindow`]
     /// and whatever defining the table refuses.
-    pub(crate) fn define_rollup(
+    pub(crate) async fn define_rollup(
         &self,
         transaction: &mut Transaction<'_>,
         declared: &Declared<'_>,
         span: Span,
     ) -> Result<Outcome> {
-        let (context, source, mut series) = self.rollup_source(transaction, declared.source)?;
+        let (context, source, mut series) =
+            self.rollup_source(transaction, declared.source).await?;
         if declared.window.nanos() != 0 || declared.window.seconds() <= 0 {
             return Err(Error::RollupWindow { span });
         }
         let computes = computes_of(declared.computes)?;
         let existed = Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &declared.name.text)?
+            .table_id(context.namespace, context.database, &declared.name.text)
+            .await?
             .is_some();
         self.define_table(
             transaction,
@@ -96,12 +98,14 @@ impl Session<'_> {
             },
             declared.if_not_exists,
             span,
-        )?;
+        )
+        .await?;
         if existed {
             return Ok(Outcome::Done);
         }
         let table = Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &declared.name.text)?
+            .table_id(context.namespace, context.database, &declared.name.text)
+            .await?
             .ok_or_else(|| Error::RollupNeedsSeries {
                 name: declared.name.text.clone(),
                 span,
@@ -112,7 +116,7 @@ impl Session<'_> {
             by: declared.by.map(|by| by.text.clone()),
             computes,
         });
-        Catalog::new(transaction).set_series(source, series)?;
+        Catalog::new(transaction).set_series(source, series).await?;
         Ok(Outcome::Done)
     }
 
@@ -122,15 +126,16 @@ impl Session<'_> {
     /// # Errors
     ///
     /// Whatever reading the series or writing a row refuses.
-    pub(crate) fn backfill_rollup(
+    pub(crate) async fn backfill_rollup(
         &self,
         transaction: &mut Transaction<'_>,
         source: &Name,
         name: &Name,
     ) -> Result<()> {
-        let (context, source, series) = self.rollup_source(transaction, source)?;
-        let Some(table) =
-            Catalog::new(transaction).table_id(context.namespace, context.database, &name.text)?
+        let (context, source, series) = self.rollup_source(transaction, source).await?;
+        let Some(table) = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &name.text)
+            .await?
         else {
             return Ok(());
         };
@@ -140,7 +145,9 @@ impl Session<'_> {
         let Some(time) = series.time.as_deref() else {
             return Ok(());
         };
-        let raw = transaction.scan_table(context.namespace, context.database, source)?;
+        let raw = transaction
+            .scan_table(context.namespace, context.database, source)
+            .await?;
         let mut records = Vec::with_capacity(raw.len());
         for (_, payload) in raw {
             records.push(decode_payload(&payload).map_err(tessari_storage::Error::from)?);
@@ -154,7 +161,8 @@ impl Session<'_> {
             row_identity(0, &Value::None),
         );
         for row in fold_rows(rollup, time, &records)?.into_values() {
-            self.keep_row(transaction, &rows, rollup, row, name.span)?;
+            self.keep_row(transaction, &rows, rollup, row, name.span)
+                .await?;
         }
         Ok(())
     }
@@ -164,23 +172,25 @@ impl Session<'_> {
     /// # Errors
     ///
     /// [`Error::Unknown`] when no rollup has that name.
-    pub(crate) fn drop_rollup(
+    pub(crate) async fn drop_rollup(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         let unknown = || Error::Unknown {
             entity: "rollup",
             name: name.text.clone(),
             span,
         };
         let table = Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &name.text)?
+            .table_id(context.namespace, context.database, &name.text)
+            .await?
             .ok_or_else(unknown)?;
         let Some(source) = Catalog::new(transaction)
-            .table(table)?
+            .table(table)
+            .await?
             .and_then(|definition| match definition.kind {
                 TableKind::Series(declared) => declared.rollup_of,
                 _ => None,
@@ -188,21 +198,21 @@ impl Session<'_> {
         else {
             return Err(unknown());
         };
-        if let Some(definition) = Catalog::new(transaction).table(source)?
+        if let Some(definition) = Catalog::new(transaction).table(source).await?
             && let TableKind::Series(mut series) = definition.kind
         {
             series.rollups.retain(|held| held.table != table);
-            Catalog::new(transaction).set_series(source, series)?;
+            Catalog::new(transaction).set_series(source, series).await?;
         }
         // The exact sums kept beside its rows go with them (Q-927).
-        transaction.forget_rollup_states(table)?;
-        Catalog::new(transaction).drop_table(table)?;
+        transaction.forget_rollup_states(table).await?;
+        Catalog::new(transaction).drop_table(table).await?;
         Ok(Outcome::Done)
     }
 
     /// The source a rollup folds: an event-time series that is not itself a
     /// rollup, with its declaration.
-    fn rollup_source(
+    async fn rollup_source(
         &self,
         transaction: &mut Transaction<'_>,
         source: &Name,
@@ -212,8 +222,12 @@ impl Session<'_> {
             name: source.clone(),
             span: source.span,
         };
-        let (context, id) = self.resolve_table(transaction, &table)?;
-        match Catalog::new(transaction).table(id)?.map(|found| found.kind) {
+        let (context, id) = self.resolve_table(transaction, &table).await?;
+        match Catalog::new(transaction)
+            .table(id)
+            .await?
+            .map(|found| found.kind)
+        {
             Some(TableKind::Series(series))
                 if series.time.is_some() && series.rollup_of.is_none() =>
             {

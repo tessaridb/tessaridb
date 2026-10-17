@@ -50,6 +50,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Outcome, Session};
@@ -74,14 +76,14 @@ const NEARER: &str = "CREATE points:99 = { name: 'written here', embedding: [49.
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Forty points on a line and a vector index over them.
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE atlas; USE DATABASE atlas;\n\
              DEFINE COLLECTION points;\n\
@@ -94,9 +96,9 @@ fn ready(store: &Store) -> Session<'_> {
             "CREATE points:{n} = {{ name: 'point {n}', embedding: [{n}.0, 0.0] }};\n"
         ));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     session
-        .run("DEFINE INDEX by_embedding ON points FIELDS embedding VECTOR euclidean;")
+        .run_now("DEFINE INDEX by_embedding ON points FIELDS embedding VECTOR euclidean;")
         .unwrap();
     session
 }
@@ -120,7 +122,7 @@ fn the_graph_serves_this_read_when_nothing_is_uncommitted() {
     let held = store();
     let mut session = ready(&held);
 
-    let outcomes = session.run(&format!("{NEAR} APPROXIMATE;")).unwrap();
+    let outcomes = session.run_now(&format!("{NEAR} APPROXIMATE;")).unwrap();
     let (found, path) = answered(&outcomes, 0);
     assert_eq!(
         path,
@@ -148,7 +150,7 @@ fn a_record_written_in_this_transaction_is_in_its_own_approximate_read() {
     let mut session = ready(&held);
 
     let outcomes = session
-        .run(&format!("BEGIN;\n{NEARER}\n{NEAR} APPROXIMATE;\nCOMMIT;"))
+        .run_now(&format!("BEGIN;\n{NEARER}\n{NEAR} APPROXIMATE;\nCOMMIT;"))
         .unwrap();
     let (found, _) = answered(&outcomes, 2);
 
@@ -169,7 +171,7 @@ fn the_approximate_and_exact_reads_agree_inside_a_writing_transaction() {
     let mut session = ready(&held);
 
     let outcomes = session
-        .run(&format!(
+        .run_now(&format!(
             "BEGIN;\n{NEARER}\n{NEAR} APPROXIMATE;\n{NEAR};\nCOMMIT;"
         ))
         .unwrap();

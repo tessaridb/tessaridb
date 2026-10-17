@@ -59,9 +59,9 @@ impl Store {
     /// Returns an error when the backend fails, a stored key or value cannot be
     /// decoded, or a commit is refused for a reason other than the range being
     /// led elsewhere.
-    pub fn remove_expired(&self) -> Result<Lapsed> {
+    pub async fn remove_expired(&self) -> Result<Lapsed> {
         let mut lapsed = Lapsed::default();
-        let now = self.begin()?.clock();
+        let now = self.begin().await?.clock();
         let whole = ExpiryKey::passed_by(now);
         let mut from: Option<Vec<u8>> = None;
         loop {
@@ -72,12 +72,15 @@ impl Store {
                     whole.end().clone(),
                 ),
             };
-            let page = self.backend().scan(&ScanRequest {
-                keyspace: ExpiryKey::keyspace(),
-                range,
-                direction: ScanDirection::Forward,
-                limit: Some(BATCH_ENTRIES),
-            })?;
+            let page = self
+                .backend()
+                .scan(&ScanRequest {
+                    keyspace: ExpiryKey::keyspace(),
+                    range,
+                    direction: ScanDirection::Forward,
+                    limit: Some(BATCH_ENTRIES),
+                })
+                .await?;
             let Some((last, _)) = page.last() else {
                 return Ok(lapsed);
             };
@@ -92,7 +95,7 @@ impl Store {
                     .push(entry);
             }
             for entries in by_table.values() {
-                self.remove_table_entries(entries, &mut lapsed)?;
+                self.remove_table_entries(entries, &mut lapsed).await?;
             }
             if page.len() < BATCH_ENTRIES {
                 return Ok(lapsed);
@@ -102,15 +105,15 @@ impl Store {
 
     /// One table's passed entries, in one commit when its ranges share a
     /// leader and one record at a time when they do not.
-    fn remove_table_entries(&self, entries: &[ExpiryKey], lapsed: &mut Lapsed) -> Result<()> {
-        match self.remove_these(entries) {
+    async fn remove_table_entries(&self, entries: &[ExpiryKey], lapsed: &mut Lapsed) -> Result<()> {
+        match self.remove_these(entries).await {
             Ok(done) => {
                 done.add_to(lapsed);
                 Ok(())
             }
             Err(Error::SpansLeaderships { .. }) => {
                 for entry in entries {
-                    match self.remove_these(std::slice::from_ref(entry)) {
+                    match self.remove_these(std::slice::from_ref(entry)).await {
                         Ok(done) => done.add_to(lapsed),
                         Err(why) if led_elsewhere(&why) => {
                             lapsed.elsewhere = lapsed.elsewhere.saturating_add(1);
@@ -130,8 +133,8 @@ impl Store {
 
     /// Delete the records these entries name whose version still carries the
     /// instant, in one commit.
-    fn remove_these(&self, entries: &[ExpiryKey]) -> Result<Lapsed> {
-        let mut transaction = self.begin()?;
+    async fn remove_these(&self, entries: &[ExpiryKey]) -> Result<Lapsed> {
+        let mut transaction = self.begin().await?;
         let mut done = Lapsed::default();
         for entry in entries {
             let address = RecordAddress::new(
@@ -141,7 +144,8 @@ impl Store {
                 entry.id.clone(),
             );
             let current = transaction
-                .read_stamped_at(&address)?
+                .read_stamped_at(&address)
+                .await?
                 .and_then(|stamped| stamped.expires());
             if current == Some(entry.at) {
                 transaction.delete(address);
@@ -151,7 +155,7 @@ impl Store {
             }
         }
         if done.records > 0 {
-            transaction.commit()?;
+            transaction.commit().await?;
             done.batches = 1;
         }
         Ok(done)

@@ -25,24 +25,25 @@ impl<'a> Session<'a> {
     /// alike — telling them apart tells an attacker which half to keep guessing
     /// at — [`Error::SignInThrottled`] when either bound declined to try, and a
     /// substrate failure otherwise.
-    pub fn sign_in(&mut self, name: &str, password: &str) -> Result<()> {
+    pub async fn sign_in(&mut self, name: &str, password: &str) -> Result<()> {
         // First, and before the transaction below: a throttled attempt has to
         // cost a lock and an array index, or the refusal has bounded nothing.
         // The cluster's table when there is one and it answers in time, else
         // this node's own (ADR-0108 D5). Both are kept: this node's own count
         // is what stands in while the shared one cannot be asked.
-        let permitted = self
-            .budget
-            .as_ref()
-            .and_then(|budget| budget.permit(name))
-            .unwrap_or_else(|| self.store.attempts().permit(name));
+        let shared = match &self.budget {
+            Some(budget) => budget.permit(name).await,
+            None => None,
+        };
+        let permitted = shared.unwrap_or_else(|| self.store.attempts().permit(name));
         if !permitted {
             tracing::warn!(user = %name, "sign-in refused: too many recent failures");
             return Err(Error::SignInThrottled);
         }
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let found = Catalog::new(&mut transaction)
-            .users()?
+            .users()
+            .await?
             .into_iter()
             .find(|user| user.name == name);
         transaction.rollback();
@@ -70,28 +71,28 @@ impl<'a> Session<'a> {
             // Counted against the name that was tried, not against the user that
             // was not found. Counting only known names would let an attacker
             // enumerate the catalog by watching which names start to wait.
-            self.missed(name);
+            self.missed(name).await;
             return Err(Error::SignInRefused);
         };
         if !identity::verifies(password, &user.secret) {
             tracing::warn!(user = %name, "sign-in refused");
-            self.missed(name);
+            self.missed(name).await;
             return Err(Error::SignInRefused);
         }
         tracing::info!(user = %name, "signed in");
         self.store.attempts().succeeded(name);
         if let Some(budget) = &self.budget {
-            budget.succeeded(name);
+            budget.succeeded(name).await;
         }
         self.identity = Identity::Signed(Box::new(user));
         Ok(())
     }
 
     /// Count a missed try as `name` here and, in a cluster, in the shared table.
-    fn missed(&self, name: &str) {
+    async fn missed(&self, name: &str) {
         self.store.attempts().failed(name);
         if let Some(budget) = &self.budget {
-            budget.failed(name);
+            budget.failed(name).await;
         }
     }
 
@@ -125,10 +126,11 @@ impl<'a> Session<'a> {
     /// Returns [`Error::UnknownUser`] when no user carries that id — which is
     /// what a deleted declarer looks like, and is therefore how deleting one
     /// stops the consumer they declared.
-    pub fn acting_as(&mut self, id: u32) -> Result<()> {
-        let mut transaction = self.store.begin()?;
+    pub async fn acting_as(&mut self, id: u32) -> Result<()> {
+        let mut transaction = self.store.begin().await?;
         let found = tessari_storage::Catalog::new(&mut transaction)
-            .users()?
+            .users()
+            .await?
             .into_iter()
             .find(|user| user.id == id);
         transaction.rollback();
@@ -165,7 +167,7 @@ impl<'a> Session<'a> {
     /// Returns [`Error::UnknownUser`] when no user carries that id — which a
     /// caller iterating the catalog it just read will not see, and which is
     /// still an error rather than a silent omission.
-    pub(crate) fn probing(&self, id: u32) -> Result<Self> {
+    pub(crate) async fn probing(&self, id: u32) -> Result<Self> {
         let mut probe = Self {
             store: self.store,
             namespace: self.namespace.clone(),
@@ -192,8 +194,9 @@ impl<'a> Session<'a> {
             acknowledge_open: None,
             across_open: false,
             event_depth: 0,
+            now: self.now,
         };
-        probe.acting_as(id)?;
+        probe.acting_as(id).await?;
         Ok(probe)
     }
 
@@ -232,7 +235,7 @@ impl<'a> Session<'a> {
     /// when the current password does not match, [`Error::PasswordEmpty`] when
     /// the new one is empty, [`Error::Unknown`] when the user has been removed
     /// since signing in, and a substrate failure otherwise.
-    pub fn change_password(&mut self, current: &str, new: &str) -> Result<()> {
+    pub async fn change_password(&mut self, current: &str, new: &str) -> Result<()> {
         // A span over nothing: no script produced this, and inventing one would
         // put a caret under a character nobody wrote.
         let span = tessari_ql::Span::new(0, 0);
@@ -245,9 +248,10 @@ impl<'a> Session<'a> {
         // Re-read rather than trust the session's copy, for the reason a ticket
         // is re-read: a session open across a `DROP USER` would otherwise write
         // a hash back over an id the catalog no longer holds.
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let found = Catalog::new(&mut transaction)
-            .users()?
+            .users()
+            .await?
             .into_iter()
             .find(|user| user.id == id);
         transaction.rollback();
@@ -273,9 +277,9 @@ impl<'a> Session<'a> {
         }
 
         user.secret = secret;
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         Catalog::new(&mut transaction).update_user(&user);
-        transaction.commit()?;
+        transaction.commit().await?;
         tracing::info!(user = %user.name, "a user changed their own password");
         // The session keeps running as the same user, with the record it now
         // has: leaving the old copy here would make the next `ticket()` cut one

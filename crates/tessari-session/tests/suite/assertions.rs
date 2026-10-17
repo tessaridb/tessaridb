@@ -14,6 +14,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -22,13 +24,13 @@ use tessari_types::RecordId;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE bank; USE DATABASE bank;\n\
              DEFINE TABLE accounts SCHEMALESS;\n\
@@ -39,7 +41,7 @@ fn ready(store: &Store) -> Session<'_> {
 }
 
 fn ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let mut found: Vec<RecordId> = outcomes
         .last()
         .unwrap()
@@ -56,8 +58,10 @@ fn ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
 fn a_value_the_declaration_refuses_does_not_land() {
     let store = store();
     let mut session = ready(&store);
-    session.run("CREATE accounts:1 = { balance: 10 };").unwrap();
-    let refused = session.run("CREATE accounts:2 = { balance: -1 };");
+    session
+        .run_now("CREATE accounts:1 = { balance: 10 };")
+        .unwrap();
+    let refused = session.run_now("CREATE accounts:2 = { balance: -1 };");
     assert!(refused.is_err(), "{refused:?}");
     assert_eq!(
         ids(&mut session, "SELECT * FROM accounts;"),
@@ -72,7 +76,7 @@ fn a_refusal_fails_the_whole_commit() {
     // not there either.
     let store = store();
     let mut session = ready(&store);
-    let refused = session.run(
+    let refused = session.run_now(
         "BEGIN;\n\
          CREATE accounts:1 = { balance: 10 };\n\
          CREATE accounts:2 = { balance: -5 };\n\
@@ -91,7 +95,7 @@ fn an_absent_field_and_a_null_one_pass() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE accounts:1 = { holder: 'ada' };\n\
              CREATE accounts:2 = { balance: NULL };",
         )
@@ -110,7 +114,7 @@ fn declaring_one_over_rows_that_violate_it_is_refused_and_writes_nothing() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE bank; USE DATABASE bank;\n\
              DEFINE TABLE accounts SCHEMALESS;\n\
@@ -119,11 +123,13 @@ fn declaring_one_over_rows_that_violate_it_is_refused_and_writes_nothing() {
         )
         .unwrap();
 
-    let refused = session.run("DEFINE FIELD balance ON accounts TYPE int ASSERT $value >= 0;");
+    let refused = session.run_now("DEFINE FIELD balance ON accounts TYPE int ASSERT $value >= 0;");
     assert!(refused.is_err(), "{refused:?}");
     // …and the declaration is not there either, so a later write is unconstrained
     // rather than constrained by something that never applied.
-    session.run("CREATE accounts:3 = { balance: -7 };").unwrap();
+    session
+        .run_now("CREATE accounts:3 = { balance: -7 };")
+        .unwrap();
 }
 
 #[test]
@@ -131,7 +137,7 @@ fn a_range_is_two_comparisons_and_a_set_is_one_membership() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE orders SCHEMALESS;\n\
@@ -140,14 +146,14 @@ fn a_range_is_two_comparisons_and_a_set_is_one_membership() {
         )
         .unwrap();
     session
-        .run("CREATE orders:1 = { age: 30, status: 'paid' };")
+        .run_now("CREATE orders:1 = { age: 30, status: 'paid' };")
         .unwrap();
     for refused in [
         "CREATE orders:2 = { age: 0 };",
         "CREATE orders:3 = { age: 200 };",
         "CREATE orders:4 = { status: 'cancelled' };",
     ] {
-        assert!(session.run(refused).is_err(), "{refused} was accepted");
+        assert!(session.run_now(refused).is_err(), "{refused} was accepted");
     }
     assert_eq!(
         ids(&mut session, "SELECT * FROM orders;"),
@@ -168,7 +174,7 @@ fn assert_and_where_cannot_disagree() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE t; USE DATABASE t;\n\
              DEFINE COLLECTION loose;\n\
@@ -188,7 +194,7 @@ fn assert_and_where_cannot_disagree() {
     // assertion admits both by the presence rule, so those two are held out and
     // asserted separately below.
     session
-        .run(
+        .run_now(
             "DEFINE TABLE strict SCHEMALESS;\nDEFINE FIELD v ON strict TYPE any ASSERT $value > 0;",
         )
         .unwrap();
@@ -206,7 +212,7 @@ fn assert_and_where_cannot_disagree() {
         } else {
             format!("CREATE strict:{id} = {{ v: {written} }};")
         };
-        if session.run(&script).is_ok() {
+        if session.run_now(&script).is_ok() {
             admitted.push(RecordId::Int(id));
         }
     }
@@ -250,7 +256,7 @@ fn an_assertion_outside_the_vocabulary_is_refused_where_it_is_written() {
         // A bare literal is not a constraint on anything.
         "DEFINE FIELD j ON accounts TYPE int ASSERT true;",
     ] {
-        let refused = session.run(script);
+        let refused = session.run_now(script);
         assert!(refused.is_err(), "{script} was accepted: {refused:?}");
     }
 }
@@ -265,13 +271,13 @@ fn a_field_of_the_same_record_is_inside_the_vocabulary() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE FIELD low ON accounts TYPE int ASSERT $value < high;")
+        .run_now("DEFINE FIELD low ON accounts TYPE int ASSERT $value < high;")
         .unwrap();
     session
-        .run("CREATE accounts:1 = { balance: 0, low: 1, high: 5 };")
+        .run_now("CREATE accounts:1 = { balance: 0, low: 1, high: 5 };")
         .unwrap();
 
-    let refused = session.run("CREATE accounts:2 = { balance: 0, low: 9, high: 5 };");
+    let refused = session.run_now("CREATE accounts:2 = { balance: 0, low: 9, high: 5 };");
     let Err(error) = refused else {
         panic!("the violating record landed: {refused:?}");
     };
@@ -287,17 +293,21 @@ fn a_field_of_the_same_record_is_inside_the_vocabulary() {
 fn an_assertion_survives_a_reopen_because_it_is_catalog_and_not_memory() {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     {
-        let store = Store::open(Arc::clone(&backend)).unwrap();
+        let store = Store::open(Arc::clone(&backend)).now().unwrap();
         ready(&store);
     }
-    let store = Store::open(backend).unwrap();
+    let store = Store::open(backend).now().unwrap();
     let mut session = Session::new(&store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE bank;")
+        .run_now("USE NAMESPACE prod; USE DATABASE bank;")
         .unwrap();
     assert!(
-        session.run("CREATE accounts:9 = { balance: -1 };").is_err(),
+        session
+            .run_now("CREATE accounts:9 = { balance: -1 };")
+            .is_err(),
         "the assertion did not come back with the catalog"
     );
-    session.run("CREATE accounts:9 = { balance: 1 };").unwrap();
+    session
+        .run_now("CREATE accounts:9 = { balance: 1 };")
+        .unwrap();
 }

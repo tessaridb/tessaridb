@@ -31,18 +31,18 @@ impl Session<'_> {
     /// asked, and `NotGathered` when a leader does not count. A score measured
     /// against part of the collection is never offered as one measured against
     /// all of it.
-    pub(crate) fn counted_elsewhere(
+    pub(crate) async fn counted_elsewhere(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
         index: &IndexDefinition,
         terms: &[String],
     ) -> Result<Option<SearchCounts>> {
-        let Some(missing) = self.missing(transaction, table, Part::Whole)? else {
+        let Some(missing) = self.missing(transaction, table, Part::Whole).await? else {
             return Ok(None);
         };
         let (Some(gatherer), Some(map)) = (self.gather.as_ref(), missing.map.as_ref()) else {
-            return Err(self.not_held_here(&missing)?);
+            return Err(self.not_held_here(&missing).await?);
         };
         let counting = Counting {
             index: index.id,
@@ -72,7 +72,7 @@ impl Session<'_> {
                 ordered: None,
                 counting: Some(&counting),
             };
-            let counted = match gatherer.gather(&asked) {
+            let counted = match gatherer.gather(&asked).await {
                 Ok(Gathered {
                     counted: Some(counted),
                     ..
@@ -84,7 +84,7 @@ impl Session<'_> {
                         None,
                     ));
                 }
-                Err(why) => return Err(self.unanswered(&missing, span.id, why)?),
+                Err(why) => return Err(self.unanswered(&missing, span.id, why).await?),
             };
             total.documents = total.documents.saturating_add(counted.documents);
             total.tokens = total.tokens.saturating_add(counted.tokens);

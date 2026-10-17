@@ -17,7 +17,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use tessari_lsm::{LsmBackend, StoreConfig, effective_options_files};
+use tessari_lsm::{StoreConfig, TessariKvBackend, effective_options_files};
 
 fn main() -> ExitCode {
     let argument = std::env::args().nth(1);
@@ -31,12 +31,26 @@ fn main() -> ExitCode {
 
     // Opening is what makes the engine write the file; reading a directory that
     // was never opened would report the options of nothing.
-    let opened = LsmBackend::open(&path, StoreConfig::default());
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("could not start a runtime: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let opened = runtime.block_on(async {
+        TessariKvBackend::open(&path, StoreConfig::default())
+            .await?
+            .close()
+            .await
+    });
     if let Err(error) = opened {
         eprintln!("could not open a store at {}: {error}", path.display());
         return ExitCode::FAILURE;
     }
-    drop(opened);
 
     let files = match effective_options_files(&path) {
         Ok(files) => files,

@@ -31,6 +31,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -41,7 +43,7 @@ const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Two namespaces with a record each, a store owner, and three users inside one
@@ -53,24 +55,24 @@ fn store() -> Store {
 fn peopled(store: &Store) {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION orders; CREATE orders:1 = { total: 5 };",
         )
         .unwrap();
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE secret; USE NAMESPACE secret;\n\
              DEFINE DATABASE vault; USE DATABASE vault;\n\
              DEFINE COLLECTION holdings; CREATE holdings:1 = { value: 'the crown jewels' };",
         )
         .unwrap();
     session
-        .run("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
     let mut root = signed_in(store, "root");
-    root.run(
+    root.run_now(
         "DEFINE USER nina ON prod.shop ROLE owner PASSWORD 'correct horse battery';\n\
          DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
          DEFINE USER vic ON prod.shop ROLE viewer PASSWORD 'correct horse battery';",
@@ -80,7 +82,7 @@ fn peopled(store: &Store) {
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
 }
 
@@ -88,7 +90,7 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
 fn inside<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = signed_in(store, name);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -117,7 +119,7 @@ fn a_database_owner_may_run_none_of_them() {
     for statement in STORE_WIDE {
         let mut nina = inside(&store, "nina");
         assert!(
-            nina.run(statement).is_err(),
+            nina.run_now(statement).is_err(),
             "an owner of one database ran {statement:?}, whose subject is the whole store"
         );
     }
@@ -134,7 +136,7 @@ fn an_editor_may_run_none_of_them_either() {
     for statement in STORE_WIDE {
         let mut ada = inside(&store, "ada");
         assert!(
-            ada.run(statement).is_err(),
+            ada.run_now(statement).is_err(),
             "an editor of one database ran {statement:?}, whose subject is the whole store"
         );
     }
@@ -152,7 +154,7 @@ fn the_store_owner_may_run_all_of_them() {
     let folder = tempfile::tempdir().unwrap();
     for statement in STORE_WIDE {
         let mut root = signed_in(&store, "root").backing_up_into(Arc::from(folder.path()));
-        root.run(statement).unwrap_or_else(|failure| {
+        root.run_now(statement).unwrap_or_else(|failure| {
             panic!("the store's owner could not run {statement:?}: {failure}")
         });
     }
@@ -168,14 +170,14 @@ fn a_backup_taken_by_a_database_owner_would_have_held_another_namespace() {
     // from a namespace `nina` cannot name, let alone read.
     let mut nina = inside(&store, "nina");
     assert!(
-        nina.run("BACKUP;").is_err(),
+        nina.run_now("BACKUP;").is_err(),
         "a database owner backed up the store"
     );
 
     // And the store's owner still gets those bytes, so the test is about who
     // rather than about whether backups work.
     let mut root = signed_in(&store, "root");
-    let taken = root.run("BACKUP;").unwrap();
+    let taken = root.run_now("BACKUP;").unwrap();
     let Some(tessari_session::Outcome::Value(Value::Bytes(bytes))) = taken.last() else {
         panic!("a backup with no bytes");
     };
@@ -200,9 +202,10 @@ fn there_are_exactly_two_reaches_a_user_can_be_given() {
     // that guards the store-wide statements — "does this user hold a tenancy of
     // their own" — is exactly the line between them.
     let mut root = signed_in(&store, "root");
-    root.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+    root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
     let refusal = root
-        .run("DEFINE USER pat ON prod ROLE owner PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER pat ON prod ROLE owner PASSWORD 'correct horse battery';")
         .unwrap_err()
         .to_string();
     assert!(
@@ -225,16 +228,16 @@ fn a_store_wide_editor_may_declare_a_namespace_and_still_not_back_the_store_up()
     // namespace, which an existing test caught — `DEFINE NAMESPACE` needs a
     // store-wide *reach*, not a raised role.
     let mut root = signed_in(&store, "root");
-    root.run("DEFINE USER wide ROLE editor PASSWORD 'correct horse battery';")
+    root.run_now("DEFINE USER wide ROLE editor PASSWORD 'correct horse battery';")
         .unwrap();
 
     let mut wide = signed_in(&store, "wide");
-    wide.run("DEFINE NAMESPACE editors_may;").unwrap();
+    wide.run_now("DEFINE NAMESPACE editors_may;").unwrap();
     assert!(
-        wide.run("BACKUP;").is_err(),
+        wide.run_now("BACKUP;").is_err(),
         "an editor backed up the store"
     );
-    assert!(wide.run("INFO FOR NODE;").is_err());
+    assert!(wide.run_now("INFO FOR NODE;").is_err());
 }
 
 #[test]
@@ -246,7 +249,7 @@ fn the_refusal_says_it_is_about_reach_and_not_about_role() {
     // The two refusals have different fixes — be made an owner, against be made
     // an owner *of the store* — so they must not read alike.
     let mut nina = inside(&store, "nina");
-    let refusal = nina.run("BACKUP;").unwrap_err().to_string();
+    let refusal = nina.run_now("BACKUP;").unwrap_err().to_string();
     assert!(
         !refusal.contains("may not administer"),
         "an owner of a part was told they are not an owner: {refusal}"
@@ -264,7 +267,7 @@ fn the_refusal_says_it_is_about_reach_and_not_about_role() {
     // `operate` and not `read`: a backup demands both, and the one they are
     // short of is the one worth naming.
     let mut vic = inside(&store, "vic");
-    let refusal = vic.run("BACKUP;").unwrap_err().to_string();
+    let refusal = vic.run_now("BACKUP;").unwrap_err().to_string();
     assert!(
         refusal.contains("operate"),
         "a viewer should still be told which authority is missing: {refusal}"
@@ -279,7 +282,7 @@ fn an_open_store_may_still_declare_its_first_namespace() {
     let store = store();
     let mut anybody = Session::new(&store);
     anybody
-        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop;")
+        .run_now("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop;")
         .unwrap();
 }
 
@@ -291,13 +294,13 @@ fn what_a_database_owner_may_still_do_is_unchanged() {
     // The other side of a boundary test, and the one that catches a fix which
     // went too far: everything inside their own tenancy still works.
     let mut nina = inside(&store, "nina");
-    nina.run("CREATE orders:2 = { total: 9 };").unwrap();
-    nina.run("SELECT * FROM orders;").unwrap();
-    nina.run("INFO FOR STORE;").unwrap();
-    nina.run("INFO FOR USERS;").unwrap();
-    nina.run("DEFINE USER extra ON prod.shop ROLE viewer PASSWORD 'correct horse battery';")
+    nina.run_now("CREATE orders:2 = { total: 9 };").unwrap();
+    nina.run_now("SELECT * FROM orders;").unwrap();
+    nina.run_now("INFO FOR STORE;").unwrap();
+    nina.run_now("INFO FOR USERS;").unwrap();
+    nina.run_now("DEFINE USER extra ON prod.shop ROLE viewer PASSWORD 'correct horse battery';")
         .unwrap();
-    nina.run("DEFINE DATABASE another;").unwrap();
+    nina.run_now("DEFINE DATABASE another;").unwrap();
 }
 
 #[test]
@@ -309,7 +312,7 @@ fn info_for_store_still_shows_only_what_the_caller_holds() {
     // property that made `BACKUP` a leak rather than a duplicate of something
     // already visible: `nina` cannot even see that `secret` exists.
     let mut nina = inside(&store, "nina");
-    let said = format!("{:?}", nina.run("INFO FOR STORE;").unwrap());
+    let said = format!("{:?}", nina.run_now("INFO FOR STORE;").unwrap());
     assert!(said.contains("prod"), "{said}");
     assert!(
         !said.contains("secret"),

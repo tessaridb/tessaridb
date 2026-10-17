@@ -29,7 +29,7 @@ impl Catalog<'_, '_> {
     ///
     /// Held between statements as a row is (`rows`): a write asks this for its
     /// table's indexes and fields at every commit and every statement.
-    fn claimed(&self, level: Level, parents: &[u32]) -> Result<Vec<u32>> {
+    async fn claimed(&self, level: Level, parents: &[u32]) -> Result<Vec<u32>> {
         let prefix = qualify(level, parents, "");
         // This transaction's own names are read through it, never from what is
         // held for everybody's snapshot.
@@ -37,7 +37,7 @@ impl Catalog<'_, '_> {
             .transaction
             .has_written_in(SYSTEM_NAMESPACE, SYSTEM_DATABASE, system::NAMES)
         {
-            return self.read_claimed(prefix);
+            return self.read_claimed(prefix).await;
         }
         let store = self.transaction.store();
         let fill = match store
@@ -48,7 +48,7 @@ impl Catalog<'_, '_> {
             Lookup::Missing(fill) => fill,
         };
         let reads_landed = self.reads_only_landed();
-        let ids = self.read_claimed(prefix.clone())?;
+        let ids = self.read_claimed(prefix.clone()).await?;
         if let Some(generation) = fill
             && reads_landed
         {
@@ -60,7 +60,7 @@ impl Catalog<'_, '_> {
     }
 
     /// [`Self::claimed`] read from `NAMES` at this transaction's snapshot.
-    fn read_claimed(&self, prefix: String) -> Result<Vec<u32>> {
+    async fn read_claimed(&self, prefix: String) -> Result<Vec<u32>> {
         // The prefix ends in `/`, so the first text past every name that begins
         // with it ends in the next byte, `0` — and a parent whose id merely
         // begins with this one's digits (`…/30/`) starts at or after it.
@@ -69,17 +69,21 @@ impl Catalog<'_, '_> {
         past.push('0');
         let (from, to) = (RecordId::from(prefix), RecordId::from(past));
         let mut ids = Vec::new();
-        for (_, payload) in self.transaction.records_between(
-            SYSTEM_NAMESPACE,
-            SYSTEM_DATABASE,
-            system::NAMES,
-            Window {
-                from: Some(&from),
-                to: Some((&to, false)),
-            },
-            None,
-            usize::MAX,
-        )? {
+        for (_, payload) in self
+            .transaction
+            .records_between(
+                SYSTEM_NAMESPACE,
+                SYSTEM_DATABASE,
+                system::NAMES,
+                Window {
+                    from: Some(&from),
+                    to: Some((&to, false)),
+                },
+                None,
+                usize::MAX,
+            )
+            .await?
+        {
             ids.push(definition::id_of(&decode_payload(&payload)?, "name", "id")?);
         }
         ids.sort_unstable();
@@ -91,10 +95,10 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn databases_in(&self, namespace: NamespaceId) -> Result<Vec<DatabaseDefinition>> {
+    pub async fn databases_in(&self, namespace: NamespaceId) -> Result<Vec<DatabaseDefinition>> {
         let mut found = Vec::new();
-        for id in self.claimed(Level::Database, &[namespace.get()])? {
-            if let Some(database) = self.database(DatabaseId::new(id))?
+        for id in self.claimed(Level::Database, &[namespace.get()]).await? {
+            if let Some(database) = self.database(DatabaseId::new(id)).await?
                 && database.namespace == namespace
             {
                 found.push(database);
@@ -108,14 +112,17 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn tables_in(
+    pub async fn tables_in(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
     ) -> Result<Vec<TableDefinition>> {
         let mut found = Vec::new();
-        for id in self.claimed(Level::Table, &[namespace.get(), database.get()])? {
-            if let Some(table) = self.table(TableId::new(id))?
+        for id in self
+            .claimed(Level::Table, &[namespace.get(), database.get()])
+            .await?
+        {
+            if let Some(table) = self.table(TableId::new(id)).await?
                 && table.namespace == namespace
                 && table.database == database
             {
@@ -138,7 +145,7 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn indexes_on(
+    pub async fn indexes_on(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -146,8 +153,8 @@ impl Catalog<'_, '_> {
     ) -> Result<Vec<IndexDefinition>> {
         let parents = [namespace.get(), database.get(), table.get()];
         let mut found = Vec::new();
-        for id in self.claimed(Level::Index, &parents)? {
-            if let Some(index) = self.index(IndexId::new(id))?
+        for id in self.claimed(Level::Index, &parents).await? {
+            if let Some(index) = self.index(IndexId::new(id)).await?
                 && index.namespace == namespace
                 && index.database == database
                 && index.table == table
@@ -165,9 +172,12 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn declared_fields(&self, table: TableId) -> Result<Vec<FieldDefinition>> {
-        match self.table(table)? {
-            Some(defined) => self.fields_on(defined.namespace, defined.database, table),
+    pub async fn declared_fields(&self, table: TableId) -> Result<Vec<FieldDefinition>> {
+        match self.table_shared(table).await? {
+            Some(defined) => {
+                self.fields_on(defined.namespace, defined.database, table)
+                    .await
+            }
             None => Ok(Vec::new()),
         }
     }
@@ -178,7 +188,7 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn fields_on(
+    pub async fn fields_on(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -186,8 +196,8 @@ impl Catalog<'_, '_> {
     ) -> Result<Vec<FieldDefinition>> {
         let parents = [namespace.get(), database.get(), table.get()];
         let mut found = Vec::new();
-        for id in self.claimed(Level::Field, &parents)? {
-            if let Some(field) = self.field(FieldId::new(id))?
+        for id in self.claimed(Level::Field, &parents).await? {
+            if let Some(field) = self.field(FieldId::new(id)).await?
                 && field.namespace == namespace
                 && field.database == database
                 && field.table == table

@@ -32,13 +32,14 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the catalog cannot be read or a record cannot be
     /// decoded.
-    pub fn search_counts(
+    pub async fn search_counts(
         &mut self,
         index: &IndexDefinition,
         records: &[(RecordId, Vec<u8>)],
         terms: &[String],
     ) -> Result<SearchCounts> {
-        let analyzers = analyzers_on(self, index.namespace, index.database, index.table)?;
+        let analyzers =
+            analyzers_on(self, &[], index.namespace, index.database, index.table).await?;
         let analyzer = search_analyzer(index, &analyzers);
         let asked: Vec<IndexValues> = terms
             .iter()

@@ -92,7 +92,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn records_in_descending_order(
+    pub async fn records_in_descending_order(
         &self,
         index: &IndexDefinition,
         leading_fields: usize,
@@ -124,7 +124,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Reverse,
                 limit: Some(ORDERED_SCAN_BATCH_ENTRIES),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = self.store.backend().scan(&request).await?;
             let last = batch.last().map(|(key, _)| key.clone());
             // Decoded before anything is resolved, because deciding *what* to
             // resolve reads the entry's key and never its record: the boundary
@@ -169,7 +169,7 @@ impl Transaction<'_> {
                         RecordAddress::new(index.namespace, index.database, index.table, id.clone())
                     })
                     .collect();
-                for ((values, id), payload) in chunk.iter().zip(self.get_each(&addresses)?) {
+                for ((values, id), payload) in chunk.iter().zip(self.get_each(&addresses).await?) {
                     if let Some(edge) = &boundary
                         && values.leading_of(leading_fields)? != edge.as_slice()
                     {
@@ -237,7 +237,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn records_in_ascending_order(
+    pub async fn records_in_ascending_order(
         &self,
         index: &IndexDefinition,
         leading_fields: usize,
@@ -271,7 +271,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(ORDERED_SCAN_BATCH_ENTRIES),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = self.store.backend().scan(&request).await?;
             let last = batch.last().map(|(key, _)| key.clone());
             let mut entries: Vec<(IndexValues, RecordId)> = Vec::with_capacity(batch.len());
             for (key, value) in &batch {
@@ -307,7 +307,7 @@ impl Transaction<'_> {
                         RecordAddress::new(index.namespace, index.database, index.table, id.clone())
                     })
                     .collect();
-                for ((values, id), payload) in chunk.iter().zip(self.get_each(&addresses)?) {
+                for ((values, id), payload) in chunk.iter().zip(self.get_each(&addresses).await?) {
                     if let Some(edge) = &boundary
                         && values.leading_of(leading_fields)? != edge.as_slice()
                     {

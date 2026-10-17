@@ -7,11 +7,13 @@
 
 #![allow(clippy::unwrap_used)]
 
+use crate::now::Now;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use tessari_kv::KvFuture;
 use tessari_kv::{
-    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value, WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value, WriteBatch,
 };
 use tessari_types::{DatabaseId, NamespaceId, TableId};
 
@@ -40,32 +42,40 @@ impl KvBackend for Counting {
         "counting"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<Value>> {
-        self.read();
-        self.engine.get(keyspace, key)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<Value>> {
+        Box::pin(async move {
+            self.read();
+            self.engine.get(keyspace, key).await
+        })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
-        self.read();
-        self.engine.scan(request)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
+        Box::pin(async move {
+            self.read();
+            self.engine.scan(request).await
+        })
     }
 
-    fn first_of_each(
-        &self,
+    fn first_of_each<'a>(
+        &'a self,
         keyspace: Keyspace,
-        ranges: &[KeyRange],
-    ) -> Result<Vec<Option<(Key, Value)>>> {
-        self.read();
-        self.engine.first_of_each(keyspace, ranges)
+        ranges: &'a [KeyRange],
+    ) -> KvFuture<'a, Vec<Option<(Key, Value)>>> {
+        Box::pin(async move {
+            self.read();
+            self.engine.first_of_each(keyspace, ranges).await
+        })
     }
 
-    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
-        self.read();
-        self.engine.count(keyspace, range)
+    fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
+        Box::pin(async move {
+            self.read();
+            self.engine.count(keyspace, range).await
+        })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.engine.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move { self.engine.apply(batch).await })
     }
 }
 
@@ -82,16 +92,19 @@ fn fixture() -> Fixture {
         engine: MemoryBackend::new(),
         reads: AtomicUsize::new(0),
     });
-    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
-    let mut transaction = store.begin().unwrap();
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("ns").unwrap().id;
-    let database = catalog.create_database(namespace, "db").unwrap().id;
+    let namespace = catalog.create_namespace("ns").now().unwrap().id;
+    let database = catalog.create_database(namespace, "db").now().unwrap().id;
     let table = catalog
         .create_table(namespace, database, "t", TableShape::default())
+        .now()
         .unwrap()
         .id;
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     Fixture {
         backend,
         store,
@@ -103,13 +116,14 @@ fn fixture() -> Fixture {
 
 /// What a statement naming `ns.db.t` asks the catalog.
 fn resolve(fixture: &Fixture) -> Option<TableId> {
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("ns").unwrap()?;
-    let database = catalog.database_id(namespace, "db").unwrap()?;
-    let table = catalog.table_id(namespace, database, "t").unwrap()?;
+    let namespace = catalog.namespace_id("ns").now().unwrap()?;
+    let database = catalog.database_id(namespace, "db").now().unwrap()?;
+    let table = catalog.table_id(namespace, database, "t").now().unwrap()?;
     catalog
         .table(table)
+        .now()
         .unwrap()
         .map(|definition| definition.id)
 }
@@ -122,7 +136,7 @@ fn a_name_resolved_once_is_not_read_again() {
     assert_eq!(resolve(&fixture), Some(fixture.table));
     let catalog_reads = fixture.backend.reads() - before;
     // Beginning a transaction reads the committed version; nothing else may.
-    let _transaction = fixture.store.begin().unwrap();
+    let _transaction = fixture.store.begin().now().unwrap();
     let begin_reads = fixture.backend.reads() - before - catalog_reads;
     assert!(
         catalog_reads <= begin_reads,
@@ -134,15 +148,16 @@ fn a_name_resolved_once_is_not_read_again() {
 fn a_dropped_table_is_gone_for_new_readers_and_kept_for_old_ones() {
     let fixture = fixture();
     assert_eq!(resolve(&fixture), Some(fixture.table), "warm");
-    let mut before_the_drop = fixture.store.begin().unwrap();
+    let mut before_the_drop = fixture.store.begin().now().unwrap();
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     assert!(
         Catalog::new(&mut transaction)
             .drop_table(fixture.table)
+            .now()
             .unwrap()
     );
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     assert_eq!(
         resolve(&fixture),
@@ -152,8 +167,51 @@ fn a_dropped_table_is_gone_for_new_readers_and_kept_for_old_ones() {
     let old = Catalog::new(&mut before_the_drop);
     assert_eq!(
         old.table_id(fixture.namespace, fixture.database, "t")
+            .now()
             .unwrap(),
         Some(fixture.table),
         "a reader from before the drop lost the table its snapshot holds"
+    );
+}
+
+/// What a commit asks about the namespace it writes into.
+fn namespace(fixture: &Fixture) -> Option<NamespaceId> {
+    let mut transaction = fixture.store.begin().now().unwrap();
+    Catalog::new(&mut transaction)
+        .namespace(fixture.namespace)
+        .now()
+        .unwrap()
+        .map(|definition| definition.id)
+}
+
+#[test]
+fn a_namespace_read_once_is_not_read_again() {
+    let fixture = fixture();
+    assert_eq!(namespace(&fixture), Some(fixture.namespace));
+    let before = fixture.backend.reads();
+    assert_eq!(namespace(&fixture), Some(fixture.namespace));
+    assert_eq!(
+        fixture.backend.reads() - before,
+        0,
+        "a second read of the namespace reached the backend"
+    );
+}
+
+#[test]
+fn a_dropped_namespace_is_gone_for_new_readers() {
+    let fixture = fixture();
+    assert_eq!(namespace(&fixture), Some(fixture.namespace), "warm");
+    let mut transaction = fixture.store.begin().now().unwrap();
+    assert!(
+        Catalog::new(&mut transaction)
+            .drop_namespace(fixture.namespace)
+            .now()
+            .unwrap()
+    );
+    transaction.commit().now().unwrap();
+    assert_eq!(
+        namespace(&fixture),
+        None,
+        "a reader after the drop was served the dropped namespace"
     );
 }

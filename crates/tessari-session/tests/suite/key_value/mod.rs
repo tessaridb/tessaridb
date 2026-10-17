@@ -4,6 +4,8 @@
 //! the owner's condition for this feature is that a space behaves the same in
 //! either, and a feature tested on one backend is a claim about one backend.
 
+use tessari_session::Now;
+use tessari_session::RunNow;
 mod atomic;
 mod bounded;
 mod expiry;
@@ -14,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_lsm::{Durability, LsmBackend, StoreConfig};
+use tessari_lsm::{Durability, StoreConfig, TessariKvBackend};
 use tessari_session::{Outcome, Session};
 use tessari_storage::Store;
 use tessari_types::Value;
@@ -38,21 +40,22 @@ pub(super) fn on_each_backend(case: impl Fn(&Backend)) {
     let raw = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     case(&Backend {
         name: "memory",
-        store: Store::open(Arc::clone(&raw)).unwrap(),
+        store: Store::open(Arc::clone(&raw)).now().unwrap(),
         raw,
         _directory: None,
     });
     let directory = tempfile::tempdir().unwrap();
     let raw = Arc::new(
-        LsmBackend::open(
+        TessariKvBackend::open(
             directory.path(),
             StoreConfig::new(Durability::ProcessCrashSafe),
         )
+        .now()
         .unwrap(),
     ) as Arc<dyn KvBackend>;
     case(&Backend {
         name: "disk",
-        store: Store::open(Arc::clone(&raw)).unwrap(),
+        store: Store::open(Arc::clone(&raw)).now().unwrap(),
         raw,
         _directory: Some(directory),
     });
@@ -62,7 +65,7 @@ pub(super) fn on_each_backend(case: impl Fn(&Backend)) {
 pub(super) fn opened(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE app; USE DATABASE app;\n\
              DEFINE SPACE cache;",
@@ -73,7 +76,7 @@ pub(super) fn opened(store: &Store) -> Session<'_> {
 
 /// The last statement's outcome.
 pub(super) fn run(session: &mut Session<'_>, script: &str) -> Outcome {
-    session.run(script).unwrap().pop().unwrap()
+    session.run_now(script).unwrap().pop().unwrap()
 }
 
 /// The value a statement answers with.
@@ -102,7 +105,7 @@ pub(super) fn keys(session: &mut Session<'_>, script: &str) -> usize {
 
 /// The refusal a script meets, as text.
 pub(super) fn refused(session: &mut Session<'_>, script: &str) -> String {
-    match session.run(script) {
+    match session.run_now(script) {
         Err(why) => why.to_string(),
         Ok(outcome) => panic!("expected {script} to be refused, got {outcome:?}"),
     }

@@ -19,11 +19,12 @@ impl Catalog<'_, '_> {
     /// [`Error::SplitPointOnABoundary`] for a point that already begins a shard,
     /// [`Error::ShardNamedByAReplica`] when a replica row names the shard, and
     /// an error when the catalog cannot be read.
-    pub fn split_table(&mut self, id: TableId, point: &RecordId) -> Result<ShardMap> {
+    pub async fn split_table(&mut self, id: TableId, point: &RecordId) -> Result<ShardMap> {
         self.move_shards(id, |name, map| {
             let holder = map.shard_of(point);
             Ok((vec![holder], refused(name, map.split_at(point))?))
         })
+        .await
     }
 
     /// Merge the adjacent live shards `first` and `second` of table `id`.
@@ -34,7 +35,7 @@ impl Catalog<'_, '_> {
     /// unknown or retired, [`Error::ShardsNotAdjacent`],
     /// [`Error::ShardNamedByAReplica`], and an error when the catalog cannot be
     /// read.
-    pub fn merge_shards(
+    pub async fn merge_shards(
         &mut self,
         id: TableId,
         first: ShardId,
@@ -46,16 +47,17 @@ impl Catalog<'_, '_> {
                 refused(name, map.merged(first, second))?,
             ))
         })
+        .await
     }
 
     /// Change table `id`'s map by `change`, which answers the shards it retires
     /// and the new map; refuse it when a replica row names one of those shards.
-    fn move_shards(
+    async fn move_shards(
         &mut self,
         id: TableId,
         change: impl FnOnce(&str, &ShardMap) -> Result<(Vec<ShardId>, ShardMap)>,
     ) -> Result<ShardMap> {
-        let Some(mut definition) = self.table(id)? else {
+        let Some(mut definition) = self.table(id).await? else {
             return Err(Error::NoSuchParent {
                 entity: "table",
                 id: id.get(),
@@ -69,7 +71,7 @@ impl Catalog<'_, '_> {
         let (retiring, moved) = change(&definition.name, map)?;
         // A row holds one reach, so it cannot be carried to two successors; it
         // would go on naming a shard nothing writes again (ADR-0095 amendment).
-        for replica in self.replicas()? {
+        for replica in self.replicas().await? {
             for reach in [replica.replicates, replica.leads].into_iter().flatten() {
                 if let crate::Reach::Shard(namespace, database, table, shard) = reach
                     && (namespace, database, table)

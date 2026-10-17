@@ -29,12 +29,6 @@ use tessaridb::Db;
 /// a healthy node out of all routing. A round in which nobody answered is a
 /// cluster in trouble rather than an operation that went wrong, so it is logged
 /// and the cadence runs again.
-#[expect(
-    unused_assignments,
-    reason = "the failover period the pass re-reads is state for the NEXT pass; rustc lints a \
-              by-value capture assigned in an FnMut closure as never read when the closure also \
-              returns early without reading it (G060 SG4)"
-)]
 pub(crate) async fn dial_peers(
     db: std::sync::Arc<Db>,
     (keys, join): (tessari_wire::PeerKeys, Option<[u8; 32]>),
@@ -52,85 +46,127 @@ pub(crate) async fn dial_peers(
     // woken when that changes and not on every greeting.
     let mut followed: Option<[u8; tessari_storage::NODE_ID_LEN]> = None;
     let first = tessari_storage::Failover::DEFAULT.awareness();
-    tessari_wire::every_paced("greeting", &stop, &woken.greeting, first, move |now| {
-        let (db, keys, seeds, published) = (&*db, &keys, &seeds[..], &*published);
-        // Read through the pieces the facade already publishes rather than
-        // through a new `Db` method: `Db::store` and `Store::begin` are both
-        // public, so a `Db::declared_peers` would be a second name for a
-        // capability this binary can already reach — which is the finding
-        // W238 recorded when it wrote and then reverted `Db::holding`.
-        let store = db.store();
-        // Date this node's own tail on the same cadence, because the copy
-        // age this makes measurable is only honest at the interval the
-        // staleness floor is derived from. It rides this round rather than
-        // the commit path deliberately: see `Store::mark_tail`.
-        if let Err(why) = store.mark_tail(tessari_types::Reach::Store) {
-            tracing::warn!(error = %why, "this node cannot date its own log position");
-        }
-        let declared = store.begin().and_then(|mut transaction| {
-            let catalog = tessari_storage::Catalog::new(&mut transaction);
-            Ok((catalog.replicas()?, catalog.failover()?))
-        });
-        let (me, declared) = match (store.node_identity(), declared) {
-            (Ok(identity), Ok((declared, policy))) => {
-                periods = policy.map_or(tessari_storage::Failover::DEFAULT, |definition| {
-                    definition.policy
-                });
-                (identity.id, declared)
+    tessari_wire::every_paced(
+        "greeting",
+        &stop,
+        &woken.greeting,
+        first,
+        async move |now| {
+            let (db, keys, seeds, published) = (&*db, &keys, &seeds[..], &*published);
+            // Read through the pieces the facade already publishes rather than
+            // through a new `Db` method: `Db::store` and `Store::begin` are both
+            // public, so a `Db::declared_peers` would be a second name for a
+            // capability this binary can already reach — which is the finding
+            // W238 recorded when it wrote and then reverted `Db::holding`.
+            let store = db.store();
+            // Date this node's own tail on the same cadence, because the copy
+            // age this makes measurable is only honest at the interval the
+            // staleness floor is derived from. It rides this round rather than
+            // the commit path deliberately: see `Store::mark_tail`.
+            if let Err(why) = store.mark_tail(tessari_types::Reach::Store).await {
+                tracing::warn!(error = %why, "this node cannot date its own log position");
             }
-            (Err(why), _) => {
-                return Err(tessari_wire::PassFailed::new(
-                    "this node cannot say who it is",
-                    why,
-                ));
-            }
-            (_, Err(why)) => {
-                return Err(tessari_wire::PassFailed::new(
-                    "this node cannot say who its peers are",
-                    why,
-                ));
-            }
-        };
-        let mut reached = 0_usize;
-        published.round(|directory| {
+            let declared = crate::peers::declared_with_policy(store).await;
+            let (me, declared) = match (store.node_identity().await, declared) {
+                (Ok(identity), Ok((declared, policy))) => {
+                    periods = policy.map_or(tessari_storage::Failover::DEFAULT, |definition| {
+                        definition.policy
+                    });
+                    (identity.id, declared)
+                }
+                (Err(why), _) => {
+                    return Err(tessari_wire::PassFailed::new(
+                        "this node cannot say who it is",
+                        why,
+                    ));
+                }
+                (_, Err(why)) => {
+                    return Err(tessari_wire::PassFailed::new(
+                        "this node cannot say who its peers are",
+                        why,
+                    ));
+                }
+            };
+            // Read once per pass rather than per peer: the pass is the moment
+            // the round greets as.
+            let said = greeting(db).await.map_err(|why| why.to_string());
             // The seeds INSTEAD of the catalog, and only while the catalog
             // names no peer BUT THIS NODE. A node that has just been told
             // to join holds no replica rows, so `greet_round` would dial
             // nobody and this node would never learn anything; once
             // collection brings a row naming somebody else in, the catalog
             // is the answer and a seed still being dialled would be a
-            // second source of truth about who the members are — see
+            // second source of truth about who the members are; see
             // `Directory::greet_seeds`. The *but this node* is load-bearing
             // and was `is_empty` until W260: the row a cluster writes to
             // admit a newcomer describes the NEWCOMER, so the joiner's
             // first collection left it holding one row, its own, which
             // answers nothing and stopped the seed all the same.
-            let greet = |endpoint: &str, node| {
-                tessari_wire::call(
-                    endpoint,
-                    keys,
-                    node,
-                    &greeting(db).map_err(|why| why.to_string())?,
-                    tessari_wire::Ask::Nothing,
-                )
-                .map(|(said, _)| said)
-                .map_err(|why| {
-                    // Said here rather than swallowed. The rounds keep only
-                    // a count, so without this the one line an operator
-                    // gets for a directory that has stopped refreshing is
-                    // *nobody answered* — and a directory that stops
-                    // refreshing is a follower that stops knowing who to
-                    // follow, whose symptom is a copy that silently never
-                    // changes.
-                    tracing::warn!(endpoint = %endpoint, error = %why, "a greeting did not land");
-                    why.to_string()
-                })
-            };
-            reached = if tessari_wire::names_a_peer(&declared, &me) {
-                directory.greet_round(&declared, &me, now, greet)
+            let catalogued = tessari_wire::names_a_peer(&declared, &me);
+            // Every peer the round will record is dialled at once, rather than
+            // one after another, and the directory's own rules then read the
+            // answers: a peer that cannot be reached costs the round its own
+            // deadline and no more.
+            let targets: Vec<(String, [u8; tessari_storage::NODE_ID_LEN])> = if catalogued {
+                declared
+                    .iter()
+                    .filter_map(|row| row.node.map(|node| (row.endpoint.clone(), node)))
+                    .filter(|(_, node)| *node != me)
+                    .collect()
             } else {
-                directory.greet_seeds(seeds, &me, now, greet)
+                seeds
+                    .iter()
+                    .filter(|seed| seed.node != me)
+                    .map(|seed| (seed.endpoint.clone(), seed.node))
+                    .collect()
             };
+            let said = &said;
+            let heard: std::collections::HashMap<_, Result<tessari_wire::Hello, String>> =
+                futures_util::future::join_all(targets.into_iter().map(
+                    |(endpoint, node)| async move {
+                        let answer = match said {
+                            Ok(said) => tessari_wire::call(
+                                endpoint.as_str(),
+                                keys,
+                                node,
+                                said,
+                                tessari_wire::Ask::Nothing,
+                            )
+                            .await
+                            .map(|(said, _)| said)
+                            .map_err(|why| {
+                                // Said here rather than swallowed. The rounds keep only
+                                // a count, so without this the one line an operator
+                                // gets for a directory that has stopped refreshing is
+                                // *nobody answered*, and a directory that stops
+                                // refreshing is a follower that stops knowing who to
+                                // follow, whose symptom is a copy that silently never
+                                // changes.
+                                tracing::warn!(endpoint = %endpoint, error = %why, "a greeting did not land");
+                                why.to_string()
+                            }),
+                            Err(why) => Err(why.clone()),
+                        };
+                        ((endpoint, node), answer)
+                    },
+                ))
+                .await
+                .into_iter()
+                .collect();
+            let mut reached = 0_usize;
+            published.round(|directory| {
+                let greet = |endpoint: &str, node| {
+                    heard
+                        .get(&(endpoint.to_owned(), node))
+                        .cloned()
+                        .unwrap_or_else(|| Err("not dialled this round".to_owned()))
+                };
+                reached = if catalogued {
+                    directory.greet_round(&declared, &me, now, greet)
+                } else {
+                    directory.greet_seeds(seeds, &me, now, greet)
+                };
+            });
             // A joiner offers its token to every seed until its catalog names a
             // peer, which happens once the row it was bound to has reached it
             // (ADR-0108 D9). Asking again after the binding answers `true` and
@@ -138,56 +174,56 @@ pub(crate) async fn dial_peers(
             if let Some(token) = &join
                 && !tessari_wire::names_a_peer(&declared, &me)
             {
-                offer_the_token(db, keys, seeds, token);
+                offer_the_token(db, keys, seeds, token).await;
             }
-        });
-        // The count and not the directory, because nothing reads the
-        // directory yet — routing on it is S6.2 and is a wave of its own.
-        // What this round makes observable today is that the dialling
-        // happens at all and how much of the cluster answered.
-        let (kind, dialled) = if tessari_wire::names_a_peer(&declared, &me) {
-            ("declared peer", declared.len())
-        } else {
-            ("seed", seeds.len())
-        };
-        if reached == 0 && dialled > 0 {
-            tracing::warn!(kind, dialled, "nobody answered this round");
-        } else {
-            tracing::info!(kind, reached, dialled, "greeting round answered");
-        }
-        // G053 SG2b. A clustered node that may not write and can name no
-        // leader to follow greets again after one round time rather than
-        // one awareness interval: that is the window right after a leader
-        // died, and a directory a second old is what kept a follower away
-        // from its new leader for up to a whole interval. Once a leader is
-        // heard the cadence relaxes again, so a cluster without a leader
-        // for a long time costs five greetings a second, not more.
-        let roles = store.effective_roles().ok();
-        let leading = roles.is_some_and(|roles| roles.has(tessari_storage::Roles::WRITABLE));
-        let leader = roles.and_then(|roles| {
-            tessari_wire::upstream(roles, &declared, &published.current()).map(|(node, _)| node)
-        });
-        if leader != followed {
-            followed = leader;
-            wakes.collection.notify_one();
-        }
-        if tessari_wire::names_a_peer(&declared, &me) && !leading && leader.is_none() {
-            Ok(periods.round())
-        } else {
-            Ok(periods.awareness())
-        }
-    })
+            // The count and not the directory, because nothing reads the
+            // directory yet — routing on it is S6.2 and is a wave of its own.
+            // What this round makes observable today is that the dialling
+            // happens at all and how much of the cluster answered.
+            let (kind, dialled) = if tessari_wire::names_a_peer(&declared, &me) {
+                ("declared peer", declared.len())
+            } else {
+                ("seed", seeds.len())
+            };
+            if reached == 0 && dialled > 0 {
+                tracing::warn!(kind, dialled, "nobody answered this round");
+            } else {
+                tracing::info!(kind, reached, dialled, "greeting round answered");
+            }
+            // G053 SG2b. A clustered node that may not write and can name no
+            // leader to follow greets again after one round time rather than
+            // one awareness interval: that is the window right after a leader
+            // died, and a directory a second old is what kept a follower away
+            // from its new leader for up to a whole interval. Once a leader is
+            // heard the cadence relaxes again, so a cluster without a leader
+            // for a long time costs five greetings a second, not more.
+            let roles = store.effective_roles().await.ok();
+            let leading = roles.is_some_and(|roles| roles.has(tessari_storage::Roles::WRITABLE));
+            let leader = roles.and_then(|roles| {
+                tessari_wire::upstream(roles, &declared, &published.current()).map(|(node, _)| node)
+            });
+            if leader != followed {
+                followed = leader;
+                wakes.collection.notify_one();
+            }
+            if tessari_wire::names_a_peer(&declared, &me) && !leading && leader.is_none() {
+                Ok(periods.round())
+            } else {
+                Ok(periods.awareness())
+            }
+        },
+    )
     .await;
 }
 
 /// Offer `token` to each seed, saying what came of it.
-fn offer_the_token(
+async fn offer_the_token(
     db: &Db,
     keys: &tessari_wire::PeerKeys,
     seeds: &[tessari_wire::Seed],
     token: &[u8; 32],
 ) {
-    let said = match greeting(db) {
+    let said = match greeting(db).await {
         Ok(said) => said,
         Err(why) => {
             tracing::warn!(error = %why, "this node cannot say what it holds");
@@ -201,7 +237,9 @@ fn offer_the_token(
             seed.node,
             &said,
             tessari_wire::Ask::Join(token),
-        ) {
+        )
+        .await
+        {
             Ok((_, tessari_wire::Answered::Joined(true))) => {
                 tracing::info!(seed = %seed.endpoint, "a seed bound this node to its row");
             }
@@ -239,21 +277,22 @@ fn offer_the_token(
 /// this costs one catalog read and writes nothing at all. A binding is audited;
 /// a refused join is logged and not audited, because a joiner asks every round
 /// until somebody approves it and the trail would fill with its patience.
-pub(crate) fn bind_the_greeter(
+pub(crate) async fn bind_the_greeter(
     db: &Db,
     node: [u8; tessari_storage::NODE_ID_LEN],
     presented: Option<&[u8; 32]>,
     token: Option<&[u8; 32]>,
 ) -> bool {
-    let bind = || -> Result<(bool, Option<String>), String> {
-        let mut transaction = db.store().begin().map_err(|why| why.to_string())?;
+    let bind = async || -> Result<(bool, Option<String>), String> {
+        let mut transaction = db.store().begin().await.map_err(|why| why.to_string())?;
         let mut catalog = tessari_storage::Catalog::new(&mut transaction);
-        let declared = catalog.replicas().map_err(|why| why.to_string())?;
+        let declared = catalog.replicas().await.map_err(|why| why.to_string())?;
         if declared.iter().any(|row| row.node == Some(node)) {
             return Ok((true, None));
         }
         if catalog
             .is_tombstoned(&node)
+            .await
             .map_err(|why| why.to_string())?
         {
             return Ok((false, None));
@@ -279,6 +318,7 @@ pub(crate) fn bind_the_greeter(
         let name = name.to_owned();
         catalog
             .bind_replica_node(&name, node)
+            .await
             .map_err(|why| why.to_string())?;
         let actor = format!("node {}", hex(&node));
         tessari_storage::administered(
@@ -290,10 +330,10 @@ pub(crate) fn bind_the_greeter(
             },
         )
         .map_err(|why| why.to_string())?;
-        transaction.commit().map_err(|why| why.to_string())?;
+        transaction.commit().await.map_err(|why| why.to_string())?;
         Ok((true, Some(name)))
     };
-    match bind() {
+    match bind().await {
         Ok((bound, Some(name))) => {
             tracing::info!(peer = %hex(&node), replica = %name, "a peer now names its replica row");
             bound
@@ -319,14 +359,14 @@ pub(crate) fn bind_the_greeter(
 /// Built through [`tessari_wire::Hello::about`] rather than field by field, so
 /// that a node cannot greet under an id, a role set or a build that disagree
 /// with what its own store holds.
-pub(crate) fn greeting(db: &Db) -> Result<tessari_wire::Hello, tessari_storage::Error> {
+pub(crate) async fn greeting(db: &Db) -> Result<tessari_wire::Hello, tessari_storage::Error> {
     let store = db.store();
-    let identity = store.node_identity()?;
+    let identity = store.node_identity().await?;
     // Where this node stands on the store's line: the history the line shares,
     // not the few records it once wrote alone (ADR-0107, Q-879).
-    let own = store.history_log(tessari_types::Reach::Store)?;
-    let tail = store.committed_tail(own)?;
-    let current_as_of = store.current_as_of()?;
+    let own = store.history_log(tessari_types::Reach::Store).await?;
+    let tail = store.committed_tail(own).await?;
+    let current_as_of = store.current_as_of().await?;
     // The leadership this node is actually writing under — and the trigger the
     // previous version of this line named has now fired.
     //
@@ -350,7 +390,7 @@ pub(crate) fn greeting(db: &Db) -> Result<tessari_wire::Hello, tessari_storage::
     // what this node holds, rather than the one it holds a lease under. A voter
     // ranks candidates on this pair, and ranking on `leading` instead would put
     // a follower carrying the newest records below an ex-leader carrying fewer.
-    let tail_leadership = store.tail_leadership(own)?;
+    let tail_leadership = store.tail_leadership(own).await?;
     // Which failover policy this node is running under, read from its own
     // catalog rather than assembled from the constants it currently times by.
     // The two are not the same claim: the constants are what this build compiled
@@ -360,10 +400,14 @@ pub(crate) fn greeting(db: &Db) -> Result<tessari_wire::Hello, tessari_storage::
     // make visible.
     //
     // `None` is the ordinary state today, because nothing sets the row yet.
-    let (policy, declared) = store.begin().and_then(|mut transaction| {
-        let catalog = tessari_storage::Catalog::new(&mut transaction);
-        Ok((catalog.failover()?, catalog.replicas()?))
-    })?;
+    let mut transaction = store.begin().await?;
+    let catalog = tessari_storage::Catalog::new(&mut transaction);
+    let read = match catalog.failover().await {
+        Ok(policy) => catalog.replicas().await.map(|declared| (policy, declared)),
+        Err(why) => Err(why),
+    };
+    transaction.rollback();
+    let (policy, declared) = read?;
     let policy = policy.map(|definition| definition.stamp());
     let mut said = tessari_wire::Hello::about(
         &identity,
@@ -378,7 +422,7 @@ pub(crate) fn greeting(db: &Db) -> Result<tessari_wire::Hello, tessari_storage::
     // hears a live leader of the range by it. Read in the same transaction as
     // the policy, so a greeting is one reading of the catalog.
     if let Some(range) = tessari_wire::stands_for(&declared, &identity.id) {
-        said.line = Some(line_of(store, range)?);
+        said.line = Some(line_of(store, range).await?);
     }
     Ok(said)
 }
@@ -386,18 +430,18 @@ pub(crate) fn greeting(db: &Db) -> Result<tessari_wire::Hello, tessari_storage::
 /// Where this node stands on `range`'s line: the epoch it leads it under, if
 /// any, and its copy's tail and the leadership that wrote it — what a voter
 /// judges a ballot on that range by.
-pub(crate) fn line_of(
+pub(crate) async fn line_of(
     store: &tessari_storage::Store,
     range: tessari_types::Reach,
 ) -> tessari_storage::Result<tessari_wire::Line> {
-    let log = store.history_log(range)?;
+    let log = store.history_log(range).await?;
     Ok(tessari_wire::Line {
         range,
         leading: store
             .leading_of(range)
             .unwrap_or(tessari_types::Epoch::ZERO),
-        tail: store.committed_tail(log)?,
-        tail_leadership: store.tail_leadership(log)?,
+        tail: store.committed_tail(log).await?,
+        tail_leadership: store.tail_leadership(log).await?,
     })
 }
 

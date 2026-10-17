@@ -23,6 +23,8 @@
 
 use std::fmt::Write as _;
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -42,24 +44,26 @@ DEFINE COLLECTION events;
 ";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// A session over `events` holding `count` records, ids `1..=count`.
 fn holding(store: &Store, count: usize) -> Session<'_> {
     let mut session = Session::new(store);
-    session.run(SCHEMA).unwrap();
+    session.run_now(SCHEMA).unwrap();
     let mut script = String::new();
     for n in 1..=count {
         writeln!(script, "CREATE events:{n} = {{ n: {n} }};").unwrap();
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     session
 }
 
 fn run(session: &mut Session<'_>, script: &str) -> Outcome {
     session
-        .run(script)
+        .run_now(script)
         .unwrap_or_else(|error| panic!("{script}: {error}"))
         .pop()
         .expect("one outcome")
@@ -68,7 +72,7 @@ fn run(session: &mut Session<'_>, script: &str) -> Outcome {
 /// The refusal, as a caller reads it.
 fn refusal(session: &mut Session<'_>, script: &str) -> String {
     session
-        .run(script)
+        .run_now(script)
         .err()
         .map(|error| error.to_string())
         .unwrap_or_else(|| panic!("{script}: answered instead of refusing"))

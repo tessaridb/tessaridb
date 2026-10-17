@@ -75,9 +75,10 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the store cannot be read or the row is malformed.
-    pub fn view_group_of(&self, view: TableId, record: &RecordId) -> Result<Option<Vec<u8>>> {
+    pub async fn view_group_of(&self, view: TableId, record: &RecordId) -> Result<Option<Vec<u8>>> {
         let address = system::address(VIEW_MEMBERS, group_of_id(view, record));
-        self.get(&address)?
+        self.get(&address)
+            .await?
             .map(|payload| bytes_of(&payload, "group"))
             .transpose()
     }
@@ -118,8 +119,9 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the store cannot be read or a row is malformed.
-    pub fn view_group_members(&self, view: TableId, group: &[u8]) -> Result<Vec<RecordId>> {
-        self.member_rows(&group_prefix(view, group))?
+    pub async fn view_group_members(&self, view: TableId, group: &[u8]) -> Result<Vec<RecordId>> {
+        self.member_rows(&group_prefix(view, group))
+            .await?
             .into_iter()
             .map(|(_, payload)| {
                 decode_record_id(&bytes_of(&payload, "record")?).map_err(Error::from)
@@ -132,9 +134,9 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the store cannot be read.
-    pub fn forget_view_members(&mut self, view: TableId) -> Result<()> {
+    pub async fn forget_view_members(&mut self, view: TableId) -> Result<()> {
         for direction in [RECORD_TO_GROUP, GROUP_TO_RECORD] {
-            for (id, _) in self.member_rows(&prefix(direction, view).finish())? {
+            for (id, _) in self.member_rows(&prefix(direction, view).finish()).await? {
                 self.delete(system::address(VIEW_MEMBERS, id));
             }
         }
@@ -143,8 +145,8 @@ impl Transaction<'_> {
 
     /// The membership rows whose identity begins with `prefix`, this
     /// transaction's own writes included.
-    fn member_rows(&self, prefix: &[u8]) -> Result<Vec<(RecordId, Vec<u8>)>> {
-        self.system_rows_prefixed(VIEW_MEMBERS, prefix)
+    async fn member_rows(&self, prefix: &[u8]) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        self.system_rows_prefixed(VIEW_MEMBERS, prefix).await
     }
 }
 

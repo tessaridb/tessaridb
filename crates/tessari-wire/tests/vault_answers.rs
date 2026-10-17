@@ -23,6 +23,7 @@
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 
 use tessari_wire::{Client, Node};
 use tessaridb::Db;
@@ -73,7 +74,7 @@ fn everything(client: &mut Client, script: &str) -> String {
 
 #[test]
 fn only_a_reveal_puts_a_secret_on_the_wire() {
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
     ready(&mut client);
 
@@ -153,7 +154,7 @@ fn state(answer: &tessari_wire::Answer) -> String {
 #[test]
 fn the_vault_frame_unseals_seals_and_reports() {
     use tessari_wire::VaultCall;
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
 
     assert_eq!(
@@ -206,7 +207,7 @@ fn a_vault_call_never_prints_its_passphrase() {
 #[test]
 fn the_vault_frame_changes_the_passphrase() {
     use tessari_wire::VaultCall;
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
     client
         .vault(&VaultCall::Unseal(PASSPHRASE.to_owned()), None, None)
@@ -251,7 +252,7 @@ fn the_vault_frame_changes_the_passphrase() {
 #[test]
 fn the_vault_frame_reaches_one_vault_and_leaves_the_connection_where_it_was() {
     use tessari_wire::{VaultCall, VaultPlace};
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut setup = Client::connect(&address).unwrap();
     setup
         .run(
@@ -312,7 +313,7 @@ fn the_vault_frame_reaches_one_vault_and_leaves_the_connection_where_it_was() {
 #[test]
 fn a_closed_store_refuses_every_vault_act_to_nobody_and_every_change_to_a_viewer() {
     use tessari_wire::VaultCall;
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
     client
         .run("DEFINE USER root ROLE owner PASSWORD 'root secret';", None)

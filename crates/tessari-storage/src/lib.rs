@@ -50,6 +50,7 @@ mod index;
 #[cfg(test)]
 mod index_unchanged_tests;
 mod intents;
+mod landed;
 mod lapse;
 mod lease;
 mod lifetime;
@@ -57,7 +58,10 @@ mod lines;
 mod log;
 mod log_holds;
 mod node;
+#[cfg(feature = "test-support")]
+mod now;
 mod ordering;
+mod owned;
 mod pruning;
 mod quarantine;
 mod reclaim;
@@ -104,7 +108,7 @@ pub use catalog::VaultRoot;
 pub use catalog::system::ALL as SYSTEM_TABLES;
 pub use collections::{Collection, Collections, Currency, Upstream, UpstreamReport};
 pub use covering::MEASURED_RELATION;
-pub use decisions::Decisions;
+pub use decisions::{Deciding, Decisions};
 pub use expiry::Expired;
 pub use lapse::Lapsed;
 pub use log_holds::LogHold;
@@ -121,8 +125,10 @@ pub use error::{ConflictWith, Error, Result};
 pub use failover::Failover;
 pub use feed::{Change, ChangeKind, Changes, History, Merged, Subject, Subscription, Watch};
 pub use followers::FollowerLag;
-pub use graph::{Graph as VectorGraph, Matched, filtered_ceiling, vector_of};
+pub use graph::{Admit, Graph as VectorGraph, Matched, filtered_ceiling, vector_of};
 pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};
+#[cfg(feature = "test-support")]
+pub use now::{Now, now};
 pub use ordering::{Horizon, MergedHistory, Page, in_writer_order};
 pub use pruning::{Pruned, Trimmed};
 pub use reclaim::Reclaimed;
@@ -147,7 +153,7 @@ pub use tessari_encoding::{
 pub use tessari_kv::ErrorCategory;
 pub use transaction::{
     AcrossPart, Committed, Expansion, FieldedPostings, Neighbour, PlacesNearest, RecordAddress,
-    Region, SearchCounts, StoredRecord, Transaction, Window,
+    RecordWalk, Region, SearchCounts, StoredRecord, Transaction, Window,
 };
 pub use vault::{OpenVault, SealState};
 pub use views::ViewState;

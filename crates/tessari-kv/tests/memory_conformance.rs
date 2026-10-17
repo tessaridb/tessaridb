@@ -5,13 +5,23 @@
 //! intention.
 
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
-#![allow(clippy::expect_used, clippy::as_conversions)]
+#![allow(clippy::expect_used, clippy::as_conversions, clippy::panic)]
 
 use tessari_kv::{MemoryBackend, conformance};
 
+/// The answer of a future that must complete on its first poll: the in-memory
+/// backend never waits.
+fn ready<T>(future: impl std::future::Future<Output = T>) -> T {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match std::pin::pin!(future).poll(&mut context) {
+        std::task::Poll::Ready(answer) => answer,
+        std::task::Poll::Pending => panic!("the in-memory backend's future waited"),
+    }
+}
+
 #[test]
 fn memory_backend_satisfies_the_backend_contract() {
-    let results = conformance::run_all(MemoryBackend::new);
+    let results = ready(conformance::run_all(|| async { MemoryBackend::new() }));
 
     assert_eq!(
         results.len(),
@@ -42,7 +52,7 @@ fn memory_backend_satisfies_the_backend_contract() {
 fn suite_covers_every_documented_contract_rule() {
     // The trait documents five numbered guarantees. Each has at least one check
     // whose name names it, so a rule cannot be silently dropped from the suite.
-    let results = conformance::run_all(MemoryBackend::new);
+    let results = ready(conformance::run_all(|| async { MemoryBackend::new() }));
     let names: Vec<&str> = results.iter().map(|result| result.name).collect();
 
     for required in [

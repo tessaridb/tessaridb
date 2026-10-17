@@ -11,6 +11,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Note, Outcome, Session};
@@ -19,7 +21,7 @@ use tessari_types::{RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Points along a line at `x = n`, each carrying its parity and a rare marker.
@@ -38,12 +40,12 @@ fn ready(store: &Store, count: i64) -> Session<'_> {
         ));
     }
     script.push_str("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;\n");
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     session
 }
 
 fn answered(session: &mut Session<'_>, script: &str) -> (Vec<RecordId>, Vec<Note>, AccessPath) {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let Some(Outcome::Records {
         records,
         plan,
@@ -97,7 +99,7 @@ fn every_answer_passes_the_whole_condition() {
     let store = store();
     let mut session = ready(&store, 400);
     let outcomes = session
-        .run(
+        .run_now(
             "SELECT * FROM items WHERE even = true AND at[0] > 100 \
              ORDER BY vector::euclidean(at, [50.0, 0.0]) LIMIT 5 APPROXIMATE;",
         )
@@ -147,7 +149,7 @@ fn a_record_written_in_this_transaction_keeps_the_filtered_read_exact() {
     let store = store();
     let mut session = ready(&store, 60);
     let outcomes = session
-        .run(&format!(
+        .run_now(&format!(
             "BEGIN; CREATE items:900 = {{ at: [0.4, 0.0], even: true, rare: false }};\n\
              {EVEN_NEAR_ZERO} APPROXIMATE; COMMIT;"
         ))
@@ -171,7 +173,7 @@ fn a_condition_an_index_narrows_to_few_records_is_answered_exactly() {
     let store = store();
     let mut session = ready(&store, 60);
     session
-        .run("DEFINE INDEX by_even ON items FIELDS even;")
+        .run_now("DEFINE INDEX by_even ON items FIELDS even;")
         .unwrap();
     let (ids, notes, path) = answered(&mut session, &format!("{EVEN_NEAR_ZERO} APPROXIMATE;"));
     assert_eq!(path, AccessPath::Index);
@@ -187,7 +189,7 @@ fn explain_names_the_graph_for_a_filtered_approximate_read() {
     let store = store();
     let mut session = ready(&store, 60);
     let outcomes = session
-        .run(&format!("EXPLAIN {EVEN_NEAR_ZERO} APPROXIMATE;"))
+        .run_now(&format!("EXPLAIN {EVEN_NEAR_ZERO} APPROXIMATE;"))
         .unwrap();
     let Some(Outcome::Value(Value::Object(plan))) = outcomes.last() else {
         panic!("{outcomes:?}");

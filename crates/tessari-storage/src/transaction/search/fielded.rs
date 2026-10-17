@@ -6,7 +6,7 @@ use tessari_encoding::{IndexAddress, IndexValues, KeyKind, Posting, PostingKey, 
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{RecordId, Value};
 
-use super::Transaction;
+use super::{RangeWalk, Transaction};
 use crate::catalog::IndexDefinition;
 use crate::error::Result;
 
@@ -28,7 +28,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a posting cannot be decoded.
-    pub fn member_postings(
+    pub async fn member_postings(
         &self,
         index: &IndexDefinition,
         terms: &[String],
@@ -39,20 +39,18 @@ impl Transaction<'_> {
         for term in terms {
             let encoded = IndexValues::of(&[Value::from(term.as_str())]);
             let prefix = PostingKey::term_prefix(&address, &encoded);
-            self.walk_range(
-                PostingKey::keyspace(),
-                &KeyRange::prefix(&prefix),
-                |key, value| {
+            let mut walk = RangeWalk::new(PostingKey::keyspace(), &KeyRange::prefix(&prefix));
+            while let Some(batch) = walk.next(self).await? {
+                for (key, value) in &batch {
                     let fields = Posting::located(value.as_slice())?.fields;
                     if fields.is_empty() {
                         fielded = false;
-                        return Ok(());
+                        continue;
                     }
                     let id = PostingKey::decode(key.as_slice())?.id;
                     found.entry(id).or_default().insert(term.clone(), fields);
-                    Ok(())
-                },
-            )?;
+                }
+            }
             if !fielded {
                 return Ok(None);
             }
@@ -67,7 +65,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or the posting cannot be read.
-    pub fn member_fielded(&self, index: &IndexDefinition) -> Result<bool> {
+    pub async fn member_fielded(&self, index: &IndexDefinition) -> Result<bool> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let request = ScanRequest {
             keyspace: PostingKey::keyspace(),
@@ -75,7 +73,7 @@ impl Transaction<'_> {
             direction: ScanDirection::Forward,
             limit: Some(1),
         };
-        match self.store.backend().scan(&request)?.first() {
+        match self.store.backend().scan(&request).await?.first() {
             Some((_, value)) => Ok(!Posting::located(value.as_slice())?.fields.is_empty()),
             None => Ok(true),
         }

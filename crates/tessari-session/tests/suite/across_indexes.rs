@@ -5,6 +5,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_encoding::{
     Decision, Mutation, Participant, RecordValue, StampedValue, TRANSACTION_ID_LEN, TransactionId,
@@ -20,9 +22,9 @@ const USE: &str = "USE NAMESPACE prod; USE DATABASE shop;";
 
 /// A store set up by `script`, in `prod.shop`.
 fn store(script: &str) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     Session::new(&store)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; {USE} {script}"
         ))
         .unwrap();
@@ -33,12 +35,17 @@ fn store(script: &str) -> Store {
 /// committed and not yet resolved.
 fn committed_not_resolved(store: &Store, table: &str, id: RecordId, value: Value) {
     let mut session = Session::new(store);
-    let mut reading = store.begin().unwrap();
+    let mut reading = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut reading);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "shop")
+        .now()
+        .unwrap()
+        .unwrap();
     let table = catalog
         .table_id(namespace, database, table)
+        .now()
         .unwrap()
         .unwrap();
     reading.rollback();
@@ -47,7 +54,10 @@ fn committed_not_resolved(store: &Store, table: &str, id: RecordId, value: Value
         .answer_across(&AcrossAsk::Prepare {
             transaction: TRANSACTION,
             coordinator: range,
-            seen: store.committed_tail(store.own_log(range).unwrap()).unwrap(),
+            seen: store
+                .committed_tail(store.own_log(range).now().unwrap())
+                .now()
+                .unwrap(),
             writes: vec![Mutation {
                 namespace,
                 database,
@@ -57,6 +67,7 @@ fn committed_not_resolved(store: &Store, table: &str, id: RecordId, value: Value
                 value: StampedValue::new(RecordValue::Present(encode_payload(&value).into_bytes())),
             }],
         })
+        .now()
         .unwrap();
     let tessari_session::AcrossAnswer::Prepared(at) = prepared else {
         panic!("{prepared:?}");
@@ -74,6 +85,7 @@ fn committed_not_resolved(store: &Store, table: &str, id: RecordId, value: Value
                     }],
                 },
             })
+            .now()
             .unwrap();
     }
 }
@@ -90,7 +102,10 @@ fn object(fields: &[(&str, Value)]) -> Value {
 fn said(session: &mut Session<'_>, statement: &str) -> String {
     format!(
         "{:?}",
-        session.run(&format!("{USE} {statement}")).unwrap().last()
+        session
+            .run_now(&format!("{USE} {statement}"))
+            .unwrap()
+            .last()
     )
 }
 
@@ -136,12 +151,17 @@ fn a_traversal_over_edges_part_way_here_is_refused_as_retriable() {
          CREATE users:1 = { handle: 'ada' }; CREATE users:2 = { handle: 'grace' };",
     );
     let users = {
-        let mut reading = store.begin().unwrap();
+        let mut reading = store.begin().now().unwrap();
         let catalog = Catalog::new(&mut reading);
-        let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-        let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
+        let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+        let database = catalog
+            .database_id(namespace, "shop")
+            .now()
+            .unwrap()
+            .unwrap();
         catalog
             .table_id(namespace, database, "users")
+            .now()
             .unwrap()
             .unwrap()
     };
@@ -154,7 +174,7 @@ fn a_traversal_over_edges_part_way_here_is_refused_as_retriable() {
     );
     let mut session = Session::new(&store);
     let refused = session
-        .run(&format!("{USE} SELECT * FROM users:1->follows->users;"))
+        .run_now(&format!("{USE} SELECT * FROM users:1->follows->users;"))
         .unwrap_err();
     assert!(
         matches!(refused, tessari_session::Error::AcrossSettling { .. }),

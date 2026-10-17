@@ -24,6 +24,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -35,25 +37,27 @@ DEFINE DATABASE shop; USE DATABASE shop;
 ";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn opened(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.run(SCHEMA).unwrap();
+    session.run_now(SCHEMA).unwrap();
     session
 }
 
 fn ok(session: &mut Session<'_>, script: &str) {
     session
-        .run(script)
+        .run_now(script)
         .unwrap_or_else(|error| panic!("{script}: {error}"));
 }
 
 /// The refusal, as a caller reads it.
 fn refusal(session: &mut Session<'_>, script: &str) -> String {
     session
-        .run(script)
+        .run_now(script)
         .err()
         .map(|error| error.to_string())
         .unwrap_or_else(|| panic!("{script}: answered instead of refusing"))
@@ -213,7 +217,7 @@ fn tightening_a_table_is_refused_while_a_stored_row_carries_an_undeclared_field(
          ALTER TABLE notes SET SCHEMAFULL;",
     );
     session
-        .run("CREATE notes:3 = { title: 'third', beyond: 'no' };")
+        .run_now("CREATE notes:3 = { title: 'third', beyond: 'no' };")
         .expect_err("a schemafull table took an undeclared field");
 }
 
@@ -229,7 +233,7 @@ fn loosening_a_table_is_never_refused() {
          ALTER TABLE notes SET SCHEMAFULL;",
     );
     session
-        .run("CREATE notes:1 = { title: 'first', extra: 'no' };")
+        .run_now("CREATE notes:1 = { title: 'first', extra: 'no' };")
         .expect_err("a schemafull table took an undeclared field");
     ok(&mut session, "ALTER TABLE notes SET SCHEMALESS;");
     ok(
@@ -314,7 +318,7 @@ fn a_refused_field_alteration_leaves_the_old_declaration_standing() {
     // The old declaration is still enforcing: an int is still refused, which it
     // would not be if the drop had landed and the redeclaration had not.
     session
-        .run("CREATE people:2 = { name: 42 };")
+        .run_now("CREATE people:2 = { name: 42 };")
         .expect_err("the dropped half of a refused alteration was applied");
     ok(&mut session, "CREATE people:3 = { name: 'grace' };");
 }
@@ -338,7 +342,7 @@ fn the_columnar_spelling_takes_every_option_the_long_one_does() {
     ok(&mut session, "CREATE people:1 = { name: 'ada' };");
     // The default was taken, so the columnar spelling did not drop the clause.
     let outcome = session
-        .run("RETURN (SELECT rank FROM people:1);")
+        .run_now("RETURN (SELECT rank FROM people:1);")
         .unwrap()
         .pop()
         .expect("one outcome");
@@ -347,7 +351,7 @@ fn the_columnar_spelling_takes_every_option_the_long_one_does() {
         "the DEFAULT was parsed and then ignored: {outcome:?}"
     );
     session
-        .run("CREATE people:2 = { rank: 'editor' };")
+        .run_now("CREATE people:2 = { rank: 'editor' };")
         .expect_err("REQUIRED was parsed and then ignored");
 }
 
@@ -368,7 +372,7 @@ fn a_table_and_its_columns_are_one_statement() {
     ok(&mut session, "CREATE people:1 = { name: 'ada' };");
 
     let outcome = session
-        .run("RETURN (SELECT rank FROM people:1);")
+        .run_now("RETURN (SELECT rank FROM people:1);")
         .unwrap()
         .pop()
         .expect("one outcome");
@@ -377,7 +381,7 @@ fn a_table_and_its_columns_are_one_statement() {
         "the column's DEFAULT did not reach the field: {outcome:?}"
     );
     session
-        .run("CREATE people:2 = { rank: 'editor' };")
+        .run_now("CREATE people:2 = { rank: 'editor' };")
         .expect_err("the column's REQUIRED did not reach the field");
 }
 
@@ -453,7 +457,7 @@ fn a_failing_column_rolls_back_the_columns_before_it_and_the_table() {
         "DEFINE TABLE half (first string, second int, first bool);",
     );
     session
-        .run("SELECT * FROM half;")
+        .run_now("SELECT * FROM half;")
         .expect_err("the table survived a refused declaration");
 }
 
@@ -498,7 +502,7 @@ fn a_union_of_literals_is_a_declared_type_and_reads_back_as_one() {
     let reported = format!(
         "{:?}",
         session
-            .run("INFO FOR TABLE posts;")
+            .run_now("INFO FOR TABLE posts;")
             .unwrap()
             .pop()
             .expect("one outcome")
@@ -516,8 +520,8 @@ fn a_union_declared_in_another_order_is_the_same_declaration() {
     let mut session = opened(&store);
     ok(&mut session, "DEFINE TABLE a (s 'x' | 'y');");
     ok(&mut session, "DEFINE TABLE b (s 'y' | 'x' | 'y');");
-    let one = format!("{:?}", session.run("INFO FOR TABLE a;").unwrap());
-    let other = format!("{:?}", session.run("INFO FOR TABLE b;").unwrap());
+    let one = format!("{:?}", session.run_now("INFO FOR TABLE a;").unwrap());
+    let other = format!("{:?}", session.run_now("INFO FOR TABLE b;").unwrap());
     assert!(one.contains("'x' | 'y'"), "{one}");
     assert!(other.contains("'x' | 'y'"), "{other}");
 }

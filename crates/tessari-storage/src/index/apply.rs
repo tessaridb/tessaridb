@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn apply_one(
+pub(super) async fn apply_one(
     store: &Store,
     mut batch: WriteBatch,
     definition: &IndexDefinition,
@@ -41,7 +41,7 @@ pub(super) fn apply_one(
         if let RecordValue::Present(payload) = mutation.value.value()
             && let Some(held) = projected_vector(definition, &decode_payload(payload)?)
         {
-            let touched = graph.insert(&mutation.id, held)?;
+            let touched = graph.insert(&mutation.id, held).await?;
             batch = graph::write(batch, &address, &touched);
         }
         return Ok(batch);
@@ -205,7 +205,8 @@ pub(super) fn apply_one(
             &values,
             &mutation.id,
             &mut pending.claimed,
-        )?;
+        )
+        .await?;
     }
     Ok(batch)
 }

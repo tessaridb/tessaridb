@@ -52,6 +52,7 @@
 //! is the rest of the same criterion and it is a decision, not a number.
 
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessaridb::Db;
 
@@ -81,9 +82,9 @@ const REPEATS: usize = 3;
 /// The two carrying the same number is what makes the arms comparable: the span
 /// walks the key and the condition tests the field, and they name one set.
 fn build(session: &mut tessaridb::Session, table: &str, records: u64) -> Failable<()> {
-    session.run(&format!("DEFINE TABLE {table} SCHEMALESS;"))?;
+    session.run_now(&format!("DEFINE TABLE {table} SCHEMALESS;"))?;
     for n in 0..records {
-        session.run(&format!(
+        session.run_now(&format!(
             "CREATE {table}:{n} = {{ n: {n}, note: 'a payload long enough to be a record rather than a token' }};"
         ))?;
     }
@@ -92,7 +93,7 @@ fn build(session: &mut tessaridb::Session, table: &str, records: u64) -> Failabl
 
 /// The identities a table still holds, in the order it answers with.
 fn remaining(session: &mut tessaridb::Session, table: &str) -> Failable<Vec<String>> {
-    let outcomes = session.run(&format!("SELECT * FROM {table};"))?;
+    let outcomes = session.run_now(&format!("SELECT * FROM {table};"))?;
     Ok(outcomes
         .first()
         .and_then(tessaridb::Outcome::records)
@@ -108,7 +109,7 @@ fn remaining(session: &mut tessaridb::Session, table: &str) -> Failable<Vec<Stri
 pub(crate) fn retention(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench;")?;
 
     let upto = FROM.saturating_add(WINDOW);
     let mut reports = Vec::new();
@@ -120,7 +121,7 @@ pub(crate) fn retention(db: &Db) -> Failable<Vec<Report>> {
             let table = format!("span_{size}_{round}");
             build(&mut session, &table, size)?;
             let started = Instant::now();
-            session.run(&format!("DELETE FROM {table}:{FROM}..{upto} LIMIT ALL;"))?;
+            session.run_now(&format!("DELETE FROM {table}:{FROM}..{upto} LIMIT ALL;"))?;
             samples.push(started.elapsed());
         }
         reports.push(samples.summarise(&format!("span delete, table of {size}")));
@@ -132,7 +133,7 @@ pub(crate) fn retention(db: &Db) -> Failable<Vec<Report>> {
             let table = format!("cond_{size}_{round}");
             build(&mut session, &table, size)?;
             let started = Instant::now();
-            session.run(&format!(
+            session.run_now(&format!(
                 "DELETE FROM {table} WHERE n >= {FROM} AND n < {upto} LIMIT ALL;"
             ))?;
             samples.push(started.elapsed());

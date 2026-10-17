@@ -38,7 +38,7 @@ pub(crate) fn leads_a_range(
 /// Answers whether a copy landed, so the caller knows to drop its cursors: the
 /// copy stood each log where the leader's stood, and a cursor still pointing
 /// below that would ask for the pruned position again.
-pub(crate) fn reseed(
+pub(crate) async fn reseed(
     db: &Db,
     keys: &tessari_wire::PeerKeys,
     (node, endpoint): ([u8; tessari_storage::NODE_ID_LEN], &str),
@@ -61,7 +61,7 @@ pub(crate) fn reseed(
         from = %endpoint,
         "this node cannot continue that log — below its start or forked from it; copying its state"
     );
-    match tessari_wire::copy(endpoint, keys, node, said, store) {
+    match tessari_wire::copy(endpoint, keys, node, said, store).await {
         Ok(copied) => {
             store.replica_copied(copied.records);
             tracing::info!(

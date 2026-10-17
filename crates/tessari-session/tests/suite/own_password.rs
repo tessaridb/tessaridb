@@ -23,6 +23,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -33,22 +35,22 @@ const ROTATED: &str = "a different horse entirely";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn peopled(store: &Store) {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop; DEFINE COLLECTION orders;",
         )
         .unwrap();
     session
-        .run("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
     let mut root = signed_in(store, "root", PASSWORD);
-    root.run(
+    root.run_now(
         "DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
          DEFINE USER vic ON prod.shop ROLE viewer PASSWORD 'correct horse battery';",
     )
@@ -57,12 +59,12 @@ fn peopled(store: &Store) {
 
 fn signed_in<'a>(store: &'a Store, name: &str, password: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, password).unwrap();
+    session.sign_in(name, password).now().unwrap();
     session
 }
 
 fn signs_in(store: &Store, name: &str, password: &str) -> bool {
-    Session::new(store).sign_in(name, password).is_ok()
+    Session::new(store).sign_in(name, password).now().is_ok()
 }
 
 #[test]
@@ -74,7 +76,7 @@ fn a_viewer_may_rotate_their_own_password() {
     // could not change their own credential without an owner doing it for them
     // — which means an owner choosing it, and knowing it.
     let mut vic = signed_in(&store, "vic", PASSWORD);
-    vic.change_password(PASSWORD, ROTATED).unwrap();
+    vic.change_password(PASSWORD, ROTATED).now().unwrap();
 
     assert!(signs_in(&store, "vic", ROTATED));
     assert!(
@@ -89,13 +91,13 @@ fn an_editor_may_too_and_the_role_is_untouched() {
     peopled(&store);
 
     let mut ada = signed_in(&store, "ada", PASSWORD);
-    ada.change_password(PASSWORD, ROTATED).unwrap();
+    ada.change_password(PASSWORD, ROTATED).now().unwrap();
 
     // The other field is exercised rather than read back: reading the catalog
     // would assert the value that was just written and prove nothing about
     // whether it still works.
     let mut ada = signed_in(&store, "ada", ROTATED);
-    ada.run("USE NAMESPACE prod; USE DATABASE shop; CREATE orders:1 = { total: 5 };")
+    ada.run_now("USE NAMESPACE prod; USE DATABASE shop; CREATE orders:1 = { total: 5 };")
         .unwrap();
 }
 
@@ -108,7 +110,11 @@ fn the_current_password_is_required_and_checked() {
     // copied off a plaintext connection would be a permanent takeover — the
     // thief sets a new password and the owner's way back is a restore.
     let mut vic = signed_in(&store, "vic", PASSWORD);
-    assert!(vic.change_password("not the password", ROTATED).is_err());
+    assert!(
+        vic.change_password("not the password", ROTATED)
+            .now()
+            .is_err()
+    );
 
     assert!(
         signs_in(&store, "vic", PASSWORD),
@@ -123,7 +129,7 @@ fn it_changes_the_caller_and_nobody_else() {
     peopled(&store);
 
     let mut vic = signed_in(&store, "vic", PASSWORD);
-    vic.change_password(PASSWORD, ROTATED).unwrap();
+    vic.change_password(PASSWORD, ROTATED).now().unwrap();
 
     // There is no subject to name, which is exactly why this needs no
     // containment check: the only account it can reach is the caller's own.
@@ -139,7 +145,7 @@ fn an_anonymous_session_has_no_password_to_change() {
     // Not "an empty password" and not a way in. On a closed store there is
     // nobody to be, and on an open one there is nobody to be either.
     let mut nobody = Session::new(&store);
-    assert!(nobody.change_password(PASSWORD, ROTATED).is_err());
+    assert!(nobody.change_password(PASSWORD, ROTATED).now().is_err());
 }
 
 #[test]
@@ -153,9 +159,9 @@ fn a_user_removed_since_signing_in_cannot_rotate_anything() {
     // catalog no longer holds.
     let mut vic = signed_in(&store, "vic", PASSWORD);
     let mut root = signed_in(&store, "root", PASSWORD);
-    root.run("DROP USER vic;").unwrap();
+    root.run_now("DROP USER vic;").unwrap();
 
-    assert!(vic.change_password(PASSWORD, ROTATED).is_err());
+    assert!(vic.change_password(PASSWORD, ROTATED).now().is_err());
     assert!(!signs_in(&store, "vic", ROTATED));
 }
 
@@ -168,7 +174,7 @@ fn rotating_your_own_password_still_needs_the_new_one_to_be_a_password() {
     // whichever path happened to check it.
     let mut vic = signed_in(&store, "vic", PASSWORD);
     assert!(
-        vic.change_password(PASSWORD, "").is_err(),
+        vic.change_password(PASSWORD, "").now().is_err(),
         "an empty password was accepted"
     );
     assert!(signs_in(&store, "vic", PASSWORD));

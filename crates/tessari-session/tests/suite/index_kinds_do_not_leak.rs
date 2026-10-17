@@ -21,6 +21,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -28,13 +30,13 @@ use tessari_storage::Store;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE atlas; USE NAMESPACE atlas;\n\
              DEFINE DATABASE world; USE DATABASE world;\n\
              DEFINE TABLE notes SCHEMALESS;",
@@ -45,7 +47,7 @@ fn ready(store: &Store) -> Session<'_> {
 
 /// How many records one statement answered with.
 fn rows(session: &mut Session<'_>, statement: &str) -> usize {
-    match session.run(statement).unwrap().pop() {
+    match session.run_now(statement).unwrap().pop() {
         Some(Outcome::Records { records, .. }) => records.len(),
         other => panic!("expected records, got {other:?}"),
     }
@@ -55,7 +57,7 @@ fn rows(session: &mut Session<'_>, statement: &str) -> usize {
 fn unchanged_by(populate: &str, query: &str, define: &str) {
     let store = store();
     let mut session = ready(&store);
-    session.run(populate).unwrap();
+    session.run_now(populate).unwrap();
 
     let scanned = rows(&mut session, query);
     assert!(
@@ -63,7 +65,7 @@ fn unchanged_by(populate: &str, query: &str, define: &str) {
         "the case proves nothing unless the scan finds something: {query}"
     );
 
-    session.run(define).unwrap();
+    session.run_now(define).unwrap();
     let indexed = rows(&mut session, query);
     assert_eq!(
         indexed, scanned,
@@ -143,13 +145,13 @@ fn an_ordered_index_still_serves_the_equality_it_is_for() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("CREATE notes:1 = { city: 'paris' }; CREATE notes:2 = { city: 'berlin' };")
+        .run_now("CREATE notes:1 = { city: 'paris' }; CREATE notes:2 = { city: 'berlin' };")
         .unwrap();
     session
-        .run("DEFINE INDEX by_city ON notes FIELDS city;")
+        .run_now("DEFINE INDEX by_city ON notes FIELDS city;")
         .unwrap();
     let answered = session
-        .run("SELECT * FROM notes WHERE city = 'paris';")
+        .run_now("SELECT * FROM notes WHERE city = 'paris';")
         .unwrap();
     match answered.first() {
         Some(Outcome::Records { records, plan, .. }) => {

@@ -68,12 +68,14 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_encoding::{
     CODEC_VERSION, Posting, PostingKey, SearchTermKey, StoreKey, StoreValue, TermStatistics,
 };
 use tessari_kv::{KeyRange, Keyspace, KvBackend, ScanDirection, ScanRequest, WriteBatch};
-use tessari_lsm::{Durability, LsmBackend, StoreConfig};
+use tessari_lsm::{Durability, StoreConfig, TessariKvBackend};
 use tessari_session::Session;
 use tessari_storage::Store;
 
@@ -109,9 +111,11 @@ const RANKED: &str = "SELECT * FROM notes ORDER BY search::score(body, 'alpha be
 /// is not something a caller does; it is something an older release did, and
 /// this is the only way to be that release.
 fn open(path: &std::path::Path) -> (Arc<dyn KvBackend>, Store) {
-    let backend = LsmBackend::open(path, StoreConfig::new(Durability::PowerLossSafe)).unwrap();
+    let backend = TessariKvBackend::open(path, StoreConfig::new(Durability::PowerLossSafe))
+        .now()
+        .unwrap();
     let backend = Arc::new(backend) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     (backend, store)
 }
 
@@ -130,7 +134,7 @@ const USE: &str = "USE NAMESPACE prod; USE DATABASE shop;";
 /// answer wants.
 fn build(session: &mut Session<'_>) {
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER simple FILTERS lowercase;\n\
@@ -143,11 +147,11 @@ fn build(session: &mut Session<'_>) {
         let repeats = usize::try_from(n % 4).unwrap().saturating_add(1);
         let body = vec![word; repeats].join(" ");
         session
-            .run(&format!("CREATE notes:{n} = {{ body: '{body}' }};"))
+            .run_now(&format!("CREATE notes:{n} = {{ body: '{body}' }};"))
             .unwrap();
     }
     session
-        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
         .unwrap();
 }
 
@@ -171,7 +175,7 @@ fn contested(answer: &[String]) -> bool {
 /// and in what order, not what they contain.
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<String> {
     session
-        .run(read)
+        .run_now(read)
         .unwrap()
         .last()
         .unwrap()
@@ -196,6 +200,7 @@ fn entries_of<K: StoreKey>(backend: &dyn KvBackend) -> Vec<(tessari_kv::Key, tes
     };
     backend
         .scan(&request)
+        .now()
         .unwrap()
         .into_iter()
         .filter(|(key, _)| K::decode(key.as_slice()).is_ok())
@@ -213,7 +218,7 @@ fn forget_the_numbers(backend: &dyn KvBackend) -> usize {
     for (key, _) in &found {
         batch = batch.put(Keyspace::INDEX, key.clone(), Posting::Membership.encode());
     }
-    backend.apply(batch).unwrap();
+    backend.apply(batch).now().unwrap();
     found.len()
 }
 
@@ -232,7 +237,7 @@ fn forget_the_bound(backend: &dyn KvBackend) -> usize {
         older.truncate(header.saturating_add(8));
         batch = batch.put(Keyspace::INDEX, key.clone(), tessari_kv::Value::from(older));
     }
-    backend.apply(batch).unwrap();
+    backend.apply(batch).now().unwrap();
     found.len()
 }
 
@@ -367,7 +372,7 @@ fn an_index_in_the_prior_format_answers_the_same_after_its_writer_is_killed() {
     }
 
     let mut session = Session::new(&store);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     // Membership is what `MATCHES` ever needed, and the index still carries it.
     assert_eq!(&ids(&mut session, MEMBERS), members);
@@ -411,7 +416,7 @@ fn on_this_fixture_a_wrong_bound_moves_the_ranked_answer() {
         let wrong = TermStatistics::bounded(read.documents, 1, 1_000_000);
         batch = batch.put(Keyspace::INDEX, key.clone(), wrong.encode());
     }
-    backend.apply(batch).unwrap();
+    backend.apply(batch).now().unwrap();
 
     assert_ne!(
         ids(&mut session, RANKED),
@@ -446,18 +451,18 @@ fn a_value_from_an_unknown_codec_version_is_refused_and_names_it() {
             ahead[0] = CODEC_VERSION.saturating_add(1);
             batch = batch.put(Keyspace::INDEX, key.clone(), tessari_kv::Value::from(ahead));
         }
-        backend.apply(batch).unwrap();
+        backend.apply(batch).now().unwrap();
         found.len()
     };
     assert!(rewritten > 0, "no postings were re-versioned");
 
     let (_backend, store) = open(&path);
     let mut session = Session::new(&store);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     // The scored read is the one that decodes a posting's value; `MATCHES` reads
     // keys alone and would not reach this at all.
-    let refused = session.run(RANKED);
+    let refused = session.run_now(RANKED);
     let error = refused.expect_err("an unknown codec version must not be read as this one");
 
     let said = error.to_string();

@@ -18,6 +18,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -26,13 +28,13 @@ use tessari_types::Value;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION users; DEFINE COLLECTION orders;",
@@ -43,7 +45,7 @@ fn ready(store: &Store) -> Session<'_> {
 
 /// The rows one read answered with.
 fn rows(session: &mut Session<'_>, script: &str) -> Vec<(tessari_types::RecordId, Value)> {
-    match session.run(script).unwrap().last().unwrap() {
+    match session.run_now(script).unwrap().last().unwrap() {
         Outcome::Records { records, .. } => records.clone(),
         other => panic!("not records: {other:?}"),
     }
@@ -52,7 +54,7 @@ fn rows(session: &mut Session<'_>, script: &str) -> Vec<(tessari_types::RecordId
 /// `orders.who` holds a reference; `users.tag` holds the same identity as text.
 fn mismatched(session: &mut Session<'_>) {
     session
-        .run(
+        .run_now(
             "CREATE users:1 = { tag: 'users:1' };\n\
              CREATE users:2 = { tag: 'users:2' };\n\
              CREATE orders:1 = { who: users:1, total: 3 };\n\
@@ -69,7 +71,7 @@ fn a_reference_against_text_is_refused_rather_than_answered() {
     let mut session = ready(&store);
     mismatched(&mut session);
 
-    let refused = session.run(ACROSS_KINDS).expect_err("a refusal");
+    let refused = session.run_now(ACROSS_KINDS).expect_err("a refusal");
     let said = refused.to_string();
     assert!(said.contains("string"), "{said}");
     assert!(said.contains("record"), "{said}");
@@ -84,7 +86,7 @@ fn the_refusal_names_both_routes() {
     mismatched(&mut session);
 
     let said = session
-        .run(ACROSS_KINDS)
+        .run_now(ACROSS_KINDS)
         .expect_err("a refusal")
         .to_string();
     assert!(said.contains("tag"), "{said}");
@@ -101,11 +103,11 @@ fn the_index_served_path_refuses_too() {
     let mut session = ready(&store);
     mismatched(&mut session);
     session
-        .run("DEFINE INDEX by_who ON orders FIELDS who;")
+        .run_now("DEFINE INDEX by_who ON orders FIELDS who;")
         .unwrap();
 
     assert!(
-        session.run(ACROSS_KINDS).is_err(),
+        session.run_now(ACROSS_KINDS).is_err(),
         "an index turned the refusal back into an empty answer"
     );
 }
@@ -117,7 +119,7 @@ fn a_join_that_legitimately_matches_nothing_still_answers() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE users:1 = { name: 'ada' };\n\
              CREATE orders:1 = { who: 'nobody', total: 3 };",
         )
@@ -138,7 +140,7 @@ fn a_join_that_matched_anything_is_never_refused() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE users:1 = { tag: 'ada' };\n\
              CREATE users:2 = { tag: users:2 };\n\
              CREATE orders:1 = { who: 'ada', total: 3 };",
@@ -156,7 +158,7 @@ fn an_empty_side_is_not_a_type_mistake() {
     // query written before its data arrives.
     let store = store();
     let mut session = ready(&store);
-    session.run("CREATE users:1 = { tag: 'ada' };").unwrap();
+    session.run_now("CREATE users:1 = { tag: 'ada' };").unwrap();
 
     assert!(rows(&mut session, ACROSS_KINDS).is_empty());
 }
@@ -170,7 +172,7 @@ fn a_where_that_discards_every_row_is_not_a_type_mistake() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE users:1 = { name: 'ada' };\n\
              CREATE orders:1 = { who: 'ada', total: 3 };",
         )
@@ -192,7 +194,7 @@ fn a_key_absent_on_one_side_is_not_a_type_mistake() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE users:1 = { name: 'ada' };\n\
              CREATE orders:1 = { who: 'ada', total: 3 };",
         )

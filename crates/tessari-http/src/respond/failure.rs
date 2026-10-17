@@ -48,7 +48,7 @@ pub(crate) fn elsewhere(error: &Error) -> Option<(&str, &[u8; tessaridb::NODE_ID
 /// that has is answered `409` with the refusal's own words instead. A redirect
 /// that is safe names the node's HTTP base plus `path` when its member row
 /// declares one (`HTTP AT`), and the address the refusal carried otherwise.
-pub(crate) fn script_failure(db: &Db, error: &Error, landed: bool, path: &str) -> Answer {
+pub(crate) async fn script_failure(db: &Db, error: &Error, landed: bool, path: &str) -> Answer {
     let Some((_, node)) = elsewhere(error) else {
         return failure(error);
     };
@@ -65,7 +65,13 @@ pub(crate) fn script_failure(db: &Db, error: &Error, landed: bool, path: &str) -
         return Answer::new(409, body);
     }
     let mut answer = failure(error);
-    if let Some(base) = db.member(node).ok().flatten().and_then(|row| row.http) {
+    if let Some(base) = db
+        .member(node)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|row| row.http)
+    {
         answer.location = Some(format!("{}{path}", base.trim_end_matches('/')));
     }
     answer

@@ -9,6 +9,7 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
+use tessari_storage::Now;
 mod across;
 mod bootstrap;
 mod catch_up;
@@ -36,9 +37,10 @@ use tessari_types::Sequence;
 pub(crate) fn tails(store: &Store) -> Vec<(LogId, Sequence)> {
     store
         .logs()
+        .now()
         .unwrap()
         .into_iter()
-        .map(|log| (log, store.committed_tail(log).unwrap()))
+        .map(|log| (log, store.committed_tail(log).now().unwrap()))
         .collect()
 }
 

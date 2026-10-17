@@ -14,6 +14,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -24,13 +26,13 @@ const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION users;\n\
@@ -44,7 +46,7 @@ fn ready(store: &Store) -> Session<'_> {
 
 /// One field of the plan a read explains under.
 fn plan(session: &mut Session<'_>, script: &str, field: &str) -> String {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("a plan answered with {:?}", outcomes.last());
     };
@@ -52,7 +54,7 @@ fn plan(session: &mut Session<'_>, script: &str, field: &str) -> String {
 }
 
 fn ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let mut found: Vec<RecordId> = outcomes
         .last()
         .unwrap()
@@ -88,7 +90,7 @@ fn an_index_served_read_names_the_index_and_the_shape() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE INDEX by_city ON users FIELDS city;")
+        .run_now("DEFINE INDEX by_city ON users FIELDS city;")
         .unwrap();
     let script = "EXPLAIN SELECT * FROM users WHERE city = 'Paris';";
     assert_eq!(plan(&mut session, script, "access"), r#"String("index")"#);
@@ -108,7 +110,7 @@ fn it_names_the_more_selective_of_two_usable_indexes() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE INDEX by_city ON users FIELDS city;\n\
              DEFINE INDEX by_email ON users FIELDS email UNIQUE;",
         )
@@ -126,7 +128,7 @@ fn the_order_the_conjuncts_were_written_in_does_not_decide() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE INDEX by_city ON users FIELDS city;\n\
              DEFINE INDEX by_email ON users FIELDS email UNIQUE;",
         )
@@ -161,7 +163,7 @@ fn the_answer_is_the_same_under_every_plan() {
         let store = store();
         let mut session = ready(&store);
         if !declarations.is_empty() {
-            session.run(declarations).unwrap();
+            session.run_now(declarations).unwrap();
         }
         plans.push(plan(&mut session, &format!("EXPLAIN {read}"), "index"));
         answers.push(ids(&mut session, read));
@@ -196,12 +198,12 @@ fn explaining_a_read_does_not_run_it() {
         tessari_types::NamespaceId::new(1),
         tessari_types::DatabaseId::new(1),
     );
-    let home = store.own_log(home).unwrap();
-    let before = store.committed_tail(home).unwrap();
+    let home = store.own_log(home).now().unwrap();
+    let before = store.committed_tail(home).now().unwrap();
     session
-        .run("EXPLAIN SELECT * FROM users WHERE city = 'Paris';")
+        .run_now("EXPLAIN SELECT * FROM users WHERE city = 'Paris';")
         .unwrap();
-    assert_eq!(store.committed_tail(home).unwrap(), before);
+    assert_eq!(store.committed_tail(home).now().unwrap(), before);
     assert_eq!(ids(&mut session, "SELECT * FROM users;").len(), 3);
 }
 
@@ -214,7 +216,7 @@ fn a_point_read_and_a_walk_say_what_they_are() {
         r#"String("record")"#
     );
     session
-        .run("DEFINE TABLE follows EDGE; RELATE users:1->follows->users:2;")
+        .run_now("DEFINE TABLE follows EDGE; RELATE users:1->follows->users:2;")
         .unwrap();
     assert_eq!(
         plan(
@@ -253,7 +255,7 @@ fn it_needs_exactly_the_permission_the_read_needs() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION secrets;\n\
              CREATE secrets:1 = { held: 'x' };\n\
              DEFINE INDEX by_held ON secrets FIELDS held;\n\
@@ -261,15 +263,16 @@ fn it_needs_exactly_the_permission_the_read_needs() {
         )
         .unwrap();
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
         .unwrap();
-    root.run("USE NAMESPACE prod; USE DATABASE shop; GRANT read ON users TO ada;")
+    root.run_now("USE NAMESPACE prod; USE DATABASE shop; GRANT read ON users TO ada;")
         .unwrap();
 
     let mut ada = Session::new(&store);
-    ada.sign_in("ada", PASSWORD).unwrap();
-    ada.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+    ada.sign_in("ada", PASSWORD).now().unwrap();
+    ada.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
     // Granted on `users`: the read runs and so does its explanation.
     assert_eq!(
         plan(
@@ -280,12 +283,12 @@ fn it_needs_exactly_the_permission_the_read_needs() {
         r#"String("users")"#
     );
     // Not granted on `secrets`: neither does.
-    let refused = ada.run("EXPLAIN SELECT * FROM secrets WHERE held = 'x';");
+    let refused = ada.run_now("EXPLAIN SELECT * FROM secrets WHERE held = 'x';");
     assert!(
         refused.is_err(),
         "an ungranted table's plan was disclosed: {refused:?}"
     );
-    assert!(ada.run("SELECT * FROM secrets;").is_err());
+    assert!(ada.run_now("SELECT * FROM secrets;").is_err());
 }
 
 #[test]
@@ -297,7 +300,7 @@ fn only_a_read_can_be_explained() {
         "EXPLAIN DELETE users:1;",
         "EXPLAIN;",
     ] {
-        let refused = session.run(script);
+        let refused = session.run_now(script);
         assert!(refused.is_err(), "{script} was accepted: {refused:?}");
     }
 }

@@ -50,21 +50,24 @@ struct Graph<'a> {
 impl Graph<'_> {
     /// The steps out of `node`: neighbours in the target table that exist, with
     /// their cost — read once per node.
-    fn out_of(
+    async fn out_of(
         &mut self,
         transaction: &Transaction<'_>,
         node: &RecordId,
     ) -> Result<&[(RecordId, f64)]> {
         if !self.steps.contains_key(node) {
             let mut out = Vec::new();
-            for neighbour in transaction.neighbours(&self.kind, self.table, node, self.along)? {
+            for neighbour in transaction
+                .neighbours(&self.kind, self.table, node, self.along)
+                .await?
+            {
                 if neighbour.table != self.table || neighbour.id == *node {
                     continue;
                 }
                 let Some(cost) = self.cost(&neighbour.properties)? else {
                     continue;
                 };
-                if self.alive(transaction, &neighbour.id)? {
+                if self.alive(transaction, &neighbour.id).await? {
                     out.push((neighbour.id, cost));
                 }
             }
@@ -101,7 +104,7 @@ impl Graph<'_> {
 
     /// Whether a record is there: a deleted node drops out of every path, as it
     /// drops out of a `DEPTH` walk.
-    fn alive(&mut self, transaction: &Transaction<'_>, node: &RecordId) -> Result<bool> {
+    async fn alive(&mut self, transaction: &Transaction<'_>, node: &RecordId) -> Result<bool> {
         if let Some(known) = self.exists.get(node) {
             return Ok(*known);
         }
@@ -111,7 +114,7 @@ impl Graph<'_> {
             self.table,
             node.clone(),
         );
-        let alive = transaction.get(&address)?.is_some();
+        let alive = transaction.get(&address).await?.is_some();
         self.exists.insert(node.clone(), alive);
         Ok(alive)
     }
@@ -120,46 +123,44 @@ impl Graph<'_> {
 impl Session<'_> {
     /// The shortest path from `from` to the record `path` names, within `depth`
     /// steps of `hop`, and the note stating its length and cost.
-    pub(super) fn shortest_path(
+    pub(super) async fn shortest_path(
         &self,
         transaction: &mut Transaction<'_>,
         (from, direction, hop, depth): (&RecordTarget, Direction, &Hop, u64),
         path: &PathTo,
     ) -> Result<Answered> {
-        if !transaction.indexes_are_current()? {
+        if !transaction.indexes_are_current().await? {
             return Err(Error::NoHistoricalTraversal {
                 table: hop.edges.name.text.clone(),
                 span: from.span,
             });
         }
-        let (origin, start) = self.address(transaction, from)?;
-        let (_, end) = self.address(transaction, &path.to)?;
-        let Some(kind) = Catalog::new(transaction).edge_kind_id(
-            origin.namespace,
-            origin.database,
-            &hop.edges.name.text,
-        )?
+        let (origin, start) = self.address(transaction, from).await?;
+        let (_, end) = self.address(transaction, &path.to).await?;
+        let Some(kind) = Catalog::new(transaction)
+            .edge_kind_id(origin.namespace, origin.database, &hop.edges.name.text)
+            .await?
         else {
             // Resolved for its refusal: an unknown name is `Unknown`, a table
             // that exists is an edge table this search cannot walk backwards.
-            self.resolve_table(transaction, &hop.edges)?;
+            self.resolve_table(transaction, &hop.edges).await?;
             return Err(Error::PathOverEdgeTable {
                 table: hop.edges.name.text.clone(),
                 span: hop.edges.span,
             });
         };
-        let kind =
-            Catalog::new(transaction)
-                .edge_kind(kind)?
-                .ok_or_else(|| Error::NotAnEdgeTable {
-                    table: hop.edges.name.text.clone(),
-                    span: hop.edges.span,
-                })?;
-        super::graph::edges_settled(transaction, kind.edges, &hop.edges)?;
+        let kind = Catalog::new(transaction)
+            .edge_kind(kind)
+            .await?
+            .ok_or_else(|| Error::NotAnEdgeTable {
+                table: hop.edges.name.text.clone(),
+                span: hop.edges.span,
+            })?;
+        super::graph::edges_settled(transaction, kind.edges, &hop.edges).await?;
         let Some(target) = hop.target.as_ref() else {
             return Ok((Vec::new(), None));
         };
-        let (context, table) = self.resolve_table(transaction, target)?;
+        let (context, table) = self.resolve_table(transaction, target).await?;
         let mut graph = Graph {
             kind,
             along: match direction {
@@ -175,25 +176,25 @@ impl Session<'_> {
         };
         if start.table != table
             || end.table != table
-            || !graph.alive(transaction, &start.id)?
-            || !graph.alive(transaction, &end.id)?
+            || !graph.alive(transaction, &start.id).await?
+            || !graph.alive(transaction, &end.id).await?
         {
             return Ok((Vec::new(), None));
         }
         let found = if graph.weight.is_some() {
-            cheapest(transaction, &mut graph, &start.id, &end.id, depth)?
+            cheapest(transaction, &mut graph, &start.id, &end.id, depth).await?
         } else {
-            fewest(transaction, &mut graph, &start.id, &end.id, depth)?
+            fewest(transaction, &mut graph, &start.id, &end.id, depth).await?
         };
         let Some((ids, cost)) = found else {
             return Ok((Vec::new(), None));
         };
-        let visible = self.visible_in(transaction, table)?;
+        let visible = self.visible_in(transaction, table).await?;
         let mut records = Vec::with_capacity(ids.len());
         for id in &ids {
             let address =
                 RecordAddress::new(context.namespace, context.database, table, id.clone());
-            if let Some(payload) = transaction.get(&address)? {
+            if let Some(payload) = transaction.get(&address).await? {
                 records.push((id.clone(), self.record_of(&payload, &visible)?));
             }
         }
@@ -210,7 +211,7 @@ impl Session<'_> {
 /// The fewest-steps path: breadth-first layers to the end, the nodes on a
 /// shortest path marked backwards through them, and the smallest-id walk
 /// forward through the marked ones.
-fn fewest(
+async fn fewest(
     transaction: &Transaction<'_>,
     graph: &mut Graph<'_>,
     start: &RecordId,
@@ -227,7 +228,7 @@ fn fewest(
         let mut next = BTreeSet::new();
         let last = layers.last().cloned().unwrap_or_default();
         for node in &last {
-            for (far, _) in graph.out_of(transaction, node)?.to_vec() {
+            for (far, _) in graph.out_of(transaction, node).await?.to_vec() {
                 if seen.insert(far.clone()) {
                     next.insert(far);
                 }
@@ -253,7 +254,7 @@ fn fewest(
     for at in (0..layers.len().saturating_sub(1)).rev() {
         let mut marked = BTreeSet::new();
         for node in &layers[at] {
-            let onward = graph.out_of(transaction, node)?;
+            let onward = graph.out_of(transaction, node).await?;
             let next = useful.get(at.saturating_add(1));
             if onward
                 .iter()
@@ -268,7 +269,8 @@ fn fewest(
     let mut at = start.clone();
     for layer in useful.iter().skip(1) {
         let next = graph
-            .out_of(transaction, &at)?
+            .out_of(transaction, &at)
+            .await?
             .iter()
             .map(|(far, _)| far)
             .find(|far| layer.contains(*far))
@@ -287,7 +289,7 @@ fn fewest(
 /// end within `k` steps from every node reachable from the start, then the
 /// fewest `k` reaching the overall cheapest, then the smallest-id walk forward
 /// that keeps the cost exact.
-fn cheapest(
+async fn cheapest(
     transaction: &Transaction<'_>,
     graph: &mut Graph<'_>,
     start: &RecordId,
@@ -300,7 +302,7 @@ fn cheapest(
     for _ in 0..depth {
         let mut next = Vec::new();
         for node in &frontier {
-            for (far, _) in graph.out_of(transaction, node)?.to_vec() {
+            for (far, _) in graph.out_of(transaction, node).await?.to_vec() {
                 if reachable.insert(far.clone()) {
                     next.push(far);
                 }
@@ -322,7 +324,7 @@ fn cheapest(
         };
         let mut current = previous.clone();
         for node in &reachable {
-            for (far, cost) in graph.out_of(transaction, node)? {
+            for (far, cost) in graph.out_of(transaction, node).await? {
                 if let Some(onward) = previous.get(far) {
                     let through = cost + onward;
                     let held = current.entry(node.clone()).or_insert(f64::INFINITY);
@@ -357,7 +359,8 @@ fn cheapest(
             .copied()
             .unwrap_or(f64::INFINITY);
         let next = graph
-            .out_of(transaction, &at)?
+            .out_of(transaction, &at)
+            .await?
             .iter()
             .find(|(far, cost)| {
                 rounds[left]

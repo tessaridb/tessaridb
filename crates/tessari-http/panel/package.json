@@ -1,6 +1,7 @@
 {
   "name": "tessaridb-console",
   "version": "0.0.0",
+  "author": "boogvar",
   "private": true,
   "description": "Source for the console the database serves at /. The build's output is committed to ../assets/ and embedded into the binary by include_str!, so nothing here is needed to build or run the database.",
   "type": "module",

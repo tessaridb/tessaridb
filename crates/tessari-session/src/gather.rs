@@ -107,6 +107,12 @@ pub enum Unanswered {
     Moved,
 }
 
+/// What [`Gather::gather`] answers with: the fetching crosses a link, and the
+/// trait is held as an object, so its future is boxed.
+pub type Gathering<'a> = core::pin::Pin<
+    Box<dyn core::future::Future<Output = core::result::Result<Gathered, Unanswered>> + Send + 'a>,
+>;
+
 /// Who fetches a shard's records for this node.
 ///
 /// `Send + Sync` because one is shared by every connection a node serves.
@@ -117,7 +123,7 @@ pub trait Gather: core::fmt::Debug + Send + Sync {
     ///
     /// [`Unanswered::Ceiling`] when there are more than `asked.most`, and
     /// [`Unanswered::Refused`] when no leader answered.
-    fn gather(&self, asked: &Asked<'_>) -> core::result::Result<Gathered, Unanswered>;
+    fn gather<'a>(&'a self, asked: &'a Asked<'_>) -> Gathering<'a>;
 }
 
 /// The part of a read this node lacks, when it lacks any.
@@ -196,16 +202,21 @@ impl Session<'_> {
     /// Membership is read from the store as it is NOW, in a transaction of its
     /// own, and never through the read's: under `VERSION` that one is the
     /// catalog as it stood, and a peer declared since would be invisible.
-    pub(crate) fn not_held_here(&self, missing: &Missing) -> Result<Error> {
+    pub(crate) async fn not_held_here(&self, missing: &Missing) -> Result<Error> {
         self.store.answered_not_held_here();
-        Ok(missing.refusal(self.whole_holder(missing)?))
+        Ok(missing.refusal(self.whole_holder(missing).await?))
     }
 
     /// The refusal a shard that did not answer gives; a moved map names the
     /// whole holder as [`Self::not_held_here`] does (G051 SG3).
-    fn unanswered(&self, missing: &Missing, shard: ShardId, why: Unanswered) -> Result<Error> {
+    async fn unanswered(
+        &self,
+        missing: &Missing,
+        shard: ShardId,
+        why: Unanswered,
+    ) -> Result<Error> {
         let holder = match why {
-            Unanswered::Moved => self.whole_holder(missing)?,
+            Unanswered::Moved => self.whole_holder(missing).await?,
             Unanswered::Ceiling | Unanswered::Refused(_) => None,
         };
         Ok(missing.unanswered(shard, why, holder))
@@ -213,15 +224,16 @@ impl Session<'_> {
 
     /// A serving peer holding the whole of `missing`'s table, when this node
     /// knows one.
-    fn whole_holder(&self, missing: &Missing) -> Result<Option<crate::Peer>> {
+    async fn whole_holder(&self, missing: &Missing) -> Result<Option<crate::Peer>> {
         let Some(known) = self.elsewhere.as_ref() else {
             return Ok(None);
         };
-        let me = self.store.node_identity()?.id;
+        let me = self.store.node_identity().await?.id;
         let whole = tessari_storage::Reach::Database(missing.namespace, missing.database);
-        let mut now = self.store.begin()?;
+        let mut now = self.store.begin().await?;
         let holder = Catalog::new(&mut now)
-            .replicas()?
+            .replicas()
+            .await?
             .into_iter()
             .filter(|row| row.replicates.is_some_and(|reach| reach.contains(whole)))
             .find_map(|row| {
@@ -238,7 +250,7 @@ impl Session<'_> {
     /// A node never served anything — a leader, a store standing alone — answers
     /// `None` for [`tessari_storage::Store::served`] and pays one in-memory read;
     /// so does every follower whose reach covers the table's database.
-    pub(crate) fn missing(
+    pub(crate) async fn missing(
         &self,
         transaction: &mut Transaction<'_>,
         id: TableId,
@@ -247,7 +259,7 @@ impl Session<'_> {
         let Some(over) = self.store.served() else {
             return Ok(None);
         };
-        let Some(definition) = Catalog::new(transaction).table(id)? else {
+        let Some(definition) = Catalog::new(transaction).table(id).await? else {
             return Ok(None);
         };
         if over.contains(tessari_storage::Reach::Database(
@@ -305,7 +317,7 @@ impl Session<'_> {
     /// wherever gathering is not possible: a node told of no gatherer, a table
     /// that is not split, and — because the gatherer is withheld there — inside
     /// a transaction and under `VERSION`, where one snapshot is the promise.
-    pub(crate) fn gather_a_part(
+    pub(crate) async fn gather_a_part(
         &self,
         transaction: &mut Transaction<'_>,
         id: TableId,
@@ -314,11 +326,11 @@ impl Session<'_> {
         enough: Option<usize>,
         ordered: Option<&crate::Ordered>,
     ) -> Result<Option<(Stored, Note)>> {
-        let Some(missing) = self.missing(transaction, id, part)? else {
+        let Some(missing) = self.missing(transaction, id, part).await? else {
             return Ok(None);
         };
         let (Some(gatherer), Some(map)) = (self.gather.as_ref(), missing.map.as_ref()) else {
-            return Err(self.not_held_here(&missing)?);
+            return Err(self.not_held_here(&missing).await?);
         };
         let too_much = || missing.too_much();
         let mut found: Stored = Vec::new();
@@ -348,32 +360,35 @@ impl Session<'_> {
                     ordered,
                     counting: None,
                 };
-                match gatherer.gather(&asked) {
+                match gatherer.gather(&asked).await {
                     Ok(gathered) => gathered.records,
-                    Err(why) => return Err(self.unanswered(&missing, span.id, why)?),
+                    Err(why) => return Err(self.unanswered(&missing, span.id, why).await?),
                 }
             } else if let Some(ordered) = ordered {
                 // Ranked exactly as a leader ranks its shard, a page at a time,
                 // so what this node holds of its own span is its first `n` too.
-                self.leading_of_span(transaction, &missing, id, window, pushed, ordered)?
+                self.leading_of_span(transaction, &missing, id, window, pushed, ordered)
+                    .await?
             } else {
                 // This node's own span is narrowed by the same condition before
                 // it counts towards `enough`: a record the condition will drop
                 // must not take the place of one it keeps — which is also why
                 // the read is not cut at `enough` until it has been narrowed.
-                let held = transaction.records_between(
-                    missing.namespace,
-                    missing.database,
-                    id,
-                    window,
-                    None,
-                    match (pushed, remaining) {
-                        (None, Some(remaining)) => remaining.min(most.saturating_add(1)),
-                        _ => most.saturating_add(1),
-                    },
-                )?;
+                let held = transaction
+                    .records_between(
+                        missing.namespace,
+                        missing.database,
+                        id,
+                        window,
+                        None,
+                        match (pushed, remaining) {
+                            (None, Some(remaining)) => remaining.min(most.saturating_add(1)),
+                            _ => most.saturating_add(1),
+                        },
+                    )
+                    .await?;
                 match pushed {
-                    Some(pushed) => crate::keeping(self.store, pushed, held)?,
+                    Some(pushed) => crate::keeping(self.store, pushed, held).await?,
                     None => held,
                 }
             };
@@ -394,7 +409,7 @@ impl Session<'_> {
 
     /// This node's own span of table `id`, narrowed by `pushed` and ranked by
     /// `ordered` — its first `n`, in identity order (ADR-0102).
-    fn leading_of_span(
+    async fn leading_of_span(
         &self,
         transaction: &mut Transaction<'_>,
         missing: &Missing,
@@ -403,26 +418,13 @@ impl Session<'_> {
         pushed: Option<&crate::Pushed>,
         ordered: &crate::Ordered,
     ) -> Result<Stored> {
-        let mut after: Option<RecordId> = None;
-        let mut done = false;
-        crate::leading(self.store, ordered, || {
-            if done {
-                return Ok(None);
-            }
-            let page = transaction.records_between(
-                missing.namespace,
-                missing.database,
-                id,
-                window,
-                after.as_ref(),
-                GATHER_PAGE_RECORDS,
-            )?;
-            done = page.len() < GATHER_PAGE_RECORDS;
-            after = page.last().map(|(id, _)| id.clone());
-            Ok(Some(match pushed {
-                Some(pushed) => crate::keeping(self.store, pushed, page)?,
-                None => page,
-            }))
-        })
+        let mut pages = crate::SpanPages::new(
+            self.store,
+            transaction,
+            (missing.namespace, missing.database, id),
+            window,
+            pushed,
+        );
+        crate::leading(self.store, ordered, &mut pages).await
     }
 }

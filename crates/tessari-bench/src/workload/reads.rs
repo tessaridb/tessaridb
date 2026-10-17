@@ -4,12 +4,13 @@ use super::write;
 use super::{Failable, RECORDS, prepared};
 use crate::samples::{Report, Samples};
 use std::time::Instant;
+use tessari_session::RunNow;
 use tessaridb::Db;
 
 pub(crate) fn filter(db: &Db) -> Failable<Vec<Report>> {
     let mut reports = write(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench;")?;
 
     // The scan first, deliberately: measuring it after the index exists would
     // measure a table the index has already warmed the cache for.
@@ -17,7 +18,7 @@ pub(crate) fn filter(db: &Db) -> Failable<Vec<Report>> {
     for n in 0..100 {
         timed!(
             scanned,
-            session.run(&format!(
+            session.run_now(&format!(
                 "SELECT * FROM people WHERE city = 'city {}';",
                 n % 50
             ))?
@@ -28,7 +29,7 @@ pub(crate) fn filter(db: &Db) -> Failable<Vec<Report>> {
     let mut built = Samples::with_capacity(1);
     timed!(
         built,
-        session.run("DEFINE INDEX by_city ON people FIELDS city;")?
+        session.run_now("DEFINE INDEX by_city ON people FIELDS city;")?
     );
     reports.push(built.summarise("filter-build-index"));
 
@@ -36,7 +37,7 @@ pub(crate) fn filter(db: &Db) -> Failable<Vec<Report>> {
     for n in 0..100 {
         timed!(
             served,
-            session.run(&format!(
+            session.run_now(&format!(
                 "SELECT * FROM people WHERE city = 'city {}';",
                 n % 50
             ))?
@@ -50,7 +51,7 @@ pub(crate) fn filter(db: &Db) -> Failable<Vec<Report>> {
     for n in 0..100 {
         timed!(
             ranged,
-            session.run(&format!(
+            session.run_now(&format!(
                 "SELECT * FROM people WHERE age >= {} AND age < {};",
                 n % 80_u64,
                 (n % 80_u64).saturating_add(5)
@@ -62,7 +63,7 @@ pub(crate) fn filter(db: &Db) -> Failable<Vec<Report>> {
     let mut bounded = Samples::with_capacity(1);
     timed!(
         bounded,
-        session.run("DEFINE INDEX by_age ON people FIELDS age;")?
+        session.run_now("DEFINE INDEX by_age ON people FIELDS age;")?
     );
     reports.push(bounded.summarise("range-build-index"));
 
@@ -70,7 +71,7 @@ pub(crate) fn filter(db: &Db) -> Failable<Vec<Report>> {
     for n in 0..100 {
         timed!(
             walked,
-            session.run(&format!(
+            session.run_now(&format!(
                 "SELECT * FROM people WHERE age >= {} AND age < {};",
                 n % 80_u64,
                 (n % 80_u64).saturating_add(5)
@@ -84,7 +85,7 @@ pub(crate) fn filter(db: &Db) -> Failable<Vec<Report>> {
 pub(crate) fn search(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run(
+    session.run_now(
         "USE NAMESPACE bench; USE DATABASE bench;\n\
          DEFINE ANALYZER simple FILTERS lowercase;\n\
          DEFINE TABLE notes SCHEMALESS;\n\
@@ -95,7 +96,7 @@ pub(crate) fn search(db: &Db) -> Failable<Vec<Report>> {
     for n in 0..RECORDS {
         timed!(
             written,
-            session.run(&format!(
+            session.run_now(&format!(
                 "CREATE notes:{n} = {{ body: 'note {n} about topic {} and matter {}' }};",
                 n % 40,
                 n % 7
@@ -108,7 +109,7 @@ pub(crate) fn search(db: &Db) -> Failable<Vec<Report>> {
     for n in 0..100 {
         timed!(
             scanned,
-            session.run(&format!(
+            session.run_now(&format!(
                 "SELECT * FROM notes WHERE body MATCHES 'topic{}';",
                 n % 40
             ))?
@@ -119,7 +120,7 @@ pub(crate) fn search(db: &Db) -> Failable<Vec<Report>> {
     let mut built = Samples::with_capacity(1);
     timed!(
         built,
-        session.run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")?
+        session.run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")?
     );
     reports.push(built.summarise("search-build-index"));
 
@@ -127,7 +128,7 @@ pub(crate) fn search(db: &Db) -> Failable<Vec<Report>> {
     for n in 0..100 {
         timed!(
             served,
-            session.run(&format!(
+            session.run_now(&format!(
                 "SELECT * FROM notes WHERE body MATCHES 'topic{}';",
                 n % 40
             ))?
@@ -139,7 +140,7 @@ pub(crate) fn search(db: &Db) -> Failable<Vec<Report>> {
     for n in 0..100 {
         timed!(
             ranked,
-            session.run(&format!(
+            session.run_now(&format!(
                 "SELECT search::score(body, 'topic{} matter{}') AS relevance FROM notes \
                  WHERE body MATCHES 'topic{}' ORDER BY relevance DESC LIMIT 10;",
                 n % 40,

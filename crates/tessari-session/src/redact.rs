@@ -50,7 +50,7 @@ impl Session<'_> {
     /// Resolved once per read rather than once per record: which fields a grant
     /// names is a property of the catalog, and the catalog does not change under
     /// a read.
-    pub(crate) fn visible_in(
+    pub(crate) async fn visible_in(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
@@ -58,7 +58,9 @@ impl Session<'_> {
         let Some(user) = self.identity.user() else {
             return Ok(None);
         };
-        let grants = tessari_storage::Catalog::new(transaction).grants_for(user.id)?;
+        let grants = tessari_storage::Catalog::new(transaction)
+            .grants_for(user.id)
+            .await?;
         let Some(grant) = grants
             .iter()
             .find(|grant| grant.table == table && grant.verbs.contains(&Verb::Read))
@@ -84,9 +86,9 @@ impl Session<'_> {
     /// # Errors
     ///
     /// Returns an error when the catalog cannot be read.
-    pub fn visible(&self, store: &tessari_storage::Store, table: TableId) -> Result<Visible> {
-        let mut transaction = store.begin()?;
-        let held = self.visible_in(&mut transaction, table)?;
+    pub async fn visible(&self, store: &tessari_storage::Store, table: TableId) -> Result<Visible> {
+        let mut transaction = store.begin().await?;
+        let held = self.visible_in(&mut transaction, table).await?;
         transaction.rollback();
         Ok(held)
     }
@@ -102,7 +104,7 @@ impl Session<'_> {
     ///
     /// Whatever evaluating the condition refuses, and a condition that is not a
     /// truth.
-    pub fn holds_for(
+    pub async fn holds_for(
         &self,
         transaction: &mut Transaction<'_>,
         condition: &tessari_ql::Expr,
@@ -110,11 +112,13 @@ impl Session<'_> {
         visible: &Visible,
     ) -> Result<bool> {
         let shown = seen(record, visible);
-        let held = self.evaluate_in(
-            transaction,
-            condition,
-            crate::evaluate::Scope::of(&shown).identified(id),
-        )?;
+        let held = self
+            .evaluate_in(
+                transaction,
+                condition,
+                crate::evaluate::Scope::of(&shown).identified(id),
+            )
+            .await?;
         crate::condition::boolean(&held, condition.span)
     }
 

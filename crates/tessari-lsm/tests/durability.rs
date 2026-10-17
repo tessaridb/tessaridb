@@ -52,9 +52,10 @@
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_kv::KvBackend;
-use tessari_lsm::{Durability, LsmBackend, StoreConfig};
+use tessari_lsm::{Durability, StoreConfig, TessariKvBackend};
 use tessari_storage::{RecordAddress, Store};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
@@ -91,8 +92,30 @@ fn payload(n: u64) -> Vec<u8> {
 }
 
 fn open_store(path: &std::path::Path) -> Store {
-    let backend = LsmBackend::open(path, StoreConfig::new(Durability::PowerLossSafe)).unwrap();
-    Store::open(Arc::new(backend) as Arc<dyn KvBackend>).unwrap()
+    open_closable(path).0
+}
+
+/// A store and the engine under it, which the caller closes once the store is dropped: the next
+/// process opens the directory only after this one has let go of it.
+fn open_closable(path: &std::path::Path) -> (Store, Arc<TessariKvBackend>) {
+    let backend = Arc::new(
+        TessariKvBackend::open(path, StoreConfig::new(Durability::PowerLossSafe))
+            .now()
+            .unwrap(),
+    );
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
+    (store, backend)
+}
+
+/// Closes an engine whose store was dropped.
+fn close(backend: Arc<TessariKvBackend>) {
+    Arc::into_inner(backend)
+        .expect("the dropped store held the only other handle")
+        .close()
+        .now()
+        .unwrap();
 }
 
 /// The child. Commits forever, announcing each sequence it was handed.
@@ -107,9 +130,9 @@ fn commit_until_killed() {
     let store = open_store(std::path::Path::new(&path));
 
     for n in 1..=CHILD_GIVES_UP_AFTER {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         transaction.put(address(n), payload(n));
-        let committed = transaction.commit().unwrap();
+        let committed = transaction.commit().now().unwrap();
         // Printed only after the commit returned, so every line the parent reads
         // is a promise the store made.
         println!("committed {n} {committed}");
@@ -164,10 +187,10 @@ fn an_acknowledged_commit_survives_the_writer_being_killed() {
     );
 
     let reopened = open_store(&path);
-    let transaction = reopened.begin().unwrap();
+    let transaction = reopened.begin().now().unwrap();
     for (n, sequence) in &acknowledged {
         assert_eq!(
-            transaction.get(&address(*n)).unwrap(),
+            transaction.get(&address(*n)).now().unwrap(),
             Some(payload(*n)),
             "record {n}, acknowledged at sequence {sequence}, did not survive the kill"
         );
@@ -179,7 +202,8 @@ fn an_acknowledged_commit_survives_the_writer_being_killed() {
     let (_, last) = acknowledged.last().unwrap();
     assert!(
         reopened
-            .committed_tail(reopened.own_log(HOME).unwrap())
+            .committed_tail(reopened.own_log(HOME).now().unwrap())
+            .now()
             .unwrap()
             >= *last,
         "the committed position was recovered behind the records it accounts for"
@@ -227,8 +251,12 @@ fn open_small_store(path: &std::path::Path, encrypted: bool) -> Store {
         ..StoreConfig::new(Durability::PowerLossSafe)
     };
     let key = encrypted.then(at_rest);
-    let backend = LsmBackend::open_with_key(path, config, key.as_ref()).unwrap();
-    Store::open(Arc::new(backend) as Arc<dyn KvBackend>).unwrap()
+    let backend = TessariKvBackend::open_with_key(path, config, key.as_ref())
+        .now()
+        .unwrap();
+    Store::open(Arc::new(backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// Whether the store has written any sorted file, which is how a flush shows up.
@@ -256,9 +284,9 @@ fn commit_large_until_killed() {
     let store = open_small_store(std::path::Path::new(&path), encrypted);
 
     for n in 1..=CHILD_GIVES_UP_AFTER {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         transaction.put(address(n), large_payload(n));
-        let committed = transaction.commit().unwrap();
+        let committed = transaction.commit().now().unwrap();
         println!("committed {n} {committed}");
         use std::io::Write;
         std::io::stdout().flush().unwrap();
@@ -350,10 +378,10 @@ fn killed_after_a_flush(encrypted: bool) {
     }
 
     let reopened = open_small_store(&path, encrypted);
-    let transaction = reopened.begin().unwrap();
+    let transaction = reopened.begin().now().unwrap();
     for (n, sequence) in &acknowledged {
         assert_eq!(
-            transaction.get(&address(*n)).unwrap(),
+            transaction.get(&address(*n)).now().unwrap(),
             Some(large_payload(*n)),
             "record {n}, acknowledged at sequence {sequence}, did not survive the kill"
         );
@@ -362,7 +390,8 @@ fn killed_after_a_flush(encrypted: bool) {
     let (_, last) = acknowledged.last().unwrap();
     assert!(
         reopened
-            .committed_tail(reopened.own_log(HOME).unwrap())
+            .committed_tail(reopened.own_log(HOME).now().unwrap())
+            .now()
             .unwrap()
             >= *last,
         "the committed position was recovered behind the records it accounts for"
@@ -393,9 +422,9 @@ fn commit_from_several_writers_until_killed() {
             scope.spawn(move || {
                 for i in 1..=CHILD_GIVES_UP_AFTER {
                     let n = writer * CHILD_GIVES_UP_AFTER + i;
-                    let mut transaction = store.begin().unwrap();
+                    let mut transaction = store.begin().now().unwrap();
                     transaction.put(address(n), payload(n));
-                    let committed = transaction.commit().unwrap();
+                    let committed = transaction.commit().now().unwrap();
                     use std::io::Write;
                     let mut stdout = std::io::stdout().lock();
                     writeln!(stdout, "committed {n} {committed}").unwrap();
@@ -453,10 +482,10 @@ fn an_acknowledged_commit_survives_a_kill_among_concurrent_writers() {
     );
 
     let reopened = open_store(&path);
-    let transaction = reopened.begin().unwrap();
+    let transaction = reopened.begin().now().unwrap();
     for (n, sequence) in &acknowledged {
         assert_eq!(
-            transaction.get(&address(*n)).unwrap(),
+            transaction.get(&address(*n)).now().unwrap(),
             Some(payload(*n)),
             "record {n}, acknowledged at sequence {sequence}, did not survive the kill"
         );
@@ -469,7 +498,8 @@ fn an_acknowledged_commit_survives_a_kill_among_concurrent_writers() {
         .unwrap();
     assert!(
         reopened
-            .committed_tail(reopened.own_log(HOME).unwrap())
+            .committed_tail(reopened.own_log(HOME).now().unwrap())
+            .now()
             .unwrap()
             >= highest,
         "the committed position was recovered behind the records it accounts for"
@@ -526,11 +556,11 @@ fn commit_transactions_until_killed() {
             scope.spawn(move || {
                 for i in 1..PER_WRITER {
                     let n = identity(offset, writer, i);
-                    let mut transaction = store.begin().unwrap();
+                    let mut transaction = store.begin().now().unwrap();
                     for of in 0..PARTS {
                         transaction.put(part(n, of), payload(n));
                     }
-                    transaction.commit().unwrap();
+                    transaction.commit().now().unwrap();
                     use std::io::Write;
                     let mut stdout = std::io::stdout().lock();
                     writeln!(stdout, "committed {writer} {i}").unwrap();
@@ -618,12 +648,12 @@ fn a_hundred_kills_lose_nothing_acknowledged_and_tear_no_transaction() {
             let _ = recovering.wait();
         }
 
-        let reopened = open_store(&path);
-        let transaction = reopened.begin().unwrap();
+        let (reopened, engine) = open_closable(&path);
+        let transaction = reopened.begin().now().unwrap();
         for n in &acknowledged {
             for of in 0..PARTS {
                 assert_eq!(
-                    transaction.get(&part(*n, of)).unwrap(),
+                    transaction.get(&part(*n, of)).now().unwrap(),
                     Some(payload(*n)),
                     "seed {seed} kill {kill}: acknowledged transaction {n} lost part {of}"
                 );
@@ -635,7 +665,7 @@ fn a_hundred_kills_lose_nothing_acknowledged_and_tear_no_transaction() {
             for i in 1..=highest.saturating_add(1) {
                 let n = identity(offset, writer, i);
                 let held = (0..PARTS)
-                    .filter(|of| transaction.get(&part(n, *of)).unwrap().is_some())
+                    .filter(|of| transaction.get(&part(n, *of)).now().unwrap().is_some())
                     .count();
                 assert!(
                     held == 0 || held == usize::try_from(PARTS).unwrap(),
@@ -643,6 +673,9 @@ fn a_hundred_kills_lose_nothing_acknowledged_and_tear_no_transaction() {
                 );
             }
         }
+        drop(transaction);
+        drop(reopened);
+        close(engine);
     }
     println!(
         "[BGV_CRASH] seed={seed} kills={KILLS} recovery-kills={} acknowledged={}",

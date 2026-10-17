@@ -8,6 +8,8 @@
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::MemoryBackend;
 use tessari_session::{Error, Outcome, Session};
@@ -29,10 +31,10 @@ fn node(hex: &str) -> [u8; tessari_storage::NODE_ID_LEN] {
 /// A store whose namespace `prod` says `acknowledge`, declaring two voters
 /// that replicate `replicates`, and holding a leadership so it may write.
 fn clustered(acknowledge: &str, replicates: &str) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = Session::new(&store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod REPLICATION FACTOR 3 {acknowledge}; \
              DEFINE NAMESPACE other REPLICATION FACTOR 3; \
              USE NAMESPACE prod; DEFINE DATABASE app; USE DATABASE app; \
@@ -45,20 +47,22 @@ fn clustered(acknowledge: &str, replicates: &str) -> Store {
              COMMIT;"
         ))
         .unwrap();
-    store.hold(Epoch::new(1), Lease::taken(Duration::from_secs(60)));
+    store
+        .hold(Epoch::new(1), Lease::taken(Duration::from_secs(60)))
+        .now();
     store
 }
 
 fn writing(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE app;")
+        .run_now("USE NAMESPACE prod; USE DATABASE app;")
         .unwrap();
     session
 }
 
 fn held(session: &mut Session<'_>) -> usize {
-    let outcomes = session.run("SELECT * FROM t;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM t;").unwrap();
     match outcomes.last() {
         Some(Outcome::Records { records, .. }) => records.len(),
         other => panic!("not records: {other:?}"),
@@ -67,12 +71,17 @@ fn held(session: &mut Session<'_>) -> usize {
 
 /// Record that `peer` was sent, and holds, everything of `prod.app`'s log.
 fn acknowledged_by(store: &Store, peer: &str) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "app").unwrap().unwrap();
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "app")
+        .now()
+        .unwrap()
+        .unwrap();
     let log = store
         .line_log(Reach::Database(namespace, database))
+        .now()
         .unwrap();
     store.follower_sent(node(peer), log, Sequence::new(1_000_000));
     store.follower_asked(node(peer), log, Sequence::new(1_000_000));
@@ -80,23 +89,23 @@ fn acknowledged_by(store: &Store, peer: &str) {
 
 #[test]
 fn a_single_node_is_its_own_majority_and_waits_for_nobody() {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod REPLICATION FACTOR 3 ACKNOWLEDGE MAJORITY; \
              USE NAMESPACE prod; DEFINE DATABASE app; USE DATABASE app; \
              DEFINE COLLECTION t;",
         )
         .unwrap();
     let began = Instant::now();
-    session.run("CREATE t:1 = { a: 1 };").unwrap();
+    session.run_now("CREATE t:1 = { a: 1 };").unwrap();
     assert!(
         began.elapsed() < Duration::from_millis(150),
         "it waited for nobody"
     );
     assert_eq!(
-        store.health().unwrap().acknowledgement_waits,
+        store.health().now().unwrap().acknowledgement_waits,
         0,
         "and counted none"
     );
@@ -110,24 +119,24 @@ fn a_single_node_is_its_own_majority_and_waits_for_nobody() {
 /// where the stronger one was accepted.
 #[test]
 fn a_single_node_is_its_own_region_and_meets_a_local_majority() {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod REPLICATION FACTOR 3 ACKNOWLEDGE MAJORITY OR WEAKER; \
              USE NAMESPACE prod; DEFINE DATABASE app; USE DATABASE app; \
              DEFINE COLLECTION t;",
         )
         .unwrap();
     session
-        .run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;")
+        .run_now("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;")
         .unwrap_or_else(|why| panic!("a lone store is its own region: {why}"));
     session
-        .run("BEGIN; CREATE t:2 = { a: 2 }; COMMIT ACKNOWLEDGE LOCAL MAJORITY;")
+        .run_now("BEGIN; CREATE t:2 = { a: 2 }; COMMIT ACKNOWLEDGE LOCAL MAJORITY;")
         .unwrap();
     assert_eq!(held(&mut session), 2);
     assert_eq!(
-        store.health().unwrap().acknowledgement_waits,
+        store.health().now().unwrap().acknowledgement_waits,
         0,
         "it waited for nobody"
     );
@@ -139,10 +148,10 @@ fn a_write_held_by_a_majority_is_acknowledged() {
     acknowledged_by(&store, FIRST);
     let mut session = writing(&store);
     session
-        .run("CREATE t:1 = { a: 1 };")
+        .run_now("CREATE t:1 = { a: 1 };")
         .unwrap_or_else(|why| panic!("one voter of two besides this node is a majority: {why}"));
     // G053 C6: the wait is counted once, and it did not time out.
-    let health = store.health().unwrap();
+    let health = store.health().now().unwrap();
     assert_eq!(
         (
             health.acknowledgement_waits,
@@ -156,7 +165,7 @@ fn a_write_held_by_a_majority_is_acknowledged() {
 fn a_write_no_voter_acknowledges_is_committed_and_said_so() {
     let store = clustered("ACKNOWLEDGE MAJORITY", "prod");
     let mut session = writing(&store);
-    let refused = session.run("CREATE t:1 = { a: 1 };");
+    let refused = session.run_now("CREATE t:1 = { a: 1 };");
     assert!(
         matches!(
             &refused,
@@ -171,7 +180,7 @@ fn a_write_no_voter_acknowledges_is_committed_and_said_so() {
     );
     // G053 C6: a timeout is a wait that ran out — counted as both, with the
     // round it spent in the total.
-    let health = store.health().unwrap();
+    let health = store.health().now().unwrap();
     assert_eq!(
         (
             health.acknowledgement_waits,
@@ -186,7 +195,7 @@ fn a_write_no_voter_acknowledges_is_committed_and_said_so() {
 fn a_majority_the_voters_cannot_form_is_refused_before_anything_is_written() {
     let store = clustered("ACKNOWLEDGE MAJORITY", "other");
     let mut session = writing(&store);
-    let refused = session.run("CREATE t:1 = { a: 1 };");
+    let refused = session.run_now("CREATE t:1 = { a: 1 };");
     assert!(
         matches!(&refused, Err(Error::MajorityUnreachable { voters: 3, .. })),
         "{refused:?}"
@@ -199,13 +208,13 @@ fn a_replicated_namespace_that_said_nothing_waits_for_a_majority() {
     let store = clustered("", "prod");
     let mut session = writing(&store);
     assert!(matches!(
-        session.run("CREATE t:1 = { a: 1 };"),
+        session.run_now("CREATE t:1 = { a: 1 };"),
         Err(Error::NotAcknowledgedInTime { .. })
     ));
     // The default is the namespace's level: a request below it is refused as one
     // below a stated level is (ADR-0106 D2, G075 C2a).
     assert!(matches!(
-        session.run("CREATE t:2 = { a: 2 } ACKNOWLEDGE LEADER;"),
+        session.run_now("CREATE t:2 = { a: 2 } ACKNOWLEDGE LEADER;"),
         Err(Error::AcknowledgeBelowNamespace { .. })
     ));
 }
@@ -214,7 +223,7 @@ fn a_replicated_namespace_that_said_nothing_waits_for_a_majority() {
 fn a_request_below_its_namespace_is_refused_unless_the_namespace_allows_it() {
     let store = clustered("ACKNOWLEDGE MAJORITY", "prod");
     let mut session = writing(&store);
-    let refused = session.run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LEADER;");
+    let refused = session.run_now("CREATE t:1 = { a: 1 } ACKNOWLEDGE LEADER;");
     assert!(
         matches!(&refused, Err(Error::AcknowledgeBelowNamespace { .. })),
         "{refused:?}"
@@ -224,11 +233,11 @@ fn a_request_below_its_namespace_is_refused_unless_the_namespace_allows_it() {
     let store = clustered("ACKNOWLEDGE MAJORITY OR WEAKER", "prod");
     let mut session = writing(&store);
     session
-        .run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LEADER;")
+        .run_now("CREATE t:1 = { a: 1 } ACKNOWLEDGE LEADER;")
         .unwrap();
     // And inside a transaction, the level its COMMIT asks for.
     session
-        .run("BEGIN; CREATE t:2 = { a: 2 }; COMMIT ACKNOWLEDGE LEADER;")
+        .run_now("BEGIN; CREATE t:2 = { a: 2 }; COMMIT ACKNOWLEDGE LEADER;")
         .unwrap();
     assert_eq!(held(&mut session), 2);
 }
@@ -244,7 +253,7 @@ fn a_request_below_an_unstated_default_is_refused() {
     let store = clustered("", "prod");
     let mut session = writing(&store);
     for asked in ["LOCAL MAJORITY", "LEADER"] {
-        let refused = session.run(&format!("CREATE t:1 = {{ a: 1 }} ACKNOWLEDGE {asked};"));
+        let refused = session.run_now(&format!("CREATE t:1 = {{ a: 1 }} ACKNOWLEDGE {asked};"));
         assert!(
             matches!(
                 &refused,
@@ -258,7 +267,7 @@ fn a_request_below_an_unstated_default_is_refused() {
 
     // A namespace kept on one node defaults to `LEADER`, which admits `LEADER`.
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE solo REPLICATION NONE; USE NAMESPACE solo; \
              DEFINE DATABASE app; USE DATABASE app; DEFINE COLLECTION t; \
              CREATE t:1 = { a: 1 } ACKNOWLEDGE LEADER;",
@@ -281,9 +290,10 @@ fn a_read_waits_for_no_copies() {
 /// A store in region `eu` whose namespace `prod` says `acknowledge`, beside one
 /// voter in `eu` and one in `us`, both replicating `prod` (G057 C3).
 fn regional(acknowledge: &str, mine: &str) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let me: String = store
         .node_identity()
+        .now()
         .unwrap()
         .id
         .iter()
@@ -291,7 +301,7 @@ fn regional(acknowledge: &str, mine: &str) -> Store {
         .collect();
     let mut session = Session::new(&store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod REPLICATION FACTOR 3 {acknowledge}; \
              USE NAMESPACE prod; DEFINE DATABASE app; USE DATABASE app; \
              DEFINE COLLECTION t; \
@@ -305,7 +315,9 @@ fn regional(acknowledge: &str, mine: &str) -> Store {
              COMMIT;"
         ))
         .unwrap();
-    store.hold(Epoch::new(1), Lease::taken(Duration::from_secs(60)));
+    store
+        .hold(Epoch::new(1), Lease::taken(Duration::from_secs(60)))
+        .now();
     store
 }
 
@@ -318,13 +330,13 @@ fn a_local_majority_is_a_majority_of_the_leaders_region() {
     acknowledged_by(&store, FIRST);
     let mut session = writing(&store);
     session
-        .run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;")
+        .run_now("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;")
         .unwrap_or_else(|why| panic!("first is eu's majority with this node: {why}"));
 
     let store = regional("ACKNOWLEDGE LOCAL MAJORITY", "REGION 'eu'");
     acknowledged_by(&store, SECOND);
     let mut session = writing(&store);
-    let refused = session.run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;");
+    let refused = session.run_now("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;");
     assert!(
         matches!(
             &refused,
@@ -334,10 +346,10 @@ fn a_local_majority_is_a_majority_of_the_leaders_region() {
     );
     // The same copy is a majority of the whole cluster: second and this node.
     session
-        .run("CREATE t:2 = { a: 2 } ACKNOWLEDGE MAJORITY;")
+        .run_now("CREATE t:2 = { a: 2 } ACKNOWLEDGE MAJORITY;")
         .unwrap_or_else(|why| panic!("{why}"));
     // And the region is on the row `INFO FOR NODE` reports, as written.
-    let outcomes = Session::new(&store).run("INFO FOR NODE;").unwrap();
+    let outcomes = Session::new(&store).run_now("INFO FOR NODE;").unwrap();
     let report = format!("{outcomes:?}");
     assert!(report.contains("\"region\": String(\"us\")"), "{report}");
 }
@@ -349,7 +361,7 @@ fn a_local_majority_is_a_majority_of_the_leaders_region() {
 fn a_local_majority_on_a_node_with_no_region_is_refused_before_writing() {
     let store = regional("ACKNOWLEDGE LOCAL MAJORITY", "");
     let mut session = writing(&store);
-    let refused = session.run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;");
+    let refused = session.run_now("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;");
     assert!(
         matches!(&refused, Err(Error::LocalMajorityWithoutRegion { .. })),
         "{refused:?}"
@@ -363,7 +375,7 @@ fn a_local_majority_on_a_node_with_no_region_is_refused_before_writing() {
 fn a_local_majority_is_weaker_than_a_majority_and_stronger_than_the_leader() {
     let store = regional("ACKNOWLEDGE MAJORITY", "REGION 'eu'");
     let mut session = writing(&store);
-    let refused = session.run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;");
+    let refused = session.run_now("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;");
     assert!(
         matches!(&refused, Err(Error::AcknowledgeBelowNamespace { .. })),
         "{refused:?}"
@@ -373,9 +385,9 @@ fn a_local_majority_is_weaker_than_a_majority_and_stronger_than_the_leader() {
     acknowledged_by(&store, FIRST);
     let mut session = writing(&store);
     session
-        .run("CREATE t:1 = { a: 1 };")
+        .run_now("CREATE t:1 = { a: 1 };")
         .unwrap_or_else(|why| panic!("the namespace default is eu's majority: {why}"));
-    let refused = session.run("CREATE t:2 = { a: 2 } ACKNOWLEDGE LEADER;");
+    let refused = session.run_now("CREATE t:2 = { a: 2 } ACKNOWLEDGE LEADER;");
     assert!(
         matches!(&refused, Err(Error::AcknowledgeBelowNamespace { .. })),
         "{refused:?}"
@@ -383,7 +395,7 @@ fn a_local_majority_is_weaker_than_a_majority_and_stronger_than_the_leader() {
     // Stronger than the default is always admitted — and it is MAJORITY's
     // wait: first and this node are a majority of three too.
     session
-        .run("CREATE t:3 = { a: 3 } ACKNOWLEDGE MAJORITY;")
+        .run_now("CREATE t:3 = { a: 3 } ACKNOWLEDGE MAJORITY;")
         .unwrap_or_else(|why| panic!("{why}"));
 }
 
@@ -400,12 +412,16 @@ fn a_new_leader_says_intents_are_gone_only_once_its_own_entry_is_held() {
     // answered and only the leader rule can refuse.
     acknowledged_by(&store, FIRST);
     acknowledged_by(&store, SECOND);
-    session.run("CREATE t:1 = { n: 1 };").unwrap();
+    session.run_now("CREATE t:1 = { n: 1 };").unwrap();
     let range = {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-        let database = catalog.database_id(namespace, "app").unwrap().unwrap();
+        let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+        let database = catalog
+            .database_id(namespace, "app")
+            .now()
+            .unwrap()
+            .unwrap();
         Reach::Database(namespace, database)
     };
     let holds = tessari_session::AcrossAsk::Holds {
@@ -415,8 +431,10 @@ fn a_new_leader_says_intents_are_gone_only_once_its_own_entry_is_held() {
         range,
     };
     // Re-elected at epoch 2, its tail still written at epoch 1.
-    store.hold(Epoch::new(2), Lease::taken(Duration::from_secs(60)));
-    let refused = session.answer_across(&holds);
+    store
+        .hold(Epoch::new(2), Lease::taken(Duration::from_secs(60)))
+        .now();
+    let refused = session.answer_across(&holds).now();
     assert!(
         matches!(
             &refused,
@@ -427,9 +445,9 @@ fn a_new_leader_says_intents_are_gone_only_once_its_own_entry_is_held() {
         "{refused:?}"
     );
     // Its own first entry, held by a majority: now it may answer.
-    session.run("CREATE t:2 = { n: 2 };").unwrap();
+    session.run_now("CREATE t:2 = { n: 2 };").unwrap();
     assert_eq!(
-        session.answer_across(&holds).unwrap(),
+        session.answer_across(&holds).now().unwrap(),
         tessari_session::AcrossAnswer::Holding(false)
     );
 }

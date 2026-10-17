@@ -61,81 +61,85 @@ impl Carried {
 }
 
 impl Participants for Coordinator {
-    fn ask(
-        &self,
+    fn ask<'a>(
+        &'a self,
         to: [u8; NODE_ID_LEN],
-        user: Option<&UserDefinition>,
-        asked: &AcrossAsk,
-    ) -> std::result::Result<AcrossAnswer, PartRefused> {
-        // Everything short of the leader's own answer — no route, no key, a
-        // link that failed or timed out — is a part not reached, which asking
-        // again can get past.
-        let began = std::time::Instant::now();
-        let what = match asked {
-            AcrossAsk::Prepare { .. } => "prepare",
-            AcrossAsk::Resolve { .. } => "resolve",
-            AcrossAsk::Begin { .. } | AcrossAsk::Conclude { .. } | AcrossAsk::Decide { .. } => {
-                "record"
+        user: Option<&'a UserDefinition>,
+        asked: &'a AcrossAsk,
+    ) -> tessari_session::Asking<'a> {
+        Box::pin(async move {
+            // Everything short of the leader's own answer — no route, no key, a
+            // link that failed or timed out — is a part not reached, which asking
+            // again can get past.
+            let began = std::time::Instant::now();
+            let what = match asked {
+                AcrossAsk::Prepare { .. } => "prepare",
+                AcrossAsk::Resolve { .. } => "resolve",
+                AcrossAsk::Begin { .. } | AcrossAsk::Conclude { .. } | AcrossAsk::Decide { .. } => {
+                    "record"
+                }
+                AcrossAsk::Settle { .. } => "settle",
+                AcrossAsk::Lookup { .. } => "lookup",
+                AcrossAsk::Holds { .. } => "holds",
+                AcrossAsk::Forget { .. } => "forget",
+                AcrossAsk::Bar { .. } => "bar",
+            };
+            let asked = asked.encode();
+            let carried = Carried {
+                signed: Assertion {
+                    from: self.me(),
+                    to,
+                    principal: user.map_or(Principal::Anonymous, |user| Principal::User {
+                        id: user.id,
+                        account: account(user),
+                    }),
+                    request: request_digest(None, None, ACROSS, &asked),
+                    nonce: nonce().map_err(|why| PartRefused::retriable(why.to_string()))?,
+                    issued_ms: now_ms(),
+                    expires_ms: now_ms().saturating_add(crate::coordination::LIFE_MILLIS),
+                }
+                .sign(&self.keys().duplicate().key)
+                .map_err(|why| PartRefused::retriable(why.to_string()))?,
+                asked,
+            };
+            // A link kept from an earlier record carries this one without a new
+            // handshake (D13j); one the record could not be written onto is
+            // replaced, and one whose answer was lost is a part not reached.
+            if let Some(mut link) = self.kept().take(to) {
+                match kept::across_on(&mut link, &carried).await {
+                    Ok(reply) => {
+                        self.kept().keep(to, link);
+                        carried_after(what, "kept", began);
+                        return replied(reply, "a kept link");
+                    }
+                    Err(kept::KeptFailed::Sent(why)) => {
+                        return Err(PartRefused::retriable(format!("a kept link: {why}")));
+                    }
+                    Err(kept::KeptFailed::Unsent(why)) => {
+                        tracing::debug!(error = %why, "a kept cross-leader link could not take a record");
+                    }
+                }
             }
-            AcrossAsk::Settle { .. } => "settle",
-            AcrossAsk::Lookup { .. } => "lookup",
-            AcrossAsk::Holds { .. } => "holds",
-            AcrossAsk::Forget { .. } => "forget",
-            AcrossAsk::Bar { .. } => "bar",
-        };
-        let asked = asked.encode();
-        let carried = Carried {
-            signed: Assertion {
-                from: self.me(),
+            let (endpoint, mine, said) = self.dialling(to).await.map_err(PartRefused::retriable)?;
+            match kept::across_keeping(
+                endpoint.as_str(),
+                (self.keys(), mine),
                 to,
-                principal: user.map_or(Principal::Anonymous, |user| Principal::User {
-                    id: user.id,
-                    account: account(user),
-                }),
-                request: request_digest(None, None, ACROSS, &asked),
-                nonce: nonce().map_err(|why| PartRefused::retriable(why.to_string()))?,
-                issued_ms: now_ms(),
-                expires_ms: now_ms().saturating_add(crate::coordination::LIFE_MILLIS),
+                &said,
+                (&carried, Duration::from_secs(COORDINATED_SECONDS)),
+            )
+            .await
+            {
+                Ok((reply, link)) => {
+                    if let Some(link) = link {
+                        self.kept().keep(to, link);
+                    }
+                    carried_after(what, "dialled", began);
+                    replied(reply, &endpoint)
+                }
+                Err(why) => Err(PartRefused::retriable(format!("{endpoint}: {why}"))),
             }
-            .sign(&self.keys().duplicate().key)
-            .map_err(|why| PartRefused::retriable(why.to_string()))?,
-            asked,
-        };
-        // A link kept from an earlier record carries this one without a new
-        // handshake (D13j); one the record could not be written onto is
-        // replaced, and one whose answer was lost is a part not reached.
-        if let Some(mut link) = self.kept().take(to) {
-            match kept::across_on(&mut link, &carried) {
-                Ok(reply) => {
-                    self.kept().keep(to, link);
-                    carried_after(what, "kept", began);
-                    return replied(reply, "a kept link");
-                }
-                Err(kept::KeptFailed::Sent(why)) => {
-                    return Err(PartRefused::retriable(format!("a kept link: {why}")));
-                }
-                Err(kept::KeptFailed::Unsent(why)) => {
-                    tracing::debug!(error = %why, "a kept cross-leader link could not take a record");
-                }
-            }
-        }
-        let (endpoint, mine, said) = self.dialling(to).map_err(PartRefused::retriable)?;
-        match kept::across_keeping(
-            endpoint.as_str(),
-            (self.keys(), mine),
-            to,
-            &said,
-            (&carried, Duration::from_secs(COORDINATED_SECONDS)),
-        ) {
-            Ok((reply, link)) => {
-                if let Some(link) = link {
-                    self.kept().keep(to, link);
-                }
-                carried_after(what, "dialled", began);
-                replied(reply, &endpoint)
-            }
-            Err(why) => Err(PartRefused::retriable(format!("{endpoint}: {why}"))),
-        }
+        })
     }
 }
 

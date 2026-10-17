@@ -18,10 +18,10 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     ///
     /// Returns [`Error::NameTaken`] when the name is already in use, and a
     /// substrate or decoding failure otherwise.
-    pub fn create_namespace(&mut self, name: &str) -> Result<NamespaceDefinition> {
+    pub async fn create_namespace(&mut self, name: &str) -> Result<NamespaceDefinition> {
         let qualified = qualify(Level::Namespace, &[], name);
-        self.reserve_name(&qualified)?;
-        let id = NamespaceId::new(self.allocate(Level::Namespace)?);
+        self.reserve_name(&qualified).await?;
+        let id = NamespaceId::new(self.allocate(Level::Namespace).await?);
         let definition = NamespaceDefinition {
             id,
             name: name.to_owned(),
@@ -62,12 +62,12 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     ///
     /// Returns [`Error::NoSuchParent`] when the namespace does not exist, and a
     /// substrate or decoding failure otherwise.
-    pub fn set_replication(
+    pub async fn set_replication(
         &mut self,
         namespace: NamespaceId,
         replication: Replication,
     ) -> Result<NamespaceDefinition> {
-        let Some(mut definition) = self.namespace(namespace)? else {
+        let Some(mut definition) = self.namespace(namespace).await? else {
             return Err(Error::NoSuchParent {
                 entity: "namespace",
                 id: namespace.get(),
@@ -89,12 +89,12 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     ///
     /// Returns [`Error::NoSuchParent`] when the namespace does not exist, and
     /// the substrate or decoding failure otherwise.
-    pub fn set_replication_class(
+    pub async fn set_replication_class(
         &mut self,
         namespace: NamespaceId,
         class: ReplicationClass,
     ) -> Result<NamespaceDefinition> {
-        let Some(mut definition) = self.namespace(namespace)? else {
+        let Some(mut definition) = self.namespace(namespace).await? else {
             return Err(Error::NoSuchParent {
                 entity: "namespace",
                 id: namespace.get(),
@@ -111,12 +111,12 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns [`Error::NoSuchParent`] when the namespace does not exist.
-    pub fn set_acknowledgement(
+    pub async fn set_acknowledgement(
         &mut self,
         namespace: NamespaceId,
         acknowledge: Acknowledgement,
     ) -> Result<NamespaceDefinition> {
-        let Some(mut definition) = self.namespace(namespace)? else {
+        let Some(mut definition) = self.namespace(namespace).await? else {
             return Err(Error::NoSuchParent {
                 entity: "namespace",
                 id: namespace.get(),
@@ -133,20 +133,20 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     ///
     /// Returns [`Error::NoSuchParent`] when the namespace does not exist,
     /// [`Error::NameTaken`] when the name is in use within it.
-    pub fn create_database(
+    pub async fn create_database(
         &mut self,
         namespace: NamespaceId,
         name: &str,
     ) -> Result<DatabaseDefinition> {
-        if self.namespace(namespace)?.is_none() {
+        if self.namespace(namespace).await?.is_none() {
             return Err(Error::NoSuchParent {
                 entity: "namespace",
                 id: namespace.get(),
             });
         }
         let qualified = qualify(Level::Database, &[namespace.get()], name);
-        self.reserve_name(&qualified)?;
-        let id = DatabaseId::new(self.allocate(Level::Database)?);
+        self.reserve_name(&qualified).await?;
+        let id = DatabaseId::new(self.allocate(Level::Database).await?);
         let definition = DatabaseDefinition {
             id,
             namespace,
@@ -175,14 +175,14 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// Returns [`Error::NoSuchParent`] when the database does not exist or does
     /// not belong to `namespace`, and [`Error::NameTaken`] when the name is in
     /// use within it.
-    pub fn create_table(
+    pub async fn create_table(
         &mut self,
         namespace: NamespaceId,
         database: DatabaseId,
         name: &str,
         shape: TableShape,
     ) -> Result<TableDefinition> {
-        let parent = self.database(database)?;
+        let parent = self.database(database).await?;
         if parent.is_none_or(|found| found.namespace != namespace) {
             return Err(Error::NoSuchParent {
                 entity: "database",
@@ -205,8 +205,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             });
         }
         let qualified = qualify(Level::Table, &[namespace.get(), database.get()], name);
-        self.reserve_name(&qualified)?;
-        let id = TableId::new(self.allocate(Level::Table)?);
+        self.reserve_name(&qualified).await?;
+        let id = TableId::new(self.allocate(Level::Table).await?);
         let definition = TableDefinition {
             id,
             namespace,
@@ -259,8 +259,10 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                     &format!("{endpoint}_edges"),
                     vec![Path::field(endpoint)],
                     IndexShape::default(),
-                )?;
-                self.create_field(id, endpoint, FieldKind::Record, FieldShape::default())?;
+                )
+                .await?;
+                self.create_field(id, endpoint, FieldKind::Record, FieldShape::default())
+                    .await?;
             }
         }
         if matches!(definition.kind, TableKind::Bucket(_)) {
@@ -269,23 +271,27 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             // mechanism the catalog itself uses to be unreachable rather than
             // merely undocumented, and the reason `SELECT * FROM media` answers
             // with files and never with chunks (ADR-0011 §2).
-            self.create_table(
+            // Boxed: a table may declare a companion table, which is created here.
+            Box::pin(self.create_table(
                 namespace,
                 database,
                 &Self::chunks_named(name),
                 TableShape::default(),
-            )?;
+            ))
+            .await?;
         }
         if definition.deduplication_window().is_some() {
             // Where a deduplicating queue or topic remembers the keys it has
             // written (ADR-0124 D8). Unnameable for the chunk table's reason,
             // so no statement reads, writes or backs it up by name.
-            self.create_table(
+            // Boxed: a table may declare a companion table, which is created here.
+            Box::pin(self.create_table(
                 namespace,
                 database,
                 &Self::seen_named(name),
                 TableShape::default(),
-            )?;
+            ))
+            .await?;
         }
         Ok(definition)
     }

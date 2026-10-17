@@ -11,8 +11,8 @@
 mod acknowledging;
 mod across;
 pub use across::{
-    AcrossAnswer, AcrossAsk, AcrossRefusal, PartRefused, Participants, Recovery, RefusalKind,
-    across_lapse_millis, recover_staging,
+    AcrossAnswer, AcrossAsk, AcrossRefusal, Asking, PartRefused, Participants, Recovery,
+    RefusalKind, Staged, across_lapse_millis, recover_staging,
 };
 mod atomic;
 mod defaults;
@@ -131,6 +131,10 @@ pub struct Session<'a> {
     /// How many events deep this session runs: zero for a caller's session,
     /// one more for each event body a write ran (ADR-0110 D5).
     pub(crate) event_depth: u8,
+    /// The clock as the running statement began, which every `time::now()` in
+    /// it answers (DB-21): read once per statement, so two calls in one
+    /// statement are one instant rather than two readings a walk apart.
+    pub(crate) now: std::time::SystemTime,
 }
 
 /// Who a session is, to a queue.
@@ -154,7 +158,7 @@ pub struct Consumer {
 impl<'a> Session<'a> {
     /// Open a session on a store, with nothing selected.
     #[must_use]
-    pub const fn new(store: &'a Store) -> Self {
+    pub fn new(store: &'a Store) -> Self {
         Self {
             store,
             identity: Identity::Anonymous,
@@ -173,6 +177,7 @@ impl<'a> Session<'a> {
             acknowledge_open: None,
             across_open: false,
             event_depth: 0,
+            now: std::time::SystemTime::now(),
         }
     }
 
@@ -290,8 +295,8 @@ impl<'a> Session<'a> {
     ///
     /// Returns the first failure. Work buffered in an uncommitted transaction is
     /// discarded — nothing reaches the store until `commit`.
-    pub fn run(&mut self, source: &str) -> Result<Vec<Outcome>> {
-        self.run_with(source, &Parameters::new())
+    pub async fn run(&mut self, source: &str) -> Result<Vec<Outcome>> {
+        self.run_with(source, &Parameters::new()).await
     }
 
     /// Read a script, give its parameters the values `parameters` binds, and run
@@ -311,9 +316,24 @@ impl<'a> Session<'a> {
     /// [`tessari_ql::Error::UnboundParameter`] when the script names a parameter
     /// this map has no value for, and nothing is written when it does. Otherwise
     /// as [`Session::run`].
-    pub fn run_with(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
-        let script = self.bind_script(parse(source)?, parameters)?;
-        self.run_script(script)
+    pub async fn run_with(
+        &mut self,
+        source: &str,
+        parameters: &Parameters,
+    ) -> Result<Vec<Outcome>> {
+        let script = self.bind_script(parse(source)?, parameters).await?;
+        self.run_script(script).await
+    }
+
+    /// [`Session::run`], boxed: a statement that runs a script of its own on a
+    /// second session reaches `run` from inside it, and a future that contains
+    /// itself needs the indirection.
+    pub(crate) fn run_boxed<'s>(
+        &'s mut self,
+        source: &'s str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Outcome>>> + Send + 's>>
+    {
+        Box::pin(self.run(source))
     }
 
     /// The user this session is signed in as, if any.
@@ -338,8 +358,8 @@ const fn conflicting(refusal: &tessari_storage::Error) -> bool {
 /// one place a caller's write can be refused by the store, and therefore the one
 /// place worth teaching. It is deliberately not a second validation pass: the
 /// commit is unchanged and only its failure is read.
-fn settle(transaction: Transaction<'_>) -> Result<()> {
-    match transaction.commit() {
+async fn settle(transaction: Transaction<'_>) -> Result<()> {
+    match transaction.commit().await {
         Ok(_) => Ok(()),
         Err(refusal) => Err(advised(refusal)),
     }

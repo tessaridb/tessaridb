@@ -113,7 +113,7 @@ impl Catalog<'_, '_> {
     ///
     /// Returns [`Error::NameTaken`] when the name is already declared in that
     /// database.
-    pub fn create_edge_kind(
+    pub async fn create_edge_kind(
         &mut self,
         graph: &super::GraphDefinition,
         name: &str,
@@ -126,8 +126,8 @@ impl Catalog<'_, '_> {
             &[graph.namespace.get(), graph.database.get()],
             name,
         );
-        self.reserve_name(&qualified)?;
-        let id = EdgeKindId::new(self.allocate(Level::EdgeKind)?);
+        self.reserve_name(&qualified).await?;
+        let id = EdgeKindId::new(self.allocate(Level::EdgeKind).await?);
         let definition = EdgeKindDefinition {
             id,
             namespace: graph.namespace,
@@ -148,8 +148,9 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn edge_kind(&self, id: EdgeKindId) -> Result<Option<EdgeKindDefinition>> {
-        self.read(system::EDGE_KINDS, id.get())?
+    pub async fn edge_kind(&self, id: EdgeKindId) -> Result<Option<EdgeKindDefinition>> {
+        self.read(system::EDGE_KINDS, id.get())
+            .await?
             .as_ref()
             .map(EdgeKindDefinition::from_value)
             .transpose()
@@ -160,7 +161,7 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored entry cannot be read.
-    pub fn edge_kind_id(
+    pub async fn edge_kind_id(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -171,7 +172,8 @@ impl Catalog<'_, '_> {
                 Level::EdgeKind,
                 &[namespace.get(), database.get()],
                 name,
-            ))?
+            ))
+            .await?
             .map(EdgeKindId::new))
     }
 
@@ -180,13 +182,14 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn edge_kinds_in(
+    pub async fn edge_kinds_in(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
     ) -> Result<Vec<EdgeKindDefinition>> {
         Ok(self
-            .all(system::EDGE_KINDS, EdgeKindDefinition::from_value)?
+            .all(system::EDGE_KINDS, EdgeKindDefinition::from_value)
+            .await?
             .into_iter()
             .filter(|found| found.namespace == namespace && found.database == database)
             .collect())
@@ -206,8 +209,8 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn drop_edge_kind(&mut self, id: EdgeKindId) -> Result<bool> {
-        let Some(definition) = self.edge_kind(id)? else {
+    pub async fn drop_edge_kind(&mut self, id: EdgeKindId) -> Result<bool> {
+        let Some(definition) = self.edge_kind(id).await? else {
             return Ok(false);
         };
         let qualified = qualify(

@@ -6,6 +6,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_http::Node;
 use tessari_serve::tls::{self, Pem};
@@ -42,7 +43,7 @@ fn served() -> (String, String) {
     )
     .unwrap()
     .server_config(&[b"http/1.1"]);
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let wire = tessari_wire::Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap();
     let mut http = Node::bind(db, "127.0.0.1:0").unwrap();
     http.carrying(crate::wire_socket::door_of(&wire));

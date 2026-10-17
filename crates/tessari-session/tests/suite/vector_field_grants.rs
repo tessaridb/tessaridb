@@ -62,6 +62,8 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Outcome, Session};
@@ -85,7 +87,7 @@ const NEAR: &str = "SELECT * FROM points \
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Forty points on a line, a vector index over them, and two editors — one who
@@ -93,7 +95,7 @@ fn store() -> Store {
 fn ready(store: &Store) {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE atlas; USE DATABASE atlas;\n\
              DEFINE COLLECTION points;\n\
@@ -108,16 +110,16 @@ fn ready(store: &Store) {
             "CREATE points:{n} = {{ name: 'point {n}', embedding: [{n}.0, 0.0] }};\n"
         ));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     session
-        .run(
+        .run_now(
             "DEFINE INDEX by_embedding ON points FIELDS embedding VECTOR euclidean;\n\
              DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
         )
         .unwrap();
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now(
         "DEFINE USER wide ON prod.atlas ROLE editor PASSWORD 'correct horse battery';\n\
          DEFINE USER narrow ON prod.atlas ROLE editor PASSWORD 'correct horse battery';\n\
          USE NAMESPACE prod; USE DATABASE atlas;\n\
@@ -129,9 +131,9 @@ fn ready(store: &Store) {
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE atlas;")
+        .run_now("USE NAMESPACE prod; USE DATABASE atlas;")
         .unwrap();
     session
 }
@@ -139,7 +141,7 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
 /// The records a read answered with, in the order it answered them, and the path
 /// that served it.
 fn answered(session: &mut Session<'_>, script: &str) -> (Vec<RecordId>, AccessPath) {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };

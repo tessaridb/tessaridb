@@ -33,8 +33,8 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when a position or the version cannot be read.
-    pub fn read_state(&self) -> Result<crate::state::StateReader<'_>> {
-        crate::state::StateReader::open(self, tessari_types::Reach::Store)
+    pub async fn read_state(&self) -> Result<crate::state::StateReader<'_>> {
+        crate::state::StateReader::open(self, tessari_types::Reach::Store).await
     }
 
     /// Begin reading the part of this store a peer subscribed at `within` is
@@ -44,11 +44,11 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when a position or the version cannot be read.
-    pub fn read_state_within(
+    pub async fn read_state_within(
         &self,
         within: tessari_types::Reach,
     ) -> Result<crate::state::StateReader<'_>> {
-        crate::state::StateReader::open(self, within)
+        crate::state::StateReader::open(self, within).await
     }
 
     /// Whether nothing has ever been written into this store.
@@ -56,8 +56,8 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the version or the log list cannot be read.
-    pub fn holds_nothing(&self) -> Result<bool> {
-        Ok(self.committed_version()? == Sequence::ZERO && self.logs()?.is_empty())
+    pub async fn holds_nothing(&self) -> Result<bool> {
+        Ok(self.committed_version().await? == Sequence::ZERO && self.logs().await?.is_empty())
     }
 
     /// Write one chunk of a restored state.
@@ -66,19 +66,21 @@ impl Store {
     ///
     /// Returns the store's refusal when a record does not satisfy the catalog
     /// already restored, and a backend error when the batch cannot land.
-    pub fn restore_state_chunk(&self, record: &LogRecord) -> Result<()> {
-        let _turn = self.writing.hold();
-        self.writing.land_all(self.backend.as_ref());
-        crate::schema::validate(self, record)?;
-        let version = Sequence::new(self.committed_version()?.get().saturating_add(1));
-        let landed = self.derive_and_land(
-            record,
-            crate::log::state_batch(version, record),
-            version,
-            // A state lands in no log: what it carries is applied, not logged.
-            None,
-            crate::gate::Landing::Synced,
-        );
+    pub async fn restore_state_chunk(&self, record: &LogRecord) -> Result<()> {
+        let _turn = self.writing.hold().await;
+        self.writing.land_all(self.backend.as_ref()).await;
+        crate::schema::validate(self, record).await?;
+        let version = Sequence::new(self.committed_version().await?.get().saturating_add(1));
+        let landed = self
+            .derive_and_land(
+                record,
+                crate::log::state_batch(version, record),
+                version,
+                // A state lands in no log: what it carries is applied, not logged.
+                None,
+                crate::gate::Landing::Synced,
+            )
+            .await;
         // A state writes a decided record as `PENDING` and then its decision
         // (ADR-0112 D9a). Copied onto a store already holding the decision —
         // a follower copying its leader's state again — the first is refused
@@ -109,13 +111,13 @@ impl Store {
     /// # Errors
     ///
     /// Returns a backend error when the batch cannot land.
-    pub fn finish_state(
+    pub async fn finish_state(
         &self,
         positions: &[(LogId, Sequence)],
         topics: &[TopicHead],
     ) -> Result<()> {
-        let _turn = self.writing.hold();
-        self.writing.land_all(self.backend.as_ref());
+        let _turn = self.writing.hold().await;
+        self.writing.land_all(self.backend.as_ref()).await;
         let mut batch = WriteBatch::new();
         for (log, at) in positions {
             batch = batch
@@ -136,7 +138,8 @@ impl Store {
                 database: topic.database,
                 table: topic.table,
             };
-            let held = crate::topic::head(self, (topic.namespace, topic.database, topic.table))?;
+            let held =
+                crate::topic::head(self, (topic.namespace, topic.database, topic.table)).await?;
             if topic.last > held {
                 batch = batch.put(
                     TopicHeadKey::keyspace(),
@@ -148,10 +151,11 @@ impl Store {
         batch = batch.put(
             ReclaimFloorKey::keyspace(),
             ReclaimFloorKey.encode(),
-            self.committed_version()?.encode(),
+            self.committed_version().await?.encode(),
         );
         self.writing
-            .apply(batch, self.backend.as_ref(), crate::gate::Landing::Synced)?;
+            .apply(batch, self.backend.as_ref(), crate::gate::Landing::Synced)
+            .await?;
         Ok(())
     }
 }

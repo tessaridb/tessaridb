@@ -37,13 +37,14 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// A backend failure.
-    pub fn is_tombstoned(&self, node: &[u8; NODE_ID_LEN]) -> Result<bool> {
+    pub async fn is_tombstoned(&self, node: &[u8; NODE_ID_LEN]) -> Result<bool> {
         Ok(self
             .transaction
             .get(&system::address(
                 system::TOMBSTONED_NODES,
                 RecordId::Uuid(*node),
-            ))?
+            ))
+            .await?
             .is_some())
     }
 
@@ -52,13 +53,17 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// A backend failure, or a stored row that is not a tombstone.
-    pub fn tombstoned_nodes(&self) -> Result<Vec<[u8; NODE_ID_LEN]>> {
+    pub async fn tombstoned_nodes(&self) -> Result<Vec<[u8; NODE_ID_LEN]>> {
         let mut found = Vec::new();
-        for (_, payload) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::TOMBSTONED_NODES,
-        )? {
+        for (_, payload) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::TOMBSTONED_NODES,
+            )
+            .await?
+        {
             let row = decode_payload(&payload)?;
             let node = match &row {
                 Value::Object(fields) => fields.get(FIELD_NODE),

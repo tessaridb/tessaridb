@@ -9,6 +9,7 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
+use tessari_storage::Now;
 mod catalog;
 mod counted_reads;
 mod descending_order;
@@ -60,6 +61,7 @@ pub(crate) const FIXTURE_HOME: Reach = Reach::Database(NamespaceId::new(1), Data
 pub(crate) fn fixture_log(store: &tessari_storage::Store) -> tessari_encoding::LogId {
     store
         .own_log(FIXTURE_HOME)
+        .now()
         .expect("the store's own identity")
 }
 
@@ -75,12 +77,16 @@ pub(crate) fn fixture_log(store: &tessari_storage::Store) -> tessari_encoding::L
 /// the source's logs empty on a store that holds all of their records.
 pub(crate) fn replay(source: &tessari_storage::Store, target: &tessari_storage::Store) -> usize {
     let mut applied = 0_usize;
-    for log in source.logs().unwrap() {
+    for log in source.logs().now().unwrap() {
         for (sequence, record) in source
             .log_records(log, tessari_types::Sequence::ZERO, 4096)
+            .now()
             .unwrap()
         {
-            target.apply_record(log.writer, sequence, &record).unwrap();
+            target
+                .apply_record(log.writer, sequence, &record)
+                .now()
+                .unwrap();
             applied = applied.saturating_add(1);
         }
     }

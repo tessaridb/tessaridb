@@ -40,7 +40,7 @@ use tessari_types::RecordId;
 /// A first build has nothing to clear and no statistics to reset, so the extra
 /// work it pays for is four scans over an empty range — next to reading the
 /// whole table, which it already does.
-pub(crate) fn build(
+pub(crate) async fn build(
     store: &Store,
     mut batch: WriteBatch,
     view: &mut Transaction<'_>,
@@ -54,7 +54,7 @@ pub(crate) fn build(
         definition.table,
         definition.id,
     );
-    batch = clear(store, batch, &address)?;
+    batch = clear(store, batch, &address).await?;
     pending.built.insert(address);
     // Anything the per-mutation pass moved for this index is discarded with the
     // entries it described: the rows below include this record's own mutations,
@@ -63,7 +63,8 @@ pub(crate) fn build(
     pending.terms.insert(address, BTreeMap::new());
     pending.lengths.remove(&address);
     let mut rows: BTreeMap<RecordId, Vec<u8>> = view
-        .sweep_table(definition.namespace, definition.database, definition.table)?
+        .sweep_table(definition.namespace, definition.database, definition.table)
+        .await?
         .into_iter()
         .collect();
 
@@ -90,13 +91,13 @@ pub(crate) fn build(
             let Some(held) = projected_vector(definition, &decode_payload(payload)?) else {
                 continue;
             };
-            written.extend(graph.insert(id, held)?);
+            written.extend(graph.insert(id, held).await?);
         }
         // Measured here and nowhere else: this is the one place the whole graph
         // and every stored vector are in hand at once, and it is reached by
         // applying a log record, so every replica computes the same figure.
         let batch = graph::write(batch, &address, &written);
-        return graph::measure(batch, &address, &graph);
+        return graph::measure(batch, &address, &graph).await;
     }
 
     if definition.spatial {
@@ -129,7 +130,8 @@ pub(crate) fn build(
         // that never declares one stays open to the builds before it.
         let stamped = store
             .backend()
-            .get(FormatVersionKey::keyspace(), &FormatVersionKey.encode())?
+            .get(FormatVersionKey::keyspace(), &FormatVersionKey.encode())
+            .await?
             .map(|held| FormatVersion::decode(held.as_slice()))
             .transpose()?;
         if stamped.is_none_or(|held| held < FormatVersion::CONTAINMENT_INDEX) {
@@ -148,12 +150,14 @@ pub(crate) fn build(
     if definition.search || definition.engine.is_some() {
         let declared = analyzers_on(
             view,
+            record.mutations(),
             definition.namespace,
             definition.database,
             definition.table,
-        )?;
+        )
+        .await?;
         let named = if definition.engine.is_some() {
-            analyzers_named(view)?
+            analyzers_named(view, record.mutations()).await?
         } else {
             BTreeMap::new()
         };
@@ -221,7 +225,8 @@ pub(crate) fn build(
                 &values,
                 id,
                 &mut claimed,
-            )?;
+            )
+            .await?;
         }
     }
     Ok(batch)
@@ -243,7 +248,7 @@ pub(crate) fn build(
 /// covering that no longer exists, which is exactly the stale number the
 /// measurements were introduced to prevent, arriving from inside. Neither fails
 /// a test until somebody reads it.
-pub(crate) fn clear(
+pub(crate) async fn clear(
     store: &Store,
     mut batch: WriteBatch,
     address: &IndexAddress,
@@ -272,7 +277,7 @@ pub(crate) fn clear(
             direction: ScanDirection::Forward,
             limit: None,
         };
-        for (key, _) in store.backend().scan(&request)? {
+        for (key, _) in store.backend().scan(&request).await? {
             batch = batch.delete(keyspace, key);
         }
     }

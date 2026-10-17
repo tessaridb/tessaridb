@@ -43,7 +43,7 @@ pub use read::{Message, Messages};
 type Topic = (NamespaceId, DatabaseId, TableId);
 
 /// The name and declaration of each topic a record writes.
-fn topics_in(
+async fn topics_in(
     view: &mut Transaction<'_>,
     record: &LogRecord,
 ) -> Result<BTreeMap<Topic, (String, TopicDeclaration)>> {
@@ -54,21 +54,21 @@ fn topics_in(
         if !seen.insert(topic) {
             continue;
         }
-        let Some(definition) = Catalog::new(view).table(mutation.table)? else {
+        let Some(definition) = Catalog::new(view).table_shared(mutation.table).await? else {
             continue;
         };
         if definition.namespace != mutation.namespace || definition.database != mutation.database {
             continue;
         }
-        if let TableKind::Topic(declared) = definition.kind {
-            found.insert(topic, (definition.name, declared));
+        if let TableKind::Topic(declared) = &definition.kind {
+            found.insert(topic, (definition.name.clone(), declared.clone()));
         }
     }
     Ok(found)
 }
 
 /// The position a message holds, if it holds one.
-pub(crate) fn position_of(
+pub(crate) async fn position_of(
     store: &Store,
     (namespace, database, table): Topic,
     id: &RecordId,
@@ -81,14 +81,14 @@ pub(crate) fn position_of(
         direction: ScanDirection::Forward,
         limit: Some(1),
     };
-    match store.backend().scan(&request)?.first() {
+    match store.backend().scan(&request).await?.first() {
         Some((key, _)) => Ok(Some(TopicEntryKey::decode(key.as_slice())?.offset)),
         None => Ok(None),
     }
 }
 
 /// The last position a topic has given, or 0 when it has given none.
-pub(crate) fn head(store: &Store, (namespace, database, table): Topic) -> Result<u64> {
+pub(crate) async fn head(store: &Store, (namespace, database, table): Topic) -> Result<u64> {
     let key = TopicHeadKey {
         namespace,
         database,
@@ -96,7 +96,8 @@ pub(crate) fn head(store: &Store, (namespace, database, table): Topic) -> Result
     };
     match store
         .backend()
-        .get(TopicHeadKey::keyspace(), &key.encode())?
+        .get(TopicHeadKey::keyspace(), &key.encode())
+        .await?
     {
         Some(bytes) => Ok(Sequence::decode(bytes.as_slice())?.get()),
         None => Ok(0),
@@ -104,7 +105,7 @@ pub(crate) fn head(store: &Store, (namespace, database, table): Topic) -> Result
 }
 
 /// The first or last position a topic holds, or `None` when it holds none.
-pub(crate) fn edge(
+pub(crate) async fn edge(
     store: &Store,
     (namespace, database, table): Topic,
     direction: ScanDirection,
@@ -115,7 +116,7 @@ pub(crate) fn edge(
         direction,
         limit: Some(1),
     };
-    match store.backend().scan(&request)?.first() {
+    match store.backend().scan(&request).await?.first() {
         Some((key, _)) => Ok(Some(TopicOffsetKey::decode(key.as_slice())?.offset)),
         None => Ok(None),
     }
@@ -133,14 +134,14 @@ pub(crate) fn edge(
 ///
 /// [`Error::TopicIsAppendOnly`] or [`Error::TopicMessageTooLarge`] naming the
 /// topic; a backend or catalog error otherwise.
-pub(crate) fn admit(
+pub(crate) async fn admit(
     store: &Store,
     record: &LogRecord,
     now: u64,
     node: [u8; tessari_encoding::NODE_ID_LEN],
 ) -> Result<Option<LogRecord>> {
-    let mut view = store.begin_local()?;
-    let topics = topics_in(&mut view, record)?;
+    let mut view = store.begin_local().await?;
+    let topics = topics_in(&mut view, record).await?;
     if topics.is_empty() {
         return Ok(None);
     }
@@ -153,7 +154,8 @@ pub(crate) fn admit(
         };
         let address = RecordAddress::new(topic.0, topic.1, topic.2, mutation.id.clone());
         let held = view
-            .read_newest_stamped(&address)?
+            .read_newest_stamped(&address)
+            .await?
             .filter(|(_, held)| !held.value().is_tombstone());
         let payload = match mutation.value.value() {
             RecordValue::Present(payload) => payload.len(),
@@ -193,7 +195,7 @@ pub(crate) fn admit(
     // the total it judges is the one the commit would leave (G055 C8).
     for (topic, (name, declared)) in &topics {
         if let Some(limit) = declared.retain_bytes
-            && size::enforce(store, &view, *topic, (name, limit), &mut mutations, node)?
+            && size::enforce(store, &view, *topic, (name, limit), &mut mutations, node).await?
         {
             stamped = true;
         }
@@ -222,13 +224,13 @@ fn millis(span: tessari_types::Duration) -> Option<u64> {
 /// mutations; a removed message gives up both of its entries. A rewrite — which
 /// a commit refuses and a follower may still meet in a log written before this
 /// rule — keeps the position the message already held.
-pub(crate) fn maintain(
+pub(crate) async fn maintain(
     store: &Store,
     record: &LogRecord,
     mut batch: WriteBatch,
 ) -> Result<WriteBatch> {
-    let mut view = store.begin_local()?;
-    let topics = topics_in(&mut view, record)?;
+    let mut view = store.begin_local().await?;
+    let topics = topics_in(&mut view, record).await?;
     if topics.is_empty() {
         return Ok(batch);
     }
@@ -238,12 +240,13 @@ pub(crate) fn maintain(
         if !topics.contains_key(&topic) {
             continue;
         }
-        let held = position_of(store, topic, &mutation.id)?;
+        let held = position_of(store, topic, &mutation.id).await?;
         match (held, mutation.value.value()) {
             (None, RecordValue::Present(_)) => {
                 let offset = match next.get(&topic) {
                     Some(offset) => *offset,
-                    None => head(store, topic)?
+                    None => head(store, topic)
+                        .await?
                         .checked_add(1)
                         .ok_or(Error::TopicPositionsExhausted)?,
                 };
@@ -284,7 +287,7 @@ pub(crate) fn maintain(
     }
     for (topic, (_, declared)) in &topics {
         if declared.retain_bytes.is_some() {
-            batch = size::count(store, &view, *topic, record, batch)?;
+            batch = size::count(store, &view, *topic, record, batch).await?;
         }
     }
     for ((namespace, database, table), following) in next {

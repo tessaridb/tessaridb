@@ -6,6 +6,7 @@
 //! and is visible nowhere else.
 
 use std::thread;
+use tessari_session::Now;
 
 use tessari_encoding::{ExpiryKey, KeyKind, StoreKey};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
@@ -23,6 +24,7 @@ fn indexed(backend: &Backend) -> Vec<RecordId> {
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .now()
         .unwrap()
         .into_iter()
         .map(|(key, _)| ExpiryKey::decode(key.as_slice()).unwrap().id)
@@ -80,14 +82,14 @@ fn the_pass_removes_what_has_expired_and_nothing_else() {
                  SET cache:'never' = 1;"
             ),
         );
-        let nothing_yet = backend.store.remove_expired().unwrap();
+        let nothing_yet = backend.store.remove_expired().now().unwrap();
         assert_eq!(
             nothing_yet.records, 0,
             "{}: nothing has passed yet",
             backend.name
         );
         thread::sleep(PAST_SHORT);
-        let lapsed = backend.store.remove_expired().unwrap();
+        let lapsed = backend.store.remove_expired().now().unwrap();
         assert_eq!(
             (lapsed.records, lapsed.stale),
             (3, 0),
@@ -107,7 +109,7 @@ fn the_pass_removes_what_has_expired_and_nothing_else() {
             backend.name
         );
         assert_eq!(value(&mut session, "GET cache:'never';"), Value::from(1));
-        let again = backend.store.remove_expired().unwrap();
+        let again = backend.store.remove_expired().now().unwrap();
         assert_eq!(again.records, 0, "{}: the pass is idempotent", backend.name);
     });
 }

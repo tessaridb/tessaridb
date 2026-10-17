@@ -201,7 +201,7 @@ pub fn account(user: &UserDefinition) -> [u8; 32] {
 /// In words the asking node passes to its caller: the account changed or is
 /// gone, the user reaches past what the asking peer is subscribed to, or the
 /// catalog could not be read.
-pub fn admit_asserted<'a>(
+pub async fn admit_asserted<'a>(
     db: &'a Db,
     from: [u8; NODE_ID_LEN],
     assertion: &Assertion,
@@ -212,10 +212,10 @@ pub fn admit_asserted<'a>(
         // with a user refuses whatever the script does.
         return Ok(session);
     };
-    let mut transaction = db.store().begin().map_err(|why| why.to_string())?;
+    let mut transaction = db.store().begin().await.map_err(|why| why.to_string())?;
     let catalog = Catalog::new(&mut transaction);
-    let users = catalog.users().map_err(|why| why.to_string())?;
-    let replicas = catalog.replicas().map_err(|why| why.to_string())?;
+    let users = catalog.users().await.map_err(|why| why.to_string())?;
+    let replicas = catalog.replicas().await.map_err(|why| why.to_string())?;
     transaction.rollback();
     let user = users
         .iter()
@@ -235,7 +235,7 @@ pub fn admit_asserted<'a>(
     if !subscribed.contains(reach) {
         return Err("that user reaches past what the asking node is subscribed to here".to_owned());
     }
-    session.acting_as(id).map_err(|why| why.to_string())?;
+    session.acting_as(id).await.map_err(|why| why.to_string())?;
     Ok(session)
 }
 
@@ -299,7 +299,7 @@ impl Coordinator {
     /// One snapshot signs and dials: the far end checks the assertion against
     /// the certificate this connection presents, so a rotation landing between
     /// the two would refuse a request that was honest.
-    pub(crate) fn dialling(
+    pub(crate) async fn dialling(
         &self,
         to: [u8; NODE_ID_LEN],
     ) -> std::result::Result<(String, crate::link::Credential, crate::peer::Hello), String> {
@@ -309,67 +309,73 @@ impl Coordinator {
         let db = self.db.upgrade().ok_or("this node is stopping")?;
         let endpoint = db
             .member(&to)
+            .await
             .map_err(|why| why.to_string())?
             .map(|row| row.endpoint)
             .ok_or("the node that answers is not declared here")?;
         let mine = self.keys.duplicate();
-        let said = (self.greeting)().map_err(|why| why.to_string())?;
+        let said = (self.greeting)().await.map_err(|why| why.to_string())?;
         Ok((endpoint, mine, said))
     }
 }
 
 impl Coordinates for Coordinator {
-    fn coordinate(&self, asked: &Coordination<'_>) -> std::result::Result<Coordinated, String> {
-        let (endpoint, mine, said) = self.dialling(asked.to)?;
-        let request = Coordinate {
-            signed: Assertion {
-                from: self.me,
-                to: asked.to,
-                principal: asked
-                    .user
-                    .map_or(Principal::Anonymous, |user| Principal::User {
-                        id: user.id,
-                        account: account(user),
-                    }),
-                request: request_digest(
-                    asked.namespace,
-                    asked.database,
-                    asked.script,
-                    &encode_parameters(asked.parameters),
-                ),
-                nonce: nonce().map_err(|why| why.to_string())?,
-                issued_ms: now_ms(),
-                expires_ms: now_ms().saturating_add(LIFE_MILLIS),
+    fn coordinate<'a>(&'a self, asked: &'a Coordination<'_>) -> tessaridb::Coordinating<'a> {
+        Box::pin(async move {
+            let (endpoint, mine, said) = self.dialling(asked.to).await?;
+            let request = Coordinate {
+                signed: Assertion {
+                    from: self.me,
+                    to: asked.to,
+                    principal: asked
+                        .user
+                        .map_or(Principal::Anonymous, |user| Principal::User {
+                            id: user.id,
+                            account: account(user),
+                        }),
+                    request: request_digest(
+                        asked.namespace,
+                        asked.database,
+                        asked.script,
+                        &encode_parameters(asked.parameters),
+                    ),
+                    nonce: nonce().map_err(|why| why.to_string())?,
+                    issued_ms: now_ms(),
+                    expires_ms: now_ms().saturating_add(LIFE_MILLIS),
+                }
+                .sign(&mine.key)
+                .map_err(|why| why.to_string())?,
+                namespace: asked.namespace.map(str::to_owned),
+                database: asked.database.map(str::to_owned),
+                script: asked.script.to_owned(),
+                parameters: asked.parameters.clone(),
+                surface: asked.surface,
+            };
+            match call_within(
+                endpoint.as_str(),
+                (&self.keys, mine),
+                asked.to,
+                &said,
+                Ask::Coordinate(&request),
+                Duration::from_secs(COORDINATED_SECONDS),
+            )
+            .await
+            {
+                Ok((_, Answered::Coordinated(answer))) => Ok(answer),
+                Ok(_) => Err(format!(
+                    "{endpoint} answered something other than the request"
+                )),
+                Err(Error::NotCoordinated(why)) => Err(format!("{endpoint} refused: {why}")),
+                Err(why) => Err(format!("{endpoint}: {why}")),
             }
-            .sign(&mine.key)
-            .map_err(|why| why.to_string())?,
-            namespace: asked.namespace.map(str::to_owned),
-            database: asked.database.map(str::to_owned),
-            script: asked.script.to_owned(),
-            parameters: asked.parameters.clone(),
-            surface: asked.surface,
-        };
-        match call_within(
-            endpoint.as_str(),
-            (&self.keys, mine),
-            asked.to,
-            &said,
-            Ask::Coordinate(&request),
-            Duration::from_secs(COORDINATED_SECONDS),
-        ) {
-            Ok((_, Answered::Coordinated(answer))) => Ok(answer),
-            Ok(_) => Err(format!(
-                "{endpoint} answered something other than the request"
-            )),
-            Err(Error::NotCoordinated(why)) => Err(format!("{endpoint} refused: {why}")),
-            Err(why) => Err(format!("{endpoint}: {why}")),
-        }
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use tessari_session::Now;
 
     use rustls::pki_types::PrivateKeyDer;
     use tessaridb::{Coordinate as _, Coordination, Db, Parameters, Surface};
@@ -396,7 +402,11 @@ mod tests {
                 certificate.der().clone(),
             )
             .expect("a usable credential"),
-            Box::new(|| Err(crate::gatherer::GreetingUnavailable::Stopping)),
+            Box::new(|| {
+                Box::pin(std::future::ready(Err(
+                    crate::gatherer::GreetingUnavailable::Stopping,
+                )))
+            }),
         )
     }
 
@@ -405,7 +415,7 @@ mod tests {
         // R-14 / Q-109: a drained leader whose catalog still names it writable
         // used to forward to itself until it ran out of connections. The hop
         // is now named by node id, and a node never asks itself.
-        let db = Arc::new(Db::in_memory().expect("a store"));
+        let db = Arc::new(Db::in_memory().now().expect("a store"));
         let refused = coordinator(&db)
             .coordinate(&Coordination {
                 to: ME,
@@ -416,6 +426,7 @@ mod tests {
                 parameters: &Parameters::new(),
                 surface: Surface::Http,
             })
+            .now()
             .expect_err("a node carried a request to itself");
         assert!(refused.contains("does not ask itself"), "{refused}");
     }

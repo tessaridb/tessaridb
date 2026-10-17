@@ -33,7 +33,7 @@ impl Session<'_> {
     /// is where `DEFINE GRAPH` put it. A name that resolves to nothing refuses
     /// here, before the table exists, so a refusal leaves the store exactly as
     /// it found it.
-    pub(super) fn resolve_graph(
+    pub(super) async fn resolve_graph(
         &self,
         transaction: &mut Transaction<'_>,
         graph: Option<&Name>,
@@ -41,9 +41,10 @@ impl Session<'_> {
         let Some(graph) = graph else {
             return Ok(None);
         };
-        let context = self.context(transaction, None, graph.span)?;
+        let context = self.context(transaction, None, graph.span).await?;
         let id = Catalog::new(transaction)
-            .graph_id(context.namespace, context.database, &graph.text)?
+            .graph_id(context.namespace, context.database, &graph.text)
+            .await?
             .ok_or_else(|| Error::Unknown {
                 entity: "graph",
                 name: graph.text.clone(),
@@ -52,7 +53,7 @@ impl Session<'_> {
         Ok(Some(id))
     }
 
-    pub(super) fn edge_kind(
+    pub(super) async fn edge_kind(
         &self,
         transaction: &mut Transaction<'_>,
         edge: Option<&EdgeClause>,
@@ -64,8 +65,8 @@ impl Session<'_> {
         let EdgeClause::Between(declared) = edge else {
             return Ok(TableKind::Edge(None));
         };
-        let (_, from_id) = self.resolve_table(transaction, &declared.from)?;
-        let (_, to_id) = self.resolve_table(transaction, &declared.to)?;
+        let (_, from_id) = self.resolve_table(transaction, &declared.from).await?;
+        let (_, to_id) = self.resolve_table(transaction, &declared.to).await?;
         // The ordering field has to be one the table declares. Nothing else can
         // guarantee an edge carries it, and the order is the endpoint index's
         // key suffix rather than a sort applied afterwards: an edge missing the
@@ -110,7 +111,7 @@ impl Session<'_> {
     /// that re-states what it knows, and it is why two edges between the same
     /// pair in the same table are one edge with properties rather than two
     /// records (Q-41).
-    pub(super) fn relate(
+    pub(super) async fn relate(
         &self,
         transaction: &mut Transaction<'_>,
         from: &RecordTarget,
@@ -118,20 +119,21 @@ impl Session<'_> {
         to: &RecordTarget,
         value: Option<&tessari_ql::Expr>,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, edges.span)?;
+        let context = self.context(transaction, None, edges.span).await?;
         // An edge *kind* is looked for first, because it is the narrower word: a
         // kind and an edge table cannot share a name (both claim it in the same
         // catalog), so finding one settles which path this is.
-        if let Some(kind) = Catalog::new(transaction).edge_kind_id(
-            context.namespace,
-            context.database,
-            &edges.name.text,
-        )? {
-            return self.relate_in_graph(transaction, kind, from, edges, to, value);
+        if let Some(kind) = Catalog::new(transaction)
+            .edge_kind_id(context.namespace, context.database, &edges.name.text)
+            .await?
+        {
+            return self
+                .relate_in_graph(transaction, kind, from, edges, to, value)
+                .await;
         }
 
-        let (context, edge_table) = self.resolve_table(transaction, edges)?;
-        let Some(definition) = Catalog::new(transaction).table(edge_table)? else {
+        let (context, edge_table) = self.resolve_table(transaction, edges).await?;
+        let Some(definition) = Catalog::new(transaction).table(edge_table).await? else {
             return Err(Error::NotAnEdgeTable {
                 table: edges.name.text.clone(),
                 span: edges.span,
@@ -144,8 +146,8 @@ impl Session<'_> {
             });
         }
         let declared = definition.edge_endpoints().cloned();
-        let (_, out) = self.address(transaction, from)?;
-        let (_, into) = self.address(transaction, to)?;
+        let (_, out) = self.address(transaction, from).await?;
+        let (_, into) = self.address(transaction, to).await?;
         // A table that declared its pair refuses a link between any other, and
         // that refusal is the whole of what the clause buys. It is checked after
         // both endpoints resolve so that a link naming a record that is not
@@ -161,7 +163,7 @@ impl Session<'_> {
         }
 
         let mut fields = match value {
-            Some(expression) => match self.evaluate(transaction, expression)? {
+            Some(expression) => match self.evaluate(transaction, expression).await? {
                 Value::Object(given) => given,
                 // A non-object edge property has nowhere to live beside the two
                 // endpoints, so it is refused where it is written rather than
@@ -192,8 +194,11 @@ impl Session<'_> {
         );
         // An edge is an ordinary record, so an edge table's declarations apply
         // to it — including their defaults.
-        let payload = self.with_defaults(transaction, edge_table, Value::Object(fields))?;
-        self.put_record(transaction, address, payload, edges.span)?;
+        let payload = self
+            .with_defaults(transaction, edge_table, Value::Object(fields))
+            .await?;
+        self.put_record(transaction, address, payload, edges.span)
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -203,7 +208,7 @@ impl Session<'_> {
     /// edge is an ordinary mutation, which is what carries it and the adjacency
     /// derived from it through the log to every replica; the neighbours and their
     /// properties are read from the adjacency entries instead.
-    pub(super) fn relate_in_graph(
+    pub(super) async fn relate_in_graph(
         &self,
         transaction: &mut Transaction<'_>,
         kind: tessari_types::EdgeKindId,
@@ -212,16 +217,16 @@ impl Session<'_> {
         to: &RecordTarget,
         value: Option<&tessari_ql::Expr>,
     ) -> Result<Outcome> {
-        let declared =
-            Catalog::new(transaction)
-                .edge_kind(kind)?
-                .ok_or_else(|| Error::Unknown {
-                    entity: "edge kind",
-                    name: edges.name.text.clone(),
-                    span: edges.span,
-                })?;
-        let (_, out) = self.address(transaction, from)?;
-        let (_, into) = self.address(transaction, to)?;
+        let declared = Catalog::new(transaction)
+            .edge_kind(kind)
+            .await?
+            .ok_or_else(|| Error::Unknown {
+                entity: "edge kind",
+                name: edges.name.text.clone(),
+                span: edges.span,
+            })?;
+        let (_, out) = self.address(transaction, from).await?;
+        let (_, into) = self.address(transaction, to).await?;
         // Checked after both endpoints resolve, so a relation naming a record
         // that is not there fails as the missing record rather than as a pair the
         // kind does not join. The order matters too: an unordered check would
@@ -234,7 +239,7 @@ impl Session<'_> {
         }
 
         let mut fields = match value {
-            Some(expression) => match self.evaluate(transaction, expression)? {
+            Some(expression) => match self.evaluate(transaction, expression).await? {
                 Value::Object(given) => given,
                 other => {
                     return Err(Error::EdgePropertiesNotAnObject {
@@ -263,7 +268,8 @@ impl Session<'_> {
             declared.edges,
             edge_identity(&out, &into),
         );
-        self.put_record(transaction, address, Value::Object(fields), edges.span)?;
+        self.put_record(transaction, address, Value::Object(fields), edges.span)
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -281,7 +287,7 @@ impl Session<'_> {
     /// record's own mutation in `adjacency::maintain`, so the tombstone written
     /// below removes both of them in the batch that carries it — the same reason
     /// `DROP EDGE` needed no sweep.
-    pub(super) fn delete_edge(
+    pub(super) async fn delete_edge(
         &self,
         transaction: &mut Transaction<'_>,
         from: &RecordTarget,
@@ -289,26 +295,25 @@ impl Session<'_> {
         to: &RecordTarget,
         answer: Answer,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, edges.span)?;
-        let (_, out) = self.address(transaction, from)?;
-        let (_, into) = self.address(transaction, to)?;
+        let context = self.context(transaction, None, edges.span).await?;
+        let (_, out) = self.address(transaction, from).await?;
+        let (_, into) = self.address(transaction, to).await?;
 
         // An edge kind is looked for first, for the reason `relate` looks for it
         // first: a kind and an edge table cannot share a name, so finding one
         // settles which path this is.
-        let address = if let Some(kind) = Catalog::new(transaction).edge_kind_id(
-            context.namespace,
-            context.database,
-            &edges.name.text,
-        )? {
-            let declared =
-                Catalog::new(transaction)
-                    .edge_kind(kind)?
-                    .ok_or_else(|| Error::Unknown {
-                        entity: "edge kind",
-                        name: edges.name.text.clone(),
-                        span: edges.span,
-                    })?;
+        let address = if let Some(kind) = Catalog::new(transaction)
+            .edge_kind_id(context.namespace, context.database, &edges.name.text)
+            .await?
+        {
+            let declared = Catalog::new(transaction)
+                .edge_kind(kind)
+                .await?
+                .ok_or_else(|| Error::Unknown {
+                    entity: "edge kind",
+                    name: edges.name.text.clone(),
+                    span: edges.span,
+                })?;
             // Refused rather than answered with a no-op. The derived identity
             // for a pair the kind does not join cannot exist, so deleting it
             // would succeed and remove nothing — and a caller who wrote the
@@ -329,9 +334,10 @@ impl Session<'_> {
                 edge_identity(&out, &into),
             )
         } else {
-            let (context, edge_table) = self.resolve_table(transaction, edges)?;
+            let (context, edge_table) = self.resolve_table(transaction, edges).await?;
             let declared = Catalog::new(transaction)
-                .table(edge_table)?
+                .table(edge_table)
+                .await?
                 .filter(|found| found.is_edge())
                 .ok_or_else(|| Error::NotAnEdgeTable {
                     table: edges.name.text.clone(),
@@ -355,13 +361,13 @@ impl Session<'_> {
 
         // An edge that is not there deletes as a record that is not there does:
         // `BEFORE` answers `NONE`, which is the true answer to what was removed.
-        let before = match transaction.get(&address)? {
+        let before = match transaction.get(&address).await? {
             Some(held) => decode_payload(&held)?,
             None => Value::None,
         };
         // Through the delete funnel, so an edge table's events see the edge go
         // as they saw it come (ADR-0110 D8).
-        self.delete_record(transaction, address, edges.span)?;
+        self.delete_record(transaction, address, edges.span).await?;
         Ok(answered(answer, before, Value::None))
     }
 }

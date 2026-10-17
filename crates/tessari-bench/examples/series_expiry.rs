@@ -13,9 +13,11 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tessari_session::Now;
+use tessari_session::RunNow;
 
-use tessari_kv::{KeyRange, Keyspace, KvBackend, ScanRequest};
-use tessari_lsm::{LsmBackend, StoreConfig};
+use tessari_kv::{KeyRange, Keyspace, KvBackend as _, ScanRequest};
+use tessari_lsm::{StoreConfig, TessariKvBackend};
 use tessari_storage::Catalog;
 use tessaridb::Db;
 
@@ -69,7 +71,7 @@ fn write(
             ));
         }
         script.push_str(" COMMIT;");
-        session.run(&script)?;
+        session.run_now(&script)?;
         written = upto;
     }
     Ok(())
@@ -77,7 +79,7 @@ fn write(
 
 /// The identities the series answers with, in order.
 fn answer(session: &mut tessaridb::Session) -> Result<Vec<String>, Box<dyn Error>> {
-    let outcomes = session.run("SELECT * FROM readings;")?;
+    let outcomes = session.run_now("SELECT * FROM readings;")?;
     Ok(outcomes
         .first()
         .and_then(tessaridb::Outcome::records)
@@ -91,9 +93,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let aged: u64 = args.get(2).map_or(Ok(1_000_000), |held| held.parse())?;
     let kept: u64 = args.get(3).map_or(Ok(10_000), |held| held.parse())?;
 
-    let db = Db::open(dir)?;
+    let db = Db::open(dir).now()?;
     let mut session = db.session();
-    session.run(
+    session.run_now(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench; DEFINE DATABASE bench; \
          USE DATABASE bench; DEFINE SERIES readings RETAIN 30d;",
     )?;
@@ -105,30 +107,33 @@ fn main() -> Result<(), Box<dyn Error>> {
     let before = answer(&mut session)?;
     let store = db.store();
     let (namespace, database, table) = {
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().now()?;
         let catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.namespace_id("bench")?.ok_or("no namespace")?;
+        let namespace = catalog.namespace_id("bench").now()?.ok_or("no namespace")?;
         let database = catalog
-            .database_id(namespace, "bench")?
+            .database_id(namespace, "bench")
+            .now()?
             .ok_or("no database")?;
         let table = catalog
-            .table_id(namespace, database, "readings")?
+            .table_id(namespace, database, "readings")
+            .now()?
             .ok_or("no table")?;
         (namespace, database, table)
     };
     let started = Instant::now();
-    let expired = store.expire_series(namespace, database, table)?;
+    let expired = store.expire_series(namespace, database, table).now()?;
     let took = started.elapsed();
     let after = answer(&mut session)?;
     let same = before == after && u64::try_from(after.len())? == kept;
     drop(session);
     drop(db);
 
-    let backend = LsmBackend::open(dir, StoreConfig::default())?;
-    backend.compact()?;
+    let backend = TessariKvBackend::open(dir, StoreConfig::default()).now()?;
+    backend.compact().now()?;
     let count = |keyspace| -> Result<usize, Box<dyn Error>> {
         Ok(backend
-            .scan(&ScanRequest::new(keyspace, KeyRange::all()))?
+            .scan(&ScanRequest::new(keyspace, KeyRange::all()))
+            .now()?
             .len())
     };
     // The writes are a known number of commits, so what the pass added to the

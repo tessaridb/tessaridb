@@ -15,6 +15,8 @@ chacha20poly1305.workspace = true
 getrandom.workspace = true
 ring.workspace = true
 thiserror.workspace = true
+# `block_in_place` keeps a key derivation off the worker its caller runs on.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
 zeroize.workspace = true
 
 [dev-dependencies]

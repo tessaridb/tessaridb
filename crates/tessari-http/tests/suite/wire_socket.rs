@@ -13,6 +13,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::pin::Pin;
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_http::{Node, WireDoor, WireSession};
 use tessari_wire::{Follow, Request};
@@ -51,7 +52,7 @@ struct Served {
 }
 
 fn served() -> Served {
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let wire = Arc::new(tessari_wire::Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
     let mut http = Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap();
     http.carrying(door_of(&wire));
@@ -73,7 +74,7 @@ fn served() -> Served {
 
 /// An HTTP node alone, carrying the door the test decides — or none.
 fn served_with(door: Option<WireDoor>) -> String {
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let mut http = Node::bind(db, "127.0.0.1:0").unwrap();
     if let Some(door) = door {
         http.carrying(door);

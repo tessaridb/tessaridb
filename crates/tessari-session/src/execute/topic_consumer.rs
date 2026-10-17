@@ -28,7 +28,7 @@ impl Session<'_> {
     /// exists **in the same database** (one transaction is the guarantee), and a
     /// `quarantine` policy has a group that will eventually stop handing a
     /// message out.
-    pub(super) fn define_topic_consumer(
+    pub(super) async fn define_topic_consumer(
         &self,
         transaction: &mut Transaction<'_>,
         declared: &TopicDeclared<'_>,
@@ -37,14 +37,15 @@ impl Session<'_> {
     ) -> Result<Outcome> {
         if if_not_exists
             && Catalog::new(transaction)
-                .consumers()?
+                .consumers()
+                .await?
                 .iter()
                 .any(|found| found.name == declared.name.text)
         {
             return Ok(Outcome::Done);
         }
 
-        let (context, topic) = self.group_topic(transaction, declared.topic, span)?;
+        let (context, topic) = self.group_topic(transaction, declared.topic, span).await?;
         let group = Self::existing_group(
             transaction,
             &context,
@@ -52,8 +53,11 @@ impl Session<'_> {
             declared.group,
             declared.topic,
             span,
-        )?;
-        let (landing, destination) = self.resolve_table(transaction, declared.destination)?;
+        )
+        .await?;
+        let (landing, destination) = self
+            .resolve_table(transaction, declared.destination)
+            .await?;
         if landing.namespace != context.namespace || landing.database != context.database {
             return Err(Error::TopicConsumerSpansDatabases {
                 topic: declared.topic.name.text.clone(),
@@ -94,20 +98,23 @@ impl Session<'_> {
             // Whose authority each batch carries, re-established every batch.
             declarer: self.identity.user().map(|user| user.id),
         };
-        Catalog::new(transaction).create_consumer(&definition)?;
+        Catalog::new(transaction)
+            .create_consumer(&definition)
+            .await?;
         Ok(Outcome::Done)
     }
 
     /// Forget a topic consumer; the runner stops its members after the batch
     /// each is in, the next time it reads the catalog.
-    pub(super) fn drop_topic_consumer(
+    pub(super) async fn drop_topic_consumer(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
         let found = Catalog::new(transaction)
-            .consumers()?
+            .consumers()
+            .await?
             .into_iter()
             .find(|held| held.name == name.text);
         let Some(consumer) = found else {
@@ -125,7 +132,7 @@ impl Session<'_> {
                 span,
             });
         }
-        Catalog::new(transaction).drop_consumer(&consumer)?;
+        Catalog::new(transaction).drop_consumer(&consumer).await?;
         Ok(Outcome::Done)
     }
 }

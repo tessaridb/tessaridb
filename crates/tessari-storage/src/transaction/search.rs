@@ -53,8 +53,24 @@ pub struct Expansion {
     pub examined: usize,
 }
 
-impl Transaction<'_> {
-    /// Hand every pair of a range to `take`, reading it in bounded batches.
+/// A walk over one key range, handed out a bounded batch at a time.
+///
+/// A pull rather than a callback: the caller's loop body runs between batches,
+/// so it may await on the transaction it holds without lending it to a closure.
+pub(super) struct RangeWalk {
+    keyspace: Keyspace,
+    remaining: Option<KeyRange>,
+}
+
+impl RangeWalk {
+    pub(super) fn new(keyspace: Keyspace, range: &KeyRange) -> Self {
+        Self {
+            keyspace,
+            remaining: Some(range.clone()),
+        }
+    }
+
+    /// The next batch of a range, read in bounded batches.
     ///
     /// # Why the walk is batched and what that does not promise
     ///
@@ -63,45 +79,42 @@ impl Transaction<'_> {
     /// first pair reaches the caller, so the memory is a function of what is
     /// stored rather than of what is being built.
     ///
-    /// It does not bound whatever `take` accumulates. A caller collecting one
-    /// record id per entry still ends up holding one per entry — that is the
+    /// It does not bound whatever the caller accumulates. A caller collecting one
+    /// record id per entry still ends up holding one per entry; that is the
     /// answer's size and a different question. What this removes is the copy of
     /// the range that existed *beside* the answer, values included, for callers
     /// that then threw the values away.
     ///
     /// # Errors
     ///
-    /// Returns the backend's failure, or `take`'s.
-    fn walk_range(
-        &self,
-        keyspace: Keyspace,
-        range: &KeyRange,
-        mut take: impl FnMut(&Key, &KvValue) -> Result<()>,
-    ) -> Result<()> {
-        let mut remaining = range.clone();
-        loop {
-            let request = ScanRequest {
-                keyspace,
-                range: remaining.clone(),
-                direction: ScanDirection::Forward,
-                limit: Some(RANGE_SCAN_BATCH_ENTRIES),
-            };
-            let batch = self.store.backend().scan(&request)?;
-            for (key, value) in &batch {
-                take(key, value)?;
-            }
-            // A short batch is the end of the range: the backend was asked for
-            // a full one and had fewer to give.
-            let Some((last, _)) = batch
-                .last()
-                .filter(|_| batch.len() >= RANGE_SCAN_BATCH_ENTRIES)
-            else {
-                return Ok(());
-            };
-            remaining = remaining.resuming_after(last);
+    /// Returns the backend's failure.
+    pub(super) async fn next(
+        &mut self,
+        transaction: &Transaction<'_>,
+    ) -> Result<Option<Vec<(Key, KvValue)>>> {
+        let Some(range) = self.remaining.take() else {
+            return Ok(None);
+        };
+        let request = ScanRequest {
+            keyspace: self.keyspace,
+            range: range.clone(),
+            direction: ScanDirection::Forward,
+            limit: Some(RANGE_SCAN_BATCH_ENTRIES),
+        };
+        let batch = transaction.store.backend().scan(&request).await?;
+        // A short batch is the end of the range: the backend was asked for a
+        // full one and had fewer to give.
+        if let Some((last, _)) = batch
+            .last()
+            .filter(|_| batch.len() >= RANGE_SCAN_BATCH_ENTRIES)
+        {
+            self.remaining = Some(range.resuming_after(last));
         }
+        Ok(Some(batch))
     }
+}
 
+impl Transaction<'_> {
     /// The records an index says hold `values`, as of this transaction's
     /// snapshot.
     ///
@@ -137,7 +150,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn records_by_terms(
+    pub async fn records_by_terms(
         &self,
         index: &IndexDefinition,
         analyzer: Option<&Analyzer>,
@@ -147,17 +160,18 @@ impl Transaction<'_> {
             return Ok(Vec::new());
         };
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
-        let mut holding = self.postings(&address, first)?;
+        let mut holding = self.postings(&address, first).await?;
         for term in terms.iter().skip(1) {
             if holding.is_empty() {
                 break;
             }
-            let next = self.postings(&address, term)?;
+            let next = self.postings(&address, term).await?;
             holding.retain(|id| next.contains(id));
         }
         self.settle_pending(index, analyzer, &mut holding, |held| {
             terms.iter().all(|term| held.contains(term))
-        })?;
+        })
+        .await?;
         Ok(holding.into_iter().collect())
     }
 
@@ -185,7 +199,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn records_by_expansions(
+    pub async fn records_by_expansions(
         &self,
         index: &IndexDefinition,
         analyzer: Option<&Analyzer>,
@@ -198,12 +212,12 @@ impl Transaction<'_> {
             return Ok(Vec::new());
         }
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
-        let mut holding = self.union(&address, first)?;
+        let mut holding = self.union(&address, first).await?;
         for expansion in expansions.iter().skip(1) {
             if holding.is_empty() {
                 break;
             }
-            let next = self.union(&address, expansion)?;
+            let next = self.union(&address, expansion).await?;
             holding.retain(|id| next.contains(id));
         }
         // The expansions were resolved from the term dictionary, which a pending
@@ -216,7 +230,8 @@ impl Transaction<'_> {
             expansions
                 .iter()
                 .all(|expansion| expansion.iter().any(|term| held.contains(term)))
-        })?;
+        })
+        .await?;
         Ok(holding.into_iter().collect())
     }
 
@@ -236,7 +251,7 @@ impl Transaction<'_> {
     /// so the two sides ask one question. `None` means the field declares none,
     /// in which case it contributes no terms and no pending record can match —
     /// the answer a scan gives for the same record.
-    fn settle_pending(
+    async fn settle_pending(
         &self,
         index: &IndexDefinition,
         analyzer: Option<&Analyzer>,
@@ -250,7 +265,7 @@ impl Transaction<'_> {
             {
                 continue;
             }
-            let held = self.terms_now(index, analyzer, pending)?;
+            let held = self.terms_now(index, analyzer, pending).await?;
             if held.as_deref().is_some_and(&holds) {
                 holding.insert(pending.id.clone());
             } else {
@@ -267,7 +282,7 @@ impl Transaction<'_> {
     /// holds something that is not text: the same three ways a record
     /// contributes nothing at write time, asked in the same order so the two
     /// cannot answer differently.
-    fn terms_now(
+    async fn terms_now(
         &self,
         index: &IndexDefinition,
         analyzer: Option<&Analyzer>,
@@ -276,7 +291,7 @@ impl Transaction<'_> {
         let (Some(analyzer), Some(path)) = (analyzer, index.fields.first()) else {
             return Ok(None);
         };
-        let Some(payload) = self.get(address)? else {
+        let Some(payload) = self.get(address).await? else {
             return Ok(None);
         };
         let record = decode_payload(&payload)?;
@@ -287,10 +302,10 @@ impl Transaction<'_> {
     }
 
     /// The records any one of these terms is posted against.
-    fn union(&self, address: &IndexAddress, terms: &[String]) -> Result<BTreeSet<RecordId>> {
+    async fn union(&self, address: &IndexAddress, terms: &[String]) -> Result<BTreeSet<RecordId>> {
         let mut found = BTreeSet::new();
         for term in terms {
-            found.extend(self.postings(address, term)?);
+            found.extend(self.postings(address, term).await?);
         }
         Ok(found)
     }

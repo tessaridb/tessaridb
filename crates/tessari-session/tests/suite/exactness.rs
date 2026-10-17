@@ -33,6 +33,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Exactness, Note, Outcome, Session};
@@ -40,7 +42,9 @@ use tessari_storage::Store;
 use tessari_types::Value;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 const PLACE: &str = "\
@@ -54,7 +58,7 @@ fn texts(indexed: bool) -> Store {
     let held = store();
     let mut session = Session::new(&held);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
              DEFINE COLLECTION notes;\n\
@@ -68,7 +72,7 @@ fn texts(indexed: bool) -> Store {
         .unwrap();
     if indexed {
         session
-            .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+            .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
             .unwrap();
     }
     held
@@ -80,7 +84,7 @@ fn points() -> Store {
     let held = store();
     let mut session = Session::new(&held);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}DEFINE VECTOR embeddings DIMENSION 2 DISTANCE euclidean;"
         ))
         .unwrap();
@@ -90,7 +94,7 @@ fn points() -> Store {
             "CREATE embeddings:{n} = {{ vector: [{n}.0, 0.0] }};\n"
         ));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     held
 }
 
@@ -99,7 +103,7 @@ const USE: &str = "USE NAMESPACE prod; USE DATABASE shop;";
 /// What one read reported: the path it took, whether it called itself exact, the
 /// object it renders as, and its notes.
 fn reported(session: &mut Session<'_>, read: &str) -> (AccessPath, Exactness, Value, Vec<Note>) {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { plan, notes, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -160,7 +164,7 @@ fn every_access_path_has_a_decided_exactness() {
 fn an_exact_answer_still_carries_the_claim() {
     let held = texts(false);
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     let (path, exact, rendered, notes) = reported(&mut session, "SELECT * FROM notes;");
 
@@ -192,7 +196,7 @@ fn every_exact_surface_says_so() {
     for indexed in [false, true] {
         let held = texts(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
 
         for read in [
             "SELECT * FROM notes;",
@@ -229,7 +233,7 @@ fn every_exact_surface_says_so() {
 fn the_graph_walk_says_it_is_not_and_says_why() {
     let held = points();
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     let (path, exact, rendered, notes) = reported(
         &mut session,
@@ -265,13 +269,13 @@ fn the_graph_walk_says_it_is_not_and_says_why() {
 fn explaining_a_read_and_running_it_agree() {
     let held = points();
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     let read = "SELECT * FROM embeddings \
                 ORDER BY vector::euclidean(vector, [0.0, 0.0]) LIMIT 5 APPROXIMATE";
 
     let (_, _, answered, _) = reported(&mut session, &format!("{read};"));
-    let outcomes = session.run(&format!("EXPLAIN {read};")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read};")).unwrap();
     let Some(Outcome::Value(explained)) = outcomes.last() else {
         panic!("EXPLAIN answered with {:?}", outcomes.last());
     };
@@ -292,12 +296,12 @@ fn explaining_a_read_and_running_it_agree() {
 fn explaining_an_exact_read_and_running_it_agree() {
     let held = texts(true);
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     let read = "SELECT * FROM notes WHERE city = 'Paris'";
 
     let (_, _, answered, _) = reported(&mut session, &format!("{read};"));
-    let outcomes = session.run(&format!("EXPLAIN {read};")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read};")).unwrap();
     let Some(Outcome::Value(explained)) = outcomes.last() else {
         panic!("EXPLAIN answered with {:?}", outcomes.last());
     };

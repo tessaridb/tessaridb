@@ -9,6 +9,8 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
+use tessari_session::Now;
+use tessari_session::RunNow;
 use tessaridb::{
     AccessPath, Change, ChangeKind, Db, Exactness, Reach, RecordId, Sequence, Value, Watch,
 };
@@ -42,14 +44,14 @@ fn name_of(record: &Value) -> Option<&str> {
 
 #[test]
 fn opening_a_database_takes_one_line_and_names_nothing_internal() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let mut session = db.session();
-    session.run(READY).unwrap();
+    session.run_now(READY).unwrap();
     session
-        .run("CREATE users:1 = { name: 'ada', city: 'Paris' };")
+        .run_now("CREATE users:1 = { name: 'ada', city: 'Paris' };")
         .unwrap();
 
-    let found = session.run("SELECT name FROM users:1;").unwrap();
+    let found = session.run_now("SELECT name FROM users:1;").unwrap();
     assert_eq!(found[0].path(), Some(AccessPath::Record));
     // Beside the path, and for the same reason it is here: a caller of the front
     // door can ask how the records were reached and whether they are provably
@@ -70,16 +72,16 @@ fn the_two_ways_to_open_run_the_same_script_to_the_same_result() {
                   DEFINE INDEX by_name ON users FIELDS name;\
                   SELECT * FROM users WHERE name = 'grace';";
 
-    let memory = Db::in_memory().unwrap();
+    let memory = Db::in_memory().now().unwrap();
     let mut session = memory.session();
-    session.run(READY).unwrap();
-    let from_memory = session.run(script).unwrap();
+    session.run_now(READY).unwrap();
+    let from_memory = session.run_now(script).unwrap();
 
     let root = tempfile::tempdir().unwrap();
-    let persistent = Db::open(root.path().join("store")).unwrap();
+    let persistent = Db::open(root.path().join("store")).now().unwrap();
     let mut session = persistent.session();
-    session.run(READY).unwrap();
-    let from_disk = session.run(script).unwrap();
+    session.run_now(READY).unwrap();
+    let from_disk = session.run_now(script).unwrap();
 
     assert_eq!(from_memory, from_disk);
     assert_eq!(from_disk.last().unwrap().path(), Some(AccessPath::Index));
@@ -91,33 +93,39 @@ fn a_database_opened_at_a_path_remembers_what_was_written_to_it() {
     let path = root.path().join("store");
 
     {
-        let db = Db::open(&path).unwrap();
+        let db = Db::open(&path).now().unwrap();
         let mut session = db.session();
-        session.run(READY).unwrap();
-        session.run("CREATE users:1 = { name: 'ada' };").unwrap();
+        session.run_now(READY).unwrap();
+        session
+            .run_now("CREATE users:1 = { name: 'ada' };")
+            .unwrap();
     }
 
-    let reopened = Db::open(&path).unwrap();
+    let reopened = Db::open(&path).now().unwrap();
     let mut session = reopened.session();
-    session.run("USE NAMESPACE prod DATABASE orders;").unwrap();
-    let found = session.run("SELECT * FROM users;").unwrap();
+    session
+        .run_now("USE NAMESPACE prod DATABASE orders;")
+        .unwrap();
+    let found = session.run_now("SELECT * FROM users;").unwrap();
     assert_eq!(found[0].records().unwrap().len(), 1);
 }
 
 #[test]
 fn two_sessions_on_one_database_are_two_conversations() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let mut first = db.session();
-    first.run(READY).unwrap();
-    first.run("CREATE users:1 = { name: 'ada' };").unwrap();
+    first.run_now(READY).unwrap();
+    first.run_now("CREATE users:1 = { name: 'ada' };").unwrap();
 
     // The second has selected nothing, so it cannot see the table by name until
     // it says so itself — which is what makes them independent.
     let mut second = db.session();
-    assert!(second.run("SELECT * FROM users;").is_err());
-    second.run("USE NAMESPACE prod DATABASE orders;").unwrap();
+    assert!(second.run_now("SELECT * FROM users;").is_err());
+    second
+        .run_now("USE NAMESPACE prod DATABASE orders;")
+        .unwrap();
     assert_eq!(
-        second.run("SELECT * FROM users;").unwrap()[0]
+        second.run_now("SELECT * FROM users;").unwrap()[0]
             .records()
             .unwrap()
             .len(),
@@ -127,18 +135,21 @@ fn two_sessions_on_one_database_are_two_conversations() {
 
 #[test]
 fn the_change_feed_reaches_the_surface() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let mut session = db.session();
-    session.run(READY).unwrap();
-    session.run("CREATE users:1 = { name: 'ada' };").unwrap();
-    session.run("DELETE users:1;").unwrap();
+    session.run_now(READY).unwrap();
+    session
+        .run_now("CREATE users:1 = { name: 'ada' };")
+        .unwrap();
+    session.run_now("DELETE users:1;").unwrap();
 
     let answer = db
         .changes_since(
-            db.store().own_log(FIXTURE_HOME).unwrap(),
+            db.store().own_log(FIXTURE_HOME).now().unwrap(),
             Sequence::ZERO,
             1024,
         )
+        .now()
         .unwrap();
     let kinds: Vec<&ChangeKind> = answer.changes.iter().map(|c| &c.kind).collect();
     assert_eq!(kinds.len(), 2, "{kinds:?}");
@@ -148,17 +159,19 @@ fn the_change_feed_reaches_the_surface() {
 
 #[test]
 fn a_subscription_is_a_value_the_caller_keeps() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     let mut session = db.session();
-    session.run(READY).unwrap();
+    session.run_now(READY).unwrap();
 
     let mut watching = Db::subscribe(
-        db.store().own_log(FIXTURE_HOME).unwrap(),
+        db.store().own_log(FIXTURE_HOME).now().unwrap(),
         Sequence::ZERO,
         Watch::default(),
     );
-    session.run("CREATE users:1 = { name: 'ada' };").unwrap();
-    let first: Vec<Change> = db.poll(&mut watching, 1024).unwrap();
+    session
+        .run_now("CREATE users:1 = { name: 'ada' };")
+        .unwrap();
+    let first: Vec<Change> = db.poll(&mut watching, 1024).now().unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(
         name_of(match &first[0].kind {
@@ -170,15 +183,19 @@ fn a_subscription_is_a_value_the_caller_keeps() {
 
     // It does not repeat, and a skip past the tail is counted rather than
     // silent.
-    session.run("CREATE users:2 = { name: 'grace' };").unwrap();
+    session
+        .run_now("CREATE users:2 = { name: 'grace' };")
+        .unwrap();
     let tail = db
-        .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+        .committed_tail(db.store().own_log(FIXTURE_HOME).now().unwrap())
+        .now()
         .unwrap();
     let skipped = db
         .skip(&mut watching, Sequence::new(tail.get() + 1))
+        .now()
         .unwrap();
     assert_eq!(skipped, 1);
-    assert!(db.poll(&mut watching, 1024).unwrap().is_empty());
+    assert!(db.poll(&mut watching, 1024).now().unwrap().is_empty());
     assert_eq!(watching.delivered(), 1);
     assert_eq!(watching.dropped(), 1);
 }

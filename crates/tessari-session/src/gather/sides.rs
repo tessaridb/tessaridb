@@ -26,19 +26,22 @@ impl Session<'_> {
     ///
     /// Refuses `NotHeldHere` where gathering is withheld (a transaction,
     /// `VERSION`, a node told of no gatherer), as every gathered read does.
-    pub(crate) fn whole_table(
+    pub(crate) async fn whole_table(
         &self,
         transaction: &mut Transaction<'_>,
         (namespace, database): (NamespaceId, DatabaseId),
         id: TableId,
         notes: &mut Vec<Note>,
     ) -> Result<Stored> {
-        match self.gather_a_part(transaction, id, Part::Whole, None, None, None)? {
+        match self
+            .gather_a_part(transaction, id, Part::Whole, None, None, None)
+            .await?
+        {
             Some((found, note)) => {
                 noted(notes, note);
                 Ok(found)
             }
-            None => Ok(transaction.scan_table(namespace, database, id)?),
+            None => Ok(transaction.scan_table(namespace, database, id).await?),
         }
     }
 
@@ -48,7 +51,7 @@ impl Session<'_> {
     ///
     /// Asked only of a table this node lacks part of; a record the leader keeps
     /// is matched again by the join here, so leniency there costs only bytes.
-    pub(crate) fn gathered_by_keys(
+    pub(crate) async fn gathered_by_keys(
         &self,
         transaction: &mut Transaction<'_>,
         place: (NamespaceId, DatabaseId),
@@ -73,25 +76,28 @@ impl Session<'_> {
             span,
         };
         let Some((condition, parameters)) = tessari_ql::portable(&membership) else {
-            return self.whole_table(transaction, place, id, notes);
+            return self.whole_table(transaction, place, id, notes).await;
         };
         let pushed = crate::Pushed {
             visible: visible.clone(),
             condition,
             parameters,
         };
-        match self.gather_a_part(transaction, id, Part::Whole, Some(&pushed), None, None)? {
+        match self
+            .gather_a_part(transaction, id, Part::Whole, Some(&pushed), None, None)
+            .await?
+        {
             Some((found, note)) => {
                 noted(notes, note);
                 Ok(found)
             }
-            None => Ok(transaction.scan_table(place.0, place.1, id)?),
+            None => Ok(transaction.scan_table(place.0, place.1, id).await?),
         }
     }
 
     /// The stored record `record` of table `id` gathered from its shard's
     /// leader, or `None` when this node holds that record's shard.
-    pub(crate) fn gathered_record(
+    pub(crate) async fn gathered_record(
         &self,
         transaction: &mut Transaction<'_>,
         id: TableId,
@@ -99,7 +105,10 @@ impl Session<'_> {
         notes: &mut Vec<Note>,
     ) -> Result<Option<Stored>> {
         Ok(
-            match self.gather_a_part(transaction, id, Part::Record(record), None, None, None)? {
+            match self
+                .gather_a_part(transaction, id, Part::Record(record), None, None, None)
+                .await?
+            {
                 Some((found, note)) => {
                     noted(notes, note);
                     Some(found)

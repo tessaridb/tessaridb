@@ -14,6 +14,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -21,7 +23,7 @@ use tessari_storage::Store;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Six readings, four of which are stale. The two live ones exist so a bound
@@ -30,7 +32,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION readings;\n\
@@ -53,7 +55,7 @@ fn removed(outcome: &Outcome) -> u64 {
 }
 
 fn rows(session: &mut Session<'_>, statement: &str) -> usize {
-    let outcome = session.run(statement).unwrap();
+    let outcome = session.run_now(statement).unwrap();
     let last = outcome.last().expect("an outcome");
     last.records().expect("records").len()
 }
@@ -63,7 +65,7 @@ fn an_unbounded_conditional_delete_is_refused() {
     let store = store();
     let mut session = ready(&store);
 
-    let refused = session.run("DELETE FROM readings WHERE stale = true;");
+    let refused = session.run_now("DELETE FROM readings WHERE stale = true;");
 
     assert!(
         refused.is_err(),
@@ -82,7 +84,7 @@ fn a_bound_removes_at_most_what_it_names() {
     let mut session = ready(&store);
 
     let outcome = session
-        .run("DELETE FROM readings WHERE stale = true LIMIT 2;")
+        .run_now("DELETE FROM readings WHERE stale = true LIMIT 2;")
         .unwrap();
 
     assert_eq!(removed(outcome.last().expect("an outcome")), 2);
@@ -98,7 +100,7 @@ fn the_bound_counts_survivors_and_not_candidates() {
     // all four; a bound that counted the walk would stop at the fourth record
     // *examined* and leave at least one stale record behind.
     let outcome = session
-        .run("DELETE FROM readings WHERE stale = true LIMIT 4;")
+        .run_now("DELETE FROM readings WHERE stale = true LIMIT 4;")
         .unwrap();
 
     assert_eq!(removed(outcome.last().expect("an outcome")), 4);
@@ -120,7 +122,7 @@ fn limit_all_removes_every_record_the_condition_holds_for() {
     let mut session = ready(&store);
 
     let outcome = session
-        .run("DELETE FROM readings WHERE stale = true LIMIT ALL;")
+        .run_now("DELETE FROM readings WHERE stale = true LIMIT ALL;")
         .unwrap();
 
     assert_eq!(removed(outcome.last().expect("an outcome")), 4);
@@ -133,7 +135,7 @@ fn a_bound_larger_than_the_match_removes_the_match() {
     let mut session = ready(&store);
 
     let outcome = session
-        .run("DELETE FROM readings WHERE stale = true LIMIT 1000;")
+        .run_now("DELETE FROM readings WHERE stale = true LIMIT 1000;")
         .unwrap();
 
     assert_eq!(
@@ -149,7 +151,7 @@ fn a_bound_of_zero_removes_nothing_and_is_not_an_error() {
     let mut session = ready(&store);
 
     let outcome = session
-        .run("DELETE FROM readings WHERE stale = true LIMIT 0;")
+        .run_now("DELETE FROM readings WHERE stale = true LIMIT 0;")
         .unwrap();
 
     assert_eq!(removed(outcome.last().expect("an outcome")), 0);
@@ -162,7 +164,7 @@ fn the_single_record_form_needs_no_bound() {
     let mut session = ready(&store);
 
     // It names one record, so the question the clause answers does not arise.
-    session.run("DELETE readings:1;").unwrap();
+    session.run_now("DELETE readings:1;").unwrap();
 
     assert_eq!(rows(&mut session, "SELECT * FROM readings;"), 5);
 }
@@ -177,12 +179,12 @@ fn a_condition_nothing_satisfies_still_needs_its_bound() {
     // would be checking after the fact.
     assert!(
         session
-            .run("DELETE FROM readings WHERE value > 100;")
+            .run_now("DELETE FROM readings WHERE value > 100;")
             .is_err()
     );
 
     let outcome = session
-        .run("DELETE FROM readings WHERE value > 100 LIMIT ALL;")
+        .run_now("DELETE FROM readings WHERE value > 100 LIMIT ALL;")
         .unwrap();
     assert_eq!(removed(outcome.last().expect("an outcome")), 0);
 }
@@ -213,14 +215,14 @@ fn a_conditional_delete_returning_before_answers_the_records_it_removed() {
     let store = store();
     let mut session = ready(&store);
     let outcome = session
-        .run("DELETE FROM readings WHERE stale = true LIMIT 2 RETURN BEFORE;")
+        .run_now("DELETE FROM readings WHERE stale = true LIMIT 2 RETURN BEFORE;")
         .unwrap();
     assert_eq!(
         returned(outcome.last().expect("an outcome")),
         vec![("1".to_owned(), 1), ("3".to_owned(), 3)]
     );
     let outcome = session
-        .run("DELETE FROM readings WHERE stale = true LIMIT ALL RETURN BEFORE;")
+        .run_now("DELETE FROM readings WHERE stale = true LIMIT ALL RETURN BEFORE;")
         .unwrap();
     assert_eq!(
         returned(outcome.last().expect("an outcome")),
@@ -234,7 +236,7 @@ fn a_span_delete_returning_before_answers_the_records_it_removed() {
     let store = store();
     let mut session = ready(&store);
     let outcome = session
-        .run("DELETE FROM readings:1..=2 LIMIT ALL RETURN BEFORE;")
+        .run_now("DELETE FROM readings:1..=2 LIMIT ALL RETURN BEFORE;")
         .unwrap();
     assert_eq!(
         returned(outcome.last().expect("an outcome")),
@@ -250,7 +252,7 @@ fn a_delete_of_many_refuses_return_after() {
     let store = store();
     let mut session = ready(&store);
     let refused = session
-        .run("DELETE FROM readings WHERE stale = true LIMIT ALL RETURN AFTER;")
+        .run_now("DELETE FROM readings WHERE stale = true LIMIT ALL RETURN AFTER;")
         .unwrap_err()
         .to_string();
     assert!(refused.contains("`BEFORE`"), "{refused}");

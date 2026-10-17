@@ -39,13 +39,16 @@ impl Store {
     /// # Errors
     ///
     /// Whatever the backend returns.
-    pub fn across_unsettled(&self, table: TableId) -> Result<bool> {
-        let found = self.backend().scan(&ScanRequest {
-            keyspace: AcrossUnsettledKey::keyspace(),
-            range: KeyRange::prefix(&AcrossUnsettledKey::prefix_of(table)),
-            direction: ScanDirection::Forward,
-            limit: Some(1),
-        })?;
+    pub async fn across_unsettled(&self, table: TableId) -> Result<bool> {
+        let found = self
+            .backend()
+            .scan(&ScanRequest {
+                keyspace: AcrossUnsettledKey::keyspace(),
+                range: KeyRange::prefix(&AcrossUnsettledKey::prefix_of(table)),
+                direction: ScanDirection::Forward,
+                limit: Some(1),
+            })
+            .await?;
         Ok(!found.is_empty())
     }
 }
@@ -56,7 +59,7 @@ impl Store {
 /// # Errors
 ///
 /// Whatever the backend or the codec returns.
-pub(super) fn reconcile(
+pub(super) async fn reconcile(
     store: &Store,
     across: &Across,
     record: &LogRecord,
@@ -74,10 +77,11 @@ pub(super) fn reconcile(
         None if across.part.resolution() == Some(false) => return Ok(batch),
         None if matches!(across.part, Part::Forget { .. }) => return Ok(batch),
         None => store
-            .transaction_record(transaction)?
+            .transaction_record(transaction)
+            .await?
             .filter(|standing| standing.decision == Decision::Committed),
     };
-    let marked = marks_of(store, transaction)?;
+    let marked = marks_of(store, transaction).await?;
     // Committed as far as this node can tell: its record here says so, this is
     // its committed resolution, or an earlier one left a mark.
     let committed = decided.or_else(|| {
@@ -97,8 +101,8 @@ pub(super) fn reconcile(
         Part::Prepare { .. } | Part::Landed { .. } => Some(crate::catalog::home_of(record)?),
         _ => None,
     };
-    let missing = part_missing(store, transaction, &committed.participants, landing)?;
-    let mut target = intent_tables(store, across, record)?;
+    let missing = part_missing(store, transaction, &committed.participants, landing).await?;
+    let mut target = intent_tables(store, across, record).await?;
     if missing {
         // What the index already holds stays ahead of the readers until the
         // missing part lands: the tables marked before, and this resolution's.
@@ -137,16 +141,19 @@ fn committed_with(participants: Vec<Participant>) -> TransactionRecord {
 
 /// Every table `transaction` is marked in here, with the record each mark
 /// holds. A walk of the whole kind: it holds only transactions in flight.
-fn marks_of(
+async fn marks_of(
     store: &Store,
     transaction: TransactionId,
 ) -> Result<Vec<(TableId, TransactionRecord)>> {
-    let found = store.backend().scan(&ScanRequest {
-        keyspace: AcrossUnsettledKey::keyspace(),
-        range: KeyRange::prefix(&AcrossUnsettledKey::prefix()),
-        direction: ScanDirection::Forward,
-        limit: None,
-    })?;
+    let found = store
+        .backend()
+        .scan(&ScanRequest {
+            keyspace: AcrossUnsettledKey::keyspace(),
+            range: KeyRange::prefix(&AcrossUnsettledKey::prefix()),
+            direction: ScanDirection::Forward,
+            limit: None,
+        })
+        .await?;
     let mut marked = Vec::new();
     for (key, value) in found {
         let held = AcrossUnsettledKey::decode(key.as_slice())?;
@@ -160,7 +167,7 @@ fn marks_of(
 /// Whether a range of `participants` this node holds has no part of the
 /// transaction landed here, counting the one `landing` lands in this batch —
 /// the same ranges a reader asks about (D6a).
-fn part_missing(
+async fn part_missing(
     store: &Store,
     transaction: TransactionId,
     participants: &[Participant],
@@ -179,7 +186,8 @@ fn part_missing(
         };
         if store
             .backend()
-            .get(AcrossPartKey::keyspace(), &part.encode())?
+            .get(AcrossPartKey::keyspace(), &part.encode())
+            .await?
             .is_none()
         {
             return Ok(true);
@@ -191,7 +199,11 @@ fn part_missing(
 /// The tables with an intent of the transaction standing once `record`
 /// lands: those indexed here, less the ones a resolution removes, plus the
 /// ones a prepare adds.
-fn intent_tables(store: &Store, across: &Across, record: &LogRecord) -> Result<BTreeSet<TableId>> {
+async fn intent_tables(
+    store: &Store,
+    across: &Across,
+    record: &LogRecord,
+) -> Result<BTreeSet<TableId>> {
     let mut standing: BTreeSet<Vec<u8>> = store
         .backend()
         .scan(&ScanRequest {
@@ -199,7 +211,8 @@ fn intent_tables(store: &Store, across: &Across, record: &LogRecord) -> Result<B
             range: KeyRange::prefix(&IntentOfKey::prefix_of(across.transaction)),
             direction: ScanDirection::Forward,
             limit: None,
-        })?
+        })
+        .await?
         .into_iter()
         .map(|(key, _)| key.as_slice().to_vec())
         .collect();

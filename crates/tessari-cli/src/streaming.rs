@@ -11,13 +11,11 @@
 //! line's upstream, or on stop — and the next round takes over from the
 //! positions the store actually holds.
 //!
-//! # Why a thread and not a task — the recorded reason
+//! # A task per stream
 //!
-//! A stream blocks on the leader's next frame for as long as nothing is
-//! committed, and the peer link is synchronous by design (`link.rs`). A runtime
-//! worker must never be the thing that blocks, and the blocking pool is for work
-//! that ends, so each stream owns one named thread for its lifetime. There is
-//! one per leader followed — on a store line, one.
+//! A stream waits on the leader's next frame for as long as nothing is
+//! committed; the wait is the link's, on the runtime, and holds no thread.
+//! There is one per leader followed (on a store line, one).
 //!
 //! # The positions come from the store, not from a cursor
 //!
@@ -28,9 +26,9 @@
 //! to be told (ADR-0106 D1).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use futures_util::FutureExt as _;
 use tessari_constants::{COLLECTION_RECORDS, STREAM_HEARTBEAT_MILLIS};
 use tessari_storage::{Currency, NODE_ID_LEN, Reach, Writer};
 use tessari_types::Sequence;
@@ -43,53 +41,57 @@ use crate::greeting_round::{greeting, hex};
 /// heartbeats.
 const SILENCE: Duration = Duration::from_millis(STREAM_HEARTBEAT_MILLIS * 10);
 
+/// A read of the store a stream drives, borrowing the database.
+pub(crate) type Reading<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
 /// Which logs a stream carries, asked again before every ask, because a
 /// namespace arrives through the stream itself.
-pub(crate) type HomesFor = dyn Fn(&Db) -> Option<Vec<Reach>> + Send;
+pub(crate) type HomesFor = dyn for<'a> Fn(&'a Db) -> Reading<'a, Option<Vec<Reach>>> + Send + Sync;
 
-/// [`HomesFor`], owned by the stream's thread.
+/// [`HomesFor`], owned by the stream's task.
 pub(crate) type Homes = Box<HomesFor>;
 
 /// Whether the leader is still the one this line follows, asked before every
 /// ask; `false` ends the stream and the round decides again.
-pub(crate) type StillFor = dyn Fn(&Db) -> bool + Send;
+pub(crate) type StillFor = dyn for<'a> Fn(&'a Db) -> Reading<'a, bool> + Send + Sync;
 
-/// [`StillFor`], owned by the stream's thread.
+/// [`StillFor`], owned by the stream's task.
 pub(crate) type Still = Box<StillFor>;
 
 /// A stream's key: the leader, and the line it leads for this node — `None` for
 /// the store line, the range for a placed one. One leader can lead both.
 pub(crate) type Line = ([u8; NODE_ID_LEN], Option<Reach>);
 
-/// One running stream: its liveness, published by the thread as it ends.
+/// One running stream, as its task.
 #[derive(Debug)]
 struct Running {
-    alive: Arc<AtomicBool>,
-    thread: std::thread::JoinHandle<()>,
+    task: tokio::task::JoinHandle<()>,
 }
 
 /// The streams this node holds, one per leader it follows.
 ///
 /// Owned by the one collection loop that starts them, so a plain map: nothing
-/// else reaches it, and the threads publish only their own liveness flag.
+/// else reaches it.
 #[derive(Debug, Default)]
 pub(crate) struct Streams {
     running: std::collections::BTreeMap<Line, Running>,
 }
 
 impl Streams {
-    /// Whether a stream for `line` is running right now. Ended streams are
-    /// joined here, which costs nothing: their flag is published last.
+    /// Whether a stream for `line` is running right now. Ended streams, a
+    /// panicked one included, are forgotten here so the round can start again.
     pub(crate) fn following(&mut self, line: Line) -> bool {
         let ended: Vec<Line> = self
             .running
             .iter()
-            .filter(|(_, running)| !running.alive.load(Ordering::Acquire))
+            .filter(|(_, running)| running.task.is_finished())
             .map(|(line, _)| *line)
             .collect();
         for ended in ended {
             if let Some(running) = self.running.remove(&ended)
-                && running.thread.join().is_err()
+                && let Some(Err(why)) = running.task.now_or_never()
+                && why.is_panic()
             {
                 tracing::warn!(leader = %hex(&ended.0), "a held stream ended in a panic");
             }
@@ -110,45 +112,34 @@ impl Streams {
             return;
         }
         let leader = line.0;
-        let alive = Arc::new(AtomicBool::new(true));
-        let published = Arc::clone(&alive);
-        let started = std::thread::Builder::new()
-            .name(format!("stream-{}", hex(&leader)))
-            .spawn(move || {
-                let ended = follow(&db, &keys, (leader, &address), (&*homes, &*still), &stop);
-                match ended {
-                    Ok(()) => tracing::info!(
-                        leader = %hex(&leader),
-                        "a held stream ended; the collection round takes over"
-                    ),
-                    Err(why) => tracing::warn!(
-                        leader = %hex(&leader),
-                        error = %why,
-                        "a held stream ended; the collection round takes over"
-                    ),
-                }
-                // Last, and Release: whoever reads `false` may join at once.
-                published.store(false, Ordering::Release);
-                // A stream that ended is the first sign its leader may be gone,
-                // so the greeting round learns where the line went now rather
-                // than at its next interval (G053 SG2b).
-                wakes.greeting.notify_one();
-            });
-        match started {
-            Ok(thread) => {
-                tracing::info!(leader = %hex(&leader), "following the leader on a held stream");
-                self.running.insert(line, Running { alive, thread });
+        let task = tokio::spawn(async move {
+            let ended = follow(&db, &keys, (leader, &address), (&*homes, &*still), &stop).await;
+            match ended {
+                Ok(()) => tracing::info!(
+                    leader = %hex(&leader),
+                    "a held stream ended; the collection round takes over"
+                ),
+                Err(why) => tracing::warn!(
+                    leader = %hex(&leader),
+                    error = %why,
+                    "a held stream ended; the collection round takes over"
+                ),
             }
-            Err(why) => tracing::warn!(error = %why, "a stream thread could not be started"),
-        }
+            // A stream that ended is the first sign its leader may be gone,
+            // so the greeting round learns where the line went now rather
+            // than at its next interval (G053 SG2b).
+            wakes.greeting.notify_one();
+        });
+        tracing::info!(leader = %hex(&leader), "following the leader on a held stream");
+        self.running.insert(line, Running { task });
     }
 
-    /// Wait for every stream to end. Called off the runtime once `stop` is
-    /// cancelled; each stream notices within one heartbeat, or within
-    /// [`SILENCE`] when its leader has gone quiet.
-    pub(crate) fn join(self) {
+    /// Wait for every stream to end, once `stop` is cancelled; each stream
+    /// notices within one heartbeat, or within [`SILENCE`] when its leader has
+    /// gone quiet.
+    pub(crate) async fn join(self) {
         for ((leader, _), running) in self.running {
-            if running.thread.join().is_err() {
+            if running.task.await.is_err() {
                 tracing::warn!(leader = %hex(&leader), "a held stream ended in a panic");
             }
         }
@@ -156,7 +147,7 @@ impl Streams {
 }
 
 /// Hold one stream until it ends, applying every round the leader sends.
-fn follow(
+async fn follow(
     db: &Db,
     keys: &tessari_wire::PeerKeys,
     (leader, address): ([u8; NODE_ID_LEN], &str),
@@ -164,8 +155,9 @@ fn follow(
     stop: &CancellationToken,
 ) -> Result<(), String> {
     let store = db.store();
-    let said = greeting(db).map_err(|why| why.to_string())?;
+    let said = greeting(db).await.map_err(|why| why.to_string())?;
     let mut following = tessari_wire::Following::open((leader, address), keys, &said, SILENCE)
+        .await
         .map_err(|why| why.to_string())?;
     let collector = tessari_wire::Collector {
         keys,
@@ -176,13 +168,13 @@ fn follow(
     // ADR-0120: a leader that pushes is told where this node stands once,
     // and sends what lands as it lands.
     if following.pushes() {
-        return follow_pushed(db, &mut following, &collector, (homes, still), stop);
+        return follow_pushed(db, &mut following, &collector, (homes, still), stop).await;
     }
     loop {
-        if stop.is_cancelled() || !still(db) {
+        if stop.is_cancelled() || !still(db).await {
             return Ok(());
         }
-        let Some(logs) = homes(db) else {
+        let Some(logs) = homes(db).await else {
             return Err("this node cannot say which logs it should hold".to_owned());
         };
         let mut asks = Vec::with_capacity(logs.len());
@@ -190,8 +182,12 @@ fn follow(
             // The log the leader serves for this home (ADR-0107).
             let log = store
                 .followed_log(home, Writer::new(leader))
+                .await
                 .map_err(|why| why.to_string())?;
-            let tail = store.committed_tail(log).map_err(|why| why.to_string())?;
+            let tail = store
+                .committed_tail(log)
+                .await
+                .map_err(|why| why.to_string())?;
             asks.push((home, Sequence::new(tail.get().saturating_add(1))));
         }
         let asked = tessari_wire::StreamAsk {
@@ -204,9 +200,9 @@ fn follow(
                 })
                 .collect(),
         };
-        following.ask(&asked).map_err(|why| why.to_string())?;
+        following.ask(&asked).await.map_err(|why| why.to_string())?;
         let round = loop {
-            let frame = following.heard().map_err(|why| why.to_string())?;
+            let frame = following.heard().await.map_err(|why| why.to_string())?;
             if !frame.is_heartbeat() {
                 break frame;
             }
@@ -218,7 +214,7 @@ fn follow(
             // Asked on every beat and not only before an ask: a leader demoted
             // while idle goes on beating for a log nobody writes any more, and a
             // follower that believed it would miss its successor's writes.
-            if stop.is_cancelled() || !still(db) {
+            if stop.is_cancelled() || !still(db).await {
                 return Ok(());
             }
         };
@@ -229,7 +225,9 @@ fn follow(
                 asks.len()
             ));
         }
-        let applied = collector.apply(store, &asks, round.answers.into_iter().map(Ok).collect());
+        let applied = collector
+            .apply(store, &asks, round.answers.into_iter().map(Ok).collect())
+            .await;
         for ((home, _), result) in asks.iter().zip(applied) {
             if let Err(why) = result {
                 return Err(format!("applying {home:?} was refused: {why}"));
@@ -240,25 +238,29 @@ fn follow(
 
 /// What this node holds of each log `homes` names: the first position it does
 /// not hold in each, read from the store's committed tails.
-fn holding(
+async fn holding(
     db: &Db,
     leader: [u8; NODE_ID_LEN],
     homes: &HomesFor,
 ) -> Result<Vec<(Reach, Sequence)>, String> {
     let store = db.store();
-    let Some(logs) = homes(db) else {
+    let Some(logs) = homes(db).await else {
         return Err("this node cannot say which logs it should hold".to_owned());
     };
-    logs.into_iter()
-        .map(|home| {
-            // The log the leader serves for this home (ADR-0107).
-            let log = store
-                .followed_log(home, Writer::new(leader))
-                .map_err(|why| why.to_string())?;
-            let tail = store.committed_tail(log).map_err(|why| why.to_string())?;
-            Ok((home, Sequence::new(tail.get().saturating_add(1))))
-        })
-        .collect()
+    let mut held = Vec::with_capacity(logs.len());
+    for home in logs {
+        // The log the leader serves for this home (ADR-0107).
+        let log = store
+            .followed_log(home, Writer::new(leader))
+            .await
+            .map_err(|why| why.to_string())?;
+        let tail = store
+            .committed_tail(log)
+            .await
+            .map_err(|why| why.to_string())?;
+        held.push((home, Sequence::new(tail.get().saturating_add(1))));
+    }
+    Ok(held)
 }
 
 /// The positions as the frame that names them.
@@ -282,7 +284,7 @@ fn naming(holds: &[(Reach, Sequence)]) -> tessari_wire::StreamAsk {
 /// record the writer-order rule held back — or a change in the logs this node
 /// holds restarts the stream from what it holds, and every round read before
 /// the leader's mark is thrown away, because it was cut from the old positions.
-fn follow_pushed(
+async fn follow_pushed(
     db: &Db,
     following: &mut tessari_wire::Following,
     collector: &tessari_wire::Collector<'_>,
@@ -291,16 +293,21 @@ fn follow_pushed(
 ) -> Result<(), String> {
     let store = db.store();
     let leader = collector.peer.0;
-    let mut holds = holding(db, leader, homes)?;
+    let mut holds = holding(db, leader, homes).await?;
     following
         .stream_from(&naming(&holds))
+        .await
         .map_err(|why| why.to_string())?;
     let mut restarting = false;
     loop {
-        if stop.is_cancelled() || !still(db) {
+        if stop.is_cancelled() || !still(db).await {
             return Ok(());
         }
-        let round = match following.next_pushed().map_err(|why| why.to_string())? {
+        let round = match following
+            .next_pushed()
+            .await
+            .map_err(|why| why.to_string())?
+        {
             tessari_wire::Pushed::Restarted => {
                 restarting = false;
                 continue;
@@ -334,13 +341,15 @@ fn follow_pushed(
                     .map_or(*from, |(at, _)| Sequence::new(at.get().saturating_add(1)))
             })
             .collect();
-        let applied = collector.apply(store, &holds, round.answers.into_iter().map(Ok).collect());
+        let applied = collector
+            .apply(store, &holds, round.answers.into_iter().map(Ok).collect())
+            .await;
         for ((home, _), result) in holds.iter().zip(applied) {
             if let Err(why) = result {
                 return Err(format!("applying {home:?} was refused: {why}"));
             }
         }
-        let now = holding(db, leader, homes)?;
+        let now = holding(db, leader, homes).await?;
         let in_step = now.len() == holds.len()
             && now
                 .iter()
@@ -351,10 +360,12 @@ fn follow_pushed(
         if in_step {
             following
                 .held(&naming(&holds))
+                .await
                 .map_err(|why| why.to_string())?;
         } else {
             following
                 .stream_from(&naming(&holds))
+                .await
                 .map_err(|why| why.to_string())?;
             restarting = true;
         }

@@ -1,6 +1,7 @@
 //! `INCR` and the conditional `SET` (G035 S3.1-S3.3).
 
 use std::thread;
+use tessari_session::RunNow;
 
 use tessari_session::Session;
 use tessari_types::{Number, Value};
@@ -149,10 +150,10 @@ fn concurrent_increments_all_land_and_none_is_refused() {
                     scope.spawn(|| {
                         let mut session = Session::new(&backend.store);
                         session
-                            .run("USE NAMESPACE prod; USE DATABASE app;")
+                            .run_now("USE NAMESPACE prod; USE DATABASE app;")
                             .unwrap();
                         (0..EACH)
-                            .filter(|_| session.run("INCR cache:'hits';").is_err())
+                            .filter(|_| session.run_now("INCR cache:'hits';").is_err())
                             .count()
                     })
                 })
@@ -164,7 +165,7 @@ fn concurrent_increments_all_land_and_none_is_refused() {
         });
         let mut session = Session::new(&backend.store);
         session
-            .run("USE NAMESPACE prod; USE DATABASE app;")
+            .run_now("USE NAMESPACE prod; USE DATABASE app;")
             .unwrap();
         assert_eq!(
             (value(&mut session, "GET cache:'hits';"), refusals),

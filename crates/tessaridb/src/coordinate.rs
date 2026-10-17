@@ -51,6 +51,11 @@ pub struct Coordinated {
     pub body: Vec<u8>,
 }
 
+/// What [`Coordinate::coordinate`] answers with: the carrying crosses a link,
+/// and the trait is held as an object, so its future is boxed.
+pub type Coordinating<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Coordinated, String>> + Send + 'a>>;
+
 /// Carries a request to the node that can answer it.
 pub trait Coordinate: Send + Sync + std::fmt::Debug {
     /// Ask `asked.to` to answer `asked` as `asked.user`, and bring back what it
@@ -60,5 +65,5 @@ pub trait Coordinate: Send + Sync + std::fmt::Debug {
     ///
     /// Why the request could not be carried, in words a caller can act on; the
     /// surface answers with it in place of an answer.
-    fn coordinate(&self, asked: &Coordination<'_>) -> Result<Coordinated, String>;
+    fn coordinate<'a>(&'a self, asked: &'a Coordination<'_>) -> Coordinating<'a>;
 }

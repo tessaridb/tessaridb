@@ -18,10 +18,11 @@ use std::error::Error;
 use std::path::Path as FsPath;
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_storage::Now;
 
 use tessari_geo::{Bounds, Cell, Relation, Shape, Snapped, covering, intersects};
 use tessari_kv::KvBackend;
-use tessari_lsm::{LsmBackend, StoreConfig};
+use tessari_lsm::{StoreConfig, TessariKvBackend};
 use tessari_storage::{Catalog, IndexDefinition, IndexShape, RecordAddress, Store, TableShape};
 use tessari_types::{Geometry, Path, Polygon, Position, RecordId, Ring, Value};
 
@@ -114,13 +115,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     if FsPath::new(&dir).exists() && std::fs::read_dir(&dir)?.next().is_some() {
         return Err("the directory must be empty".into());
     }
-    let backend: Arc<dyn KvBackend> = Arc::new(LsmBackend::open(&dir, StoreConfig::default())?);
-    let store = Store::open(backend)?;
+    let backend: Arc<dyn KvBackend> =
+        Arc::new(TessariKvBackend::open(&dir, StoreConfig::default()).now()?);
+    let store = Store::open(backend).now()?;
     let (index, home) = defined(&store)?;
     let shapes = corpus();
     let loading = Instant::now();
     for (chunk, slice) in shapes.chunks(2_000).enumerate() {
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().now()?;
         for (at, geometry) in slice.iter().enumerate() {
             let record = Value::Object(
                 [("at".to_owned(), Value::Geometry(geometry.clone()))]
@@ -133,7 +135,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 tessari_encoding::encode_payload(&record).into_bytes(),
             );
         }
-        transaction.commit()?;
+        transaction.commit().now()?;
     }
     println!(
         "corpus: {} records (30 000 city points, 10 000 spread, 3 000 buildings, 600 roads, \
@@ -174,9 +176,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let probe = Shape::of(&query_polygon(*query))?;
                 for repeat in 0..=REPEATS {
                     let began = Instant::now();
-                    let transaction = store.begin()?;
-                    let region =
-                        transaction.records_in_region(&index, &cells, *query, Relation::Meets)?;
+                    let transaction = store.begin().now()?;
+                    let region = transaction
+                        .records_in_region(&index, &cells, *query, Relation::Meets)
+                        .now()?;
                     let mut met = 0_usize;
                     for (_, payload) in &region.rows {
                         let record = tessari_encoding::decode_payload(payload)?;
@@ -220,24 +223,27 @@ fn main() -> Result<(), Box<dyn Error>> {
 type Home = Box<dyn Fn(RecordId) -> RecordAddress>;
 
 fn defined(store: &Store) -> Result<(IndexDefinition, Home), Box<dyn Error>> {
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().now()?;
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("atlas")?.id;
-    let database = catalog.create_database(namespace, "world")?.id;
+    let namespace = catalog.create_namespace("atlas").now()?.id;
+    let database = catalog.create_database(namespace, "world").now()?.id;
     let table = catalog
-        .create_table(namespace, database, "places", TableShape::default())?
+        .create_table(namespace, database, "places", TableShape::default())
+        .now()?
         .id;
-    let index = catalog.create_index(
-        table,
-        "by_at",
-        vec![Path::field("at")],
-        IndexShape {
-            spatial: true,
-            containment: false,
-            ..IndexShape::default()
-        },
-    )?;
-    transaction.commit()?;
+    let index = catalog
+        .create_index(
+            table,
+            "by_at",
+            vec![Path::field("at")],
+            IndexShape {
+                spatial: true,
+                containment: false,
+                ..IndexShape::default()
+            },
+        )
+        .now()?;
+    transaction.commit().now()?;
     Ok((
         index,
         Box::new(move |id| RecordAddress::new(namespace, database, table, id)),

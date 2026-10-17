@@ -10,6 +10,7 @@
 use super::{FILTERED_RECORDS, Failable, QUERIES, embedding, ids, prepared};
 use crate::samples::{Report, Samples};
 use std::time::Instant;
+use tessari_session::RunNow;
 use tessaridb::Db;
 
 /// The three selectivities measured, as `band < s` out of a hundred.
@@ -18,15 +19,15 @@ const SELECTIVITIES: [u64; 3] = [50, 10, 1];
 pub(crate) fn vector_filtered(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION items;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION items;")?;
     for n in 0..FILTERED_RECORDS {
-        session.run(&format!(
+        session.run_now(&format!(
             "CREATE items:{n} = {{ embedding: {}, band: {} }};",
             embedding(n),
             n % 100
         ))?;
     }
-    session.run("DEFINE INDEX by_embedding ON items FIELDS embedding VECTOR euclidean;")?;
+    session.run_now("DEFINE INDEX by_embedding ON items FIELDS embedding VECTOR euclidean;")?;
 
     let mut reports = Vec::new();
     for selectivity in SELECTIVITIES {
@@ -44,8 +45,8 @@ pub(crate) fn vector_filtered(db: &Db) -> Failable<Vec<Report>> {
                  ORDER BY vector::euclidean(embedding, {query}) LIMIT 10;"
             );
             let walked_read = format!("{} APPROXIMATE;", exact_read.trim_end_matches(';'));
-            let truth = ids(timed!(exact, session.run(&exact_read)?));
-            let answered = timed!(approximate, session.run(&walked_read)?);
+            let truth = ids(timed!(exact, session.run_now(&exact_read)?));
+            let answered = timed!(approximate, session.run_now(&walked_read)?);
             if answered.first().and_then(tessaridb::Outcome::path)
                 == Some(tessaridb::AccessPath::Approximate)
             {

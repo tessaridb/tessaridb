@@ -67,7 +67,7 @@ impl Store {
     ///
     /// Returns an error when the backend fails, a stored key or value cannot be
     /// decoded, or the catalog cannot be read.
-    pub fn expire_series(
+    pub async fn expire_series(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -83,32 +83,41 @@ impl Store {
         let held_back = self.oldest_snapshot_age().map_or(0, |age| {
             u64::try_from(age.as_millis()).map_or(u64::MAX, |millis| millis.saturating_add(1))
         });
-        let mut view = self.begin()?;
-        let Some(floor) = view.series_floor_at(namespace, table, now.saturating_sub(held_back))?
+        let mut view = self.begin().await?;
+        let Some(floor) = view
+            .series_floor_at(namespace, table, now.saturating_sub(held_back))
+            .await?
         else {
             return Ok(Expired::default());
         };
         let start: Key = RecordKey::table_prefix(namespace, database, table).into();
         let end: Key = RecordKey::versions_prefix(namespace, database, table, &floor).into();
         let range = KeyRange::between(start.clone(), end.clone());
-        let first = self.backend().scan(&ScanRequest {
-            keyspace: RecordKey::keyspace(),
-            range: range.clone(),
-            direction: ScanDirection::Forward,
-            limit: Some(1),
-        })?;
+        let first = self
+            .backend()
+            .scan(&ScanRequest {
+                keyspace: RecordKey::keyspace(),
+                range: range.clone(),
+                direction: ScanDirection::Forward,
+                limit: Some(1),
+            })
+            .await?;
         if first.is_empty() {
             return Ok(Expired::default());
         }
         let indexed = if !Catalog::new(&mut view)
-            .indexes_on(namespace, database, table)?
+            .indexes_on(namespace, database, table)
+            .await?
             .is_empty()
         {
-            self.unindex_below(namespace, database, table, start, &end)?
+            self.unindex_below(namespace, database, table, start, &end)
+                .await?
         } else {
             0
         };
-        self.backend().delete_range(RecordKey::keyspace(), &range)?;
+        self.backend()
+            .delete_range(RecordKey::keyspace(), &range)
+            .await?;
         Ok(Expired { ranges: 1, indexed })
     }
 
@@ -118,14 +127,14 @@ impl Store {
     /// # Errors
     ///
     /// The first failure of any table's pass, or of reading the catalog.
-    pub fn expire_every_series(&self) -> Result<Expired> {
+    pub async fn expire_every_series(&self) -> Result<Expired> {
         let mut series = Vec::new();
         {
-            let mut transaction = self.begin()?;
+            let mut transaction = self.begin().await?;
             let catalog = Catalog::new(&mut transaction);
-            for namespace in catalog.namespaces()? {
-                for database in catalog.databases_in(namespace.id)? {
-                    for table in catalog.tables_in(namespace.id, database.id)? {
+            for namespace in catalog.namespaces().await? {
+                for database in catalog.databases_in(namespace.id).await? {
+                    for table in catalog.tables_in(namespace.id, database.id).await? {
                         if matches!(table.kind, TableKind::Series(_)) {
                             series.push((table.namespace, table.database, table.id));
                         }
@@ -135,7 +144,7 @@ impl Store {
         }
         let mut total = Expired::default();
         for (namespace, database, table) in series {
-            let expired = self.expire_series(namespace, database, table)?;
+            let expired = self.expire_series(namespace, database, table).await?;
             total.ranges = total.ranges.saturating_add(expired.ranges);
             total.indexed = total.indexed.saturating_add(expired.indexed);
         }
@@ -146,7 +155,7 @@ impl Store {
     /// of records at a time, through the same index code a commit uses.
     ///
     /// Answers how many records that was.
-    fn unindex_below(
+    async fn unindex_below(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -157,12 +166,15 @@ impl Store {
         let mut unindexed = 0_usize;
         let mut from = KeyRange::between(start, end.clone());
         loop {
-            let pairs = self.backend().sweep(&ScanRequest {
-                keyspace: RecordKey::keyspace(),
-                range: from.clone(),
-                direction: ScanDirection::Forward,
-                limit: Some(BATCH_RECORDS),
-            })?;
+            let pairs = self
+                .backend()
+                .sweep(&ScanRequest {
+                    keyspace: RecordKey::keyspace(),
+                    range: from.clone(),
+                    direction: ScanDirection::Forward,
+                    limit: Some(BATCH_RECORDS),
+                })
+                .await?;
             let Some((last, _)) = pairs.last() else {
                 return Ok(unindexed);
             };
@@ -203,7 +215,7 @@ impl Store {
                 continue;
             }
             unindexed = unindexed.saturating_add(mutations.len());
-            let view = self.begin_local()?;
+            let view = self.begin_local().await?;
             view.lift_floor(table);
             let batch = crate::index::maintain_from(
                 self,
@@ -213,8 +225,9 @@ impl Store {
                 // Nothing to retire: a record past the floor is hidden from every
                 // reader already, at every snapshot this pass can reach.
                 None,
-            )?;
-            self.backend().apply(batch)?;
+            )
+            .await?;
+            self.backend().apply(batch).await?;
         }
     }
 }

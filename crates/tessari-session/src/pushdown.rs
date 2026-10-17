@@ -17,9 +17,10 @@
 //! same failure and refuses in its own words. A leader that dropped too much
 //! would be a record missing from an answer that says it is whole.
 
+use tessari_constants::GATHER_PAGE_RECORDS;
 use tessari_encoding::decode_payload;
-use tessari_storage::Store;
-use tessari_types::{RecordId, Value};
+use tessari_storage::{Store, Transaction, Window};
+use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
 
 use crate::error::Result;
 use crate::evaluate::Scope;
@@ -43,24 +44,29 @@ pub struct Pushed {
 ///
 /// A condition that does not read back, or a store that cannot be read. A
 /// record whose payload does not decode is kept, for the asker to refuse.
-pub fn keeping(
+pub async fn keeping(
     store: &Store,
     pushed: &Pushed,
     found: Vec<(RecordId, Vec<u8>)>,
 ) -> Result<Vec<(RecordId, Vec<u8>)>> {
     let condition = tessari_ql::bound_condition(&pushed.condition, &pushed.parameters)?;
     let session = Session::new(store);
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().await?;
     let mut kept = Vec::with_capacity(found.len());
     for (id, payload) in found {
-        let answered = decode_payload(&payload).map(|record| {
-            let record = seen(record, &pushed.visible);
-            session.evaluate_in(
-                &mut transaction,
-                &condition,
-                Scope::of(&record).identified(&id),
-            )
-        });
+        let answered = match decode_payload(&payload) {
+            Ok(record) => {
+                let record = seen(record, &pushed.visible);
+                Ok(session
+                    .evaluate_in(
+                        &mut transaction,
+                        &condition,
+                        Scope::of(&record).identified(&id),
+                    )
+                    .await)
+            }
+            Err(failure) => Err(failure),
+        };
         let refused = matches!(
             answered,
             Ok(Ok(Value::Bool(false) | Value::None | Value::Null))
@@ -97,6 +103,92 @@ pub struct OrderKey {
     pub descending: bool,
 }
 
+/// The records of one node's span of a table, a page at a time, narrowed by
+/// the asker's pushed condition when it sent one.
+pub struct SpanPages<'p, 'a> {
+    store: &'p Store,
+    transaction: &'p Transaction<'a>,
+    place: (NamespaceId, DatabaseId, TableId),
+    window: Window<'p>,
+    pushed: Option<&'p Pushed>,
+    after: Option<RecordId>,
+    done: bool,
+}
+
+/// One page of records, each its identity and its stored payload.
+pub type Page = Vec<(RecordId, Vec<u8>)>;
+
+/// Where [`leading`] takes its pages from: a node's span of a table
+/// ([`SpanPages`]), or records already in hand (`Some(records)`, taken once).
+pub trait Pages {
+    /// The next page, or `None` once there are no more.
+    fn next_page(&mut self) -> impl Future<Output = Result<Option<Page>>> + Send;
+}
+
+impl Pages for Option<Page> {
+    fn next_page(&mut self) -> impl Future<Output = Result<Option<Page>>> + Send {
+        std::future::ready(Ok(self.take()))
+    }
+}
+
+impl Pages for SpanPages<'_, '_> {
+    fn next_page(&mut self) -> impl Future<Output = Result<Option<Page>>> + Send {
+        self.next()
+    }
+}
+
+impl<'p, 'a> SpanPages<'p, 'a> {
+    /// The pages of `table` inside `window`, read through `transaction`.
+    #[must_use]
+    pub const fn new(
+        store: &'p Store,
+        transaction: &'p Transaction<'a>,
+        place: (NamespaceId, DatabaseId, TableId),
+        window: Window<'p>,
+        pushed: Option<&'p Pushed>,
+    ) -> Self {
+        Self {
+            store,
+            transaction,
+            place,
+            window,
+            pushed,
+            after: None,
+            done: false,
+        }
+    }
+
+    /// The next page, or `None` once the span is read.
+    ///
+    /// # Errors
+    ///
+    /// The store's failure to read the span, or a pushed condition that does
+    /// not read back.
+    pub async fn next(&mut self) -> Result<Option<Vec<(RecordId, Vec<u8>)>>> {
+        if self.done {
+            return Ok(None);
+        }
+        let (namespace, database, table) = self.place;
+        let page = self
+            .transaction
+            .records_between(
+                namespace,
+                database,
+                table,
+                self.window,
+                self.after.as_ref(),
+                GATHER_PAGE_RECORDS,
+            )
+            .await?;
+        self.done = page.len() < GATHER_PAGE_RECORDS;
+        self.after = page.last().map(|(id, _)| id.clone());
+        Ok(Some(match self.pushed {
+            Some(pushed) => keeping(self.store, pushed, page).await?,
+            None => page,
+        }))
+    }
+}
+
 /// The records `ordered` puts first, out of every page `pages` hands over, in
 /// identity order.
 ///
@@ -113,10 +205,10 @@ pub struct OrderKey {
 ///
 /// A key that does not read back, a page that could not be read, or a store
 /// that cannot be read.
-pub fn leading(
+pub async fn leading(
     store: &Store,
     ordered: &Ordered,
-    mut pages: impl FnMut() -> Result<Option<Vec<(RecordId, Vec<u8>)>>>,
+    pages: &mut impl Pages,
 ) -> Result<Vec<(RecordId, Vec<u8>)>> {
     let order = ordered
         .keys
@@ -130,26 +222,32 @@ pub fn leading(
         .collect::<Result<Vec<_>>>()?;
     let most = usize::try_from(ordered.most).unwrap_or(usize::MAX);
     let session = Session::new(store);
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().await?;
     let mut topmost = crate::shape::Topmost::keeping(&order, Some(most));
     let mut unranked = Vec::new();
-    while let Some(page) = pages()? {
+    while let Some(page) = pages.next_page().await? {
         for (id, payload) in page {
             let Ok(record) = decode_payload(&payload) else {
                 unranked.push((id, payload));
                 continue;
             };
             let record = seen(record, &ordered.visible);
-            let keys: Result<Vec<Value>> = order
-                .iter()
-                .map(|key| {
-                    session.evaluate_in(
-                        &mut transaction,
-                        &key.key,
-                        Scope::of(&record).identified(&id),
-                    )
-                })
-                .collect();
+            let keys: Result<Vec<Value>> = async {
+                let mut keys = Vec::with_capacity(order.len());
+                for key in order.iter() {
+                    keys.push(
+                        session
+                            .evaluate_in(
+                                &mut transaction,
+                                &key.key,
+                                Scope::of(&record).identified(&id),
+                            )
+                            .await?,
+                    );
+                }
+                Ok(keys)
+            }
+            .await;
             match keys {
                 Ok(keys) => topmost.offer(keys, id, Value::Bytes(payload)),
                 Err(_) => unranked.push((id, payload)),

@@ -18,8 +18,12 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn set_params(&mut self, id: DatabaseId, params: BTreeMap<String, Value>) -> Result<bool> {
-        let Some(mut definition) = self.database(id)? else {
+    pub async fn set_params(
+        &mut self,
+        id: DatabaseId,
+        params: BTreeMap<String, Value>,
+    ) -> Result<bool> {
+        let Some(mut definition) = self.database(id).await? else {
             return Ok(false);
         };
         definition.params = params;

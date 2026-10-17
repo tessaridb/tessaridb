@@ -68,7 +68,9 @@ impl<H: Holding> Connection<H> {
                 let holding = Arc::clone(&self.holding);
                 let cut = next.clone();
                 match self
-                    .store(move || stream_answer_pushed(&*holding, follower, &cut))
+                    .store_async(move || async move {
+                        stream_answer_pushed(&*holding, follower, &cut).await
+                    })
                     .await
                 {
                     Ok(round) if !round.is_quiet() => {
@@ -180,7 +182,7 @@ impl<H: Holding> Connection<H> {
     async fn held_by(&self, follower: [u8; NODE_ID_LEN], holds: &StreamAsk) -> Result<()> {
         let holding = Arc::clone(&self.holding);
         let holds = holds.clone();
-        self.store(move || stream_held(&*holding, follower, &holds))
+        self.store_async(move || async move { stream_held(&*holding, follower, &holds).await })
             .await
     }
 }

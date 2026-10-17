@@ -30,6 +30,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_encoding::{
     IndexAddress, IndexValues, KeyKind, Posting, PostingKey, SearchSurfaceKey, SearchTermKey,
@@ -103,19 +104,20 @@ impl Fixture {
 
     fn analysed(analyzer: Analyzer) -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        let store = Store::open(Arc::clone(&backend)).unwrap();
-        let mut transaction = store.begin().unwrap();
+        let store = Store::open(Arc::clone(&backend)).now().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("prod").unwrap();
-        let database = catalog.create_database(namespace.id, "shop").unwrap();
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog.create_database(namespace.id, "shop").now().unwrap();
         let table = catalog
             .create_table(namespace.id, database.id, "notes", TableShape::default())
+            .now()
             .unwrap();
         // The analyzer is on the **field**. A search index over a field that
         // declares none posts no terms at all, silently — so a sweep that found
         // an empty dictionary matching empty postings would pass while proving
         // nothing. The population assertion in each test is what catches that.
-        catalog.create_analyzer("plain", analyzer).unwrap();
+        catalog.create_analyzer("plain", analyzer).now().unwrap();
         catalog
             .create_field(
                 table.id,
@@ -129,6 +131,7 @@ impl Fixture {
                     assert: None,
                 },
             )
+            .now()
             .unwrap();
         let index = catalog
             .create_index(
@@ -145,8 +148,9 @@ impl Fixture {
                     costs: tessari_storage::SearchCosts::default(),
                 },
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         Self {
             backend,
             store,
@@ -176,20 +180,20 @@ impl Fixture {
     }
 
     fn write(&self, n: u64, body: &str) {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         let mut fields = BTreeMap::new();
         fields.insert("body".to_owned(), Value::from(body));
         transaction.put(
             self.at(n),
             encode_payload(&Value::Object(fields)).into_bytes(),
         );
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     fn delete(&self, n: u64) {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         transaction.delete(self.at(n));
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     fn keys(&self, kind: KeyKind) -> Vec<Vec<u8>> {
@@ -201,6 +205,7 @@ impl Fixture {
         };
         self.backend
             .scan(&request)
+            .now()
             .unwrap()
             .into_iter()
             .map(|(key, _)| key.as_slice().to_vec())
@@ -230,6 +235,7 @@ impl Fixture {
         };
         self.backend
             .scan(&request)
+            .now()
             .unwrap()
             .into_iter()
             .map(|(key, value)| {
@@ -253,7 +259,7 @@ impl Fixture {
             limit: None,
         };
         let mut found: BTreeMap<IndexValues, (u32, u32)> = BTreeMap::new();
-        for (key, value) in self.backend.scan(&request).unwrap() {
+        for (key, value) in self.backend.scan(&request).now().unwrap() {
             let term = PostingKey::decode(key.as_slice()).unwrap().term;
             let Posting::Counted { frequency, length } = Posting::decode(value.as_slice()).unwrap()
             else {
@@ -280,6 +286,7 @@ impl Fixture {
         };
         self.backend
             .scan(&request)
+            .now()
             .unwrap()
             .into_iter()
             .map(|(key, value)| {
@@ -430,16 +437,18 @@ fn a_term_held_by_several_records_counts_them_and_not_its_occurrences() {
     fixture.write(1, "lock lock lock");
     fixture.write(2, "lock contention");
     fixture.write(3, "lock index");
-    let transaction = fixture.store.begin().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
     assert_eq!(
         transaction
             .document_frequency(&fixture.index, "lock")
+            .now()
             .unwrap(),
         3
     );
     assert_eq!(
         transaction
             .document_frequency(&fixture.index, "contention")
+            .now()
             .unwrap(),
         1
     );
@@ -447,6 +456,7 @@ fn a_term_held_by_several_records_counts_them_and_not_its_occurrences() {
     assert_eq!(
         transaction
             .document_frequency(&fixture.index, "unheardof")
+            .now()
             .unwrap(),
         0
     );
@@ -465,9 +475,9 @@ fn a_rebuild_makes_the_dictionary_what_the_rows_imply_rather_than_adding_to_it()
     // rebuild that added to the stored figure would double every count — and
     // nothing would raise, because a document frequency has no reader who would
     // notice it drifting.
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     Catalog::new(&mut transaction).rebuild_index(&fixture.index);
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     fixture.assert_agrees("after the rebuild");
     let held = fixture.dictionary();
@@ -491,19 +501,21 @@ fn an_index_with_no_dictionary_still_answers_the_frequency_it_always_did() {
     for key in fixture.keys(KeyKind::SearchTerm) {
         batch = batch.delete(KeyKind::SearchTerm.keyspace(), Key::from(key));
     }
-    fixture.backend.apply(batch).unwrap();
+    fixture.backend.apply(batch).now().unwrap();
     assert!(fixture.dictionary().is_empty());
 
-    let transaction = fixture.store.begin().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
     assert_eq!(
         transaction
             .document_frequency(&fixture.index, "lock")
+            .now()
             .unwrap(),
         2
     );
     assert_eq!(
         transaction
             .document_frequency(&fixture.index, "index")
+            .now()
             .unwrap(),
         1
     );
@@ -520,11 +532,12 @@ fn dropping_the_index_leaves_no_dictionary_behind() {
     // reconcile, in a keyspace nothing scans on its own.
     let terms: BTreeSet<Vec<u8>> = fixture.keys(KeyKind::SearchTerm).into_iter().collect();
     assert!(!terms.is_empty());
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .drop_index(fixture.index.id)
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     // A dropped index keeps its entries by design — the same stance a dropped
     // table takes towards its records — so this asserts what the store actually
     // promises rather than what a reader might assume, and pins it so a change
@@ -612,9 +625,9 @@ fn a_rebuild_recomputes_a_bound_that_maintenance_left_loose() {
         "the loose bound this test exists to repair was not there to begin with"
     );
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     Catalog::new(&mut transaction).rebuild_index(&fixture.index);
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     fixture.assert_agrees("after the rebuild");
     assert_eq!(
@@ -712,7 +725,7 @@ fn the_surface_dictionary_equals_a_recount_through_writes_and_deletes() {
         fixture
             .backend
             .scan(&request)
-            .unwrap()
+            .now().unwrap()
             .into_iter()
             .map(|(key, value)| {
                 let pair = SearchSurfaceKey::decode(key.as_slice()).unwrap();

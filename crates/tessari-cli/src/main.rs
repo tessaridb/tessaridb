@@ -176,44 +176,68 @@ fn run(asked: Asked) -> Result<Ended, String> {
         return statements(&mut remote, &mut out, &asked.source, Where::Node(address));
     }
 
-    let db = match &asked.store {
-        Some(path) => Db::open_encrypted(path, tessaridb::StoreConfig::default(), at_rest)
-            .map_err(|failure| format!("{}: {failure}", path.display()))?,
-        None => Db::in_memory().map_err(|failure| failure.to_string())?,
-    };
+    // The one runtime this process owns, built before the store opens: the
+    // engine starts its background work on the runtime that opens it, so that
+    // runtime drives the store for as long as it is open, serving included.
+    let process = runtime::build().map_err(|why| format!("the runtime would not start: {why}"))?;
+    let db = process.block_on(async {
+        match &asked.store {
+            Some(path) => Db::open_encrypted(path, tessaridb::StoreConfig::default(), at_rest)
+                .await
+                .map_err(|failure| format!("{}: {failure}", path.display())),
+            None => Db::in_memory().await.map_err(|failure| failure.to_string()),
+        }
+    })?;
 
-    // These are store operations rather than statements, so they never reach a
-    // session at all — and an operator rehearses a restore with a command, which
-    // is what "rehearsed" in the readiness checklist means.
-    match &asked.source {
-        // A snapshot unless a position asks for the log (ADR-0094 D1): only a log
-        // has a `--from`, and `--from 1` is the whole of it.
-        Source::Backup(path) => {
-            return match sequence {
-                None => snapshot(&db, path),
-                Some(_) => backup(&db, path, sequence),
-            }
-            .map(|()| Ended::Fine);
-        }
-        Source::Snapshot(path) => return snapshot(&db, path).map(|()| Ended::Fine),
-        Source::Dump(path) => return dump(&db, path).map(|()| Ended::Fine),
-        Source::Restore(path) => {
-            return restore(&db, path, sequence, backup_key.as_ref()).map(|()| Ended::Fine);
-        }
-        Source::Health => return health(&db),
-        Source::Serve => return serve(db, &asked.serving, asked.cluster.as_ref(), started),
-        Source::Verify(_)
-        | Source::Version
-        | Source::Help
-        | Source::Standard
-        | Source::Inline(_)
-        | Source::File(_) => {}
+    if let Source::Serve = &asked.source {
+        return serve(db, &asked.serving, asked.cluster.as_ref(), started, process);
     }
+    let ended = (|| {
+        // These are store operations rather than statements, so they never reach a
+        // session at all — and an operator rehearses a restore with a command, which
+        // is what "rehearsed" in the readiness checklist means.
+        match &asked.source {
+            // A snapshot unless a position asks for the log (ADR-0094 D1): only a log
+            // has a `--from`, and `--from 1` is the whole of it.
+            Source::Backup(path) => {
+                return match sequence {
+                    None => process.block_on(snapshot(&db, path)),
+                    Some(_) => process.block_on(backup(&db, path, sequence)),
+                }
+                .map(|()| Ended::Fine);
+            }
+            Source::Snapshot(path) => {
+                return process.block_on(snapshot(&db, path)).map(|()| Ended::Fine);
+            }
+            Source::Dump(path) => return process.block_on(dump(&db, path)).map(|()| Ended::Fine),
+            Source::Restore(path) => {
+                return process
+                    .block_on(restore(&db, path, sequence, backup_key.as_ref()))
+                    .map(|()| Ended::Fine);
+            }
+            Source::Health => return process.block_on(health(&db)),
+            Source::Serve
+            | Source::Verify(_)
+            | Source::Version
+            | Source::Help
+            | Source::Standard
+            | Source::Inline(_)
+            | Source::File(_) => {}
+        }
 
-    let mut embedded = store::Embedded::new(&db, credentials.as_ref(), parameters)?;
-    let mut out = io::stdout().lock();
-    let opened = asked.store.as_deref();
-    statements(&mut embedded, &mut out, &asked.source, Where::Store(opened))
+        let mut embedded = store::Embedded::new(&db, credentials.as_ref(), parameters)?;
+        let mut out = io::stdout().lock();
+        let opened = asked.store.as_deref();
+        statements(&mut embedded, &mut out, &asked.source, Where::Store(opened))
+    })();
+    // Closed and awaited before the runtime goes: a store only dropped would
+    // close on a task the runtime's end cancels, leaving what a kill leaves.
+    let closed = process
+        .block_on(db.close())
+        .map_err(|failure| format!("the store did not close: {failure}"));
+    let ended = ended?;
+    closed?;
+    Ok(ended)
 }
 
 /// What the greeting says was opened.

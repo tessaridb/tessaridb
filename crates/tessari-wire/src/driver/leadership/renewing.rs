@@ -84,8 +84,19 @@ impl Renewing {
         now: Instant,
         pass: impl FnOnce(Lease, Epoch) -> Stood,
     ) -> Leadership {
+        match self.due(now) {
+            Some((lease, next)) => self.answered(candidate, now, next, pass(lease, next)),
+            None => self.standing,
+        }
+    }
+
+    /// The first half of [`Self::once`], for a caller that awaits the round: the
+    /// lease held and the epoch to stand for, or `None` while a lost round's
+    /// stagger has not passed.
+    #[must_use]
+    pub fn due(&self, now: Instant) -> Option<(Lease, Epoch)> {
         if self.not_before.is_some_and(|until| now < until) {
-            return self.standing;
+            return None;
         }
         let held = self.standing.epoch;
         let next = if held > Epoch::ZERO && self.stood == held && self.heard <= held {
@@ -98,7 +109,19 @@ impl Renewing {
                     .saturating_add(1),
             )
         };
-        match pass(self.standing.lease(), next) {
+        Some((self.standing.lease(), next))
+    }
+
+    /// The second half of [`Self::once`]: what the round for `next` answered,
+    /// applied, and the leadership this node now stands on.
+    pub fn answered(
+        &mut self,
+        candidate: [u8; NODE_ID_LEN],
+        now: Instant,
+        next: Epoch,
+        stood: Stood,
+    ) -> Leadership {
+        match stood {
             // Untouched, and that is the ordinary case: a cadence that ran a
             // little early while the fence was still far off. Standing down here
             // would make a healthy leader resign because its timer fired.

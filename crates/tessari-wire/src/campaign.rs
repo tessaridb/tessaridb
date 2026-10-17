@@ -253,11 +253,8 @@ impl Standing<'_> {
     ///
     /// One after another, a member that accepted the connection and then said
     /// nothing held the canvass for the greeting's ten seconds, past every lease
-    /// this build ships. Each ballot is a task on the caller's runtime — on its
-    /// blocking pool, because the peer link is synchronous (`link.rs`), the same
-    /// shape the peer door serves connections in — and none may take longer than
-    /// the round on any one step: a blocking task cannot be cancelled, so its
-    /// deadline is the only thing that ends it. A peer that cannot be reached,
+    /// this build ships. Each ballot is a task on the caller's runtime, and none
+    /// may take longer than the round on any one step. A peer that cannot be reached,
     /// answers something other than a vote, or whose task failed, are all one
     /// answer: no vote.
     async fn canvass(&self, ballot: Ballot) -> Vec<([u8; NODE_ID_LEN], Vote)> {
@@ -265,7 +262,7 @@ impl Standing<'_> {
         for (peer, address) in self.peers {
             let (peer, address, said, round) = (*peer, address.clone(), *self.said, self.round);
             let keys = self.keys.clone();
-            asked.spawn_blocking(move || {
+            asked.spawn(async move {
                 match call_within(
                     address.as_str(),
                     (&keys, keys.duplicate()),
@@ -273,7 +270,9 @@ impl Standing<'_> {
                     &said,
                     Ask::Ballot(&ballot),
                     round,
-                ) {
+                )
+                .await
+                {
                     Ok((_, Answered::Voted(vote))) => Some((peer, vote)),
                     _ => None,
                 }

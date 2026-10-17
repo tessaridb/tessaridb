@@ -104,17 +104,15 @@ pub(crate) struct Ranking {
 impl Session<'_> {
     /// The search `name` in the current database, narrowed to what this
     /// session may read.
-    pub(crate) fn resolve_search(
+    pub(crate) async fn resolve_search(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
     ) -> Result<Resolved> {
-        let context = self.context(transaction, None, name.span)?;
-        let members = Catalog::new(transaction).members_of(
-            context.namespace,
-            context.database,
-            &name.text,
-        )?;
+        let context = self.context(transaction, None, name.span).await?;
+        let members = Catalog::new(transaction)
+            .members_of(context.namespace, context.database, &name.text)
+            .await?;
         let Some(first) = members.first().and_then(|member| member.engine.clone()) else {
             return Err(Error::Unknown {
                 entity: "search",
@@ -123,7 +121,8 @@ impl Session<'_> {
             });
         };
         let analyzer = Catalog::new(transaction)
-            .analyzers()?
+            .analyzers()
+            .await?
             .into_iter()
             .find(|held| held.name == first.analyzer)
             .ok_or_else(|| Error::Unknown {
@@ -134,13 +133,14 @@ impl Session<'_> {
             .analyzer;
         let stopwords = match &first.stopwords {
             Some(set) => self
-                .word_set(transaction, WordSetKind::Stopwords, set, name.span)?
+                .word_set(transaction, WordSetKind::Stopwords, set, name.span)
+                .await?
                 .into_keys()
                 .flat_map(|word| analyzer.terms(&word))
                 .collect(),
             None => BTreeSet::new(),
         };
-        let readable = self.readable_in(transaction)?;
+        let readable = self.readable_in(transaction).await?;
         let mut reached = Vec::new();
         let mut rebuild = Vec::new();
         for index in members {
@@ -153,7 +153,7 @@ impl Session<'_> {
             {
                 continue;
             }
-            let visible = self.visible_in(transaction, index.table)?;
+            let visible = self.visible_in(transaction, index.table).await?;
             if let Some(visible) = &visible
                 && index
                     .fields
@@ -163,8 +163,9 @@ impl Session<'_> {
                 continue;
             }
             // A partial holder's statistics are not the collection's (ADR-0105 D8).
-            self.refuse_reading_a_part(transaction, index.table, Part::Whole)?;
-            let Some(table) = Catalog::new(transaction).table(index.table)? else {
+            self.refuse_reading_a_part(transaction, index.table, Part::Whole)
+                .await?;
+            let Some(table) = Catalog::new(transaction).table(index.table).await? else {
                 continue;
             };
             // No scan stands in for a member — it is the search — so it is read
@@ -177,12 +178,13 @@ impl Session<'_> {
                     member: true,
                 });
             }
-            let (statistics, lengths) = transaction.member_statistics(&index)?;
+            let (statistics, lengths) = transaction.member_statistics(&index).await?;
             let mut fields = Vec::with_capacity(index.fields.len());
             for (at, (path, declared)) in index.fields.iter().zip(&engine.fields).enumerate() {
                 let synonyms = match &declared.synonyms {
                     Some(set) => self
-                        .word_set(transaction, WordSetKind::Synonyms, set, name.span)?
+                        .word_set(transaction, WordSetKind::Synonyms, set, name.span)
+                        .await?
                         .into_iter()
                         .filter_map(|(word, alternatives)| {
                             let [word] = analyzer.terms(&word).try_into().ok()?;
@@ -230,7 +232,7 @@ impl Session<'_> {
     }
 
     /// A declared word set's entries, refused by name when it has gone.
-    fn word_set(
+    async fn word_set(
         &self,
         transaction: &mut Transaction<'_>,
         kind: WordSetKind,
@@ -238,7 +240,8 @@ impl Session<'_> {
         span: Span,
     ) -> Result<BTreeMap<String, Vec<String>>> {
         Catalog::new(transaction)
-            .word_set(kind, name)?
+            .word_set(kind, name)
+            .await?
             .map(|set| set.entries)
             .ok_or_else(|| Error::Unknown {
                 entity: kind.word(),
@@ -251,7 +254,7 @@ impl Session<'_> {
     /// whether they can also decide and score it (Q-870) — the plan's
     /// questions, answered from the dictionary and one posting per member
     /// without a record.
-    pub(crate) fn search_served(
+    pub(crate) async fn search_served(
         &self,
         transaction: &mut Transaction<'_>,
         resolved: &Resolved,
@@ -269,11 +272,11 @@ impl Session<'_> {
         let mut decided = unconditioned
             && !query.is_empty()
             && super::postings::decidable(&query)
-            && indexes_agree(transaction, &resolved.members)?;
+            && indexes_agree(transaction, &resolved.members).await?;
         for member in &resolved.members {
             let mut expansions = Vec::with_capacity(probes.len());
             for probe in &probes {
-                expansions.push(expand(transaction, member, probe)?);
+                expansions.push(expand(transaction, member, probe).await?);
             }
             if groups_of(&query, &probes, &expansions).is_none() {
                 return Ok((false, false));
@@ -285,7 +288,7 @@ impl Session<'_> {
                     member.index.database,
                     member.index.table,
                 )
-                && transaction.member_fielded(&member.index)?;
+                && transaction.member_fielded(&member.index).await?;
         }
         Ok((true, decided))
     }
@@ -294,7 +297,7 @@ impl Session<'_> {
 /// The terms of `member`'s dictionary one probe reaches — `None` when the walk
 /// would be past its cap, or the probe cannot be walked, and the member must be
 /// scanned instead.
-fn expand(
+async fn expand(
     transaction: &Transaction<'_>,
     member: &Member,
     probe: &Probe,
@@ -311,11 +314,9 @@ fn expand(
         }
         Probe::Prefix(alternatives) => {
             for spelling in alternatives {
-                let found = transaction.terms_with_prefix(
-                    &member.index,
-                    spelling,
-                    SEARCH_PREFIX_EXPANSION_CAP,
-                )?;
+                let found = transaction
+                    .terms_with_prefix(&member.index, spelling, SEARCH_PREFIX_EXPANSION_CAP)
+                    .await?;
                 if found.capped {
                     return Ok(None);
                 }
@@ -327,22 +328,27 @@ fn expand(
                 // The terms near the spelling, and the terms of the surfaces
                 // near it (Q-867).
                 for found in [
-                    transaction.terms_within_distance(
-                        &member.index,
-                        spelling,
-                        budget(spelling),
-                        SEARCH_FUZZY_PREFIX,
-                        SEARCH_FUZZY_EXPANSION_CAP,
-                    )?,
+                    transaction
+                        .terms_within_distance(
+                            &member.index,
+                            spelling,
+                            budget(spelling),
+                            SEARCH_FUZZY_PREFIX,
+                            SEARCH_FUZZY_EXPANSION_CAP,
+                        )
+                        .await?,
                     // A member built before surfaces existed holds none, and
                     // is scanned instead.
-                    match transaction.terms_by_surface(
-                        &member.index,
-                        spelling,
-                        budget(spelling),
-                        SEARCH_FUZZY_PREFIX,
-                        SEARCH_FUZZY_EXPANSION_CAP,
-                    )? {
+                    match transaction
+                        .terms_by_surface(
+                            &member.index,
+                            spelling,
+                            budget(spelling),
+                            SEARCH_FUZZY_PREFIX,
+                            SEARCH_FUZZY_EXPANSION_CAP,
+                        )
+                        .await?
+                    {
                         Some(found) => found,
                         None => return Ok(None),
                     },
@@ -355,7 +361,10 @@ fn expand(
             }
         }
         Probe::Infix(piece) => {
-            match transaction.terms_with_infix(&member.index, piece, SEARCH_PREFIX_EXPANSION_CAP)? {
+            match transaction
+                .terms_with_infix(&member.index, piece, SEARCH_PREFIX_EXPANSION_CAP)
+                .await?
+            {
                 Some(found) if !found.capped => reached.extend(found.terms),
                 _ => return Ok(None),
             }
@@ -399,9 +408,12 @@ fn groups_of(
 /// Whether every member's index may answer at this transaction's snapshot:
 /// none behind the tail, and none in a table where a transaction across
 /// leaders is part-way here (Q-919).
-fn indexes_agree(transaction: &Transaction<'_>, members: &[Member]) -> Result<bool> {
+async fn indexes_agree(transaction: &Transaction<'_>, members: &[Member]) -> Result<bool> {
     for member in members {
-        if !transaction.indexes_are_current_for(member.index.table)? {
+        if !transaction
+            .indexes_are_current_for(member.index.table)
+            .await?
+        {
             return Ok(false);
         }
     }

@@ -11,6 +11,8 @@
 )]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_encoding::{FormatVersion, FormatVersionKey, StoreKey, StoreValue};
 use tessari_kv::{KvBackend, MemoryBackend, WriteBatch};
@@ -20,7 +22,7 @@ use tessari_types::{Number, RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 const DEFINE: &str = "DEFINE ROLLUP hourly FROM visits WINDOW 1h BY page COMPUTE count(*) AS n, \
@@ -34,12 +36,12 @@ const DEFINE: &str = "DEFINE ROLLUP hourly FROM visits WINDOW 1h BY page COMPUTE
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE SERIES visits RETAIN 36500d TIME at;",
         )
         .unwrap();
-    session.run(DEFINE).unwrap();
+    session.run_now(DEFINE).unwrap();
     let mut script = String::from("BEGIN;\n");
     let mut ms = 0;
     let mut visit = |script: &mut String, page: &str, user: i64, minute: i64| {
@@ -62,12 +64,12 @@ fn ready(store: &Store) -> Session<'_> {
         visit(&mut script, "a", user, 60 + user % 60);
     }
     script.push_str("COMMIT;");
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     session
 }
 
 fn records(session: &mut Session<'_>, read: &str) -> Vec<(RecordId, Value)> {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     outcomes.last().unwrap().records().unwrap().to_vec()
 }
 
@@ -131,7 +133,7 @@ fn folding_a_sketch_column_merges_the_rows_and_answers_what_the_series_answers()
     };
     assert!((users - 1_200).abs() <= 30, "{users}");
     // The merged answer carries the note the raw one does.
-    let outcomes = session.run(merged).unwrap();
+    let outcomes = session.run_now(merged).unwrap();
     assert!(
         outcomes
             .last()
@@ -149,13 +151,13 @@ fn a_deleted_or_moved_reading_recomputes_its_rows_sketches() {
     // Every visit on page `a` in hour 10 of a visitor sorting below `u2` goes,
     // and one visitor's readings move to page `b`.
     session
-        .run(
+        .run_now(
             "DELETE FROM visits WHERE page = 'a' AND at < datetime '2026-10-07T11:00:00Z' \
              AND visitor < 'u2' LIMIT ALL;",
         )
         .unwrap();
     session
-        .run(
+        .run_now(
             "DELETE FROM visits WHERE page = 'a' AND visitor = 'u1600' LIMIT ALL;\n\
              CREATE visits = { page: 'b', visitor: 'u1600', ms: 9999, \
              at: datetime '2026-10-07T11:40:00Z' };",
@@ -181,7 +183,7 @@ fn a_rollup_keeps_a_sketch_only_as_declared() {
     ] {
         let script =
             format!("DEFINE ROLLUP other FROM visits WINDOW 1h COMPUTE {compute} RETAIN 1d;");
-        match session.run(&script) {
+        match session.run_now(&script) {
             Err(Error::RollupFold { .. }) => {}
             // A missing rank is the parser's to refuse: there is nothing to read.
             Err(Error::Script(_)) if compute == "approx_quantile(ms) AS q" => {
@@ -195,7 +197,7 @@ fn a_rollup_keeps_a_sketch_only_as_declared() {
 #[test]
 fn a_store_holding_an_older_format_refuses_a_sketch_rollup_until_finalized() {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    drop(Store::open(Arc::clone(&backend)).unwrap());
+    drop(Store::open(Arc::clone(&backend)).now().unwrap());
     let older = FormatVersion::SKETCH_ROLLUP.get().checked_sub(1).unwrap();
     backend
         .apply(WriteBatch::new().put(
@@ -203,22 +205,23 @@ fn a_store_holding_an_older_format_refuses_a_sketch_rollup_until_finalized() {
             FormatVersionKey.encode(),
             FormatVersion::new(older).encode(),
         ))
+        .now()
         .unwrap();
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE SERIES visits RETAIN 36500d TIME at;\n\
              DEFINE ROLLUP counted FROM visits WINDOW 1h COMPUTE count(*) AS n RETAIN 1d;",
         )
         .unwrap();
     assert!(matches!(
-        session.run(DEFINE),
+        session.run_now(DEFINE),
         Err(Error::FormatNotFinalized { .. })
     ));
-    session.run("ALTER STORE FINALIZE FORMAT;").unwrap();
-    session.run(DEFINE).unwrap();
+    session.run_now("ALTER STORE FINALIZE FORMAT;").unwrap();
+    session.run_now(DEFINE).unwrap();
 }
 
 /// A reader who may not see a sketch column merges nothing from beside its
@@ -228,21 +231,27 @@ fn a_sketch_column_the_reader_may_not_see_merges_nothing() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
     let mut owner = Session::new(&store);
-    owner.sign_in("root", "correct horse battery").unwrap();
     owner
-        .run(
+        .sign_in("root", "correct horse battery")
+        .now()
+        .unwrap();
+    owner
+        .run_now(
             "DEFINE USER narrow ON NAMESPACE prod AUTHORITIES read \
              PASSWORD 'correct horse battery';\n\
              USE NAMESPACE prod; USE DATABASE shop; GRANT read ON hourly FIELDS page, n TO narrow;",
         )
         .unwrap();
     let mut narrow = Session::new(&store);
-    narrow.sign_in("narrow", "correct horse battery").unwrap();
     narrow
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .sign_in("narrow", "correct horse battery")
+        .now()
+        .unwrap();
+    narrow
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     let answered = rows(
         &mut narrow,
@@ -273,7 +282,7 @@ fn a_rollup_declared_over_written_records_keeps_their_sketches() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE SERIES visits RETAIN 36500d TIME at;\n\
              CREATE visits = { page: 'a', visitor: 'u1', ms: 10, at: datetime '2026-10-07T10:00:00Z' };\n\
@@ -281,7 +290,7 @@ fn a_rollup_declared_over_written_records_keeps_their_sketches() {
              CREATE visits = { page: 'a', visitor: 'u1', ms: 20, at: datetime '2026-10-07T11:00:00Z' };",
         )
         .unwrap();
-    session.run(DEFINE).unwrap();
+    session.run_now(DEFINE).unwrap();
     let merged = "SELECT page, approx_distinct(users) AS u, approx_quantile(p99, 0.5) AS m \
                   FROM hourly GROUP BY page;";
     let raw = "SELECT page, approx_distinct(visitor) AS u, approx_quantile(ms, 0.5) AS m \

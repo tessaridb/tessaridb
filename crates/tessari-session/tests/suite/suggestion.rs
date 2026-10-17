@@ -36,13 +36,17 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session, Suggestion};
 use tessari_storage::Store;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 const PLACE: &str = "\
@@ -63,7 +67,7 @@ fn notes(indexed: bool) -> Store {
     let held = store();
     let mut session = Session::new(&held);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
              DEFINE COLLECTION notes;\n\
@@ -77,7 +81,7 @@ fn notes(indexed: bool) -> Store {
         .unwrap();
     if indexed {
         session
-            .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+            .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
             .unwrap();
     }
     held
@@ -88,7 +92,7 @@ type Answer = (Vec<String>, Option<Suggestion>);
 
 /// The ids and the suggestion one read answered with.
 fn answered(session: &mut Session<'_>, read: &str) -> Answer {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records {
         records,
         suggestion,
@@ -108,7 +112,7 @@ fn both_paths(read: &str) -> (Answer, Answer) {
     for indexed in [false, true] {
         let held = notes(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
         answers.push(answered(&mut session, read));
     }
     (answers[0].clone(), answers[1].clone())

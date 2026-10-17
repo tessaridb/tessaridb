@@ -34,7 +34,7 @@ impl Session<'_> {
     /// # Errors
     ///
     /// A catalog that cannot be read.
-    pub(crate) fn rollup_merging(
+    pub(crate) async fn rollup_merging(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
@@ -47,11 +47,13 @@ impl Session<'_> {
             _ => return Ok(None),
         };
         // An unknown table is the source's to refuse, in its own words.
-        let Ok((_, id)) = self.resolve_table(transaction, table) else {
+        let Ok((_, id)) = self.resolve_table(transaction, table).await else {
             return Ok(None);
         };
-        let Some(TableKind::Series(series)) =
-            Catalog::new(transaction).table(id)?.map(|found| found.kind)
+        let Some(TableKind::Series(series)) = Catalog::new(transaction)
+            .table(id)
+            .await?
+            .map(|found| found.kind)
         else {
             return Ok(None);
         };
@@ -59,7 +61,8 @@ impl Session<'_> {
             return Ok(None);
         };
         let Some(TableKind::Series(raw)) = Catalog::new(transaction)
-            .table(source)?
+            .table(source)
+            .await?
             .map(|found| found.kind)
         else {
             return Ok(None);
@@ -122,7 +125,7 @@ impl Merging {
     ///
     /// [`crate::Error::NotSummable`] for a row whose sketch is not kept, and
     /// whatever the rank or a read of the store refuses.
-    pub(crate) fn merge_row(
+    pub(crate) async fn merge_row(
         &self,
         transaction: &mut Transaction<'_>,
         accumulator: &mut Accumulator,
@@ -146,7 +149,9 @@ impl Merging {
             .as_ref()
             .and_then(|by| fields.get(by).cloned())
             .unwrap_or(Value::None);
-        let kept = transaction.rollup_state(self.rollup.table, &state_key(window, &key, column))?;
+        let kept = transaction
+            .rollup_state(self.rollup.table, &state_key(window, &key, column))
+            .await?;
         accumulator.merge_kept(kept.as_ref(), rank, span)
     }
 }

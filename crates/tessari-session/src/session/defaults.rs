@@ -14,10 +14,14 @@ impl Session<'_> {
     ///
     /// The catalog is read only when the caller's map leaves a name unbound, so
     /// a script that names no param pays nothing for the feature.
-    pub(crate) fn bind_script(&self, script: Script, parameters: &Parameters) -> Result<Script> {
+    pub(crate) async fn bind_script(
+        &self,
+        script: Script,
+        parameters: &Parameters,
+    ) -> Result<Script> {
         match script.clone().bind(parameters) {
             Err(tessari_ql::Error::UnboundParameter { .. }) => {
-                let defaults = self.database_params(&script)?;
+                let defaults = self.database_params(&script).await?;
                 Ok(script.bind_with_defaults(parameters, &defaults)?)
             }
             bound => Ok(bound?),
@@ -26,11 +30,11 @@ impl Session<'_> {
 
     /// One map per statement: the params of the database it will run in, as
     /// the `USE` statements above it select it.
-    fn database_params(&self, script: &Script) -> Result<Vec<Parameters>> {
+    async fn database_params(&self, script: &Script) -> Result<Vec<Parameters>> {
         let mut namespace = self.namespace.clone();
         let mut database = self.database.clone();
         let mut held: BTreeMap<(String, String), Parameters> = BTreeMap::new();
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let mut defaults = Vec::with_capacity(script.statements.len());
         for statement in &script.statements {
             if let StatementKind::Use {
@@ -53,9 +57,9 @@ impl Session<'_> {
             let key = (namespace.clone(), database.clone());
             if !held.contains_key(&key) {
                 let catalog = Catalog::new(&mut transaction);
-                let params = match catalog.namespace_id(namespace)? {
-                    Some(namespace) => match catalog.database_id(namespace, database)? {
-                        Some(id) => catalog.database(id)?.map(|found| found.params),
+                let params = match catalog.namespace_id(namespace).await? {
+                    Some(namespace) => match catalog.database_id(namespace, database).await? {
+                        Some(id) => catalog.database(id).await?.map(|found| found.params),
                         None => None,
                     },
                     None => None,

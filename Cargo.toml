@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.35.3"
+version = "0.36.0"
 edition = "2024"
 rust-version = "1.98"
 license = "BUSL-1.1"
@@ -12,23 +12,25 @@ repository = "https://github.com/tessaridb/tessaridb"
 publish = false
 
 [workspace.dependencies]
-tessari-types = { path = "crates/tessari-types", version = "0.35.3" }
-tessari-constants = { path = "crates/tessari-constants", version = "0.35.3" }
-tessari-kv = { path = "crates/tessari-kv", version = "0.35.3" }
-tessari-encoding = { path = "crates/tessari-encoding", version = "0.35.3" }
-tessari-geo = { path = "crates/tessari-geo", version = "0.35.3" }
-tessari-storage = { path = "crates/tessari-storage", version = "0.35.3" }
-tessari-lsm = { path = "crates/tessari-lsm", version = "0.35.3" }
-tessari-ql = { path = "crates/tessari-ql", version = "0.35.3" }
-tessari-session = { path = "crates/tessari-session", version = "0.35.3" }
-tessari-conformance = { path = "crates/tessari-conformance", version = "0.35.3" }
-tessaridb = { path = "crates/tessaridb", version = "0.35.3" }
-tessari-backup = { path = "crates/tessari-backup", version = "0.35.3" }
-tessari-wire = { path = "crates/tessari-wire", version = "0.35.3" }
-tessari-http = { path = "crates/tessari-http", version = "0.35.3" }
-tessari-ingest = { path = "crates/tessari-ingest", version = "0.35.3" }
-tessari-serve = { path = "crates/tessari-serve", version = "0.35.3" }
-tessari-vault = { path = "crates/tessari-vault", version = "0.35.3" }
+tessari-types = { path = "crates/tessari-types", version = "0.36.0" }
+tessari-constants = { path = "crates/tessari-constants", version = "0.36.0" }
+tessari-kv = { path = "crates/tessari-kv", version = "0.36.0" }
+# The storage engine.
+tessarikv = "0.1.0"
+tessari-encoding = { path = "crates/tessari-encoding", version = "0.36.0" }
+tessari-geo = { path = "crates/tessari-geo", version = "0.36.0" }
+tessari-storage = { path = "crates/tessari-storage", version = "0.36.0" }
+tessari-lsm = { path = "crates/tessari-lsm", version = "0.36.0" }
+tessari-ql = { path = "crates/tessari-ql", version = "0.36.0" }
+tessari-session = { path = "crates/tessari-session", version = "0.36.0" }
+tessari-conformance = { path = "crates/tessari-conformance", version = "0.36.0" }
+tessaridb = { path = "crates/tessaridb", version = "0.36.0" }
+tessari-backup = { path = "crates/tessari-backup", version = "0.36.0" }
+tessari-wire = { path = "crates/tessari-wire", version = "0.36.0" }
+tessari-http = { path = "crates/tessari-http", version = "0.36.0" }
+tessari-ingest = { path = "crates/tessari-ingest", version = "0.36.0" }
+tessari-serve = { path = "crates/tessari-serve", version = "0.36.0" }
+tessari-vault = { path = "crates/tessari-vault", version = "0.36.0" }
 
 thiserror = "2"
 # The serving runtime (ADR-0085). Default features off here, so every crate names
@@ -81,17 +83,9 @@ getrandom = "0.4"
 # compiler is entitled to delete a wipe that nothing afterwards observes, and a
 # hand-written `for b in buf { *b = 0 }` is exactly that wipe.
 zeroize = { version = "1.9", features = ["zeroize_derive"] }
-# The engine files of an encrypted store (ADR-0108 D7): XChaCha20 keystream at a
-# file offset, so the engine can read any block of a file without the rest. The
-# crate is already in the tree under `chacha20poly1305`; this names the extended
-# nonce so every file can take a random one.
-chacha20 = { version = "0.10", default-features = false, features = ["cipher", "xchacha", "zeroize"] }
 # HKDF for the at-rest subkeys. `ring` is already in the tree as the TLS
 # provider below; this uses its HKDF and nothing else of it.
 ring = { version = "0.17", default-features = false }
-# Compiles the engine's encryption provider against the engine's own headers.
-# Already in the tree: every C/C++ dependency here builds with it.
-cc = "1"
 # TLS for the inter-node link, and nothing else in this workspace speaks it.
 # `rustls` with the `ring` provider rather than `aws-lc-rs`: the provider is the
 # whole build-system question, and `ring` asks only for the `cc` that
@@ -126,8 +120,6 @@ tracing = { version = "0.1", default-features = false, features = ["std", "attri
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "json", "tracing-log", "smallvec"] }
 tracing-appender = "0.2"
 libc = "0.2"
-rocksdb = { version = "0.25", default-features = false }
-librocksdb-sys = { version = "0.19", default-features = false }
 rdkafka = { version = "0.39", default-features = false }
 
 proptest = "1"

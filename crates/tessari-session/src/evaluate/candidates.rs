@@ -1,7 +1,5 @@
 //! The candidates an index offers, and the walks that confirm them.
 
-use std::ops::ControlFlow;
-
 use tessari_ql::Expr;
 use tessari_storage::{Catalog, RecordAddress, Transaction};
 use tessari_types::TableId;
@@ -36,7 +34,7 @@ impl Session<'_> {
     /// narrow case where the read *is* the answer — see [`Session::trusts`] for
     /// what has to hold before it can be said, and `plan::Candidate::answers`
     /// for the part of it the planner contributes.
-    pub(crate) fn candidates(
+    pub(crate) async fn candidates(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
@@ -54,20 +52,22 @@ impl Session<'_> {
         // cannot use is one this statement does not have, and saying so here
         // keeps the reason in the one place that asks the catalog rather than
         // spread across every candidate that could have been built from it.
-        let (declared, exact) = declared_for(transaction, table)?;
-        let offered = self.enumerate(transaction, condition, &declared, searched)?;
+        let (declared, exact) = declared_for(transaction, table).await?;
+        let offered = self
+            .enumerate(transaction, condition, &declared, searched)
+            .await?;
 
         // Resolved before either path, so an index-served read and a scan see
         // the same record — which is what makes candidates re-tested against the
         // whole condition unable to answer what a scan refuses.
-        let visible = self.visible_in(transaction, table)?;
+        let visible = self.visible_in(transaction, table).await?;
         // Ranking says which index narrows most; it does not say whether the
         // winner narrows enough to be worth reading. An index that produces
         // most of the table pays an entry walk on top of a fetch it did not
         // shorten, so the winner is measured against the table before it is
         // served — see `plan::worth_serving`, which `EXPLAIN` asks too so that
         // the reported path is the one the read takes.
-        let chosen = plan::serving(transaction, table, offered, asked.lift_scan_guard)?;
+        let chosen = plan::serving(transaction, table, offered, asked.lift_scan_guard).await?;
         if let Some(chosen) = chosen {
             // Built by the candidate itself, which is the same function
             // `EXPLAIN` calls on the candidate its own `serving` returned. The
@@ -114,7 +114,9 @@ impl Session<'_> {
                     upper: None,
                 }
             } else {
-                let found = self.serve(transaction, context, table, &chosen, analyzer)?;
+                let found = self
+                    .serve(transaction, context, table, &chosen, analyzer)
+                    .await?;
                 Candidates::Held(self.records_of(found, &visible)?)
             };
             return Ok(Some(Reached {
@@ -126,13 +128,16 @@ impl Session<'_> {
         // No conjunct serves the condition; every side of an `OR` may
         // (G051 T7.2). The union is deduplicated in identity order, the order a
         // scan would meet the same records in.
-        if let Some(sides) = self.union_of(
-            transaction,
-            table,
-            condition,
-            (&declared, searched),
-            asked.lift_scan_guard,
-        )? {
+        if let Some(sides) = self
+            .union_of(
+                transaction,
+                table,
+                condition,
+                (&declared, searched),
+                asked.lift_scan_guard,
+            )
+            .await?
+        {
             let mut found = std::collections::BTreeMap::new();
             for side in &sides {
                 let analyzer = side
@@ -140,7 +145,10 @@ impl Session<'_> {
                     .fields
                     .first()
                     .and_then(|path| searched.analyzer(path));
-                found.extend(self.serve(transaction, context, table, side, analyzer)?);
+                found.extend(
+                    self.serve(transaction, context, table, side, analyzer)
+                        .await?,
+                );
             }
             return Ok(Some(Reached {
                 records: Candidates::Held(self.records_of(found.into_iter().collect(), &visible)?),
@@ -172,39 +180,44 @@ impl Session<'_> {
     /// The record is redacted before the condition sees it, which is what makes
     /// a scan and an index-served read answer the same records: a field this
     /// session may not read resolves to `NONE` for both.
-    pub(super) fn scan_matching(
+    pub(super) async fn scan_matching(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
         table: TableId,
         testing: Testing<'_>,
-        consumer: &mut dyn Consumer,
+        consumer: &mut impl Consumer,
     ) -> Result<()> {
         let Testing {
             condition,
             searched,
             noticed,
         } = testing;
-        let visible = self.visible_in(transaction, table)?;
-        transaction.walk_table(
-            context.namespace,
-            context.database,
-            table,
-            |transaction, id, payload| {
+        let visible = self.visible_in(transaction, table).await?;
+        let mut walk = transaction
+            .walk_table(context.namespace, context.database, table)
+            .await?;
+        while let Some(round) = walk.next_round(transaction).await? {
+            for (id, payload) in round {
                 let record = self.record_of(&payload, &visible)?;
-                let held = self.evaluate_in(
-                    transaction,
-                    condition,
-                    Scope::searching(&record, searched)
-                        .identified(&id)
-                        .noticing(noticed),
-                )?;
+                let held = self
+                    .evaluate_in(
+                        transaction,
+                        condition,
+                        Scope::searching(&record, searched)
+                            .identified(&id)
+                            .noticing(noticed),
+                    )
+                    .await?;
                 if !boolean(&held, condition.span)? {
-                    return Ok(ControlFlow::Continue(()));
+                    continue;
                 }
-                consumer.take(transaction, id, record)
-            },
-        )
+                if consumer.take(transaction, id, record).await?.is_break() {
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Whether this read may be believed instead of re-tested.
@@ -288,25 +301,29 @@ impl Session<'_> {
     /// read of `[99, 39, 38]` against an approximate `[39, 38, 37]` for the same
     /// statement in the same transaction. Isolation is not what `APPROXIMATE`
     /// relaxes.
-    pub(super) fn walk(
+    pub(super) async fn walk(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
         table: TableId,
         wanted: &plan::Nearest<'_>,
     ) -> Result<Option<Approximated>> {
-        let Some(gated) = self.nearest_gate(transaction, context, table, wanted)? else {
+        let Some(gated) = self
+            .nearest_gate(transaction, context, table, wanted)
+            .await?
+        else {
             return Ok(None);
         };
         let mut rows = Vec::new();
         let window = plan::walked_for(wanted.wanted, gated.index.quantized);
-        for id in
-            transaction.records_by_vector(&gated.index, &gated.query, window, wanted.effort)?
+        for id in transaction
+            .records_by_vector(&gated.index, &gated.query, window, wanted.effort)
+            .await?
         {
             // Resolved at this reader's own snapshot, like every index read, so
             // a node left behind by a deleted record produces nothing.
             let at = RecordAddress::new(context.namespace, context.database, table, id);
-            if let Some(payload) = transaction.get(&at)? {
+            if let Some(payload) = transaction.get(&at).await? {
                 rows.push((at.id, self.record_of(&payload, &gated.visible)?));
             }
         }
@@ -320,14 +337,14 @@ impl Session<'_> {
     /// them: no index on the path, one built for another distance, a query
     /// that is not a vector, a field this caller's grant does not contain, and
     /// a table this transaction has written to without committing.
-    pub(super) fn nearest_gate(
+    pub(super) async fn nearest_gate(
         &self,
         transaction: &mut Transaction<'_>,
         context: crate::context::Context,
         table: TableId,
         wanted: &plan::Nearest<'_>,
     ) -> Result<Option<Gated>> {
-        let Some(index) = self.index_on_path(transaction, table, wanted.path)? else {
+        let Some(index) = self.index_on_path(transaction, table, wanted.path).await? else {
             return Ok(None);
         };
         let Some(declared) = index.vector else {
@@ -336,11 +353,12 @@ impl Session<'_> {
         if !plan::answers(declared, wanted.distance) {
             return Ok(None);
         }
-        let Some(query) = tessari_storage::vector_of(&self.evaluate(transaction, wanted.query)?)
+        let Some(query) =
+            tessari_storage::vector_of(&self.evaluate(transaction, wanted.query).await?)
         else {
             return Ok(None);
         };
-        let visible = self.visible_in(transaction, table)?;
+        let visible = self.visible_in(transaction, table).await?;
         // Asked before the graph is walked and not after: the redaction below
         // removes the field from the records, and would leave the caller holding
         // the graph's choice of which records to return.
@@ -376,16 +394,23 @@ impl Session<'_> {
 ///
 /// One function for the read and for `EXPLAIN`, so the plan reported is the
 /// plan run.
-pub(crate) fn declared_for(
+pub(crate) async fn declared_for(
     transaction: &mut Transaction<'_>,
     table: TableId,
 ) -> Result<(Vec<tessari_storage::IndexDefinition>, bool)> {
-    if transaction.indexes_are_current_for(table)? {
-        return Ok((Catalog::new(transaction).field_indexes_on(table)?, true));
+    if transaction.indexes_are_current_for(table).await? {
+        return Ok((
+            Catalog::new(transaction).field_indexes_on(table).await?,
+            true,
+        ));
     }
-    if transaction.plain_indexes_serve_behind_the_tail(table)? {
+    if transaction
+        .plain_indexes_serve_behind_the_tail(table)
+        .await?
+    {
         let plain = Catalog::new(transaction)
-            .field_indexes_on(table)?
+            .field_indexes_on(table)
+            .await?
             .into_iter()
             .filter(tessari_storage::IndexDefinition::keeps_retired_entries)
             .collect();

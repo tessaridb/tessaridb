@@ -14,6 +14,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_encoding::{decode_payload, encode_payload};
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -45,15 +46,18 @@ struct Fixture {
 /// and it does not exercise the statement that will one day set them up.
 fn fixture(secret: bool) -> Fixture {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
 
     let (root, master) = Root::create(PASSPHRASE).unwrap();
     store.vault().adopt(master).unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("prod").unwrap();
-    let database = catalog.create_database(namespace.id, "people").unwrap();
+    let namespace = catalog.create_namespace("prod").now().unwrap();
+    let database = catalog
+        .create_database(namespace.id, "people")
+        .now()
+        .unwrap();
 
     // The vault's own key, wrapped under the master key, bound to the name the
     // table is about to claim — the same binding the write path recomputes.
@@ -75,6 +79,7 @@ fn fixture(secret: bool) -> Fixture {
                 ..TableShape::default()
             },
         )
+        .now()
         .unwrap();
     catalog
         .create_field(
@@ -86,13 +91,14 @@ fn fixture(secret: bool) -> Fixture {
                 ..FieldShape::default()
             },
         )
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     // Kept so a test can prove the root record is safe to hold beside the data.
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction).set_vault_root(&tessari_storage::VaultRoot(root));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     Fixture {
         backend,
@@ -125,11 +131,13 @@ impl Fixture {
 
     /// Seal a record and write it, exactly as the session's write path does.
     fn write(&self) -> Value {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         let address = self.address();
-        let sealed = seal_secrets(&mut transaction, &address, Self::record()).unwrap();
+        let sealed = seal_secrets(&mut transaction, &address, Self::record())
+            .now()
+            .unwrap();
         transaction.put(address, encode_payload(&sealed).into_bytes());
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         sealed
     }
 
@@ -148,7 +156,7 @@ impl Fixture {
                 direction: tessari_kv::ScanDirection::Forward,
                 limit: None,
             };
-            for entry in self.backend.scan(&scan).unwrap() {
+            for entry in self.backend.scan(&scan).now().unwrap() {
                 everything.extend_from_slice(entry.0.as_slice());
                 everything.extend_from_slice(entry.1.as_slice());
             }
@@ -204,7 +212,7 @@ fn a_sealed_field_opens_back_to_the_value_that_was_written() {
         panic!("a vault record is an object")
     };
 
-    let transaction = fixture.store.begin().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
     let address = fixture.address();
     let data_key = open_data_key(&transaction, &address, &fixture.vault, fields).unwrap();
     let Some(Value::Bytes(envelope)) = fields.get("password") else {
@@ -227,7 +235,7 @@ fn a_ciphertext_moved_to_another_record_does_not_open() {
         panic!("the secret field holds an envelope")
     };
 
-    let transaction = fixture.store.begin().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
     let address = fixture.address();
     let data_key = open_data_key(&transaction, &address, &fixture.vault, fields).unwrap();
 
@@ -256,7 +264,7 @@ fn a_ciphertext_moved_to_another_field_does_not_open() {
         panic!("the secret field holds an envelope")
     };
 
-    let transaction = fixture.store.begin().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
     let address = fixture.address();
     let data_key = open_data_key(&transaction, &address, &fixture.vault, fields).unwrap();
     let moved = open_field(&data_key, &address, &fixture.vault, "recovery", envelope);
@@ -269,9 +277,9 @@ fn a_sealed_store_refuses_the_write_rather_than_writing_plaintext() {
     let fixture = fixture(true);
     fixture.store.vault().seal().unwrap();
 
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     let address = fixture.address();
-    let refused = seal_secrets(&mut transaction, &address, Fixture::record());
+    let refused = seal_secrets(&mut transaction, &address, Fixture::record()).now();
     assert!(
         matches!(refused, Err(Error::Vault(tessari_vault::Error::Sealed))),
         "{refused:?}"
@@ -287,7 +295,7 @@ fn a_sealed_store_refuses_the_write_rather_than_writing_plaintext() {
 #[test]
 fn a_write_may_not_supply_the_key_set_itself() {
     let fixture = fixture(true);
-    let mut transaction = fixture.store.begin().unwrap();
+    let mut transaction = fixture.store.begin().now().unwrap();
     let address = fixture.address();
 
     let forged = Value::Object(
@@ -305,7 +313,7 @@ fn a_write_may_not_supply_the_key_set_itself() {
         .into_iter()
         .collect(),
     );
-    let refused = seal_secrets(&mut transaction, &address, forged);
+    let refused = seal_secrets(&mut transaction, &address, forged).now();
     assert!(
         matches!(refused, Err(Error::VaultReservedField { .. })),
         "{refused:?}"
@@ -316,27 +324,33 @@ fn a_write_may_not_supply_the_key_set_itself() {
 #[test]
 fn an_ordinary_table_is_left_alone() {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("prod").unwrap();
-    let database = catalog.create_database(namespace.id, "people").unwrap();
+    let namespace = catalog.create_namespace("prod").now().unwrap();
+    let database = catalog
+        .create_database(namespace.id, "people")
+        .now()
+        .unwrap();
     let table = catalog
         .create_table(namespace.id, database.id, "staff", TableShape::default())
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     // Sealed keyring, ordinary table. If the vault path ran at all this would
     // refuse — which is the cheap way to assert that it did not run.
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let address = RecordAddress::new(
         namespace.id,
         database.id,
         table.id,
         RecordId::Text("ada".to_owned()),
     );
-    let untouched = seal_secrets(&mut transaction, &address, Fixture::record()).unwrap();
+    let untouched = seal_secrets(&mut transaction, &address, Fixture::record())
+        .now()
+        .unwrap();
     transaction.rollback();
 
     assert_eq!(untouched, Fixture::record());
@@ -382,21 +396,21 @@ struct Crossing {
 
 fn crossing() -> Crossing {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(backend).unwrap();
+    let store = Store::open(backend).now().unwrap();
     let (_root, master) = Root::create(PASSPHRASE).unwrap();
     store.vault().adopt(master).unwrap();
 
     // The tenancies first, because the scope is built from their ids and the
     // ids do not exist until the catalog allocates them.
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let prod = catalog.create_namespace("prod").unwrap().id;
-    let staging = catalog.create_namespace("staging").unwrap().id;
-    let people = catalog.create_database(prod, "people").unwrap().id;
-    let payroll = catalog.create_database(prod, "payroll").unwrap().id;
-    let finance = catalog.create_database(prod, "finance").unwrap().id;
-    let other_people = catalog.create_database(staging, "people").unwrap().id;
-    transaction.commit().unwrap();
+    let prod = catalog.create_namespace("prod").now().unwrap().id;
+    let staging = catalog.create_namespace("staging").now().unwrap().id;
+    let people = catalog.create_database(prod, "people").now().unwrap().id;
+    let payroll = catalog.create_database(prod, "payroll").now().unwrap().id;
+    let finance = catalog.create_database(prod, "finance").now().unwrap().id;
+    let other_people = catalog.create_database(staging, "people").now().unwrap().id;
+    transaction.commit().now().unwrap();
 
     let mint = |namespace, database| {
         let scope = vault_key_scope(namespace, database, "credentials");
@@ -408,7 +422,7 @@ fn crossing() -> Crossing {
     let prod_people_key = mint(prod, people);
     let finance_key = mint(prod, finance);
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     let mut declared = Vec::new();
     for (namespace, database, key) in [
@@ -429,6 +443,7 @@ fn crossing() -> Crossing {
                     ..TableShape::default()
                 },
             )
+            .now()
             .unwrap();
         catalog
             .create_field(
@@ -440,10 +455,11 @@ fn crossing() -> Crossing {
                     ..FieldShape::default()
                 },
             )
+            .now()
             .unwrap();
         declared.push(table);
     }
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let control = declared.pop().unwrap();
     let across_namespaces = declared.pop().unwrap();
@@ -463,17 +479,17 @@ fn crossing() -> Crossing {
 /// Not `?`-shaped: a failing seal leaves the transaction open, and every other
 /// test in this file ends one explicitly rather than trusting a drop.
 fn attempt_write(store: &Store, vault: &TableDefinition) -> Result<(), Error> {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let address = RecordAddress::new(
         vault.namespace,
         vault.database,
         vault.id,
         RecordId::Text("ada".to_owned()),
     );
-    match seal_secrets(&mut transaction, &address, Fixture::record()) {
+    match seal_secrets(&mut transaction, &address, Fixture::record()).now() {
         Ok(sealed) => {
             transaction.put(address, encode_payload(&sealed).into_bytes());
-            transaction.commit().map(|_| ())
+            transaction.commit().now().map(|_| ())
         }
         Err(error) => {
             transaction.rollback();
@@ -530,7 +546,9 @@ fn a_vault_key_from_another_tenancy_does_not_open_this_vault() {
 // that refused everything would pass the first test.
 
 fn unsealed_for(period: std::time::Duration) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     store.vault().last_for(period);
     let (_, master) = Root::create(PASSPHRASE).unwrap();
     store.vault().adopt(master).unwrap();

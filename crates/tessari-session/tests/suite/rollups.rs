@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -21,13 +23,15 @@ const RECOMPUTED: &str = "SELECT sensor, time::bucket(at, 1h) AS window, count(*
      GROUP BY sensor, time::bucket(at, 1h);";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn opened(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE t; USE NAMESPACE t; DEFINE DATABASE d; USE DATABASE d; \
              DEFINE SERIES readings RETAIN 36500d TIME at;",
         )
@@ -40,7 +44,7 @@ fn rows(
     session: &mut Session<'_>,
     read: &str,
 ) -> BTreeMap<(String, String), BTreeMap<String, Value>> {
-    let Outcome::Records { records, .. } = session.run(read).unwrap().pop().unwrap() else {
+    let Outcome::Records { records, .. } = session.run_now(read).unwrap().pop().unwrap() else {
         panic!("a read answers with records");
     };
     records
@@ -92,11 +96,11 @@ fn a_rollup_equals_its_recomputation_after_every_batch() {
     let mut ids: Vec<String> = Vec::new();
     // Written before the rollup exists, so the backfill is what folds these.
     for _ in 0..40 {
-        if let Some(Outcome::Keys(keys)) = session.run(&reading(&mut draw)).unwrap().pop() {
+        if let Some(Outcome::Keys(keys)) = session.run_now(&reading(&mut draw)).unwrap().pop() {
             ids.push(keys[0].to_literal());
         }
     }
-    session.run(ROLLUP).unwrap();
+    session.run_now(ROLLUP).unwrap();
     assert_eq!(
         rows(&mut session, "SELECT * FROM hourly;"),
         rows(&mut session, RECOMPUTED)
@@ -122,7 +126,7 @@ fn a_rollup_equals_its_recomputation_after_every_batch() {
             script.push_str(&format!(" DELETE readings:{id};"));
         }
         script.push_str(" COMMIT;");
-        for outcome in session.run(&script).unwrap() {
+        for outcome in session.run_now(&script).unwrap() {
             if let Outcome::Keys(keys) = outcome {
                 ids.extend(keys.iter().map(tessari_types::RecordId::to_literal));
             }
@@ -140,16 +144,21 @@ fn a_write_open_across_a_declaration_retries_and_is_then_folded() {
     let store = store();
     let mut writer = opened(&store);
     let mut declarer = Session::new(&store);
-    declarer.run("USE NAMESPACE t; USE DATABASE d;").unwrap();
+    declarer
+        .run_now("USE NAMESPACE t; USE DATABASE d;")
+        .unwrap();
     // The raw write's transaction is open while the declaration commits.
-    let straddled: tessari_session::Result<()> = writer.atomically(|work| {
-        work.run_with(
-            "CREATE readings = { sensor: 's0', v: 5, at: datetime '2026-09-29T10:00:00Z' };",
-            &tessari_session::Parameters::new(),
-        )?;
-        declarer.run(ROLLUP)?;
-        Ok(())
-    });
+    let straddled: tessari_session::Result<()> = writer
+        .atomically(async |work| {
+            work.run_with(
+                "CREATE readings = { sensor: 's0', v: 5, at: datetime '2026-09-29T10:00:00Z' };",
+                &tessari_session::Parameters::new(),
+            )
+            .await?;
+            declarer.run(ROLLUP).await?;
+            Ok(())
+        })
+        .now();
     let refused = straddled.unwrap_err();
     assert!(
         matches!(
@@ -159,7 +168,7 @@ fn a_write_open_across_a_declaration_retries_and_is_then_folded() {
         "{refused:?}"
     );
     writer
-        .run("CREATE readings = { sensor: 's0', v: 5, at: datetime '2026-09-29T10:00:00Z' };")
+        .run_now("CREATE readings = { sensor: 's0', v: 5, at: datetime '2026-09-29T10:00:00Z' };")
         .unwrap();
     assert_eq!(
         rows(&mut writer, "SELECT * FROM hourly;"),
@@ -172,13 +181,15 @@ fn what_a_rollup_cannot_keep_or_be_asked_is_refused() {
     let store = store();
     let mut session = opened(&store);
     let refused =
-        |session: &mut Session<'_>, script: &str| session.run(script).unwrap_err().to_string();
+        |session: &mut Session<'_>, script: &str| session.run_now(script).unwrap_err().to_string();
     let mean = refused(
         &mut session,
         "DEFINE ROLLUP m FROM readings WINDOW 1h COMPUTE mean(v) AS avg RETAIN 1d;",
     );
     assert!(mean.contains("divide"), "{mean}");
-    session.run("DEFINE SERIES arrivals RETAIN 1d;").unwrap();
+    session
+        .run_now("DEFINE SERIES arrivals RETAIN 1d;")
+        .unwrap();
     let plain = refused(
         &mut session,
         "DEFINE ROLLUP a FROM arrivals WINDOW 1h COMPUTE count(*) AS n RETAIN 1d;",
@@ -186,8 +197,8 @@ fn what_a_rollup_cannot_keep_or_be_asked_is_refused() {
     assert!(plain.contains("declared with `TIME`"), "{plain}");
     let inside = refused(&mut session, &format!("BEGIN; {ROLLUP}"));
     assert!(inside.contains("outside `BEGIN"), "{inside}");
-    session.run("CANCEL;").ok();
-    session.run(ROLLUP).unwrap();
+    session.run_now("CANCEL;").ok();
+    session.run_now(ROLLUP).unwrap();
     let written = refused(
         &mut session,
         "CREATE hourly = { window: datetime '2026-09-29T10:00:00Z', n: 1 };",
@@ -196,7 +207,7 @@ fn what_a_rollup_cannot_keep_or_be_asked_is_refused() {
     let dropped = refused(&mut session, "DROP SERIES readings;");
     assert!(dropped.contains("drop them first"), "{dropped}");
     session
-        .run("DROP ROLLUP hourly; DROP SERIES readings;")
+        .run_now("DROP ROLLUP hourly; DROP SERIES readings;")
         .unwrap();
 }
 
@@ -207,12 +218,12 @@ fn what_a_rollup_cannot_keep_or_be_asked_is_refused() {
 fn a_float_sum_kept_insert_by_insert_is_the_exact_total() {
     let store = store();
     let mut session = opened(&store);
-    session.run(ROLLUP).unwrap();
+    session.run_now(ROLLUP).unwrap();
     // 1e16 + 1.0 rounds back to 1e16, so a running rounded total loses every
     // 1.0 and ends at 0 where the exact total is 4.
     for v in ["1e16", "1.0", "1.0", "1.0", "1.0", "-1e16"] {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE readings = {{ sensor: 'f', v: {v}, at: datetime '2026-09-29T10:00:00Z' }};"
             ))
             .unwrap();
@@ -223,7 +234,7 @@ fn a_float_sum_kept_insert_by_insert_is_the_exact_total() {
     assert_eq!(kept, rows(&mut session, RECOMPUTED));
     // And one more insert into the same window keeps it exact.
     session
-        .run("CREATE readings = { sensor: 'f', v: 0.5, at: datetime '2026-09-29T10:30:00Z' };")
+        .run_now("CREATE readings = { sensor: 'f', v: 0.5, at: datetime '2026-09-29T10:30:00Z' };")
         .unwrap();
     let kept = rows(&mut session, "SELECT * FROM hourly;");
     assert_eq!(kept.values().next().unwrap()["total"], Value::from(4.5_f64));
@@ -232,14 +243,14 @@ fn a_float_sum_kept_insert_by_insert_is_the_exact_total() {
     // the first: its row is no longer the one whose state is kept.
     for v in ["1e16", "1.0", "-1e16"] {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE readings = {{ sensor: 'f', v: {v}, at: datetime '2026-09-29T11:00:00Z' }};"
             ))
             .unwrap();
     }
     for v in ["1e16", "1.0", "1.0", "-1e16"] {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE readings = {{ sensor: 'f', v: {v}, at: datetime '2026-09-29T10:45:00Z' }};"
             ))
             .unwrap();
@@ -256,17 +267,18 @@ fn dropping_a_rollup_takes_its_exact_sums() {
 
     let store = store();
     let mut session = opened(&store);
-    session.run(ROLLUP).unwrap();
+    session.run_now(ROLLUP).unwrap();
     session
-        .run("CREATE readings = { sensor: 's0', v: 1.5, at: datetime '2026-09-29T10:00:00Z' };")
+        .run_now("CREATE readings = { sensor: 's0', v: 1.5, at: datetime '2026-09-29T10:00:00Z' };")
         .unwrap();
     let rollup = {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let catalog = tessari_storage::Catalog::new(&mut transaction);
-        let namespace = catalog.namespace_id("t").unwrap().unwrap();
-        let database = catalog.database_id(namespace, "d").unwrap().unwrap();
+        let namespace = catalog.namespace_id("t").now().unwrap().unwrap();
+        let database = catalog.database_id(namespace, "d").now().unwrap().unwrap();
         let rollup = catalog
             .table_id(namespace, database, "hourly")
+            .now()
             .unwrap()
             .unwrap();
         transaction.rollback();
@@ -275,11 +287,11 @@ fn dropping_a_rollup_takes_its_exact_sums() {
     // The key's state is kept under a digest of the key.
     let key = Sha256::digest(tessari_encoding::encode_payload(&Value::from("s0")).into_bytes());
     let kept = |store: &Store| {
-        let transaction = store.begin().unwrap();
-        transaction.rollup_state(rollup, &key[..16]).unwrap()
+        let transaction = store.begin().now().unwrap();
+        transaction.rollup_state(rollup, &key[..16]).now().unwrap()
     };
     // Pinned before the drop, so the absence after it is not vacuous.
     assert!(kept(&store).is_some());
-    session.run("DROP ROLLUP hourly;").unwrap();
+    session.run_now("DROP ROLLUP hourly;").unwrap();
     assert_eq!(kept(&store), None);
 }

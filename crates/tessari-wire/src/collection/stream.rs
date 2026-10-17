@@ -48,17 +48,16 @@
 //! stream from where the follower stands, and the leader marks the restart
 //! ([`PeerFrame::Restarted`]) so the rounds cut before it can be thrown away.
 
-use std::net::TcpStream;
+use std::time::Duration;
 
-use rustls::ClientConnection;
 use tessari_encoding::NODE_ID_LEN;
 
 use super::{Collect, Collected, Origin};
 use crate::error::{Error, Result};
-use crate::frame;
 use crate::keys::PeerKeys;
-use crate::link::{hear, open, say};
+use crate::link::{Link, framed, hear, open, say};
 use crate::peer::{Hello, PeerFrame};
+use crate::{frame, frame_async};
 
 /// The first build whose leaders push a held stream (ADR-0120).
 pub const PUSHED_FROM: tessari_encoding::NodeVersion = tessari_encoding::NodeVersion {
@@ -175,16 +174,15 @@ impl Streamed {
 /// # Errors
 ///
 /// The first log's refusal, unchanged — the caller ends the stream on it.
-pub(crate) fn answer(
+pub(crate) async fn answer(
     origin: &dyn Origin,
     follower: [u8; NODE_ID_LEN],
     asked: &StreamAsk,
 ) -> Result<Streamed> {
-    let answers = asked
-        .asks
-        .iter()
-        .map(|ask| origin.collected(follower, *ask))
-        .collect::<Result<Vec<_>>>()?;
+    let mut answers = Vec::with_capacity(asked.asks.len());
+    for ask in &asked.asks {
+        answers.push(origin.collected(follower, *ask).await?);
+    }
     Ok(Streamed { answers })
 }
 
@@ -194,16 +192,15 @@ pub(crate) fn answer(
 /// # Errors
 ///
 /// As [`answer`].
-pub(crate) fn answer_pushed(
+pub(crate) async fn answer_pushed(
     origin: &dyn Origin,
     follower: [u8; NODE_ID_LEN],
     asked: &StreamAsk,
 ) -> Result<Streamed> {
-    let answers = asked
-        .asks
-        .iter()
-        .map(|ask| origin.collected_pushed(follower, *ask))
-        .collect::<Result<Vec<_>>>()?;
+    let mut answers = Vec::with_capacity(asked.asks.len());
+    for ask in &asked.asks {
+        answers.push(origin.collected_pushed(follower, *ask).await?);
+    }
     Ok(Streamed { answers })
 }
 
@@ -212,25 +209,30 @@ pub(crate) fn answer_pushed(
 /// # Errors
 ///
 /// The first log's store failure.
-pub(crate) fn held(
+pub(crate) async fn held(
     origin: &dyn Origin,
     follower: [u8; NODE_ID_LEN],
     holds: &StreamAsk,
 ) -> Result<()> {
-    holds
-        .asks
-        .iter()
-        .try_for_each(|ask| origin.held(follower, *ask))
+    for ask in &holds.asks {
+        origin.held(follower, *ask).await?;
+    }
+    Ok(())
 }
+
+/// How long a write on the stream may take: the greeting's deadline, which
+/// bounded every write when the link was a blocking socket.
+const GREETING: Duration = Duration::from_secs(tessari_constants::GREETING_SECONDS);
 
 /// A follower's held stream to one leader.
 ///
-/// Synchronous, like every dial on the peer link (`link.rs`): it is driven from
-/// a thread of its own, because a round blocks on the leader's next commit and
-/// a runtime worker must never be the thing that blocks.
+/// Every wait on it is bounded: a read by the silence it was opened with, a
+/// write by the greeting's deadline, so a task driving it ends rather than
+/// waiting on a leader that went away.
 pub struct Following {
-    session: ClientConnection,
-    socket: TcpStream,
+    link: Link,
+    /// The longest the leader may say nothing before the stream counts as lost.
+    silence: Duration,
     /// What the handshake judged the leader by, asked again for every frame:
     /// a leader whose certificate is revoked while it streams is followed no
     /// further (ADR-0108 D6).
@@ -254,23 +256,18 @@ impl Following {
     /// # Errors
     ///
     /// Whatever the handshake refuses with, exactly as a collection round's dial.
-    pub fn open(
+    pub async fn open(
         peer: ([u8; NODE_ID_LEN], &str),
         keys: &PeerKeys,
         said: &Hello,
-        silence: std::time::Duration,
+        silence: Duration,
     ) -> Result<Self> {
-        let (mut session, mut socket) = open(peer.1, keys, peer.0)?;
-        let heard = {
-            let mut link = rustls::Stream::new(&mut session, &mut socket);
-            say(&mut link, said)?;
-            hear(&mut link)?
-        };
-        // After the greeting, which keeps the greeting's own deadline.
-        socket.set_read_timeout(Some(silence))?;
+        let mut link = open(peer.1, keys, peer.0).await?;
+        framed(GREETING, say(&mut link, said)).await?;
+        let heard = framed(GREETING, hear(&mut link)).await?;
         Ok(Self {
-            session,
-            socket,
+            link,
+            silence,
             keys: keys.clone(),
             leader_build: heard.build,
         })
@@ -291,9 +288,13 @@ impl Following {
     /// # Errors
     ///
     /// The transport's failure.
-    pub fn stream_from(&mut self, holds: &StreamAsk) -> Result<()> {
-        let mut link = rustls::Stream::new(&mut self.session, &mut self.socket);
-        frame::write_tagged(&mut link, PeerFrame::StreamFrom.tag(), &holds.encode())
+    pub async fn stream_from(&mut self, holds: &StreamAsk) -> Result<()> {
+        let body = holds.encode();
+        framed(
+            GREETING,
+            frame_async::write_tagged(&mut self.link, PeerFrame::StreamFrom.tag(), &body),
+        )
+        .await
     }
 
     /// Say what this node now holds durably, per log — the first position it
@@ -302,9 +303,13 @@ impl Following {
     /// # Errors
     ///
     /// The transport's failure.
-    pub fn held(&mut self, holds: &StreamAsk) -> Result<()> {
-        let mut link = rustls::Stream::new(&mut self.session, &mut self.socket);
-        frame::write_tagged(&mut link, PeerFrame::Held.tag(), &holds.encode())
+    pub async fn held(&mut self, holds: &StreamAsk) -> Result<()> {
+        let body = holds.encode();
+        framed(
+            GREETING,
+            frame_async::write_tagged(&mut self.link, PeerFrame::Held.tag(), &body),
+        )
+        .await
     }
 
     /// Ask from where this node stands. The leader answers with any number of
@@ -314,25 +319,30 @@ impl Following {
     /// # Errors
     ///
     /// The transport's failure.
-    pub fn ask(&mut self, asked: &StreamAsk) -> Result<()> {
-        let mut link = rustls::Stream::new(&mut self.session, &mut self.socket);
-        frame::write_tagged(&mut link, PeerFrame::Stream.tag(), &asked.encode())
+    pub async fn ask(&mut self, asked: &StreamAsk) -> Result<()> {
+        let body = asked.encode();
+        framed(
+            GREETING,
+            frame_async::write_tagged(&mut self.link, PeerFrame::Stream.tag(), &body),
+        )
+        .await
     }
 
     /// The leader's next frame: a heartbeat ([`Streamed::is_heartbeat`]) or the
     /// round answering the last ask.
     ///
-    /// Blocks until the leader sends; the read deadline set at
-    /// [`Following::open`] is what turns a leader that went silent into an
-    /// error rather than a wait.
+    /// Waits until the leader sends; the silence given to [`Following::open`]
+    /// is what turns a leader that went silent into an error rather than a wait.
     ///
     /// # Errors
     ///
     /// [`Error::Uncollectable`] or [`Error::Unsubscribed`] as the leader sent
     /// them, and the transport's failure otherwise.
-    pub fn heard(&mut self) -> Result<Streamed> {
+    pub async fn heard(&mut self) -> Result<Streamed> {
         let admitted = self
-            .session
+            .link
+            .get_ref()
+            .1
             .peer_certificates()
             .and_then(<[_]>::first)
             .is_some_and(|presented| self.keys.still_admits(presented));
@@ -342,8 +352,9 @@ impl Following {
                 class: None,
             });
         }
-        let mut link = rustls::Stream::new(&mut self.session, &mut self.socket);
-        let (tag, body) = frame::read_tagged(&mut link)?.ok_or(Error::Truncated)?;
+        let (tag, body) = framed(self.silence, frame_async::read_tagged(&mut self.link))
+            .await?
+            .ok_or(Error::Truncated)?;
         match PeerFrame::from_tag(tag) {
             Some(PeerFrame::Streamed) => Streamed::decode(&body),
             Some(PeerFrame::Uncollectable) => {
@@ -364,9 +375,11 @@ impl Following {
     /// # Errors
     ///
     /// As [`Following::heard`].
-    pub fn next_pushed(&mut self) -> Result<Pushed> {
+    pub async fn next_pushed(&mut self) -> Result<Pushed> {
         let admitted = self
-            .session
+            .link
+            .get_ref()
+            .1
             .peer_certificates()
             .and_then(<[_]>::first)
             .is_some_and(|presented| self.keys.still_admits(presented));
@@ -376,8 +389,9 @@ impl Following {
                 class: None,
             });
         }
-        let mut link = rustls::Stream::new(&mut self.session, &mut self.socket);
-        let (tag, body) = frame::read_tagged(&mut link)?.ok_or(Error::Truncated)?;
+        let (tag, body) = framed(self.silence, frame_async::read_tagged(&mut self.link))
+            .await?
+            .ok_or(Error::Truncated)?;
         match PeerFrame::from_tag(tag) {
             Some(PeerFrame::Restarted) => Ok(Pushed::Restarted),
             Some(PeerFrame::Streamed) => {
@@ -414,9 +428,14 @@ pub enum Pushed {
 impl Drop for Following {
     fn drop(&mut self) {
         // Said properly for the reason `call` says it: a dropped socket reaches
-        // the leader as a fault it did not have.
-        self.session.send_close_notify();
-        drop(self.session.write_tls(&mut self.socket));
+        // the leader as a fault it did not have. Written without waiting, as
+        // much as the socket takes now; a drop cannot await.
+        let (socket, session) = self.link.get_mut();
+        session.send_close_notify();
+        let mut goodbye = Vec::new();
+        if session.write_tls(&mut goodbye).is_ok() {
+            drop(socket.try_write(&goodbye));
+        }
     }
 }
 

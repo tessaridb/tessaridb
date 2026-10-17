@@ -26,7 +26,7 @@ use crate::shape::Topmost;
 
 impl Session<'_> {
     /// The answer of a fused read over the records its source produced.
-    pub(super) fn fused_answer(
+    pub(super) async fn fused_answer(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
@@ -34,7 +34,7 @@ impl Session<'_> {
         (searched, noticed): (&Searched, &Noticed),
         (budget, plan, mut notes): (&mut Budget, Plan, Vec<Note>),
     ) -> Result<Answered> {
-        let keys = self.folded_order(transaction, &select.order)?;
+        let keys = self.folded_order(transaction, &select.order).await?;
         let mut shaping = Shaping::new(
             self,
             None,
@@ -45,7 +45,7 @@ impl Session<'_> {
             noticed,
         );
         for (id, record) in records {
-            if shaping.take(transaction, id, record)?.is_break() {
+            if shaping.take(transaction, id, record).await?.is_break() {
                 break;
             }
         }
@@ -55,18 +55,21 @@ impl Session<'_> {
         let keep = select.limit.map_or(usize::MAX, |limit| {
             usize::try_from(limit).unwrap_or(usize::MAX)
         });
-        let wanted = self.shaped(transaction, select)?;
+        let wanted = self.shaped(transaction, select).await?;
         let mut answered = Vec::new();
         for (id, record, ranks) in shaping.finish_fused().into_iter().skip(skip).take(keep) {
             let shaped = match &wanted {
-                Some(wanted) => self.project_with(
-                    transaction,
-                    &id,
-                    &record,
-                    wanted,
-                    (searched, noticed),
-                    (Some(&ranks), None),
-                )?,
+                Some(wanted) => {
+                    self.project_with(
+                        transaction,
+                        &id,
+                        &record,
+                        wanted,
+                        (searched, noticed),
+                        (Some(&ranks), None),
+                    )
+                    .await?
+                }
                 None => record,
             };
             answered.push((id, shaped));

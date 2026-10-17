@@ -28,6 +28,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Note, Outcome, Parameters, Session};
@@ -48,18 +50,20 @@ CREATE notes:1 = { title: 'first' };
 ";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.run(SCHEMA).unwrap();
+    session.run_now(SCHEMA).unwrap();
     session
 }
 
 fn run(session: &mut Session<'_>, script: &str) -> Outcome {
     session
-        .run(script)
+        .run_now(script)
         .unwrap_or_else(|error| panic!("{script}: {error}"))
         .pop()
         .expect("one outcome")
@@ -67,7 +71,7 @@ fn run(session: &mut Session<'_>, script: &str) -> Outcome {
 
 fn refuse(session: &mut Session<'_>, script: &str) -> String {
     session
-        .run(script)
+        .run_now(script)
         .err()
         .unwrap_or_else(|| panic!("{script}: answered instead of refusing"))
         .to_string()
@@ -323,7 +327,7 @@ fn a_cursor_past_the_last_record_answers_with_nothing() {
 /// asked for.
 fn pages(session: &mut Session<'_>, script: &str) -> Vec<Vec<i64>> {
     session
-        .run(script)
+        .run_now(script)
         .unwrap_or_else(|error| panic!("{script}: {error}"))
         .iter()
         .filter(|answer| answer.records().is_some())
@@ -418,7 +422,7 @@ fn the_anchor_may_be_a_bound_value_like_any_record_identity() {
     let mut supplied = Parameters::new();
     supplied.insert("anchor".to_owned(), Value::Number(Number::Integer(2)));
     let bound = session
-        .run_with(
+        .run_with_now(
             "SELECT * FROM people AFTER people:$anchor LIMIT 2;",
             &supplied,
         )

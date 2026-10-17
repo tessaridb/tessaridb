@@ -6,15 +6,16 @@
 
 mod records;
 mod spans;
-use std::ops::{Bound, ControlFlow};
+use std::ops::Bound;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
-use tessari_encoding::{RecordKey, RecordValue};
+use tessari_encoding::RecordKey;
 use tessari_kv::{Key, KeyRange, Keyspace, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
 use super::Transaction;
 use super::address::{after, resuming_after};
+use super::walk::{RecordWalk, TableWalk};
 
 /// A span of record identities, as the walk carries it.
 ///
@@ -126,13 +127,14 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn scan_table(
+    pub async fn scan_table(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
         table: TableId,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
         self.table_records(namespace, database, table, Walk::default())
+            .await
     }
 
     /// Every live record of one table, for a pass that will not read them again.
@@ -149,7 +151,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn sweep_table(
+    pub async fn sweep_table(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -164,13 +166,14 @@ impl Transaction<'_> {
                 ..Walk::default()
             },
         )
+        .await
     }
 
     /// Every live record of one table, handed over as the walk finds them.
     ///
     /// The streaming twin of [`Self::scan_table`], and one difference is the
-    /// whole of it: `hand` may answer `Break`, and the walk then stops where it
-    /// stands instead of after the table.
+    /// whole of it: the caller may stop between rounds, and nothing after the
+    /// last round it asked for is read.
     ///
     /// # Why this exists beside a method that already reads a table
     ///
@@ -192,40 +195,33 @@ impl Transaction<'_> {
     /// because the source stops. What streams is the source's own buffering, one
     /// level below the answer, exactly as ADR-0014 already did for decoding.
     ///
-    /// # What `hand` receives
+    /// # What a round holds
     ///
-    /// The transaction itself, because a caller that stops early is deciding
-    /// something — testing a condition, feeding a consumer — and both need it.
-    /// Records arrive in key order with this transaction's own uncommitted
+    /// Records in key order with this transaction's own uncommitted
     /// writes merged into that order, deleted records left out, and a record
     /// this transaction has written answered from the write rather than from the
     /// committed version underneath it.
     ///
     /// # Errors
     ///
-    /// Returns an error when the backend fails, when stored bytes cannot be
-    /// decoded, or when `hand` itself fails.
-    pub fn walk_table<F, E>(
-        &mut self,
+    /// Returns an error when the series floor cannot be read; the rounds report
+    /// the backend's failures and undecodable stored bytes.
+    pub async fn walk_table(
+        &self,
         namespace: NamespaceId,
         database: DatabaseId,
         table: TableId,
-        mut hand: F,
-    ) -> std::result::Result<(), E>
-    where
-        F: FnMut(&mut Self, RecordId, Vec<u8>) -> std::result::Result<ControlFlow<()>, E>,
-        E: From<crate::error::Error>,
-    {
+    ) -> Result<RecordWalk> {
         let prefix = RecordKey::table_prefix(namespace, database, table);
-        // Copied out before the walk rather than read in step with it: `hand`
-        // takes the transaction, so nothing may hold a borrow of it across the
-        // call. There are as many of these as this transaction has written to
-        // this table, which for the read that motivates this walk is none.
         // The streaming twin opens at the floor for the reason the collecting
         // walk does, and it is the same call so the two cannot drift about where
         // a series table begins.
-        let floor = self.series_floor(namespace, table).map_err(E::from)?;
-        let mut pending = self
+        let floor = self.series_floor(namespace, table).await?;
+        // Copied out when the walk begins rather than read in step with it: the
+        // caller holds the transaction between rounds and may write through it.
+        // There are as many of these as this transaction has written to this
+        // table, which for the read that motivates this walk is none.
+        let pending = self
             .writes
             .iter()
             .filter(|(address, _)| {
@@ -239,76 +235,24 @@ impl Transaction<'_> {
                     && floor.as_ref().is_none_or(|floor| &address.id >= floor)
             })
             .map(|(address, value)| (address.id.clone(), value.clone()))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .peekable();
-
-        let mut resolved: Option<RecordId> = None;
-        let mut from = match &floor {
+            .collect();
+        let from = match &floor {
             Some(floor) => RecordKey::versions_prefix(namespace, database, table, floor),
             None => prefix.clone(),
         };
-        let end = after(prefix);
-        loop {
-            // Batched although the walk names no bound. `table_records` asks for
-            // everything in one request because it is going to hold everything
-            // anyway; here a single unbounded request would read the table
-            // before the first record could ask to stop, which is the cost this
-            // walk exists to remove.
-            let batch = self.batch_of(&from, &end, Some(RANGE_SCAN_BATCH_ENTRIES))?;
-            let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
-            let entries = batch.len();
-            for (id, value) in self.settled(batch, &mut resolved)? {
-                // Pending writes sorting before this record come first, so the
-                // records arrive in key order whether they are committed or not
-                // — the order `scan_table` answers in, and therefore the order a
-                // bound above truncates.
-                while let Some((waiting, written)) = pending.next_if(|(waiting, _)| waiting < &id) {
-                    if let RecordValue::Present(payload) = written
-                        && hand(self, waiting, payload)?.is_break()
-                    {
-                        return Ok(());
-                    }
-                }
-                // A record this transaction has written is answered from the
-                // write and not from the committed version beneath it —
-                // including when the write is a tombstone, which removes it.
-                let value = match pending.next_if(|(waiting, _)| waiting == &id) {
-                    Some((_, written)) => written,
-                    None => value,
-                };
-                if let RecordValue::Present(payload) = value
-                    && hand(self, id, payload)?.is_break()
-                {
-                    return Ok(());
-                }
-            }
-            // A batch shorter than the one asked for is the end of the table.
-            if entries < RANGE_SCAN_BATCH_ENTRIES {
-                break;
-            }
-            let Some(last) = last else {
-                break;
-            };
-            from = resuming_after(last);
-        }
-        // Whatever the committed walk never reached: records written in this
-        // transaction that sort after the last one on disk.
-        for (waiting, written) in pending {
-            if let RecordValue::Present(payload) = written
-                && hand(self, waiting, payload)?.is_break()
-            {
-                return Ok(());
-            }
-        }
-        Ok(())
+        Ok(RecordWalk::table(TableWalk {
+            pending,
+            resolved: None,
+            from: Some(from),
+            end: after(prefix),
+        }))
     }
 
     /// One batched scan of a span, up to `limit` entries.
     ///
     /// The batching is the backend's request limit rather than the caller's, so a
     /// caller asking for everything does not ask for it in one allocation.
-    pub(super) fn scan_once(
+    pub(super) async fn scan_once(
         &self,
         keyspace: Keyspace,
         span: KeyRange,
@@ -321,12 +265,19 @@ impl Transaction<'_> {
             Bound::Unbounded => Vec::new(),
         };
         while taken.len() < limit {
-            let batch = self.store.backend().scan(&ScanRequest {
-                keyspace,
-                range: KeyRange::from_bounds(Bound::Included(Key::from(from)), span.end().clone()),
-                direction: ScanDirection::Forward,
-                limit: Some(RANGE_SCAN_BATCH_ENTRIES.min(limit.saturating_sub(taken.len()))),
-            })?;
+            let batch = self
+                .store
+                .backend()
+                .scan(&ScanRequest {
+                    keyspace,
+                    range: KeyRange::from_bounds(
+                        Bound::Included(Key::from(from)),
+                        span.end().clone(),
+                    ),
+                    direction: ScanDirection::Forward,
+                    limit: Some(RANGE_SCAN_BATCH_ENTRIES.min(limit.saturating_sub(taken.len()))),
+                })
+                .await?;
             let full = batch.len() >= RANGE_SCAN_BATCH_ENTRIES;
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             taken.extend(batch);

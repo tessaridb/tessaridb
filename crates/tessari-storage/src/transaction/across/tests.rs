@@ -1,6 +1,7 @@
 //! The three records of a transaction across leaders, written on one node
 //! through the commit path, with every refusal the decision asks of them.
 
+use crate::now::Now;
 use std::sync::Arc;
 
 use tessari_encoding::{
@@ -28,21 +29,22 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Result<Self> {
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)?;
-        let mut transaction = store.begin()?;
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).now()?;
+        let mut transaction = store.begin().now()?;
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("ns")?.id;
-        let database = catalog.create_database(namespace, "db")?.id;
+        let namespace = catalog.create_namespace("ns").now()?.id;
+        let database = catalog.create_database(namespace, "db").now()?.id;
         let table = catalog
-            .create_table(namespace, database, "t", TableShape::default())?
+            .create_table(namespace, database, "t", TableShape::default())
+            .now()?
             .id;
-        transaction.commit()?;
-        let mut transaction = store.begin()?;
+        transaction.commit().now()?;
+        let mut transaction = store.begin().now()?;
         transaction.put(
             RecordAddress::new(namespace, database, table, RecordId::from("r")),
             b"old".to_vec(),
         );
-        let log = transaction.commit_placed()?.log;
+        let log = transaction.commit_placed().now()?.log;
         Ok(Self {
             store,
             namespace,
@@ -66,17 +68,19 @@ impl Fixture {
     }
 
     fn seen(&self) -> Result<Sequence> {
-        self.store.committed_tail(self.log)
+        self.store.committed_tail(self.log).now()
     }
 
     fn prepare(&self, seen: Sequence) -> Result<crate::transaction::Committed> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().now()?;
         transaction.put(self.address(), b"new".to_vec());
-        transaction.prepare_across(TRANSACTION, self.coordinator(), seen)
+        transaction
+            .prepare_across(TRANSACTION, self.coordinator(), seen)
+            .now()
     }
 
     fn read(&self) -> Result<Option<Vec<u8>>> {
-        self.store.begin()?.get(&self.address())
+        self.store.begin().now()?.get(&self.address()).now()
     }
 
     fn record(&self, decision: Decision) -> TransactionRecord {
@@ -92,17 +96,18 @@ impl Fixture {
 
     fn decide(&self, decision: Decision) -> Result<crate::transaction::Committed> {
         self.store
-            .begin()?
+            .begin()
+            .now()?
             .decide_across(TRANSACTION, self.record(decision))
+            .now()
     }
 
     fn resolve(&self, committed: bool) -> Result<Option<crate::transaction::Committed>> {
-        self.store.begin()?.resolve_across(
-            TRANSACTION,
-            committed,
-            &[self.address()],
-            &self.prepared(),
-        )
+        self.store
+            .begin()
+            .now()?
+            .resolve_across(TRANSACTION, committed, &[self.address()], &self.prepared())
+            .now()
     }
 
     /// The participants as a committed record names them.
@@ -116,8 +121,9 @@ impl Fixture {
     fn logged(&self, at: Sequence) -> Result<LogRecord> {
         let value = self
             .store
-            .backend()
-            .get(LogKey::keyspace(), &LogKey::new(self.log, at).encode())?
+            .engine()
+            .get(LogKey::keyspace(), &LogKey::new(self.log, at).encode())
+            .now()?
             .ok_or(Error::AcrossMalformed {
                 part: "test",
                 problem: "no record at the position the commit answered",
@@ -161,9 +167,9 @@ fn a_prepare_is_refused_for_a_record_written_after_what_its_node_had_seen() -> R
     // Committed on the participant after the transaction's node read position
     // `seen`: only the log walk can see it, since this prepare's own snapshot
     // is newer than the write.
-    let mut other = fixture.store.begin()?;
+    let mut other = fixture.store.begin().now()?;
     other.put(fixture.address(), b"meanwhile".to_vec());
-    other.commit()?;
+    other.commit().now()?;
     let refused = fixture.prepare(seen);
     assert!(
         matches!(refused, Err(Error::Conflict { .. })),
@@ -179,7 +185,7 @@ fn a_prepare_is_refused_when_the_log_no_longer_reaches_what_was_seen() -> Result
     let fixture = Fixture::new()?;
     let seen = fixture.seen()?;
     for value in [b"a".to_vec(), b"b".to_vec()] {
-        let mut writer = fixture.store.begin()?;
+        let mut writer = fixture.store.begin().now()?;
         writer.put(
             RecordAddress::new(
                 fixture.namespace,
@@ -189,11 +195,12 @@ fn a_prepare_is_refused_when_the_log_no_longer_reaches_what_was_seen() -> Result
             ),
             value,
         );
-        writer.commit()?;
+        writer.commit().now()?;
     }
     fixture
         .store
-        .prune_log(fixture.log, Sequence::new(seen.get().saturating_add(1)))?;
+        .prune_log(fixture.log, Sequence::new(seen.get().saturating_add(1)))
+        .now()?;
     let refused = fixture.prepare(seen);
     assert!(
         matches!(refused, Err(Error::AcrossReadTooOld { .. })),
@@ -239,8 +246,10 @@ fn a_resolution_makes_the_value_once_and_then_finds_nothing_left() -> Result<()>
     // And the version keeps where it came from, resolved.
     let stored = fixture
         .store
-        .begin()?
-        .read_stamped_at(&fixture.address())?
+        .begin()
+        .now()?
+        .read_stamped_at(&fixture.address())
+        .now()?
         .map(|stored| stored.provenance().cloned());
     assert!(matches!(
         stored,
@@ -257,9 +266,9 @@ fn an_aborted_resolution_leaves_the_old_value_and_frees_the_record() -> Result<(
     fixture.prepare(fixture.seen()?)?;
     assert!(fixture.resolve(false)?.is_some());
     assert_eq!(fixture.read()?, Some(b"old".to_vec()));
-    let mut writer = fixture.store.begin()?;
+    let mut writer = fixture.store.begin().now()?;
     writer.put(fixture.address(), b"after".to_vec());
-    writer.commit()?;
+    writer.commit().now()?;
     Ok(())
 }
 
@@ -274,12 +283,12 @@ fn a_committed_resolution_must_say_where_every_prepare_landed() -> Result<()> {
         prepared_at: None,
     }];
     for participants in [&unplaced[..], &[]] {
-        let refused = fixture.store.begin()?.resolve_across(
-            TRANSACTION,
-            true,
-            &[fixture.address()],
-            participants,
-        );
+        let refused = fixture
+            .store
+            .begin()
+            .now()?
+            .resolve_across(TRANSACTION, true, &[fixture.address()], participants)
+            .now();
         assert!(
             matches!(refused, Err(Error::AcrossMalformed { .. })),
             "{refused:?}"
@@ -304,7 +313,7 @@ fn a_record_found_absent_is_aborted_for_good() -> Result<()> {
 #[test]
 fn a_participant_resolves_every_intent_it_holds_without_being_told_where() -> Result<()> {
     let fixture = Fixture::new()?;
-    let mut transaction = fixture.store.begin()?;
+    let mut transaction = fixture.store.begin().now()?;
     for id in ["r", "s"] {
         transaction.put(
             RecordAddress::new(
@@ -316,24 +325,27 @@ fn a_participant_resolves_every_intent_it_holds_without_being_told_where() -> Re
             b"new".to_vec(),
         );
     }
-    transaction.prepare_across(TRANSACTION, fixture.coordinator(), fixture.seen()?)?;
-    assert_eq!(fixture.store.intents_of(TRANSACTION)?.len(), 2);
+    transaction
+        .prepare_across(TRANSACTION, fixture.coordinator(), fixture.seen()?)
+        .now()?;
+    assert_eq!(fixture.store.intents_of(TRANSACTION).now()?.len(), 2);
     assert_eq!(
-        fixture.store.standing_across()?,
+        fixture.store.standing_across().now()?,
         vec![(TRANSACTION, fixture.coordinator())]
     );
-    let resolved =
-        fixture
-            .store
-            .begin()?
-            .resolve_across(TRANSACTION, true, &[], &fixture.prepared())?;
+    let resolved = fixture
+        .store
+        .begin()
+        .now()?
+        .resolve_across(TRANSACTION, true, &[], &fixture.prepared())
+        .now()?;
     assert!(resolved.is_some());
     assert_eq!(fixture.read()?, Some(b"new".to_vec()));
     assert!(
-        fixture.store.intents_of(TRANSACTION)?.is_empty(),
+        fixture.store.intents_of(TRANSACTION).now()?.is_empty(),
         "the index went with them"
     );
-    assert!(fixture.store.standing_across()?.is_empty());
+    assert!(fixture.store.standing_across().now()?.is_empty());
     Ok(())
 }
 
@@ -341,9 +353,9 @@ fn a_participant_resolves_every_intent_it_holds_without_being_told_where() -> Re
 fn a_pending_record_is_listed_until_it_is_decided() -> Result<()> {
     let fixture = Fixture::new()?;
     fixture.decide(Decision::Pending)?;
-    assert_eq!(fixture.store.pending_across()?.len(), 1);
+    assert_eq!(fixture.store.pending_across().now()?.len(), 1);
     fixture.decide(Decision::Aborted)?;
-    assert!(fixture.store.pending_across()?.is_empty());
+    assert!(fixture.store.pending_across().now()?.is_empty());
     Ok(())
 }
 

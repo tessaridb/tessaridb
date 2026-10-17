@@ -16,14 +16,14 @@ impl Graph {
     /// **A read's budget never reaches the build.** [`Self::insert`] walks this
     /// same graph to choose a new node's neighbours and passes `None` — see the
     /// note there for what a leak would cost.
-    pub(crate) fn nearest(
+    pub(crate) async fn nearest(
         &self,
         query: &[f64],
         wanted: usize,
         effort: Option<usize>,
     ) -> Result<Vec<RecordId>> {
         let effort = effort.unwrap_or(EXPLORATION).max(wanted);
-        let Some(entry) = self.entry()? else {
+        let Some(entry) = self.entry().await? else {
             return Ok(Vec::new());
         };
         let mut seen: BTreeSet<RecordId> = BTreeSet::new();
@@ -33,20 +33,20 @@ impl Graph {
         let mut frontier: Vec<(f64, RecordId)> = Vec::new();
         let mut best: Vec<(f64, RecordId)> = Vec::new();
 
-        let start = self.at(entry.clone(), query)?;
+        let start = self.at(entry.clone(), query).await?;
         seen.insert(entry.clone());
         frontier.push((start, entry.clone()));
         best.push((start, entry));
 
         while let Some((_, current)) = take_nearest(&mut frontier) {
-            let Some(node) = self.nodes.get(&current)? else {
+            let Some(node) = self.nodes.get(&current).await? else {
                 continue;
             };
             // Stop when nothing in hand can improve on what is already held:
             // the classic greedy cut-off, and what keeps the walk sub-linear.
             if let Some((furthest, _)) = best.last()
                 && best.len() >= effort
-                && self.at(current.clone(), query)? > *furthest
+                && self.at(current.clone(), query).await? > *furthest
             {
                 break;
             }
@@ -59,10 +59,10 @@ impl Graph {
                 // not a candidate: offering it would answer with a record that
                 // is not in the index, which the resolution step would drop and
                 // which would meanwhile have taken a place in the answer.
-                if !self.nodes.contains(neighbour)? {
+                if !self.nodes.contains(neighbour).await? {
                     continue;
                 }
-                let distance = self.at(neighbour.clone(), query)?;
+                let distance = self.at(neighbour.clone(), query).await?;
                 frontier.push((distance, neighbour.clone()));
                 insert_sorted(&mut best, distance, neighbour.clone(), effort);
             }
@@ -100,8 +100,8 @@ impl Graph {
     /// `None` when there is nothing to measure — an index over fewer than two
     /// records has no answer a walk could get wrong, and absence reads as *never
     /// measured*, which is a different statement from a measured zero.
-    pub(crate) fn recall(&self) -> Result<Option<VectorRecall>> {
-        self.nodes.load_all()?;
+    pub(crate) async fn recall(&self) -> Result<Option<VectorRecall>> {
+        self.nodes.load_all().await?;
         let present = self.nodes.present();
         let records = present.len();
         if records < 2 {
@@ -120,7 +120,8 @@ impl Graph {
             // One more than the answer, because the query record is expected
             // back and is then dropped; `take` trims the case where it was not.
             let found: Vec<RecordId> = self
-                .nearest(&probe, MEASURED_AT.saturating_add(1), None)?
+                .nearest(&probe, MEASURED_AT.saturating_add(1), None)
+                .await?
                 .into_iter()
                 .filter(|other| other != id)
                 .take(MEASURED_AT)

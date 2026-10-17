@@ -3,6 +3,7 @@ name = "tessaridb-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
+authors = ["boogvar"]
 license = "BUSL-1.1"
 description = "Fuzz targets for every parser a node runs on bytes it did not write (G061 C3)"
 

@@ -31,7 +31,7 @@ impl Session<'_> {
     /// `FROM` is what bounds it — an incremental backup carries the records since
     /// a sequence — and a streaming answer is named in `docs/tessariql.md` §8 rather
     /// than left to be discovered by whoever backs up a large store first.
-    pub(crate) fn backup(
+    pub(crate) async fn backup(
         &self,
         from: Option<u64>,
         form: tessari_ql::BackupForm,
@@ -39,7 +39,7 @@ impl Session<'_> {
     ) -> Result<Outcome> {
         let mut held = Vec::new();
         if form == tessari_ql::BackupForm::Script {
-            let taken = self.state_script(of)?;
+            let taken = self.state_script(of).await?;
             // Sealed, a script is bytes like the other forms; plain, it stays
             // the text it is.
             return Ok(Outcome::Value(match &self.at_rest {
@@ -48,16 +48,16 @@ impl Session<'_> {
             }));
         }
         if form == tessari_ql::BackupForm::State {
-            let within = self.state_scope(of)?;
-            self.refuse_a_partial_snapshot(within)?;
+            let within = self.state_scope(of).await?;
+            self.refuse_a_partial_snapshot(within).await?;
             if let Some(out) = self.sink.take() {
-                return self.snapshot_streamed(within, out);
+                return self.snapshot_streamed(within, out).await;
             }
-            tessari_backup::write_state_within(self.store, within, &mut held).map_err(|error| {
-                Error::BackupFailed {
+            tessari_backup::write_state_within(self.store, within, &mut held)
+                .await
+                .map_err(|error| Error::BackupFailed {
                     reason: error.to_string(),
-                }
-            })?;
+                })?;
             return Ok(Outcome::Value(Value::Bytes(self.sealed(held)?)));
         }
         // No `FROM` backs up the store, which is every log it holds. A `FROM`
@@ -66,10 +66,11 @@ impl Session<'_> {
         // answering with a file that reads as whole and is missing the rest
         // (Q-624).
         match from.filter(|from| *from > 1) {
-            None => tessari_backup::write(self.store, &mut held),
+            None => tessari_backup::write(self.store, &mut held).await,
             Some(from) => {
-                let home =
-                    tessari_backup::only_log(self.store).map_err(|error| Error::BackupFailed {
+                let home = tessari_backup::only_log(self.store)
+                    .await
+                    .map_err(|error| Error::BackupFailed {
                         reason: error.to_string(),
                     })?;
                 tessari_backup::write_from(
@@ -78,6 +79,7 @@ impl Session<'_> {
                     home,
                     tessari_types::Sequence::new(from),
                 )
+                .await
             }
         }
         .map_err(|error| Error::BackupFailed {
@@ -104,7 +106,7 @@ impl Session<'_> {
 
     /// Write the snapshot of `within` into the caller's sink, and answer what
     /// it holds rather than its bytes.
-    fn snapshot_streamed(
+    async fn snapshot_streamed(
         &self,
         within: tessari_types::Reach,
         out: Box<dyn std::io::Write + Send>,
@@ -116,6 +118,7 @@ impl Session<'_> {
                     .seal_into(out)
                     .map_err(|error| failed(error.to_string()))?;
                 let taken = tessari_backup::write_state_within(self.store, within, &mut sealing)
+                    .await
                     .map_err(|error| failed(error.to_string()))?;
                 sealing
                     .finish()
@@ -125,6 +128,7 @@ impl Session<'_> {
             None => {
                 let mut out = out;
                 let taken = tessari_backup::write_state_within(self.store, within, &mut out)
+                    .await
                     .map_err(|error| failed(error.to_string()))?;
                 out.flush().map_err(|error| failed(error.to_string()))?;
                 taken

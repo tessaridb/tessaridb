@@ -21,7 +21,7 @@ impl Session<'_> {
     /// The distance between two operands, or `None` when this is not a distance
     /// taken over exactly two of them — the ordinary call answers those, with
     /// its own refusals.
-    pub(super) fn distance_between(
+    pub(super) async fn distance_between(
         &self,
         transaction: &mut Transaction<'_>,
         function: Function,
@@ -37,8 +37,8 @@ impl Session<'_> {
         let [left, right] = arguments else {
             return Ok(None);
         };
-        let left = self.lent(transaction, left, scope)?;
-        let right = self.lent(transaction, right, scope)?;
+        let left = self.lent(transaction, left, scope).await?;
+        let right = self.lent(transaction, right, scope).await?;
         // No absence check: a distance answers for an absent operand — it is
         // infinitely far — exactly as the ordinary call lets it.
         Ok(Some(crate::vector::distance(function, &left, &right)))
@@ -46,7 +46,7 @@ impl Session<'_> {
 
     /// An operand as it stands when it is a field or a literal, and evaluated
     /// otherwise.
-    fn lent<'a>(
+    async fn lent<'a>(
         &self,
         transaction: &mut Transaction<'_>,
         expr: &'a Expr,
@@ -63,7 +63,10 @@ impl Session<'_> {
                     .map_or(Cow::Owned(Value::None), Cow::Borrowed))
             }
             ExprKind::Literal(value) => Ok(Cow::Borrowed(value)),
-            _ => self.evaluate_in(transaction, expr, scope).map(Cow::Owned),
+            _ => self
+                .evaluate_child(transaction, expr, scope)
+                .await
+                .map(Cow::Owned),
         }
     }
 }

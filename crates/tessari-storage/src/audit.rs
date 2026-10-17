@@ -161,8 +161,8 @@ impl AuditTrail {
     /// Returns [`Error::AuditUnavailable`] when the built-in trail cannot be
     /// written or any installed device refuses. The caller must treat that as a
     /// refusal of the read it was about to serve.
-    pub fn record(&self, store: &Store, event: &VaultRead<'_>) -> Result<()> {
-        write_entry(store, event)?;
+    pub async fn record(&self, store: &Store, event: &VaultRead<'_>) -> Result<()> {
+        write_entry(store, event).await?;
         let installed = self
             .installed
             .read()
@@ -251,14 +251,17 @@ pub fn administered(transaction: &mut Transaction<'_>, event: &Administered<'_>)
 /// # Errors
 ///
 /// Returns an error when the trail cannot be read.
-pub fn entries(store: &Store) -> Result<Vec<Value>> {
-    let transaction = store.begin()?;
+pub async fn entries(store: &Store) -> Result<Vec<Value>> {
+    let transaction = store.begin().await?;
     let mut found = Vec::new();
-    for (_, payload) in transaction.scan_table(
-        system::SYSTEM_NAMESPACE,
-        system::SYSTEM_DATABASE,
-        system::VAULT_AUDIT,
-    )? {
+    for (_, payload) in transaction
+        .scan_table(
+            system::SYSTEM_NAMESPACE,
+            system::SYSTEM_DATABASE,
+            system::VAULT_AUDIT,
+        )
+        .await?
+    {
         found.push(tessari_encoding::decode_payload(&payload)?);
     }
     Ok(found)
@@ -269,8 +272,9 @@ pub fn entries(store: &Store) -> Result<Vec<Value>> {
 /// # Errors
 ///
 /// Returns an error when the trail cannot be read.
-pub fn reads_by(store: &Store, actor: &str) -> Result<Vec<Value>> {
-    Ok(entries(store)?
+pub async fn reads_by(store: &Store, actor: &str) -> Result<Vec<Value>> {
+    Ok(entries(store)
+        .await?
         .into_iter()
         .filter(|entry| match entry {
             Value::Object(fields) => fields.get("actor") == Some(&Value::String(actor.to_owned())),
@@ -285,8 +289,8 @@ pub fn reads_by(store: &Store, actor: &str) -> Result<Vec<Value>> {
 /// `REVEAL` inside a transaction the caller then cancels would otherwise hand
 /// back plaintext and roll the record of it away, leaving exactly the gap the
 /// ordering rule exists to close.
-fn write_entry(store: &Store, event: &VaultRead<'_>) -> Result<()> {
-    let mut transaction = store.begin()?;
+async fn write_entry(store: &Store, event: &VaultRead<'_>) -> Result<()> {
+    let mut transaction = store.begin().await?;
     let address = system::address(system::VAULT_AUDIT, RecordId::Uuid(entry_id()?));
     transaction.put(
         address,
@@ -294,6 +298,7 @@ fn write_entry(store: &Store, event: &VaultRead<'_>) -> Result<()> {
     );
     transaction
         .commit()
+        .await
         .map(|_| ())
         .map_err(|error| Error::AuditUnavailable {
             reason: error.to_string(),

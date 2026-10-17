@@ -1,17 +1,66 @@
 # Changelog
 
 Versions before 1.0 do not promise compatibility with each other in the query
-language or the wire format; either may change in any release. The **on-disk
-format is held** from `0.27.0-beta`: a store written by `0.22.0-beta` or any
-release since opens under a newer one and reads back the same, a store from a
-newer format is refused, and going back to an older build is not promised.
-Before `0.22.0-beta`, treat every upgrade as a fresh store.
+language or the wire format; either may change in any release. **From `0.36.0`
+the storage engine is a new one**: a store written by `0.35.3` or any earlier
+release is refused, and the only way across is a backup taken by the build that
+wrote it and restored by `0.36.0`. Within `0.22.0-beta` … `0.35.3` the on-disk
+format was held: a store written by any of them opened under a newer one and read
+back the same. Before `0.22.0-beta`, treat every upgrade as a fresh store.
+
+**Upgrading to `0.36.0`.** Run `tessaridb <store> --backup <file>` on the build that
+wrote the store, then `tessaridb <new store> --restore <file>` on `0.36.0`; every
+node of a cluster is moved the same way, so a cluster is not upgraded node by node
+across this release. The snapshot carries the records and the
+catalog, not the history: `VERSION` reads and change-feed positions from before the
+move do not carry over. Going back is the same path in reverse, a snapshot taken by
+`0.36.0` restored by `0.35.3`. The embedded API is async from `0.36.0`: `Db::open`,
+`Db::in_memory` and `Db::close` return futures, called from a Tokio runtime.
 
 The three numbers a pre-release carries are never reused by the release that
 follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 `0.0.1`. That is what lets a backup written by a pre-release be told apart from
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
+
+## 0.36.0 — 2026-10-17
+
+TessariDB now runs on its own storage engine,
+[TessariKV](https://github.com/tessaridb/tessarikv) `0.1.0`, the heart of the
+database: a log-structured merge-tree engine in pure Rust, lock-free first, with
+an on-disk file format that is stable from its `0.1.0`
+([crates.io](https://crates.io/crates/tessarikv)). Building TessariDB no longer
+compiles any C++.
+
+### Changed
+
+- **The storage engine is TessariKV.** A store written by `0.35.3` or earlier is
+  refused by name and left untouched; move it with a backup, as the note above
+  says.
+- **The embedded API is async.** `Db::open`, `Db::in_memory`, `Db::close` and the
+  session's `run` calls return futures, called from a Tokio runtime.
+- **No statement holds a runtime worker while it waits.** Statements run as
+  tasks; a commit waiting for its follower copies, a commit retry, an idle feed
+  and a backup's file writes wait as suspended tasks instead of blocking a thread,
+  so concurrent writes on a cluster no longer starve the follower answers a
+  majority commit waits for.
+- Statements cost less to run: catalog rows and table definitions are shared
+  instead of copied, a transaction begins at the newest landed version without
+  reading the engine, and an evaluation boxes only the calls that need it.
+
+### Fixed
+
+- A search index built, or a row written, in the transaction that declares the
+  field's analyzer posted no terms, so a read served by the index answered
+  without those rows while a scan found them.
+- Two `time::now()` calls in one statement could answer two instants; they now
+  read one.
+- A commit abandoned by its caller could hide its write from the next
+  transaction; the write is visible as soon as it lands.
+- A failed close of a store is reported rather than discarded, and the copy of
+  the encryption key handed to the engine is wiped when the engine drops it.
+- TLS moves to `rustls` `0.23.46`, which carries the fixes for its published
+  advisories.
 
 ## 0.35.3 — 2026-10-16
 

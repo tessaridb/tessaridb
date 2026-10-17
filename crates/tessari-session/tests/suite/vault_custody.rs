@@ -10,6 +10,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
@@ -21,7 +23,9 @@ const TEAM_PASSPHRASE: &str = "the team passphrase";
 const PLANTED: &str = "team-secret-4c1d";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// A store with a store-custody vault `shared` and an own-custody vault `team`,
@@ -29,7 +33,7 @@ fn store() -> Store {
 fn two_custodies(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;
              DEFINE DATABASE work; DEFINE DATABASE other; USE DATABASE work;
              UNSEAL VAULT WITH '{STORE_PASSPHRASE}';
@@ -46,7 +50,7 @@ fn two_custodies(store: &Store) -> Session<'_> {
 
 fn reveal(session: &mut Session<'_>, vault: &str) -> Result<Value, Error> {
     match session
-        .run(&format!("REVEAL token FROM {vault}:'github';"))?
+        .run_now(&format!("REVEAL token FROM {vault}:'github';"))?
         .pop()
         .unwrap()
     {
@@ -64,7 +68,7 @@ fn is_sealed(refused: &Error) -> bool {
 
 fn seal_of(session: &mut Session<'_>, vault: &str) -> BTreeMap<String, Value> {
     match session
-        .run(&format!("INFO FOR SEAL OF {vault};"))
+        .run_now(&format!("INFO FOR SEAL OF {vault};"))
         .unwrap()
         .pop()
         .unwrap()
@@ -81,7 +85,7 @@ fn a_vault_with_its_own_passphrase_is_not_opened_by_the_stores() {
     // Declaring it unsealed it, for one period.
     assert_eq!(reveal(&mut session, "team").unwrap(), Value::from(PLANTED));
 
-    session.run("SEAL VAULT team;").unwrap();
+    session.run_now("SEAL VAULT team;").unwrap();
     let refused = reveal(&mut session, "team").expect_err("a sealed own vault opened");
     assert!(is_sealed(&refused), "refused, but not as sealed: {refused}");
     // The store is unsealed throughout, and its own vault still opens.
@@ -91,7 +95,7 @@ fn a_vault_with_its_own_passphrase_is_not_opened_by_the_stores() {
     );
 
     session
-        .run(&format!("UNSEAL VAULT team WITH '{TEAM_PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT team WITH '{TEAM_PASSPHRASE}';"))
         .unwrap();
     assert_eq!(reveal(&mut session, "team").unwrap(), Value::from(PLANTED));
 }
@@ -101,7 +105,7 @@ fn a_vault_with_its_own_passphrase_needs_no_store_passphrase_at_all() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;
              DEFINE DATABASE work; USE DATABASE work;
              DEFINE VAULT team PASSPHRASE '{TEAM_PASSPHRASE}';
@@ -110,7 +114,7 @@ fn a_vault_with_its_own_passphrase_needs_no_store_passphrase_at_all() {
         ))
         .unwrap();
     assert_eq!(reveal(&mut session, "team").unwrap(), Value::from(PLANTED));
-    let store_state = match session.run("INFO FOR SEAL;").unwrap().pop().unwrap() {
+    let store_state = match session.run_now("INFO FOR SEAL;").unwrap().pop().unwrap() {
         Outcome::Value(Value::Object(mut fields)) => fields.remove("state").unwrap(),
         other => panic!("{other:?}"),
     };
@@ -121,11 +125,11 @@ fn a_vault_with_its_own_passphrase_needs_no_store_passphrase_at_all() {
 fn the_stores_passphrase_does_not_unseal_an_own_vault_and_its_own_opens_only_it() {
     let store = store();
     let mut session = two_custodies(&store);
-    session.run("SEAL VAULT team;").unwrap();
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT team;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
 
     let refused = session
-        .run(&format!("UNSEAL VAULT team WITH '{STORE_PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT team WITH '{STORE_PASSPHRASE}';"))
         .expect_err("the store's passphrase unsealed an own vault");
     assert!(
         matches!(
@@ -139,7 +143,7 @@ fn the_stores_passphrase_does_not_unseal_an_own_vault_and_its_own_opens_only_it(
     assert!(!refused.to_string().contains(STORE_PASSPHRASE), "{refused}");
 
     session
-        .run(&format!("UNSEAL VAULT team WITH '{TEAM_PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT team WITH '{TEAM_PASSPHRASE}';"))
         .unwrap();
     assert_eq!(reveal(&mut session, "team").unwrap(), Value::from(PLANTED));
     let refused = reveal(&mut session, "shared").expect_err("an own passphrase opened the store");
@@ -150,13 +154,13 @@ fn the_stores_passphrase_does_not_unseal_an_own_vault_and_its_own_opens_only_it(
 fn a_vault_under_the_stores_passphrase_is_not_unsealed_by_naming_it() {
     let store = store();
     let mut session = two_custodies(&store);
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
     for statement in [
         format!("UNSEAL VAULT shared WITH '{STORE_PASSPHRASE}';"),
         "SEAL VAULT shared;".to_owned(),
         format!("CHANGE VAULT shared PASSPHRASE FROM '{STORE_PASSPHRASE}' TO 'x';"),
     ] {
-        let refused = session.run(&statement).expect_err(&statement);
+        let refused = session.run_now(&statement).expect_err(&statement);
         assert!(
             matches!(refused, Error::VaultUsesStorePassphrase { .. }),
             "{statement} was refused, but not for its custody: {refused}"
@@ -178,7 +182,7 @@ fn the_seal_of_a_vault_names_its_custody_and_its_own_state() {
         "{team:?}"
     );
 
-    session.run("SEAL VAULT team;").unwrap();
+    session.run_now("SEAL VAULT team;").unwrap();
     assert_eq!(
         seal_of(&mut session, "team").get("state"),
         Some(&Value::from("sealed"))
@@ -187,7 +191,7 @@ fn the_seal_of_a_vault_names_its_custody_and_its_own_state() {
     let shared = seal_of(&mut session, "shared");
     assert_eq!(shared.get("custody"), Some(&Value::from("store")));
     assert_eq!(shared.get("state"), Some(&Value::from("unsealed")));
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
     assert_eq!(
         seal_of(&mut session, "shared").get("state"),
         Some(&Value::from("sealed"))
@@ -199,13 +203,13 @@ fn a_changed_vault_passphrase_opens_its_secrets_and_the_old_one_does_not() {
     let store = store();
     let mut session = two_custodies(&store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "CHANGE VAULT team PASSPHRASE FROM '{TEAM_PASSPHRASE}' TO 'the next team passphrase';"
         ))
         .unwrap();
-    session.run("SEAL VAULT team;").unwrap();
+    session.run_now("SEAL VAULT team;").unwrap();
     let refused = session
-        .run(&format!("UNSEAL VAULT team WITH '{TEAM_PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT team WITH '{TEAM_PASSPHRASE}';"))
         .expect_err("the old vault passphrase still unseals");
     assert!(
         matches!(
@@ -217,7 +221,7 @@ fn a_changed_vault_passphrase_opens_its_secrets_and_the_old_one_does_not() {
         "{refused}"
     );
     session
-        .run("UNSEAL VAULT team WITH 'the next team passphrase';")
+        .run_now("UNSEAL VAULT team WITH 'the next team passphrase';")
         .unwrap();
     assert_eq!(reveal(&mut session, "team").unwrap(), Value::from(PLANTED));
 }
@@ -226,10 +230,10 @@ fn a_changed_vault_passphrase_opens_its_secrets_and_the_old_one_does_not() {
 fn an_own_vault_unsealed_past_its_period_is_sealed() {
     let store = store();
     let mut session = two_custodies(&store);
-    session.run("SEAL VAULT team;").unwrap();
+    session.run_now("SEAL VAULT team;").unwrap();
     store.vault().last_for(std::time::Duration::ZERO);
     session
-        .run(&format!("UNSEAL VAULT team WITH '{TEAM_PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT team WITH '{TEAM_PASSPHRASE}';"))
         .unwrap();
     assert!(is_sealed(&reveal(&mut session, "team").unwrap_err()));
     assert_eq!(
@@ -242,21 +246,21 @@ fn an_own_vault_unsealed_past_its_period_is_sealed() {
 fn an_own_vault_guessed_three_times_wrong_waits_and_the_store_does_not() {
     let store = store();
     let mut session = two_custodies(&store);
-    session.run("SEAL VAULT team;").unwrap();
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT team;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
     for guess in ["one", "two", "three"] {
         let refused = session
-            .run(&format!("UNSEAL VAULT team WITH '{guess}';"))
+            .run_now(&format!("UNSEAL VAULT team WITH '{guess}';"))
             .expect_err("a wrong vault passphrase unsealed");
         assert!(!matches!(refused, Error::PassphraseThrottled));
     }
     let refused = session
-        .run(&format!("UNSEAL VAULT team WITH '{TEAM_PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT team WITH '{TEAM_PASSPHRASE}';"))
         .expect_err("a fourth attempt was tried at once");
     assert!(matches!(refused, Error::PassphraseThrottled), "{refused}");
     // The store's passphrase is a different thing being guessed.
     session
-        .run(&format!("UNSEAL VAULT WITH '{STORE_PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT WITH '{STORE_PASSPHRASE}';"))
         .unwrap();
 }
 
@@ -265,24 +269,25 @@ fn a_reader_of_the_vault_may_open_it_and_only_a_manager_may_change_its_passphras
     let store = store();
     let mut anonymous = two_custodies(&store);
     anonymous
-        .run("DEFINE USER root ROLE owner PASSWORD 'root-password';")
+        .run_now("DEFINE USER root ROLE owner PASSWORD 'root-password';")
         .unwrap();
     let mut root = Session::new(&store);
-    root.sign_in("root", "root-password").unwrap();
-    root.run(
+    root.sign_in("root", "root-password").now().unwrap();
+    root.run_now(
         "DEFINE USER ada ON prod.work ROLE viewer PASSWORD 'ada-password';
          USE NAMESPACE prod; USE DATABASE work; SEAL VAULT team;",
     )
     .unwrap();
 
     let mut ada = Session::new(&store);
-    ada.sign_in("ada", "ada-password").unwrap();
-    ada.run("USE NAMESPACE prod; USE DATABASE work;").unwrap();
-    ada.run(&format!("UNSEAL VAULT team WITH '{TEAM_PASSPHRASE}';"))
+    ada.sign_in("ada", "ada-password").now().unwrap();
+    ada.run_now("USE NAMESPACE prod; USE DATABASE work;")
+        .unwrap();
+    ada.run_now(&format!("UNSEAL VAULT team WITH '{TEAM_PASSPHRASE}';"))
         .unwrap();
     assert_eq!(reveal(&mut ada, "team").unwrap(), Value::from(PLANTED));
     let refused = ada
-        .run(&format!(
+        .run_now(&format!(
             "CHANGE VAULT team PASSPHRASE FROM '{TEAM_PASSPHRASE}' TO 'mine now';"
         ))
         .expect_err("a viewer rewrote the vault's passphrase");
@@ -290,7 +295,7 @@ fn a_reader_of_the_vault_may_open_it_and_only_a_manager_may_change_its_passphras
         matches!(refused, Error::RoleForbids { needs, .. } if needs == "manage"),
         "{refused}"
     );
-    ada.run("SEAL VAULT team;").unwrap();
+    ada.run_now("SEAL VAULT team;").unwrap();
     assert!(is_sealed(&reveal(&mut ada, "team").unwrap_err()));
 }
 
@@ -300,7 +305,7 @@ fn info_for_vault_names_its_custody() {
     let mut session = two_custodies(&store);
     for (vault, custody) in [("team", "own"), ("shared", "store")] {
         let report = match session
-            .run(&format!("INFO FOR VAULT {vault};"))
+            .run_now(&format!("INFO FOR VAULT {vault};"))
             .unwrap()
             .pop()
             .unwrap()

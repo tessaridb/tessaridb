@@ -16,8 +16,12 @@ impl tessari_wire::Origin for PeerDoor {
         &self,
         follower: [u8; tessari_storage::NODE_ID_LEN],
         asked: tessari_wire::Collect,
-    ) -> tessari_wire::Result<tessari_wire::Collected> {
-        tessari_wire::Serving::declared(self.db.store()).collected(follower, asked)
+    ) -> tessari_wire::Answering<'_, tessari_wire::Result<tessari_wire::Collected>> {
+        Box::pin(async move {
+            tessari_wire::Serving::declared(self.db.store())
+                .collected(follower, asked)
+                .await
+        })
     }
 
     // A round the leader pushes, and the report that vouches for it (ADR-0120).
@@ -25,58 +29,88 @@ impl tessari_wire::Origin for PeerDoor {
         &self,
         follower: [u8; tessari_storage::NODE_ID_LEN],
         asked: tessari_wire::Collect,
-    ) -> tessari_wire::Result<tessari_wire::Collected> {
-        tessari_wire::Serving::declared(self.db.store()).collected_pushed(follower, asked)
+    ) -> tessari_wire::Answering<'_, tessari_wire::Result<tessari_wire::Collected>> {
+        Box::pin(async move {
+            tessari_wire::Serving::declared(self.db.store())
+                .collected_pushed(follower, asked)
+                .await
+        })
     }
 
     fn held(
         &self,
         follower: [u8; tessari_storage::NODE_ID_LEN],
         asked: tessari_wire::Collect,
-    ) -> tessari_wire::Result<()> {
-        tessari_wire::Serving::declared(self.db.store()).held(follower, asked)
+    ) -> tessari_wire::Answering<'_, tessari_wire::Result<()>> {
+        Box::pin(async move {
+            tessari_wire::Serving::declared(self.db.store())
+                .held(follower, asked)
+                .await
+        })
     }
 
-    fn gathered(
-        &self,
+    fn gathered<'a>(
+        &'a self,
         asker: [u8; tessari_storage::NODE_ID_LEN],
-        asked: &tessari_wire::Gather,
-    ) -> tessari_wire::Result<tessari_wire::Page> {
-        tessari_wire::Serving::declared(self.db.store()).gathered(asker, asked)
+        asked: &'a tessari_wire::Gather,
+    ) -> tessari_wire::Answering<'a, tessari_wire::Result<tessari_wire::Page>> {
+        Box::pin(async move {
+            tessari_wire::Serving::declared(self.db.store())
+                .gathered(asker, asked)
+                .await
+        })
     }
 
-    fn copied(
-        &self,
+    fn copied<'a>(
+        &'a self,
         follower: [u8; tessari_storage::NODE_ID_LEN],
-        write: &mut dyn FnMut(u8, Vec<u8>) -> tessari_wire::Result<()>,
-    ) -> tessari_wire::Result<()> {
-        tessari_wire::Serving::declared(self.db.store()).copied(follower, write)
+        write: &'a mut (
+                    dyn FnMut(
+            u8,
+            Vec<u8>,
+        ) -> tessari_wire::Answering<'static, tessari_wire::Result<()>>
+                        + Send
+                ),
+    ) -> tessari_wire::Answering<'a, tessari_wire::Result<()>> {
+        Box::pin(async move {
+            tessari_wire::Serving::declared(self.db.store())
+                .copied(follower, write)
+                .await
+        })
     }
 
     // A join token offered by the node the handshake proved (ADR-0108 D9). The
     // fingerprint is not compared here: a pinned row binds in `met`, where the
     // presented certificate is in hand, and a token is evidence of its own.
-    fn joined(
-        &self,
+    fn joined<'a>(
+        &'a self,
         node: [u8; tessari_storage::NODE_ID_LEN],
-        token: &[u8; 32],
-    ) -> tessari_wire::Result<bool> {
-        Ok(bind_the_greeter(&self.db, node, None, Some(token)))
+        token: &'a [u8; 32],
+    ) -> tessari_wire::Answering<'a, tessari_wire::Result<bool>> {
+        Box::pin(async move { Ok(bind_the_greeter(&self.db, node, None, Some(token)).await) })
     }
 
     fn places(
         &self,
         candidate: [u8; tessari_storage::NODE_ID_LEN],
         range: tessari_types::Reach,
-    ) -> bool {
-        tessari_wire::Serving::declared(self.db.store()).places(candidate, range)
+    ) -> tessari_wire::Answering<'_, bool> {
+        Box::pin(async move {
+            tessari_wire::Serving::declared(self.db.store())
+                .places(candidate, range)
+                .await
+        })
     }
 
     fn reached_on(
         &self,
         range: tessari_types::Reach,
-    ) -> tessari_wire::Result<Option<tessari_wire::Reached>> {
-        tessari_wire::Serving::declared(self.db.store()).reached_on(range)
+    ) -> tessari_wire::Answering<'_, tessari_wire::Result<Option<tessari_wire::Reached>>> {
+        Box::pin(async move {
+            tessari_wire::Serving::declared(self.db.store())
+                .reached_on(range)
+                .await
+        })
     }
 
     fn attempted(&self, asked: &tessari_wire::Attempt) -> bool {
@@ -88,23 +122,29 @@ impl tessari_wire::Holding for PeerDoor {
     // Read when a peer has arrived and proved who it is — not before the wait.
     // A door idle for an hour used to greet with hour-old epoch, tail and copy
     // age, which are exactly the fields a router reads.
-    fn hello(&self) -> tessari_wire::Result<tessari_wire::Hello> {
-        greeting(&self.db).map_err(|why| tessari_wire::Error::NothingToSay(why.to_string()))
+    fn hello(&self) -> tessari_wire::Answering<'_, tessari_wire::Result<tessari_wire::Hello>> {
+        Box::pin(async move {
+            greeting(&self.db)
+                .await
+                .map_err(|why| tessari_wire::Error::NothingToSay(why.to_string()))
+        })
     }
 
-    fn met(&self, met: &tessari_wire::Met) {
-        tracing::info!(
-            peer = %hex(&met.said.node),
-            epoch = met.said.epoch.get(),
-            tail = met.said.tail.get(),
-            voted = ?met.voted,
-            "a peer greeted"
-        );
-        bind_the_greeter(&self.db, met.said.node, Some(&met.presented), None);
-        // What a finalize asks before it raises the format (ADR-0118 D3).
-        self.db
-            .store()
-            .follower_greeted(met.said.node, met.said.build);
+    fn met<'a>(&'a self, met: &'a tessari_wire::Met) -> tessari_wire::Answering<'a, ()> {
+        Box::pin(async move {
+            tracing::info!(
+                peer = %hex(&met.said.node),
+                epoch = met.said.epoch.get(),
+                tail = met.said.tail.get(),
+                voted = ?met.voted,
+                "a peer greeted"
+            );
+            bind_the_greeter(&self.db, met.said.node, Some(&met.presented), None).await;
+            // What a finalize asks before it raises the format (ADR-0118 D3).
+            self.db
+                .store()
+                .follower_greeted(met.said.node, met.said.build);
+        })
     }
 
     fn commits(&self) -> tokio::sync::watch::Receiver<u64> {
@@ -115,55 +155,60 @@ impl tessari_wire::Holding for PeerDoor {
     // door believed the signature; this node judges the account and the reach,
     // runs the script as that user — its own grants decide — and answers in
     // the shape the caller's surface reads.
-    fn coordinated(
+    async fn coordinated(
         &self,
         from: [u8; tessari_storage::NODE_ID_LEN],
         assertion: &tessari_wire::Assertion,
         asked: &tessari_wire::Coordinate,
     ) -> Result<tessaridb::Coordinated, String> {
-        let mut session = tessari_wire::admit_asserted(&self.db, from, assertion)?;
-        let ran = session.run_coordinated(
-            (asked.namespace.as_deref(), asked.database.as_deref()),
-            &asked.script,
-            &asked.parameters,
-        );
+        let mut session = tessari_wire::admit_asserted(&self.db, from, assertion).await?;
+        let ran = session
+            .run_coordinated(
+                (asked.namespace.as_deref(), asked.database.as_deref()),
+                &asked.script,
+                &asked.parameters,
+            )
+            .await;
         Ok(match asked.surface {
             tessaridb::Surface::Wire { minor } => {
-                tessari_wire::render_coordinated(&self.db, &ran, minor)
+                tessari_wire::render_coordinated(&self.db, &ran, minor).await
             }
-            tessaridb::Surface::Http => tessari_http::render_coordinated(&self.db, &ran),
+            tessaridb::Surface::Http => tessari_http::render_coordinated(&self.db, &ran).await,
         })
     }
 
     // A record of a transaction across leaders another node carried here
     // (ADR-0112): judged as a coordinated request is — the account and the
     // reach — then written as that user, whose grants here decide.
-    fn across(
-        &self,
+    fn across<'a>(
+        &'a self,
         from: [u8; tessari_storage::NODE_ID_LEN],
-        assertion: &tessari_wire::Assertion,
-        asked: &[u8],
-    ) -> Result<Vec<u8>, tessari_session::PartRefused> {
-        use tessari_session::{PartRefused, RefusalKind};
-        let asked = tessari_session::AcrossAsk::decode(asked).map_err(|reason| PartRefused {
-            kind: RefusalKind::Invalid,
-            reason,
-        })?;
-        let mut session =
-            tessari_wire::admit_asserted(&self.db, from, assertion).map_err(|reason| {
-                PartRefused {
+        assertion: &'a tessari_wire::Assertion,
+        asked: &'a [u8],
+    ) -> tessari_wire::Answering<'a, Result<Vec<u8>, tessari_session::PartRefused>> {
+        Box::pin(async move {
+            use tessari_session::{PartRefused, RefusalKind};
+            let asked =
+                tessari_session::AcrossAsk::decode(asked).map_err(|reason| PartRefused {
+                    kind: RefusalKind::Invalid,
+                    reason,
+                })?;
+            let mut session = tessari_wire::admit_asserted(&self.db, from, assertion)
+                .await
+                .map_err(|reason| PartRefused {
                     kind: RefusalKind::Forbidden,
                     reason,
-                }
-            })?;
-        // The kind is judged here, where the refusal is whole, by the mapping
-        // the HTTP surface answers with (Q-924).
-        session
-            .answer_across(&asked)
-            .map(|answer| answer.encode().to_vec())
-            .map_err(|refused| PartRefused {
-                kind: tessari_http::refusal_kind(&refused),
-                reason: refused.to_string(),
-            })
+                })?;
+            // The kind is judged here, where the refusal is whole, by the mapping
+            // the HTTP surface answers with (Q-924).
+            session
+                .answer_across(&asked)
+                .await
+                .map(|answer| answer.encode().to_vec())
+                .map_err(|refused| PartRefused {
+                    kind: tessari_http::refusal_kind(&refused),
+                    reason: refused.to_string(),
+                })
+        })
     }
 }

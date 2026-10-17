@@ -341,11 +341,14 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn failover(&self) -> Result<Option<FailoverDefinition>> {
-        let Some(payload) = self.transaction.get(&system::address(
-            system::FAILOVER,
-            FailoverDefinition::key(),
-        ))?
+    pub async fn failover(&self) -> Result<Option<FailoverDefinition>> {
+        let Some(payload) = self
+            .transaction
+            .get(&system::address(
+                system::FAILOVER,
+                FailoverDefinition::key(),
+            ))
+            .await?
         else {
             return Ok(None);
         };

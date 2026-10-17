@@ -55,6 +55,8 @@
 //! interval is an operational decision that wants a measurement of its own.
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_storage::Catalog;
 use tessaridb::Db;
@@ -130,16 +132,16 @@ fn build(
     keeps: u64,
     recent_ms: u64,
 ) -> Failable<()> {
-    session.run(declaration)?;
+    session.run_now(declaration)?;
     for n in 0..WINDOW {
         let id = named(ANCIENT_MS.saturating_add(n), n);
-        session.run(&format!(
+        session.run_now(&format!(
             "CREATE {table}:uuid '{id}' = {{ n: {n}, note: 'a payload long enough to be a record rather than a token' }};"
         ))?;
     }
     for n in 0..keeps {
         let id = named(recent_ms, WINDOW.saturating_add(n));
-        session.run(&format!(
+        session.run_now(&format!(
             "CREATE {table}:uuid '{id}' = {{ n: {}, note: 'a payload long enough to be a record rather than a token' }};",
             WINDOW.saturating_add(n)
         ))?;
@@ -149,7 +151,7 @@ fn build(
 
 /// The identities a table still answers with, in the order it answers.
 fn remaining(session: &mut tessaridb::Session, table: &str) -> Failable<Vec<String>> {
-    let outcomes = session.run(&format!("SELECT * FROM {table};"))?;
+    let outcomes = session.run_now(&format!("SELECT * FROM {table};"))?;
     Ok(outcomes
         .first()
         .and_then(tessaridb::Outcome::records)
@@ -165,20 +167,23 @@ fn remaining(session: &mut tessaridb::Session, table: &str) -> Failable<Vec<Stri
 fn expire(db: &Db, table: &str) -> Failable<usize> {
     let store = db.store();
     let (namespace, database, id) = {
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().now()?;
         let catalog = Catalog::new(&mut transaction);
         let namespace = catalog
-            .namespace_id("bench")?
+            .namespace_id("bench")
+            .now()?
             .ok_or("the bench namespace is missing")?;
         let database = catalog
-            .database_id(namespace, "bench")?
+            .database_id(namespace, "bench")
+            .now()?
             .ok_or("the bench database is missing")?;
         let id = catalog
-            .table_id(namespace, database, table)?
+            .table_id(namespace, database, table)
+            .now()?
             .ok_or("the table this cell just built is missing")?;
         (namespace, database, id)
     };
-    Ok(store.expire_series(namespace, database, id)?.ranges)
+    Ok(store.expire_series(namespace, database, id).now()?.ranges)
 }
 
 /// The same window removed by a declared clause and by a condition, at four
@@ -191,7 +196,7 @@ fn expire(db: &Db, table: &str) -> Failable<usize> {
 pub(crate) fn series(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench;")?;
     let recent_ms = now_ms()?;
 
     let mut reports = Vec::new();
@@ -230,7 +235,7 @@ pub(crate) fn series(db: &Db) -> Failable<Vec<Report>> {
                 recent_ms,
             )?;
             let started = Instant::now();
-            session.run(&format!(
+            session.run_now(&format!(
                 "DELETE FROM {table} WHERE n < {WINDOW} LIMIT ALL;"
             ))?;
             samples.push(started.elapsed());

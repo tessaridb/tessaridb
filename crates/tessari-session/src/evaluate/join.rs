@@ -76,7 +76,7 @@ impl Session<'_> {
     /// thousand would refuse a join that works — trading a silent wrong answer
     /// for a loud wrong refusal. Making a single mismatched pair *visible*
     /// without failing the read is the note channel's job and belongs with it.
-    pub(super) fn join(
+    pub(super) async fn join(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
@@ -110,16 +110,17 @@ impl Session<'_> {
         let mut far_gathered = None;
         match right {
             JoinSide::Table { table, .. } => {
-                let (context, id) = self.resolve_table(transaction, table)?;
-                let visible = self.visible_in(transaction, id)?;
-                if self.missing(transaction, id, Part::Whole)?.is_some() {
+                let (context, id) = self.resolve_table(transaction, table).await?;
+                let visible = self.visible_in(transaction, id).await?;
+                if self.missing(transaction, id, Part::Whole).await?.is_some() {
                     far_gathered = Some((context, id, visible));
                 } else {
-                    match ordered_index_on(transaction, id, right_key)? {
+                    match ordered_index_on(transaction, id, right_key).await? {
                         Some(index) => probed = Some((index, visible, context, id)),
                         None => {
-                            let found =
-                                transaction.scan_table(context.namespace, context.database, id)?;
+                            let found = transaction
+                                .scan_table(context.namespace, context.database, id)
+                                .await?;
                             collect_by_key(
                                 &mut built,
                                 self.records_of(found, &visible)?,
@@ -130,7 +131,7 @@ impl Session<'_> {
                 }
             }
             JoinSide::Read { read, .. } => {
-                let answered = self.read(transaction, read, within, None)?;
+                let answered = Box::pin(self.read(transaction, read, within, None)).await?;
                 reporting.collected.extend(answered.notes);
                 reporting
                     .collected
@@ -144,19 +145,21 @@ impl Session<'_> {
         // rather than borrowing the other side's.
         let (driving, searched) = match left {
             JoinSide::Table { table, .. } => {
-                let (context, id) = self.resolve_table(transaction, table)?;
-                let visible = self.visible_in(transaction, id)?;
-                let searched = self.searched_for(transaction, id, &shown(select))?;
-                let found = self.whole_table(
-                    transaction,
-                    (context.namespace, context.database),
-                    id,
-                    reporting.collected,
-                )?;
+                let (context, id) = self.resolve_table(transaction, table).await?;
+                let visible = self.visible_in(transaction, id).await?;
+                let searched = self.searched_for(transaction, id, &shown(select)).await?;
+                let found = self
+                    .whole_table(
+                        transaction,
+                        (context.namespace, context.database),
+                        id,
+                        reporting.collected,
+                    )
+                    .await?;
                 (self.records_of(found, &visible)?, searched)
             }
             JoinSide::Read { read, .. } => {
-                let answered = self.read(transaction, read, within, None)?;
+                let answered = Box::pin(self.read(transaction, read, within, None)).await?;
                 reporting.collected.extend(answered.notes);
                 reporting
                     .collected
@@ -172,14 +175,16 @@ impl Session<'_> {
                 .collect();
             // No near key, no match: nothing of the far side is needed.
             if !keys.is_empty() {
-                let found = self.gathered_by_keys(
-                    transaction,
-                    (context.namespace, context.database),
-                    id,
-                    (right_key, keys.into_iter().collect()),
-                    &visible,
-                    reporting.collected,
-                )?;
+                let found = self
+                    .gathered_by_keys(
+                        transaction,
+                        (context.namespace, context.database),
+                        id,
+                        (right_key, keys.into_iter().collect()),
+                        &visible,
+                        reporting.collected,
+                    )
+                    .await?;
                 collect_by_key(&mut built, self.records_of(found, &visible)?, right_key);
             }
         }
@@ -196,8 +201,9 @@ impl Session<'_> {
             left_kinds.insert(key.type_name());
             let matches = match &probed {
                 Some((index, visible, _, _)) => {
-                    let offered =
-                        transaction.records_by_index(index, core::slice::from_ref(&key))?;
+                    let offered = transaction
+                        .records_by_index(index, core::slice::from_ref(&key))
+                        .await?;
                     self.records_of(offered, visible)?
                         .into_iter()
                         .filter(|(_, held)| right_key.path.resolve(held) == Some(&key))
@@ -211,11 +217,13 @@ impl Session<'_> {
                     (right_name.clone(), far),
                 ]));
                 if let Some(condition) = condition {
-                    let held = self.evaluate_in(
-                        transaction,
-                        condition,
-                        Scope::searching(&row, &searched).noticing(reporting.noticed),
-                    )?;
+                    let held = self
+                        .evaluate_in(
+                            transaction,
+                            condition,
+                            Scope::searching(&row, &searched).noticing(reporting.noticed),
+                        )
+                        .await?;
                     if !boolean(&held, condition.span)? {
                         continue;
                     }
@@ -236,7 +244,9 @@ impl Session<'_> {
                 // holds costs a scan. It is paid once, after an empty answer,
                 // and never by a join that worked.
                 Some((_, visible, context, id)) => {
-                    let found = transaction.scan_table(context.namespace, context.database, *id)?;
+                    let found = transaction
+                        .scan_table(context.namespace, context.database, *id)
+                        .await?;
                     self.records_of(found, visible)?
                         .iter()
                         .filter_map(|(_, record)| right_key.path.resolve(record))

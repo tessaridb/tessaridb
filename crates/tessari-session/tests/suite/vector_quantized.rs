@@ -9,6 +9,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Outcome, Session};
@@ -17,13 +19,13 @@ use tessari_types::{Number, RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;",
         )
@@ -42,11 +44,11 @@ fn crowded(session: &mut Session<'_>, table: &str) {
             "CREATE {table}:{n} = {{ vector: [0.0, 1000.0, {third:.1}] }};\n"
         ));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
 }
 
 fn ids_and_path(session: &mut Session<'_>, script: &str) -> (Vec<RecordId>, AccessPath) {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("{outcomes:?}");
     };
@@ -61,7 +63,7 @@ fn a_quantized_read_is_rescored_on_the_full_vectors() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE VECTOR crowd DIMENSION 3 DISTANCE euclidean QUANTIZED;")
+        .run_now("DEFINE VECTOR crowd DIMENSION 3 DISTANCE euclidean QUANTIZED;")
         .unwrap();
     crowded(&mut session, "crowd");
     let read =
@@ -84,7 +86,7 @@ fn a_store_reports_that_it_is_quantized_and_what_a_node_costs() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE VECTOR full DIMENSION 3 DISTANCE euclidean;\n\
              DEFINE VECTOR coded DIMENSION 3 DISTANCE euclidean QUANTIZED;",
         )
@@ -92,11 +94,13 @@ fn a_store_reports_that_it_is_quantized_and_what_a_node_costs() {
     crowded(&mut session, "full");
     crowded(&mut session, "coded");
     session
-        .run("REBUILD INDEX vector ON full; REBUILD INDEX vector ON coded;")
+        .run_now("REBUILD INDEX vector ON full; REBUILD INDEX vector ON coded;")
         .unwrap();
 
     let info = |session: &mut Session<'_>, name: &str| {
-        let outcomes = session.run(&format!("INFO FOR VECTOR {name};")).unwrap();
+        let outcomes = session
+            .run_now(&format!("INFO FOR VECTOR {name};"))
+            .unwrap();
         let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
             panic!("{outcomes:?}");
         };
@@ -125,10 +129,10 @@ fn a_store_reports_that_it_is_quantized_and_what_a_node_costs() {
 fn quantized_is_refused_on_an_index_that_holds_no_vectors() {
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE COLLECTION people;").unwrap();
+    session.run_now("DEFINE COLLECTION people;").unwrap();
     assert!(
         session
-            .run("DEFINE INDEX by_city ON people FIELDS city QUANTIZED;")
+            .run_now("DEFINE INDEX by_city ON people FIELDS city QUANTIZED;")
             .is_err()
     );
 }

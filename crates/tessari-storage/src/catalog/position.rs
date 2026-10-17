@@ -62,7 +62,7 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// A backend failure, or a stored row that is not a position.
-    pub fn topic_position(
+    pub async fn topic_position(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -73,7 +73,7 @@ impl Catalog<'_, '_> {
             system::TOPIC_POSITIONS,
             row(namespace, database, table, consumer),
         );
-        match self.transaction.get(&address)? {
+        match self.transaction.get(&address).await? {
             Some(payload) => Ok(Some(position_in(&decode_payload(&payload)?)?)),
             None => Ok(None),
         }
@@ -111,7 +111,7 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// A backend failure, or a stored row that is not a position.
-    pub fn topic_positions(
+    pub async fn topic_positions(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -119,11 +119,15 @@ impl Catalog<'_, '_> {
     ) -> Result<Vec<(String, u64)>> {
         let prefix = topic_prefix(namespace, database, table);
         let mut found = Vec::new();
-        for (id, payload) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::TOPIC_POSITIONS,
-        )? {
+        for (id, payload) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::TOPIC_POSITIONS,
+            )
+            .await?
+        {
             let RecordId::Text(name) = &id else {
                 continue;
             };

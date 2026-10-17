@@ -28,18 +28,20 @@ impl Session<'_> {
     /// An unknown role is refused here rather than in the grammar, for the
     /// reason a vector distance is: which roles exist is the store's question,
     /// and this is where the store knows what it knows.
-    pub(super) fn define_node(
+    pub(super) async fn define_node(
         &self,
         roles: Option<&[Name]>,
         endpoints: Option<&[String]>,
         retain: Option<Option<u64>>,
     ) -> Result<Outcome> {
         let named = roles.map(named_roles).transpose()?;
-        self.store.configure_node(
-            named,
-            endpoints.map(<[String]>::to_vec),
-            retain.map(|keep| keep.map(tessari_types::Sequence::new)),
-        )?;
+        self.store
+            .configure_node(
+                named,
+                endpoints.map(<[String]>::to_vec),
+                retain.map(|keep| keep.map(tessari_types::Sequence::new)),
+            )
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -70,7 +72,7 @@ impl Session<'_> {
     /// `Failover::stated` is the only way to build a policy that is not the
     /// default, and it is what knows which direction each relation fails in. A
     /// second check here would be a second answer that drifts.
-    pub(super) fn define_failover(
+    pub(super) async fn define_failover(
         &self,
         transaction: &mut Transaction<'_>,
         periods: [tessari_types::Duration; 5],
@@ -98,7 +100,8 @@ impl Session<'_> {
         // zero rather than one: the number counts settings under a leadership,
         // and this is the first.
         let version = catalog
-            .failover()?
+            .failover()
+            .await?
             .map_or(0, |held| held.version.saturating_add(1));
         // A node holding no leadership writes under `Epoch::ZERO`, which is what
         // a store standing alone genuinely holds. It is not refused here: the
@@ -125,14 +128,15 @@ impl Session<'_> {
         Outcome::Done
     }
 
-    pub(super) fn define_replica(
+    pub(super) async fn define_replica(
         &self,
         transaction: &mut Transaction<'_>,
         peer: &Peer<'_>,
         if_not_exists: bool,
     ) -> Result<Outcome> {
         let declared = Catalog::new(transaction)
-            .replicas()?
+            .replicas()
+            .await?
             .into_iter()
             .any(|found| found.name == peer.name.text);
         if if_not_exists && declared {
@@ -161,29 +165,31 @@ impl Session<'_> {
         // peer credential to, which is the act that admits a member.
         let replicates = match peer.replicates {
             None => None,
-            Some(named) => Some(self.reach_of(transaction, named)?),
+            Some(named) => Some(self.reach_of(transaction, named).await?),
         };
         // Resolved by the same reader, so `LEADS SHARD` names a shard the table
         // has or is refused exactly as `REPLICATES SHARD` is (ADR-0082).
         let leads = match peer.leads {
             None => None,
-            Some(named) => Some(self.reach_of(transaction, named)?),
+            Some(named) => Some(self.reach_of(transaction, named).await?),
         };
-        Catalog::new(transaction).create_replica_with(ReplicaDefinition {
-            name: peer.name.text.clone(),
-            endpoint: peer.endpoint.to_owned(),
-            roles,
-            node: peer.node,
-            replicates,
-            leads,
-            clients: peer.clients.map(str::to_owned),
-            http: peer.http.map(str::to_owned),
-            fingerprint: peer.fingerprint.map(str::to_owned),
-            join: None,
-            releasing: false,
-            preferred: peer.preferred,
-            region: peer.region.map(str::to_owned),
-        })?;
+        Catalog::new(transaction)
+            .create_replica_with(ReplicaDefinition {
+                name: peer.name.text.clone(),
+                endpoint: peer.endpoint.to_owned(),
+                roles,
+                node: peer.node,
+                replicates,
+                leads,
+                clients: peer.clients.map(str::to_owned),
+                http: peer.http.map(str::to_owned),
+                fingerprint: peer.fingerprint.map(str::to_owned),
+                join: None,
+                releasing: false,
+                preferred: peer.preferred,
+                region: peer.region.map(str::to_owned),
+            })
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -192,13 +198,13 @@ impl Session<'_> {
     /// Nothing depends on a peer the way a field depends on an analyzer, so
     /// there is no refusal here: a replica declaration is a statement about who
     /// we send to, and withdrawing it is complete on its own.
-    pub(super) fn drop_replica(
+    pub(super) async fn drop_replica(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        if !Catalog::new(transaction).drop_replica(&name.text)? {
+        if !Catalog::new(transaction).drop_replica(&name.text).await? {
             return Err(Error::Unknown {
                 entity: "replica",
                 name: name.text.clone(),
@@ -214,7 +220,7 @@ impl Session<'_> {
     /// and its expiry, so the catalog — in every backup and on every follower —
     /// holds nothing that binds a row. A second token for the row replaces the
     /// first, which is how a lost one is withdrawn.
-    pub(super) fn create_join_token(
+    pub(super) async fn create_join_token(
         transaction: &mut Transaction<'_>,
         replica: &Name,
         expires: tessari_types::Duration,
@@ -248,7 +254,10 @@ impl Session<'_> {
             digest,
             expires_ms: now_ms.saturating_add(life_ms),
         };
-        if !Catalog::new(transaction).wait_for_join(&replica.text, ticket)? {
+        if !Catalog::new(transaction)
+            .wait_for_join(&replica.text, ticket)
+            .await?
+        {
             return Err(Error::Unknown {
                 entity: "replica",
                 name: replica.text.clone(),
@@ -263,7 +272,7 @@ impl Session<'_> {
     /// The range is resolved by the reader `DEFINE REPLICA` uses, so a shard the
     /// table lacks is refused the same way; what may be taken from whom is the
     /// catalog's rule.
-    pub(super) fn alter_replica(
+    pub(super) async fn alter_replica(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
@@ -275,24 +284,40 @@ impl Session<'_> {
             ReplicaChange::Leads { range, preferred } => {
                 let leads = match range {
                     None => None,
-                    Some(named) => Some(self.reach_of(transaction, named)?),
+                    Some(named) => Some(self.reach_of(transaction, named).await?),
                 };
-                Catalog::new(transaction).alter_replica_leads(&name.text, leads, *preferred)?
+                Catalog::new(transaction)
+                    .alter_replica_leads(&name.text, leads, *preferred)
+                    .await?
             }
             // Read before the row is touched, so a misspelled role changes
             // nothing — `DEFINE REPLICA`'s order.
             ReplicaChange::Roles(words) => {
                 let roles = named_roles(words)?;
-                Catalog::new(transaction).amend_replica(&name.text, |row| row.roles = roles)?
+                Catalog::new(transaction)
+                    .amend_replica(&name.text, |row| row.roles = roles)
+                    .await?
             }
-            ReplicaChange::At(endpoint) => Catalog::new(transaction)
-                .amend_replica(&name.text, |row| row.endpoint.clone_from(endpoint))?,
-            ReplicaChange::ClientsAt(clients) => Catalog::new(transaction)
-                .amend_replica(&name.text, |row| row.clients.clone_from(clients))?,
-            ReplicaChange::HttpAt(http) => Catalog::new(transaction)
-                .amend_replica(&name.text, |row| row.http.clone_from(http))?,
-            ReplicaChange::Region(region) => Catalog::new(transaction)
-                .amend_replica(&name.text, |row| row.region.clone_from(region))?,
+            ReplicaChange::At(endpoint) => {
+                Catalog::new(transaction)
+                    .amend_replica(&name.text, |row| row.endpoint.clone_from(endpoint))
+                    .await?
+            }
+            ReplicaChange::ClientsAt(clients) => {
+                Catalog::new(transaction)
+                    .amend_replica(&name.text, |row| row.clients.clone_from(clients))
+                    .await?
+            }
+            ReplicaChange::HttpAt(http) => {
+                Catalog::new(transaction)
+                    .amend_replica(&name.text, |row| row.http.clone_from(http))
+                    .await?
+            }
+            ReplicaChange::Region(region) => {
+                Catalog::new(transaction)
+                    .amend_replica(&name.text, |row| row.region.clone_from(region))
+                    .await?
+            }
         };
         if !amended {
             return Err(Error::Unknown {
@@ -312,7 +337,7 @@ impl Session<'_> {
     /// declares nothing. Here that covers three things a mistyped statement gets
     /// wrong — an unknown format, a destination that does not exist, and a
     /// mapping that names the same record field twice.
-    pub(super) fn define_consumer(
+    pub(super) async fn define_consumer(
         &self,
         transaction: &mut Transaction<'_>,
         declared: &Declared<'_>,
@@ -320,7 +345,8 @@ impl Session<'_> {
     ) -> Result<Outcome> {
         if if_not_exists
             && Catalog::new(transaction)
-                .consumers()?
+                .consumers()
+                .await?
                 .iter()
                 .any(|found| found.name == declared.name.text)
         {
@@ -343,7 +369,9 @@ impl Session<'_> {
         // removes the race the two-object design cannot: a consumer whose
         // destination does not exist is refused here instead of starting and
         // discovering it later, with messages already read.
-        let (context, destination) = self.resolve_table(transaction, declared.destination)?;
+        let (context, destination) = self
+            .resolve_table(transaction, declared.destination)
+            .await?;
 
         let mapping = mapped(declared.mapping)?;
 
@@ -375,7 +403,9 @@ impl Session<'_> {
         };
         // A name already taken is refused by the catalog itself, which is where
         // every other declaration's collision is decided.
-        Catalog::new(transaction).create_consumer(&definition)?;
+        Catalog::new(transaction)
+            .create_consumer(&definition)
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -385,14 +415,15 @@ impl Session<'_> {
     /// running is the runner's job, and it learns of the change the same way a
     /// follower does — by reading the catalog — rather than by being called from
     /// inside a transaction that has not committed yet.
-    pub(super) fn drop_consumer(
+    pub(super) async fn drop_consumer(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
         let found = Catalog::new(transaction)
-            .consumers()?
+            .consumers()
+            .await?
             .into_iter()
             .find(|held| held.name == name.text);
         let Some(consumer) = found else {
@@ -410,7 +441,7 @@ impl Session<'_> {
                 span,
             });
         }
-        Catalog::new(transaction).drop_consumer(&consumer)?;
+        Catalog::new(transaction).drop_consumer(&consumer).await?;
         Ok(Outcome::Done)
     }
 }

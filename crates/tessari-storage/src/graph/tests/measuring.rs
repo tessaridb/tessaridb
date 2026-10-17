@@ -1,4 +1,5 @@
 use super::*;
+use crate::now::Now;
 
 /// The recall of this graph against the exact answer over `live`.
 fn recall_over(graph: &Graph, live: &[i64], dimensions: usize) -> usize {
@@ -25,7 +26,7 @@ fn recall_over(graph: &Graph, live: &[i64], dimensions: usize) -> usize {
             .take(10)
             .map(|(_, n)| RecordId::Int(*n))
             .collect();
-        let found = graph.nearest(&query, 10, None).unwrap();
+        let found = graph.nearest(&query, 10, None).now().unwrap();
         hit = hit.saturating_add(found.iter().filter(|id| truth.contains(id)).count());
         asked = asked.saturating_add(truth.len());
     }
@@ -47,6 +48,7 @@ fn a_smaller_budget_finds_less_and_a_larger_one_finds_more() {
     for n in 0..RECORDS {
         graph
             .insert(&RecordId::Int(n), clustered(n, DIMENSIONS))
+            .now()
             .unwrap();
     }
     let live: Vec<i64> = (0..RECORDS).collect();
@@ -73,9 +75,13 @@ fn a_budget_below_the_answer_still_fills_the_answer() {
     for n in 0..20_u32 {
         graph
             .insert(&RecordId::Int(i64::from(n)), vec![f64::from(n), 0.0])
+            .now()
             .unwrap();
     }
-    assert_eq!(graph.nearest(&[0.0, 0.0], 10, Some(1)).unwrap().len(), 10);
+    assert_eq!(
+        graph.nearest(&[0.0, 0.0], 10, Some(1)).now().unwrap().len(),
+        10
+    );
 }
 
 /// The recall of this graph over `live`, at a named budget.
@@ -108,7 +114,7 @@ fn recall_over_with(
             .take(10)
             .map(|(_, n)| RecordId::Int(*n))
             .collect();
-        let found = graph.nearest(&query, 10, effort).unwrap();
+        let found = graph.nearest(&query, 10, effort).now().unwrap();
         hit = hit.saturating_add(found.iter().filter(|id| truth.contains(id)).count());
         asked = asked.saturating_add(truth.len());
     }
@@ -130,6 +136,7 @@ fn churn_costs_recall_and_a_rebuild_gets_it_back() {
     for n in 0..RECORDS {
         graph
             .insert(&RecordId::Int(n), clustered(n, DIMENSIONS))
+            .now()
             .unwrap();
     }
     // Half of them go, spread across every cluster rather than taken from
@@ -149,6 +156,7 @@ fn churn_costs_recall_and_a_rebuild_gets_it_back() {
     for n in &live {
         rebuilt
             .insert(&RecordId::Int(*n), clustered(*n, DIMENSIONS))
+            .now()
             .unwrap();
     }
     let after = recall_over(&rebuilt, &live, DIMENSIONS);
@@ -173,13 +181,17 @@ fn an_index_with_nothing_to_measure_reports_no_figure() {
     assert!(
         Graph::empty(VectorDistance::Euclidean, false)
             .recall()
+            .now()
             .unwrap()
             .is_none()
     );
 
     let mut alone = Graph::empty(VectorDistance::Euclidean, false);
-    alone.insert(&RecordId::Int(1), vec![1.0, 2.0]).unwrap();
-    assert!(alone.recall().unwrap().is_none());
+    alone
+        .insert(&RecordId::Int(1), vec![1.0, 2.0])
+        .now()
+        .unwrap();
+    assert!(alone.recall().now().unwrap().is_none());
 }
 
 #[test]
@@ -194,10 +206,12 @@ fn a_measurement_does_not_count_the_query_finding_itself() {
     for n in 0..12_u32 {
         graph
             .insert(&RecordId::Int(i64::from(n)), vec![f64::from(n), 0.0])
+            .now()
             .unwrap();
     }
     let measured = graph
         .recall()
+        .now()
         .unwrap()
         .expect("twelve records were not measured");
     assert_eq!(measured.recall, 100, "the free hit was counted");
@@ -221,12 +235,14 @@ fn a_measured_recall_is_a_function_of_the_rows_and_not_of_their_order() {
     for n in 0..200_i64 {
         forwards
             .insert(&RecordId::Int(n), clustered(n, DIMENSIONS))
+            .now()
             .unwrap();
     }
     let mut backwards = Graph::empty(VectorDistance::Euclidean, false);
     for n in (0..200_i64).rev() {
         backwards
             .insert(&RecordId::Int(n), clustered(n, DIMENSIONS))
+            .now()
             .unwrap();
     }
     assert_ne!(
@@ -239,13 +255,13 @@ fn a_measured_recall_is_a_function_of_the_rows_and_not_of_their_order() {
     let rebuild = |source: &Graph| {
         let mut held = Graph::empty(VectorDistance::Euclidean, false);
         for (id, node) in &source.nodes.present() {
-            held.insert(id, node.vector.to_vec()).unwrap();
+            held.insert(id, node.vector.to_vec()).now().unwrap();
         }
         held
     };
     assert_eq!(
-        rebuild(&forwards).recall().unwrap(),
-        rebuild(&backwards).recall().unwrap(),
+        rebuild(&forwards).recall().now().unwrap(),
+        rebuild(&backwards).recall().now().unwrap(),
         "two replicas would publish different recalls"
     );
 }
@@ -264,12 +280,14 @@ fn a_rebuilt_graph_is_a_function_of_the_rows_and_not_of_their_order() {
     for n in &forwards {
         first
             .insert(&RecordId::Int(*n), clustered(*n, DIMENSIONS))
+            .now()
             .unwrap();
     }
     let mut second = Graph::empty(VectorDistance::Euclidean, false);
     for n in &backwards {
         second
             .insert(&RecordId::Int(*n), clustered(*n, DIMENSIONS))
+            .now()
             .unwrap();
     }
     assert_ne!(
@@ -282,7 +300,7 @@ fn a_rebuilt_graph_is_a_function_of_the_rows_and_not_of_their_order() {
     let rebuild = |source: &Graph| {
         let mut held = Graph::empty(VectorDistance::Euclidean, false);
         for (id, node) in source.nodes.present() {
-            held.insert(&id, node.vector.to_vec()).unwrap();
+            held.insert(&id, node.vector.to_vec()).now().unwrap();
         }
         held
     };

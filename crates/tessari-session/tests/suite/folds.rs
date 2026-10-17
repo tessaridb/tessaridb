@@ -14,6 +14,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Session};
@@ -22,7 +24,7 @@ use tessari_types::Value;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Four sales in two cities.
@@ -35,7 +37,7 @@ fn store() -> Store {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION sales;\n\
@@ -50,7 +52,7 @@ fn ready(store: &Store) -> Session<'_> {
 
 /// The one field of the one answer a read gives, as text.
 fn one(session: &mut Session<'_>, script: &str, field: &str) -> String {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(records.len(), 1, "expected one group: {records:?}");
     let Value::Object(fields) = &records[0].1 else {
@@ -134,7 +136,7 @@ fn a_composed_fold_is_computed_per_group() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT city, sum(price) * 2 AS doubled FROM sales GROUP BY city ORDER BY city;")
+        .run_now("SELECT city, sum(price) * 2 AS doubled FROM sales GROUP BY city ORDER BY city;")
         .unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(records.len(), 2);
@@ -187,7 +189,7 @@ fn a_fold_folding_over_a_fold_is_refused() {
     // over, so what is left to average is one number.
     let store = store();
     let mut session = ready(&store);
-    let refused = session.run("SELECT mean(sum(price)) AS nonsense FROM sales;");
+    let refused = session.run_now("SELECT mean(sum(price)) AS nonsense FROM sales;");
     assert!(
         matches!(refused, Err(Error::Script(_))),
         "a nested fold was accepted: {refused:?}"
@@ -206,7 +208,7 @@ fn a_fold_in_a_filter_is_refused_and_says_what_it_would_be() {
         "SELECT city, count(*) AS n FROM sales GROUP BY city ORDER BY count(*);",
         "DELETE FROM sales WHERE count(*) > 1 LIMIT ALL;",
     ] {
-        let refused = session.run(script);
+        let refused = session.run_now(script);
         assert!(
             matches!(refused, Err(Error::Script(_))),
             "{script} was accepted: {refused:?}"
@@ -221,7 +223,7 @@ fn a_projection_that_is_neither_a_key_nor_a_fold_is_still_refused() {
     // number reaches a report.
     let store = store();
     let mut session = ready(&store);
-    let refused = session.run("SELECT clerk, count(*) AS n FROM sales GROUP BY city;");
+    let refused = session.run_now("SELECT clerk, count(*) AS n FROM sales GROUP BY city;");
     assert!(
         matches!(refused, Err(Error::Script(_))),
         "an ungrouped projection was accepted: {refused:?}"
@@ -229,7 +231,7 @@ fn a_projection_that_is_neither_a_key_nor_a_fold_is_still_refused() {
     // …and an expression *built from* a key and a fold is admitted.
     assert!(
         session
-            .run("SELECT city, count(*) * 10 AS scaled FROM sales GROUP BY city;")
+            .run_now("SELECT city, count(*) * 10 AS scaled FROM sales GROUP BY city;")
             .is_ok()
     );
 }

@@ -34,7 +34,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn newest_per_value(&self, index: &IndexDefinition) -> Result<Vec<StoredRecord>> {
+    pub async fn newest_per_value(&self, index: &IndexDefinition) -> Result<Vec<StoredRecord>> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let kind = if index.unique {
             KeyKind::UniqueIndex
@@ -52,7 +52,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Reverse,
                 limit: Some(1),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = self.store.backend().scan(&request).await?;
             let Some((key, value)) = batch.first() else {
                 break;
             };
@@ -68,7 +68,7 @@ impl Transaction<'_> {
                 entry.id
             };
             let record = RecordAddress::new(index.namespace, index.database, index.table, id);
-            let held = self.get_each(std::slice::from_ref(&record))?;
+            let held = self.get_each(std::slice::from_ref(&record)).await?;
             if let Some(Some(payload)) = held.into_iter().next() {
                 found.push((record.id, payload));
             }

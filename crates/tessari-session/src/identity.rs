@@ -145,7 +145,7 @@ impl Session<'_> {
     /// Argon2 hash. The tenancy is resolved to ids the same way every other
     /// reference is, so a user cannot be declared against a database that does
     /// not exist.
-    pub(crate) fn define_user(
+    pub(crate) async fn define_user(
         &self,
         transaction: &mut Transaction<'_>,
         declaration: UserDeclaration<'_>,
@@ -159,7 +159,8 @@ impl Session<'_> {
             if_not_exists,
         } = declaration;
         let declared = Catalog::new(transaction)
-            .users()?
+            .users()
+            .await?
             .into_iter()
             .any(|user| user.name == name.text);
         if if_not_exists && declared {
@@ -167,7 +168,7 @@ impl Session<'_> {
         }
         let reach = match scope {
             None => Reach::Store,
-            Some(named) => self.reach_of(transaction, named)?,
+            Some(named) => self.reach_of(transaction, named).await?,
         };
         let (namespace, database) = reach.parts();
         let authorities = self.held_from(role, reach, span)?;
@@ -189,13 +190,9 @@ impl Session<'_> {
             tessari_ql::Credential::Password(password) => hash(password.expose(), span)?,
             tessari_ql::Credential::Hash(held) => password::accepted(held, span)?,
         };
-        Catalog::new(transaction).create_user(
-            &name.text,
-            namespace,
-            database,
-            &authorities,
-            &secret,
-        )?;
+        Catalog::new(transaction)
+            .create_user(&name.text, namespace, database, &authorities, &secret)
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -204,14 +201,15 @@ impl Session<'_> {
     /// The same `administers` check every other statement about a user makes,
     /// and it is not the `Needs` check that already ran: that one says the
     /// caller administers *something*.
-    fn user_to_change(
+    async fn user_to_change(
         &self,
         transaction: &mut Transaction<'_>,
         user: &Name,
         span: Span,
     ) -> Result<UserDefinition> {
         let Some(found) = Catalog::new(transaction)
-            .users()?
+            .users()
+            .await?
             .into_iter()
             .find(|found| found.name == user.text)
         else {
@@ -242,7 +240,7 @@ impl Session<'_> {
     /// this one an owner of a single namespace could set the store owner's
     /// password and take the node, which is a privilege escalation dressed as
     /// routine administration.
-    pub(crate) fn alter_user(
+    pub(crate) async fn alter_user(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
@@ -250,7 +248,8 @@ impl Session<'_> {
         span: Span,
     ) -> Result<Outcome> {
         let Some(mut user) = Catalog::new(transaction)
-            .users()?
+            .users()
+            .await?
             .into_iter()
             .find(|held| held.name == name.text)
         else {
@@ -304,14 +303,15 @@ impl Session<'_> {
     /// account out permanently, and the grants go with it. A takeover and a
     /// denial of service in one statement, and every log of it reads as routine
     /// administration.
-    pub(crate) fn drop_user(
+    pub(crate) async fn drop_user(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
         let found = Catalog::new(transaction)
-            .users()?
+            .users()
+            .await?
             .into_iter()
             .find(|user| user.name == name.text);
         if let Some(user) = found {
@@ -326,7 +326,7 @@ impl Session<'_> {
             // is the same shape of bug as a reused table id resolving a stale
             // reference — and the catalog already refuses to reuse ids for
             // exactly that reason.
-            for held in Catalog::new(transaction).grants_for(user.id)? {
+            for held in Catalog::new(transaction).grants_for(user.id).await? {
                 Catalog::new(transaction).revoke(user.id, held.table);
             }
             Catalog::new(transaction).drop_user(&user)?;

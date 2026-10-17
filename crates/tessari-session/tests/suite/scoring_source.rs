@@ -30,10 +30,13 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_encoding::{Posting, PostingKey, StoreKey, StoreValue};
+use tessari_kv::KvFuture;
 use tessari_kv::{
-    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanDirection, ScanRequest,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanDirection, ScanRequest,
     Value as KvValue, WriteBatch,
 };
 use tessari_session::{Outcome, Session};
@@ -84,23 +87,25 @@ impl KvBackend for Counting {
         "counting"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<KvValue>> {
-        if PostingKey::decode(key.as_slice()).is_ok() {
-            self.postings.fetch_add(1, Ordering::Relaxed);
-        }
-        self.inner.get(keyspace, key)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<KvValue>> {
+        Box::pin(async move {
+            if PostingKey::decode(key.as_slice()).is_ok() {
+                self.postings.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.get(keyspace, key).await
+        })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, KvValue)>> {
-        self.inner.scan(request)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, KvValue)>> {
+        Box::pin(async move { self.inner.scan(request).await })
     }
 
-    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
-        self.inner.count(keyspace, range)
+    fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
+        Box::pin(async move { self.inner.count(keyspace, range).await })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.inner.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move { self.inner.apply(batch).await })
     }
 }
 
@@ -133,10 +138,12 @@ fn body(n: u32, filler: usize) -> String {
 /// A populated, indexed table, and the backend that watched it being read.
 fn corpus(filler: usize) -> (Arc<Counting>, Store) {
     let counting = Counting::new();
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
@@ -146,14 +153,14 @@ fn corpus(filler: usize) -> (Arc<Counting>, Store) {
         .unwrap();
     for n in 0..RECORDS {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE notes:{n} = {{ body: '{}' }};",
                 body(n, filler)
             ))
             .unwrap();
     }
     session
-        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
         .unwrap();
     (counting, store)
 }
@@ -179,7 +186,7 @@ fn forget_the_numbers(backend: &Arc<Counting>) -> usize {
     };
     let mut batch = WriteBatch::default();
     let mut rewritten = 0_usize;
-    for (key, _) in backend.scan(&request).unwrap() {
+    for (key, _) in backend.scan(&request).now().unwrap() {
         // Decoding is the filter: the index keyspace also holds the dictionary,
         // the statistics and every other index's entries, and a posting key is
         // the only one that decodes as one.
@@ -189,7 +196,7 @@ fn forget_the_numbers(backend: &Arc<Counting>) -> usize {
         batch = batch.put(Keyspace::INDEX, key, Posting::Membership.encode());
         rewritten = rewritten.saturating_add(1);
     }
-    backend.apply(batch).unwrap();
+    backend.apply(batch).now().unwrap();
     rewritten
 }
 
@@ -233,7 +240,7 @@ fn overstate(backend: &Arc<Counting>, wanted_id: &str, wanted_term: &str, times:
         direction: ScanDirection::Forward,
         limit: None,
     };
-    for (key, value) in backend.scan(&request).unwrap() {
+    for (key, value) in backend.scan(&request).now().unwrap() {
         let Ok(posting) = PostingKey::decode(key.as_slice()) else {
             continue;
         };
@@ -255,7 +262,7 @@ fn overstate(backend: &Arc<Counting>, wanted_id: &str, wanted_term: &str, times:
             }
             .encode(),
         );
-        backend.apply(batch).unwrap();
+        backend.apply(batch).now().unwrap();
         return true;
     }
     false
@@ -265,10 +272,10 @@ fn overstate(backend: &Arc<Counting>, wanted_id: &str, wanted_term: &str, times:
 fn scores_for(store: &Store, query: &str) -> Vec<(String, f64)> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     let outcomes = session
-        .run(&format!(
+        .run_now(&format!(
             "SELECT id, search::score(body, '{query}') AS relevance FROM notes;"
         ))
         .unwrap();

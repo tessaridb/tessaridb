@@ -52,12 +52,16 @@ use tessari_storage::Store;
 pub trait Budget: Send + Sync + std::fmt::Debug {
     /// Whether `name` may try now; `None` when the shared table could not be
     /// asked, so this node decides on its own.
-    fn permit(&self, name: &str) -> Option<bool>;
+    fn permit<'a>(&'a self, name: &'a str) -> Budgeting<'a, Option<bool>>;
     /// A try as `name` missed.
-    fn failed(&self, name: &str);
+    fn failed<'a>(&'a self, name: &'a str) -> Budgeting<'a, ()>;
     /// A try as `name` succeeded.
-    fn succeeded(&self, name: &str);
+    fn succeeded<'a>(&'a self, name: &'a str) -> Budgeting<'a, ()>;
 }
+
+/// A [`Budget`] answer: boxed, because a budget is held as a trait object and
+/// asking the shared table reads the store and crosses the peer link.
+pub type Budgeting<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 /// What the store line's leader answers a peer asking for `name` (ADR-0108
 /// D5): `store`'s own table, the cluster's while this node leads.

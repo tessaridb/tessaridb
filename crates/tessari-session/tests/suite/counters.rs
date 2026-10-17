@@ -6,6 +6,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -16,23 +18,25 @@ use tessari_types::{Number, Value};
 const SAMPLES: [(u32, &str); 5] = [(30, "8"), (0, "10"), (40, "20"), (20, "3"), (10, "15")];
 
 fn answered(numbers: &str) -> Value {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE t; USE NAMESPACE t; DEFINE DATABASE d; USE DATABASE d; \
              DEFINE COLLECTION hits;",
         )
         .unwrap();
     for (second, value) in SAMPLES {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE hits = {{ n: {value}{numbers}, at: datetime '2026-09-29T10:00:{second:02}Z' }};"
             ))
             .unwrap();
     }
     let Outcome::Records { records, .. } = session
-        .run(
+        .run_now(
             "SELECT increase(n, at) AS up, delta(n, at) AS change, rate(n, at) AS per \
              FROM hits;",
         )
@@ -73,16 +77,18 @@ fn a_float_sample_turns_the_fold_to_floats() {
 
 #[test]
 fn one_sample_is_not_a_change_and_the_instant_is_required() {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE t; USE NAMESPACE t; DEFINE DATABASE d; USE DATABASE d; \
              DEFINE COLLECTION hits; CREATE hits = { n: 1, at: datetime '2026-09-29T10:00:00Z' };",
         )
         .unwrap();
     let Outcome::Records { records, .. } = session
-        .run("SELECT increase(n, at) AS up FROM hits;")
+        .run_now("SELECT increase(n, at) AS up FROM hits;")
         .unwrap()
         .pop()
         .unwrap()
@@ -91,7 +97,7 @@ fn one_sample_is_not_a_change_and_the_instant_is_required() {
     };
     assert_eq!(field(&records[0].1, "up"), Value::None);
     let missing = session
-        .run("SELECT increase(n) AS up FROM hits;")
+        .run_now("SELECT increase(n) AS up FROM hits;")
         .unwrap_err()
         .to_string();
     assert!(
@@ -99,7 +105,7 @@ fn one_sample_is_not_a_change_and_the_instant_is_required() {
         "{missing}"
     );
     let text = session
-        .run("SELECT rate(n, 'x') AS up FROM hits;")
+        .run_now("SELECT rate(n, 'x') AS up FROM hits;")
         .unwrap_err()
         .to_string();
     assert!(text.contains("not a datetime"), "{text}");

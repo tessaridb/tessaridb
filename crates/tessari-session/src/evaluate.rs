@@ -92,8 +92,12 @@ pub(crate) enum Part<'a> {
 
 impl Session<'_> {
     /// The value an expression denotes, with no record in scope.
-    pub(crate) fn evaluate(&self, transaction: &mut Transaction<'_>, expr: &Expr) -> Result<Value> {
-        self.evaluate_in(transaction, expr, Scope::default())
+    pub(crate) async fn evaluate(
+        &self,
+        transaction: &mut Transaction<'_>,
+        expr: &Expr,
+    ) -> Result<Value> {
+        self.evaluate_in(transaction, expr, Scope::default()).await
     }
 
     /// The value an expression denotes, against the record being tested.
@@ -102,23 +106,14 @@ impl Session<'_> {
     /// meaningful when there **is** a record, and in a value position there is
     /// not — which is why `CREATE audit:1 = { subject: users }` writes a table
     /// and `WHERE users = 3` reads a field.
-    pub(crate) fn evaluate_in(
+    pub(crate) async fn evaluate_in(
         &self,
         transaction: &mut Transaction<'_>,
         expr: &Expr,
         scope: Scope<'_>,
     ) -> Result<Value> {
         match &expr.kind {
-            ExprKind::Path(field) => {
-                let Some(record) = scope.record else {
-                    return Err(Error::NoRecordInScope { span: field.span });
-                };
-                // A route that reaches nothing **is** `none`: the field is not
-                // there, which is precisely what `none` says. That is what makes
-                // `WHERE email = NONE` find the records without an email
-                // without the language needing an `IS NULL` operator at all.
-                Ok(field.path.resolve(record).cloned().unwrap_or(Value::None))
-            }
+            ExprKind::Path(field) => field_value(field, scope.record),
             // A fold is replaced by the value it produced before the enclosing
             // expression is evaluated, so one reaching here is one that stood
             // somewhere a fold may not stand. The parser refuses those, which
@@ -127,13 +122,13 @@ impl Session<'_> {
             // answer `none`.
             ExprKind::Fold { span, .. } => Err(Error::FoldOutsideAGroup { span: *span }),
             ExprKind::Not(operand) => {
-                let held = self.evaluate_in(transaction, operand, scope)?;
+                let held = self.evaluate_child(transaction, operand, scope).await?;
                 Ok(Value::Bool(!boolean(&held, operand.span)?))
             }
             // A step that reaches nothing is `none`, for the reason a path's is
             // above (ADR-0110).
             ExprKind::Route { value, steps } => {
-                let held = self.evaluate_in(transaction, value, scope)?;
+                let held = self.evaluate_child(transaction, value, scope).await?;
                 Ok(walk_route(held, steps))
             }
             // Short-circuit: the right side is not evaluated when the left
@@ -141,19 +136,19 @@ impl Session<'_> {
             // `x = NONE OR x.y = 1` be written without the second half having to
             // be meaningful for every record.
             ExprKind::And(left, right) => {
-                let held = self.evaluate_in(transaction, left, scope)?;
+                let held = self.evaluate_child(transaction, left, scope).await?;
                 if !boolean(&held, left.span)? {
                     return Ok(Value::Bool(false));
                 }
-                let held = self.evaluate_in(transaction, right, scope)?;
+                let held = self.evaluate_child(transaction, right, scope).await?;
                 Ok(Value::Bool(boolean(&held, right.span)?))
             }
             ExprKind::Or(left, right) => {
-                let held = self.evaluate_in(transaction, left, scope)?;
+                let held = self.evaluate_child(transaction, left, scope).await?;
                 if boolean(&held, left.span)? {
                     return Ok(Value::Bool(true));
                 }
-                let held = self.evaluate_in(transaction, right, scope)?;
+                let held = self.evaluate_child(transaction, right, scope).await?;
                 Ok(Value::Bool(boolean(&held, right.span)?))
             }
             // Only the arm that is taken is evaluated. That is not only a
@@ -165,12 +160,12 @@ impl Session<'_> {
                 then,
                 otherwise,
             } => {
-                let held = self.evaluate_in(transaction, condition, scope)?;
+                let held = self.evaluate_child(transaction, condition, scope).await?;
                 if boolean(&held, condition.span)? {
-                    return self.evaluate_in(transaction, then, scope);
+                    return self.evaluate_child(transaction, then, scope).await;
                 }
                 match otherwise {
-                    Some(otherwise) => self.evaluate_in(transaction, otherwise, scope),
+                    Some(otherwise) => self.evaluate_child(transaction, otherwise, scope).await,
                     // No `ELSE` answers `none`, which is what a route into a
                     // field the record does not have already answers.
                     None => Ok(Value::None),
@@ -181,87 +176,42 @@ impl Session<'_> {
             // asks is whether there is a value to use, and the answer is no in
             // both cases. The right side is evaluated only when it is needed.
             ExprKind::Coalesce(left, right) => {
-                let held = self.evaluate_in(transaction, left, scope)?;
+                let held = self.evaluate_child(transaction, left, scope).await?;
                 if matches!(held, Value::None | Value::Null) {
-                    return self.evaluate_in(transaction, right, scope);
+                    return self.evaluate_child(transaction, right, scope).await;
                 }
                 Ok(held)
             }
             ExprKind::Negate(operand) => {
-                let held = self.evaluate_in(transaction, operand, scope)?;
+                let held = self.evaluate_child(transaction, operand, scope).await?;
                 negate(&held, operand.span)
             }
+            // Boxed, as the store's own arms below are: the futures a call
+            // awaits are many times the size of the ones every other arm does,
+            // and an inline one would make each nested sub-expression copy it.
             ExprKind::Call {
                 function,
                 arguments,
                 span,
             } => {
-                // A `FROM SEARCH` record answers its own score, table, snippet
-                // and marks, from what the search ranked it with (ADR-0105).
-                if let Some(answer) =
-                    self.answered_by_hit(transaction, *function, arguments, scope, *span)?
-                {
-                    return Ok(answer);
-                }
-                // A score is the second thing in this language that needs more
-                // than its arguments — the field's analyzer, and what the
-                // collection looks like. `call` takes values, and neither of
-                // those is one, so it is answered here where the scope is.
-                // An explanation is the same score, answered with its parts.
-                if matches!(function, Function::SearchScore | Function::SearchExplain) {
-                    let explaining = *function == Function::SearchExplain;
-                    return self.rank(transaction, arguments, scope, *span, explaining);
-                }
-                // And the third. A highlight needs the field's analyzer and what
-                // this read asked of that field — neither of which is a value,
-                // and the second of which is the whole point: the marks come
-                // from the query the statement ran, not from one the projection
-                // repeated.
-                if *function == Function::SearchHighlight {
-                    return self.highlight(transaction, arguments, scope);
-                }
-                // And a rank, which is the fusion's and not the record's: it
-                // exists only while a fused read projects what it ordered.
-                if *function == Function::SearchRanks {
-                    let Some(ranks) = scope.ranks else {
-                        return Err(Error::NotFused { span: *span });
-                    };
-                    return Ok(Value::Array(
-                        ranks
-                            .iter()
-                            .map(|rank| {
-                                rank.and_then(|rank| i64::try_from(rank).ok())
-                                    .map_or(Value::None, |rank| {
-                                        Value::Number(Number::Integer(rank))
-                                    })
-                            })
-                            .collect(),
-                    ));
-                }
-                if *function == Function::SessionContext {
-                    return self.session_context();
-                }
-                // A record reference is written by its table's name, and the
-                // name is the catalog's — not a value the call is given.
-                if *function == Function::JsonEncode {
-                    let arguments = self.values(transaction, arguments, scope)?;
-                    return self.json_encode(transaction, &arguments);
-                }
+                // A distance is answered through its own future, which lends
+                // its operands and is a fraction of the call's: a nearest-first
+                // scan asks one per record.
                 if let Some(distance) =
-                    self.distance_between(transaction, *function, arguments, scope)?
+                    Box::pin(self.distance_between(transaction, *function, arguments, scope))
+                        .await?
                 {
                     return Ok(distance);
                 }
-                let arguments = self.values(transaction, arguments, scope)?;
-                call(*function, &arguments, *span)
+                Box::pin(self.evaluate_call(transaction, *function, arguments, *span, scope)).await
             }
             ExprKind::Arithmetic { op, left, right } => {
-                let held = self.evaluate_in(transaction, left, scope)?;
-                let other = self.evaluate_in(transaction, right, scope)?;
+                let held = self.evaluate_child(transaction, left, scope).await?;
+                let other = self.evaluate_child(transaction, right, scope).await?;
                 arithmetic(*op, &held, &other, expr.span)
             }
             ExprKind::Binary { op, left, right } => {
-                let other = self.evaluate_in(transaction, right, scope)?;
+                let other = self.evaluate_child(transaction, right, scope).await?;
                 // A route holding `[*]` denotes *the values it reaches* rather
                 // than a value, and what a comparison does with several values
                 // is the comparison's rule: it holds when **any** of them
@@ -291,7 +241,7 @@ impl Session<'_> {
                         }
                     })));
                 }
-                let held = self.evaluate_in(transaction, left, scope)?;
+                let held = self.evaluate_child(transaction, left, scope).await?;
                 // A term match is the one test that needs the *schema*: which
                 // analyzer turns this field's text into terms is a property of
                 // the field, so that both a scan and an index ask the same
@@ -332,30 +282,37 @@ impl Session<'_> {
                 span: expr.span,
             }),
             ExprKind::Table(table) => {
-                let (_, id) = self.resolve_table(transaction, table)?;
+                let (_, id) = Box::pin(self.resolve_table(transaction, table)).await?;
                 Ok(Value::Table(id))
             }
             ExprKind::Record(target) => {
-                let (_, address) = self.address(transaction, target)?;
+                let (_, address) = Box::pin(self.address(transaction, target)).await?;
                 Ok(Value::Record(RecordRef::new(address.table, address.id)))
             }
-            ExprKind::Array(items) => Ok(Value::Array(self.values(transaction, items, scope)?)),
+            ExprKind::Array(items) => {
+                Ok(Value::Array(self.values(transaction, items, scope).await?))
+            }
             ExprKind::Set(items) => Ok(Value::Set(
-                self.values(transaction, items, scope)?
+                self.values(transaction, items, scope)
+                    .await?
                     .into_iter()
                     .collect(),
             )),
             ExprKind::Object(fields) => {
                 let mut object = BTreeMap::new();
                 for field in fields {
-                    let value = self.evaluate_in(transaction, &field.value, scope)?;
+                    let value = self
+                        .evaluate_child(transaction, &field.value, scope)
+                        .await?;
                     object.insert(field.name.text.clone(), value);
                 }
                 Ok(Value::Object(object))
             }
             ExprKind::Range(range) => {
-                let start = self.evaluate_in(transaction, &range.start, scope)?;
-                let end = self.evaluate_in(transaction, &range.end, scope)?;
+                let start = self
+                    .evaluate_child(transaction, &range.start, scope)
+                    .await?;
+                let end = self.evaluate_child(transaction, &range.end, scope).await?;
                 let end = if range.inclusive {
                     Bound::Included(end)
                 } else {
@@ -366,13 +323,130 @@ impl Session<'_> {
                     end,
                 ))))
             }
-            ExprKind::Get(target) => self.read_key(transaction, target),
-            ExprKind::Ttl(target) => self.ttl_of(transaction, target),
-            ExprKind::Select(select) => self.read_as_value(transaction, select),
+            ExprKind::Get(target) => Box::pin(self.read_key(transaction, target)).await,
+            ExprKind::Ttl(target) => Box::pin(self.ttl_of(transaction, target)).await,
+            ExprKind::Select(select) => Box::pin(self.read_as_value(transaction, select)).await,
         }
     }
 
-    fn values(
+    /// A function call, for [`Self::evaluate_in`].
+    async fn evaluate_call(
+        &self,
+        transaction: &mut Transaction<'_>,
+        function: Function,
+        arguments: &[Expr],
+        span: Span,
+        scope: Scope<'_>,
+    ) -> Result<Value> {
+        let function = &function;
+        let span = &span;
+        // A `FROM SEARCH` record answers its own score, table, snippet
+        // and marks, from what the search ranked it with (ADR-0105).
+        if let Some(answer) = self
+            .answered_by_hit(transaction, *function, arguments, scope, *span)
+            .await?
+        {
+            return Ok(answer);
+        }
+        // A score is the second thing in this language that needs more
+        // than its arguments: the field's analyzer, and what the
+        // collection looks like. `call` takes values, and neither of
+        // those is one, so it is answered here where the scope is.
+        // An explanation is the same score, answered with its parts.
+        if matches!(function, Function::SearchScore | Function::SearchExplain) {
+            let explaining = *function == Function::SearchExplain;
+            return self
+                .rank(transaction, arguments, scope, *span, explaining)
+                .await;
+        }
+        // And the third. A highlight needs the field's analyzer and what
+        // this read asked of that field, neither of which is a value,
+        // and the second of which is the whole point: the marks come
+        // from the query the statement ran, not from one the projection
+        // repeated.
+        if *function == Function::SearchHighlight {
+            return self.highlight(transaction, arguments, scope).await;
+        }
+        // And a rank, which is the fusion's and not the record's: it
+        // exists only while a fused read projects what it ordered.
+        if *function == Function::SearchRanks {
+            let Some(ranks) = scope.ranks else {
+                return Err(Error::NotFused { span: *span });
+            };
+            return Ok(Value::Array(
+                ranks
+                    .iter()
+                    .map(|rank| {
+                        rank.and_then(|rank| i64::try_from(rank).ok())
+                            .map_or(Value::None, |rank| Value::Number(Number::Integer(rank)))
+                    })
+                    .collect(),
+            ));
+        }
+        if *function == Function::SessionContext {
+            return self.session_context().await;
+        }
+        // One clock per statement (DB-21): the reading `step` took as
+        // the statement began, not a fresh one per call.
+        if *function == Function::TimeNow {
+            return Ok(Value::Datetime(crate::call::instant_of(self.now, *span)?));
+        }
+        // A record reference is written by its table's name, and the
+        // name is the catalog's, not a value the call is given.
+        if *function == Function::JsonEncode {
+            let arguments = self.values(transaction, arguments, scope).await?;
+            return self.json_encode(transaction, &arguments).await;
+        }
+        if let Some(distance) = self
+            .distance_between(transaction, *function, arguments, scope)
+            .await?
+        {
+            return Ok(distance);
+        }
+        let arguments = self.values(transaction, arguments, scope).await?;
+        call(*function, &arguments, *span)
+    }
+
+    /// [`Self::evaluate_in`] for a sub-expression: an async function cannot
+    /// hold itself inline, so the recursion goes through a boxed future here,
+    /// once per nested sub-expression.
+    ///
+    /// A literal and a field are answered on the spot instead, with no future
+    /// to box: they are most of a condition's leaves, and a condition is
+    /// evaluated once per record a read passes over.
+    pub(crate) fn evaluate_child<'s>(
+        &'s self,
+        transaction: &'s mut Transaction<'_>,
+        expr: &'s Expr,
+        scope: Scope<'s>,
+    ) -> Child<'s> {
+        match &expr.kind {
+            ExprKind::Literal(value) => Child::Literal(value),
+            ExprKind::Path(field) => Child::Field(field, scope.record),
+            // A comparison between two leaves, which is what most conditions
+            // are made of, compares the values where they lie.
+            ExprKind::Binary { op, left, right }
+                if !matches!(
+                    op,
+                    BinaryOp::Matches
+                        | BinaryOp::MatchesPrefix
+                        | BinaryOp::MatchesFuzzy
+                        | BinaryOp::MatchesInfix
+                ) =>
+            {
+                match (leaf(left, scope.record), leaf(right, scope.record)) {
+                    (Some(held), Some(other)) => {
+                        scope.compared_by(*op, held, other);
+                        Child::Answered(apply(*op, held, other))
+                    }
+                    _ => Child::Nested(Box::pin(self.evaluate_in(transaction, expr, scope))),
+                }
+            }
+            _ => Child::Nested(Box::pin(self.evaluate_in(transaction, expr, scope))),
+        }
+    }
+
+    async fn values(
         &self,
         transaction: &mut Transaction<'_>,
         items: &[Expr],
@@ -380,10 +454,70 @@ impl Session<'_> {
     ) -> Result<Vec<Value>> {
         let mut values = Vec::with_capacity(items.len());
         for item in items {
-            values.push(self.evaluate_in(transaction, item, scope)?);
+            values.push(self.evaluate_child(transaction, item, scope).await?);
         }
         Ok(values)
     }
+}
+
+/// The future [`Session::evaluate_child`] hands back.
+///
+/// A leaf holds only what answering it reads and is answered when first
+/// polled, so it is no larger than the boxed future beside it: every future
+/// awaiting a sub-expression holds one of these, and those futures are moved.
+pub(crate) enum Child<'s> {
+    /// A literal, answered on the spot.
+    Literal(&'s Value),
+    /// A field of the record in scope, answered on the spot.
+    Field(&'s FieldPath, Option<&'s Value>),
+    /// A comparison already answered.
+    Answered(bool),
+    /// Anything that recurses.
+    Nested(std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 's>>),
+}
+
+impl std::future::Future for Child<'_> {
+    type Output = Result<Value>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        match self.get_mut() {
+            Self::Literal(value) => std::task::Poll::Ready(Ok((*value).clone())),
+            Self::Field(field, record) => std::task::Poll::Ready(field_value(field, *record)),
+            Self::Answered(holds) => std::task::Poll::Ready(Ok(Value::Bool(*holds))),
+            Self::Nested(nested) => nested.as_mut().poll(context),
+        }
+    }
+}
+
+/// What a leaf denotes, borrowed where it lies: a literal, or a field of the
+/// record in scope that reaches one value. Anything else, including a field
+/// with no record to read, is answered by the full evaluation instead.
+fn leaf<'s>(expr: &'s Expr, record: Option<&'s Value>) -> Option<&'s Value> {
+    /// What a route that reaches nothing denotes.
+    static NONE: Value = Value::None;
+    match &expr.kind {
+        ExprKind::Literal(value) => Some(value),
+        ExprKind::Path(field) if !field.path.is_several() => {
+            record.map(|record| field.path.resolve(record).unwrap_or(&NONE))
+        }
+        _ => None,
+    }
+}
+
+/// The value a field path reaches in the record in scope.
+///
+/// A route that reaches nothing **is** `none`: the field is not there, which is
+/// precisely what `none` says. That is what makes `WHERE email = NONE` find the
+/// records without an email without the language needing an `IS NULL` operator
+/// at all.
+fn field_value(field: &FieldPath, record: Option<&Value>) -> Result<Value> {
+    let Some(record) = record else {
+        return Err(Error::NoRecordInScope { span: field.span });
+    };
+    Ok(field.path.resolve(record).cloned().unwrap_or(Value::None))
 }
 
 /// What a read's projection produces, worked out once above the records.

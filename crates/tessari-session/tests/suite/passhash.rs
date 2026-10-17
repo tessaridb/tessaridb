@@ -6,6 +6,8 @@
 //! no way to plant a credential weaker than the store would have made itself.
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -15,14 +17,15 @@ const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// The stored hash of the user named `name`.
 fn stored(store: &Store, name: &str) -> String {
-    let mut view = store.begin().unwrap();
+    let mut view = store.begin().now().unwrap();
     Catalog::new(&mut view)
         .users()
+        .now()
         .unwrap()
         .into_iter()
         .find(|user| user.name == name)
@@ -34,7 +37,7 @@ fn stored(store: &Store, name: &str) -> String {
 fn a_user_defined_by_their_stored_hash_signs_in_with_their_password() {
     let source = store();
     Session::new(&source)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE USER ada ROLE owner PASSWORD '{PASSWORD}';"
         ))
         .unwrap();
@@ -42,15 +45,20 @@ fn a_user_defined_by_their_stored_hash_signs_in_with_their_password() {
 
     let target = store();
     Session::new(&target)
-        .run(&format!("DEFINE USER ada ROLE owner PASSHASH '{hash}';"))
+        .run_now(&format!("DEFINE USER ada ROLE owner PASSHASH '{hash}';"))
         .unwrap();
     assert_eq!(
         stored(&target, "ada"),
         hash,
         "the hash was not stored as given"
     );
-    assert!(Session::new(&target).sign_in("ada", PASSWORD).is_ok());
-    assert!(Session::new(&target).sign_in("ada", "not it").is_err());
+    assert!(Session::new(&target).sign_in("ada", PASSWORD).now().is_ok());
+    assert!(
+        Session::new(&target)
+            .sign_in("ada", "not it")
+            .now()
+            .is_err()
+    );
 }
 
 /// A real Argon2id hash of `PASSWORD` at these parameters.
@@ -78,7 +86,7 @@ fn a_hash_this_store_would_not_have_made_is_refused() {
     );
     assert!(
         Session::new(&store())
-            .run(&format!("DEFINE USER ada ROLE owner PASSHASH '{floor}';"))
+            .run_now(&format!("DEFINE USER ada ROLE owner PASSHASH '{floor}';"))
             .is_ok(),
         "a hash at the store's own parameters was refused"
     );
@@ -89,7 +97,7 @@ fn a_hash_this_store_would_not_have_made_is_refused() {
         "hunter2".to_owned(),
     ] {
         let refused = Session::new(&store())
-            .run(&format!("DEFINE USER ada ROLE owner PASSHASH '{weak}';"))
+            .run_now(&format!("DEFINE USER ada ROLE owner PASSHASH '{weak}';"))
             .unwrap_err()
             .to_string();
         assert!(

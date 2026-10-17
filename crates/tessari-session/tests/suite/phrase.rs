@@ -31,13 +31,17 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
 use tessari_storage::Store;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 const PLACE: &str = "\
@@ -57,7 +61,7 @@ fn phrases(indexed: bool) -> Store {
     let held = store();
     let mut session = Session::new(&held);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
              DEFINE COLLECTION notes;\n\
@@ -69,7 +73,7 @@ fn phrases(indexed: bool) -> Store {
         .unwrap();
     if indexed {
         session
-            .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+            .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
             .unwrap();
     }
     held
@@ -77,7 +81,7 @@ fn phrases(indexed: bool) -> Store {
 
 /// The record ids one read answered with, in the order returned.
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<String> {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -100,7 +104,7 @@ fn the_order_is_what_a_phrase_is() {
     for indexed in [false, true] {
         let held = phrases(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
 
         let quoted = ids(
             &mut session,
@@ -124,7 +128,7 @@ fn an_unquoted_query_is_still_a_conjunction() {
     for indexed in [false, true] {
         let held = phrases(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
 
         let plain = ids(
             &mut session,
@@ -150,7 +154,7 @@ fn the_reverse_phrase_finds_the_reverse_record() {
     for indexed in [false, true] {
         let held = phrases(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
 
         let reversed = ids(
             &mut session,
@@ -173,7 +177,7 @@ fn a_phrase_of_one_word_is_that_word() {
     for indexed in [false, true] {
         let held = phrases(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
 
         let quoted = ids(
             &mut session,
@@ -206,7 +210,7 @@ fn an_unbalanced_quote_is_not_a_phrase() {
     for indexed in [false, true] {
         let held = phrases(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
 
         let half = ids(
             &mut session,
@@ -234,7 +238,7 @@ fn an_unbalanced_quote_is_not_a_phrase() {
 fn the_filter_chain_is_one_token_in_one_token_out() {
     let held = phrases(false);
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     // Six source words, and the analyzer must produce exactly six terms: the
     // count is what a splitting or dropping filter would change.
@@ -263,7 +267,7 @@ fn slop_widens_the_window_and_never_the_order() {
     for indexed in [false, true] {
         let held = phrases(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
 
         // `ada lovelace wrote` — `ada` and `wrote` sit two apart, so a span of
         // one extra token is exactly enough and none is not.
@@ -303,7 +307,7 @@ fn an_explicit_zero_is_the_bare_phrase() {
     for indexed in [false, true] {
         let held = phrases(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
 
         let bare = ids(
             &mut session,
@@ -338,10 +342,10 @@ fn a_malformed_slop_marker_is_refused_by_name() {
     for indexed in [false, true] {
         let held = phrases(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
 
         let refused = session
-            .run("SELECT * FROM notes WHERE body MATCHES '\"ada lovelace\"~x';")
+            .run_now("SELECT * FROM notes WHERE body MATCHES '\"ada lovelace\"~x';")
             .unwrap_err()
             .to_string();
 
@@ -362,10 +366,10 @@ fn a_malformed_slop_marker_is_refused_by_name() {
 fn a_slop_marker_with_no_number_is_refused() {
     let held = phrases(false);
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     let refused = session
-        .run("SELECT * FROM notes WHERE body MATCHES '\"ada lovelace\"~';")
+        .run_now("SELECT * FROM notes WHERE body MATCHES '\"ada lovelace\"~';")
         .unwrap_err()
         .to_string();
 
@@ -380,10 +384,10 @@ fn a_slop_marker_with_no_number_is_refused() {
 fn a_negative_slop_is_refused() {
     let held = phrases(false);
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
 
     let refused = session
-        .run("SELECT * FROM notes WHERE body MATCHES '\"ada lovelace\"~-1';")
+        .run_now("SELECT * FROM notes WHERE body MATCHES '\"ada lovelace\"~-1';")
         .unwrap_err()
         .to_string();
 
@@ -399,7 +403,7 @@ fn a_starred_phrase_ends_in_a_prefix_and_keeps_its_order() {
     for indexed in [false, true] {
         let held = phrases(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
 
         let typed = ids(
             &mut session,
@@ -420,7 +424,7 @@ fn a_starred_phrase_ends_in_a_prefix_and_keeps_its_order() {
         assert!(unstarred.is_empty(), "indexed {indexed}: {unstarred:?}");
 
         let marked = session
-            .run(
+            .run_now(
                 "SELECT search::highlight(body) AS marks FROM notes \
                  WHERE body MATCHES '\"ada lov\"*';",
             )
@@ -450,8 +454,8 @@ fn a_starred_phrase_with_a_short_last_word_is_refused() {
     for indexed in [false, true] {
         let held = phrases(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
-        let refused = session.run("SELECT * FROM notes WHERE body MATCHES '\"ada lo\"*';");
+        session.run_now(USE).unwrap();
+        let refused = session.run_now("SELECT * FROM notes WHERE body MATCHES '\"ada lo\"*';");
         assert!(
             matches!(refused, Err(tessari_session::Error::PrefixTooShort { ref prefix, .. }) if prefix == "lo"),
             "indexed {indexed}: {refused:?}"

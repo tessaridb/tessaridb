@@ -51,16 +51,17 @@ impl Session<'_> {
     /// and the read moves that position to the last message it answers — in
     /// this transaction, so the move commits with whatever else the reader
     /// writes, and is undone with it.
-    pub(crate) fn read_topic(
+    pub(crate) async fn read_topic(
         &self,
         transaction: &mut Transaction<'_>,
         topic: &TableRef,
         reading: Reading<'_>,
         span: Span,
     ) -> Result<Outcome> {
-        let (context, table) = self.resolve_table(transaction, topic)?;
+        let (context, table) = self.resolve_table(transaction, topic).await?;
         let is_topic = Catalog::new(transaction)
-            .table(table)?
+            .table(table)
+            .await?
             .is_some_and(|definition| matches!(definition.kind, TableKind::Topic(_)));
         if !is_topic {
             return Err(Error::NotATopic {
@@ -69,12 +70,9 @@ impl Session<'_> {
             });
         }
         if let Some(consumer) = reading.consumer
-            && let Some(state) = Catalog::new(transaction).topic_group(
-                context.namespace,
-                context.database,
-                table,
-                consumer,
-            )?
+            && let Some(state) = Catalog::new(transaction)
+                .topic_group(context.namespace, context.database, table, consumer)
+                .await?
         {
             if reading.after.is_some() {
                 return Err(Error::AfterOnGroup {
@@ -83,55 +81,67 @@ impl Session<'_> {
                 });
             }
             let limit = match reading.limit {
-                Some(limit) => self.whole(
-                    transaction,
-                    limit,
-                    "a limit is a whole number at or above zero",
-                )?,
+                Some(limit) => {
+                    self.whole(
+                        transaction,
+                        limit,
+                        "a limit is a whole number at or above zero",
+                    )
+                    .await?
+                }
                 None => DEFAULT_LIMIT,
             };
-            return self.read_group(
-                transaction,
-                (&context, table),
-                (topic, consumer),
-                state,
-                limit,
-                span,
-            );
+            return self
+                .read_group(
+                    transaction,
+                    (&context, table),
+                    (topic, consumer),
+                    state,
+                    limit,
+                    span,
+                )
+                .await;
         }
         let named = match reading.after {
-            Some(after) => Some(self.whole(
-                transaction,
-                after,
-                "a position is a whole number at or above zero",
-            )?),
+            Some(after) => Some(
+                self.whole(
+                    transaction,
+                    after,
+                    "a position is a whole number at or above zero",
+                )
+                .await?,
+            ),
             None => None,
         };
         let stored = match reading.consumer {
-            Some(consumer) => Catalog::new(transaction).topic_position(
-                context.namespace,
-                context.database,
-                table,
-                consumer,
-            )?,
+            Some(consumer) => {
+                Catalog::new(transaction)
+                    .topic_position(context.namespace, context.database, table, consumer)
+                    .await?
+            }
             None => None,
         };
         let after = named.or(stored).unwrap_or(0);
         let limit = match reading.limit {
-            Some(limit) => self.whole(
-                transaction,
-                limit,
-                "a limit is a whole number at or above zero",
-            )?,
+            Some(limit) => {
+                self.whole(
+                    transaction,
+                    limit,
+                    "a limit is a whole number at or above zero",
+                )
+                .await?
+            }
             None => DEFAULT_LIMIT,
         };
-        let found = transaction.topic_after(
-            context.namespace,
-            context.database,
-            table,
-            after,
-            usize::try_from(limit).unwrap_or(usize::MAX),
-        )?;
+        let found = transaction
+            .topic_after(
+                context.namespace,
+                context.database,
+                table,
+                after,
+                usize::try_from(limit).unwrap_or(usize::MAX),
+            )
+            .await?;
         let missed = missed(&found, after);
         let reached = found.messages.last().map(|message| message.position);
         if let Some(consumer) = reading.consumer {
@@ -181,24 +191,24 @@ impl Session<'_> {
     }
 
     /// A whole number at or above zero, from an expression.
-    pub(super) fn whole(
+    pub(super) async fn whole(
         &self,
         transaction: &mut Transaction<'_>,
         expr: &Expr,
         reason: &'static str,
     ) -> Result<u64> {
-        position_of(self.evaluate(transaction, expr)?, reason, expr.span)
+        position_of(self.evaluate(transaction, expr).await?, reason, expr.span)
     }
 
     /// The positions one expression names: a whole number, or an array of them
     /// — a batch read and bound as one parameter (ADR-0126 D3).
-    pub(super) fn positions(
+    pub(super) async fn positions(
         &self,
         transaction: &mut Transaction<'_>,
         expr: &Expr,
         reason: &'static str,
     ) -> Result<Vec<u64>> {
-        match self.evaluate(transaction, expr)? {
+        match self.evaluate(transaction, expr).await? {
             Value::Array(items) => items
                 .into_iter()
                 .map(|item| position_of(item, reason, expr.span))

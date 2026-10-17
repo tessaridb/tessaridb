@@ -217,13 +217,17 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn grants_for(&self, user: u32) -> Result<Vec<GrantDefinition>> {
+    pub async fn grants_for(&self, user: u32) -> Result<Vec<GrantDefinition>> {
         let mut found = Vec::new();
-        for (_, payload) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::GRANTS,
-        )? {
+        for (_, payload) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::GRANTS,
+            )
+            .await?
+        {
             let held = GrantDefinition::from_value(&decode_payload(&payload)?)?;
             if held.user == user {
                 found.push(held);

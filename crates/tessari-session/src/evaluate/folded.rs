@@ -15,7 +15,7 @@ impl Session<'_> {
     /// The groups `select` folds into, when it is a grouping read every part of
     /// which the leaders can fold exactly and this node lacks part of its table;
     /// `None` for every other read, which then prepares its source as before.
-    pub(super) fn prepare_folded(
+    pub(super) async fn prepare_folded(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
@@ -30,17 +30,19 @@ impl Session<'_> {
             Source::Where { table, condition } => (table, Some(&**condition)),
             _ => return Ok(None),
         };
-        let (_, id) = self.resolve_table(transaction, table)?;
-        self.refuse_reading_a_vault(transaction, id, table)?;
-        reduce.visible = self.visible_in(transaction, id)?;
-        let Some((groups, note)) = self.gather_folded(
-            transaction,
-            id,
-            &reduce,
-            (select, condition),
-            noticed,
-            within,
-        )?
+        let (_, id) = self.resolve_table(transaction, table).await?;
+        self.refuse_reading_a_vault(transaction, id, table).await?;
+        reduce.visible = self.visible_in(transaction, id).await?;
+        let Some((groups, note)) = self
+            .gather_folded(
+                transaction,
+                id,
+                &reduce,
+                (select, condition),
+                noticed,
+                within,
+            )
+            .await?
         else {
             return Ok(None);
         };

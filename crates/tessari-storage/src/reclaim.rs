@@ -59,17 +59,17 @@ impl Store {
     ///
     /// Returns an error when the backend fails or a stored key or value cannot
     /// be decoded.
-    pub fn reclaim_table(
+    pub async fn reclaim_table(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
         table: TableId,
     ) -> Result<Reclaimed> {
-        let floor = self.retention_floor()?;
+        let floor = self.retention_floor().await?;
         // First, so the versions they settle can be reclaimed below: settled
         // transactions whose markers the floor has passed lose their provenance
         // (Q-922), the reclaim floor rising with each.
-        self.fold_settled_across(floor)?;
+        self.fold_settled_across(floor).await?;
         let prefix = RecordKey::table_prefix(namespace, database, table);
         let request = ScanRequest {
             keyspace: RecordKey::keyspace(),
@@ -92,7 +92,7 @@ impl Store {
         // the one being judged, for the current record.
         let mut kept_above_across = false;
 
-        for (key, value) in self.backend().scan(&request)? {
+        for (key, value) in self.backend().scan(&request).await? {
             let decoded = RecordKey::decode(key.as_slice())?;
             if current.as_ref() != Some(&decoded.id) {
                 current = Some(decoded.id.clone());
@@ -147,13 +147,13 @@ impl Store {
             // earlier one — a long-held snapshot holds the floor down — and what
             // this records is the oldest sequence still answerable exactly,
             // which only ever moves forward as versions are removed.
-            let raised = self.reclaim_floor()?.max(floor);
+            let raised = self.reclaim_floor().await?.max(floor);
             batch = batch.put(
                 ReclaimFloorKey::keyspace(),
                 ReclaimFloorKey.encode(),
                 raised.encode(),
             );
-            self.backend().apply(batch)?;
+            self.backend().apply(batch).await?;
         }
         Ok(removed)
     }
@@ -168,9 +168,13 @@ impl Store {
     ///
     /// Returns an error when the backend fails or the stored floor cannot be
     /// decoded.
-    pub fn reclaim_floor(&self) -> Result<Sequence> {
+    pub async fn reclaim_floor(&self) -> Result<Sequence> {
         let key = ReclaimFloorKey.encode();
-        match self.backend().get(ReclaimFloorKey::keyspace(), &key)? {
+        match self
+            .backend()
+            .get(ReclaimFloorKey::keyspace(), &key)
+            .await?
+        {
             Some(value) => Ok(Sequence::decode(value.as_slice())?),
             None => Ok(Sequence::ZERO),
         }

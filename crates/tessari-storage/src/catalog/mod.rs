@@ -64,7 +64,7 @@ use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
 pub use analyzer::AnalyzerDefinition;
 pub use authority::{Authority, Held, Kind, Reach};
 pub(crate) use carried::{carried_to, home_of};
-pub(crate) use change::{CatalogChange, catalog_change, defined_index};
+pub(crate) use change::{CatalogChange, catalog_change, defined_analyzer, defined_index};
 pub use consumer::{ConsumerDefinition, Feed, Mapped, OnFailure};
 pub(crate) use decoded::DecodedTables;
 pub use definition::{
@@ -126,8 +126,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn namespace(&self, id: NamespaceId) -> Result<Option<NamespaceDefinition>> {
-        self.read(system::NAMESPACES, id.get())?
+    pub async fn namespace(&self, id: NamespaceId) -> Result<Option<NamespaceDefinition>> {
+        self.read(system::NAMESPACES, id.get())
+            .await?
             .as_ref()
             .map(NamespaceDefinition::from_value)
             .transpose()
@@ -138,8 +139,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn database(&self, id: DatabaseId) -> Result<Option<DatabaseDefinition>> {
-        self.read(system::DATABASES, id.get())?
+    pub async fn database(&self, id: DatabaseId) -> Result<Option<DatabaseDefinition>> {
+        self.read(system::DATABASES, id.get())
+            .await?
             .as_ref()
             .map(DatabaseDefinition::from_value)
             .transpose()
@@ -150,19 +152,36 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn table(&self, id: TableId) -> Result<Option<TableDefinition>> {
-        // The row is read here, at this transaction's snapshot, as every catalog
-        // read is — held between statements when the snapshot allows (`rows`) —
-        // and decoding it is shared (`decoded`).
+    pub async fn table(&self, id: TableId) -> Result<Option<TableDefinition>> {
+        Ok(self
+            .table_shared(id)
+            .await?
+            .map(std::sync::Arc::unwrap_or_clone))
+    }
+
+    /// [`Catalog::table`] without the copy, for a caller that only reads it.
+    ///
+    /// The row is read here, at this transaction's snapshot, as every catalog
+    /// read is (held between statements when the snapshot allows, `rows`),
+    /// and decoding it is shared (`decoded`), so the definition handed back is
+    /// the one every other reader of the same bytes holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub async fn table_shared(
+        &self,
+        id: TableId,
+    ) -> Result<Option<std::sync::Arc<TableDefinition>>> {
         let address: RecordAddress =
             system::address(system::TABLES, RecordId::Int(id_key(id.get())));
-        let Some(stored) = self.row(&address)? else {
+        let Some(stored) = self.row(&address).await? else {
             return Ok(None);
         };
         self.transaction
             .store()
             .decoded_tables()
-            .definition(&stored)
+            .definition(id, &stored)
             .map(Some)
     }
 
@@ -180,8 +199,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn namespaces(&self) -> Result<Vec<NamespaceDefinition>> {
+    pub async fn namespaces(&self) -> Result<Vec<NamespaceDefinition>> {
         self.all(system::NAMESPACES, NamespaceDefinition::from_value)
+            .await
     }
 
     /// Every definition in one system table, decoded.
@@ -191,11 +211,12 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// alternative is an index over the catalog, and the catalog is what indexes
     /// are declared in. If a caller ever needs this hot, the answer is a cache
     /// keyed by the catalog's own version rather than a cleverer scan.
-    fn all<T>(&self, table: TableId, decode: fn(&Value) -> Result<T>) -> Result<Vec<T>> {
+    async fn all<T>(&self, table: TableId, decode: fn(&Value) -> Result<T>) -> Result<Vec<T>> {
         let mut found = Vec::new();
-        for (_, payload) in
-            self.transaction
-                .scan_table(system::SYSTEM_NAMESPACE, system::SYSTEM_DATABASE, table)?
+        for (_, payload) in self
+            .transaction
+            .scan_table(system::SYSTEM_NAMESPACE, system::SYSTEM_DATABASE, table)
+            .await?
         {
             found.push(decode(&decode_payload(&payload)?)?);
         }
@@ -207,9 +228,10 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored entry cannot be read.
-    pub fn namespace_id(&self, name: &str) -> Result<Option<NamespaceId>> {
+    pub async fn namespace_id(&self, name: &str) -> Result<Option<NamespaceId>> {
         Ok(self
-            .resolve(&qualify(Level::Namespace, &[], name))?
+            .resolve(&qualify(Level::Namespace, &[], name))
+            .await?
             .map(NamespaceId::new))
     }
 
@@ -218,9 +240,14 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored entry cannot be read.
-    pub fn database_id(&self, namespace: NamespaceId, name: &str) -> Result<Option<DatabaseId>> {
+    pub async fn database_id(
+        &self,
+        namespace: NamespaceId,
+        name: &str,
+    ) -> Result<Option<DatabaseId>> {
         Ok(self
-            .resolve(&qualify(Level::Database, &[namespace.get()], name))?
+            .resolve(&qualify(Level::Database, &[namespace.get()], name))
+            .await?
             .map(DatabaseId::new))
     }
 
@@ -229,7 +256,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored entry cannot be read.
-    pub fn table_id(
+    pub async fn table_id(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -240,7 +267,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 Level::Table,
                 &[namespace.get(), database.get()],
                 name,
-            ))?
+            ))
+            .await?
             .map(TableId::new))
     }
 
@@ -256,8 +284,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn set_schemafull(&mut self, id: TableId, schemafull: bool) -> Result<bool> {
-        let Some(mut definition) = self.table(id)? else {
+    pub async fn set_schemafull(&mut self, id: TableId, schemafull: bool) -> Result<bool> {
+        let Some(mut definition) = self.table(id).await? else {
             return Ok(false);
         };
         definition.schemafull = schemafull;
@@ -275,8 +303,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// [`Error::AutoSplitOnAnUnsplitTable`] for a table with no shard map,
     /// whose shards nothing could split; [`Error::AutoSplitWouldOscillate`]
     /// when a split's two halves would merge straight back.
-    pub fn set_auto_split(&mut self, id: TableId, policy: Option<AutoSplit>) -> Result<bool> {
-        let Some(mut definition) = self.table(id)? else {
+    pub async fn set_auto_split(&mut self, id: TableId, policy: Option<AutoSplit>) -> Result<bool> {
+        let Some(mut definition) = self.table(id).await? else {
             return Ok(false);
         };
         if let Some(policy) = policy {
@@ -310,8 +338,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn set_expiry(&mut self, id: TableId, expire: TableExpiry) -> Result<bool> {
-        let Some(mut definition) = self.table(id)? else {
+    pub async fn set_expiry(&mut self, id: TableId, expire: TableExpiry) -> Result<bool> {
+        let Some(mut definition) = self.table(id).await? else {
             return Ok(false);
         };
         definition.expire = Some(expire);
@@ -329,8 +357,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn set_series(&mut self, id: TableId, declared: SeriesDeclaration) -> Result<bool> {
-        let Some(mut definition) = self.table(id)? else {
+    pub async fn set_series(&mut self, id: TableId, declared: SeriesDeclaration) -> Result<bool> {
+        let Some(mut definition) = self.table(id).await? else {
             return Ok(false);
         };
         definition.kind = TableKind::Series(declared);
@@ -345,8 +373,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn set_events(&mut self, id: TableId, events: Vec<EventDeclaration>) -> Result<bool> {
-        let Some(mut definition) = self.table(id)? else {
+    pub async fn set_events(&mut self, id: TableId, events: Vec<EventDeclaration>) -> Result<bool> {
+        let Some(mut definition) = self.table(id).await? else {
             return Ok(false);
         };
         definition.events = events;
@@ -362,8 +390,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn set_vault(&mut self, id: TableId, declared: VaultDeclaration) -> Result<bool> {
-        let Some(mut definition) = self.table(id)? else {
+    pub async fn set_vault(&mut self, id: TableId, declared: VaultDeclaration) -> Result<bool> {
+        let Some(mut definition) = self.table(id).await? else {
             return Ok(false);
         };
         definition.kind = TableKind::Vault(declared);
@@ -374,9 +402,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// A catalog row at this transaction's snapshot, from the rows held
     /// between statements when it is one of theirs and the snapshot allows it
     /// (`rows`); any other row is read through the transaction.
-    fn row(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
+    async fn row(&self, address: &RecordAddress) -> Result<Option<std::sync::Arc<[u8]>>> {
         if !CatalogRows::holds(address) || self.transaction.has_written(address) {
-            return self.transaction.get(address);
+            return Ok(self.transaction.get(address).await?.map(Into::into));
         }
         let store = self.transaction.store();
         let fill = match store
@@ -387,7 +415,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             rows::Lookup::Missing(fill) => fill,
         };
         let reads_landed = self.reads_only_landed();
-        let row = self.transaction.get(address)?;
+        let row: Option<std::sync::Arc<[u8]>> =
+            self.transaction.get(address).await?.map(Into::into);
         if let Some(generation) = fill
             && reads_landed
         {
@@ -422,8 +451,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// record is unreadable still holds sealed records, and reporting "no vault
     /// here" would invite an operator to initialise a second one over the top
     /// and lose every secret behind the first.
-    pub fn vault_root(&self) -> Result<Option<VaultRoot>> {
-        match self.read(system::VAULT_ROOT, system::VAULT_ROOT_ID)? {
+    pub async fn vault_root(&self) -> Result<Option<VaultRoot>> {
+        match self.read(system::VAULT_ROOT, system::VAULT_ROOT_ID).await? {
             Some(value) => VaultRoot::from_value(&value).map(Some),
             None => Ok(None),
         }
@@ -446,9 +475,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         );
     }
 
-    fn read(&self, table: TableId, id: u32) -> Result<Option<Value>> {
+    async fn read(&self, table: TableId, id: u32) -> Result<Option<Value>> {
         let address: RecordAddress = system::address(table, RecordId::Int(id_key(id)));
-        let Some(bytes) = self.row(&address)? else {
+        let Some(bytes) = self.row(&address).await? else {
             return Ok(None);
         };
         Ok(Some(decode_payload(&bytes)?))

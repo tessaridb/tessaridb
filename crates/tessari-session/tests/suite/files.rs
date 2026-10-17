@@ -8,6 +8,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Parameters, Session};
@@ -19,13 +21,13 @@ const CHUNK: usize = 1024 * 1024;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE library; USE DATABASE library;\n\
              DEFINE BUCKET media;",
@@ -51,12 +53,12 @@ fn put(session: &mut Session<'_>, path: &str, bytes: &[u8]) {
     let mut given = Parameters::new();
     given.insert("held".to_owned(), Value::Bytes(bytes.to_vec()));
     session
-        .run_with(&format!("PUT media:'{path}' = $held;"), &given)
+        .run_with_now(&format!("PUT media:'{path}' = $held;"), &given)
         .unwrap();
 }
 
 fn read(session: &mut Session<'_>, path: &str) -> Value {
-    let outcomes = session.run(&format!("READ media:'{path}';")).unwrap();
+    let outcomes = session.run_now(&format!("READ media:'{path}';")).unwrap();
     match &outcomes[0] {
         Outcome::Value(value) => value.clone(),
         other => panic!("not a value: {other:?}"),
@@ -84,7 +86,7 @@ fn the_metadata_says_what_the_store_actually_holds() {
     put(&mut session, "/big.bin", &bytes);
 
     let outcomes = session
-        .run("SELECT size, chunks FROM media:'/big.bin';")
+        .run_now("SELECT size, chunks FROM media:'/big.bin';")
         .unwrap();
     let Outcome::Records { records, .. } = &outcomes[0] else {
         panic!("not records: {:?}", outcomes[0]);
@@ -129,7 +131,7 @@ fn deleting_a_file_takes_its_bytes_with_it() {
     let store = store();
     let mut session = ready(&store);
     put(&mut session, "/gone.bin", &pattern(CHUNK + 5));
-    session.run("DELETE media:'/gone.bin';").unwrap();
+    session.run_now("DELETE media:'/gone.bin';").unwrap();
 
     assert_eq!(read(&mut session, "/gone.bin"), Value::None);
 
@@ -164,7 +166,7 @@ fn an_empty_file_is_a_file() {
     put(&mut session, "/empty", &[]);
 
     assert_eq!(read(&mut session, "/empty"), Value::Bytes(Vec::new()));
-    let outcomes = session.run("SELECT * FROM media;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM media;").unwrap();
     let Outcome::Records { records, .. } = &outcomes[0] else {
         panic!("not records: {:?}", outcomes[0]);
     };

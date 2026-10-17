@@ -1,13 +1,16 @@
 use super::*;
+use tessari_kv::KvBackend;
 
 /// The format this store was written in, if it has been written at all.
 ///
 /// A free function rather than a method because it runs before the store
 /// exists: `open` settles the format before it resolves the node identity, and
 /// the identity is one of the store's own fields.
-pub(super) fn read_format_version(backend: Arc<dyn KvBackend>) -> Result<Option<FormatVersion>> {
+pub(super) async fn read_format_version(
+    backend: Arc<dyn KvBackend>,
+) -> Result<Option<FormatVersion>> {
     let key = FormatVersionKey.encode();
-    let stored = backend.get(FormatVersionKey::keyspace(), &key)?;
+    let stored = backend.get(FormatVersionKey::keyspace(), &key).await?;
     match stored {
         Some(value) => Ok(Some(FormatVersion::decode(value.as_slice())?)),
         None => Ok(None),
@@ -24,9 +27,11 @@ pub(super) fn read_format_version(backend: Arc<dyn KvBackend>) -> Result<Option<
 /// to it, so data without a stamp is data whose format nobody knows; stamping
 /// it as new would write this build's format over it. One key per keyspace is
 /// read, which is what an empty store costs to tell apart from one that is not.
-pub(super) fn refuse_data_without_a_stamp(backend: &dyn KvBackend) -> Result<()> {
+pub(super) async fn refuse_data_without_a_stamp(backend: &dyn KvBackend) -> Result<()> {
     for &keyspace in Keyspace::ALL {
-        let first = backend.scan(&ScanRequest::new(keyspace, KeyRange::all()).with_limit(1))?;
+        let first = backend
+            .scan(&ScanRequest::new(keyspace, KeyRange::all()).with_limit(1))
+            .await?;
         if !first.is_empty() {
             return Err(tessari_encoding::Error::UnstampedStore {
                 keyspace: keyspace.name(),
@@ -37,7 +42,7 @@ pub(super) fn refuse_data_without_a_stamp(backend: &dyn KvBackend) -> Result<()>
     Ok(())
 }
 
-pub(super) fn write_initial_metadata(backend: Arc<dyn KvBackend>) -> Result<()> {
+pub(super) async fn write_initial_metadata(backend: Arc<dyn KvBackend>) -> Result<()> {
     let format_key = FormatVersionKey.encode();
     let batch = WriteBatch::new()
         .expect_absent(FormatVersionKey::keyspace(), format_key.clone())
@@ -46,7 +51,7 @@ pub(super) fn write_initial_metadata(backend: Arc<dyn KvBackend>) -> Result<()> 
             format_key,
             FormatVersion::CURRENT.encode(),
         );
-    backend.apply(batch)?;
+    backend.apply(batch).await?;
     Ok(())
 }
 
@@ -67,7 +72,7 @@ pub(super) fn write_initial_metadata(backend: Arc<dyn KvBackend>) -> Result<()> 
 ///
 /// Returns the substrate's failure, and a decoding failure when a log key of
 /// the expected old shape does not hold a sequence.
-pub(super) fn give_an_older_log_its_home(
+pub(super) async fn give_an_older_log_its_home(
     backend: Arc<dyn KvBackend>,
     found: FormatVersion,
 ) -> Result<()> {
@@ -82,7 +87,7 @@ pub(super) fn give_an_older_log_its_home(
         limit: None,
     };
     let mut batch = WriteBatch::new();
-    for (key, value) in backend.scan(&request)? {
+    for (key, value) in backend.scan(&request).await? {
         let Some(sequence) = sequence_in_a_homeless_log_key(key.as_slice()) else {
             continue;
         };
@@ -96,7 +101,10 @@ pub(super) fn give_an_older_log_its_home(
     // per home. Read before the rewrite for the same reason the records are:
     // its old key no longer names anything this build addresses.
     let homeless_applied = Key::from(vec![KeyKind::AppliedPosition.tag()]);
-    if let Some(value) = backend.get(AppliedPositionKey::keyspace(), &homeless_applied)? {
+    if let Some(value) = backend
+        .get(AppliedPositionKey::keyspace(), &homeless_applied)
+        .await?
+    {
         batch = batch
             .delete(AppliedPositionKey::keyspace(), homeless_applied)
             .put(
@@ -110,7 +118,7 @@ pub(super) fn give_an_older_log_its_home(
         FormatVersionKey.encode(),
         FormatVersion::HOMED_LOG.encode(),
     );
-    backend.apply(batch)?;
+    backend.apply(batch).await?;
     Ok(())
 }
 
@@ -144,7 +152,7 @@ pub(super) fn give_an_older_log_its_home(
 ///
 /// Returns the substrate's failure, and a decoding failure when a log key of
 /// the expected old shape does not hold a sequence.
-pub(super) fn give_an_older_log_its_writer(
+pub(super) async fn give_an_older_log_its_writer(
     backend: Arc<dyn KvBackend>,
     found: FormatVersion,
 ) -> Result<()> {
@@ -158,7 +166,7 @@ pub(super) fn give_an_older_log_its_writer(
         direction: ScanDirection::Forward,
         limit: None,
     };
-    for (key, value) in backend.scan(&entries)? {
+    for (key, value) in backend.scan(&entries).await? {
         let Some((home, sequence)) = an_unqualified_log_key(key.as_slice())? else {
             continue;
         };
@@ -178,7 +186,7 @@ pub(super) fn give_an_older_log_its_writer(
         direction: ScanDirection::Forward,
         limit: None,
     };
-    for (key, value) in backend.scan(&positions)? {
+    for (key, value) in backend.scan(&positions).await? {
         let Some(home) = an_unqualified_position_key(key.as_slice())? else {
             continue;
         };
@@ -193,7 +201,7 @@ pub(super) fn give_an_older_log_its_writer(
         FormatVersionKey.encode(),
         FormatVersion::CURRENT.encode(),
     );
-    backend.apply(batch)?;
+    backend.apply(batch).await?;
     Ok(())
 }
 
@@ -287,10 +295,11 @@ pub(super) fn sequence_in_a_homeless_log_key(key: &[u8]) -> Option<Sequence> {
 /// The `Absent` precondition makes a race between two openers harmless: one
 /// writes, the other is refused and finds the value already there. A refusal is
 /// therefore success, not an error to report.
-pub(super) fn seed_version_position(backend: Arc<dyn KvBackend>) -> Result<()> {
+pub(super) async fn seed_version_position(backend: Arc<dyn KvBackend>) -> Result<()> {
     let version_key = VersionPositionKey.encode();
     if backend
-        .get(VersionPositionKey::keyspace(), &version_key)?
+        .get(VersionPositionKey::keyspace(), &version_key)
+        .await?
         .is_some()
     {
         return Ok(());
@@ -298,7 +307,10 @@ pub(super) fn seed_version_position(backend: Arc<dyn KvBackend>) -> Result<()> {
     // The store home, because a store written before the log was partitioned
     // had exactly one log and this is where the migration files it.
     let applied_key = AppliedPositionKey::new(LogId::unattributed(Reach::Store)).encode();
-    let applied = match backend.get(AppliedPositionKey::keyspace(), &applied_key)? {
+    let applied = match backend
+        .get(AppliedPositionKey::keyspace(), &applied_key)
+        .await?
+    {
         Some(value) => Sequence::decode(value.as_slice())?,
         None => Sequence::ZERO,
     };
@@ -309,7 +321,7 @@ pub(super) fn seed_version_position(backend: Arc<dyn KvBackend>) -> Result<()> {
             version_key,
             applied.encode(),
         );
-    match backend.apply(batch) {
+    match backend.apply(batch).await {
         Ok(()) | Err(tessari_kv::Error::Conflict { .. }) => Ok(()),
         Err(other) => Err(other.into()),
     }

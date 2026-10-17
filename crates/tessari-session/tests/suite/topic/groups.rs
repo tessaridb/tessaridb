@@ -2,6 +2,7 @@
 //! only when it is acknowledged (ADR-0086).
 
 use std::time::Duration;
+use tessari_session::RunNow;
 
 use tessari_session::{Error, Outcome, Session};
 use tessari_types::{Number, Value};
@@ -124,7 +125,7 @@ fn a_batch_of_positions_is_acknowledged_from_one_bound_array() {
             ]),
         );
         let acknowledged = session
-            .run_with("ACK events FOR CONSUMER 'billing' AT $batch;", &supplied)
+            .run_with_now("ACK events FOR CONSUMER 'billing' AT $batch;", &supplied)
             .unwrap()
             .pop()
             .unwrap();
@@ -146,7 +147,8 @@ fn a_batch_of_positions_is_acknowledged_from_one_bound_array() {
             "batch".to_owned(),
             Value::Array(vec![Value::String("one".to_owned())]),
         );
-        let refused = session.run_with("NACK events FOR CONSUMER 'billing' AT $batch;", &supplied);
+        let refused =
+            session.run_with_now("NACK events FOR CONSUMER 'billing' AT $batch;", &supplied);
         assert!(
             matches!(refused, Err(Error::InvalidPosition { .. })),
             "a position that is not a whole number was taken: {refused:?}"
@@ -281,7 +283,7 @@ fn a_group_is_refused_what_it_cannot_mean() {
             "DEFINE TABLE plain SCHEMALESS;\n\
              DEFINE GROUP 'billing' ON TOPIC events ACK DEADLINE 30s;",
         );
-        let refusal = |session: &mut Session<'_>, script: &str| match session.run(script) {
+        let refusal = |session: &mut Session<'_>, script: &str| match session.run_now(script) {
             Err(why) => why,
             Ok(outcome) => panic!("{script} answered {outcome:?}"),
         };
@@ -369,7 +371,7 @@ fn members_share_every_message_once(store: &tessari_storage::Store, messages: u6
                     for round in 0.. {
                         assert!(round < 100_000, "a member was still reading after {round} reads");
                         let taken = match session
-                            .run("READ FROM events FOR CONSUMER 'workers' LIMIT 10;")
+                            .run_now("READ FROM events FOR CONSUMER 'workers' LIMIT 10;")
                         {
                             Ok(mut outcomes) => match outcomes.pop().unwrap() {
                                 Outcome::Records { records, .. } => records
@@ -399,7 +401,7 @@ fn members_share_every_message_once(store: &tessari_storage::Store, messages: u6
                             .join(", ");
                         loop {
                             match session
-                                .run(&format!("ACK events FOR CONSUMER 'workers' AT {list};"))
+                                .run_now(&format!("ACK events FOR CONSUMER 'workers' AT {list};"))
                             {
                                 Ok(mut outcomes) => {
                                     let settled = match outcomes.pop().unwrap() {

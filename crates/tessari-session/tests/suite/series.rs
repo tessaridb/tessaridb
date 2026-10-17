@@ -10,19 +10,23 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
 use tessari_storage::Store;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn opened(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE metrics; USE DATABASE metrics;",
         )
@@ -31,11 +35,11 @@ fn opened(store: &Store) -> Session<'_> {
 }
 
 fn run(session: &mut Session<'_>, script: &str) -> Outcome {
-    session.run(script).unwrap().pop().unwrap()
+    session.run_now(script).unwrap().pop().unwrap()
 }
 
 fn refused(session: &mut Session<'_>, script: &str) -> String {
-    match session.run(script) {
+    match session.run_now(script) {
         Err(why) => why.to_string(),
         Ok(outcome) => panic!("expected a refusal, got {outcome:?}"),
     }
@@ -216,7 +220,7 @@ fn thousands_of_events_at_one_instant_are_each_kept() {
     let script: String = (0..2_000)
         .map(|n| format!("CREATE readings = {{ at: datetime '2026-09-29T10:00:00Z', n: {n} }};\n"))
         .collect();
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     let answered = instants(run(&mut session, "SELECT * FROM readings;"));
     assert_eq!(answered.len(), 2_000);
 }
@@ -305,7 +309,7 @@ fn an_event_time_series_refuses_what_would_misplace_a_record() {
 #[test]
 fn an_aged_records_index_entries_go_with_it() {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     let mut session = opened(&store);
     run(
         &mut session,
@@ -338,7 +342,7 @@ fn an_aged_records_index_entries_go_with_it() {
         ));
     }
     script.push_str(" COMMIT;");
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
 
     let indexed = || {
         backend
@@ -346,6 +350,7 @@ fn an_aged_records_index_entries_go_with_it() {
                 tessari_kv::Keyspace::INDEX,
                 tessari_kv::KeyRange::all(),
             ))
+            .now()
             .unwrap()
             .len()
     };
@@ -354,17 +359,25 @@ fn an_aged_records_index_entries_go_with_it() {
     let entries = indexed();
 
     let (namespace, database, table) = {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let catalog = tessari_storage::Catalog::new(&mut transaction);
-        let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-        let database = catalog.database_id(namespace, "metrics").unwrap().unwrap();
+        let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+        let database = catalog
+            .database_id(namespace, "metrics")
+            .now()
+            .unwrap()
+            .unwrap();
         let table = catalog
             .table_id(namespace, database, "readings")
+            .now()
             .unwrap()
             .unwrap();
         (namespace, database, table)
     };
-    let expired = store.expire_series(namespace, database, table).unwrap();
+    let expired = store
+        .expire_series(namespace, database, table)
+        .now()
+        .unwrap();
     assert_eq!(expired.indexed, 1_000);
     assert_eq!(indexed(), entries - 1_000, "one entry per aged record gone");
     assert_eq!(format!("{:?}", run(&mut session, read)), before);
@@ -429,15 +442,18 @@ fn a_compacted_series_reads_back_every_value_and_instant_bit_for_bit() {
     let directory = tempfile::tempdir().unwrap();
     let open = || {
         Arc::new(
-            tessari_lsm::LsmBackend::open(
+            tessari_lsm::TessariKvBackend::open(
                 directory.path(),
                 tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
             )
+            .now()
             .unwrap(),
         )
     };
     {
-        let store = Store::open(open() as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(open() as Arc<dyn tessari_kv::KvBackend>)
+            .now()
+            .unwrap();
         let mut session = opened(&store);
         run(
             &mut session,
@@ -460,17 +476,19 @@ fn a_compacted_series_reads_back_every_value_and_instant_bit_for_bit() {
                 script.push_str(&format!(" CREATE readings = $e{slot};"));
             }
             script.push_str(" COMMIT;");
-            session.run_with(&script, &parameters).unwrap();
+            session.run_with_now(&script, &parameters).unwrap();
         }
     }
     // Every region flushed and compacted to the bottom, where the codec and
     // the trained dictionary do their work.
-    open().compact().unwrap();
+    open().compact().now().unwrap();
 
-    let store = Store::open(open() as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(open() as Arc<dyn tessari_kv::KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE metrics;")
+        .run_now("USE NAMESPACE prod; USE DATABASE metrics;")
         .unwrap();
     let Outcome::Records { records, .. } = run(&mut session, "SELECT n, v, at FROM readings;")
     else {

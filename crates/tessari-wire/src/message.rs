@@ -54,13 +54,14 @@ pub type Names = BTreeMap<TableId, String>;
 /// a client has neither.
 #[cfg(feature = "server")]
 #[must_use]
-pub fn names_for(db: &tessaridb::Db, outcome: &Outcome) -> Names {
+pub async fn names_for(db: &tessaridb::Db, outcome: &Outcome) -> Names {
     match outcome {
-        Outcome::Records { records, .. } => db.names_in(records).unwrap_or_default(),
+        Outcome::Records { records, .. } => db.names_in(records).await.unwrap_or_default(),
         // Wrapped so the same walk finds it. The identity is a placeholder: the
         // walk reads values and never looks at what they are keyed by.
         Outcome::Value(held) => db
             .names_in(&[(RecordId::Int(0), held.clone())])
+            .await
             .unwrap_or_default(),
         // Keys are record identities and hold no values, and the rest hold
         // nothing at all.

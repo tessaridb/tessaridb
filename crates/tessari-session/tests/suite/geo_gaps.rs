@@ -11,6 +11,7 @@
 //! beside it.
 
 use std::collections::BTreeMap;
+use tessari_session::RunNow;
 
 use tessari_session::{Outcome, Session};
 use tessari_types::{Geometry, Number, RecordId, Value};
@@ -19,7 +20,7 @@ use super::key_value::{on_each_backend, opened, run};
 
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
     session
-        .run(read)
+        .run_now(read)
         .unwrap_or_else(|error| panic!("{read}: {error}"))
         .last()
         .unwrap()
@@ -351,7 +352,7 @@ fn a_cell_is_asked_of_a_position_at_a_level_that_exists() {
             (format!("geo::cell({}, 2.5)", point(0.0, 0.0)), "0 to 32"),
         ] {
             let refusal = session
-                .run(&format!("RETURN {call};"))
+                .run_now(&format!("RETURN {call};"))
                 .expect_err(&call)
                 .to_string();
             assert!(refusal.contains("geo::cell"), "{call}: {refusal}");
@@ -405,7 +406,7 @@ fn the_nearest_few_under_a_condition_and_over_areas_are_walked_and_answer_the_sc
                         "SELECT * FROM {table} {condition}ORDER BY geo::distance(at, {here}) LIMIT 5;"
                     )
                 };
-                let outcomes = session.run(&read("served")).unwrap();
+                let outcomes = session.run_now(&read("served")).unwrap();
                 let outcome = outcomes.last().unwrap();
                 let plan = outcome.plan().unwrap();
                 assert_eq!(

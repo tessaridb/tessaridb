@@ -41,6 +41,7 @@ mod scan;
 mod search;
 mod spatial;
 mod visible;
+mod walk;
 
 pub use across::AcrossPart;
 pub use address::{RecordAddress, StoredRecord};
@@ -51,14 +52,17 @@ pub use nearest_place::PlacesNearest;
 pub use scan::Window;
 pub use search::{Expansion, FieldedPostings, SearchCounts};
 pub use spatial::Region;
+pub use walk::RecordWalk;
 
-use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tessari_encoding::RecordValue;
 use tessari_types::{RecordId, Sequence, TableId};
 
+use crate::owned::Owned;
 use crate::store::Store;
 
 /// A unit of work at a fixed snapshot.
@@ -92,19 +96,19 @@ pub struct Transaction<'a> {
     /// snapshot is fixed once: one read answers at one floor, or a walk long
     /// enough to cross the boundary refuses in its second batch what it returned
     /// in its first.
-    reading_at: Cell<Option<u64>>,
+    reading_at: OnceLock<u64>,
     /// The floor per series table, derived once each.
-    floors: RefCell<BTreeMap<TableId, Option<RecordId>>>,
+    floors: Owned<BTreeMap<TableId, Option<RecordId>>>,
     /// Records read, not written, that must still be at or below the snapshot
     /// when this transaction commits (ADR-0088 §6 amendment). Owned by this one
-    /// transaction on one thread, so an ordinary set.
-    guarded: RefCell<BTreeSet<RecordAddress>>,
+    /// transaction's task, so an ordinary set.
+    guarded: Owned<BTreeSet<RecordAddress>>,
     /// Which record of a transaction across leaders this commit writes, when
     /// it writes one (ADR-0112) — set only by the three methods in `across`.
     across: Option<across::Work>,
     /// Whether this transaction sees each transaction across leaders it has
     /// met, decided the first time and kept (ADR-0112 D6a, `visible`).
-    decided: RefCell<BTreeMap<tessari_encoding::TransactionId, bool>>,
+    decided: Owned<BTreeMap<tessari_encoding::TransactionId, bool>>,
     /// Whether an intent this node's copy cannot decide is asked of its
     /// record's leader (ADR-0112 D13d) — a reader's question. A view that
     /// derives what a commit or an apply writes decides from this copy alone.
@@ -113,12 +117,12 @@ pub struct Transaction<'a> {
     /// plain indexes although its snapshot is behind the tail (Q-S3-34,
     /// `crate::retired`). Set once, by the question that decides it, so a read
     /// at the tail asks the store nothing extra.
-    pub(crate) retired_reads: std::cell::Cell<bool>,
+    pub(crate) retired_reads: AtomicBool,
     /// This transaction's token in the store's claim register and the records
     /// it took there, given back when it ends (ADR-0126 D5). Zero until a
     /// claim takes one.
-    claim_token: Cell<u64>,
-    claiming: RefCell<Vec<RecordAddress>>,
+    claim_token: AtomicU64,
+    claiming: Owned<Vec<RecordAddress>>,
 }
 
 /// What a write said about a record's expiry that its buffered value does not
@@ -135,19 +139,16 @@ pub(crate) enum Lifetime {
 impl Transaction<'_> {
     /// The millisecond this transaction judges retention against.
     pub(crate) fn reading_at(&self) -> u64 {
-        if let Some(held) = self.reading_at.get() {
-            return held;
-        }
         // A clock before the epoch answers zero, which puts every floor at the
         // beginning of time and hides nothing. The alternative — refusing the
         // read — would turn a misconfigured host clock into an outage over data
         // that is present and correct.
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| {
-                u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-            });
-        self.reading_at.set(Some(millis));
-        millis
+        *self.reading_at.get_or_init(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |since| {
+                    u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+                })
+        })
     }
 }

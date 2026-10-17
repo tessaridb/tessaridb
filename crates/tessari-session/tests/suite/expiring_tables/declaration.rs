@@ -1,6 +1,8 @@
 //! Declaring that a table's records expire (ADR-0122 A1, A4–A6, A8).
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_encoding::{FormatVersion, FormatVersionKey, StoreKey, StoreValue};
 use tessari_kv::{KvBackend, MemoryBackend, WriteBatch};
@@ -12,7 +14,7 @@ use super::{field, info, opened, run};
 
 #[test]
 fn a_table_that_declares_expiry_reports_it_and_its_definition_recreates_it() {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = opened(&store);
     run(
         &mut session,
@@ -39,7 +41,7 @@ fn a_table_that_declares_expiry_reports_it_and_its_definition_recreates_it() {
 
 #[test]
 fn a_table_that_says_nothing_reports_no_expiry_at_all() {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = opened(&store);
     run(&mut session, "DEFINE TABLE plain (body string);");
     let plain = info(&mut session, "INFO FOR TABLE plain;");
@@ -52,7 +54,7 @@ fn a_table_that_says_nothing_reports_no_expiry_at_all() {
 
 #[test]
 fn alter_turns_expiry_on_changes_the_default_and_retires_it_without_touching_records() {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = opened(&store);
     run(
         &mut session,
@@ -85,7 +87,7 @@ fn alter_turns_expiry_on_changes_the_default_and_retires_it_without_touching_rec
 
 #[test]
 fn expiry_is_refused_on_every_kind_but_a_table_and_a_collection() {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut session = opened(&store);
     run(
         &mut session,
@@ -94,14 +96,14 @@ fn expiry_is_refused_on_every_kind_but_a_table_and_a_collection() {
     for table in ["cache", "jobs", "follows"] {
         assert!(
             matches!(
-                session.run(&format!("ALTER TABLE {table} SET EXPIRE AFTER 1h;")),
+                session.run_now(&format!("ALTER TABLE {table} SET EXPIRE AFTER 1h;")),
                 Err(Error::ExpiryNotOnThisKind { .. })
             ),
             "{table}"
         );
     }
     assert!(matches!(
-        session.run("DEFINE TABLE likes EDGE EXPIRE AFTER 1h;"),
+        session.run_now("DEFINE TABLE likes EDGE EXPIRE AFTER 1h;"),
         Err(Error::ExpiryNotOnThisKind { .. })
     ));
 }
@@ -109,7 +111,7 @@ fn expiry_is_refused_on_every_kind_but_a_table_and_a_collection() {
 #[test]
 fn a_store_holding_an_older_format_refuses_the_declaration_until_finalized() {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    drop(Store::open(Arc::clone(&backend)).unwrap());
+    drop(Store::open(Arc::clone(&backend)).now().unwrap());
     let older = FormatVersion::TABLE_EXPIRY.get().checked_sub(1).unwrap();
     backend
         .apply(WriteBatch::new().put(
@@ -117,8 +119,9 @@ fn a_store_holding_an_older_format_refuses_the_declaration_until_finalized() {
             FormatVersionKey.encode(),
             FormatVersion::new(older).encode(),
         ))
+        .now()
         .unwrap();
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     let mut session = opened(&store);
     run(&mut session, "DEFINE TABLE plain (body string);");
     for script in [
@@ -127,7 +130,10 @@ fn a_store_holding_an_older_format_refuses_the_declaration_until_finalized() {
         "ALTER TABLE plain SET EXPIRE;",
     ] {
         assert!(
-            matches!(session.run(script), Err(Error::FormatNotFinalized { .. })),
+            matches!(
+                session.run_now(script),
+                Err(Error::FormatNotFinalized { .. })
+            ),
             "{script}"
         );
     }

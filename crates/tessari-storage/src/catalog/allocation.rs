@@ -12,9 +12,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// The counter is written in this transaction, so two concurrent creations
     /// write the same record and one of them loses — the same mechanism that
     /// keeps names unique, and no second lock.
-    pub(crate) fn allocate(&mut self, level: Level) -> Result<u32> {
+    pub(crate) async fn allocate(&mut self, level: Level) -> Result<u32> {
         let address = system::address(system::ALLOCATORS, RecordId::from(level.counter()));
-        let next = match self.transaction.get(&address)? {
+        let next = match self.transaction.get(&address).await? {
             Some(bytes) => definition::id_of(&decode_payload(&bytes)?, "allocator", "next")?,
             None => system::FIRST_ID,
         };
@@ -51,9 +51,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// Returns [`Error::IdSpaceExhausted`] when the table has spent every
     /// identity the key grammar can express, and a substrate or decoding
     /// failure otherwise.
-    pub fn next_record_number(&mut self, table: TableId) -> Result<u64> {
+    pub async fn next_record_number(&mut self, table: TableId) -> Result<u64> {
         let address = system::address(system::RECORD_SEQUENCES, RecordId::Int(id_key(table.get())));
-        let next = match self.transaction.get(&address)? {
+        let next = match self.transaction.get(&address).await? {
             Some(bytes) => {
                 definition::count_of(&decode_payload(&bytes)?, "record sequence", "next")?
             }
@@ -88,9 +88,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     ///
     /// Returns an error when the store cannot be read or the stored count
     /// cannot be decoded.
-    pub fn record_count(&mut self, table: TableId) -> Result<Option<u64>> {
+    pub async fn record_count(&mut self, table: TableId) -> Result<Option<u64>> {
         let address = system::address(system::RECORD_COUNTS, RecordId::Int(id_key(table.get())));
-        let Some(bytes) = self.transaction.get(&address)? else {
+        let Some(bytes) = self.transaction.get(&address).await? else {
             return Ok(None);
         };
         Ok(Some(definition::count_of(
@@ -101,14 +101,14 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     }
 
     /// Refuse early if the name is already resolvable.
-    pub(crate) fn reserve_name(&self, qualified: &str) -> Result<()> {
-        let Some(id) = self.resolve(qualified)? else {
+    pub(crate) async fn reserve_name(&self, qualified: &str) -> Result<()> {
+        let Some(id) = self.resolve(qualified).await? else {
             return Ok(());
         };
         // Said in the caller's words: what holds the name and the name itself,
         // never the key the catalog keeps it under (Q-G042-1).
         let noun = match parse_qualified(qualified) {
-            Some((Level::Table, _)) => match self.table(TableId::new(id))? {
+            Some((Level::Table, _)) => match self.table(TableId::new(id)).await? {
                 Some(table) => table.kind.noun(),
                 None => Level::Table.noun(),
             },
@@ -128,9 +128,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             .put(address, encode_payload(&value).into_bytes());
     }
 
-    pub(crate) fn resolve(&self, qualified: &str) -> Result<Option<u32>> {
+    pub(crate) async fn resolve(&self, qualified: &str) -> Result<Option<u32>> {
         let address = system::address(system::NAMES, RecordId::from(qualified));
-        let Some(bytes) = self.row(&address)? else {
+        let Some(bytes) = self.row(&address).await? else {
             return Ok(None);
         };
         definition::id_of(&decode_payload(&bytes)?, "name", "id").map(Some)

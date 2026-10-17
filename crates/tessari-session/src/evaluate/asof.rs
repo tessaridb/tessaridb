@@ -43,7 +43,7 @@ struct Side {
 impl Session<'_> {
     /// Read `side` whole, in time order, refusing it unless it is a series
     /// ordered by event time.
-    fn asof_side(
+    async fn asof_side(
         &self,
         transaction: &mut Transaction<'_>,
         side: &JoinSide,
@@ -55,16 +55,19 @@ impl Session<'_> {
                 span: select.span,
             });
         };
-        let (context, id) = self.resolve_table(transaction, table)?;
-        let Some(time) = transaction.series_time(context.namespace, id)? else {
+        let (context, id) = self.resolve_table(transaction, table).await?;
+        let Some(time) = transaction.series_time(context.namespace, id).await? else {
             return Err(Error::AsofNeedsTime {
                 side: side.name().to_owned(),
                 span: select.span,
             });
         };
-        self.refuse_reading_a_part(transaction, id, Part::Whole)?;
-        let visible = self.visible_in(transaction, id)?;
-        let found = transaction.scan_table(context.namespace, context.database, id)?;
+        self.refuse_reading_a_part(transaction, id, Part::Whole)
+            .await?;
+        let visible = self.visible_in(transaction, id).await?;
+        let found = transaction
+            .scan_table(context.namespace, context.database, id)
+            .await?;
         let records = self.records_of(found, &visible)?;
         Ok((Side { records, time }, context, id))
     }
@@ -76,7 +79,7 @@ impl Session<'_> {
     ///
     /// [`Error::AsofNeedsTime`] for a side that is not an event-time series, and
     /// whatever reading either side or testing the condition refuses.
-    pub(super) fn asof_join(
+    pub(super) async fn asof_join(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
@@ -85,9 +88,11 @@ impl Session<'_> {
         condition: Option<&Expr>,
         reporting: Reporting<'_>,
     ) -> Result<Joined> {
-        let (far, _, _) = self.asof_side(transaction, right, select)?;
-        let (near, _, left_table) = self.asof_side(transaction, left, select)?;
-        let searched = self.searched_for(transaction, left_table, &shown(select))?;
+        let (far, _, _) = self.asof_side(transaction, right, select).await?;
+        let (near, _, left_table) = self.asof_side(transaction, left, select).await?;
+        let searched = self
+            .searched_for(transaction, left_table, &shown(select))
+            .await?;
 
         // Filed by key, each list already in time order because the scan was.
         let mut by_key: BTreeMap<Value, Vec<(RecordId, Value)>> = BTreeMap::new();
@@ -107,11 +112,13 @@ impl Session<'_> {
             }
             let row = Value::Object(fields);
             if let Some(condition) = condition {
-                let held = self.evaluate_in(
-                    transaction,
-                    condition,
-                    Scope::searching(&row, &searched).noticing(reporting.noticed),
-                )?;
+                let held = self
+                    .evaluate_in(
+                        transaction,
+                        condition,
+                        Scope::searching(&row, &searched).noticing(reporting.noticed),
+                    )
+                    .await?;
                 if !boolean(&held, condition.span)? {
                     continue;
                 }

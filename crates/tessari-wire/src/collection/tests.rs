@@ -2,6 +2,8 @@ use super::{
     COLLECTION_BUDGET_BYTES, Catalog, Collect, Collected, Collector, LogId, NODE_ID_LEN, Reach,
     Result, Serving, StoreValue, logs_to_collect,
 };
+use tessari_session::Now;
+use tessari_session::RunNow;
 use tessari_types::{DatabaseId, NamespaceId};
 
 use crate::error::Error;
@@ -36,8 +38,11 @@ const LEADER: [u8; NODE_ID_LEN] = [70_u8; NODE_ID_LEN];
 struct Everything;
 
 impl super::Subscriptions for Everything {
-    fn granted(&self, _follower: [u8; NODE_ID_LEN]) -> Result<Option<Reach>> {
-        Ok(Some(Reach::Store))
+    fn granted(
+        &self,
+        _follower: [u8; NODE_ID_LEN],
+    ) -> crate::collection::Answering<'_, Result<Option<Reach>>> {
+        Box::pin(async move { Ok(Some(Reach::Store)) })
     }
 }
 
@@ -50,7 +55,7 @@ impl super::Subscriptions for Everything {
 /// epoch to produce them. Filed in the log the store's commits go to — the
 /// line's on the store (ADR-0107), which is the one a leader serves.
 fn logged(epochs: &[u64]) -> Arc<Db> {
-    let db = Arc::new(Db::in_memory().expect("an in-memory store"));
+    let db = Arc::new(Db::in_memory().now().expect("an in-memory store"));
     let writer = store_log(&db).writer;
     logging(&db, writer, epochs);
     db
@@ -64,7 +69,7 @@ fn logged(epochs: &[u64]) -> Arc<Db> {
 /// second log that the collect below never reads, and the symptom is a gap
 /// at position one rather than the disagreement the test is about.
 fn logged_as(writer: Writer, epochs: &[u64]) -> Arc<Db> {
-    let db = Arc::new(Db::in_memory().expect("an in-memory store"));
+    let db = Arc::new(Db::in_memory().now().expect("an in-memory store"));
     logging(&db, writer, epochs);
     db
 }
@@ -79,6 +84,7 @@ fn logging(db: &Arc<Db>, writer: Writer, epochs: &[u64]) {
         );
         db.store()
             .apply_record(writer, at, &LogRecord::at(Epoch::new(*epoch), Vec::new()))
+            .now()
             .expect("an empty record applies at the next position");
     }
 }
@@ -87,6 +93,7 @@ fn logging(db: &Arc<Db>, writer: Writer, epochs: &[u64]) {
 fn store_log(db: &Arc<Db>) -> LogId {
     db.store()
         .line_log(Reach::Store)
+        .now()
         .expect("the store's own identity")
 }
 
@@ -100,9 +107,10 @@ fn one_record() -> usize {
 
 /// Every namespace a store can name, in catalog order.
 fn declared(db: &Db) -> Vec<String> {
-    let mut transaction = db.store().begin().expect("a read");
+    let mut transaction = db.store().begin().now().expect("a read");
     let names = Catalog::new(&mut transaction)
         .namespaces()
+        .now()
         .expect("the catalog answers")
         .into_iter()
         .map(|namespace| namespace.name)
@@ -118,9 +126,9 @@ fn declared(db: &Db) -> Vec<String> {
 /// subscription is a catalog record, so the only honest way to have one is
 /// to have declared it.
 fn granting(clause: &str) -> Arc<Db> {
-    let db = Arc::new(Db::in_memory().expect("an in-memory store"));
+    let db = Arc::new(Db::in_memory().now().expect("an in-memory store"));
     db.session()
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
                  USE DATABASE orders; DEFINE COLLECTION users; \
                  CREATE users:1 = {{ name: 'ada' }}; \
@@ -163,12 +171,16 @@ fn declaring_for(authority: &Authority, db: &Arc<Db>, rounds: usize) -> (String,
     let db = Arc::clone(db);
     let door = std::thread::spawn(move || {
         for _ in 0..rounds {
-            drop(peers.greet(
-                || Ok(mine),
-                &LEADER,
-                &Deciding::holding(settled()),
-                &Serving::declared(db.store()),
-            ));
+            drop(
+                peers
+                    .greet(
+                        || Ok(mine),
+                        &LEADER,
+                        &Deciding::holding(settled()),
+                        &Serving::declared(db.store()),
+                    )
+                    .now(),
+            );
         }
     });
     (address, door)
@@ -197,12 +209,16 @@ fn serving_within(
     let db = Arc::clone(db);
     let door = std::thread::spawn(move || {
         for _ in 0..rounds {
-            drop(peers.greet(
-                || Ok(mine),
-                &LEADER,
-                &Deciding::holding(settled()),
-                &Serving::within(db.store(), &Everything, budget),
-            ));
+            drop(
+                peers
+                    .greet(
+                        || Ok(mine),
+                        &LEADER,
+                        &Deciding::holding(settled()),
+                        &Serving::within(db.store(), &Everything, budget),
+                    )
+                    .now(),
+            );
         }
     });
     (address, door)

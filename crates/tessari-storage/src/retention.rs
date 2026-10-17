@@ -73,9 +73,13 @@ impl Store {
     ///
     /// Returns an error when the backend fails or the stored value cannot be
     /// decoded.
-    pub fn log_retention(&self) -> Result<Option<Retention>> {
+    pub async fn log_retention(&self) -> Result<Option<Retention>> {
         let key = LogRetentionKey.encode();
-        match self.backend().get(LogRetentionKey::keyspace(), &key)? {
+        match self
+            .backend()
+            .get(LogRetentionKey::keyspace(), &key)
+            .await?
+        {
             // An empty value is the stored `RETAIN NONE`. Stores written before
             // ADR-0094 deleted the key instead, which now reads as never said
             // — the default they get is the one the owner chose.
@@ -96,11 +100,12 @@ impl Store {
     /// # Errors
     ///
     /// Returns the backend's own failure.
-    pub fn set_log_retention(&self, keep: Option<Sequence>) -> Result<()> {
+    pub async fn set_log_retention(&self, keep: Option<Sequence>) -> Result<()> {
         let key = LogRetentionKey.encode();
         let value = keep.map_or_else(|| tessari_kv::Value::from(Vec::new()), |keep| keep.encode());
         self.backend()
-            .apply(WriteBatch::new().put(LogRetentionKey::keyspace(), key, value))?;
+            .apply(WriteBatch::new().put(LogRetentionKey::keyspace(), key, value))
+            .await?;
         Ok(())
     }
 
@@ -120,8 +125,8 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the stored value cannot be read.
-    pub fn effective_retention(&self) -> Result<(Retention, RetentionSource)> {
-        if let Some(stored) = self.log_retention()? {
+    pub async fn effective_retention(&self) -> Result<(Retention, RetentionSource)> {
+        if let Some(stored) = self.log_retention().await? {
             return Ok((stored, RetentionSource::Statement));
         }
         Ok(self.process_retention().0.get().map_or(

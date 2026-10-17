@@ -7,6 +7,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
@@ -14,14 +16,16 @@ use tessari_storage::Store;
 use tessari_types::{RecordId, Value};
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// A tenancy holding `customers`, partitioned by `region` and split at 'de', 'fr'.
 fn customers(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE customers (region string, name string) IDENTITY uuid \
              PARTITION BY region SPLIT AT 'de', 'fr';",
@@ -31,7 +35,7 @@ fn customers(store: &Store) -> Session<'_> {
 }
 
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
-    match session.run(read).unwrap().last() {
+    match session.run_now(read).unwrap().last() {
         Some(Outcome::Records { records, .. }) => {
             records.iter().map(|(id, _)| id.clone()).collect()
         }
@@ -40,7 +44,7 @@ fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
 }
 
 fn refusal(session: &mut Session<'_>, script: &str) -> tessari_storage::Error {
-    match session.run(script) {
+    match session.run_now(script) {
         Err(Error::Store(refused)) => refused,
         other => panic!("{script}\n  expected a store refusal, got {other:?}"),
     }
@@ -60,7 +64,7 @@ fn a_record_the_store_names_carries_its_region_before_the_rest() {
     let store = store();
     let mut session = customers(&store);
     session
-        .run("CREATE customers = { region: 'de', name: 'ada' }; CREATE customers = { region: 'fr', name: 'bo' };")
+        .run_now("CREATE customers = { region: 'de', name: 'ada' }; CREATE customers = { region: 'fr', name: 'bo' };")
         .unwrap();
     let named = ids(&mut session, "SELECT * FROM customers;");
     assert_eq!(named.len(), 2, "{named:?}");
@@ -79,7 +83,7 @@ fn a_write_whose_identity_and_region_disagree_is_refused_by_name() {
     let store = store();
     let mut session = customers(&store);
     session
-        .run("CREATE customers:'de:1' = { region: 'de', name: 'ada' };")
+        .run_now("CREATE customers:'de:1' = { region: 'de', name: 'ada' };")
         .unwrap();
     assert_eq!(
         mismatch(refusal(
@@ -123,7 +127,9 @@ fn a_partition_needs_the_store_to_name_the_rest_of_the_identity() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;")
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;",
+        )
         .unwrap();
     match refusal(
         &mut session,
@@ -140,7 +146,7 @@ fn a_partition_needs_the_store_to_name_the_rest_of_the_identity() {
 fn the_report_names_the_partition_and_its_definition_re_creates_it() {
     let store = store();
     let mut session = customers(&store);
-    let described = match session.run("INFO FOR TABLE customers;").unwrap().last() {
+    let described = match session.run_now("INFO FOR TABLE customers;").unwrap().last() {
         Some(Outcome::Value(value)) => value.clone(),
         other => panic!("{other:?}"),
     };
@@ -151,10 +157,12 @@ fn the_report_names_the_partition_and_its_definition_re_creates_it() {
     let Some(Value::String(script)) = fields.get("definition") else {
         panic!("{described:?}");
     };
-    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut again = Session::new(&restored);
     again
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; {script}"
         ))
         .unwrap();
@@ -198,7 +206,7 @@ fn a_read_naming_a_partition_reads_its_span_in_one_shard() {
     let store = store();
     let mut session = customers(&store);
     session
-        .run(
+        .run_now(
             "CREATE customers = { region: 'at', name: 'cy' }; \
              CREATE customers = { region: 'de', name: 'ada' }; \
              CREATE customers = { region: 'de', name: 'eve' }; \
@@ -206,7 +214,7 @@ fn a_read_naming_a_partition_reads_its_span_in_one_shard() {
         )
         .unwrap();
     let read = "SELECT * FROM customers WHERE region = 'de' AND name != 'eve';";
-    let explained = match session.run(&format!("EXPLAIN {read}")).unwrap().last() {
+    let explained = match session.run_now(&format!("EXPLAIN {read}")).unwrap().last() {
         Some(Outcome::Value(plan)) => plan.clone(),
         other => panic!("{other:?}"),
     };
@@ -215,7 +223,7 @@ fn a_read_naming_a_partition_reads_its_span_in_one_shard() {
         access_and_shards(&explained),
         ("span".to_owned(), Some(vec![2]))
     );
-    let (records, plan) = match session.run(read).unwrap().last() {
+    let (records, plan) = match session.run_now(read).unwrap().last() {
         Some(Outcome::Records { records, plan, .. }) => (records.clone(), plan.clone()),
         other => panic!("{other:?}"),
     };
@@ -231,7 +239,7 @@ fn a_read_naming_a_partition_reads_its_span_in_one_shard() {
     assert!(names[0].contains("ada"), "{names:?}");
     // A condition that does not fix the partition reads the table.
     let explained = match session
-        .run("EXPLAIN SELECT * FROM customers WHERE name = 'ada';")
+        .run_now("EXPLAIN SELECT * FROM customers WHERE name = 'ada';")
         .unwrap()
         .last()
     {

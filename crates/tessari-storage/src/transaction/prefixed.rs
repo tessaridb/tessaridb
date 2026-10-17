@@ -29,7 +29,7 @@ fn past(prefix: &[u8]) -> Option<Vec<u8>> {
 impl Transaction<'_> {
     /// The rows of system table `table` whose byte identity begins with
     /// `prefix`, this transaction's own writes included.
-    pub(crate) fn system_rows_prefixed(
+    pub(crate) async fn system_rows_prefixed(
         &self,
         table: TableId,
         prefix: &[u8],
@@ -47,6 +47,7 @@ impl Transaction<'_> {
             None,
             usize::MAX,
         )
+        .await
     }
 }
 

@@ -3,6 +3,8 @@
 //! Every case runs on the memory backend and on the disk one, for the reason
 //! the key-value suite beside this one does.
 
+use tessari_session::Now as _;
+use tessari_session::RunNow;
 mod consumers;
 mod declaring;
 mod groups;
@@ -23,7 +25,7 @@ use super::key_value::{Backend, run};
 pub(super) fn opened(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE app; USE DATABASE app;\n\
              DEFINE TOPIC events;",
@@ -36,7 +38,7 @@ pub(super) fn opened(store: &Store) -> Session<'_> {
 pub(super) fn another(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE app;")
+        .run_now("USE NAMESPACE prod; USE DATABASE app;")
         .unwrap();
     session
 }
@@ -78,6 +80,7 @@ pub(super) fn entries(backend: &Backend) -> (Vec<(u64, RecordId)>, BTreeMap<Reco
                 direction: ScanDirection::Forward,
                 limit: None,
             })
+            .now()
             .unwrap()
     };
     let by_position = scan(KeyKind::TopicOffset)

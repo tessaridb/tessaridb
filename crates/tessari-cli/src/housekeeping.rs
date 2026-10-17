@@ -30,8 +30,8 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
         "housekeeping",
         std::time::Duration::from_secs(tessari_constants::AWARENESS_SECONDS),
         &stop,
-        move |_| {
-            match db.store().trim_logs() {
+        async move |_| {
+            match db.store().trim_logs().await {
                 Ok(Some(trimmed)) if trimmed.records > 0 => tracing::info!(
                     records = trimmed.records,
                     logs = trimmed.logs,
@@ -44,7 +44,7 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
             // wait for it; it only returns space. A node that does not lead a
             // range is refused at commit exactly as any write would be, which is
             // the design rather than a fault, so that refusal stays quiet.
-            match db.store().remove_expired() {
+            match db.store().remove_expired().await {
                 Ok(lapsed) if lapsed.records > 0 || lapsed.stale > 0 => tracing::info!(
                     records = lapsed.records,
                     commits = lapsed.batches,
@@ -81,7 +81,7 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
             // plans over its own copy, leader or not, and a statistic decides a
             // path and never an answer — so a failure here costs speed and is
             // said at `warn`, not acted on.
-            match db.store().refresh_statistics() {
+            match db.store().refresh_statistics().await {
                 Ok(taken) if taken > 0 => {
                     tracing::debug!(indexes = taken, "took index statistics for the planner");
                 }
@@ -92,7 +92,7 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
             // (ADR-0109 D6). A view this node may not write is refused at its
             // commit before anything changes, which is the design rather than a
             // fault, so that refusal stays quiet like expiry's.
-            match tessari_session::maintain_views(db.store()) {
+            match tessari_session::maintain_views(db.store()).await {
                 Ok(done) if done.views > 0 => tracing::debug!(
                     changes = done.changes,
                     views = done.views,
@@ -110,7 +110,7 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
             // This node's own storage work, leader or not; a pass that lags
             // costs space and never an answer — a surplus retired entry is one
             // more candidate a re-test discards.
-            match db.store().reclaim_retired_entries() {
+            match db.store().reclaim_retired_entries().await {
                 Ok(removed) if removed > 0 => {
                     tracing::debug!(entries = removed, "reclaimed retired index entries");
                 }
@@ -121,7 +121,7 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
             // (G044 C11). This node's own storage work: every node runs it over
             // its own copy, leader or not, because the answer already changed
             // when the floor passed.
-            match db.store().expire_every_series() {
+            match db.store().expire_every_series().await {
                 Ok(expired) if expired.ranges > 0 => tracing::info!(
                     ranges = expired.ranges,
                     unindexed = expired.indexed,

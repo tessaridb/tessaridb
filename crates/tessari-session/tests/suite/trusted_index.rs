@@ -52,6 +52,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Outcome, Session};
@@ -60,7 +62,9 @@ use tessari_storage::Store;
 const PASSWORD: &str = "correct horse battery";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// A store holding two notes, a search index over their text, and an editor who
@@ -68,7 +72,7 @@ fn store() -> Store {
 fn peopled(store: &Store) {
     let mut opening = Session::new(store);
     opening
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
@@ -81,16 +85,16 @@ fn peopled(store: &Store) {
         )
         .unwrap();
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
         .unwrap();
 }
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -116,7 +120,7 @@ fn ids(session: &mut Session<'_>, statement: &str) -> Vec<String> {
 /// falling back to a scan and answering correctly through the index are the same
 /// answer, and only one of them is the thing being asserted.
 fn read(session: &mut Session<'_>, statement: &str) -> (Vec<String>, AccessPath) {
-    let answered = session.run(statement).unwrap();
+    let answered = session.run_now(statement).unwrap();
     let mut found = answered.iter().filter_map(|outcome| match outcome {
         Outcome::Records { records, plan, .. } => Some((records, plan)),
         _ => None,
@@ -139,7 +143,7 @@ fn a_field_nobody_granted_is_not_searchable_through_its_own_index() {
     let held = store();
     peopled(&held);
     signed_in(&held, "root")
-        .run("GRANT read ON notes FIELDS title TO ada;")
+        .run_now("GRANT read ON notes FIELDS title TO ada;")
         .unwrap();
 
     let mut ada = signed_in(&held, "ada");
@@ -167,7 +171,7 @@ fn granting_the_indexed_field_makes_it_searchable_again() {
     let held = store();
     peopled(&held);
     signed_in(&held, "root")
-        .run("GRANT read ON notes FIELDS title, text TO ada;")
+        .run_now("GRANT read ON notes FIELDS title, text TO ada;")
         .unwrap();
 
     let mut ada = signed_in(&held, "ada");

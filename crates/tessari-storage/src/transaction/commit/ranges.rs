@@ -51,19 +51,23 @@ impl Transaction<'_> {
     /// catalog rather than a new one — the commit path asks it on every write
     /// under a leadership (ADR-0107), and a second transaction per commit is a
     /// round trip a leader would pay on each one.
-    pub(crate) fn admits_two_writers_here(&mut self, home: Reach) -> Result<bool> {
+    pub(crate) async fn admits_two_writers_here(&mut self, home: Reach) -> Result<bool> {
         let (Some(namespace), _) = home.parts() else {
             return Ok(false);
         };
         Ok(crate::catalog::Catalog::new(self)
-            .namespace(namespace)?
+            .namespace(namespace)
+            .await?
             .and_then(|definition| definition.class)
             .is_some_and(tessari_types::ReplicationClass::admits_two_writers))
     }
 
-    pub(crate) fn every_range_admits_two_writers(&self, ranges: &BTreeSet<Reach>) -> Result<bool> {
+    pub(crate) async fn every_range_admits_two_writers(
+        &self,
+        ranges: &BTreeSet<Reach>,
+    ) -> Result<bool> {
         for range in ranges {
-            if !self.store.admits_two_writers(*range)? {
+            if !self.store.admits_two_writers(*range).await? {
                 return Ok(false);
             }
         }
@@ -79,7 +83,7 @@ impl Transaction<'_> {
     /// The store leader is deliberately NOT a fallback for a placed range with
     /// no live leader: the placement carved it out, and writing it anyway is
     /// the two-writer window the carving exists to close.
-    pub(crate) fn admitted_on_their_lines(
+    pub(crate) async fn admitted_on_their_lines(
         &self,
         ranges: &BTreeSet<Reach>,
         placed: &BTreeSet<Reach>,
@@ -98,7 +102,9 @@ impl Transaction<'_> {
                     return Err(Error::LeaseSpent { for_the_last });
                 }
                 crate::lines::Standing::NotHeld => {
-                    if self.store.in_a_cluster(me)? && !self.store.admits_two_writers(*range)? {
+                    if self.store.in_a_cluster(me).await?
+                        && !self.store.admits_two_writers(*range).await?
+                    {
                         return Err(Error::NoLeadershipYet);
                     }
                 }
@@ -179,7 +185,7 @@ impl Transaction<'_> {
     /// The registry answers almost always; a miss reads the committed catalog
     /// once and teaches the registry, which is what a node that became leader
     /// after the tables were declared elsewhere meets on its first write.
-    pub(crate) fn placement(&self) -> Result<Placement> {
+    pub(crate) async fn placement(&self) -> Result<Placement> {
         let mut maps: BTreeMap<TableId, Arc<ShardMap>> = BTreeMap::new();
         let mut unread: BTreeSet<TableId> = BTreeSet::new();
         for address in self.writes.keys() {
@@ -200,7 +206,7 @@ impl Transaction<'_> {
             }
         }
         if !unread.is_empty() {
-            let mut view = self.store.begin()?;
+            let mut view = self.store.begin().await?;
             let catalog = crate::catalog::Catalog::new(&mut view);
             for table in unread {
                 // A record naming a table the catalog does not hold is not split
@@ -208,7 +214,7 @@ impl Transaction<'_> {
                 // whether such a write is allowed at all is not this function's
                 // question. It is NOT learned, so a table declared later is read
                 // again rather than remembered as unsplit.
-                let Some(definition) = catalog.table(table)? else {
+                let Some(definition) = catalog.table(table).await? else {
                     continue;
                 };
                 self.store.shards().learn(table, definition.shards.as_ref());

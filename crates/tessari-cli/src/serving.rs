@@ -30,6 +30,7 @@ pub(crate) fn serve(
     serving: &Serving,
     cluster: Option<&tessari_wire::Told>,
     started: std::time::Instant,
+    runtime: tokio::runtime::Runtime,
 ) -> Result<Ended, String> {
     // Read before anything is bound, and before the store is touched, for the
     // reason the line below gives: an unreadable key file is a node that would
@@ -72,15 +73,12 @@ pub(crate) fn serve(
     if let Some(joining) = &cluster
         && joining.seeds.is_empty()
     {
-        let me = db
-            .store()
-            .node_identity()
+        let me = runtime
+            .block_on(db.store().node_identity())
             .map_err(|why| format!("this node cannot say who it is: {why}"))?
             .id;
-        let declared = db
-            .store()
-            .begin()
-            .and_then(|mut transaction| tessari_storage::Catalog::new(&mut transaction).replicas())
+        let declared = runtime
+            .block_on(crate::peers::declared(db.store()))
             .map_err(|why| format!("this node cannot say who its peers are: {why}"))?;
         if !tessari_wire::names_a_peer(&declared, &me) {
             return Err(
@@ -123,7 +121,7 @@ pub(crate) fn serve(
     // credentials were misconfigured should never have reached the point of
     // answering on a network, so this is a failure to start rather than a
     // warning behind a listening socket.
-    bootstrap::first_user(&db)?;
+    runtime.block_on(bootstrap::first_user(&db))?;
     // What each surface presents, for `INFO FOR NODE` — the fingerprint an
     // operator pins a newcomer's row with is read off the newcomer (D9) — and
     // how the clients are served, which a serving node always has an answer to.
@@ -138,7 +136,7 @@ pub(crate) fn serve(
     // alike, which is why it is set on the store's handle and not on a surface.
     // A node with no peers has nobody to ask and refuses as it always has.
     if let Some(surface) = &peers {
-        join_the_cluster(std::sync::Arc::clone(&db), surface)?;
+        runtime.block_on(join_the_cluster(std::sync::Arc::clone(&db), surface))?;
     }
     if let Some(folder) = &serving.backups {
         db.back_up_into(std::sync::Arc::from(folder.as_path()));
@@ -215,7 +213,7 @@ pub(crate) fn serve(
     // Stopped at the stage that refuses new connections and joined before the
     // store is dropped — see `consumers.rs` for why a `Drop` at the end of this
     // function is neither of those moments.
-    let running = consumers::start(std::sync::Arc::clone(&db));
+    let running = runtime.block_on(consumers::start(std::sync::Arc::clone(&db)));
     // The topic consumers (ADR-0087) run in every build, as a task on the
     // runtime; stage 1 stops them with the Kafka consumers.
     let (topics_stop, topics_stopped) = tokio::sync::watch::channel(false);
@@ -319,16 +317,14 @@ pub(crate) fn serve(
                 db: std::sync::Arc::clone(&db),
                 keys: surface.keys.clone(),
             };
-            revoking.refresh()?;
+            runtime.block_on(revoking.refresh())?;
             Some(revoking)
         }
         None => None,
     };
 
-    // The one runtime this process owns, and the token a stop arrives on — both
-    // before anything serves, so a signal arriving during startup is counted
-    // rather than killing the process where it stands.
-    let runtime = runtime::build().map_err(|why| format!("the runtime would not start: {why}"))?;
+    // The token a stop arrives on, before anything serves, so a signal arriving
+    // during startup is counted rather than killing the process where it stands.
     let asked = shutdown::listen(&runtime)
         .map_err(|why| format!("stop signals could not be registered: {why}"))?;
 
@@ -432,11 +428,19 @@ pub(crate) fn serve(
     // not wait; this is the wait. Joining after `drop(db)` would flush the store
     // and release its lock while threads were still writing through it.
     consumers::stop(running);
-    // Stage 4. Dropping the store is what flushes it and releases the file
+    // Stage 4. Closing the store is what flushes it and releases the file
     // lock, and it happens here rather than in the stages because this is what
-    // owns it — the stages know about surfaces, not about a store.
-    drop(db);
+    // owns it: the stages know about surfaces, not about a store. It is closed
+    // and awaited before the runtime stops: a store only dropped would close on
+    // a task the shutdown below cancels.
+    let closed = match std::sync::Arc::try_unwrap(db) {
+        Ok(db) => runtime
+            .block_on(db.close())
+            .map_err(|failure| format!("the store did not close: {failure}")),
+        Err(_) => Err("the store did not close: it is still held".to_owned()),
+    };
     runtime.shutdown_timeout(runtime::LEAVING);
+    closed?;
     tracing::info!("stopped");
     Ok(Ended::Fine)
 }

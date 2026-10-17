@@ -67,8 +67,8 @@ impl<'a> Session<'a> {
     ///
     /// Returns [`Error::NotSignedIn`] on a closed store with no identity, and
     /// [`Error::RoleForbids`] when the role is not enough.
-    pub fn may_read(&mut self, store: &Store) -> Result<()> {
-        let open = self.refresh(store)?;
+    pub async fn may_read(&mut self, store: &Store) -> Result<()> {
+        let open = self.refresh(store).await?;
         // A span over nothing, because there is no script here to point into —
         // and inventing one would put a caret under a character nobody wrote.
         self.identity
@@ -111,8 +111,8 @@ impl<'a> Session<'a> {
     /// [`Error::RoleForbids`] when the authority is not held at all, and
     /// [`Error::NotTheWholeStore`] when it is held somewhere narrower than the
     /// subscription asks for.
-    pub fn may_replicate(&mut self, store: &Store, over: Reach) -> Result<()> {
-        let open = self.refresh(store)?;
+    pub async fn may_replicate(&mut self, store: &Store, over: Reach) -> Result<()> {
+        let open = self.refresh(store).await?;
         // A span over nothing: there is no script here to point into, and
         // inventing one would put a caret under a character nobody wrote.
         let span = tessari_ql::Span::new(0, 0);
@@ -197,7 +197,7 @@ impl<'a> Session<'a> {
     ///
     /// Returns whatever [`Session::may_replicate`] refuses with, or an error
     /// when the log cannot be read or a stored record cannot be decoded.
-    pub fn replicate_from(
+    pub async fn replicate_from(
         &mut self,
         store: &Store,
         node: [u8; NODE_ID_LEN],
@@ -206,8 +206,8 @@ impl<'a> Session<'a> {
         from: Sequence,
         limit: usize,
     ) -> Result<Vec<(Sequence, LogRecord)>> {
-        self.may_replicate(store, over)?;
-        let records = store.log_records_within(over, log, from, limit)?;
+        self.may_replicate(store, over).await?;
+        let records = store.log_records_within(over, log, from, limit).await?;
         // What the follower now holds: the last sequence it was handed, or —
         // when it was handed nothing — the position it told us it was at.
         let reached = records.last().map_or_else(
@@ -243,9 +243,9 @@ impl<'a> Session<'a> {
     /// # Errors
     ///
     /// Returns an error when the catalog cannot be read.
-    pub fn readable(&self, store: &'a Store) -> Result<Option<Vec<TableId>>> {
-        let mut transaction = store.begin()?;
-        let readable = self.readable_in(&mut transaction);
+    pub async fn readable(&self, store: &'a Store) -> Result<Option<Vec<TableId>>> {
+        let mut transaction = store.begin().await?;
+        let readable = self.readable_in(&mut transaction).await;
         transaction.rollback();
         readable
     }
@@ -262,14 +262,14 @@ impl<'a> Session<'a> {
     /// # Errors
     ///
     /// Returns an error when the catalog cannot be read.
-    pub(crate) fn readable_in(
+    pub(crate) async fn readable_in(
         &self,
         transaction: &mut tessari_storage::Transaction<'_>,
     ) -> Result<Option<Vec<TableId>>> {
         let Some(user) = self.identity.user() else {
             return Ok(None);
         };
-        let grants = Catalog::new(transaction).grants_for(user.id)?;
+        let grants = Catalog::new(transaction).grants_for(user.id).await?;
         if grants.is_empty() {
             return Ok(None);
         }
@@ -289,20 +289,20 @@ impl<'a> Session<'a> {
     /// and that is a property of the data rather than of the session, and it
     /// re-reads this session's own user in the same transaction, for the reason
     /// [`Session::refresh`] gives.
-    pub(crate) fn authorize(
+    pub(crate) async fn authorize(
         &mut self,
         store: &'a Store,
         kind: &StatementKind,
         span: tessari_ql::Span,
     ) -> Result<()> {
-        let open = self.refresh(store)?;
-        self.authorize_as_refreshed(store, kind, open, span)
+        let open = self.refresh(store).await?;
+        self.authorize_as_refreshed(store, kind, open, span).await
     }
 
     /// The same check, for a session whose identity this statement already
     /// re-read — an event body, which runs inside the write that refreshed it
     /// (ADR-0110 D6). `open` is what that refresh answered.
-    pub(crate) fn authorize_as_refreshed(
+    pub(crate) async fn authorize_as_refreshed(
         &mut self,
         store: &'a Store,
         kind: &StatementKind,
@@ -311,12 +311,12 @@ impl<'a> Session<'a> {
     ) -> Result<()> {
         // A closed store's one door for a caller nobody signed in (G037).
         if !open && self.identity.user().is_none() {
-            return self.public_append(store, kind, span);
+            return self.public_append(store, kind, span).await;
         }
         self.identity.allows(kind, open, span)?;
-        self.within_tenancy(kind, span)?;
-        self.within_authority(store, kind, span)?;
-        self.within_grants(store, kind, span)
+        self.within_tenancy(kind, span).await?;
+        self.within_authority(store, kind, span).await?;
+        self.within_grants(store, kind, span).await
     }
 
     /// Re-read this session's own user, and answer whether the store is open.
@@ -358,13 +358,13 @@ impl<'a> Session<'a> {
     /// deliberately: it opens its own transaction, so a script that alters its
     /// own user mid-transaction does not re-authorize against a change nobody
     /// has committed yet.
-    pub(crate) fn refresh(&mut self, store: &Store) -> Result<bool> {
+    pub(crate) async fn refresh(&mut self, store: &Store) -> Result<bool> {
         let signed = self.identity.user().map(|user| user.id);
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().await?;
         let catalog = Catalog::new(&mut transaction);
-        let open = catalog.is_open()?;
+        let open = catalog.is_open().await?;
         let found = match signed {
-            Some(id) => catalog.user(id)?,
+            Some(id) => catalog.user(id).await?,
             None => None,
         };
         transaction.rollback();

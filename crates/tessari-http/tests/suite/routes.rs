@@ -9,16 +9,18 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
+use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_constants::HTTP_MAX_BODY_BYTES;
 use tessari_http::Node;
-use tessari_kv::{KvBackend, MemoryBackend};
+use tessari_kv::{KvBackend, KvFuture, MemoryBackend};
 use tessari_storage::Store;
 use tessaridb::Db;
 
 /// A node on a loopback port the operating system picked, plus its address.
 fn node() -> (Arc<Node>, String) {
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
@@ -219,7 +221,7 @@ fn no_such_thing_and_not_that_way_are_different_answers() {
 fn the_wire_and_the_library_answer_the_same_script() {
     // G002's C8, at the seam it is actually about: one script, two surfaces,
     // one answer.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
@@ -233,8 +235,10 @@ fn the_wire_and_the_library_answer_the_same_script() {
 
     // The same database, reached the other way.
     let mut session = db.session();
-    session.run("USE NAMESPACE prod DATABASE orders;").unwrap();
-    let embedded = session.run("SELECT name FROM users:1;").unwrap();
+    session
+        .run_now("USE NAMESPACE prod DATABASE orders;")
+        .unwrap();
+    let embedded = session.run_now("SELECT name FROM users:1;").unwrap();
     assert_eq!(embedded[0].records().unwrap().len(), 1);
 
     let (status, body) = request(
@@ -478,26 +482,26 @@ impl KvBackend for Ailing {
         "ailing"
     }
 
-    fn background_errors(&self) -> tessari_kv::Result<u64> {
-        Ok(3)
+    fn background_errors(&self) -> KvFuture<'_, u64> {
+        Box::pin(async move { Ok(3) })
     }
 
-    fn get(
-        &self,
+    fn get<'a>(
+        &'a self,
         keyspace: tessari_kv::Keyspace,
-        key: &tessari_kv::Key,
-    ) -> tessari_kv::Result<Option<tessari_kv::Value>> {
+        key: &'a tessari_kv::Key,
+    ) -> KvFuture<'a, Option<tessari_kv::Value>> {
         self.held.get(keyspace, key)
     }
 
-    fn scan(
-        &self,
-        request: &tessari_kv::ScanRequest,
-    ) -> tessari_kv::Result<Vec<(tessari_kv::Key, tessari_kv::Value)>> {
+    fn scan<'a>(
+        &'a self,
+        request: &'a tessari_kv::ScanRequest,
+    ) -> KvFuture<'a, Vec<(tessari_kv::Key, tessari_kv::Value)>> {
         self.held.scan(request)
     }
 
-    fn apply(&self, batch: tessari_kv::WriteBatch) -> tessari_kv::Result<()> {
+    fn apply(&self, batch: tessari_kv::WriteBatch) -> KvFuture<'_, ()> {
         self.held.apply(batch)
     }
 }
@@ -514,33 +518,35 @@ impl KvBackend for PanicsOnce {
         "panics-once"
     }
 
-    fn background_errors(&self) -> tessari_kv::Result<u64> {
-        if !self
-            .panicked
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            // `resume_unwind` unwinds exactly as a panic does, without the hook's noise.
-            std::panic::resume_unwind(Box::new("a request that fails inside the node"));
-        }
-        Ok(0)
+    fn background_errors(&self) -> KvFuture<'_, u64> {
+        Box::pin(async move {
+            if !self
+                .panicked
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                // `resume_unwind` unwinds exactly as a panic does, without the hook's noise.
+                std::panic::resume_unwind(Box::new("a request that fails inside the node"));
+            }
+            Ok(0)
+        })
     }
 
-    fn get(
-        &self,
+    fn get<'a>(
+        &'a self,
         keyspace: tessari_kv::Keyspace,
-        key: &tessari_kv::Key,
-    ) -> tessari_kv::Result<Option<tessari_kv::Value>> {
+        key: &'a tessari_kv::Key,
+    ) -> KvFuture<'a, Option<tessari_kv::Value>> {
         self.held.get(keyspace, key)
     }
 
-    fn scan(
-        &self,
-        request: &tessari_kv::ScanRequest,
-    ) -> tessari_kv::Result<Vec<(tessari_kv::Key, tessari_kv::Value)>> {
+    fn scan<'a>(
+        &'a self,
+        request: &'a tessari_kv::ScanRequest,
+    ) -> KvFuture<'a, Vec<(tessari_kv::Key, tessari_kv::Value)>> {
         self.held.scan(request)
     }
 
-    fn apply(&self, batch: tessari_kv::WriteBatch) -> tessari_kv::Result<()> {
+    fn apply(&self, batch: tessari_kv::WriteBatch) -> KvFuture<'_, ()> {
         self.held.apply(batch)
     }
 }
@@ -553,7 +559,7 @@ fn a_request_that_panics_is_answered_and_the_node_answers_the_next_one() {
         held: MemoryBackend::new(),
         panicked: std::sync::atomic::AtomicBool::new(false),
     }) as Arc<dyn KvBackend>;
-    let db = Arc::new(Db::from_store(Store::open(backend).unwrap()));
+    let db = Arc::new(Db::from_store(Store::open(backend).now().unwrap()));
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
@@ -706,7 +712,7 @@ fn a_store_with_a_background_failure_is_taken_out_of_rotation() {
     let backend = Arc::new(Ailing {
         held: MemoryBackend::new(),
     }) as Arc<dyn KvBackend>;
-    let db = Arc::new(Db::from_store(Store::open(backend).unwrap()));
+    let db = Arc::new(Db::from_store(Store::open(backend).now().unwrap()));
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
@@ -1035,7 +1041,7 @@ fn a_body_that_declares_no_length_is_read_only_to_the_ceiling() {
 
 #[test]
 fn a_scrape_says_where_a_follower_stands_and_how_far_behind_its_followers_are() {
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
@@ -1086,7 +1092,7 @@ fn a_stranger_scraping_a_closed_store_learns_nothing_about_the_cluster() {
     // ADR-0108 D8: which nodes follow this one, how far behind each is, and
     // whether this node leads are the topology. On a closed store they are for
     // a caller who may ask `INFO FOR NODE`, and for nobody else.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
@@ -1184,7 +1190,7 @@ fn the_certificate_a_surface_presents_says_when_it_expires_and_only_to_an_operat
         "clients",
         tessari_serve::Presenting::new(move || Some(leaf.clone())),
     );
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let mut node = Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap();
     node.watching(Arc::new(census));
     let node = Arc::new(node);

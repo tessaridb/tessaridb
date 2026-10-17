@@ -14,6 +14,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_ql::Parameters;
@@ -23,13 +25,13 @@ use tessari_types::{MAX_NESTING, Number, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION users;\n\
@@ -42,7 +44,7 @@ fn ready(store: &Store) -> Session<'_> {
 
 /// The record as it stands, read back through the language.
 fn record(session: &mut Session<'_>, statement: &str) -> Value {
-    let outcome = session.run(statement).unwrap();
+    let outcome = session.run_now(statement).unwrap();
     let records = outcome
         .last()
         .expect("an outcome")
@@ -75,7 +77,9 @@ fn upsert_writes_a_record_that_is_not_there() {
     let store = store();
     let mut session = ready(&store);
 
-    session.run("UPSERT users:9 = { name: 'grace' };").unwrap();
+    session
+        .run_now("UPSERT users:9 = { name: 'grace' };")
+        .unwrap();
 
     let held = record(&mut session, "SELECT * FROM users WHERE name = 'grace';");
     assert_eq!(text(field(&held, "name")), "grace");
@@ -86,7 +90,9 @@ fn upsert_replaces_a_record_that_is_there() {
     let store = store();
     let mut session = ready(&store);
 
-    session.run("UPSERT users:1 = { name: 'grace' };").unwrap();
+    session
+        .run_now("UPSERT users:1 = { name: 'grace' };")
+        .unwrap();
 
     let held = record(&mut session, "SELECT * FROM users WHERE name = 'grace';");
     let Value::Object(fields) = &held else {
@@ -106,7 +112,9 @@ fn upsert_set_over_an_absent_record_writes_what_it_names() {
     // The record starts as an empty object, so `SET` produces exactly the routes
     // it assigns — no special case, and no refusal for a route that "is not
     // there" when nothing is.
-    session.run("UPSERT users:9 SET name = 'grace';").unwrap();
+    session
+        .run_now("UPSERT users:9 SET name = 'grace';")
+        .unwrap();
 
     let held = record(&mut session, "SELECT * FROM users WHERE name = 'grace';");
     assert_eq!(text(field(&held, "name")), "grace");
@@ -117,7 +125,7 @@ fn upsert_set_over_a_present_record_changes_only_what_it_names() {
     let store = store();
     let mut session = ready(&store);
 
-    session.run("UPSERT users:1 SET visits = 4;").unwrap();
+    session.run_now("UPSERT users:1 SET visits = 4;").unwrap();
 
     let held = record(&mut session, "SELECT * FROM users WHERE name = 'ada';");
     assert_eq!(field(&held, "visits"), &Value::Number(Number::Integer(4)));
@@ -131,11 +139,11 @@ fn create_and_update_keep_their_refusals() {
     // The reason `UPSERT` is a third verb rather than a flag: these two still
     // say what they assert, and still refuse when it is untrue.
     assert!(
-        session.run("CREATE users:1 = { name: 'x' };").is_err(),
+        session.run_now("CREATE users:1 = { name: 'x' };").is_err(),
         "CREATE over an existing record must still be refused"
     );
     assert!(
-        session.run("UPDATE users:9 = { name: 'x' };").is_err(),
+        session.run_now("UPDATE users:9 = { name: 'x' };").is_err(),
         "UPDATE over an absent record must still be refused"
     );
 }
@@ -147,7 +155,9 @@ fn merge_leaves_what_it_does_not_name() {
     let store = store();
     let mut session = ready(&store);
 
-    session.run("UPDATE users:1 MERGE { visits: 4 };").unwrap();
+    session
+        .run_now("UPDATE users:1 MERGE { visits: 4 };")
+        .unwrap();
 
     let held = record(&mut session, "SELECT * FROM users WHERE name = 'ada';");
     assert_eq!(field(&held, "visits"), &Value::Number(Number::Integer(4)));
@@ -164,7 +174,7 @@ fn merge_is_deep_where_both_sides_hold_an_object() {
     let mut session = ready(&store);
 
     session
-        .run("UPDATE users:1 MERGE { address: { city: 'Paris' } };")
+        .run_now("UPDATE users:1 MERGE { address: { city: 'Paris' } };")
         .unwrap();
 
     let held = record(&mut session, "SELECT * FROM users WHERE name = 'ada';");
@@ -184,7 +194,7 @@ fn merge_replaces_rather_than_folding_when_a_side_is_not_an_object() {
     let mut session = ready(&store);
 
     session
-        .run("UPDATE users:1 MERGE { address: 'unknown' };")
+        .run_now("UPDATE users:1 MERGE { address: 'unknown' };")
         .unwrap();
 
     let held = record(&mut session, "SELECT * FROM users WHERE name = 'ada';");
@@ -204,7 +214,7 @@ fn merge_adds_a_route_the_record_did_not_have() {
     // writing structure nobody asked for. `MERGE` is handed the structure, so
     // there is nothing to invent.
     session
-        .run("UPDATE users:1 MERGE { billing: { plan: 'pro' } };")
+        .run_now("UPDATE users:1 MERGE { billing: { plan: 'pro' } };")
         .unwrap();
 
     let held = record(&mut session, "SELECT * FROM users WHERE name = 'ada';");
@@ -223,12 +233,12 @@ fn the_merged_object_stands_in_the_value_position() {
     // verb before it would be worse than this refusal.
     assert!(
         session
-            .run("UPDATE users:1 MERGE { visits: visits + 1 };")
+            .run_now("UPDATE users:1 MERGE { visits: visits + 1 };")
             .is_err()
     );
 
     session
-        .run("UPDATE users:1 SET visits = visits + 1;")
+        .run_now("UPDATE users:1 SET visits = visits + 1;")
         .unwrap();
     let held = record(&mut session, "SELECT * FROM users WHERE name = 'ada';");
     assert_eq!(field(&held, "visits"), &Value::Number(Number::Integer(4)));
@@ -251,7 +261,7 @@ fn a_merge_takes_its_object_from_a_parameter() {
         ),
     );
     session
-        .run_with("UPDATE users:1 MERGE $patch;", &parameters)
+        .run_with_now("UPDATE users:1 MERGE $patch;", &parameters)
         .unwrap();
 
     let held = record(&mut session, "SELECT * FROM users WHERE name = 'ada';");
@@ -270,8 +280,8 @@ fn merge_needs_an_object() {
 
     // `MERGE 3` could only mean "the record becomes 3", and `UPDATE t:1 = 3`
     // already says that.
-    assert!(session.run("UPDATE users:1 MERGE 3;").is_err());
-    assert!(session.run("UPDATE users:1 MERGE [1, 2];").is_err());
+    assert!(session.run_now("UPDATE users:1 MERGE 3;").is_err());
+    assert!(session.run_now("UPDATE users:1 MERGE [1, 2];").is_err());
 }
 
 #[test]
@@ -280,7 +290,7 @@ fn upsert_merge_over_an_absent_record_produces_what_it_names() {
     let mut session = ready(&store);
 
     session
-        .run("UPSERT users:9 MERGE { name: 'grace', address: { city: 'Paris' } };")
+        .run_now("UPSERT users:9 MERGE { name: 'grace', address: { city: 'Paris' } };")
         .unwrap();
 
     let held = record(&mut session, "SELECT * FROM users WHERE name = 'grace';");
@@ -299,7 +309,7 @@ fn a_write_nested_past_the_ceiling_is_refused_and_one_at_it_lands() {
     let write = |session: &mut Session<'_>, id: u8, deep: Value| {
         let mut parameters = Parameters::new();
         parameters.insert("deep".to_owned(), deep);
-        session.run_with(
+        session.run_with_now(
             &format!("CREATE users:{id} = {{ deep: $deep }};"),
             &parameters,
         )
@@ -318,7 +328,7 @@ fn a_write_nested_past_the_ceiling_is_refused_and_one_at_it_lands() {
         ),
         "{refused:?}"
     );
-    let landed = session.run("SELECT * FROM users;").unwrap();
+    let landed = session.run_now("SELECT * FROM users;").unwrap();
     let count = landed
         .last()
         .expect("an outcome")

@@ -8,6 +8,8 @@
 //! so a reader asks the record's leader. Storage does not speak to peers; the
 //! node installs the asker, and a store with none answers from its own copy.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
 use tessari_encoding::{TransactionId, TransactionRecord};
@@ -15,13 +17,17 @@ use tessari_types::Reach;
 
 use crate::store::Store;
 
+/// What [`Decisions::decided`] answers with: the asking is a round trip to
+/// another node, and the trait is held as an object, so its future is boxed.
+pub type Deciding<'a> = Pin<Box<dyn Future<Output = Option<TransactionRecord>> + Send + 'a>>;
+
 /// Asks the leader of a transaction's record range for its decision.
 pub trait Decisions: core::fmt::Debug + Send + Sync {
     /// The record as `coordinator`'s leader holds it once a majority holds its
     /// decision, or `None` when it cannot say — not reached, or the record
     /// undecided. Never aborts a live transaction: a reader asking is not a
     /// participant giving up.
-    fn decided(&self, transaction: TransactionId, coordinator: Reach) -> Option<TransactionRecord>;
+    fn decided(&self, transaction: TransactionId, coordinator: Reach) -> Deciding<'_>;
 }
 
 /// The asker a store's readers use, installed once by the node.
@@ -35,14 +41,14 @@ impl Store {
     }
 
     /// `transaction`'s record as its leader answers it, if anybody can.
-    pub(crate) fn asked_decision(
+    pub(crate) async fn asked_decision(
         &self,
         transaction: TransactionId,
         coordinator: Reach,
     ) -> Option<TransactionRecord> {
         let asker = self.decisions.get()?;
         let began = std::time::Instant::now();
-        let decided = asker.decided(transaction, coordinator);
+        let decided = asker.decided(transaction, coordinator).await;
         // For the per-phase attribution of a commit across leaders (Q-931):
         // a read that waits on another node is time nobody sees otherwise.
         let elapsed_us = u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX);

@@ -20,8 +20,8 @@ impl Db {
     /// # Errors
     ///
     /// Returns an error when a record or a payload cannot be read.
-    pub fn changes_since(&self, log: LogId, from: Sequence, limit: usize) -> Result<Changes> {
-        Ok(self.store.changes_since(log, from, limit)?)
+    pub async fn changes_since(&self, log: LogId, from: Sequence, limit: usize) -> Result<Changes> {
+        Ok(self.store.changes_since(log, from, limit).await?)
     }
 
     /// The position of the newest committed change in one log.
@@ -32,8 +32,8 @@ impl Db {
     /// # Errors
     ///
     /// Returns an error when the position cannot be read.
-    pub fn committed_tail(&self, log: LogId) -> Result<Sequence> {
-        Ok(self.store.committed_tail(log)?)
+    pub async fn committed_tail(&self, log: LogId) -> Result<Sequence> {
+        Ok(self.store.committed_tail(log).await?)
     }
 
     /// Follow the changes to one table, or to all of them, from `from` onward.
@@ -56,8 +56,8 @@ impl Db {
     /// # Errors
     ///
     /// Returns an error when a record or a payload cannot be read.
-    pub fn poll(&self, subscription: &mut Subscription, limit: usize) -> Result<Vec<Change>> {
-        Ok(subscription.poll(&self.store, limit)?)
+    pub async fn poll(&self, subscription: &mut Subscription, limit: usize) -> Result<Vec<Change>> {
+        Ok(subscription.poll(&self.store, limit).await?)
     }
 
     /// Give up on a subscription's backlog below `target`, counting the loss.
@@ -70,7 +70,7 @@ impl Db {
     /// # Errors
     ///
     /// Returns an error when a record or a payload cannot be read.
-    pub fn skip(&self, subscription: &mut Subscription, target: Sequence) -> Result<u64> {
-        Ok(subscription.skip_to(&self.store, target)?)
+    pub async fn skip(&self, subscription: &mut Subscription, target: Sequence) -> Result<u64> {
+        Ok(subscription.skip_to(&self.store, target).await?)
     }
 }

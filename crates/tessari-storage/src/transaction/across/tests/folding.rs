@@ -3,6 +3,7 @@
 //! versions drop their provenance and its markers go — so markers are bounded
 //! exactly as version history is.
 
+use crate::now::Now;
 use tessari_encoding::{
     AcrossPartKey, Decision, KeyKind, RecordKey, StampedValue, StoreKey, StoreValue,
     TRANSACTION_ID_LEN, TransactionId, TransactionRecord,
@@ -16,24 +17,29 @@ impl Fixture {
     /// One transaction across leaders, prepared, committed and resolved here.
     fn settled(&self, round: u8) -> Result<TransactionId> {
         let transaction = TransactionId::new([round; TRANSACTION_ID_LEN]);
-        let mut writing = self.store.begin()?;
+        let mut writing = self.store.begin().now()?;
         writing.put(self.address(), vec![round]);
-        writing.prepare_across(transaction, self.coordinator(), self.seen()?)?;
+        writing
+            .prepare_across(transaction, self.coordinator(), self.seen()?)
+            .now()?;
         for decision in [Decision::Pending, Decision::Committed] {
-            self.store.begin()?.decide_across(
-                transaction,
-                TransactionRecord {
-                    participants: self.prepared(),
-                    ..self.record(decision)
-                },
-            )?;
+            self.store
+                .begin()
+                .now()?
+                .decide_across(
+                    transaction,
+                    TransactionRecord {
+                        participants: self.prepared(),
+                        ..self.record(decision)
+                    },
+                )
+                .now()?;
         }
-        self.store.begin()?.resolve_across(
-            transaction,
-            true,
-            &[self.address()],
-            &self.prepared(),
-        )?;
+        self.store
+            .begin()
+            .now()?
+            .resolve_across(transaction, true, &[self.address()], &self.prepared())
+            .now()?;
         Ok(transaction)
     }
 
@@ -41,29 +47,34 @@ impl Fixture {
     fn count(&self, kind: KeyKind) -> Result<usize> {
         Ok(self
             .store
-            .backend()
+            .engine()
             .scan(&ScanRequest {
                 keyspace: kind.keyspace(),
                 range: KeyRange::prefix(&[kind.tag()]),
                 direction: ScanDirection::Forward,
                 limit: None,
-            })?
+            })
+            .now()?
             .len())
     }
 
     /// Whether any stored version of the table still names a transaction
     /// across leaders.
     fn names_a_transaction(&self) -> Result<bool> {
-        let stored = self.store.backend().scan(&ScanRequest {
-            keyspace: RecordKey::keyspace(),
-            range: KeyRange::prefix(&RecordKey::table_prefix(
-                self.namespace,
-                self.database,
-                self.table,
-            )),
-            direction: ScanDirection::Forward,
-            limit: None,
-        })?;
+        let stored = self
+            .store
+            .engine()
+            .scan(&ScanRequest {
+                keyspace: RecordKey::keyspace(),
+                range: KeyRange::prefix(&RecordKey::table_prefix(
+                    self.namespace,
+                    self.database,
+                    self.table,
+                )),
+                direction: ScanDirection::Forward,
+                limit: None,
+            })
+            .now()?;
         for (_, value) in stored {
             if StampedValue::decode(value.as_slice())?
                 .provenance()
@@ -91,7 +102,8 @@ fn reclaiming_past_settled_transactions_forgets_their_markers() -> Result<()> {
 
     fixture
         .store
-        .reclaim_table(fixture.namespace, fixture.database, fixture.table)?;
+        .reclaim_table(fixture.namespace, fixture.database, fixture.table)
+        .now()?;
 
     assert_eq!(
         fixture.count(AcrossPartKey::KIND)?,
@@ -118,20 +130,21 @@ fn a_reader_still_below_a_marker_keeps_it() -> Result<()> {
         fixture.settled(round)?;
     }
     // A reader that began here holds the floor below the last two.
-    let reading = fixture.store.begin()?;
-    let seen = reading.get(&fixture.address())?;
+    let reading = fixture.store.begin().now()?;
+    let seen = reading.get(&fixture.address()).now()?;
     for round in 4..=5 {
         fixture.settled(round)?;
     }
     fixture
         .store
-        .reclaim_table(fixture.namespace, fixture.database, fixture.table)?;
+        .reclaim_table(fixture.namespace, fixture.database, fixture.table)
+        .now()?;
     assert_eq!(
         fixture.count(AcrossPartKey::KIND)?,
         2,
         "the markers above the reader's snapshot stay"
     );
-    assert_eq!(reading.get(&fixture.address())?, seen);
+    assert_eq!(reading.get(&fixture.address()).now()?, seen);
     assert_eq!(seen, Some(vec![3]));
     Ok(())
 }

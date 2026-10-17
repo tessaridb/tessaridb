@@ -6608,7 +6608,9 @@ something that is not there is unbounded rather than unknown.
 
 `time::now()` is read once, in the session, so the instant that reaches the log
 is a value like any other — a replica applies what was written rather than
-asking its own clock and reaching a different answer.
+asking its own clock and reaching a different answer. It is read once per
+**statement**: every `time::now()` in one statement, and in the events its writes
+fire, answers the same instant, so `time::now() = time::now()` is `true`.
 
 **A condition must be a boolean.** Every operator above answers with one, so this
 only bites when a bare path or literal stands where a question was meant:
@@ -8339,8 +8341,8 @@ openssl rand 32 > store.key && chmod 600 store.key
 tessaridb ./data --encryption-key-file store.key --serve 0.0.0.0:9080
 ```
 
-Given a key, a node encrypts **every file its storage engine writes** — the
-tables, the write-ahead log, the manifest, the engine's own options and log —
+Given a key, a node encrypts **every file its storage engine, TessariKV,
+writes** — the tables, the write-ahead log, the manifest and the options record —
 and **seals every backup it produces**: a snapshot, a log or a script, answered
 by `BACKUP`, written by `BACKUP … TO`, streamed by `GET /backup`, or written by
 `--backup`, `--snapshot` and `--dump`. `TESSARIDB_ENCRYPTION_KEY_FILE` stands for
@@ -10230,7 +10232,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.35.3", "build": "0.35.3", "endpoints": ["db-1.internal:9000"],
+ "version": "0.36.0", "build": "0.36.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

@@ -35,8 +35,8 @@
 //!
 //! [`Scope`]: crate::evaluate::Scope
 
-use std::cell::RefCell;
 use std::collections::BTreeSet;
+use std::sync::Mutex;
 
 use tessari_types::Value;
 
@@ -50,7 +50,7 @@ use crate::outcome::Note;
 pub(crate) struct Noticed {
     /// Ordered so the same mismatch reads the same way whichever side it was
     /// written on, and deduplicated so the count is of *kinds* and not records.
-    pairs: RefCell<BTreeSet<(&'static str, &'static str)>>,
+    pairs: Mutex<BTreeSet<(&'static str, &'static str)>>,
 }
 
 impl Noticed {
@@ -73,7 +73,7 @@ impl Noticed {
         // A borrow that is only ever taken here and in `into_notes`, neither of
         // which can run while the other holds it: evaluation is single-threaded
         // and the read is finished before its notes are drained.
-        if let Ok(mut pairs) = self.pairs.try_borrow_mut() {
+        if let Ok(mut pairs) = self.pairs.try_lock() {
             pairs.insert(if left <= right {
                 (left, right)
             } else {
@@ -90,7 +90,7 @@ impl Noticed {
     /// costs a restructuring to buy nothing. Draining also makes a second call
     /// answer nothing, which is the right answer to asking twice.
     pub(crate) fn drained(&self) -> Vec<Note> {
-        let Ok(mut pairs) = self.pairs.try_borrow_mut() else {
+        let Ok(mut pairs) = self.pairs.try_lock() else {
             return Vec::new();
         };
         std::mem::take(&mut *pairs)

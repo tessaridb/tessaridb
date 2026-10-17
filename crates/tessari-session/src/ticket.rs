@@ -132,10 +132,11 @@ impl Session<'_> {
     ///
     /// Returns [`Error::TicketStale`] when the user has been changed or
     /// removed, and a substrate failure when the catalog cannot be read.
-    pub fn resume(&mut self, ticket: &Ticket) -> Result<()> {
-        let mut transaction = self.store.begin()?;
+    pub async fn resume(&mut self, ticket: &Ticket) -> Result<()> {
+        let mut transaction = self.store.begin().await?;
         let found = Catalog::new(&mut transaction)
-            .users()?
+            .users()
+            .await?
             .into_iter()
             .find(|user| user.id == ticket.held.id);
         transaction.rollback();

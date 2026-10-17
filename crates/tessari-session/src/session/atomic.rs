@@ -30,9 +30,13 @@ impl Atomic<'_, '_> {
     /// cancel or rehearse a transaction itself — the caller commits this one —
     /// and otherwise as [`Session::run_with`]. A failure leaves the held
     /// transaction to be rolled back when [`Session::atomically`] returns.
-    pub fn run_with(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
+    pub async fn run_with(
+        &mut self,
+        source: &str,
+        parameters: &Parameters,
+    ) -> Result<Vec<Outcome>> {
         let store = self.session.store;
-        let mut script = self.session.bind_script(parse(source)?, parameters)?;
+        let mut script = self.session.bind_script(parse(source)?, parameters).await?;
         if let Some(verb) = script.statements.iter().find(|statement| {
             matches!(
                 statement.kind,
@@ -45,10 +49,14 @@ impl Atomic<'_, '_> {
             return Err(Error::TransactionVerbInAtomic { span: verb.span });
         }
         if matches!(Effect::of_script(&script), Effect::Write) {
-            admits(store.node_identity()?.roles, &script)?;
+            admits(store.node_identity().await?.roles, &script)?;
         }
-        self.session
-            .run_statements(store, &mut self.open, &mut script)
+        // Boxed: a `RESTORE` statement runs its script through here.
+        Box::pin(
+            self.session
+                .run_statements(store, &mut self.open, &mut script),
+        )
+        .await
     }
 }
 
@@ -59,7 +67,7 @@ impl Atomic<'_, '_> {
     /// # Errors
     ///
     /// Whatever reading the consumer's parked messages refuses.
-    pub fn keep_quarantined(
+    pub async fn keep_quarantined(
         &mut self,
         consumer: u32,
         (partition, offset): (i32, i64),
@@ -70,44 +78,81 @@ impl Atomic<'_, '_> {
                 span: Span::new(0, 0),
             });
         };
-        Ok(transaction.keep_quarantined(consumer, partition, offset, record)?)
+        Ok(transaction
+            .keep_quarantined(consumer, partition, offset, record)
+            .await?)
     }
 
     /// Run a script that is already parsed, bound and vetted inside the held
     /// transaction — a restore, whose statements were read against the store
     /// before any of them runs.
-    pub(crate) fn run_parsed(&mut self, mut script: tessari_ql::Script) -> Result<Vec<Outcome>> {
+    pub(crate) async fn run_parsed(
+        &mut self,
+        mut script: tessari_ql::Script,
+    ) -> Result<Vec<Outcome>> {
         let store = self.session.store;
         if matches!(Effect::of_script(&script), Effect::Write) {
-            admits(store.node_identity()?.roles, &script)?;
+            admits(store.node_identity().await?.roles, &script)?;
         }
-        self.session
-            .run_statements(store, &mut self.open, &mut script)
+        // Boxed: a `RESTORE` statement runs its script through here.
+        Box::pin(
+            self.session
+                .run_statements(store, &mut self.open, &mut script),
+        )
+        .await
     }
 }
 
 impl<'a> Session<'a> {
     /// Run `work` against one transaction and commit it when `work` answers
-    /// `Ok`, through the commit `COMMIT` uses — so a refusal or contention reads
+    /// `Ok`, through the commit `COMMIT` uses, so a refusal or contention reads
     /// exactly as it would from a script. On `Err`, nothing is written.
     ///
     /// The error is the caller's type, so `work` can stop with a reason of its
-    /// own — a message it will not apply — and still have nothing written.
+    /// own (a message it will not apply) and still have nothing written.
     ///
     /// # Errors
     ///
     /// Whatever `work` answered, or the commit's refusal.
-    pub fn atomically<T, E: From<Error>>(
+    pub async fn atomically<T, E: From<Error>>(
         &mut self,
-        work: impl FnOnce(&mut Atomic<'_, 'a>) -> std::result::Result<T, E>,
+        work: impl AsyncFnOnce(&mut Atomic<'_, 'a>) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, E> {
-        let transaction = self.store.begin().map_err(Error::from)?;
-        let mut held = Atomic {
+        let mut held = self.atomic().await.map_err(E::from)?;
+        let answered = work(&mut held).await;
+        held.conclude(answered).await
+    }
+
+    /// One transaction held for running scripts in, the form of
+    /// [`Self::atomically`] whose work is written inline:
+    /// `let mut held = session.atomic().await?;` then `held.conclude(answer)`.
+    ///
+    /// Dropping it without concluding writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// The store's refusal to begin a transaction.
+    pub async fn atomic(&mut self) -> Result<Atomic<'_, 'a>> {
+        let transaction = self.store.begin().await?;
+        Ok(Atomic {
             session: self,
             open: Some((transaction, Span::new(0, 0))),
-        };
-        let answered = work(&mut held);
-        let Some((transaction, _)) = held.open.take() else {
+        })
+    }
+}
+
+impl Atomic<'_, '_> {
+    /// Commit the held transaction when `answered` is `Ok`, through the commit
+    /// `COMMIT` uses; on `Err`, roll it back and hand the failure on.
+    ///
+    /// # Errors
+    ///
+    /// The failure `answered` carried, or the commit's refusal.
+    pub async fn conclude<T, E: From<Error>>(
+        mut self,
+        answered: std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        let Some((transaction, _)) = self.open.take() else {
             // Unreachable while `run_with` refuses the verbs that close it; named
             // so that a change there is a refusal rather than a silent success.
             return Err(Error::TransactionVerbInAtomic {
@@ -117,7 +162,7 @@ impl<'a> Session<'a> {
         };
         match answered {
             Ok(value) => {
-                settle(transaction)?;
+                settle(transaction).await?;
                 Ok(value)
             }
             Err(failure) => {

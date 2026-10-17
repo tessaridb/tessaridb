@@ -24,7 +24,7 @@
 mod accumulate;
 mod administration;
 pub use administration::travels;
-pub use throttle::{Budget, failed_shared, permit_shared, succeeded_shared};
+pub use throttle::{Budget, Budgeting, failed_shared, permit_shared, succeeded_shared};
 mod aggregate;
 mod arithmetic;
 mod authorize;
@@ -92,16 +92,22 @@ pub use detached::Detached;
 pub use effect::{Effect, admits};
 pub use elsewhere::{Elsewhere, Peer};
 pub use error::{Depended, Error, Result};
-pub use gather::{Asked, Counting, Gather, Gathered, Unanswered};
+pub use gather::{Asked, Counting, Gather, Gathered, Gathering, Unanswered};
 pub use outcome::{AccessPath, Exactness, Nearest, Note, Outcome, Suggestion};
 pub use plan::{Expected, Plan};
-pub use pushdown::{OrderKey, Ordered, Pushed, keeping, leading};
+pub use pushdown::{OrderKey, Ordered, Pages, Pushed, SpanPages, keeping, leading};
 pub use reduce::{Folded, Partial, Portable, Reduce, Reduced, reducing};
 pub use script::{ScriptTaken, write_script};
 pub use session::{
-    AcrossAnswer, AcrossAsk, AcrossRefusal, Atomic, PartRefused, Participants, Recovery,
-    RefusalKind, Session, across_lapse_millis, recover_staging,
+    AcrossAnswer, AcrossAsk, AcrossRefusal, Asking, Atomic, PartRefused, Participants, Recovery,
+    RefusalKind, Session, Staged, across_lapse_millis, recover_staging,
 };
 pub use tessari_ql::Parameters;
+#[cfg(feature = "test-support")]
+mod run_now;
+#[cfg(feature = "test-support")]
+pub use run_now::RunNow;
+#[cfg(feature = "test-support")]
+pub use tessari_storage::{Now, now};
 pub use ticket::Ticket;
 pub use vault_surface::{VaultAct, VaultTarget};

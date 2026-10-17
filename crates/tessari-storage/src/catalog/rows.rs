@@ -1,4 +1,5 @@
-//! The catalog's name, table, index and field rows, held between statements.
+//! The catalog's name, namespace, table, index and field rows, held between
+//! statements.
 //!
 //! # Why this exists
 //!
@@ -7,6 +8,9 @@
 //! reads of rows that almost never change. After the decode itself was shared
 //! (`decoded`), those reads were still a third of a point read's time (G040
 //! SG6, profiled 2026-09-27).
+//!
+//! Every commit also reads the namespace it writes into, for its replication
+//! class, so the namespace rows are held as well.
 //!
 //! A write reads more of them: its table's indexes and fields, found through
 //! the span of names they claim and then read one by one (`children`). Read at
@@ -17,8 +21,8 @@
 //!
 //! # Why it cannot serve a row the reader's snapshot does not hold
 //!
-//! The rows of [`system::NAMES`], [`system::TABLES`], [`system::INDEXES`] and
-//! [`system::FIELDS`] are the same at every snapshot at or above the last
+//! The rows of [`system::NAMES`], [`system::NAMESPACES`], [`system::TABLES`],
+//! [`system::INDEXES`] and [`system::FIELDS`] are the same at every snapshot at or above the last
 //! version that changed any of them, so a row — or a span of names — read at
 //! one such snapshot is the answer for all of them. This remembers that
 //! version and answers only a reader whose snapshot is at or above it.
@@ -41,7 +45,7 @@
 //! refilled, as in `decoded`.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use tessari_encoding::LogRecord;
 use tessari_types::{DatabaseId, NamespaceId, Sequence, TableId};
@@ -66,7 +70,8 @@ pub(crate) struct CatalogRows {
 struct Held {
     changed_at: Sequence,
     generation: u64,
-    rows: HashMap<RecordAddress, Option<Vec<u8>>>,
+    /// Shared rather than copied out: a statement reads several of these.
+    rows: HashMap<RecordAddress, Option<Arc<[u8]>>>,
     /// The ids claimed under one prefix of `NAMES`, in id order (`children`).
     spans: HashMap<String, Vec<u32>>,
 }
@@ -98,7 +103,7 @@ impl CatalogRows {
         &self,
         address: &RecordAddress,
         snapshot: Sequence,
-    ) -> Lookup<Option<Vec<u8>>> {
+    ) -> Lookup<Option<Arc<[u8]>>> {
         self.find(snapshot, |held| held.rows.get(address).cloned())
     }
 
@@ -123,7 +128,7 @@ impl CatalogRows {
 
     /// Keep a row read at a snapshot [`Self::lookup`] allowed to fill, unless the
     /// catalog changed since.
-    pub(crate) fn fill(&self, address: RecordAddress, generation: u64, row: Option<Vec<u8>>) {
+    pub(crate) fn fill(&self, address: RecordAddress, generation: u64, row: Option<Arc<[u8]>>) {
         self.keep(generation, |held| {
             held.rows.insert(address, row);
         });
@@ -165,12 +170,14 @@ impl CatalogRows {
 }
 
 /// The catalog tables whose rows are held: the ones a statement resolves names
-/// through and the ones a write finds its table's definitions in.
+/// through, the namespace a commit writes into, and the ones a write finds its
+/// table's definitions in.
 fn held_table(namespace: NamespaceId, database: DatabaseId, table: TableId) -> bool {
     namespace == system::SYSTEM_NAMESPACE
         && database == system::SYSTEM_DATABASE
         && [
             system::NAMES,
+            system::NAMESPACES,
             system::TABLES,
             system::INDEXES,
             system::FIELDS,

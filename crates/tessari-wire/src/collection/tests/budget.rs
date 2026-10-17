@@ -1,4 +1,6 @@
 use super::*;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 #[test]
 fn a_collection_stops_at_the_byte_budget_and_says_that_it_did() {
@@ -8,6 +10,7 @@ fn a_collection_stops_at_the_byte_budget_and_says_that_it_did() {
     let serving = Serving::within(db.store(), &Everything, one_record() * 2);
     let (records, stopped_early) = serving
         .fill(Reach::Store, store_log(&db), Sequence::new(1), usize::MAX)
+        .now()
         .expect("a store-reach read of its own log");
 
     assert_eq!(
@@ -27,6 +30,7 @@ fn the_answer_after_a_budgeted_one_resumes_where_it_stopped() {
     let serving = Serving::within(db.store(), &Everything, one_record() * 2);
     let (first, _) = serving
         .fill(Reach::Store, store_log(&db), Sequence::new(1), usize::MAX)
+        .now()
         .expect("a store-reach read of its own log");
     let next = Sequence::new(
         first
@@ -43,6 +47,7 @@ fn the_answer_after_a_budgeted_one_resumes_where_it_stopped() {
     let roomy = Serving::within(db.store(), &Everything, one_record() * 64);
     let (second, stopped_early) = roomy
         .fill(Reach::Store, store_log(&db), next, usize::MAX)
+        .now()
         .expect("a store-reach read of its own log");
 
     assert_eq!(second.len(), 4, "the rest of the log, and none of it twice");
@@ -59,6 +64,7 @@ fn a_record_that_alone_exceeds_the_budget_is_still_carried() {
     let serving = Serving::within(db.store(), &Everything, 0);
     let (records, stopped_early) = serving
         .fill(Reach::Store, store_log(&db), Sequence::new(1), usize::MAX)
+        .now()
         .expect("a store-reach read of its own log");
 
     // A budget that could answer nothing would leave a follower asking for
@@ -73,6 +79,7 @@ fn an_answer_that_reached_the_end_of_the_log_did_not_stop_early() {
     let serving = Serving::within(db.store(), &Everything, one_record() * 64);
     let (records, stopped_early) = serving
         .fill(Reach::Store, store_log(&db), Sequence::new(1), usize::MAX)
+        .now()
         .expect("a store-reach read of its own log");
 
     assert_eq!(records.len(), 3);
@@ -90,7 +97,7 @@ fn a_follower_whose_leader_stopped_on_the_budget_does_not_record_itself_current(
     // bytes with the follower's own record count nowhere near full.
     let (address, door) = serving_within(&authority, &leader, 1, one_record());
 
-    let follower = Db::in_memory().expect("an in-memory store");
+    let follower = Db::in_memory().now().expect("an in-memory store");
     // A node that may not write, because a writable one answers zero by
     // identity and would prove nothing here.
     follower.hold_lease(Duration::ZERO);
@@ -101,6 +108,7 @@ fn a_follower_whose_leader_stopped_on_the_budget_does_not_record_itself_current(
     // reading that used to mean *the peer had no more* and now does not.
     collector(&mine, &said, &address, 64)
         .collect(follower.store(), Reach::Store, Sequence::new(1))
+        .now()
         .expect("the collection");
     door.join().expect("the door's thread");
 
@@ -108,6 +116,7 @@ fn a_follower_whose_leader_stopped_on_the_budget_does_not_record_itself_current(
         follower
             .store()
             .current_as_of()
+            .now()
             .expect("a store can be asked"),
         None,
         "an answer the budget cut short is contact, not arrival — a follower \
@@ -136,10 +145,10 @@ fn a_node_holding_a_tenancy_of_its_own_is_refused_until_it_removes_it() {
     // would hang on an accept that never happens.
     let (address, door) = declaring_for(&authority, &leader, 1);
 
-    let follower = Db::in_memory().expect("an in-memory store");
+    let follower = Db::in_memory().now().expect("an in-memory store");
     follower
         .session()
-        .run("DEFINE NAMESPACE research;")
+        .run_now("DEFINE NAMESPACE research;")
         .expect("a node that holds something of its own");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
@@ -147,6 +156,7 @@ fn a_node_holding_a_tenancy_of_its_own_is_refused_until_it_removes_it() {
 
     let refused = collector
         .collect(follower.store(), Reach::Store, Sequence::new(1))
+        .now()
         .expect_err("a node that holds a tenancy of its own may not collect");
     let words = refused.to_string();
     assert!(
@@ -173,10 +183,11 @@ fn a_node_holding_a_tenancy_of_its_own_is_refused_until_it_removes_it() {
     // the joiner's behalf and nothing outlives it.
     follower
         .session()
-        .run("DROP NAMESPACE research;")
+        .run_now("DROP NAMESPACE research;")
         .expect("the operator removes their own tenancy");
     collector
         .collect(follower.store(), Reach::Store, Sequence::new(1))
+        .now()
         .expect("a node with no tenancy of its own has nothing to reinterpret");
     door.join().expect("the door's thread");
 

@@ -9,6 +9,7 @@ mod versions;
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::ops::Bound;
+use std::sync::atomic::Ordering;
 
 use tessari_encoding::{
     CausalStamp, CausalVersions, NODE_ID_LEN, RecordKey, RecordValue, StampedValue, StoreKey,
@@ -33,24 +34,29 @@ impl<'a> Transaction<'a> {
             writes: BTreeMap::new(),
             expiring: BTreeMap::new(),
             lifetimes: BTreeMap::new(),
-            reading_at: std::cell::Cell::new(None),
-            floors: std::cell::RefCell::new(BTreeMap::new()),
-            guarded: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            reading_at: std::sync::OnceLock::new(),
+            floors: crate::owned::Owned::new(BTreeMap::new()),
+            guarded: crate::owned::Owned::new(std::collections::BTreeSet::new()),
             across: None,
-            decided: std::cell::RefCell::new(BTreeMap::new()),
+            decided: crate::owned::Owned::new(BTreeMap::new()),
             asks_leaders: true,
-            retired_reads: std::cell::Cell::new(false),
-            claim_token: std::cell::Cell::new(0),
-            claiming: std::cell::RefCell::new(Vec::new()),
+            retired_reads: std::sync::atomic::AtomicBool::new(false),
+            claim_token: std::sync::atomic::AtomicU64::new(0),
+            claiming: crate::owned::Owned::new(Vec::new()),
         }
     }
 
     /// This transaction's token in the claim register, issued on first use.
     fn claim_token(&self) -> u64 {
-        if self.claim_token.get() == 0 {
-            self.claim_token.set(self.store.claiming().token());
+        // Relaxed throughout: only this transaction's task reads or writes the
+        // token, and nothing else is published through it.
+        let held = self.claim_token.load(Ordering::Relaxed);
+        if held != 0 {
+            return held;
         }
-        self.claim_token.get()
+        let issued = self.store.claiming().token();
+        self.claim_token.store(issued, Ordering::Relaxed);
+        issued
     }
 
     /// Whether another open transaction is claiming `address` (ADR-0126 D5).
@@ -111,17 +117,17 @@ impl<'a> Transaction<'a> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn get(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
+    pub async fn get(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
         // A series table's floor is applied here rather than in each read that
         // ends in a record, because this is where every one of them ends: a
         // point read, an index-served read, a search, a nearest-first walk and a
         // graph hop all resolve their identities through this method. Gating
         // them one by one is the enforcement-coverage failure where the path
         // added next month is the one nobody remembers.
-        if self.below_series_floor(address)? {
+        if self.below_series_floor(address).await? {
             return Ok(None);
         }
-        self.get_uncovered(address)
+        self.get_uncovered(address).await
     }
 
     /// A record as it is **held**, an expired version included (G035).
@@ -138,8 +144,8 @@ impl<'a> Transaction<'a> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn get_held(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
-        if self.below_series_floor(address)? {
+    pub async fn get_held(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
+        if self.below_series_floor(address).await? {
             return Ok(None);
         }
         if let Some(pending) = self.writes.get(address) {
@@ -149,7 +155,11 @@ impl<'a> Transaction<'a> {
             });
         }
         Ok(
-            match self.read_stamped_at(address)?.map(StampedValue::into_value) {
+            match self
+                .read_stamped_at(address)
+                .await?
+                .map(StampedValue::into_value)
+            {
                 Some(RecordValue::Present(payload)) => Some(payload),
                 Some(RecordValue::Tombstone) | None => None,
             },
@@ -186,14 +196,14 @@ impl<'a> Transaction<'a> {
     ///
     /// Reserved for the catalog, which must be able to read the declaration that
     /// says where the floor is.
-    pub(super) fn get_uncovered(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
+    pub(super) async fn get_uncovered(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
         if let Some(pending) = self.writes.get(address) {
             return Ok(match pending {
                 RecordValue::Present(payload) => Some(payload.clone()),
                 RecordValue::Tombstone => None,
             });
         }
-        let found = self.read_at(address, self.snapshot)?;
+        let found = self.read_at(address, self.snapshot).await?;
         Ok(match found {
             Some((_, RecordValue::Present(payload))) => Some(payload),
             Some((_, RecordValue::Tombstone)) | None => None,
@@ -217,13 +227,13 @@ impl<'a> Transaction<'a> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn get_each(&self, addresses: &[RecordAddress]) -> Result<Vec<Option<Vec<u8>>>> {
+    pub async fn get_each(&self, addresses: &[RecordAddress]) -> Result<Vec<Option<Vec<u8>>>> {
         let mut answers: Vec<Option<Vec<u8>>> = vec![None; addresses.len()];
         // Tested before anything is asked of the backend, so a batch of
         // identities entirely below the floor costs no read at all.
         let mut covered = vec![false; addresses.len()];
         for (index, address) in addresses.iter().enumerate() {
-            covered[index] = self.below_series_floor(address)?;
+            covered[index] = self.below_series_floor(address).await?;
         }
         let mut ranges = Vec::new();
         let mut asked = Vec::new();
@@ -248,14 +258,15 @@ impl<'a> Transaction<'a> {
         let found = self
             .store
             .backend()
-            .first_of_each(RecordKey::keyspace(), &ranges)?;
+            .first_of_each(RecordKey::keyspace(), &ranges)
+            .await?;
         for (index, pair) in asked.into_iter().zip(found) {
             let Some((_, value)) = pair else { continue };
             let mut stored = StampedValue::decode(value.as_slice())?;
-            if self.passes_over(&stored)? {
+            if self.passes_over(&stored).await? {
                 // The rare record a transaction across leaders wrote that this
                 // one does not see: read the version under, one at a time.
-                let Some(under) = self.read_stamped_at(&addresses[index])? else {
+                let Some(under) = self.read_stamped_at(&addresses[index]).await? else {
                     continue;
                 };
                 stored = under;
@@ -297,7 +308,7 @@ impl<'a> Transaction<'a> {
     /// # Errors
     ///
     /// Returns an error when the committed version cannot be read or decoded.
-    pub fn indexes_are_current(&self) -> Result<bool> {
+    pub async fn indexes_are_current(&self) -> Result<bool> {
         // The **version**, not the log position. A snapshot is a record version
         // — this store's own number — and comparing it against a log position
         // was one comparison between two scales that happened to hold the same
@@ -305,7 +316,7 @@ impl<'a> Transaction<'a> {
         // holding the moment positions go per-home, and the answer it would give
         // is `false` for every transaction, which silently takes the scan on
         // every index-served read.
-        Ok(self.snapshot == self.store.committed_version()?)
+        Ok(self.snapshot == self.store.committed_version().await?)
     }
 
     /// Whether an index of one table may answer a read taken through this
@@ -320,8 +331,8 @@ impl<'a> Transaction<'a> {
     /// # Errors
     ///
     /// Returns an error when the committed version or the mark cannot be read.
-    pub fn indexes_are_current_for(&self, table: TableId) -> Result<bool> {
-        Ok(self.indexes_are_current()? && !self.store.across_unsettled(table)?)
+    pub async fn indexes_are_current_for(&self, table: TableId) -> Result<bool> {
+        Ok(self.indexes_are_current().await? && !self.store.across_unsettled(table).await?)
     }
 
     /// Whether this transaction has written to one table without committing.

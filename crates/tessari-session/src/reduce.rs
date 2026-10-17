@@ -132,7 +132,7 @@ pub enum Reduced {
 /// # Errors
 ///
 /// An expression that does not read back, or a store that cannot be read.
-pub fn reducing(
+pub async fn reducing(
     store: &Store,
     reduce: &Reduce,
     found: Vec<(RecordId, Vec<u8>)>,
@@ -153,7 +153,7 @@ pub fn reducing(
         ));
     }
     let session = Session::new(store);
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().await?;
     let noticed = Noticed::default();
     let mut groups: BTreeMap<Vec<Value>, (RecordId, Vec<Accumulator>)> = BTreeMap::new();
     // Every doubt answers `None` rather than an error: the asker then gathers
@@ -165,7 +165,10 @@ pub fn reducing(
         let record = seen(record, &reduce.visible);
         if let Some(condition) = &condition {
             let scope = Scope::of(&record).identified(&id).noticing(&noticed);
-            let Ok(held) = session.evaluate_in(&mut transaction, condition, scope) else {
+            let Ok(held) = session
+                .evaluate_in(&mut transaction, condition, scope)
+                .await
+            else {
                 return Ok(None);
             };
             let Ok(kept) = boolean(&held, condition.span) else {
@@ -182,7 +185,10 @@ pub fn reducing(
         // with no identity beside it.
         let mut key = Vec::with_capacity(keys.len());
         for held in &keys {
-            let Ok(value) = session.evaluate_in(&mut transaction, held, Scope::of(&record)) else {
+            let Ok(value) = session
+                .evaluate_in(&mut transaction, held, Scope::of(&record))
+                .await
+            else {
                 return Ok(None);
             };
             key.push(value);
@@ -200,7 +206,9 @@ pub fn reducing(
             let value = match over {
                 None => Value::Bool(true),
                 Some(over) => {
-                    let Ok(value) = session.evaluate_in(&mut transaction, over, Scope::of(&record))
+                    let Ok(value) = session
+                        .evaluate_in(&mut transaction, over, Scope::of(&record))
+                        .await
                     else {
                         return Ok(None);
                     };
@@ -211,7 +219,9 @@ pub fn reducing(
             // second argument — the instant, or the rank.
             let value = match at {
                 Some(at) => {
-                    let Ok(instant) = session.evaluate_in(&mut transaction, at, Scope::of(&record))
+                    let Ok(instant) = session
+                        .evaluate_in(&mut transaction, at, Scope::of(&record))
+                        .await
                     else {
                         return Ok(None);
                     };

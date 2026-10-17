@@ -26,6 +26,8 @@
 
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_kv::{KeyRange, Keyspace, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
 use tessari_session::{Outcome, Session};
@@ -62,7 +64,7 @@ fn everything(backend: &Arc<dyn KvBackend>) -> Vec<u8> {
             direction: ScanDirection::Forward,
             limit: None,
         };
-        for (key, value) in backend.scan(&request).unwrap() {
+        for (key, value) in backend.scan(&request).now().unwrap() {
             held.extend_from_slice(key.as_slice());
             held.extend_from_slice(value.as_slice());
         }
@@ -78,12 +80,12 @@ fn entries_in(backend: &Arc<dyn KvBackend>, keyspace: Keyspace) -> usize {
         direction: ScanDirection::Forward,
         limit: None,
     };
-    backend.scan(&request).unwrap().len()
+    backend.scan(&request).now().unwrap().len()
 }
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     (backend, store)
 }
 
@@ -94,7 +96,7 @@ fn a_vault_survives_a_backup_and_opens_again_with_only_the_passphrase() {
     {
         let mut session = Session::new(&source);
         session
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod;
                  DEFINE DATABASE work; USE DATABASE work;
                  UNSEAL VAULT WITH '{PASSPHRASE}';
@@ -109,7 +111,7 @@ fn a_vault_survives_a_backup_and_opens_again_with_only_the_passphrase() {
 
     let backup_started = Instant::now();
     let mut artifact = Vec::new();
-    let written = tessari_backup::write(&source, &mut artifact).unwrap();
+    let written = tessari_backup::write(&source, &mut artifact).now().unwrap();
     let backup_took = backup_started.elapsed();
     assert!(written.records > 0, "a backup that wrote nothing");
 
@@ -118,27 +120,29 @@ fn a_vault_survives_a_backup_and_opens_again_with_only_the_passphrase() {
     // a test would arrive at by reusing the source store.
     let (restored_backend, restored) = store();
     let restore_started = Instant::now();
-    let brought_up = tessari_backup::bootstrap(&restored, &mut artifact.as_slice()).unwrap();
+    let brought_up = tessari_backup::bootstrap(&restored, &mut artifact.as_slice())
+        .now()
+        .unwrap();
     let restore_took = restore_started.elapsed();
     assert!(!brought_up.truncated);
     assert!(brought_up.records > 0, "a restore that applied nothing");
 
     let mut session = Session::new(&restored);
-    session.run(USING).unwrap();
+    session.run_now(USING).unwrap();
 
     // The control first: the vault and its record are here. Without this, the
     // refusal below could mean the backup carried nothing at all.
-    session.run("INFO FOR VAULT team;").unwrap();
+    session.run_now("INFO FOR VAULT team;").unwrap();
 
     // Sealed. This is the assertion the whole drill exists for.
     session
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .expect_err("a restored store opened a vault before anybody unsealed it");
 
     // And the passphrase has to be the right one — a restore that accepted any
     // passphrase would be carrying the key rather than the wrapper.
     session
-        .run("UNSEAL VAULT WITH 'not the passphrase';")
+        .run_now("UNSEAL VAULT WITH 'not the passphrase';")
         .expect_err("a restored store unsealed with the wrong passphrase");
 
     // What unsealing required: the passphrase, and nothing else. No key file,
@@ -147,13 +151,13 @@ fn a_vault_survives_a_backup_and_opens_again_with_only_the_passphrase() {
     // turns it into a key.
     let unseal_started = Instant::now();
     session
-        .run(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
+        .run_now(&format!("UNSEAL VAULT WITH '{PASSPHRASE}';"))
         .unwrap();
     let unseal_took = unseal_started.elapsed();
 
     let reveal_started = Instant::now();
     let opened = match session
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .unwrap()
         .pop()
         .unwrap()

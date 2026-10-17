@@ -18,6 +18,8 @@
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_wire::{Answer, Client, Node};
 use tessaridb::{Db, Sequence, Value};
@@ -45,7 +47,7 @@ fn replicate(leader: &Db, follower: &Db) -> u64 {
     // in `homes()` order, so the definitions a range's records depend on arrive
     // before those records do.
     let mut carried_in_all = 0_u64;
-    for home in leader.store().logs().unwrap() {
+    for home in leader.store().logs().now().unwrap() {
         // `saturating_add` rather than `+`, matching what `bootstrap` itself
         // does: the workspace denies bare arithmetic, and the next sequence
         // after the tail is exactly the shape that lint exists for.
@@ -53,13 +55,18 @@ fn replicate(leader: &Db, follower: &Db) -> u64 {
             follower
                 .store()
                 .committed_tail(home)
+                .now()
                 .unwrap()
                 .get()
                 .saturating_add(1),
         );
         let mut carried = Vec::new();
-        let sent = tessari_backup::write_from(leader.store(), &mut carried, home, from).unwrap();
-        let applied = tessari_backup::bootstrap(follower.store(), &mut carried.as_slice()).unwrap();
+        let sent = tessari_backup::write_from(leader.store(), &mut carried, home, from)
+            .now()
+            .unwrap();
+        let applied = tessari_backup::bootstrap(follower.store(), &mut carried.as_slice())
+            .now()
+            .unwrap();
         assert_eq!(
             applied.records, sent.records,
             "the follower applied a different number of records than the leader sent",
@@ -108,12 +115,12 @@ fn two_nodes() -> (Arc<Db>, String, Arc<Db>, String, Arc<Node>, Arc<Node>) {
 fn two_nodes_declared(
     at: impl Fn(&str) -> String,
 ) -> (Arc<Db>, String, Arc<Db>, String, Arc<Node>, Arc<Node>) {
-    let leader = Arc::new(Db::in_memory().unwrap());
+    let leader = Arc::new(Db::in_memory().now().unwrap());
     let (leader_node, leader_address) = serving(&leader);
 
     leader
         .session()
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
              USE DATABASE orders; DEFINE COLLECTION users; \
              CREATE users:1 = {{ name: 'ada' }}; \
@@ -122,13 +129,13 @@ fn two_nodes_declared(
         ))
         .unwrap();
 
-    let follower = Arc::new(Db::in_memory().unwrap());
+    let follower = Arc::new(Db::in_memory().now().unwrap());
     replicate(&leader, &follower);
     // Local half, and last: before this the node still takes writes, which is
     // what lets the statement that drops the role be run against it at all.
     follower
         .session()
-        .run("DEFINE NODE ROLES serving;")
+        .run_now("DEFINE NODE ROLES serving;")
         .unwrap();
     let (follower_node, follower_address) = serving(&follower);
 
@@ -195,10 +202,10 @@ fn the_refusal_names_where_a_client_reaches_the_leader() {
 /// one fixture a write demonstrably tries to leave and cannot, so a read that
 /// answers cannot have tried.
 fn read_only_with_no_peer() -> (Arc<Db>, String, Arc<Node>) {
-    let alone = Arc::new(Db::in_memory().unwrap());
+    let alone = Arc::new(Db::in_memory().now().unwrap());
     alone
         .session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
              USE DATABASE orders; DEFINE COLLECTION users; \
              CREATE users:1 = { name: 'ada' }; DEFINE NODE ROLES serving;",

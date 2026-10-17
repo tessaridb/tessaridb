@@ -16,7 +16,7 @@ impl<'a> Session<'a> {
     ///
     /// [`Error::MayNotTravel`] naming the first such statement; otherwise as
     /// [`Session::run_with`].
-    pub fn run_coordinated(
+    pub async fn run_coordinated(
         &mut self,
         (namespace, database): (Option<&str>, Option<&str>),
         source: &str,
@@ -53,8 +53,8 @@ impl<'a> Session<'a> {
                 },
             );
         }
-        let script = self.bind_script(script, parameters)?;
-        let ran = self.run_script(script)?;
+        let script = self.bind_script(script, parameters).await?;
+        let ran = self.run_script(script).await?;
         // The built `USE` answered too; the caller sent none and is owed none.
         Ok(if namespace.is_some() || database.is_some() {
             ran.into_iter().skip(1).collect()
@@ -68,7 +68,10 @@ impl<'a> Session<'a> {
     ///
     /// Shared with the vault surface, whose statements are built rather than
     /// read so that a passphrase is never text (ADR-0092 D2).
-    pub(crate) fn run_script(&mut self, mut script: tessari_ql::Script) -> Result<Vec<Outcome>> {
+    pub(crate) async fn run_script(
+        &mut self,
+        mut script: tessari_ql::Script,
+    ) -> Result<Vec<Outcome>> {
         let store = self.store;
 
         // Where a statement may run, asked once for the whole script and before
@@ -81,11 +84,11 @@ impl<'a> Session<'a> {
         // pure, so asking it first keeps that cost on the writes it belongs to
         // (ADR-0018's `Alone`, and G008 kill criterion 3).
         if matches!(Effect::of_script(&script), Effect::Write) {
-            admits(store.node_identity()?.roles, &script)?;
+            admits(store.node_identity().await?.roles, &script)?;
         }
 
         let mut open: Option<(Transaction<'a>, tessari_ql::Span)> = None;
-        let outcomes = self.run_statements(store, &mut open, &mut script)?;
+        let outcomes = self.run_statements(store, &mut open, &mut script).await?;
 
         if let Some((transaction, span)) = open {
             transaction.rollback();
@@ -100,7 +103,7 @@ impl<'a> Session<'a> {
     /// Shared by [`Session::run_with`], where `open` starts empty and the script
     /// opens and closes its own, and [`Session::atomically`], where the caller
     /// holds it across several scripts.
-    pub(super) fn run_statements(
+    pub(super) async fn run_statements(
         &mut self,
         store: &'a Store,
         open: &mut Option<(Transaction<'a>, tessari_ql::Span)>,
@@ -114,7 +117,7 @@ impl<'a> Session<'a> {
         // yet, so the loop holds `&mut script` across the step.
         let mut at = 0usize;
         while at < script.statements.len() {
-            let outcome = self.step(store, open, &script.statements[at])?;
+            let outcome = self.step(store, open, &script.statements[at]).await?;
             // A write outside a transaction committed as it ran, and a `COMMIT`
             // committed what the transaction held. A write inside an open
             // transaction has not landed yet: refused at its `COMMIT`, it rolls

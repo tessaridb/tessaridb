@@ -135,12 +135,18 @@ pub(crate) fn from_secs(function: Function, arguments: &[Value], span: Span) -> 
 /// clock and a caller reading a failure wants to know which one could not be
 /// read — not which internal path asked it.
 pub(crate) fn instant(span: Span) -> Result<Datetime> {
+    instant_of(std::time::SystemTime::now(), span)
+}
+
+/// The instant `reading` names: what `time::now()` answers from the clock its
+/// statement read once (DB-21).
+pub(crate) fn instant_of(reading: std::time::SystemTime, span: Span) -> Result<Datetime> {
     let failed = |reason: &'static str| Error::CallFailed {
         function: Function::TimeNow,
         reason,
         span,
     };
-    let since = std::time::SystemTime::now()
+    let since = reading
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| failed("the clock is before the epoch"))?;
     let seconds = i64::try_from(since.as_secs()).map_err(|_| failed("the clock is unreadable"))?;

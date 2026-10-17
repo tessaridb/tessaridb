@@ -227,14 +227,14 @@ impl Moved {
 ///
 /// Reads the catalog and the records' current values as of the committed state,
 /// which is the state this record is about to be applied on top of.
-pub(crate) fn maintain(
+pub(crate) async fn maintain(
     store: &Store,
     record: &LogRecord,
     batch: WriteBatch,
     version: Sequence,
 ) -> Result<WriteBatch> {
-    let retiring = crate::retired::retiring_at(store, version)?;
-    maintain_from(store, store.begin_local()?, record, batch, retiring)
+    let retiring = crate::retired::retiring_at(store, version).await?;
+    maintain_from(store, store.begin_local().await?, record, batch, retiring).await
 }
 
 /// [`maintain`], reading the records' current values through `view`.
@@ -242,7 +242,7 @@ pub(crate) fn maintain(
 /// The series removal pass hands in a view that sees below its table's floor:
 /// through an ordinary one a record past the floor has no current value, so
 /// removing it would take none of its index entries with it.
-pub(crate) fn maintain_from(
+pub(crate) async fn maintain_from(
     store: &Store,
     mut view: crate::transaction::Transaction<'_>,
     record: &LogRecord,
@@ -288,11 +288,9 @@ pub(crate) fn maintain_from(
         let definitions = match by_table.get(&at) {
             Some(found) => found.clone(),
             None => {
-                let found: Vec<IndexDefinition> = Catalog::new(&mut view).indexes_on(
-                    mutation.namespace,
-                    mutation.database,
-                    mutation.table,
-                )?;
+                let found: Vec<IndexDefinition> = Catalog::new(&mut view)
+                    .indexes_on(mutation.namespace, mutation.database, mutation.table)
+                    .await?;
                 by_table.insert(at, found.clone());
                 found
             }
@@ -305,16 +303,18 @@ pub(crate) fn maintain_from(
             None => {
                 let found = analyzers_on(
                     &mut view,
+                    record.mutations(),
                     mutation.namespace,
                     mutation.database,
                     mutation.table,
-                )?;
+                )
+                .await?;
                 analyzers.insert(at, found.clone());
                 found
             }
         };
         if named.is_none() && definitions.iter().any(|held| held.engine.is_some()) {
-            named = Some(analyzers_named(&mut view)?);
+            named = Some(analyzers_named(&mut view, record.mutations()).await?);
         }
         let named_now = named.as_ref().unwrap_or(&unnamed);
 
@@ -324,7 +324,7 @@ pub(crate) fn maintain_from(
             mutation.table,
             mutation.id.clone(),
         );
-        let previous = view.get_held(&address)?;
+        let previous = view.get_held(&address).await?;
         let unchanged = Unchanged::of(previous.as_deref(), mutation)?;
 
         for definition in &definitions {
@@ -350,7 +350,8 @@ pub(crate) fn maintain_from(
                 previous.as_deref(),
                 (&declared, named_now),
                 &mut pending,
-            )?;
+            )
+            .await?;
         }
     }
 
@@ -359,11 +360,11 @@ pub(crate) fn maintain_from(
     // about to be applied on top of.
     for mutation in record.mutations() {
         if let Some(definition) = defined_index(mutation)? {
-            batch = build(store, batch, &mut view, record, &definition, &mut pending)?;
+            batch = build(store, batch, &mut view, record, &definition, &mut pending).await?;
         }
     }
-    let batch = crate::statistics::count_changes(store, batch, &changed)?;
-    settle(store, batch, &pending)
+    let batch = crate::statistics::count_changes(store, batch, &changed).await?;
+    settle(store, batch, &pending).await
 }
 
 /// A record's value before and after one mutation, decoded once for every index.

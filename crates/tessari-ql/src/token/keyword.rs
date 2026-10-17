@@ -417,11 +417,50 @@ impl Keyword {
     ];
 
     /// The keyword a word spells, ignoring case.
+    ///
+    /// Every identifier the lexer reads is asked this, so it is a binary search
+    /// over the spellings in order rather than a walk of [`Keyword::ALL`]: the
+    /// word is upper-cased into a buffer on the stack, and a word longer than
+    /// every spelling is not a keyword without being compared at all.
     #[must_use]
     pub fn from_word(word: &str) -> Option<Self> {
-        Self::ALL
-            .iter()
-            .copied()
-            .find(|keyword| keyword.spelling().eq_ignore_ascii_case(word))
+        let by_spelling = by_spelling();
+        let bytes = word.as_bytes();
+        let mut upper = [0_u8; LONGEST];
+        let held = upper.get_mut(..bytes.len())?;
+        for (slot, byte) in held.iter_mut().zip(bytes) {
+            *slot = byte.to_ascii_uppercase();
+        }
+        let held: &[u8] = held;
+        by_spelling
+            .binary_search_by(|keyword| keyword.spelling().as_bytes().cmp(held))
+            .ok()
+            .and_then(|at| by_spelling.get(at).copied())
     }
+}
+
+/// The length of the longest spelling; no longer word can be a keyword.
+const LONGEST: usize = longest();
+
+const fn longest() -> usize {
+    let mut longest = 0;
+    let mut at = 0;
+    while at < Keyword::ALL.len() {
+        let length = Keyword::ALL[at].spelling().len();
+        if length > longest {
+            longest = length;
+        }
+        at = at.saturating_add(1);
+    }
+    longest
+}
+
+/// [`Keyword::ALL`] in the order of its spellings, sorted once.
+fn by_spelling() -> &'static [Keyword] {
+    static SORTED: std::sync::LazyLock<Vec<Keyword>> = std::sync::LazyLock::new(|| {
+        let mut sorted = Keyword::ALL.to_vec();
+        sorted.sort_unstable_by_key(|keyword| keyword.spelling());
+        sorted
+    });
+    &SORTED
 }

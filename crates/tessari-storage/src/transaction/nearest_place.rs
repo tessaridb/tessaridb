@@ -118,7 +118,7 @@ impl PlacesNearest {
     /// # Errors
     ///
     /// Returns an error when the backend fails or an entry cannot be decoded.
-    pub fn next(
+    pub async fn next(
         &mut self,
         transaction: &Transaction<'_>,
         beyond: f64,
@@ -134,22 +134,26 @@ impl PlacesNearest {
                 Item::Cell(cell) => cell,
             };
             self.expanded = self.expanded.saturating_add(1);
-            let subtree = transaction.scan_once(
-                keyspace,
-                SpatialIndexKey::descendants(&self.address, cell),
-                SPATIAL_WALK_SUBTREE_ENTRIES.saturating_add(1),
-            )?;
+            let subtree = transaction
+                .scan_once(
+                    keyspace,
+                    SpatialIndexKey::descendants(&self.address, cell),
+                    SPATIAL_WALK_SUBTREE_ENTRIES.saturating_add(1),
+                )
+                .await?;
             let whole = subtree.len() <= SPATIAL_WALK_SUBTREE_ENTRIES;
             let read = if whole {
                 subtree
             } else {
                 // Too big to take at once: what is stored at this exact cell
                 // now, and the four children on floors of their own.
-                transaction.scan_once(
-                    keyspace,
-                    KeyRange::prefix(&SpatialIndexKey::cell_prefix(&self.address, cell)),
-                    usize::MAX,
-                )?
+                transaction
+                    .scan_once(
+                        keyspace,
+                        KeyRange::prefix(&SpatialIndexKey::cell_prefix(&self.address, cell)),
+                        usize::MAX,
+                    )
+                    .await?
             };
             for (key, value) in &read {
                 self.entries = self.entries.saturating_add(1);

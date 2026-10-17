@@ -76,7 +76,7 @@ impl ShardRegistry {
             let RecordValue::Present(stored) = mutation.value.value() else {
                 continue;
             };
-            let definition = decoded.definition(stored)?;
+            let definition = decoded.decoded(stored)?;
             self.learn(definition.id, definition.shards.as_ref());
             taught.push(definition.id);
         }

@@ -7,7 +7,6 @@
 mod equality;
 mod vectors;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::ControlFlow;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{
@@ -18,6 +17,7 @@ use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{RecordId, Value};
 
 use super::address::{after, resuming_after};
+use super::walk::{IdsWalk, Place, RecordWalk};
 use super::{RecordAddress, Transaction};
 use crate::catalog::IndexDefinition;
 use crate::error::Result;
@@ -100,7 +100,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn records_in_range(
+    pub async fn records_in_range(
         &self,
         index: &IndexDefinition,
         fixed: &[Value],
@@ -139,12 +139,13 @@ impl Transaction<'_> {
         // lost since (Q-S3-34). Resolved at the snapshot like every candidate;
         // the caller re-tests the condition that asked.
         let retired: Vec<RecordAddress> = self
-            .retired_candidates(index, &start, &end)?
+            .retired_candidates(index, &start, &end)
+            .await?
             .into_iter()
             .map(|id| RecordAddress::new(index.namespace, index.database, index.table, id))
             .collect();
         if !retired.is_empty() {
-            for (address, payload) in retired.iter().zip(self.get_each(&retired)?) {
+            for (address, payload) in retired.iter().zip(self.get_each(&retired).await?) {
                 if let Some(payload) = payload {
                     found.insert(address.id.clone(), payload);
                 }
@@ -158,7 +159,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(RANGE_SCAN_BATCH_ENTRIES),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = self.store.backend().scan(&request).await?;
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             // The entries name the records; the records are then read together.
             // Reading each one as it is named would be the same answer at one
@@ -178,7 +179,7 @@ impl Transaction<'_> {
                     id,
                 ));
             }
-            for (address, payload) in addresses.iter().zip(self.get_each(&addresses)?) {
+            for (address, payload) in addresses.iter().zip(self.get_each(&addresses).await?) {
                 if let Some(payload) = payload {
                     found.insert(address.id.clone(), payload);
                 }
@@ -222,7 +223,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or an index entry cannot be
     /// decoded.
-    pub fn ids_in_range(
+    pub async fn ids_in_range(
         &self,
         index: &IndexDefinition,
         fixed: &[Value],
@@ -250,7 +251,7 @@ impl Transaction<'_> {
 
         // Behind the tail, the records the range held at this snapshot and has
         // lost since (Q-S3-34); the caller re-tests every identity it names.
-        let mut found: BTreeSet<RecordId> = self.retired_candidates(index, &start, &end)?;
+        let mut found: BTreeSet<RecordId> = self.retired_candidates(index, &start, &end).await?;
         let mut from = start;
         loop {
             let request = ScanRequest {
@@ -259,7 +260,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(RANGE_SCAN_BATCH_ENTRIES),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = self.store.backend().scan(&request).await?;
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             for (key, value) in &batch {
                 let id = if index.unique {
@@ -317,7 +318,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails.
-    pub fn count_in_range(
+    pub async fn count_in_range(
         &self,
         index: &IndexDefinition,
         fixed: &[Value],
@@ -352,7 +353,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(RANGE_SCAN_BATCH_ENTRIES),
             };
-            let batch = self.store.backend().scan(&request)?;
+            let batch = self.store.backend().scan(&request).await?;
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             found = found.saturating_add(u64::try_from(batch.len()).unwrap_or(u64::MAX));
             if found > cap {
@@ -366,8 +367,8 @@ impl Transaction<'_> {
         Ok(Some(found))
     }
 
-    /// The records an ordered index names between two bounds, handed over one at
-    /// a time in record order, stopping where the caller says to stop.
+    /// The records an ordered index names between two bounds, walked in record
+    /// order a round at a time, stopping where the caller stops asking.
     ///
     /// The streaming twin of [`Self::records_in_range`], and it streams **half**
     /// of that read rather than all of it. The entry walk still runs to the end,
@@ -387,26 +388,21 @@ impl Transaction<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error when the backend fails, an entry cannot be decoded, or
-    /// `hand` returns one.
-    pub fn walk_records_in_range<F, E>(
-        &mut self,
+    /// Returns an error when the backend fails or an entry cannot be decoded;
+    /// the rounds report the fetch's failures.
+    pub async fn walk_records_in_range(
+        &self,
         index: &IndexDefinition,
         fixed: &[Value],
         lower: Option<&Value>,
         upper: Option<&Value>,
-        mut hand: F,
-    ) -> std::result::Result<(), E>
-    where
-        F: FnMut(&mut Self, RecordId, Vec<u8>) -> std::result::Result<ControlFlow<()>, E>,
-        E: From<crate::error::Error>,
-    {
+    ) -> Result<RecordWalk> {
         // A complete value of a secondary index is the one run whose entries are
         // already in record order, so it is walked and stopped rather than
         // collected (`index/equality.rs`).
         //
         // Not behind the tail, where the run is joined by retired entries that
-        // are not in it (Q-S3-34) — `ids_in_range` merges them.
+        // are not in it (Q-S3-34): `ids_in_range` merges them.
         if !index.unique
             && lower.is_none()
             && upper.is_none()
@@ -414,13 +410,13 @@ impl Transaction<'_> {
             && fixed.len() == index.fields.len()
             && !self.reads_retired_entries()
         {
-            return self.walk_complete_equality(index, fixed, hand);
+            return Ok(self.walk_complete_equality(index, fixed));
         }
-        let ids = self.ids_in_range(index, fixed, lower, upper)?;
-        // Copied out before the walk rather than read in step with it: `hand`
-        // takes the transaction, so nothing may hold a borrow of it across the
-        // call. A pending write's payload is the one this transaction wrote, and
-        // it wins over whatever the store still holds for that identity.
+        let ids = self.ids_in_range(index, fixed, lower, upper).await?;
+        // Copied out when the walk begins: the caller holds the transaction
+        // between rounds and may write through it. A pending write's payload is
+        // the one this transaction wrote, and it wins over whatever the store
+        // still holds for that identity.
         let pending: BTreeMap<RecordId, Vec<u8>> = self
             .writes
             .iter()
@@ -434,32 +430,15 @@ impl Transaction<'_> {
                 RecordValue::Tombstone => None,
             })
             .collect();
-
-        let ids: Vec<RecordId> = ids.into_iter().collect();
-        let mut taken = 0_usize;
-        let mut batch = FIRST_FETCH_BATCH;
-        while taken < ids.len() {
-            let upto = ids.len().min(taken.saturating_add(batch));
-            let addresses = ids
-                .get(taken..upto)
-                .unwrap_or_default()
-                .iter()
-                .map(|id| {
-                    RecordAddress::new(index.namespace, index.database, index.table, id.clone())
-                })
-                .collect::<Vec<_>>();
-            let payloads = self.get_each(&addresses)?;
-            for (address, stored) in addresses.into_iter().zip(payloads) {
-                let Some(payload) = pending.get(&address.id).cloned().or(stored) else {
-                    continue;
-                };
-                if hand(self, address.id, payload)?.is_break() {
-                    return Ok(());
-                }
-            }
-            taken = upto;
-            batch = batch.saturating_mul(2).min(RANGE_SCAN_BATCH_ENTRIES);
-        }
-        Ok(())
+        Ok(RecordWalk::ids(IdsWalk {
+            place: Place {
+                namespace: index.namespace,
+                database: index.database,
+                table: index.table,
+            },
+            ids: ids.into_iter().collect(),
+            pending,
+            batch: FIRST_FETCH_BATCH,
+        }))
     }
 }

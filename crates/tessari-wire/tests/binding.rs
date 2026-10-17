@@ -16,6 +16,7 @@
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::sync::Arc;
+use tessari_session::Now;
 
 use tessari_wire::{Answer, Client, Node};
 use tessaridb::{Db, Parameters, Value};
@@ -50,7 +51,7 @@ fn records(answers: &[Answer]) -> Vec<(String, Value)> {
 
 #[test]
 fn a_parameter_binds_across_the_connection() {
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
     client.run(READY, None).unwrap();
 
@@ -72,7 +73,7 @@ fn every_awkward_kind_survives_as_a_parameter() {
     // and read back, so what is asserted is the whole path — encode, frame,
     // decode, bind, store, read — and not the codec on its own, which already
     // has its own tests.
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
     client.run(READY, None).unwrap();
 
@@ -121,7 +122,7 @@ fn every_awkward_kind_survives_as_a_parameter() {
 
 #[test]
 fn a_parameter_holding_a_statement_is_still_a_string_at_this_distance() {
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
     client.run(READY, None).unwrap();
 
@@ -144,7 +145,7 @@ fn an_unbound_parameter_is_refused_in_the_sessions_own_words() {
     // The refusal is the session's, carried rather than restated — the same
     // rule the store's other refusals follow, so a remote caller and a local one
     // read the same sentence.
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
     client.run(READY, None).unwrap();
 
@@ -160,7 +161,7 @@ fn a_request_with_no_parameters_is_what_it_always_was() {
     // The protocol gained a field; a script that supplies nothing must answer
     // exactly as before, which is what makes the version bump the only thing an
     // existing caller has to notice.
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
     client.run(READY, None).unwrap();
 

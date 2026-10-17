@@ -1,6 +1,8 @@
-//! The runner every cadence a node keeps goes through: one pass at a time on the
-//! blocking pool, a budget for each pass, and three outcomes reported under the
-//! cadence's name — completed, failed, overran.
+//! The runner every cadence a node keeps goes through: one pass at a time in the
+//! cadence's own task, a budget for each pass, and three outcomes reported under
+//! the cadence's name: completed, failed, overran.
+
+use tracing::Instrument as _;
 
 use super::*;
 
@@ -47,9 +49,9 @@ pub enum CadenceError {
         #[source]
         failed: PassFailed,
     },
-    /// The pass is still running when its budget ran out. A pass on the
-    /// blocking pool cannot be cancelled, so the runner waits for it — passes
-    /// of one cadence never overlap — and says so, once, when it happens.
+    /// The pass is still running when its budget ran out. The runner waits for
+    /// it rather than cutting it off half way, so passes of one cadence never
+    /// overlap, and says so, once, when it happens.
     #[error("the {cadence} pass overran its budget of {budget:?}")]
     Overran {
         /// The cadence the pass belongs to.
@@ -95,11 +97,10 @@ pub fn due_in(
 /// none, and it ends the wait between passes the moment it is cancelled — a
 /// cadence holds nothing a stop would have to wait for.
 ///
-/// Each pass runs on the runtime's blocking pool, because a pass is store work
-/// and a TLS call, both synchronous. The closure is moved there and back, so a
-/// pass keeps what it learned between rounds, and one cadence's passes never
-/// overlap: the campaign's ballots stay one after another. A pass that panics
-/// is re-raised on this task, where the supervisor that started it sees it.
+/// Each pass is polled in this task, one at a time, so a pass keeps what it
+/// learned between rounds and one cadence's passes never overlap: the
+/// campaign's ballots stay one after another. A pass that panics is re-raised
+/// on this task, where the supervisor that started it sees it.
 ///
 /// Each pass runs inside a `cadence{cadence=…}` span, has `period` as its
 /// budget — one pass per period is the cadence's whole contract, so a pass that
@@ -117,7 +118,7 @@ pub async fn every<P>(
     stop: &CancellationToken,
     mut pass: P,
 ) where
-    P: FnMut(Instant) -> Result<(), PassFailed> + Send + 'static,
+    P: AsyncFnMut(Instant) -> Result<(), PassFailed> + Send + 'static,
 {
     while !stop.is_cancelled() {
         let ran_at = Instant::now();
@@ -156,7 +157,7 @@ pub async fn every_paced<P>(
     first: Duration,
     mut pass: P,
 ) where
-    P: FnMut(Instant) -> Result<Duration, PassFailed> + Send + 'static,
+    P: AsyncFnMut(Instant) -> Result<Duration, PassFailed> + Send + 'static,
 {
     let mut period = first;
     while !stop.is_cancelled() {
@@ -178,12 +179,11 @@ pub async fn every_paced<P>(
     }
 }
 
-/// Run one pass on the blocking pool inside its cadence's span, report its
-/// outcome, and hand the closure back with what the pass answered — `None` in
-/// place of a failure, which has been reported here.
+/// Run one pass inside its cadence's span, report its outcome, and hand the
+/// closure back with what the pass answered: `None` in place of a failure,
+/// which has been reported here.
 ///
-/// `None` overall is the runtime shutting down under the pass; a panic in the
-/// pass is re-raised on the calling task.
+/// A panic in the pass is re-raised on the calling task.
 async fn run_pass<P, T>(
     cadence: &'static str,
     budget: Duration,
@@ -191,32 +191,23 @@ async fn run_pass<P, T>(
     mut pass: P,
 ) -> Option<(P, Option<T>)>
 where
-    P: FnMut(Instant) -> Result<T, PassFailed> + Send + 'static,
+    P: AsyncFnMut(Instant) -> Result<T, PassFailed> + Send + 'static,
     T: Send + 'static,
 {
     let span = tracing::info_span!("cadence", cadence);
-    let inside = span.clone();
-    let mut running = tokio::task::spawn_blocking(move || {
-        let ran = inside.in_scope(|| pass(ran_at));
-        (pass, ran)
-    });
-    let joined = match tokio::time::timeout(budget, &mut running).await {
-        Ok(joined) => joined,
-        Err(_) => {
-            let overran = CadenceError::Overran { cadence, budget };
-            span.in_scope(|| {
-                tracing::warn!(error = %overran, "pass overran; the next one waits for it");
-            });
-            running.await
+    let ran = {
+        let running = pass(ran_at).instrument(span.clone());
+        let mut running = std::pin::pin!(running);
+        match tokio::time::timeout(budget, running.as_mut()).await {
+            Ok(ran) => ran,
+            Err(_) => {
+                let overran = CadenceError::Overran { cadence, budget };
+                span.in_scope(|| {
+                    tracing::warn!(error = %overran, "pass overran; the next one waits for it");
+                });
+                running.await
+            }
         }
-    };
-    let (pass, ran) = match joined {
-        Ok(ran) => ran,
-        Err(ended) => match ended.try_into_panic() {
-            Ok(payload) => std::panic::resume_unwind(payload),
-            // Cancelled: the runtime is shutting down under it.
-            Err(_) => return None,
-        },
     };
     let elapsed_ms = u64::try_from(ran_at.elapsed().as_millis()).unwrap_or(u64::MAX);
     let answered = span.in_scope(|| match ran {

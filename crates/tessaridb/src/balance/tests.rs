@@ -1,6 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
 use tessari_session::Outcome;
+use tessari_session::RunNow;
+use tessari_storage::Now;
 use tessari_storage::{Catalog, TableDefinition};
 use tessari_types::{RecordId, Value};
 
@@ -12,15 +14,20 @@ const DECLARED: &str =
 const TENANCY: &str = "USE NAMESPACE prod; USE DATABASE shop;";
 
 fn table(db: &Db) -> TableDefinition {
-    let mut reading = db.store().begin().unwrap();
+    let mut reading = db.store().begin().now().unwrap();
     let catalog = Catalog::new(&mut reading);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
-    let id = catalog
-        .table_id(namespace, database, "orders")
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "shop")
+        .now()
         .unwrap()
         .unwrap();
-    let found = catalog.table(id).unwrap().unwrap();
+    let id = catalog
+        .table_id(namespace, database, "orders")
+        .now()
+        .unwrap()
+        .unwrap();
+    let found = catalog.table(id).now().unwrap().unwrap();
     reading.rollback();
     found
 }
@@ -28,7 +35,7 @@ fn table(db: &Db) -> TableDefinition {
 fn ids(db: &Db) -> Vec<RecordId> {
     let outcomes = db
         .session()
-        .run(&format!("{TENANCY} SELECT * FROM orders;"))
+        .run_now(&format!("{TENANCY} SELECT * FROM orders;"))
         .unwrap();
     match outcomes.last() {
         Some(Outcome::Records { records, .. }) => {
@@ -50,7 +57,7 @@ fn per_shard(db: &Db) -> Vec<usize> {
 fn passes(db: &Db, samples: &mut ShardSamples) -> (usize, usize) {
     let (mut split, mut merged) = (0_usize, 0_usize);
     for _ in 0..32 {
-        let pass = db.balance_shards(samples).unwrap();
+        let pass = db.balance_shards(samples).now().unwrap();
         assert_eq!(pass.last_refusal, None);
         if pass.split == 0 && pass.merged == 0 {
             break;
@@ -63,18 +70,20 @@ fn passes(db: &Db, samples: &mut ShardSamples) -> (usize, usize) {
 
 fn orders(db: &Db, policy: &str, records: usize) {
     db.session()
-        .run(&format!(
+        .run_now(&format!(
             "{DECLARED} DEFINE TABLE orders (n int) IDENTITY uuid SPREAD SPLIT AT '80'; \
              ALTER TABLE orders {policy};"
         ))
         .unwrap();
     let creates = "CREATE orders = { n: 1 };".repeat(records);
-    db.session().run(&format!("{TENANCY} {creates}")).unwrap();
+    db.session()
+        .run_now(&format!("{TENANCY} {creates}"))
+        .unwrap();
 }
 
 #[test]
 fn a_table_too_big_for_its_shards_is_split_until_each_fits_and_keeps_every_record() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     orders(
         &db,
         "SPLIT AUTOMATICALLY ABOVE 100 RECORDS MERGE BELOW 20 RECORDS",
@@ -95,7 +104,7 @@ fn a_table_too_big_for_its_shards_is_split_until_each_fits_and_keeps_every_recor
 
 #[test]
 fn neighbours_emptied_below_the_bound_are_merged_back() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     orders(
         &db,
         "SPLIT AUTOMATICALLY ABOVE 100 RECORDS MERGE BELOW 40 RECORDS",
@@ -104,7 +113,7 @@ fn neighbours_emptied_below_the_bound_are_merged_back() {
     passes(&db, &mut ShardSamples::default());
     let split = per_shard(&db).len();
     db.session()
-        .run(&format!(
+        .run_now(&format!(
             "{TENANCY} DELETE FROM orders WHERE n = 1 LIMIT 390;"
         ))
         .unwrap();
@@ -116,7 +125,7 @@ fn neighbours_emptied_below_the_bound_are_merged_back() {
 
 #[test]
 fn a_busy_shard_is_split_however_small() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     orders(
         &db,
         "SPLIT AUTOMATICALLY ABOVE 100000 RECORDS OR 1 WRITES PER SECOND MERGE BELOW 2 RECORDS",
@@ -124,25 +133,27 @@ fn a_busy_shard_is_split_however_small() {
     );
     let mut samples = ShardSamples::default();
     // The first pass only learns where each shard's log stands.
-    assert_eq!(db.balance_shards(&mut samples).unwrap().split, 0);
+    assert_eq!(db.balance_shards(&mut samples).now().unwrap().split, 0);
     let creates = "CREATE orders = { n: 1 };".repeat(40);
-    db.session().run(&format!("{TENANCY} {creates}")).unwrap();
+    db.session()
+        .run_now(&format!("{TENANCY} {creates}"))
+        .unwrap();
     let before = per_shard(&db).len();
-    assert_eq!(db.balance_shards(&mut samples).unwrap().split, 1);
+    assert_eq!(db.balance_shards(&mut samples).now().unwrap().split, 1);
     assert_eq!(per_shard(&db).len(), before + 1);
     assert_eq!(ids(&db).len(), 40);
 }
 
 #[test]
 fn a_table_split_manually_again_is_left_alone() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     orders(
         &db,
         "SPLIT AUTOMATICALLY ABOVE 100 RECORDS MERGE BELOW 20 RECORDS",
         400,
     );
     db.session()
-        .run(&format!("{TENANCY} ALTER TABLE orders SPLIT MANUALLY;"))
+        .run_now(&format!("{TENANCY} ALTER TABLE orders SPLIT MANUALLY;"))
         .unwrap();
     assert_eq!(passes(&db, &mut ShardSamples::default()), (0, 0));
     assert_eq!(per_shard(&db).len(), 2);
@@ -150,13 +161,13 @@ fn a_table_split_manually_again_is_left_alone() {
 
 #[test]
 fn the_policy_is_refused_where_it_could_never_act_or_would_undo_itself() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     db.session()
-        .run(&format!(
+        .run_now(&format!(
             "{DECLARED} DEFINE TABLE plain (n int); DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT '80';"
         ))
         .unwrap();
-    let refused = db.session().run(&format!(
+    let refused = db.session().run_now(&format!(
         "{TENANCY} ALTER TABLE plain SPLIT AUTOMATICALLY ABOVE 100 RECORDS MERGE BELOW 20 RECORDS;"
     ));
     assert!(
@@ -168,7 +179,7 @@ fn the_policy_is_refused_where_it_could_never_act_or_would_undo_itself() {
         ),
         "{refused:?}"
     );
-    let refused = db.session().run(&format!(
+    let refused = db.session().run_now(&format!(
         "{TENANCY} ALTER TABLE orders SPLIT AUTOMATICALLY ABOVE 100 RECORDS MERGE BELOW 50 RECORDS;"
     ));
     assert!(
@@ -188,7 +199,7 @@ fn the_policy_is_refused_where_it_could_never_act_or_would_undo_itself() {
 
 #[test]
 fn the_report_names_the_policy_and_its_definition_restores_it() {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     orders(
         &db,
         "SPLIT AUTOMATICALLY ABOVE 100 RECORDS OR 50 WRITES PER SECOND MERGE BELOW 20 RECORDS",
@@ -196,7 +207,7 @@ fn the_report_names_the_policy_and_its_definition_restores_it() {
     );
     let outcomes = db
         .session()
-        .run(&format!("{TENANCY} INFO FOR TABLE orders;"))
+        .run_now(&format!("{TENANCY} INFO FOR TABLE orders;"))
         .unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         unreachable!("INFO FOR TABLE answers a value");
@@ -220,15 +231,17 @@ fn the_report_names_the_policy_and_its_definition_restores_it() {
     let Some(Value::String(script)) = fields.get("definition") else {
         unreachable!("a table reports its definition");
     };
-    let copy = Db::in_memory().unwrap();
-    copy.session().run(&format!("{DECLARED} {script}")).unwrap();
+    let copy = Db::in_memory().now().unwrap();
+    copy.session()
+        .run_now(&format!("{DECLARED} {script}"))
+        .unwrap();
     assert_eq!(table(&copy).auto_split, table(&db).auto_split);
 }
 
 #[test]
 fn what_a_pass_measured_is_reported_for_each_shard_with_its_last_act() {
     // ADR-0113 D4: the counts the pass took, not a second walk.
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     orders(
         &db,
         "SPLIT AUTOMATICALLY ABOVE 100 RECORDS MERGE BELOW 20 RECORDS",
@@ -261,7 +274,7 @@ fn what_a_pass_measured_is_reported_for_each_shard_with_its_last_act() {
     );
     let outcomes = db
         .session()
-        .run(&format!("{TENANCY} INFO FOR TABLE orders;"))
+        .run_now(&format!("{TENANCY} INFO FOR TABLE orders;"))
         .unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         unreachable!("INFO FOR TABLE answers a value");
@@ -274,7 +287,7 @@ fn what_a_pass_measured_is_reported_for_each_shard_with_its_last_act() {
     };
     assert_eq!(shards.len(), counted.len());
     // And the node's own report lists it, for the console's cluster map.
-    let outcomes = db.session().run("INFO FOR NODE;").unwrap();
+    let outcomes = db.session().run_now("INFO FOR NODE;").unwrap();
     let Some(Outcome::Value(Value::Object(node))) = outcomes.last() else {
         unreachable!("INFO FOR NODE answers a value");
     };

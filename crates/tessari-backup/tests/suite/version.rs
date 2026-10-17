@@ -18,6 +18,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_encoding::NodeVersion;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -32,7 +34,7 @@ const WRITER_AT: usize = MAGIC_LEN + 2;
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     (backend, store)
 }
 
@@ -42,7 +44,7 @@ fn taken() -> Vec<u8> {
     {
         let mut session = Session::new(&store);
         session
-            .run(
+            .run_now(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
                  DEFINE DATABASE shop; USE DATABASE shop;\n\
                  DEFINE COLLECTION orders;\n\
@@ -51,7 +53,7 @@ fn taken() -> Vec<u8> {
             .unwrap();
     }
     let mut bytes = Vec::new();
-    let written = tessari_backup::write(&store, &mut bytes).unwrap();
+    let written = tessari_backup::write(&store, &mut bytes).now().unwrap();
     assert_eq!(written.writer, NodeVersion::current());
     assert!(written.records > 0);
     bytes
@@ -76,7 +78,9 @@ fn a_backup_names_the_build_that_wrote_it() {
 fn a_restore_reports_the_build_the_file_came_from() {
     let bytes = taken();
     let (_, into) = store();
-    let restored = tessari_backup::read(&into, &mut bytes.as_slice()).unwrap();
+    let restored = tessari_backup::read(&into, &mut bytes.as_slice())
+        .now()
+        .unwrap();
     assert_eq!(restored.written_by, NodeVersion::current());
     assert!(restored.records > 0);
 }
@@ -95,7 +99,9 @@ fn a_backup_from_an_older_build_restores_and_says_where_it_came_from() {
     let bytes = claiming(taken(), older);
 
     let (_, into) = store();
-    let restored = tessari_backup::read(&into, &mut bytes.as_slice()).unwrap();
+    let restored = tessari_backup::read(&into, &mut bytes.as_slice())
+        .now()
+        .unwrap();
     assert_eq!(restored.written_by, older);
     assert!(restored.records > 0, "an older backup must still restore");
 }
@@ -110,7 +116,9 @@ fn a_backup_from_a_newer_build_is_refused_before_anything_is_applied() {
     let bytes = claiming(taken(), newer);
 
     let (_, into) = store();
-    let refused = tessari_backup::read(&into, &mut bytes.as_slice()).unwrap_err();
+    let refused = tessari_backup::read(&into, &mut bytes.as_slice())
+        .now()
+        .unwrap_err();
     let said = refused.to_string();
     assert!(said.contains(&newer.to_string()), "{said}");
     assert!(said.contains(&running.to_string()), "{said}");
@@ -132,6 +140,7 @@ fn a_file_from_the_previous_header_layout_is_refused_by_name() {
     bytes[MAGIC_LEN] = 2;
     let (_, into) = store();
     let refused = tessari_backup::read(&into, &mut bytes.as_slice())
+        .now()
         .unwrap_err()
         .to_string();
     assert!(refused.contains("format"), "{refused}");
@@ -150,7 +159,9 @@ fn a_file_written_under_the_old_name_still_restores() {
     legacy.extend_from_slice(&current[MAGIC_LEN..]);
 
     let (_, into) = store();
-    let restored = tessari_backup::read(&into, &mut legacy.as_slice()).unwrap();
+    let restored = tessari_backup::read(&into, &mut legacy.as_slice())
+        .now()
+        .unwrap();
     assert_eq!(restored.written_by, NodeVersion::current());
     assert!(restored.records > 0, "an older name must still restore");
 }
@@ -164,6 +175,7 @@ fn a_file_that_begins_with_neither_name_is_refused() {
 
     let (_, into) = store();
     let refused = tessari_backup::read(&into, &mut bytes.as_slice())
+        .now()
         .unwrap_err()
         .to_string();
     assert!(refused.contains("not a TessariDB backup"), "{refused}");

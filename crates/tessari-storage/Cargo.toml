@@ -21,6 +21,17 @@ tessari-vault.workspace = true
 tracing.workspace = true
 scc.workspace = true
 thiserror.workspace = true
+# The write gate: an async turn, a landing wait, and the id of the task holding the turn.
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+futures-util.workspace = true
+
+[features]
+# What tests and the synchronous harnesses use to drive the store's asynchronous entry points
+# without a runtime of their own (`now`, `Now`).
+test-support = ["tokio/rt-multi-thread"]
+
+[dev-dependencies]
+tessari-storage = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

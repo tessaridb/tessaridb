@@ -62,11 +62,11 @@ impl Merged {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a record cannot be decoded.
-    pub fn poll(&mut self, store: &Store, limit: usize) -> Result<Vec<(LogId, Change)>> {
+    pub async fn poll(&mut self, store: &Store, limit: usize) -> Result<Vec<(LogId, Change)>> {
         // Read before the pages: a commit that lands after this is ordered past
         // it and waits for the next round.
-        let committed = store.committed_version()?;
-        self.poll_through(store, limit, committed)
+        let committed = store.committed_version().await?;
+        self.poll_through(store, limit, committed).await
     }
 
     /// [`Self::poll`], delivering nothing ordered past `bound` either.
@@ -78,17 +78,17 @@ impl Merged {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a record cannot be decoded.
-    pub fn poll_until(
+    pub async fn poll_until(
         &mut self,
         store: &Store,
         limit: usize,
         bound: Sequence,
     ) -> Result<Vec<(LogId, Change)>> {
-        let committed = store.committed_version()?.min(bound);
-        self.poll_through(store, limit, committed)
+        let committed = store.committed_version().await?.min(bound);
+        self.poll_through(store, limit, committed).await
     }
 
-    fn poll_through(
+    async fn poll_through(
         &mut self,
         store: &Store,
         limit: usize,
@@ -96,7 +96,7 @@ impl Merged {
     ) -> Result<Vec<(LogId, Change)>> {
         let mut fetched: Vec<Vec<(Sequence, LogRecord)>> = Vec::with_capacity(self.logs.len());
         for (log, from) in &self.logs {
-            fetched.push(store.log_records(*log, *from, limit)?);
+            fetched.push(store.log_records(*log, *from, limit).await?);
         }
         let pages: Vec<Page<'_>> = self
             .logs

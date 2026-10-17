@@ -149,7 +149,7 @@ type TableAddress = (NamespaceId, DatabaseId, TableId);
 /// carried together in [`Error::RecordsRefused`]. Every record is checked before
 /// any of them is raised, so a caller writing a batch is told about all of it at
 /// once rather than one commit at a time.
-pub(crate) fn validate(store: &Store, record: &LogRecord) -> Result<()> {
+pub(crate) async fn validate(store: &Store, record: &LogRecord) -> Result<()> {
     let touched: BTreeSet<TableAddress> = record
         .mutations()
         .iter()
@@ -173,14 +173,14 @@ pub(crate) fn validate(store: &Store, record: &LogRecord) -> Result<()> {
         return Ok(());
     }
 
-    let mut view = store.begin()?;
-    let tightened = tightened_tables(&mut view, record)?;
+    let mut view = store.begin().await?;
+    let tightened = tightened_tables(&mut view, record).await?;
     if tightened.is_empty() && touched.is_empty() {
         return Ok(());
     }
     let mut schemas: BTreeMap<TableId, TableSchema> = BTreeMap::new();
     for address in touched.iter().chain(tightened.iter()) {
-        let schema = build_schema(&mut view, record, address.2)?;
+        let schema = build_schema(&mut view, record, address.2).await?;
         schemas.insert(address.2, schema);
     }
 
@@ -230,7 +230,7 @@ pub(crate) fn validate(store: &Store, record: &LogRecord) -> Result<()> {
         if schema.constrains_nothing() {
             continue;
         }
-        for (id, payload) in rows_after(&view, record, address)? {
+        for (id, payload) in rows_after(&view, record, address).await? {
             if checked.contains(&(address.2, id.clone())) {
                 continue;
             }

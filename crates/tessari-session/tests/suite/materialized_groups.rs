@@ -10,6 +10,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use proptest::prelude::*;
+use tessari_session::Now;
+use tessari_session::RunNow;
 use tessari_session::maintain_views;
 use tessari_storage::{Catalog, RecordAddress, Store, Subject};
 use tessari_types::{RecordId, Value};
@@ -29,12 +31,17 @@ fn band(row: &Value) -> Option<&Value> {
 /// How many times the logs say a view row was written or removed — read from
 /// the store, because the language answers history for tables, not views.
 fn writes_of(store: &Store, view: &str, id: &RecordId) -> usize {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "shop")
+        .now()
+        .unwrap()
+        .unwrap();
     let table = catalog
         .table_id(namespace, database, view)
+        .now()
         .unwrap()
         .unwrap();
     transaction.rollback();
@@ -46,11 +53,13 @@ fn writes_of(store: &Store, view: &str, id: &RecordId) -> usize {
     };
     store
         .logs()
+        .now()
         .unwrap()
         .into_iter()
         .map(|log| {
             store
                 .history_of(log, &subject, usize::MAX)
+                .now()
                 .unwrap()
                 .events
                 .len()
@@ -63,13 +72,13 @@ fn a_change_rewrites_only_the_groups_it_touches() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
+        .run_now(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
         .unwrap();
     let before = records(&mut session, "SELECT * FROM bands;");
     assert_eq!(before.len(), 4);
     // orders:1 is in band 1 and stays there.
-    session.run("UPDATE orders:1 SET total = 3;").unwrap();
-    maintain_views(&store).unwrap();
+    session.run_now("UPDATE orders:1 SET total = 3;").unwrap();
+    maintain_views(&store).now().unwrap();
     equals_its_read(&mut session, "bands", BANDS, false);
     for (id, row) in &before {
         let touched = band(row) == Some(&Value::from(1_i64));
@@ -88,14 +97,14 @@ fn a_group_row_keeps_its_identity_when_another_group_arrives() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
+        .run_now(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
         .unwrap();
     let before = records(&mut session, "SELECT * FROM bands;");
     // A band that sorts before every other one.
     session
-        .run("CREATE orders:500 = { band: -1, total: 9, n: 500 };")
+        .run_now("CREATE orders:500 = { band: -1, total: 9, n: 500 };")
         .unwrap();
-    maintain_views(&store).unwrap();
+    maintain_views(&store).now().unwrap();
     equals_its_read(&mut session, "bands", BANDS, false);
     let after = records(&mut session, "SELECT * FROM bands;");
     assert_eq!(after.len(), 5);
@@ -162,15 +171,15 @@ proptest! {
         let store = store();
         let mut session = ready(&store);
         session
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE VIEW bands MATERIALIZED AS {BANDS};\n\
                  DEFINE VIEW pairs MATERIALIZED AS {PAIRS};"
             ))
             .unwrap();
         for batch in &batches {
             let script: String = batch.iter().map(statement).collect();
-            session.run(&script).unwrap();
-            maintain_views(&store).unwrap();
+            session.run_now(&script).unwrap();
+            maintain_views(&store).now().unwrap();
             equals_its_read(&mut session, "bands", BANDS, false);
             equals_its_read(&mut session, "pairs", PAIRS, false);
         }
@@ -194,32 +203,41 @@ fn dropping_a_grouped_view_takes_its_membership_map() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
+        .run_now(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
         .unwrap();
     let view = {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-        let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
+        let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+        let database = catalog
+            .database_id(namespace, "shop")
+            .now()
+            .unwrap()
+            .unwrap();
         let view = catalog
             .table_id(namespace, database, "bands")
+            .now()
             .unwrap()
             .unwrap();
         // Pinned before the drop, so the absence after it is not vacuous.
         assert!(
             transaction
                 .view_group_of(view, &RecordId::Int(0))
+                .now()
                 .unwrap()
                 .is_some()
         );
         transaction.rollback();
         view
     };
-    session.run("DROP VIEW bands;").unwrap();
-    let transaction = store.begin().unwrap();
+    session.run_now("DROP VIEW bands;").unwrap();
+    let transaction = store.begin().now().unwrap();
     for n in 0..40 {
         assert_eq!(
-            transaction.view_group_of(view, &RecordId::Int(n)).unwrap(),
+            transaction
+                .view_group_of(view, &RecordId::Int(n))
+                .now()
+                .unwrap(),
             None
         );
     }
@@ -230,20 +248,28 @@ fn a_grouped_view_kept_by_position_before_is_rebuilt_by_group_once() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
+        .run_now(&format!("DEFINE VIEW bands MATERIALIZED AS {BANDS};"))
         .unwrap();
     // Put the view back the way a build before group keys left it: rows under
     // their positions, no membership map, a state that does not say by group.
     {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-        let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
-        let view = catalog
-            .table_id(namespace, database, "bands")
+        let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+        let database = catalog
+            .database_id(namespace, "shop")
+            .now()
             .unwrap()
             .unwrap();
-        let rows = transaction.scan_table(namespace, database, view).unwrap();
+        let view = catalog
+            .table_id(namespace, database, "bands")
+            .now()
+            .unwrap()
+            .unwrap();
+        let rows = transaction
+            .scan_table(namespace, database, view)
+            .now()
+            .unwrap();
         for (position, (id, payload)) in rows.into_iter().enumerate() {
             transaction.delete(RecordAddress::new(namespace, database, view, id));
             transaction.put(
@@ -256,20 +282,20 @@ fn a_grouped_view_kept_by_position_before_is_rebuilt_by_group_once() {
                 payload,
             );
         }
-        transaction.forget_view_members(view).unwrap();
-        let mut state = transaction.view_state(view).unwrap().unwrap();
+        transaction.forget_view_members(view).now().unwrap();
+        let mut state = transaction.view_state(view).now().unwrap().unwrap();
         state.by_group = false;
         transaction.put_view_state(view, &state).unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
     // Nothing changed in the source, and the view is still rebuilt.
-    maintain_views(&store).unwrap();
+    maintain_views(&store).now().unwrap();
     let rows = records(&mut session, "SELECT * FROM bands;");
     assert_eq!(rows.len(), 4);
     assert!(rows.iter().all(|(id, _)| matches!(id, RecordId::Bytes(_))));
     equals_its_read(&mut session, "bands", BANDS, false);
-    session.run("UPDATE orders:2 SET band = 0;").unwrap();
-    maintain_views(&store).unwrap();
+    session.run_now("UPDATE orders:2 SET band = 0;").unwrap();
+    maintain_views(&store).now().unwrap();
     assert_eq!(records(&mut session, "SELECT * FROM bands;").len(), 4);
     equals_its_read(&mut session, "bands", BANDS, false);
 }

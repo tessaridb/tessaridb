@@ -83,7 +83,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key or box cannot be decoded.
-    pub fn records_in_region(
+    pub async fn records_in_region(
         &self,
         index: &IndexDefinition,
         cells: &[tessari_geo::Cell],
@@ -124,7 +124,7 @@ impl Transaction<'_> {
                         direction: ScanDirection::Forward,
                         limit: Some(RANGE_SCAN_BATCH_ENTRIES),
                     };
-                    let batch = self.store.backend().scan(&request)?;
+                    let batch = self.store.backend().scan(&request).await?;
                     let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
                     for (key, value) in &batch {
                         entries = entries.saturating_add(1);
@@ -159,7 +159,7 @@ impl Transaction<'_> {
             .map(|id| RecordAddress::new(index.namespace, index.database, index.table, id))
             .collect();
         let mut found: BTreeMap<RecordId, Vec<u8>> = BTreeMap::new();
-        for (address, payload) in addresses.iter().zip(self.get_each(&addresses)?) {
+        for (address, payload) in addresses.iter().zip(self.get_each(&addresses).await?) {
             if let Some(payload) = payload {
                 found.insert(address.id.clone(), payload);
             }

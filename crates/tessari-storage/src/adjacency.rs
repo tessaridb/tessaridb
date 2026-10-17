@@ -49,12 +49,12 @@ use crate::store::Store;
 use crate::transaction::RecordAddress;
 
 /// Write the adjacency implied by everything one commit changed.
-pub(crate) fn maintain(
+pub(crate) async fn maintain(
     store: &Store,
     record: &LogRecord,
     mut batch: WriteBatch,
 ) -> Result<WriteBatch> {
-    let mut view = store.begin_local()?;
+    let mut view = store.begin_local().await?;
     // One catalog read per tenancy rather than per mutation. An edge kind is
     // found by its companion table, so the lookup is keyed by that table id.
     let mut by_tenancy: BTreeMap<(NamespaceId, DatabaseId), BTreeMap<TableId, EdgeKindDefinition>> =
@@ -66,7 +66,8 @@ pub(crate) fn maintain(
             Some(found) => found,
             None => {
                 let found = Catalog::new(&mut view)
-                    .edge_kinds_in(tenancy.0, tenancy.1)?
+                    .edge_kinds_in(tenancy.0, tenancy.1)
+                    .await?
                     .into_iter()
                     .map(|kind| (kind.edges, kind))
                     .collect();
@@ -86,7 +87,7 @@ pub(crate) fn maintain(
             mutation.table,
             mutation.id.clone(),
         );
-        if let Some(previous) = view.get_held(&address)?
+        if let Some(previous) = view.get_held(&address).await?
             && let Some((from, to, _)) = endpoints(&decode_payload(&previous)?)
         {
             batch = write_pair(batch, &kind, &from, &to, None);

@@ -19,7 +19,7 @@ pub(crate) use arguments::{
     array_at, bytes_at, datetime_at, duration_at, number_at, object_at, text_at, whole, wrong_type,
 };
 pub(crate) use numbers::{count, folded, power, reshape, truncated};
-pub(crate) use time::{bucket, from_secs, from_unix, instant, reading};
+pub(crate) use time::{bucket, from_secs, from_unix, instant, instant_of, reading};
 
 /// Evaluate a call, with its arguments already values.
 ///

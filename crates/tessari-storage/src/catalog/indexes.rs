@@ -20,14 +20,14 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// [`Error::EmptyIndex`] when no field is named, [`Error::IndexReadsOneField`]
     /// when a search, spatial or vector index names more than one, and [`Error::NameTaken`]
     /// when the name is in use on that table.
-    pub fn create_index(
+    pub async fn create_index(
         &mut self,
         table: TableId,
         name: &str,
         fields: Vec<Path>,
         shape: IndexShape,
     ) -> Result<IndexDefinition> {
-        self.create_index_as(table, name, fields, shape, None)
+        self.create_index_as(table, name, fields, shape, None).await
     }
 
     /// Create one table's member of a search (ADR-0105): an index named after
@@ -37,7 +37,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     ///
     /// As [`Self::create_index`]; [`Error::NameTaken`] when the table already
     /// has an index of the search's name.
-    pub fn create_member(
+    pub async fn create_member(
         &mut self,
         table: TableId,
         fields: Vec<Path>,
@@ -45,6 +45,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     ) -> Result<IndexDefinition> {
         let name = member.search.clone();
         self.create_index_as(table, &name, fields, IndexShape::default(), Some(member))
+            .await
     }
 
     /// Every member of the search `name` in one database.
@@ -52,18 +53,22 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn members_of(
+    pub async fn members_of(
         &self,
         namespace: tessari_types::NamespaceId,
         database: tessari_types::DatabaseId,
         name: &str,
     ) -> Result<Vec<IndexDefinition>> {
         let mut found = Vec::new();
-        for (_, bytes) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::INDEXES,
-        )? {
+        for (_, bytes) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::INDEXES,
+            )
+            .await?
+        {
             let definition = IndexDefinition::from_value(&decode_payload(&bytes)?)?;
             if definition.namespace == namespace
                 && definition.database == database
@@ -84,13 +89,17 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn engine_members(&self) -> Result<Vec<IndexDefinition>> {
+    pub async fn engine_members(&self) -> Result<Vec<IndexDefinition>> {
         let mut found = Vec::new();
-        for (_, bytes) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::INDEXES,
-        )? {
+        for (_, bytes) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::INDEXES,
+            )
+            .await?
+        {
             let definition = IndexDefinition::from_value(&decode_payload(&bytes)?)?;
             if definition.engine.is_some() {
                 found.push(definition);
@@ -99,7 +108,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         Ok(found)
     }
 
-    fn create_index_as(
+    async fn create_index_as(
         &mut self,
         table: TableId,
         name: &str,
@@ -134,7 +143,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 fields: fields.len(),
             });
         }
-        let Some(parent) = self.table(table)? else {
+        let Some(parent) = self.table(table).await? else {
             return Err(Error::NoSuchParent {
                 entity: "table",
                 id: table.get(),
@@ -149,8 +158,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             ],
             name,
         );
-        self.reserve_name(&qualified)?;
-        let id = IndexId::new(self.allocate(Level::Index)?);
+        self.reserve_name(&qualified).await?;
+        let id = IndexId::new(self.allocate(Level::Index).await?);
         let definition = IndexDefinition {
             id,
             namespace: parent.namespace,
@@ -179,8 +188,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn index(&self, id: IndexId) -> Result<Option<IndexDefinition>> {
-        self.read(system::INDEXES, id.get())?
+    pub async fn index(&self, id: IndexId) -> Result<Option<IndexDefinition>> {
+        self.read(system::INDEXES, id.get())
+            .await?
             .as_ref()
             .map(IndexDefinition::from_value)
             .transpose()
@@ -189,13 +199,17 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// Every index on one table, read from the whole index catalog — the
     /// oracle [`Self::indexes_on`] is held to.
     #[cfg(test)]
-    pub(super) fn every_index_on(&self, table: TableId) -> Result<Vec<IndexDefinition>> {
+    pub(super) async fn every_index_on(&self, table: TableId) -> Result<Vec<IndexDefinition>> {
         let mut found = Vec::new();
-        for (_, bytes) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::INDEXES,
-        )? {
+        for (_, bytes) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::INDEXES,
+            )
+            .await?
+        {
             let definition = IndexDefinition::from_value(&decode_payload(&bytes)?)?;
             if definition.table == table {
                 found.push(definition);
@@ -221,11 +235,13 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn field_indexes_on(&self, table: TableId) -> Result<Vec<IndexDefinition>> {
-        let Some(defined) = self.table(table)? else {
+    pub async fn field_indexes_on(&self, table: TableId) -> Result<Vec<IndexDefinition>> {
+        let Some(defined) = self.table(table).await? else {
             return Ok(Vec::new());
         };
-        let mut found = self.indexes_on(defined.namespace, defined.database, table)?;
+        let mut found = self
+            .indexes_on(defined.namespace, defined.database, table)
+            .await?;
         found.retain(|definition| definition.engine.is_none());
         Ok(found)
     }
@@ -260,8 +276,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn drop_index(&mut self, id: IndexId) -> Result<bool> {
-        let Some(definition) = self.index(id)? else {
+    pub async fn drop_index(&mut self, id: IndexId) -> Result<bool> {
+        let Some(definition) = self.index(id).await? else {
             return Ok(false);
         };
         let qualified = qualify(
