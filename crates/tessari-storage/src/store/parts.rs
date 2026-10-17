@@ -178,7 +178,15 @@ impl Store {
         // engine's view through the gate shows; every other reader begins at
         // the newest version landed, held in memory (`crate::landed`).
         let at = if self.writing.holding() {
-            self.committed_version().await?
+            // Read once per turn: nothing but the holder moves it meanwhile.
+            match self.writing.kept_version() {
+                Some(kept) => kept,
+                None => {
+                    let read = self.committed_version().await?;
+                    self.writing.keep_version(read);
+                    read
+                }
+            }
         } else {
             self.landed.version()
         };
