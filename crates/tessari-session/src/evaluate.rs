@@ -195,73 +195,15 @@ impl Session<'_> {
                 let held = self.evaluate_child(transaction, operand, scope).await?;
                 negate(&held, operand.span)
             }
+            // Boxed, as the store's own arms below are: the futures a call
+            // awaits are many times the size of the ones every other arm does,
+            // and an inline one would make each nested sub-expression copy it.
             ExprKind::Call {
                 function,
                 arguments,
                 span,
             } => {
-                // A `FROM SEARCH` record answers its own score, table, snippet
-                // and marks, from what the search ranked it with (ADR-0105).
-                if let Some(answer) = self
-                    .answered_by_hit(transaction, *function, arguments, scope, *span)
-                    .await?
-                {
-                    return Ok(answer);
-                }
-                // A score is the second thing in this language that needs more
-                // than its arguments — the field's analyzer, and what the
-                // collection looks like. `call` takes values, and neither of
-                // those is one, so it is answered here where the scope is.
-                // An explanation is the same score, answered with its parts.
-                if matches!(function, Function::SearchScore | Function::SearchExplain) {
-                    let explaining = *function == Function::SearchExplain;
-                    return self
-                        .rank(transaction, arguments, scope, *span, explaining)
-                        .await;
-                }
-                // And the third. A highlight needs the field's analyzer and what
-                // this read asked of that field — neither of which is a value,
-                // and the second of which is the whole point: the marks come
-                // from the query the statement ran, not from one the projection
-                // repeated.
-                if *function == Function::SearchHighlight {
-                    return self.highlight(transaction, arguments, scope).await;
-                }
-                // And a rank, which is the fusion's and not the record's: it
-                // exists only while a fused read projects what it ordered.
-                if *function == Function::SearchRanks {
-                    let Some(ranks) = scope.ranks else {
-                        return Err(Error::NotFused { span: *span });
-                    };
-                    return Ok(Value::Array(
-                        ranks
-                            .iter()
-                            .map(|rank| {
-                                rank.and_then(|rank| i64::try_from(rank).ok())
-                                    .map_or(Value::None, |rank| {
-                                        Value::Number(Number::Integer(rank))
-                                    })
-                            })
-                            .collect(),
-                    ));
-                }
-                if *function == Function::SessionContext {
-                    return self.session_context().await;
-                }
-                // A record reference is written by its table's name, and the
-                // name is the catalog's — not a value the call is given.
-                if *function == Function::JsonEncode {
-                    let arguments = self.values(transaction, arguments, scope).await?;
-                    return self.json_encode(transaction, &arguments).await;
-                }
-                if let Some(distance) = self
-                    .distance_between(transaction, *function, arguments, scope)
-                    .await?
-                {
-                    return Ok(distance);
-                }
-                let arguments = self.values(transaction, arguments, scope).await?;
-                call(*function, &arguments, *span)
+                Box::pin(self.evaluate_call(transaction, *function, arguments, *span, scope)).await
             }
             ExprKind::Arithmetic { op, left, right } => {
                 let held = self.evaluate_child(transaction, left, scope).await?;
@@ -340,11 +282,11 @@ impl Session<'_> {
                 span: expr.span,
             }),
             ExprKind::Table(table) => {
-                let (_, id) = self.resolve_table(transaction, table).await?;
+                let (_, id) = Box::pin(self.resolve_table(transaction, table)).await?;
                 Ok(Value::Table(id))
             }
             ExprKind::Record(target) => {
-                let (_, address) = self.address(transaction, target).await?;
+                let (_, address) = Box::pin(self.address(transaction, target)).await?;
                 Ok(Value::Record(RecordRef::new(address.table, address.id)))
             }
             ExprKind::Array(items) => {
@@ -381,10 +323,83 @@ impl Session<'_> {
                     end,
                 ))))
             }
-            ExprKind::Get(target) => self.read_key(transaction, target).await,
-            ExprKind::Ttl(target) => self.ttl_of(transaction, target).await,
+            ExprKind::Get(target) => Box::pin(self.read_key(transaction, target)).await,
+            ExprKind::Ttl(target) => Box::pin(self.ttl_of(transaction, target)).await,
             ExprKind::Select(select) => Box::pin(self.read_as_value(transaction, select)).await,
         }
+    }
+
+    /// A function call, for [`Self::evaluate_in`].
+    async fn evaluate_call(
+        &self,
+        transaction: &mut Transaction<'_>,
+        function: Function,
+        arguments: &[Expr],
+        span: Span,
+        scope: Scope<'_>,
+    ) -> Result<Value> {
+        let function = &function;
+        let span = &span;
+        // A `FROM SEARCH` record answers its own score, table, snippet
+        // and marks, from what the search ranked it with (ADR-0105).
+        if let Some(answer) = self
+            .answered_by_hit(transaction, *function, arguments, scope, *span)
+            .await?
+        {
+            return Ok(answer);
+        }
+        // A score is the second thing in this language that needs more
+        // than its arguments: the field's analyzer, and what the
+        // collection looks like. `call` takes values, and neither of
+        // those is one, so it is answered here where the scope is.
+        // An explanation is the same score, answered with its parts.
+        if matches!(function, Function::SearchScore | Function::SearchExplain) {
+            let explaining = *function == Function::SearchExplain;
+            return self
+                .rank(transaction, arguments, scope, *span, explaining)
+                .await;
+        }
+        // And the third. A highlight needs the field's analyzer and what
+        // this read asked of that field, neither of which is a value,
+        // and the second of which is the whole point: the marks come
+        // from the query the statement ran, not from one the projection
+        // repeated.
+        if *function == Function::SearchHighlight {
+            return self.highlight(transaction, arguments, scope).await;
+        }
+        // And a rank, which is the fusion's and not the record's: it
+        // exists only while a fused read projects what it ordered.
+        if *function == Function::SearchRanks {
+            let Some(ranks) = scope.ranks else {
+                return Err(Error::NotFused { span: *span });
+            };
+            return Ok(Value::Array(
+                ranks
+                    .iter()
+                    .map(|rank| {
+                        rank.and_then(|rank| i64::try_from(rank).ok())
+                            .map_or(Value::None, |rank| Value::Number(Number::Integer(rank)))
+                    })
+                    .collect(),
+            ));
+        }
+        if *function == Function::SessionContext {
+            return self.session_context().await;
+        }
+        // A record reference is written by its table's name, and the
+        // name is the catalog's, not a value the call is given.
+        if *function == Function::JsonEncode {
+            let arguments = self.values(transaction, arguments, scope).await?;
+            return self.json_encode(transaction, &arguments).await;
+        }
+        if let Some(distance) = self
+            .distance_between(transaction, *function, arguments, scope)
+            .await?
+        {
+            return Ok(distance);
+        }
+        let arguments = self.values(transaction, arguments, scope).await?;
+        call(*function, &arguments, *span)
     }
 
     /// [`Self::evaluate_in`] for a sub-expression: an async function cannot
