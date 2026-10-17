@@ -33,7 +33,7 @@ mod recovery;
 mod refusal;
 
 pub use driver::across_lapse_millis;
-pub use recovery::{Recovery, recover_staging};
+pub use recovery::{Recovery, Staged, recover_staging};
 pub use refusal::{AcrossRefusal, PartRefused, RefusalKind};
 
 use super::{Session, advised};
@@ -152,7 +152,11 @@ pub enum AcrossAsk {
 /// What [`Participants::ask`] answers with: the asking crosses a link, and the
 /// trait is held as an object, so its future is boxed.
 pub type Asking<'a> = std::pin::Pin<
-    Box<dyn std::future::Future<Output = std::result::Result<AcrossAnswer, PartRefused>> + 'a>,
+    Box<
+        dyn std::future::Future<Output = std::result::Result<AcrossAnswer, PartRefused>>
+            + Send
+            + 'a,
+    >,
 >;
 
 /// Who carries a record of a transaction across leaders to the node that

@@ -19,7 +19,6 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
-use std::ops::ControlFlow;
 
 use tessari_encoding::decode_payload;
 use tessari_storage::{QueueDeclaration, RecordAddress, Transaction};
@@ -163,29 +162,26 @@ impl Session<'_> {
         // The walk: every claimable record, keeping the best `limit` in a heap
         // whose top is the worst kept.
         let mut kept: BinaryHeap<Reverse<Candidate>> = BinaryHeap::with_capacity(limit);
-        transaction
-            .walk_table(
-                context.namespace,
-                context.database,
-                table,
-                async |walking, id, bytes| -> Result<ControlFlow<()>> {
-                    if let Some(candidate) = ranked(id, &bytes, (now, declared, field), &mut dead)?
-                        && self
-                            .matches(walking, matching, &candidate.id, &candidate.fields)
-                            .await?
-                        && !walking.claimed_elsewhere(&address(context, table, &candidate.id))
-                    {
-                        if kept.len() < limit {
-                            kept.push(Reverse(candidate));
-                        } else if kept.peek().is_some_and(|Reverse(worst)| candidate > *worst) {
-                            kept.pop();
-                            kept.push(Reverse(candidate));
-                        }
-                    }
-                    Ok(ControlFlow::Continue(()))
-                },
-            )
+        let mut walk = transaction
+            .walk_table(context.namespace, context.database, table)
             .await?;
+        while let Some(round) = walk.next_round(transaction).await? {
+            for (id, bytes) in round {
+                if let Some(candidate) = ranked(id, &bytes, (now, declared, field), &mut dead)?
+                    && self
+                        .matches(transaction, matching, &candidate.id, &candidate.fields)
+                        .await?
+                    && !transaction.claimed_elsewhere(&address(context, table, &candidate.id))
+                {
+                    if kept.len() < limit {
+                        kept.push(Reverse(candidate));
+                    } else if kept.peek().is_some_and(|Reverse(worst)| candidate > *worst) {
+                        kept.pop();
+                        kept.push(Reverse(candidate));
+                    }
+                }
+            }
+        }
         let mut taken: Vec<Candidate> = kept.into_iter().map(|Reverse(held)| held).collect();
         taken.sort_by(|left, right| right.cmp(left));
         Ok((

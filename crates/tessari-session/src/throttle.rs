@@ -61,7 +61,7 @@ pub trait Budget: Send + Sync + std::fmt::Debug {
 
 /// A [`Budget`] answer: boxed, because a budget is held as a trait object and
 /// asking the shared table reads the store and crosses the peer link.
-pub type Budgeting<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
+pub type Budgeting<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 /// What the store line's leader answers a peer asking for `name` (ADR-0108
 /// D5): `store`'s own table, the cluster's while this node leads.

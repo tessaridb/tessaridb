@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tracing::Instrument as _;
 
 /// What a bridged call came back with.
 ///
@@ -84,7 +85,7 @@ impl Bridge {
     pub async fn call_async<S, T, F, W>(&self, state: S, work: F) -> Bridged<T, S>
     where
         F: FnOnce(S) -> W + Send + 'static,
-        W: Future<Output = T>,
+        W: Future<Output = T> + Send + 'static,
         S: Send + 'static,
         T: Send + 'static,
     {
@@ -92,19 +93,17 @@ impl Bridge {
             self.refused.fetch_add(1, Ordering::Relaxed);
             return Bridged::Busy(state);
         };
-        // The blocking pool runs the work on a thread of its own, which is in no
-        // span; the caller's — the connection, the request — goes with it, so
-        // what the work reports says whose work it was.
-        let span = tracing::Span::current();
-        let runtime = tokio::runtime::Handle::current();
-        let ran = tokio::task::spawn_blocking(move || {
-            let _inside = span.enter();
-            // A blocking-pool thread is outside the runtime's workers, which is
-            // where `Handle::block_on` may drive a future.
-            let answer = runtime.block_on(work(state));
-            drop(slot);
-            answer
-        })
+        // A task of its own, so a caller that stops waiting does not cancel the
+        // work; the caller's span goes with it, so what the work reports says
+        // whose work it was.
+        let ran = tokio::spawn(
+            async move {
+                let answer = work(state).await;
+                drop(slot);
+                answer
+            }
+            .instrument(tracing::Span::current()),
+        )
         .await;
         match ran {
             Ok(answer) => Bridged::Answered(answer),

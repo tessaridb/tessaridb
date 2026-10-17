@@ -6,7 +6,7 @@ use tessari_encoding::{IndexAddress, IndexValues, KeyKind, Posting, PostingKey, 
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{RecordId, Value};
 
-use super::Transaction;
+use super::{RangeWalk, Transaction};
 use crate::catalog::IndexDefinition;
 use crate::error::Result;
 
@@ -39,21 +39,18 @@ impl Transaction<'_> {
         for term in terms {
             let encoded = IndexValues::of(&[Value::from(term.as_str())]);
             let prefix = PostingKey::term_prefix(&address, &encoded);
-            self.walk_range(
-                PostingKey::keyspace(),
-                &KeyRange::prefix(&prefix),
-                async |key, value| {
+            let mut walk = RangeWalk::new(PostingKey::keyspace(), &KeyRange::prefix(&prefix));
+            while let Some(batch) = walk.next(self).await? {
+                for (key, value) in &batch {
                     let fields = Posting::located(value.as_slice())?.fields;
                     if fields.is_empty() {
                         fielded = false;
-                        return Ok(());
+                        continue;
                     }
                     let id = PostingKey::decode(key.as_slice())?.id;
                     found.entry(id).or_default().insert(term.clone(), fields);
-                    Ok(())
-                },
-            )
-            .await?;
+                }
+            }
             if !fielded {
                 return Ok(None);
             }

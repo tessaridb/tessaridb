@@ -9,6 +9,7 @@ mod versions;
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::ops::Bound;
+use std::sync::atomic::Ordering;
 
 use tessari_encoding::{
     CausalStamp, CausalVersions, NODE_ID_LEN, RecordKey, RecordValue, StampedValue, StoreKey,
@@ -33,24 +34,29 @@ impl<'a> Transaction<'a> {
             writes: BTreeMap::new(),
             expiring: BTreeMap::new(),
             lifetimes: BTreeMap::new(),
-            reading_at: std::cell::Cell::new(None),
-            floors: std::cell::RefCell::new(BTreeMap::new()),
-            guarded: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            reading_at: std::sync::OnceLock::new(),
+            floors: crate::owned::Owned::new(BTreeMap::new()),
+            guarded: crate::owned::Owned::new(std::collections::BTreeSet::new()),
             across: None,
-            decided: std::cell::RefCell::new(BTreeMap::new()),
+            decided: crate::owned::Owned::new(BTreeMap::new()),
             asks_leaders: true,
-            retired_reads: std::cell::Cell::new(false),
-            claim_token: std::cell::Cell::new(0),
-            claiming: std::cell::RefCell::new(Vec::new()),
+            retired_reads: std::sync::atomic::AtomicBool::new(false),
+            claim_token: std::sync::atomic::AtomicU64::new(0),
+            claiming: crate::owned::Owned::new(Vec::new()),
         }
     }
 
     /// This transaction's token in the claim register, issued on first use.
     fn claim_token(&self) -> u64 {
-        if self.claim_token.get() == 0 {
-            self.claim_token.set(self.store.claiming().token());
+        // Relaxed throughout: only this transaction's task reads or writes the
+        // token, and nothing else is published through it.
+        let held = self.claim_token.load(Ordering::Relaxed);
+        if held != 0 {
+            return held;
         }
-        self.claim_token.get()
+        let issued = self.store.claiming().token();
+        self.claim_token.store(issued, Ordering::Relaxed);
+        issued
     }
 
     /// Whether another open transaction is claiming `address` (ADR-0126 D5).

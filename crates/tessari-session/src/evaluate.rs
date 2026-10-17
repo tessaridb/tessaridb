@@ -395,7 +395,7 @@ impl Session<'_> {
         transaction: &'s mut Transaction<'_>,
         expr: &'s Expr,
         scope: Scope<'s>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + 's>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 's>> {
         Box::pin(self.evaluate_in(transaction, expr, scope))
     }
 

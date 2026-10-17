@@ -51,7 +51,7 @@ pub struct Copied {
 pub(crate) async fn serve(
     store: &Store,
     over: Reach,
-    write: &mut dyn FnMut(u8, Vec<u8>) -> Answering<'static, Result<()>>,
+    write: &mut (dyn FnMut(u8, Vec<u8>) -> Answering<'static, Result<()>> + Send),
 ) -> Result<()> {
     let refused = |why: tessari_storage::Error| Error::Refused {
         message: why.to_string(),

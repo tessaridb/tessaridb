@@ -1,7 +1,5 @@
 //! The candidates an index offers, and the walks that confirm them.
 
-use std::ops::ControlFlow;
-
 use tessari_ql::Expr;
 use tessari_storage::{Catalog, RecordAddress, Transaction};
 use tessari_types::TableId;
@@ -196,29 +194,30 @@ impl Session<'_> {
             noticed,
         } = testing;
         let visible = self.visible_in(transaction, table).await?;
-        transaction
-            .walk_table(
-                context.namespace,
-                context.database,
-                table,
-                async |transaction, id, payload| {
-                    let record = self.record_of(&payload, &visible)?;
-                    let held = self
-                        .evaluate_in(
-                            transaction,
-                            condition,
-                            Scope::searching(&record, searched)
-                                .identified(&id)
-                                .noticing(noticed),
-                        )
-                        .await?;
-                    if !boolean(&held, condition.span)? {
-                        return Ok(ControlFlow::Continue(()));
-                    }
-                    consumer.take(transaction, id, record).await
-                },
-            )
-            .await
+        let mut walk = transaction
+            .walk_table(context.namespace, context.database, table)
+            .await?;
+        while let Some(round) = walk.next_round(transaction).await? {
+            for (id, payload) in round {
+                let record = self.record_of(&payload, &visible)?;
+                let held = self
+                    .evaluate_in(
+                        transaction,
+                        condition,
+                        Scope::searching(&record, searched)
+                            .identified(&id)
+                            .noticing(noticed),
+                    )
+                    .await?;
+                if !boolean(&held, condition.span)? {
+                    continue;
+                }
+                if consumer.take(transaction, id, record).await?.is_break() {
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Whether this read may be believed instead of re-tested.

@@ -294,32 +294,31 @@ impl Session<'_> {
                 upper,
             } => {
                 let visible = self.visible_in(transaction, id).await?;
-                transaction
-                    .walk_records_in_range(
-                        &index,
-                        &fixed,
-                        lower.as_ref(),
-                        upper.as_ref(),
-                        async |transaction, id, payload| {
-                            let record = self.record_of(&payload, &visible)?;
-                            if !answered {
-                                let passed = self
-                                    .evaluate_in(
-                                        transaction,
-                                        condition,
-                                        Scope::searching(&record, searched)
-                                            .identified(&id)
-                                            .noticing(reporting.noticed),
-                                    )
-                                    .await?;
-                                if !boolean(&passed, condition.span)? {
-                                    return Ok(ControlFlow::Continue(()));
-                                }
-                            }
-                            consumer.take(transaction, id, record).await
-                        },
-                    )
+                let mut walk = transaction
+                    .walk_records_in_range(&index, &fixed, lower.as_ref(), upper.as_ref())
                     .await?;
+                'walk: while let Some(round) = walk.next_round(transaction).await? {
+                    for (id, payload) in round {
+                        let record = self.record_of(&payload, &visible)?;
+                        if !answered {
+                            let passed = self
+                                .evaluate_in(
+                                    transaction,
+                                    condition,
+                                    Scope::searching(&record, searched)
+                                        .identified(&id)
+                                        .noticing(reporting.noticed),
+                                )
+                                .await?;
+                            if !boolean(&passed, condition.span)? {
+                                continue;
+                            }
+                        }
+                        if consumer.take(transaction, id, record).await?.is_break() {
+                            break 'walk;
+                        }
+                    }
+                }
             }
         }
         Ok(plan)

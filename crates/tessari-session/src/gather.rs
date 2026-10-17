@@ -110,7 +110,7 @@ pub enum Unanswered {
 /// What [`Gather::gather`] answers with: the fetching crosses a link, and the
 /// trait is held as an object, so its future is boxed.
 pub type Gathering<'a> = core::pin::Pin<
-    Box<dyn core::future::Future<Output = core::result::Result<Gathered, Unanswered>> + 'a>,
+    Box<dyn core::future::Future<Output = core::result::Result<Gathered, Unanswered>> + Send + 'a>,
 >;
 
 /// Who fetches a shard's records for this node.
@@ -418,29 +418,13 @@ impl Session<'_> {
         pushed: Option<&crate::Pushed>,
         ordered: &crate::Ordered,
     ) -> Result<Stored> {
-        let mut after: Option<RecordId> = None;
-        let mut done = false;
-        crate::leading(self.store, ordered, async || {
-            if done {
-                return Ok(None);
-            }
-            let page = transaction
-                .records_between(
-                    missing.namespace,
-                    missing.database,
-                    id,
-                    window,
-                    after.as_ref(),
-                    GATHER_PAGE_RECORDS,
-                )
-                .await?;
-            done = page.len() < GATHER_PAGE_RECORDS;
-            after = page.last().map(|(id, _)| id.clone());
-            Ok(Some(match pushed {
-                Some(pushed) => crate::keeping(self.store, pushed, page).await?,
-                None => page,
-            }))
-        })
-        .await
+        let mut pages = crate::SpanPages::new(
+            self.store,
+            transaction,
+            (missing.namespace, missing.database, id),
+            window,
+            pushed,
+        );
+        crate::leading(self.store, ordered, &mut pages).await
     }
 }

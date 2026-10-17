@@ -1,6 +1,6 @@
 //! Expanding a prefix or a misspelling into the terms an index holds.
 
-use super::{Expansion, RecordAddress, Transaction};
+use super::{Expansion, RangeWalk, RecordAddress, Transaction};
 use crate::catalog::IndexDefinition;
 use crate::error::Result;
 use std::collections::{BTreeMap, BTreeSet};
@@ -263,15 +263,12 @@ impl Transaction<'_> {
         let encoded = IndexValues::of(&[Value::from(term)]);
         let prefix = PostingKey::term_prefix(address, &encoded);
         let mut found = BTreeSet::new();
-        self.walk_range(
-            PostingKey::keyspace(),
-            &KeyRange::prefix(&prefix),
-            async |key, _| {
+        let mut walk = RangeWalk::new(PostingKey::keyspace(), &KeyRange::prefix(&prefix));
+        while let Some(batch) = walk.next(self).await? {
+            for (key, _) in &batch {
                 found.insert(PostingKey::decode(key.as_slice())?.id);
-                Ok(())
-            },
-        )
-        .await?;
+            }
+        }
         Ok(found)
     }
 
@@ -308,10 +305,9 @@ impl Transaction<'_> {
         let mut bounds = address.prefix(kind);
         bounds.extend_from_slice(&IndexValues::string_prefix(prefix));
         let mut found: BTreeMap<RecordId, Vec<u8>> = BTreeMap::new();
-        self.walk_range(
-            kind.keyspace(),
-            &KeyRange::prefix(&bounds),
-            async |key, value| {
+        let mut walk = RangeWalk::new(kind.keyspace(), &KeyRange::prefix(&bounds));
+        while let Some(batch) = walk.next(self).await? {
+            for (key, value) in &batch {
                 // A unique entry carries the record it points at in its value; a
                 // secondary one carries it in its key.
                 let id = if index.unique {
@@ -323,10 +319,8 @@ impl Transaction<'_> {
                 if let Some(payload) = self.confirm_prefix(index, &record, prefix).await? {
                     found.insert(record.id, payload);
                 }
-                Ok(())
-            },
-        )
-        .await?;
+            }
+        }
         // Behind the tail, the records that matched at this snapshot and have
         // changed since are named by retired entries (Q-S3-34).
         let end = crate::transaction::address::after(bounds.clone());

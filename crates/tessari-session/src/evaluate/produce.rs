@@ -2,8 +2,6 @@
 
 mod filtered;
 
-use std::ops::ControlFlow;
-
 use tessari_ql::Select;
 use tessari_storage::Transaction;
 use tessari_types::{RecordId, Value};

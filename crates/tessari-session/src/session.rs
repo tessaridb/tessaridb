@@ -12,7 +12,7 @@ mod acknowledging;
 mod across;
 pub use across::{
     AcrossAnswer, AcrossAsk, AcrossRefusal, Asking, PartRefused, Participants, Recovery,
-    RefusalKind, across_lapse_millis, recover_staging,
+    RefusalKind, Staged, across_lapse_millis, recover_staging,
 };
 mod atomic;
 mod defaults;
@@ -326,7 +326,8 @@ impl<'a> Session<'a> {
     pub(crate) fn run_boxed<'s>(
         &'s mut self,
         source: &'s str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Outcome>>> + 's>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Outcome>>> + Send + 's>>
+    {
         Box::pin(self.run(source))
     }
 

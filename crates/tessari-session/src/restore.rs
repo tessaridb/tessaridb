@@ -83,25 +83,32 @@ impl Session<'_> {
 
         let mut restorer = Session::new(self.store);
         restorer.identity = self.identity.clone();
-        restorer
-            .atomically(async |held| held.run_with(&namespaces, &Parameters::new()).await)
-            .await?;
-        if let Err(failure) = restorer
-            .atomically(async |held| held.run_with(&databases, &Parameters::new()).await)
-            .await
-        {
+        let mut held = restorer.atomic().await?;
+        let answered = held.run_with(&namespaces, &Parameters::new()).await;
+        held.conclude(answered).await?;
+        let defining = match restorer.atomic().await {
+            Ok(mut held) => {
+                let answered = held.run_with(&databases, &Parameters::new()).await;
+                held.conclude(answered).await
+            }
+            Err(failure) => Err(failure),
+        };
+        if let Err(failure) = defining {
             undone(&mut restorer, &[], &defined).await;
             return Err(failure);
         }
-        let filled = restorer
-            .atomically(async |held| {
-                held.run_parsed(Script {
-                    statements: body,
-                    span: script.span,
-                })
-                .await
-            })
-            .await;
+        let filled = match restorer.atomic().await {
+            Ok(mut held) => {
+                let answered = held
+                    .run_parsed(Script {
+                        statements: body,
+                        span: script.span,
+                    })
+                    .await;
+                held.conclude(answered).await
+            }
+            Err(failure) => Err(failure),
+        };
         if let Err(failure) = filled {
             undone(&mut restorer, &created, &defined).await;
             return Err(failure);

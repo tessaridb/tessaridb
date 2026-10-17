@@ -134,9 +134,9 @@ pub(crate) async fn converse<C: Carried>(
             return fed;
         }
         if kind == frame::Kind::Vault {
-            // Always on the bridge, never on the task: an unseal is an Argon2id
-            // derivation, and a derivation on the runtime stalls every other
-            // connection it shares a worker with.
+            // On the bridge like every store call; the unseal's Argon2id
+            // derivation hands its worker's other tasks on before it starts
+            // (`tessari_vault::off_the_worker`), so it stalls no other connection.
             let asked = crate::VaultAsk::decode(&body)?;
             let db = Arc::clone(&talk.db);
             let bridged = talk

@@ -27,7 +27,6 @@
 //! stored key not removed in this operation, or a node this operation added if
 //! that is smaller.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use tessari_kv::KvBackend;
@@ -38,6 +37,7 @@ use tessari_types::RecordId;
 
 use super::GROUND;
 use crate::error::Result;
+use crate::owned::Owned;
 
 /// Where the nodes this operation has not read yet are.
 struct Stored {
@@ -49,13 +49,13 @@ struct Stored {
 pub(super) struct Nodes {
     /// Every node read or written so far; `None` is a node this operation
     /// removed, or one it looked for and found absent.
-    held: RefCell<BTreeMap<RecordId, Option<Arc<VectorNode>>>>,
+    held: Owned<BTreeMap<RecordId, Option<Arc<VectorNode>>>>,
     /// The ids this operation wrote a node at — the only ones the store may
     /// not hold yet.
-    written: RefCell<BTreeSet<RecordId>>,
+    written: Owned<BTreeSet<RecordId>>,
     stored: Option<Stored>,
     /// Whether `held` is the whole graph — built in memory, or read whole.
-    complete: RefCell<bool>,
+    complete: Owned<bool>,
 }
 
 impl std::fmt::Debug for Nodes {
@@ -71,20 +71,20 @@ impl Nodes {
     /// A graph with nothing stored behind it.
     pub(super) fn in_memory() -> Self {
         Self {
-            held: RefCell::new(BTreeMap::new()),
-            written: RefCell::new(BTreeSet::new()),
+            held: Owned::new(BTreeMap::new()),
+            written: Owned::new(BTreeSet::new()),
             stored: None,
-            complete: RefCell::new(true),
+            complete: Owned::new(true),
         }
     }
 
     /// The nodes of an index, read as they are asked for.
     pub(super) fn stored(backend: Arc<dyn KvBackend>, address: IndexAddress) -> Self {
         Self {
-            held: RefCell::new(BTreeMap::new()),
-            written: RefCell::new(BTreeSet::new()),
+            held: Owned::new(BTreeMap::new()),
+            written: Owned::new(BTreeSet::new()),
             stored: Some(Stored { backend, address }),
-            complete: RefCell::new(false),
+            complete: Owned::new(false),
         }
     }
 

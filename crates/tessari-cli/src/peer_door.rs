@@ -64,11 +64,13 @@ impl tessari_wire::Origin for PeerDoor {
     fn copied<'a>(
         &'a self,
         follower: [u8; tessari_storage::NODE_ID_LEN],
-        write: &'a mut dyn FnMut(
+        write: &'a mut (
+                    dyn FnMut(
             u8,
             Vec<u8>,
-        )
-            -> tessari_wire::Answering<'static, tessari_wire::Result<()>>,
+        ) -> tessari_wire::Answering<'static, tessari_wire::Result<()>>
+                        + Send
+                ),
     ) -> tessari_wire::Answering<'a, tessari_wire::Result<()>> {
         Box::pin(async move {
             tessari_wire::Serving::declared(self.db.store())

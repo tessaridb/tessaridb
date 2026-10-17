@@ -55,16 +55,25 @@ async fn message_bytes(
     })
 }
 
-/// Every message a topic holds, oldest first, handed to `each` until it says
-/// to stop.
-async fn oldest_first(
-    store: &Store,
-    (namespace, database, table): Topic,
-    mut each: impl AsyncFnMut(RecordId) -> Result<bool>,
-) -> Result<()> {
-    let prefix = TopicOffsetKey::table_prefix(namespace, database, table);
-    let mut range = KeyRange::prefix(&prefix);
-    loop {
+/// Every message a topic holds, oldest first, a page at a time.
+struct OldestFirst {
+    /// What is left to read; `None` once the topic is read to its end.
+    range: Option<KeyRange>,
+}
+
+impl OldestFirst {
+    fn of((namespace, database, table): Topic) -> Self {
+        let prefix = TopicOffsetKey::table_prefix(namespace, database, table);
+        Self {
+            range: Some(KeyRange::prefix(&prefix)),
+        }
+    }
+
+    /// The next page of message identities, or `None` once there are no more.
+    async fn next(&mut self, store: &Store) -> Result<Option<Vec<RecordId>>> {
+        let Some(range) = self.range.take() else {
+            return Ok(None);
+        };
         let batch = store
             .backend()
             .scan(&ScanRequest {
@@ -75,26 +84,23 @@ async fn oldest_first(
             })
             .await?;
         let Some((last, _)) = batch.last() else {
-            return Ok(());
+            return Ok(None);
         };
-        let resume = last.clone();
-        let full = batch.len() >= PAGE;
+        if batch.len() >= PAGE {
+            // Resumed just past the last key read: a key followed by a zero byte
+            // is the smallest key greater than it.
+            let mut next = last.as_slice().to_vec();
+            next.push(0);
+            self.range = Some(KeyRange::from_bounds(
+                std::ops::Bound::Included(tessari_kv::Key::new(next)),
+                range.end().clone(),
+            ));
+        }
+        let mut ids = Vec::with_capacity(batch.len());
         for (key, _) in batch {
-            if !each(TopicOffsetKey::decode(key.as_slice())?.id).await? {
-                return Ok(());
-            }
+            ids.push(TopicOffsetKey::decode(key.as_slice())?.id);
         }
-        if !full {
-            return Ok(());
-        }
-        // Resumed just past the last key read: a key followed by a zero byte is
-        // the smallest key greater than it.
-        let mut next = resume.as_slice().to_vec();
-        next.push(0);
-        range = KeyRange::from_bounds(
-            std::ops::Bound::Included(tessari_kv::Key::new(next)),
-            range.end().clone(),
-        );
+        Ok(Some(ids))
     }
 }
 
@@ -119,11 +125,12 @@ pub(crate) async fn held_bytes(store: &Store, view: &Transaction<'_>, topic: Top
         return Ok(Sequence::decode(bytes.as_slice())?.get());
     }
     let mut total = 0_u64;
-    oldest_first(store, topic, async |id| {
-        total = total.saturating_add(message_bytes(view, topic, &id).await?);
-        Ok(true)
-    })
-    .await?;
+    let mut messages = OldestFirst::of(topic);
+    while let Some(page) = messages.next(store).await? {
+        for id in page {
+            total = total.saturating_add(message_bytes(view, topic, &id).await?);
+        }
+    }
     Ok(total)
 }
 
@@ -183,28 +190,32 @@ pub(crate) async fn enforce(
     // The committing record's own messages hold no position yet, and a
     // rewrite of a held one was refused above, so the walk meets only messages
     // older than the commit.
-    oldest_first(store, topic, async |id| {
-        let size = message_bytes(view, topic, &id).await?;
-        let address = RecordAddress::new(namespace, database, table, id.clone());
-        // The stamp is carried forward from the version being removed, advanced
-        // by this node, exactly as a space's eviction carries it.
-        let mut stamp = view
-            .read_newest_stamped(&address)
-            .await?
-            .map_or_else(CausalStamp::new, |(_, stamped)| stamped.stamp().clone());
-        stamp.advance(node);
-        evicted.push(Mutation {
-            namespace,
-            database,
-            table,
-            id,
-            shard: None,
-            value: StampedValue::stamped(stamp, RecordValue::Tombstone),
-        });
-        over = over.saturating_sub(size);
-        Ok(over > 0)
-    })
-    .await?;
+    let mut messages = OldestFirst::of(topic);
+    'walk: while let Some(page) = messages.next(store).await? {
+        for id in page {
+            let size = message_bytes(view, topic, &id).await?;
+            let address = RecordAddress::new(namespace, database, table, id.clone());
+            // The stamp is carried forward from the version being removed, advanced
+            // by this node, exactly as a space's eviction carries it.
+            let mut stamp = view
+                .read_newest_stamped(&address)
+                .await?
+                .map_or_else(CausalStamp::new, |(_, stamped)| stamped.stamp().clone());
+            stamp.advance(node);
+            evicted.push(Mutation {
+                namespace,
+                database,
+                table,
+                id,
+                shard: None,
+                value: StampedValue::stamped(stamp, RecordValue::Tombstone),
+            });
+            over = over.saturating_sub(size);
+            if over == 0 {
+                break 'walk;
+            }
+        }
+    }
     if over > 0 {
         return Err(Error::TopicRetainExceeded {
             topic: name.to_owned(),

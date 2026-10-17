@@ -70,7 +70,6 @@ mod priority;
 mod served;
 mod taking;
 use std::collections::BTreeMap;
-use std::ops::ControlFlow;
 
 use tessari_constants::MAX_CLAIM_RECORDS;
 use tessari_encoding::decode_payload;
@@ -188,16 +187,20 @@ impl Session<'_> {
                 plan
             }
             None => {
-                transaction
-                    .walk_table(
-                        context.namespace,
-                        context.database,
-                        id,
-                        async |walking, record, bytes| {
-                            self.offer(walking, &mut taking, record, &bytes).await
-                        },
-                    )
+                let mut walk = transaction
+                    .walk_table(context.namespace, context.database, id)
                     .await?;
+                'walk: while let Some(round) = walk.next_round(transaction).await? {
+                    for (record, bytes) in round {
+                        if self
+                            .offer(transaction, &mut taking, record, &bytes)
+                            .await?
+                            .is_break()
+                        {
+                            break 'walk;
+                        }
+                    }
+                }
                 Plan::new(AccessPath::Scan).on(&table.name.text)
             }
         };
@@ -446,36 +449,33 @@ impl Session<'_> {
 
         let mut freed: Vec<(RecordId, Value)> = Vec::new();
         let mut writes: Vec<(RecordId, Value)> = Vec::new();
-        transaction
-            .walk_table(
-                context.namespace,
-                context.database,
-                id,
-                async |_, record, bytes| -> Result<ControlFlow<()>> {
-                    let Value::Object(mut fields) = decode_payload(&bytes)? else {
-                        return Ok(ControlFlow::Continue(()));
-                    };
-                    let Some(holder) = claimant_of(&fields) else {
-                        return Ok(ControlFlow::Continue(()));
-                    };
-                    if !whose.holds(&holder) {
-                        return Ok(ControlFlow::Continue(()));
-                    }
-                    fields.remove(QUEUE_CLAIMED_UNTIL);
-                    fields.remove(QUEUE_CLAIMED_BY);
-                    if let Some((field, instant)) = &delay {
-                        fields.insert(field.clone(), Value::Datetime(*instant));
-                    }
-                    // The attempt count is left alone, for `release`'s reason: it
-                    // was taken at the hand-out, and a record that was handed out
-                    // was handed out whatever happened next.
-                    let payload = Value::Object(fields);
-                    freed.push((record.clone(), payload.clone()));
-                    writes.push((record, payload));
-                    Ok(ControlFlow::Continue(()))
-                },
-            )
+        let mut walk = transaction
+            .walk_table(context.namespace, context.database, id)
             .await?;
+        while let Some(round) = walk.next_round(transaction).await? {
+            for (record, bytes) in round {
+                let Value::Object(mut fields) = decode_payload(&bytes)? else {
+                    continue;
+                };
+                let Some(holder) = claimant_of(&fields) else {
+                    continue;
+                };
+                if !whose.holds(&holder) {
+                    continue;
+                }
+                fields.remove(QUEUE_CLAIMED_UNTIL);
+                fields.remove(QUEUE_CLAIMED_BY);
+                if let Some((field, instant)) = &delay {
+                    fields.insert(field.clone(), Value::Datetime(*instant));
+                }
+                // The attempt count is left alone, for `release`'s reason: it
+                // was taken at the hand-out, and a record that was handed out
+                // was handed out whatever happened next.
+                let payload = Value::Object(fields);
+                freed.push((record.clone(), payload.clone()));
+                writes.push((record, payload));
+            }
+        }
 
         // After the walk, for the reason the selecting claim writes after its
         // own: a record written during a walk is merged into an order that was

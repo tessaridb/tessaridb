@@ -84,6 +84,6 @@ pub mod secret;
 pub use at_rest::AtRestKey;
 pub use envelope::{Binding, Level};
 pub use error::{Error, Result};
-pub use keys::{Root, Wrapped};
+pub use keys::{Root, Wrapped, off_the_worker};
 pub use seal::Keyring;
 pub use secret::{KEY_BYTES, KeyId, SecretBytes};

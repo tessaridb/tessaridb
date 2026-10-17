@@ -177,21 +177,20 @@ impl Db {
         settled: &mut SettledAcross,
         silent: &mut BTreeSet<[u8; tessari_storage::NODE_ID_LEN]>,
     ) -> Result<()> {
-        let mut failed = Ok(());
-        let recovered =
-            tessari_session::recover_staging(transaction, record, true, async |range, asked| {
-                match self.ask_leader_of(range, asked, silent).await {
-                    Ok(Some(answered)) => answered,
-                    Ok(None) => Err(format!("the leader of {range:?} did not answer this pass")),
-                    Err(why) => {
-                        let said = why.to_string();
-                        failed = Err(why);
-                        Err(said)
-                    }
-                }
-            })
-            .await;
-        failed?;
+        let mut staged = tessari_session::Staged::new(transaction, record, true);
+        let recovered = loop {
+            let Some((range, asked)) = staged.next_ask() else {
+                break staged.finish();
+            };
+            let answer = match self.ask_leader_of(range, &asked, silent).await {
+                Ok(Some(answered)) => answered,
+                Ok(None) => Err(format!("the leader of {range:?} did not answer this pass")),
+                Err(why) => return Err(why),
+            };
+            if let Some(recovered) = staged.heard(answer) {
+                break recovered;
+            }
+        };
         let decided = match recovered {
             Recovery::Committed(committed) => committed,
             Recovery::Barred(_) => tessari_storage::TransactionRecord {
@@ -412,18 +411,20 @@ impl tessari_storage::Decisions for LeadersDecide {
                 Ok(Some(Ok(AcrossAnswer::Outcome(record))))
                     if record.decision == Decision::Staging =>
                 {
-                    let recovered = tessari_session::recover_staging(
-                        transaction,
-                        &record,
-                        false,
-                        async |range, asked| match db.ask_leader_of(range, asked, &mut silent).await
-                        {
+                    let mut staged = tessari_session::Staged::new(transaction, &record, false);
+                    let recovered = loop {
+                        let Some((range, asked)) = staged.next_ask() else {
+                            break staged.finish();
+                        };
+                        let answer = match db.ask_leader_of(range, &asked, &mut silent).await {
                             Ok(Some(answered)) => answered,
                             Ok(None) => Err(format!("the leader of {range:?} did not answer")),
                             Err(why) => Err(why.to_string()),
-                        },
-                    )
-                    .await;
+                        };
+                        if let Some(recovered) = staged.heard(answer) {
+                            break recovered;
+                        }
+                    };
                     match recovered {
                         Recovery::Committed(committed) => Some(committed),
                         Recovery::Barred(_) | Recovery::Missing(_) | Recovery::Unknown(_) => None,

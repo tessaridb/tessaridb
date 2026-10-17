@@ -154,7 +154,7 @@ impl Origin for Serving<'_> {
     fn copied<'a>(
         &'a self,
         follower: [u8; NODE_ID_LEN],
-        write: &'a mut dyn FnMut(u8, Vec<u8>) -> Answering<'static, Result<()>>,
+        write: &'a mut (dyn FnMut(u8, Vec<u8>) -> Answering<'static, Result<()>> + Send),
     ) -> Answering<'a, Result<()>> {
         Box::pin(async move {
             let Some(over) = self.granted.granted(follower).await? else {

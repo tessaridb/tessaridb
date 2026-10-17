@@ -60,6 +60,7 @@ mod node;
 #[cfg(feature = "test-support")]
 mod now;
 mod ordering;
+mod owned;
 mod pruning;
 mod quarantine;
 mod reclaim;
@@ -123,7 +124,7 @@ pub use error::{ConflictWith, Error, Result};
 pub use failover::Failover;
 pub use feed::{Change, ChangeKind, Changes, History, Merged, Subject, Subscription, Watch};
 pub use followers::FollowerLag;
-pub use graph::{Graph as VectorGraph, Matched, filtered_ceiling, vector_of};
+pub use graph::{Admit, Graph as VectorGraph, Matched, filtered_ceiling, vector_of};
 pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};
 #[cfg(feature = "test-support")]
 pub use now::{Now, now};
@@ -151,7 +152,7 @@ pub use tessari_encoding::{
 pub use tessari_kv::ErrorCategory;
 pub use transaction::{
     AcrossPart, Committed, Expansion, FieldedPostings, Neighbour, PlacesNearest, RecordAddress,
-    Region, SearchCounts, StoredRecord, Transaction, Window,
+    RecordWalk, Region, SearchCounts, StoredRecord, Transaction, Window,
 };
 pub use vault::{OpenVault, SealState};
 pub use views::ViewState;

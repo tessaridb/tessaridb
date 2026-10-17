@@ -212,7 +212,9 @@ impl Transaction<'_> {
     /// Whether this transaction's index reads merge retired entries — set when
     /// [`Self::plain_indexes_serve_behind_the_tail`] answered yes, and only then.
     pub(crate) fn reads_retired_entries(&self) -> bool {
-        self.retired_reads.get()
+        // Relaxed: a flag of this transaction's own task; it publishes nothing.
+        self.retired_reads
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Whether a PLAIN index of `table` may serve a read taken through this
@@ -234,7 +236,8 @@ impl Transaction<'_> {
             && self.snapshot() >= since
             && !self.store().across_unsettled(table).await?;
         if serves {
-            self.retired_reads.set(true);
+            self.retired_reads
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(serves)
     }

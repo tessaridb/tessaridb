@@ -17,9 +17,10 @@
 //! same failure and refuses in its own words. A leader that dropped too much
 //! would be a record missing from an answer that says it is whole.
 
+use tessari_constants::GATHER_PAGE_RECORDS;
 use tessari_encoding::decode_payload;
-use tessari_storage::Store;
-use tessari_types::{RecordId, Value};
+use tessari_storage::{Store, Transaction, Window};
+use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
 
 use crate::error::Result;
 use crate::evaluate::Scope;
@@ -102,6 +103,92 @@ pub struct OrderKey {
     pub descending: bool,
 }
 
+/// The records of one node's span of a table, a page at a time, narrowed by
+/// the asker's pushed condition when it sent one.
+pub struct SpanPages<'p, 'a> {
+    store: &'p Store,
+    transaction: &'p Transaction<'a>,
+    place: (NamespaceId, DatabaseId, TableId),
+    window: Window<'p>,
+    pushed: Option<&'p Pushed>,
+    after: Option<RecordId>,
+    done: bool,
+}
+
+/// One page of records, each its identity and its stored payload.
+pub type Page = Vec<(RecordId, Vec<u8>)>;
+
+/// Where [`leading`] takes its pages from: a node's span of a table
+/// ([`SpanPages`]), or records already in hand (`Some(records)`, taken once).
+pub trait Pages {
+    /// The next page, or `None` once there are no more.
+    fn next_page(&mut self) -> impl Future<Output = Result<Option<Page>>> + Send;
+}
+
+impl Pages for Option<Page> {
+    fn next_page(&mut self) -> impl Future<Output = Result<Option<Page>>> + Send {
+        std::future::ready(Ok(self.take()))
+    }
+}
+
+impl Pages for SpanPages<'_, '_> {
+    fn next_page(&mut self) -> impl Future<Output = Result<Option<Page>>> + Send {
+        self.next()
+    }
+}
+
+impl<'p, 'a> SpanPages<'p, 'a> {
+    /// The pages of `table` inside `window`, read through `transaction`.
+    #[must_use]
+    pub const fn new(
+        store: &'p Store,
+        transaction: &'p Transaction<'a>,
+        place: (NamespaceId, DatabaseId, TableId),
+        window: Window<'p>,
+        pushed: Option<&'p Pushed>,
+    ) -> Self {
+        Self {
+            store,
+            transaction,
+            place,
+            window,
+            pushed,
+            after: None,
+            done: false,
+        }
+    }
+
+    /// The next page, or `None` once the span is read.
+    ///
+    /// # Errors
+    ///
+    /// The store's failure to read the span, or a pushed condition that does
+    /// not read back.
+    pub async fn next(&mut self) -> Result<Option<Vec<(RecordId, Vec<u8>)>>> {
+        if self.done {
+            return Ok(None);
+        }
+        let (namespace, database, table) = self.place;
+        let page = self
+            .transaction
+            .records_between(
+                namespace,
+                database,
+                table,
+                self.window,
+                self.after.as_ref(),
+                GATHER_PAGE_RECORDS,
+            )
+            .await?;
+        self.done = page.len() < GATHER_PAGE_RECORDS;
+        self.after = page.last().map(|(id, _)| id.clone());
+        Ok(Some(match self.pushed {
+            Some(pushed) => keeping(self.store, pushed, page).await?,
+            None => page,
+        }))
+    }
+}
+
 /// The records `ordered` puts first, out of every page `pages` hands over, in
 /// identity order.
 ///
@@ -121,7 +208,7 @@ pub struct OrderKey {
 pub async fn leading(
     store: &Store,
     ordered: &Ordered,
-    mut pages: impl AsyncFnMut() -> Result<Option<Vec<(RecordId, Vec<u8>)>>>,
+    pages: &mut impl Pages,
 ) -> Result<Vec<(RecordId, Vec<u8>)>> {
     let order = ordered
         .keys
@@ -138,7 +225,7 @@ pub async fn leading(
     let mut transaction = store.begin().await?;
     let mut topmost = crate::shape::Topmost::keeping(&order, Some(most));
     let mut unranked = Vec::new();
-    while let Some(page) = pages().await? {
+    while let Some(page) = pages.next_page().await? {
         for (id, payload) in page {
             let Ok(record) = decode_payload(&payload) else {
                 unranked.push((id, payload));

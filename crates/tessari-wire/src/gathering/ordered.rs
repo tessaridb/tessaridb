@@ -1,9 +1,7 @@
 //! An ordered `LIMIT` a shard's leader ranks before it sends (ADR-0102): the
 //! frame section that carries it, and the page the leader answers with.
 
-use tessari_constants::GATHER_PAGE_RECORDS;
 use tessari_storage::{Store, Transaction, Window};
-use tessari_types::RecordId;
 
 use super::folds::{put_portable, put_visible, take_portable, take_visible};
 use super::{Gather, Page, next};
@@ -67,34 +65,19 @@ pub(super) async fn ranked_page(
     window: Window<'_>,
     budget: usize,
 ) -> Result<Page> {
-    let mut after: Option<RecordId> = None;
-    let mut done = false;
-    let ranked = tessari_session::leading(store, ordered, async || {
-        if done {
-            return Ok(None);
-        }
-        let page = transaction
-            .records_between(
-                asked.namespace,
-                asked.database,
-                asked.table,
-                window,
-                after.as_ref(),
-                GATHER_PAGE_RECORDS,
-            )
-            .await?;
-        done = page.len() < GATHER_PAGE_RECORDS;
-        after = page.last().map(|(id, _)| id.clone());
-        Ok(Some(match &asked.pushed {
-            Some(pushed) => tessari_session::keeping(store, pushed, page).await?,
-            None => page,
-        }))
-    })
-    .await
-    .map_err(|why| Error::Refused {
-        message: why.to_string(),
-        class: None,
-    })?;
+    let mut pages = tessari_session::SpanPages::new(
+        store,
+        transaction,
+        (asked.namespace, asked.database, asked.table),
+        window,
+        asked.pushed.as_ref(),
+    );
+    let ranked = tessari_session::leading(store, ordered, &mut pages)
+        .await
+        .map_err(|why| Error::Refused {
+            message: why.to_string(),
+            class: None,
+        })?;
     let mut more = false;
     let mut records = Vec::new();
     let mut bytes = 0_usize;

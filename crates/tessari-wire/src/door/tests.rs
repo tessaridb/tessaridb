@@ -55,11 +55,13 @@ impl Origin for Holder {
     fn copied<'a>(
         &'a self,
         follower: [u8; NODE_ID_LEN],
-        write: &'a mut dyn FnMut(
+        write: &'a mut (
+                    dyn FnMut(
             u8,
             Vec<u8>,
-        )
-            -> crate::collection::Answering<'static, crate::Result<()>>,
+        ) -> crate::collection::Answering<'static, crate::Result<()>>
+                        + Send
+                ),
     ) -> crate::collection::Answering<'a, crate::Result<()>> {
         Box::pin(async move { NoLog.copied(follower, write).await })
     }

@@ -19,7 +19,7 @@ use crate::store::Store;
 
 /// What [`Decisions::decided`] answers with: the asking is a round trip to
 /// another node, and the trait is held as an object, so its future is boxed.
-pub type Deciding<'a> = Pin<Box<dyn Future<Output = Option<TransactionRecord>> + 'a>>;
+pub type Deciding<'a> = Pin<Box<dyn Future<Output = Option<TransactionRecord>> + Send + 'a>>;
 
 /// Asks the leader of a transaction's record range for its decision.
 pub trait Decisions: core::fmt::Debug + Send + Sync {

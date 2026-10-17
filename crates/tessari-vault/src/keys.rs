@@ -220,12 +220,31 @@ pub fn derive(passphrase: &str, salt: &[u8]) -> Result<SecretBytes> {
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
     let mut derived = [0_u8; KEY_BYTES];
-    let outcome = argon.hash_password_into(passphrase.as_bytes(), salt, &mut derived);
+    let outcome =
+        off_the_worker(|| argon.hash_password_into(passphrase.as_bytes(), salt, &mut derived));
     let held = outcome
         .map(|()| SecretBytes::adopt(derived))
         .map_err(|_| Error::Derivation);
     derived.zeroize();
     held
+}
+
+/// Run CPU-bound `work` (an Argon2id hash or derivation) so it does not hold a
+/// runtime worker every other connection on it is waiting for.
+///
+/// On the multi-thread runtime the worker hands its other tasks on before
+/// `work` starts (`block_in_place`); anywhere else (a current-thread runtime, a
+/// caller with no runtime) there is no worker to free and `work` runs where it
+/// is.
+pub fn off_the_worker<T>(work: impl FnOnce() -> T) -> T {
+    let shared = tokio::runtime::Handle::try_current().is_ok_and(|runtime| {
+        runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+    });
+    if shared {
+        tokio::task::block_in_place(work)
+    } else {
+        work()
+    }
 }
 
 /// A key sealed under the key above it, with the identifier that names it.

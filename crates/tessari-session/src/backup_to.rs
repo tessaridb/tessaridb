@@ -43,7 +43,9 @@ impl Session<'_> {
         let size = if form == BackupForm::State {
             let within = self.state_scope(of).await?;
             self.refuse_a_partial_snapshot(within).await?;
-            settle(&target, form, self.at_rest.as_deref(), async |file| {
+            let mut partial = Partial::create(&target);
+            let wrote = async {
+                let file = partial.file()?;
                 let out = std::io::BufWriter::new(file);
                 match &self.at_rest {
                     Some(key) => {
@@ -65,8 +67,9 @@ impl Session<'_> {
                         out.flush().map_err(|failure| failure.to_string())
                     }
                 }
-            })
-            .await?
+            }
+            .await;
+            partial.land(form, self.at_rest.as_deref(), wrote)?
         } else {
             let bytes = match self.backup(from, form, of).await? {
                 Outcome::Value(Value::Bytes(bytes)) => bytes,
@@ -77,11 +80,12 @@ impl Session<'_> {
                     });
                 }
             };
-            settle(&target, form, self.at_rest.as_deref(), async |file| {
+            let mut partial = Partial::create(&target);
+            let wrote = partial.file().and_then(|file| {
                 file.write_all(&bytes)
                     .map_err(|failure| failure.to_string())
-            })
-            .await?
+            });
+            partial.land(form, self.at_rest.as_deref(), wrote)?
         };
         let mut answer = std::collections::BTreeMap::new();
         answer.insert(
@@ -148,26 +152,29 @@ impl Session<'_> {
 }
 
 /// Where a snapshot goes when the caller streams it, taken once.
-pub(crate) struct Sink(std::cell::RefCell<Option<Box<dyn std::io::Write + Send>>>);
+pub(crate) struct Sink(std::sync::Mutex<Option<Box<dyn std::io::Write + Send>>>);
 
 impl Sink {
     pub(crate) const fn none() -> Self {
-        Self(std::cell::RefCell::new(None))
+        Self(std::sync::Mutex::new(None))
     }
 
     pub(crate) fn to(out: Box<dyn std::io::Write + Send>) -> Self {
-        Self(std::cell::RefCell::new(Some(out)))
+        Self(std::sync::Mutex::new(Some(out)))
     }
 
     /// The sink, the first time it is asked for.
     pub(crate) fn take(&self) -> Option<Box<dyn std::io::Write + Send>> {
-        self.0.borrow_mut().take()
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 }
 
 impl std::fmt::Debug for Sink {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let held = self.0.try_borrow().map_or(true, |held| held.is_some());
+        let held = self.0.try_lock().map_or(true, |held| held.is_some());
         formatter.debug_tuple("Sink").field(&held).finish()
     }
 }
@@ -269,58 +276,96 @@ pub(crate) fn readable(folder: &Path, name: &str) -> Result<PathBuf> {
     }
 }
 
-/// Write `bytes` beside `target`, read them back where they landed, and only
-/// then put them at `target`.
-async fn settle(
-    target: &Path,
-    form: BackupForm,
-    key: Option<&tessari_vault::AtRestKey>,
-    write: impl AsyncFnOnce(&mut fs::File) -> std::result::Result<(), String>,
-) -> Result<u64> {
-    let mut partial = target.as_os_str().to_owned();
-    partial.push(".partial");
-    let partial = PathBuf::from(partial);
-    let written = write_new(&partial, write).await.and_then(|size| {
-        check(&partial, form, key)?;
-        fs::rename(&partial, target).map_err(|failure| failure.to_string())?;
-        Ok(size)
-    });
-    let size = match written {
-        Ok(size) => size,
-        Err(why) => {
-            drop(fs::remove_file(&partial));
-            return Err(Error::BackupFailed {
-                reason: format!("{}: {why}", target.display()),
-            });
-        }
-    };
-    // The rename is durable only once the folder holding it is.
-    if let Some(parent) = target.parent() {
-        fs::File::open(parent)
-            .and_then(|folder| folder.sync_all())
-            .map_err(|failure| Error::BackupFailed {
-                reason: format!("{}: {failure}", parent.display()),
-            })?;
-    }
-    Ok(size)
+/// A backup written beside its target, read back where it landed, and only
+/// then put at the target.
+struct Partial<'t> {
+    target: &'t Path,
+    path: PathBuf,
+    /// `None` when the file could not be created; the reason is in `refused`.
+    file: Option<fs::File>,
+    refused: Option<String>,
 }
 
-/// Create `path` — never open one that exists — write into it, sync it, and
-/// answer its size.
-async fn write_new(
-    path: &Path,
-    write: impl AsyncFnOnce(&mut fs::File) -> std::result::Result<(), String>,
-) -> std::result::Result<u64, String> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|failure| failure.to_string())?;
-    write(&mut file).await?;
-    file.sync_all().map_err(|failure| failure.to_string())?;
-    file.metadata()
-        .map(|held| held.len())
-        .map_err(|failure| failure.to_string())
+impl<'t> Partial<'t> {
+    /// Create the file beside `target`, never opening one that exists.
+    fn create(target: &'t Path) -> Self {
+        let mut path = target.as_os_str().to_owned();
+        path.push(".partial");
+        let path = PathBuf::from(path);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => Self {
+                target,
+                path,
+                file: Some(file),
+                refused: None,
+            },
+            Err(failure) => Self {
+                target,
+                path,
+                file: None,
+                refused: Some(failure.to_string()),
+            },
+        }
+    }
+
+    /// The file to write into, or why there is none.
+    fn file(&mut self) -> std::result::Result<&mut fs::File, String> {
+        match (&mut self.file, &self.refused) {
+            (Some(file), _) => Ok(file),
+            (None, refused) => Err(refused.clone().unwrap_or_default()),
+        }
+    }
+
+    /// Sync what `wrote` left in the file, check it, and put it at the target;
+    /// answers its size. Any failure removes the partial file.
+    fn land(
+        self,
+        form: BackupForm,
+        key: Option<&tessari_vault::AtRestKey>,
+        wrote: std::result::Result<(), String>,
+    ) -> Result<u64> {
+        let Self {
+            target,
+            path,
+            file,
+            refused,
+        } = self;
+        let written = wrote
+            .and_then(|()| file.ok_or_else(|| refused.unwrap_or_default()))
+            .and_then(|file| {
+                file.sync_all().map_err(|failure| failure.to_string())?;
+                file.metadata()
+                    .map(|held| held.len())
+                    .map_err(|failure| failure.to_string())
+            })
+            .and_then(|size| {
+                check(&path, form, key)?;
+                fs::rename(&path, target).map_err(|failure| failure.to_string())?;
+                Ok(size)
+            });
+        let size = match written {
+            Ok(size) => size,
+            Err(why) => {
+                drop(fs::remove_file(&path));
+                return Err(Error::BackupFailed {
+                    reason: format!("{}: {why}", target.display()),
+                });
+            }
+        };
+        // The rename is durable only once the folder holding it is.
+        if let Some(parent) = target.parent() {
+            fs::File::open(parent)
+                .and_then(|folder| folder.sync_all())
+                .map_err(|failure| Error::BackupFailed {
+                    reason: format!("{}: {failure}", parent.display()),
+                })?;
+        }
+        Ok(size)
+    }
 }
 
 /// Read the file back through the verifier, where it was written — opening it

@@ -471,10 +471,10 @@ impl<H: Holding> Connection<H> {
         }
     }
 
-    /// Run a store call on the bridge, driven to its end on the blocking pool
+    /// Run a store call on the bridge, driven to its end as a task
     /// ([`tessari_serve::Bridge::call_async`]), and read a refusal as the error it
     /// is.
-    async fn store_async<T: Send + 'static, W: Future<Output = Result<T>>>(
+    async fn store_async<T: Send + 'static, W: Future<Output = Result<T>> + Send + 'static>(
         &self,
         work: impl FnOnce() -> W + Send + 'static,
     ) -> Result<T> {

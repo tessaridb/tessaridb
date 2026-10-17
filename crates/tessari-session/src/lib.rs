@@ -95,12 +95,12 @@ pub use error::{Depended, Error, Result};
 pub use gather::{Asked, Counting, Gather, Gathered, Gathering, Unanswered};
 pub use outcome::{AccessPath, Exactness, Nearest, Note, Outcome, Suggestion};
 pub use plan::{Expected, Plan};
-pub use pushdown::{OrderKey, Ordered, Pushed, keeping, leading};
+pub use pushdown::{OrderKey, Ordered, Pages, Pushed, SpanPages, keeping, leading};
 pub use reduce::{Folded, Partial, Portable, Reduce, Reduced, reducing};
 pub use script::{ScriptTaken, write_script};
 pub use session::{
     AcrossAnswer, AcrossAsk, AcrossRefusal, Asking, Atomic, PartRefused, Participants, Recovery,
-    RefusalKind, Session, across_lapse_millis, recover_staging,
+    RefusalKind, Session, Staged, across_lapse_millis, recover_staging,
 };
 pub use tessari_ql::Parameters;
 #[cfg(feature = "test-support")]

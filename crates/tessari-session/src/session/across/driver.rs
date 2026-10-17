@@ -142,15 +142,15 @@ impl Session<'_> {
                 })
                 .collect(),
         };
-        let deciding = async |this: &mut Self, record: &TransactionRecord| {
-            let asked = AcrossAsk::Decide {
-                transaction: id,
-                record: record.clone(),
-            };
-            this.ask_one(carrier, coordinator_leader, user, &asked)
-                .await
+        let deciding = |record: &TransactionRecord| AcrossAsk::Decide {
+            transaction: id,
+            record: record.clone(),
         };
-        if !merged && let Err(refusal) = deciding(self, &record).await {
+        if !merged
+            && let Err(refusal) = self
+                .ask_one(carrier, coordinator_leader, user, &deciding(&record))
+                .await
+        {
             return Err(Error::AcrossAborted { refusal, span });
         }
         let prepares: Vec<AcrossAsk> = parts
@@ -214,7 +214,9 @@ impl Session<'_> {
         } else {
             Decision::Committed
         };
-        let decided = deciding(self, &record).await;
+        let decided = self
+            .ask_one(carrier, coordinator_leader, user, &deciding(&record))
+            .await;
         let committed = record.decision == Decision::Committed && decided.is_ok();
         // A committed resolution's versions carry where every prepare landed
         // (D6a); an aborted one writes no versions and needs none.
@@ -301,55 +303,45 @@ impl Session<'_> {
         user: Option<&tessari_storage::UserDefinition>,
         asks: &[AcrossAsk],
     ) -> Vec<Answered> {
-        let mut answers: Vec<Option<Answered>> = parts.iter().map(|_| None).collect();
-        // This node's own parts are answered first, awaited here: the scope
-        // below runs synchronous threads and cannot await. Until the remote
-        // asks are futures too, a local prepare's time comes before theirs
-        // rather than beside it (G077 W7).
-        for (at, (part, asked)) in parts.iter().zip(asks).enumerate() {
-            if part.leader.is_none() {
-                let began = std::time::Instant::now();
-                answers[at] = Some(
-                    self.answer_across(asked)
+        // Every remote ask is a future, polled beside this node's own parts in
+        // this one task: the parts' leaders answer at once and nothing waits on
+        // a thread.
+        let remote = futures_util::future::join_all(parts.iter().zip(asks).enumerate().filter_map(
+            |(at, (part, asked))| {
+                part.leader.map(|node| async move {
+                    let began = std::time::Instant::now();
+                    let answered = carrier
+                        .ask(node, user, asked)
                         .await
-                        .map_err(|refused| AcrossRefusal::Here(Box::new(refused))),
-                );
-                answered_after(part, true, began);
+                        .map_err(AcrossRefusal::There);
+                    answered_after(part, false, began);
+                    (at, answered)
+                })
+            },
+        ));
+        let local = async {
+            let mut answered = Vec::new();
+            for (at, (part, asked)) in parts.iter().zip(asks).enumerate() {
+                if part.leader.is_none() {
+                    let began = std::time::Instant::now();
+                    answered.push((
+                        at,
+                        self.answer_across(asked)
+                            .await
+                            .map_err(|refused| AcrossRefusal::Here(Box::new(refused))),
+                    ));
+                    answered_after(part, true, began);
+                }
+            }
+            answered
+        };
+        let (local, remote) = futures_util::future::join(local, remote).await;
+        let mut answers: Vec<Option<Answered>> = parts.iter().map(|_| None).collect();
+        for (at, answered) in local.into_iter().chain(remote) {
+            if let Some(slot) = answers.get_mut(at) {
+                *slot = Some(answered);
             }
         }
-        // The remote asks run on threads of their own, outside the runtime;
-        // each drives its ask through the runtime this call runs in.
-        let runtime = tokio::runtime::Handle::current();
-        let runtime = &runtime;
-        std::thread::scope(|scope| {
-            let remote: Vec<_> = parts
-                .iter()
-                .zip(asks)
-                .enumerate()
-                .filter_map(|(at, (part, asked))| {
-                    part.leader.map(|node| {
-                        (
-                            at,
-                            scope.spawn(move || {
-                                let began = std::time::Instant::now();
-                                let answered = runtime
-                                    .block_on(carrier.ask(node, user, asked))
-                                    .map_err(AcrossRefusal::There);
-                                answered_after(part, false, began);
-                                answered
-                            }),
-                        )
-                    })
-                })
-                .collect();
-            for (at, waiting) in remote {
-                answers[at] = Some(waiting.join().unwrap_or_else(|_| {
-                    Err(AcrossRefusal::There(PartRefused::retriable(
-                        "the ask's thread panicked",
-                    )))
-                }));
-            }
-        });
         answers
             .into_iter()
             .map(|answer| {

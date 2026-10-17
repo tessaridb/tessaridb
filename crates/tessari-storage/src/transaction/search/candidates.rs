@@ -119,30 +119,24 @@ impl Transaction<'_> {
             let mut prefix = address.prefix(KeyKind::UniqueIndex);
             prefix.extend_from_slice(wanted);
             let mut found = Vec::new();
-            self.walk_range(
-                UniqueIndexKey::keyspace(),
-                &KeyRange::prefix(&prefix),
-                async |_, value| {
+            let mut walk = RangeWalk::new(UniqueIndexKey::keyspace(), &KeyRange::prefix(&prefix));
+            while let Some(batch) = walk.next(self).await? {
+                for (_, value) in &batch {
                     found.push(IndexTarget::decode(value.as_slice())?.id);
-                    Ok(())
-                },
-            )
-            .await?;
+                }
+            }
             return Ok(found);
         }
 
         let mut prefix = address.prefix(KeyKind::SecondaryIndex);
         prefix.extend_from_slice(wanted);
         let mut found = Vec::new();
-        self.walk_range(
-            SecondaryIndexKey::keyspace(),
-            &KeyRange::prefix(&prefix),
-            async |key, _| {
+        let mut walk = RangeWalk::new(SecondaryIndexKey::keyspace(), &KeyRange::prefix(&prefix));
+        while let Some(batch) = walk.next(self).await? {
+            for (key, _) in &batch {
                 found.push(SecondaryIndexKey::decode(key.as_slice())?.id);
-                Ok(())
-            },
-        )
-        .await?;
+            }
+        }
         // Behind the tail, the records that held the value at this snapshot and
         // lost it since are named by retired entries (Q-S3-34); each candidate
         // is confirmed at the snapshot like every other.

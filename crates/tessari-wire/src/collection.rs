@@ -280,7 +280,7 @@ impl Collected {
 
 /// What a door's question answers with: answering reads the store, and the
 /// door holds its origin as an object, so the future is boxed.
-pub type Answering<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
+pub type Answering<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 /// What a peer door may do to the log it serves from.
 ///
@@ -288,7 +288,7 @@ pub type Answering<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T
 /// store, so what a peer connection can reach is a matter of what this trait
 /// says rather than of what the door's author remembered not to call. It also
 /// means a test about a handshake needs a handshake and not a storage engine.
-pub trait Origin {
+pub trait Origin: Send + Sync {
     /// Answer `asked` for the follower that asked it, and record the collection.
     ///
     /// Recording is part of the same call because the door is the only way
@@ -367,7 +367,7 @@ pub trait Origin {
     fn copied<'a>(
         &'a self,
         follower: [u8; NODE_ID_LEN],
-        write: &'a mut dyn FnMut(u8, Vec<u8>) -> Answering<'static, Result<()>>,
+        write: &'a mut (dyn FnMut(u8, Vec<u8>) -> Answering<'static, Result<()>> + Send),
     ) -> Answering<'a, Result<()>>;
 
     /// Whether this node's catalog places `candidate` on `range` — what a
@@ -483,7 +483,7 @@ impl Origin for NoLog {
     fn copied<'a>(
         &'a self,
         _follower: [u8; NODE_ID_LEN],
-        _write: &'a mut dyn FnMut(u8, Vec<u8>) -> Answering<'static, Result<()>>,
+        _write: &'a mut (dyn FnMut(u8, Vec<u8>) -> Answering<'static, Result<()>> + Send),
     ) -> Answering<'a, Result<()>> {
         Box::pin(async move { Err(Error::Unsubscribed) })
     }
@@ -496,7 +496,7 @@ impl Origin for NoLog {
 /// catalog to prove that a batch applies in order. The production answer has one
 /// implementation, on [`Store`], and it is the catalog — so the door cannot be
 /// given a second opinion by a call site.
-pub trait Subscriptions: core::fmt::Debug {
+pub trait Subscriptions: core::fmt::Debug + Send + Sync {
     /// How far `follower` may collect, or `None` when it may not at all.
     ///
     /// `None` is the refusal and it is the default: it is what a peer nobody

@@ -144,7 +144,8 @@ pub type Delivered = bool;
 /// Where a feed delivers: the change, its table's name, what of it the
 /// subscriber may see, and — on a feed over a split table — the cursor to
 /// resume after it.
-pub type Deliver<'s> = dyn FnMut(&Change, Option<&str>, &Visible, Option<&str>) -> Delivered + 's;
+pub type Deliver<'s> =
+    dyn FnMut(&Change, Option<&str>, &Visible, Option<&str>) -> Delivered + Send + 's;
 
 /// How long an async feed waits on its announcement before checking whether it
 /// has been asked to stop.

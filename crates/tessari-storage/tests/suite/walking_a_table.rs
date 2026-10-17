@@ -17,14 +17,13 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 use tessari_storage::Now;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::encode_payload;
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_storage::{Error, RecordAddress, Store, Transaction, Window};
+use tessari_storage::{RecordAddress, Store, Transaction, Window};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
 
 const NAMESPACE: NamespaceId = NamespaceId::new(1);
@@ -49,13 +48,13 @@ fn payload(mark: &str) -> Vec<u8> {
 /// What the walk hands over, in the order it hands it over.
 fn walked(transaction: &mut Transaction<'_>) -> Vec<(RecordId, Vec<u8>)> {
     let mut found = Vec::new();
-    transaction
-        .walk_table(NAMESPACE, DATABASE, TABLE, async |_, id, record| {
-            found.push((id, record));
-            Ok::<_, Error>(ControlFlow::Continue(()))
-        })
+    let mut walk = transaction
+        .walk_table(NAMESPACE, DATABASE, TABLE)
         .now()
         .unwrap();
+    while let Some(round) = walk.next_round(transaction).now().unwrap() {
+        found.extend(round);
+    }
     found
 }
 
@@ -129,21 +128,22 @@ fn a_record_rewritten_across_a_batch_boundary_is_read_once_at_its_newest_version
 #[test]
 fn the_walk_stops_where_the_caller_says_stop() {
     let store = populated();
-    let mut transaction = store.begin().now().unwrap();
+    let transaction = store.begin().now().unwrap();
     let whole = scanned(&transaction);
 
     let mut found = Vec::new();
-    transaction
-        .walk_table(NAMESPACE, DATABASE, TABLE, async |_, id, record| {
-            found.push((id, record));
-            Ok::<_, Error>(if found.len() == 3 {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            })
-        })
+    let mut walk = transaction
+        .walk_table(NAMESPACE, DATABASE, TABLE)
         .now()
         .unwrap();
+    'walk: while let Some(round) = walk.next_round(&transaction).now().unwrap() {
+        for record in round {
+            found.push(record);
+            if found.len() == 3 {
+                break 'walk;
+            }
+        }
+    }
 
     // Three, and the same three the whole read would have started with: a walk
     // that stopped early in the wrong place would also hand over three.

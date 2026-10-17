@@ -1909,6 +1909,7 @@ version = "0.35.3"
 dependencies = [
  "argon2",
  "dashmap",
+ "futures-util",
  "md-5",
  "proptest",
  "rust_decimal",
@@ -1971,6 +1972,7 @@ dependencies = [
  "ring",
  "tempfile",
  "thiserror",
+ "tokio",
  "zeroize",
 ]
 

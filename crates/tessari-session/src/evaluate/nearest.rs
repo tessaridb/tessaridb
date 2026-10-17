@@ -25,12 +25,13 @@
 
 use std::collections::BTreeMap;
 
-use tessari_storage::{RecordAddress, Transaction};
+use tessari_storage::{Admit, RecordAddress, Transaction};
 use tessari_types::{RecordId, TableId, Value};
 
 use crate::condition::boolean;
 use crate::error::{Error, Result};
 use crate::plan;
+use crate::redact::Visible;
 use crate::session::Session;
 
 use super::{Scope, Testing, Walked};
@@ -59,43 +60,23 @@ impl Session<'_> {
         let Some(graph) = transaction.vector_graph(&gated.index)? else {
             return Ok(Walked::NotServed);
         };
-        let Testing {
-            condition,
-            searched,
-            noticed,
-        } = testing;
-        let mut admitted: BTreeMap<RecordId, Value> = BTreeMap::new();
+        let mut admitting = Admitting {
+            session: self,
+            transaction,
+            place: (context, table),
+            visible: &gated.visible,
+            testing,
+            admitted: BTreeMap::new(),
+        };
         let matched = graph
             .nearest_matching(
                 &gated.query,
                 plan::walked_for(wanted.wanted, gated.index.quantized),
                 wanted.effort,
-                async |id: &RecordId| -> std::result::Result<bool, Error> {
-                    // Read at this reader's own snapshot: a node left behind by a
-                    // deleted record has nothing to read and is not admitted.
-                    let at =
-                        RecordAddress::new(context.namespace, context.database, table, id.clone());
-                    let Some(payload) = transaction.get(&at).await? else {
-                        return Ok(false);
-                    };
-                    let record = self.record_of(&payload, &gated.visible)?;
-                    let held = self
-                        .evaluate_in(
-                            transaction,
-                            condition,
-                            Scope::searching(&record, searched)
-                                .identified(id)
-                                .noticing(noticed),
-                        )
-                        .await?;
-                    if !boolean(&held, condition.span)? {
-                        return Ok(false);
-                    }
-                    admitted.insert(id.clone(), record);
-                    Ok(true)
-                },
+                &mut admitting,
             )
             .await?;
+        let mut admitted = admitting.admitted;
         if matched.cut || matched.ids.len() < wanted.wanted {
             return Ok(Walked::Declined);
         }
@@ -108,5 +89,52 @@ impl Session<'_> {
             found,
             index: gated.index.name,
         })
+    }
+}
+
+/// The condition a filtered walk admits by: a record read at this reader's own
+/// snapshot, redacted for this session and tested against the whole condition.
+struct Admitting<'w, 's, 't> {
+    session: &'w Session<'s>,
+    transaction: &'w mut Transaction<'t>,
+    place: (crate::context::Context, TableId),
+    visible: &'w Visible,
+    testing: Testing<'w>,
+    /// The admitted records, kept so the answer is not read twice.
+    admitted: BTreeMap<RecordId, Value>,
+}
+
+impl Admit for Admitting<'_, '_, '_> {
+    type Error = Error;
+
+    async fn admit(&mut self, id: &RecordId) -> Result<bool> {
+        let (context, table) = self.place;
+        // Read at this reader's own snapshot: a node left behind by a deleted
+        // record has nothing to read and is not admitted.
+        let at = RecordAddress::new(context.namespace, context.database, table, id.clone());
+        let Some(payload) = self.transaction.get(&at).await? else {
+            return Ok(false);
+        };
+        let record = self.session.record_of(&payload, self.visible)?;
+        let (condition, searched, noticed) = (
+            self.testing.condition,
+            self.testing.searched,
+            self.testing.noticed,
+        );
+        let held = self
+            .session
+            .evaluate_in(
+                self.transaction,
+                condition,
+                Scope::searching(&record, searched)
+                    .identified(id)
+                    .noticing(noticed),
+            )
+            .await?;
+        if !boolean(&held, condition.span)? {
+            return Ok(false);
+        }
+        self.admitted.insert(id.clone(), record);
+        Ok(true)
     }
 }

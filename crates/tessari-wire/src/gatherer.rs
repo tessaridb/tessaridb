@@ -46,7 +46,7 @@ pub type Greeting = Box<dyn Fn() -> Greeted + Send + Sync>;
 
 /// What a [`Greeting`] answers, once it has read the store.
 pub type Greeted =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Hello, GreetingUnavailable>>>>;
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Hello, GreetingUnavailable>> + Send>>;
 
 /// Why this node could not say what it would tell a peer.
 #[derive(Debug)]

@@ -38,7 +38,6 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::collections::BTreeMap;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tessari_storage::Now;
@@ -533,27 +532,22 @@ fn a_complete_equality_the_caller_stops_examines_its_bound_and_not_every_entry()
     let fixture = Fixture::new();
     let sharing = RANGE_SCAN_BATCH_ENTRIES * 4;
     fixture.write_sharing(sharing, 7);
-    let mut transaction = fixture.store.begin().now().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
     fixture.counting.reset();
 
     let mut handed = Vec::new();
-    transaction
-        .walk_records_in_range(
-            &fixture.index,
-            &[Value::from(7_i64)],
-            None,
-            None,
-            async |_, id, _| {
-                handed.push(id);
-                Ok::<_, tessari_storage::Error>(if handed.len() == WANTED {
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
-                })
-            },
-        )
+    let mut walk = transaction
+        .walk_records_in_range(&fixture.index, &[Value::from(7_i64)], None, None)
         .now()
         .unwrap();
+    'walk: while let Some(round) = walk.next_round(&transaction).now().unwrap() {
+        for (id, _) in round {
+            handed.push(id);
+            if handed.len() == WANTED {
+                break 'walk;
+            }
+        }
+    }
     let expected: Vec<RecordId> = (0..WANTED)
         .map(|n| RecordId::from(format!("u{n:06}").as_str()))
         .collect();
@@ -860,26 +854,22 @@ fn a_hop_costs_one_ask_however_many_neighbours_the_node_has() {
 fn a_walk_the_caller_stops_examines_a_batch_and_not_the_table() {
     let fixture = Fixture::new();
     fixture.write(RECORDS);
-    let mut transaction = fixture.store.begin().now().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
     fixture.counting.reset();
 
     let mut handed = 0_usize;
-    transaction
-        .walk_table(
-            fixture.namespace,
-            fixture.database,
-            fixture.table,
-            async |_, _, _| {
-                handed += 1;
-                Ok::<_, tessari_storage::Error>(if handed == WANTED {
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
-                })
-            },
-        )
+    let mut walk = transaction
+        .walk_table(fixture.namespace, fixture.database, fixture.table)
         .now()
         .unwrap();
+    'walk: while let Some(round) = walk.next_round(&transaction).now().unwrap() {
+        for _ in round {
+            handed += 1;
+            if handed == WANTED {
+                break 'walk;
+            }
+        }
+    }
     assert_eq!(handed, WANTED);
 
     let examined = fixture.counting.entries();
@@ -907,22 +897,17 @@ fn a_walk_the_caller_stops_examines_a_batch_and_not_the_table() {
 fn a_walk_over_the_whole_table_holds_one_batch_at_a_time() {
     let fixture = Fixture::new();
     fixture.write(RECORDS);
-    let mut transaction = fixture.store.begin().now().unwrap();
+    let transaction = fixture.store.begin().now().unwrap();
     fixture.counting.reset();
 
     let mut handed = 0_usize;
-    transaction
-        .walk_table(
-            fixture.namespace,
-            fixture.database,
-            fixture.table,
-            async |_, _, _| {
-                handed += 1;
-                Ok::<_, tessari_storage::Error>(ControlFlow::Continue(()))
-            },
-        )
+    let mut walk = transaction
+        .walk_table(fixture.namespace, fixture.database, fixture.table)
         .now()
         .unwrap();
+    while let Some(round) = walk.next_round(&transaction).now().unwrap() {
+        handed += round.len();
+    }
     assert_eq!(handed, usize::try_from(RECORDS).unwrap());
     assert!(
         fixture.counting.largest_fetch() <= RANGE_SCAN_BATCH_ENTRIES,

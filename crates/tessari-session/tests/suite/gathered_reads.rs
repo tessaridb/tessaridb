@@ -218,8 +218,7 @@ impl Gather for FromTheLeader {
             // (ADR-0102).
             let records = match asked.ordered {
                 Some(ordered) => {
-                    let mut page = Some(records);
-                    tessari_session::leading(&self.leader, ordered, async || Ok(page.take()))
+                    tessari_session::leading(&self.leader, ordered, &mut Some(records))
                         .await
                         .unwrap()
                 }

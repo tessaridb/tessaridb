@@ -63,7 +63,11 @@ impl Drop for Transaction<'_> {
         // held by its commit, or free again (ADR-0126 D5).
         let taken = self.claiming.get_mut();
         if !taken.is_empty() {
-            self.store.claiming().release(self.claim_token.get(), taken);
+            // Relaxed: the token is this task's own, as at its issue.
+            self.store.claiming().release(
+                self.claim_token.load(std::sync::atomic::Ordering::Relaxed),
+                taken,
+            );
         }
     }
 }

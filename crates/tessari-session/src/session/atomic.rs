@@ -105,11 +105,11 @@ impl Atomic<'_, '_> {
 
 impl<'a> Session<'a> {
     /// Run `work` against one transaction and commit it when `work` answers
-    /// `Ok`, through the commit `COMMIT` uses — so a refusal or contention reads
+    /// `Ok`, through the commit `COMMIT` uses, so a refusal or contention reads
     /// exactly as it would from a script. On `Err`, nothing is written.
     ///
     /// The error is the caller's type, so `work` can stop with a reason of its
-    /// own — a message it will not apply — and still have nothing written.
+    /// own (a message it will not apply) and still have nothing written.
     ///
     /// # Errors
     ///
@@ -118,13 +118,41 @@ impl<'a> Session<'a> {
         &mut self,
         work: impl AsyncFnOnce(&mut Atomic<'_, 'a>) -> std::result::Result<T, E>,
     ) -> std::result::Result<T, E> {
-        let transaction = self.store.begin().await.map_err(Error::from)?;
-        let mut held = Atomic {
+        let mut held = self.atomic().await.map_err(E::from)?;
+        let answered = work(&mut held).await;
+        held.conclude(answered).await
+    }
+
+    /// One transaction held for running scripts in, the form of
+    /// [`Self::atomically`] whose work is written inline:
+    /// `let mut held = session.atomic().await?;` then `held.conclude(answer)`.
+    ///
+    /// Dropping it without concluding writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// The store's refusal to begin a transaction.
+    pub async fn atomic(&mut self) -> Result<Atomic<'_, 'a>> {
+        let transaction = self.store.begin().await?;
+        Ok(Atomic {
             session: self,
             open: Some((transaction, Span::new(0, 0))),
-        };
-        let answered = work(&mut held).await;
-        let Some((transaction, _)) = held.open.take() else {
+        })
+    }
+}
+
+impl Atomic<'_, '_> {
+    /// Commit the held transaction when `answered` is `Ok`, through the commit
+    /// `COMMIT` uses; on `Err`, roll it back and hand the failure on.
+    ///
+    /// # Errors
+    ///
+    /// The failure `answered` carried, or the commit's refusal.
+    pub async fn conclude<T, E: From<Error>>(
+        mut self,
+        answered: std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        let Some((transaction, _)) = self.open.take() else {
             // Unreachable while `run_with` refuses the verbs that close it; named
             // so that a change there is a refusal rather than a silent success.
             return Err(Error::TransactionVerbInAtomic {

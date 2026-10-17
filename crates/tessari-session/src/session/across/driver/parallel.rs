@@ -19,9 +19,7 @@ use tessari_encoding::{Decision, NODE_ID_LEN, TransactionId, TransactionRecord};
 use tessari_ql::Span;
 use tessari_storage::{AcrossPart, Store};
 
-use super::super::{
-    AcrossAnswer, AcrossAsk, AcrossRefusal, Participants, Recovery, recover_staging,
-};
+use super::super::{AcrossAnswer, AcrossAsk, AcrossRefusal, Participants, Recovery, Staged};
 use super::records_of;
 use crate::error::{Error, Result};
 use crate::session::Session;
@@ -108,17 +106,22 @@ impl Session<'_> {
                 }
             }
         }
-        let recovered = recover_staging(id, &record, true, async |range, asked| {
-            let leader = parts
-                .iter()
-                .find(|part| part.home == range)
-                .map(|part| part.leader)
-                .ok_or_else(|| format!("{range:?} is not a part of this transaction"))?;
-            self.ask_one(carrier, leader, user, asked)
-                .await
-                .map_err(|why| why.to_string())
-        })
-        .await;
+        let mut staged = Staged::new(id, &record, true);
+        let recovered = loop {
+            let Some((range, asked)) = staged.next_ask() else {
+                break staged.finish();
+            };
+            let answer = match parts.iter().find(|part| part.home == range) {
+                Some(part) => self
+                    .ask_one(carrier, part.leader, user, &asked)
+                    .await
+                    .map_err(|why| why.to_string()),
+                None => Err(format!("{range:?} is not a part of this transaction")),
+            };
+            if let Some(recovered) = staged.heard(answer) {
+                break recovered;
+            }
+        };
         match recovered {
             Recovery::Committed(committed) => {
                 behind(store, carrying, user, concluding(parts, id, &committed));

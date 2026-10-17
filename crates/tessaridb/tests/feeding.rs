@@ -17,7 +17,8 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
-use std::cell::Cell;
+use std::sync::Mutex;
+
 use tessari_session::Now;
 use tessari_session::RunNow;
 
@@ -25,6 +26,36 @@ use tessaridb::feed::{Commits, FeedRefused, Following, follow};
 use tessaridb::{Db, Sequence};
 
 const PASSWORD: &str = "correct horse battery";
+
+/// A `Cell` a feed's sink may hold: the sink is `Send`, so what it counts in
+/// is shared through a lock rather than a `Cell`.
+struct Cell<T>(Mutex<T>);
+
+impl<T: Copy> Cell<T> {
+    fn get(&self) -> T {
+        *self.0.lock().unwrap()
+    }
+}
+
+impl<T> Cell<T> {
+    const fn new(value: T) -> Self {
+        Self(Mutex::new(value))
+    }
+
+    fn set(&self, value: T) {
+        *self.0.lock().unwrap() = value;
+    }
+
+    fn replace(&self, value: T) -> T {
+        std::mem::replace(&mut *self.0.lock().unwrap(), value)
+    }
+}
+
+impl<T: Default> Cell<T> {
+    fn take(&self) -> T {
+        std::mem::take(&mut *self.0.lock().unwrap())
+    }
+}
 
 /// How many rounds the feed is allowed before the test gives up on it.
 ///

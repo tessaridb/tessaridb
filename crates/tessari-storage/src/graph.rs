@@ -71,7 +71,7 @@ mod searching;
 
 use nodes::Nodes;
 
-pub use filtered::{Matched, filtered_ceiling};
+pub use filtered::{Admit, Matched, filtered_ceiling};
 
 /// How many neighbours a node keeps.
 ///

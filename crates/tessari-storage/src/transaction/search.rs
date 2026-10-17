@@ -53,8 +53,24 @@ pub struct Expansion {
     pub examined: usize,
 }
 
-impl Transaction<'_> {
-    /// Hand every pair of a range to `take`, reading it in bounded batches.
+/// A walk over one key range, handed out a bounded batch at a time.
+///
+/// A pull rather than a callback: the caller's loop body runs between batches,
+/// so it may await on the transaction it holds without lending it to a closure.
+pub(super) struct RangeWalk {
+    keyspace: Keyspace,
+    remaining: Option<KeyRange>,
+}
+
+impl RangeWalk {
+    pub(super) fn new(keyspace: Keyspace, range: &KeyRange) -> Self {
+        Self {
+            keyspace,
+            remaining: Some(range.clone()),
+        }
+    }
+
+    /// The next batch of a range, read in bounded batches.
     ///
     /// # Why the walk is batched and what that does not promise
     ///
@@ -63,45 +79,42 @@ impl Transaction<'_> {
     /// first pair reaches the caller, so the memory is a function of what is
     /// stored rather than of what is being built.
     ///
-    /// It does not bound whatever `take` accumulates. A caller collecting one
-    /// record id per entry still ends up holding one per entry — that is the
+    /// It does not bound whatever the caller accumulates. A caller collecting one
+    /// record id per entry still ends up holding one per entry; that is the
     /// answer's size and a different question. What this removes is the copy of
     /// the range that existed *beside* the answer, values included, for callers
     /// that then threw the values away.
     ///
     /// # Errors
     ///
-    /// Returns the backend's failure, or `take`'s.
-    async fn walk_range(
-        &self,
-        keyspace: Keyspace,
-        range: &KeyRange,
-        mut take: impl AsyncFnMut(&Key, &KvValue) -> Result<()>,
-    ) -> Result<()> {
-        let mut remaining = range.clone();
-        loop {
-            let request = ScanRequest {
-                keyspace,
-                range: remaining.clone(),
-                direction: ScanDirection::Forward,
-                limit: Some(RANGE_SCAN_BATCH_ENTRIES),
-            };
-            let batch = self.store.backend().scan(&request).await?;
-            for (key, value) in &batch {
-                take(key, value).await?;
-            }
-            // A short batch is the end of the range: the backend was asked for
-            // a full one and had fewer to give.
-            let Some((last, _)) = batch
-                .last()
-                .filter(|_| batch.len() >= RANGE_SCAN_BATCH_ENTRIES)
-            else {
-                return Ok(());
-            };
-            remaining = remaining.resuming_after(last);
+    /// Returns the backend's failure.
+    pub(super) async fn next(
+        &mut self,
+        transaction: &Transaction<'_>,
+    ) -> Result<Option<Vec<(Key, KvValue)>>> {
+        let Some(range) = self.remaining.take() else {
+            return Ok(None);
+        };
+        let request = ScanRequest {
+            keyspace: self.keyspace,
+            range: range.clone(),
+            direction: ScanDirection::Forward,
+            limit: Some(RANGE_SCAN_BATCH_ENTRIES),
+        };
+        let batch = transaction.store.backend().scan(&request).await?;
+        // A short batch is the end of the range: the backend was asked for a
+        // full one and had fewer to give.
+        if let Some((last, _)) = batch
+            .last()
+            .filter(|_| batch.len() >= RANGE_SCAN_BATCH_ENTRIES)
+        {
+            self.remaining = Some(range.resuming_after(last));
         }
+        Ok(Some(batch))
     }
+}
 
+impl Transaction<'_> {
     /// The records an index says hold `values`, as of this transaction's
     /// snapshot.
     ///
