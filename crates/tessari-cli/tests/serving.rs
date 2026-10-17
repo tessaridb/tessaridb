@@ -5071,7 +5071,23 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
     };
     let gathered = answered(GATHERING[2].0);
     assert_eq!(gathered.matches("Integer(1)").count(), 3, "{gathered}");
-    assert_eq!(gathered, answered(GATHERING[0].0));
+    // Node 0 answers from its own copy, and a read that says nothing about
+    // staleness may be answered by a copy still collecting (`ANSWERED BY ANY`):
+    // it is compared once it holds the three records, not before.
+    let began = Instant::now();
+    let whole_at_zero = loop {
+        let held = answered(GATHERING[0].0);
+        if held.matches("Integer(1)").count() == 3 {
+            break held;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(90),
+            "node 0 never held the three records; last: {held}{}",
+            what_the_nodes_said(&GATHERING, &logs)
+        );
+        std::thread::sleep(POLL);
+    };
+    assert_eq!(gathered, whole_at_zero);
     let in_the_middle = whole.get(1).unwrap().clone();
     assert_eq!(
         read_at(
@@ -5879,7 +5895,12 @@ fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() 
     );
     cluster.running[stopped] = None;
     for n in 1..=60 {
-        write(RESEEDED[leader].0, n).unwrap();
+        if let Err(refused) = write(RESEEDED[leader].0, n) {
+            panic!(
+                "write {n} was refused: {refused}{}",
+                what_the_nodes_said(&RESEEDED, &logs)
+            );
+        }
     }
     // The leader says it pruned; until it does, the follower is not below it.
     assert!(

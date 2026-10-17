@@ -10,7 +10,8 @@ back the same. Before `0.22.0-beta`, treat every upgrade as a fresh store.
 
 **Upgrading to `0.36.0`.** Run `tessaridb <store> --backup <file>` on the build that
 wrote the store, then `tessaridb <new store> --restore <file>` on `0.36.0`; every
-node of a cluster is moved the same way. The snapshot carries the records and the
+node of a cluster is moved the same way, so a cluster is not upgraded node by node
+across this release. The snapshot carries the records and the
 catalog, not the history: `VERSION` reads and change-feed positions from before the
 move do not carry over. Going back is the same path in reverse, a snapshot taken by
 `0.36.0` restored by `0.35.3`. The embedded API is async from `0.36.0`: `Db::open`,
