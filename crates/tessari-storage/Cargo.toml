@@ -22,7 +22,7 @@ tracing.workspace = true
 scc.workspace = true
 thiserror.workspace = true
 # The write gate: an async turn, a landing wait, and the id of the task holding the turn.
-tokio = { workspace = true, features = ["rt", "sync"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 futures-util.workspace = true
 
 [features]

@@ -184,13 +184,16 @@ fn an_ask_tells_the_leader_what_the_follower_holds() {
     let (address, door) = serving(&authority, &leader, 3);
     let log = store_log(&leader);
     let held = |at: u64| {
-        leader.store().await_held(
-            log,
-            Sequence::new(at),
-            &[THERE],
-            1,
-            std::time::Duration::ZERO,
-        )
+        leader
+            .store()
+            .await_held(
+                log,
+                Sequence::new(at),
+                &[THERE],
+                1,
+                std::time::Duration::ZERO,
+            )
+            .now()
     };
 
     drop(served(

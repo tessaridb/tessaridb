@@ -163,11 +163,11 @@ impl Store {
     /// Wait until `needed` of `voters` hold `log` through `at`, for at most
     /// `within`, and answer the voters that do.
     ///
-    /// Blocks the calling thread, so it is called off the async runtime — where
-    /// a commit already runs. The answer is the same shape whether the wait was
-    /// met or ran out, because a refusal names who held the write.
-    #[must_use]
-    pub fn await_held(
+    /// Suspends the caller without holding its thread, because the asks that
+    /// end the wait are answered on the same runtime. The answer is the same
+    /// shape whether the wait was met or ran out, because a refusal names who
+    /// held the write.
+    pub async fn await_held(
         &self,
         log: LogId,
         at: Sequence,
@@ -178,7 +178,9 @@ impl Store {
         let deadline = std::time::Instant::now()
             .checked_add(within)
             .unwrap_or_else(std::time::Instant::now);
-        self.holds.await_held(log, at, voters, needed, deadline)
+        self.holds
+            .await_held(log, at, voters, needed, deadline)
+            .await
     }
 
     /// Record what this node collected for itself, and whether it arrived.

@@ -29,7 +29,7 @@ impl Session<'_> {
                     .prepare_across(*transaction, *coordinator, *seen)
                     .await
                     .map_err(advised)?;
-                Self::await_acknowledged(store, committed, waiting, span)?;
+                Self::await_acknowledged(store, committed, waiting, span).await?;
                 Ok(AcrossAnswer::Prepared(committed.sequence))
             }
             AcrossAsk::Decide {
@@ -57,7 +57,7 @@ impl Session<'_> {
                     .decide_across(*transaction, record.clone())
                     .await
                     .map_err(advised)?;
-                Self::await_acknowledged(store, committed, waiting, span)?;
+                Self::await_acknowledged(store, committed, waiting, span).await?;
                 Ok(AcrossAnswer::Decided(committed.sequence))
             }
             AcrossAsk::Begin {
@@ -76,7 +76,7 @@ impl Session<'_> {
                     .begin_across(*transaction, record.clone(), *seen)
                     .await
                     .map_err(advised)?;
-                Self::await_acknowledged(store, committed, waiting, span)?;
+                Self::await_acknowledged(store, committed, waiting, span).await?;
                 Ok(AcrossAnswer::Prepared(committed.sequence))
             }
             AcrossAsk::Conclude {
@@ -105,7 +105,7 @@ impl Session<'_> {
                     .conclude_across(*transaction, record.clone(), records)
                     .await
                     .map_err(advised)?;
-                Self::await_acknowledged(store, committed, waiting, span)?;
+                Self::await_acknowledged(store, committed, waiting, span).await?;
                 Ok(AcrossAnswer::Decided(committed.sequence))
             }
             AcrossAsk::Settle {
@@ -141,7 +141,7 @@ impl Session<'_> {
                     .forget_across(*transaction, *coordinator)
                     .await
                     .map_err(advised)?;
-                Self::await_acknowledged(store, committed, waiting, span)?;
+                Self::await_acknowledged(store, committed, waiting, span).await?;
                 Ok(AcrossAnswer::Forgotten(committed.sequence))
             }
             AcrossAsk::Resolve {

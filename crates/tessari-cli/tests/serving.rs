@@ -6371,7 +6371,8 @@ fn a_local_majority_counts_the_voters_of_the_leaders_region() {
         .run(
             &format!(
                 "ALTER REPLICA n{leader} REGION 'eu'; ALTER REPLICA n{local} REGION 'eu'; \
-                 ALTER REPLICA n{remote} REGION 'us';"
+                 ALTER REPLICA n{remote} REGION 'us'; \
+                 ALTER NAMESPACE prod ACKNOWLEDGE MAJORITY OR WEAKER;"
             ),
             None,
         )

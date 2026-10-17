@@ -455,6 +455,7 @@ fn a_pushed_round_is_held_only_once_the_follower_says_so() {
         assert!(
             store
                 .await_held(*log, *at, &[THERE], 1, Duration::ZERO)
+                .now()
                 .is_empty(),
             "a round was counted as held because it was sent: {log:?} through {at:?}"
         );
@@ -466,7 +467,9 @@ fn a_pushed_round_is_held_only_once_the_follower_says_so() {
         .expect("the held report");
     for (log, at) in &sent {
         assert_eq!(
-            store.await_held(*log, *at, &[THERE], 1, Duration::from_secs(3)),
+            store
+                .await_held(*log, *at, &[THERE], 1, Duration::from_secs(3))
+                .now(),
             vec![THERE],
             "`Held` was not counted for {log:?} through {at:?}"
         );

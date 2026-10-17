@@ -196,11 +196,11 @@ impl Session<'_> {
         span: Span,
     ) -> Result<()> {
         let committed = transaction.commit_placed().await.map_err(advised)?;
-        Self::await_acknowledged(store, committed, waiting, span)
+        Self::await_acknowledged(store, committed, waiting, span).await
     }
 
     /// Wait for the copies `waiting` names to hold a commit that has landed.
-    pub(super) fn await_acknowledged(
+    pub(super) async fn await_acknowledged(
         store: &Store,
         committed: tessari_storage::Committed,
         waiting: Option<Waiting>,
@@ -211,13 +211,15 @@ impl Session<'_> {
         };
         let nodes: Vec<[u8; NODE_ID_LEN]> = waiting.holders.iter().map(|(node, _)| *node).collect();
         let began = std::time::Instant::now();
-        let held = store.await_held(
-            committed.log,
-            committed.sequence,
-            &nodes,
-            waiting.needed,
-            waiting.within,
-        );
+        let held = store
+            .await_held(
+                committed.log,
+                committed.sequence,
+                &nodes,
+                waiting.needed,
+                waiting.within,
+            )
+            .await;
         let confirmed = held.len() >= waiting.needed;
         store.acknowledgement_waited(began.elapsed(), !confirmed);
         let waited_us = u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX);

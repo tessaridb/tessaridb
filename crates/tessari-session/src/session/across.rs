@@ -325,7 +325,7 @@ impl Session<'_> {
             .await?;
         match barring.prevent_across(transaction, range).await {
             Ok(committed) => {
-                Self::await_acknowledged(store, committed, waiting, span)?;
+                Self::await_acknowledged(store, committed, waiting, span).await?;
                 Ok(AcrossAnswer::Landed(None))
             }
             // The prepare landed between the look and the bar: it stands.
@@ -363,7 +363,7 @@ impl Session<'_> {
             log,
             sequence: store.committed_tail(log).await?,
         };
-        Self::await_acknowledged(store, tail, waiting, span)
+        Self::await_acknowledged(store, tail, waiting, span).await
     }
 
     /// Refuse writes this session's user could not have made here, or into a
