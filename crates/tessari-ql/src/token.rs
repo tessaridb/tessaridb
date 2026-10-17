@@ -240,5 +240,14 @@ mod tests {
     fn a_word_that_is_not_reserved_is_not_a_keyword() {
         assert_eq!(Keyword::from_word("users"), None);
         assert_eq!(Keyword::from_word(""), None);
+        // Longer than every spelling, and a reserved word with one letter more.
+        assert_eq!(Keyword::from_word("namespacesnamespaces"), None);
+        assert_eq!(Keyword::from_word("namespaces"), None);
+    }
+
+    #[test]
+    fn a_keyword_in_mixed_case_is_still_the_keyword() {
+        assert_eq!(Keyword::from_word("NaMeSpAcE"), Some(Keyword::Namespace));
+        assert_eq!(Keyword::from_word("uSe"), Some(Keyword::Use));
     }
 }
