@@ -537,3 +537,72 @@ fn a_feed_ends_when_a_split_table_appears_in_its_scope() {
 
 #[path = "feeding/narrowed.rs"]
 mod narrowed;
+
+/// A feed with nothing to deliver waits for the next landing as a suspended
+/// future, so the writer whose commit it is waiting for can run on the same
+/// worker and the change reaches the feed.
+#[test]
+fn an_idle_feed_leaves_its_worker_to_the_commit_it_waits_for() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("a runtime");
+    let db = runtime.block_on(Db::in_memory()).unwrap();
+    let mut setup = db.session();
+    runtime
+        .block_on(setup.run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+             USE DATABASE shop; DEFINE COLLECTION orders;",
+        ))
+        .unwrap();
+    let mut reader = db.session();
+    runtime
+        .block_on(reader.run("USE NAMESPACE prod; USE DATABASE shop;"))
+        .unwrap();
+    let mut writer = db.session();
+    let seen = Cell::new(Vec::new());
+    let rounds = Cell::new(0_u32);
+    let started = std::time::Instant::now();
+    let following = Following {
+        from: Sequence::new(0),
+        table: Some("orders"),
+        cursor: None,
+        condition: None,
+    };
+    let stop = || {
+        rounds.set(rounds.get().saturating_add(1));
+        // Ended by the change arriving, or given up after a handful of empty
+        // rounds.
+        seen_any(&seen) || rounds.get() > 8
+    };
+    let deliver: &mut tessaridb::feed::Deliver<'_> = &mut |change, _, _, _| {
+        let mut held = seen.take();
+        held.push(change.id.to_string());
+        seen.set(held);
+        true
+    };
+    let (followed, wrote) = runtime.block_on(async {
+        tokio::join!(
+            follow(&db, &mut reader, &following, db.commits(), &stop, deliver),
+            writer.run("USE NAMESPACE prod; USE DATABASE shop; CREATE orders:1 = { total: 5 };"),
+        )
+    });
+    followed.unwrap();
+    wrote.unwrap();
+    assert_eq!(
+        seen.take(),
+        vec!["1".to_owned()],
+        "the commit the feed waited for never ran beside it"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "the feed held the worker until its patience ran out"
+    );
+}
+
+fn seen_any(seen: &Cell<Vec<String>>) -> bool {
+    let held = seen.take();
+    let any = !held.is_empty();
+    seen.set(held);
+    any
+}

@@ -418,3 +418,79 @@ fn a_node_with_a_key_seals_every_backup_it_produces() {
     .unwrap();
     tessari_backup::verify_state(&mut opened.as_slice()).unwrap();
 }
+
+/// A sink that, on its first write, waits for a task it spawned on the same
+/// runtime: the task can run only if the write gave its worker up.
+struct WaitsForTheRuntime {
+    starved: Arc<std::sync::atomic::AtomicBool>,
+    asked: bool,
+}
+
+impl std::io::Write for WaitsForTheRuntime {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if !self.asked {
+            self.asked = true;
+            let (answered, answer) = std::sync::mpsc::channel();
+            tokio::runtime::Handle::current().spawn(async move {
+                let _sent = answered.send(());
+            });
+            if answer
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .is_err()
+            {
+                // Relaxed: read after the statement's task has been joined.
+                self.starved
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_snapshot_streamed_to_a_sink_writes_without_holding_its_worker() {
+    // A served `GET /backup` and a wire `--at --backup` hand the session a
+    // file; a write that held the worker would stall every connection on it
+    // for as long as the disk takes.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    // An open store: signing in would run Argon2 off the worker first, which
+    // hands the worker on and leaves the write off it by accident.
+    let open = {
+        let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
+        let open = Store::open(backend).now().unwrap();
+        Session::new(&open)
+            .run_now(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE app; \
+                 USE DATABASE app; DEFINE COLLECTION notes; CREATE notes:1 = { body: 'kept' };",
+            )
+            .unwrap();
+        open
+    };
+    let store: &'static Store = Box::leak(Box::new(open));
+    let starved = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sink = WaitsForTheRuntime {
+        starved: Arc::clone(&starved),
+        asked: false,
+    };
+    let backed_up = runtime.block_on(async move {
+        tokio::spawn(async move {
+            let mut root = Session::new(store).snapshot_into(Box::new(sink));
+            root.run("BACKUP STATE;").await
+        })
+        .await
+        .unwrap()
+    });
+    assert!(backed_up.is_ok(), "{backed_up:?}");
+    assert!(
+        !starved.load(std::sync::atomic::Ordering::Relaxed),
+        "the snapshot's write held the only worker"
+    );
+}

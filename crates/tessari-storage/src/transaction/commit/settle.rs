@@ -361,7 +361,7 @@ impl Transaction<'_> {
                         // per loser per attempt, and a retry that then succeeds is
                         // the design working rather than an event.
                         tracing::debug!(attempt, "commit lost an attempt; retrying");
-                        back_off(attempt);
+                        back_off(attempt).await;
                         continue;
                     }
                     Err(other) => {

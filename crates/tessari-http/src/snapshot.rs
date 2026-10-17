@@ -18,7 +18,7 @@
 //! with it. The same check that refuses a database owner refuses one here,
 //! before anything is written, and that refusal is the status the caller gets.
 
-use std::io::{Read, Seek};
+use std::io::Seek;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -171,7 +171,7 @@ async fn spool(
 
 /// Hand the route the length and then the file, a piece at a time.
 async fn send(spooled: Result<(std::fs::File, u64), Answer>, pieces: &mpsc::Sender<Piece>) {
-    let (mut file, length) = match spooled {
+    let (file, length) = match spooled {
         Ok(spooled) => spooled,
         Err(answer) => {
             drop(pieces.send(Piece::Refused(answer)).await);
@@ -181,9 +181,12 @@ async fn send(spooled: Result<(std::fs::File, u64), Answer>, pieces: &mpsc::Send
     if pieces.send(Piece::Length(length)).await.is_err() {
         return;
     }
+    // Read through tokio's file, so the route never waits on the disk with a
+    // runtime worker.
+    let mut file = tokio::fs::File::from_std(file);
     let mut buffer = vec![0_u8; CHUNK_BYTES];
     loop {
-        match file.read(&mut buffer) {
+        match tokio::io::AsyncReadExt::read(&mut file, &mut buffer).await {
             Ok(0) => return,
             Ok(read) => {
                 let piece = buffer.get(..read).map(<[u8]>::to_vec).unwrap_or_default();

@@ -160,8 +160,12 @@ impl Sink {
         Self(std::sync::Mutex::new(None))
     }
 
+    /// A sink the caller hands over: a served backup's spool file, written from
+    /// the statement's task, so every write is taken off the worker that task
+    /// runs on, a mebibyte at a time, as `BACKUP ... TO` writes its own file.
     pub(crate) fn to(out: Box<dyn std::io::Write + Send>) -> Self {
-        Self(std::sync::Mutex::new(Some(out)))
+        let off = std::io::BufWriter::with_capacity(WRITE_BUFFER_BYTES, OffTheWorker(out));
+        Self(std::sync::Mutex::new(Some(Box::new(off))))
     }
 
     /// The sink, the first time it is asked for.

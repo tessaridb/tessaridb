@@ -423,12 +423,14 @@ pub async fn follow(
     stop: &dyn Fn() -> bool,
     deliver: &mut Deliver<'_>,
 ) -> Result<(), FeedRefused> {
+    // Subscribed before the first round, so a landing between a round and the
+    // wait after it is still announced to that wait.
+    let mut landed = committed.watching();
     let mut feed = Feed::open(db, session, asked).await?;
-    let mut seen = 0;
     loop {
         // A staged shutdown reaches a feed here. A pusher spends its life
-        // blocked in `wait` below, which returns after `PATIENCE` whether or not
-        // anything happened — so the flag is noticed within that, and a
+        // waiting below, which ends after `PATIENCE_BETWEEN_ROUNDS` whether or
+        // not anything landed, so the flag is noticed within that, and a
         // subscription ends by its own loop rather than by its socket being
         // taken from under it. What a subscriber loses is nothing: the cursor is
         // a position it holds, so it resumes exactly where it stopped.
@@ -437,7 +439,12 @@ pub async fn follow(
         }
         match feed.round(db, session, deliver).await? {
             Round::Delivered => {}
-            Round::Empty => seen = committed.wait(seen),
+            // Suspended rather than parked, so the commit it waits for can run
+            // on the same worker. Run out or announced, the next round looks.
+            Round::Empty => {
+                let _announced =
+                    tokio::time::timeout(PATIENCE_BETWEEN_ROUNDS, landed.changed()).await;
+            }
             Round::Ended => return Ok(()),
         }
     }

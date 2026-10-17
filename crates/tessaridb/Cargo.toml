@@ -18,7 +18,7 @@ tessari-storage.workspace = true
 tessari-types.workspace = true
 # `watch` alone: an async feed waits on the commit signal without this crate
 # gaining a runtime or a single `async fn` (ADR-0085 §2, §4).
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]
 tessari-session = { workspace = true, features = ["test-support"] }

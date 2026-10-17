@@ -82,9 +82,11 @@ impl Drop for Transaction<'_> {
 /// second attempt likely to succeed instead of merely later.
 ///
 /// Nothing is held across this wait: the writer gives its turn at the write gate
-/// back before it sleeps (`crate::gate`), so a waiting writer blocks only itself.
-fn back_off(attempt: u32) {
-    std::thread::sleep(waiting_for(attempt, jitter()));
+/// back before it sleeps (`crate::gate`), so a waiting writer blocks only itself,
+/// and it waits as a suspended task rather than a sleeping thread, so the worker
+/// it runs on goes on serving every other task meanwhile.
+async fn back_off(attempt: u32) {
+    tokio::time::sleep(waiting_for(attempt, jitter())).await;
 }
 
 /// How long to wait, given the attempt and a number that differs per thread.
