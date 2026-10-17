@@ -305,6 +305,7 @@ pub(crate) fn maintain_from(
             None => {
                 let found = analyzers_on(
                     &mut view,
+                    record.mutations(),
                     mutation.namespace,
                     mutation.database,
                     mutation.table,
@@ -314,7 +315,7 @@ pub(crate) fn maintain_from(
             }
         };
         if named.is_none() && definitions.iter().any(|held| held.engine.is_some()) {
-            named = Some(analyzers_named(&mut view)?);
+            named = Some(analyzers_named(&mut view, record.mutations())?);
         }
         let named_now = named.as_ref().unwrap_or(&unnamed);
 

@@ -1,39 +1,56 @@
 //! What a record contributes to an index: values, cells, vectors and terms.
 
-use crate::catalog::{Catalog, IndexDefinition};
+use crate::catalog::{Catalog, CatalogChange, IndexDefinition, catalog_change, defined_analyzer};
 use crate::error::Result;
 use crate::graph;
 use crate::transaction::Transaction;
 use std::collections::{BTreeMap, BTreeSet};
 use tessari_constants::SPATIAL_INDEX_CELLS_PER_RECORD;
-use tessari_encoding::{IndexValues, Located};
+use tessari_encoding::{IndexValues, Located, Mutation};
 use tessari_geo::{Bounds, Cell, Shape};
 use tessari_types::{Analyzer, DatabaseId, NamespaceId, TableId, Value};
 
-/// The analyzer each analysed field of a table declares, by field name.
+/// The analyzer each analysed field of a table declares, by field name, as the
+/// catalog stands once `applying` is applied on top of `view`.
+///
+/// `applying` is the log record being applied, and is read because a field and
+/// the analyzer it names may be declared in the same record as the rows an index
+/// reads: through `view` alone neither exists yet, the rows are analysed with no
+/// analyzer, they post no terms, and a read served by the index answers without
+/// them while a scan finds them (DB-23). A read through a transaction passes no
+/// mutations, because the transaction already sees its own writes.
 pub(crate) fn analyzers_on(
     view: &mut Transaction<'_>,
+    applying: &[Mutation],
     namespace: NamespaceId,
     database: DatabaseId,
     table: TableId,
 ) -> Result<BTreeMap<String, Analyzer>> {
-    let declared = Catalog::new(view).fields_on(namespace, database, table)?;
-    let wanted: BTreeMap<String, String> = declared
+    let mut wanted: BTreeMap<String, String> = Catalog::new(view)
+        .fields_on(namespace, database, table)?
         .into_iter()
         .filter_map(|field| field.analyzer.map(|named| (field.name, named)))
         .collect();
+    for mutation in applying {
+        if let Some(CatalogChange::FieldDefined(field)) = catalog_change(mutation)?
+            && field.namespace == namespace
+            && field.database == database
+            && field.table == table
+        {
+            match field.analyzer {
+                Some(named) => wanted.insert(field.name, named),
+                None => wanted.remove(&field.name),
+            };
+        }
+    }
     if wanted.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let mut resolved = BTreeMap::new();
-    for definition in Catalog::new(view).analyzers()? {
-        for (field, named) in &wanted {
-            if *named == definition.name {
-                resolved.insert(field.clone(), definition.analyzer.clone());
-            }
-        }
-    }
-    Ok(resolved)
+    let named = analyzers_named(view, applying)?;
+    Ok(wanted
+        .into_iter()
+        .filter_map(|(field, analyzer)| named.get(&analyzer).map(|held| (field, held.clone())))
+        .collect())
 }
 
 /// The analyzer a search index reads its field's text with.
@@ -331,13 +348,23 @@ pub(crate) fn analyzer_for<'a>(
 }
 
 /// Every analyzer the store declares, by name — what a search member resolves
-/// its analyzer against.
-pub(crate) fn analyzers_named(view: &mut Transaction<'_>) -> Result<BTreeMap<String, Analyzer>> {
-    Ok(Catalog::new(view)
+/// its analyzer against, counting those `applying` declares (see
+/// [`analyzers_on`]).
+pub(crate) fn analyzers_named(
+    view: &mut Transaction<'_>,
+    applying: &[Mutation],
+) -> Result<BTreeMap<String, Analyzer>> {
+    let mut named: BTreeMap<String, Analyzer> = Catalog::new(view)
         .analyzers()?
         .into_iter()
         .map(|definition| (definition.name, definition.analyzer))
-        .collect())
+        .collect();
+    for mutation in applying {
+        if let Some(definition) = defined_analyzer(mutation)? {
+            named.insert(definition.name, definition.analyzer);
+        }
+    }
+    Ok(named)
 }
 
 /// What one record posts to an index: [`terms_of`] for a field index, and for
