@@ -39,10 +39,12 @@ mod encryption;
 #[cfg(test)]
 mod encryption_tests;
 mod error;
+mod kv;
 mod options;
 #[cfg(test)]
 mod wal_tracking_tests;
 
 pub use backend::LsmBackend;
+pub use kv::TessariKvBackend;
 pub use options::{Durability, StoreConfig, effective_options_files};
 pub use tessari_vault::AtRestKey;

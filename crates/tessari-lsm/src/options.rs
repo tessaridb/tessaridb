@@ -105,6 +105,12 @@ pub enum Durability {
 }
 
 impl Durability {
+    /// Whether a commit at this level waits for the device.
+    #[must_use]
+    pub(crate) const fn syncs(self) -> bool {
+        matches!(self, Self::PowerLossSafe)
+    }
+
     /// The write options that deliver this level.
     #[must_use]
     pub(crate) fn write_options(self) -> WriteOptions {

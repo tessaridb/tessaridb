@@ -11,6 +11,7 @@ publish.workspace = true
 
 [dependencies]
 tessari-kv.workspace = true
+tessarikv.workspace = true
 thiserror.workspace = true
 rocksdb = { workspace = true, features = ["lz4", "zstd", "bindgen-runtime"] }
 # Named directly so its build tells this one where the engine's headers are,
@@ -32,6 +33,8 @@ tessari-session = { workspace = true, features = ["test-support"] }
 tessari-storage.workspace = true
 tessari-types.workspace = true
 tempfile.workspace = true
+# The TessariKV backend's tests drive its futures; the library itself creates no runtime.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true
