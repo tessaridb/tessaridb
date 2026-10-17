@@ -11,7 +11,7 @@
 //! use tessaridb::{Db, Value};
 //!
 //! # tokio::runtime::Builder::new_current_thread().build().expect("a runtime").block_on(async {
-//! let db = Db::in_memory()?;
+//! let db = Db::in_memory().await?;
 //! let mut session = db.session();
 //! session.run(
 //!     "DEFINE NAMESPACE prod;
