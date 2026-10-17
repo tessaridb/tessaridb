@@ -5,6 +5,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Note, Outcome, Session};
@@ -21,17 +23,19 @@ const RANGE: &str = "FROM datetime '2026-09-29T09:30:00Z' TO datetime '2026-09-2
 fn session(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE t; USE NAMESPACE t; DEFINE DATABASE d; USE DATABASE d; \
              DEFINE COLLECTION readings;",
         )
         .unwrap();
-    session.run(READINGS).unwrap();
+    session.run_now(READINGS).unwrap();
     session
 }
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// The answer's rows as `(window, n, v)` and its notes.
@@ -40,7 +44,8 @@ fn windows(session: &mut Session<'_>, mode: &str) -> (Vec<(String, Value, Value)
         "SELECT time::bucket(at, 1h) AS w, count(*) AS n, mean(v) AS v FROM readings \
          WHERE sensor = 'a' GROUP BY time::bucket(at, 1h) FILL {mode} {RANGE};"
     );
-    let Outcome::Records { records, notes, .. } = session.run(&read).unwrap().pop().unwrap() else {
+    let Outcome::Records { records, notes, .. } = session.run_now(&read).unwrap().pop().unwrap()
+    else {
         panic!("a read answers with records");
     };
     let rows = records
@@ -118,7 +123,7 @@ fn each_group_is_filled_over_the_whole_range() {
         "SELECT sensor, time::bucket(at, 1h) AS w, count(*) AS n FROM readings \
          GROUP BY sensor, time::bucket(at, 1h) FILL NULL {RANGE};"
     );
-    let Outcome::Records { records, .. } = session.run(&read).unwrap().pop().unwrap() else {
+    let Outcome::Records { records, .. } = session.run_now(&read).unwrap().pop().unwrap() else {
         panic!("a read answers with records");
     };
     // Two sensors × five windows; sensor b's 15:00 reading is outside the range.
@@ -138,7 +143,7 @@ fn a_fill_that_cannot_say_its_windows_is_refused() {
     let store = store();
     let mut session = session(&store);
     let refusal =
-        |session: &mut Session<'_>, read: &str| session.run(read).unwrap_err().to_string();
+        |session: &mut Session<'_>, read: &str| session.run_now(read).unwrap_err().to_string();
 
     let no_window = refusal(
         &mut session,

@@ -1,7 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use crate::run_now::RunNow;
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use rust_decimal::Decimal;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -13,18 +15,21 @@ use crate::session::Session;
 
 /// A collection of two records, and every one of them as stored.
 fn found() -> (Store, Vec<(RecordId, Vec<u8>)>) {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     Session::new(&store)
-        .run(
+        .run_now(
             "DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; \
              DEFINE COLLECTION r; \
              CREATE r:'a' = { n: 1, f: 0.5, s: 'x' }; CREATE r:'b' = { n: 2, f: 1.5, s: 'y' };",
         )
         .unwrap();
     let (namespace, database) = (NamespaceId::new(1), DatabaseId::new(1));
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let table = Catalog::new(&mut transaction)
         .table_id(namespace, database, "r")
+        .now()
         .unwrap()
         .unwrap();
     let found = transaction
@@ -39,6 +44,7 @@ fn found() -> (Store, Vec<(RecordId, Vec<u8>)>) {
             None,
             usize::MAX,
         )
+        .now()
         .unwrap();
     transaction.rollback();
     (store, found)
@@ -67,7 +73,7 @@ fn reduced(
             .collect(),
         samples: false,
     };
-    reducing(&store, &reduce, found).unwrap()
+    reducing(&store, &reduce, found).now().unwrap()
 }
 
 fn decimal(held: i64) -> Value {

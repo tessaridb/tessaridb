@@ -11,13 +11,13 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn records_with_term(
+    pub async fn records_with_term(
         &self,
         index: &IndexDefinition,
         term: &str,
     ) -> Result<BTreeSet<RecordId>> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
-        self.postings(&address, term)
+        self.postings(&address, term).await
     }
 
     /// What this index says one term does in one record.
@@ -41,7 +41,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or the stored value cannot be
     /// decoded.
-    pub fn posting(
+    pub async fn posting(
         &self,
         index: &IndexDefinition,
         term: &str,
@@ -50,7 +50,12 @@ impl Transaction<'_> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let encoded = IndexValues::of(&[Value::from(term)]);
         let key = PostingKey::new(address, encoded, id.clone()).encode();
-        match self.store.backend().get(PostingKey::keyspace(), &key)? {
+        match self
+            .store
+            .backend()
+            .get(PostingKey::keyspace(), &key)
+            .await?
+        {
             Some(bytes) => Ok(Some(Posting::decode(bytes.as_slice())?)),
             None => Ok(None),
         }
@@ -64,7 +69,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or the stored value cannot be
     /// decoded.
-    pub fn located(
+    pub async fn located(
         &self,
         index: &IndexDefinition,
         term: &str,
@@ -73,7 +78,12 @@ impl Transaction<'_> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let encoded = IndexValues::of(&[Value::from(term)]);
         let key = PostingKey::new(address, encoded, id.clone()).encode();
-        match self.store.backend().get(PostingKey::keyspace(), &key)? {
+        match self
+            .store
+            .backend()
+            .get(PostingKey::keyspace(), &key)
+            .await?
+        {
             Some(bytes) => Ok(Some(Posting::located(bytes.as_slice())?)),
             None => Ok(None),
         }
@@ -85,7 +95,7 @@ impl Transaction<'_> {
     /// what unique means. Everything else is a prefix scan — including a leading
     /// lookup on a unique composite index, where one value of the first field
     /// may have many entries and a point read would find none of them.
-    pub(in crate::transaction) fn candidates(
+    pub(in crate::transaction) async fn candidates(
         &self,
         index: &IndexDefinition,
         address: &IndexAddress,
@@ -96,7 +106,11 @@ impl Transaction<'_> {
         if index.unique {
             if complete {
                 let key = UniqueIndexKey::new(*address, IndexValues::of(values)).encode();
-                let found = self.store.backend().get(UniqueIndexKey::keyspace(), &key)?;
+                let found = self
+                    .store
+                    .backend()
+                    .get(UniqueIndexKey::keyspace(), &key)
+                    .await?;
                 return found
                     .map(|bytes| Ok(IndexTarget::decode(bytes.as_slice())?.id))
                     .transpose()
@@ -105,45 +119,41 @@ impl Transaction<'_> {
             let mut prefix = address.prefix(KeyKind::UniqueIndex);
             prefix.extend_from_slice(wanted);
             let mut found = Vec::new();
-            self.walk_range(
-                UniqueIndexKey::keyspace(),
-                &KeyRange::prefix(&prefix),
-                |_, value| {
+            let mut walk = RangeWalk::new(UniqueIndexKey::keyspace(), &KeyRange::prefix(&prefix));
+            while let Some(batch) = walk.next(self).await? {
+                for (_, value) in &batch {
                     found.push(IndexTarget::decode(value.as_slice())?.id);
-                    Ok(())
-                },
-            )?;
+                }
+            }
             return Ok(found);
         }
 
         let mut prefix = address.prefix(KeyKind::SecondaryIndex);
         prefix.extend_from_slice(wanted);
         let mut found = Vec::new();
-        self.walk_range(
-            SecondaryIndexKey::keyspace(),
-            &KeyRange::prefix(&prefix),
-            |key, _| {
+        let mut walk = RangeWalk::new(SecondaryIndexKey::keyspace(), &KeyRange::prefix(&prefix));
+        while let Some(batch) = walk.next(self).await? {
+            for (key, _) in &batch {
                 found.push(SecondaryIndexKey::decode(key.as_slice())?.id);
-                Ok(())
-            },
-        )?;
+            }
+        }
         // Behind the tail, the records that held the value at this snapshot and
         // lost it since are named by retired entries (Q-S3-34); each candidate
         // is confirmed at the snapshot like every other.
         let end = crate::transaction::address::after(prefix.clone());
-        found.extend(self.retired_candidates(index, &prefix, &end)?);
+        found.extend(self.retired_candidates(index, &prefix, &end).await?);
         Ok(found)
     }
 
     /// The record's payload, if it exists at the snapshot and one of its entries
     /// begins with `wanted`.
-    pub(in crate::transaction) fn confirm(
+    pub(in crate::transaction) async fn confirm(
         &self,
         index: &IndexDefinition,
         address: &RecordAddress,
         wanted: &[u8],
     ) -> Result<Option<Vec<u8>>> {
-        let Some(payload) = self.get(address)? else {
+        let Some(payload) = self.get(address).await? else {
             return Ok(None);
         };
         let value = decode_payload(&payload)?;

@@ -19,7 +19,6 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
-use std::ops::ControlFlow;
 
 use tessari_encoding::decode_payload;
 use tessari_storage::{QueueDeclaration, RecordAddress, Transaction};
@@ -106,7 +105,7 @@ impl Session<'_> {
     /// # Errors
     ///
     /// Whatever reading the queue or its index refuses.
-    pub(crate) fn priority_head(
+    pub(crate) async fn priority_head(
         &self,
         transaction: &mut Transaction<'_>,
         context: Context,
@@ -119,18 +118,24 @@ impl Session<'_> {
             return Ok((Vec::new(), None, Vec::new()));
         }
         let mut dead = BTreeMap::new();
-        if let Some((index, _)) =
-            self.index_serving_order(transaction, context, table, &Path::field(field), true)?
+        if let Some((index, _)) = self
+            .index_serving_order(transaction, context, table, &Path::field(field), true)
+            .await?
         {
             let mut wanted = limit;
             // Asking for more until enough of what the index names can be
             // claimed: held and spent records are in the index too.
-            while let Some(found) = transaction.records_in_descending_order(&index, 1, wanted)? {
+            while let Some(found) = transaction
+                .records_in_descending_order(&index, 1, wanted)
+                .await?
+            {
                 let mut taken = Vec::new();
                 for (id, bytes) in &found {
                     if let Some(candidate) =
                         ranked(id.clone(), bytes, (now, declared, field), &mut dead)?
-                        && self.matches(transaction, matching, &candidate.id, &candidate.fields)?
+                        && self
+                            .matches(transaction, matching, &candidate.id, &candidate.fields)
+                            .await?
                         && !transaction.claimed_elsewhere(&address(context, table, &candidate.id))
                     {
                         taken.push(candidate);
@@ -157,14 +162,16 @@ impl Session<'_> {
         // The walk: every claimable record, keeping the best `limit` in a heap
         // whose top is the worst kept.
         let mut kept: BinaryHeap<Reverse<Candidate>> = BinaryHeap::with_capacity(limit);
-        transaction.walk_table(
-            context.namespace,
-            context.database,
-            table,
-            |walking, id, bytes| -> Result<ControlFlow<()>> {
+        let mut walk = transaction
+            .walk_table(context.namespace, context.database, table)
+            .await?;
+        while let Some(round) = walk.next_round(transaction).await? {
+            for (id, bytes) in round {
                 if let Some(candidate) = ranked(id, &bytes, (now, declared, field), &mut dead)?
-                    && self.matches(walking, matching, &candidate.id, &candidate.fields)?
-                    && !walking.claimed_elsewhere(&address(context, table, &candidate.id))
+                    && self
+                        .matches(transaction, matching, &candidate.id, &candidate.fields)
+                        .await?
+                    && !transaction.claimed_elsewhere(&address(context, table, &candidate.id))
                 {
                     if kept.len() < limit {
                         kept.push(Reverse(candidate));
@@ -173,9 +180,8 @@ impl Session<'_> {
                         kept.push(Reverse(candidate));
                     }
                 }
-                Ok(ControlFlow::Continue(()))
-            },
-        )?;
+            }
+        }
         let mut taken: Vec<Candidate> = kept.into_iter().map(|Reverse(held)| held).collect();
         taken.sort_by(|left, right| right.cmp(left));
         Ok((
@@ -197,7 +203,7 @@ impl Session<'_> {
     /// # Errors
     ///
     /// Whatever finding the head or writing a hold refuses.
-    pub(super) fn claim_by_priority(
+    pub(super) async fn claim_by_priority(
         &self,
         transaction: &mut Transaction<'_>,
         (context, table, named): (Context, tessari_types::TableId, &tessari_ql::TableRef),
@@ -206,14 +212,16 @@ impl Session<'_> {
         matching: Option<&super::Matching<'_>>,
         span: tessari_ql::Span,
     ) -> Result<crate::outcome::Outcome> {
-        let (head, index, buried) = self.priority_head(
-            transaction,
-            context,
-            table,
-            (declared, field),
-            (limit, now),
-            matching,
-        )?;
+        let (head, index, buried) = self
+            .priority_head(
+                transaction,
+                context,
+                table,
+                (declared, field),
+                (limit, now),
+                matching,
+            )
+            .await?;
         let mut taken = Vec::with_capacity(head.len());
         for (id, mut fields) in head {
             let address = address(context, table, &id);
@@ -225,10 +233,12 @@ impl Session<'_> {
             }
             super::hold(&mut fields, until, self.consumer.as_ref());
             let payload = Value::Object(fields);
-            self.put_engine_record(transaction, address, payload.clone(), span)?;
+            self.put_engine_record(transaction, address, payload.clone(), span)
+                .await?;
             taken.push((id, payload));
         }
-        self.bury(transaction, (context, table, named), declared, buried, span)?;
+        self.bury(transaction, (context, table, named), declared, buried, span)
+            .await?;
         let plan = match index {
             Some(index) => crate::plan::Plan {
                 index: Some(index),

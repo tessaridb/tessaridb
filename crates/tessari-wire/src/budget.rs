@@ -127,12 +127,12 @@ impl SharedBudget {
 
     /// Ask the leader, or `None` when this node leads or the leader cannot be
     /// asked in time.
-    fn ask(&self, kind: Try, name: &str) -> Option<bool> {
+    async fn ask(&self, kind: Try, name: &str) -> Option<bool> {
         let (endpoint, node) = self.routing.current().writable()?;
         if node == self.me {
             return None;
         }
-        let said = (self.greeting)().ok()?;
+        let said = (self.greeting)().await.ok()?;
         let asked = Attempt {
             kind,
             name: name.to_owned(),
@@ -144,7 +144,9 @@ impl SharedBudget {
             &said,
             Ask::Attempt(&asked),
             Duration::from_millis(SIGN_IN_ASK_MILLIS),
-        ) {
+        )
+        .await
+        {
             Ok((_, Answered::Attempted(answer))) => Some(answer),
             Ok(_) => None,
             Err(why) => {
@@ -156,16 +158,20 @@ impl SharedBudget {
 }
 
 impl tessari_session::Budget for SharedBudget {
-    fn permit(&self, name: &str) -> Option<bool> {
-        self.ask(Try::Permit, name)
+    fn permit<'a>(&'a self, name: &'a str) -> tessari_session::Budgeting<'a, Option<bool>> {
+        Box::pin(self.ask(Try::Permit, name))
     }
 
-    fn failed(&self, name: &str) {
-        let _ = self.ask(Try::Failed, name);
+    fn failed<'a>(&'a self, name: &'a str) -> tessari_session::Budgeting<'a, ()> {
+        Box::pin(async move {
+            let _ = self.ask(Try::Failed, name).await;
+        })
     }
 
-    fn succeeded(&self, name: &str) {
-        let _ = self.ask(Try::Succeeded, name);
+    fn succeeded<'a>(&'a self, name: &'a str) -> tessari_session::Budgeting<'a, ()> {
+        Box::pin(async move {
+            let _ = self.ask(Try::Succeeded, name).await;
+        })
     }
 }
 
@@ -173,6 +179,7 @@ impl tessari_session::Budget for SharedBudget {
 mod tests {
     use super::{Attempt, Try};
     use tessari_constants::FREE_SIGN_IN_FAILURES;
+    use tessari_session::Now;
 
     #[test]
     fn an_attempt_crosses_the_wire_unchanged_and_a_short_one_is_refused() {
@@ -192,7 +199,9 @@ mod tests {
 
     #[test]
     fn misses_a_peer_reports_make_the_next_try_wait_here() {
-        let db = tessaridb::Db::in_memory().expect("an in-memory store");
+        let db = tessaridb::Db::in_memory()
+            .now()
+            .expect("an in-memory store");
         let store = db.store();
         let name = "ada";
         let asked = |kind| {

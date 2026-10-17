@@ -1,76 +1,31 @@
 //! The one place engine configuration is decided.
 //!
-//! Every option the store runs with is produced here — by the service, by the
-//! tests and by any future tool alike. A second place that builds options is a
-//! second store, because the comparator, the region set and the table format are
-//! part of the on-disk contract and not of the caller's preferences.
+//! Every option the store runs with is produced here, by the service, the tests and any tool
+//! alike. A second place that builds options is a second store, because the keyspace set and
+//! each keyspace's table format are part of the on-disk contract and not of a caller's taste.
 //!
-//! # What is set, and why each value exists
+//! # What is set, and why
 //!
-//! A value with no reason is deleted, not kept in case it helps. Everything set
-//! below is set for one of exactly two reasons: it is required for correctness,
-//! or it bounds a resource that is otherwise unbounded.
+//! A value with no reason is deleted, not kept in case it helps. Each one below is either
+//! required for correctness or bounds a resource that is otherwise unbounded.
 //!
-//! **Correctness**
-//!
-//! - Atomic flush, and it is worth being exact about what it does here, because
-//!   the obvious reason is the wrong one. The engine's own header (11.8.1,
-//!   `options.h`) says it is *not* necessary when the WAL is always enabled,
-//!   because the WAL restores the database to its last persistent state — and
-//!   this store never disables the WAL, at either durability level. What it buys
-//!   is the sentence after: an auto-triggered flush covers **every** region at
-//!   once. A batch here writes a record in one region and the position that
-//!   accounts for it in another, so flushing them together keeps the regions at
-//!   one point rather than leaving recovery to reconcile two. The cost is that a
-//!   ceiling crossed by one region rewrites the memtables of all of them,
-//!   including cold ones.
-//! - Tolerate a corrupted trailing WAL record, *and* verify the WAL set against
-//!   the manifest. This works as a pair and not as two settings. At
-//!   [`Durability::PowerLossSafe`] every acknowledged write is synced before it
-//!   is acknowledged, so a torn *trailing* record is by construction one nobody
-//!   was told about — dropping it loses nothing that was promised, while
-//!   refusing to open on it would turn an ordinary power loss into an outage.
-//!   What must never be silent is a *missing* log file, which is real loss, and
-//!   that is what the manifest check catches.
-//! - No prefix extractor. Setting one turns every plain seek into a prefix seek,
-//!   which silently truncates a scan that crosses the prefix boundary. Our key
-//!   grammar scans across record versions, so this would be wrong.
-//! - The default byte-order comparator. The key grammar is designed so that byte
-//!   order *is* logical order; a custom comparator would be a data migration to
-//!   undo and would buy nothing.
-//!
-//! **Bounded resources**
-//!
-//! - One shared block cache across every region. Per-region caches fragment the
-//!   budget so a hot region evicts while a cold one holds memory it is not
-//!   using.
-//! - Index and filter blocks charged into that same cache. Left uncharged they
-//!   are a second budget with no ceiling that grows with the file count.
-//! - A whole-database memtable ceiling, so the region count cannot multiply the
-//!   memtable term without a bound.
-//!
-//! # The memory budget as a sum
-//!
-//! ```text
-//! total ≈ memtable ceiling            (db_write_buffer_size)
-//!       + block cache                 (shared, and charged with index/filter)
-//!       + table readers               (bounded by the open-file limit)
-//!       + iterator-pinned blocks      (bounded by scan concurrency)
-//! ```
-//!
-//! The first two are the terms this module sets. They are *starting points*
-//! chosen to be small enough to run anywhere, not measured values — the
-//! measurement that replaces them is its own task, and until it lands the honest
-//! statement is that these numbers are placeholders with a ceiling, not a
-//! tuning.
+//! - Serializable transactions, because a batch's preconditions are checked inside one (see
+//!   the backend's module documentation).
+//! - Every keyspace named at open, created when missing, so a store from this build reopens.
+//! - One shared block cache, a whole-database ceiling on in-memory tables, and a bound on open
+//!   table files: the three terms of the memory budget this module sets. They are starting
+//!   points small enough to run anywhere, not measured values.
+//! - A compression profile per keyspace, matching how each is read and written: metadata is
+//!   read on the commit path and stays uncompressed; the log only grows and is kept, so it is
+//!   compressed densely throughout (G044 C10: the log was the larger half of a series' bytes);
+//!   records and index entries take a fast codec above and a dense one at the bottom, where
+//!   most bytes live. The log is never point-read, so it carries no membership filter.
+//! - Statistics, wired before the first load rather than after the first incident.
 
 use std::path::Path;
 
-use rocksdb::{
-    BlockBasedOptions, Cache, ChecksumType, DBCompressionType, DBRecoveryMode, Options,
-    WriteOptions,
-};
 use tessari_kv::Keyspace;
+use tessarikv::{Compression, KeyspaceOptions};
 
 /// What an acknowledged write is promised to survive.
 ///
@@ -105,12 +60,10 @@ pub enum Durability {
 }
 
 impl Durability {
-    /// The write options that deliver this level.
+    /// Whether a commit at this level waits for the device.
     #[must_use]
-    pub(crate) fn write_options(self) -> WriteOptions {
-        let mut options = WriteOptions::default();
-        options.set_sync(self == Self::PowerLossSafe);
-        options
+    pub(crate) const fn syncs(self) -> bool {
+        matches!(self, Self::PowerLossSafe)
     }
 
     /// A short stable name for logs and health output.
@@ -173,189 +126,30 @@ impl Default for StoreConfig {
     }
 }
 
-/// Database-wide options.
-///
-/// `create` decides whether a missing store is created. It is a parameter rather
-/// than a constant because creating a store and opening an existing one are
-/// different intentions, and conflating them is how a deployment ordering bug
-/// turns into an empty store that serves empty results.
-pub(crate) fn database_options(config: &StoreConfig, create: bool) -> Options {
-    let mut options = Options::default();
-    options.create_if_missing(create);
-    options.create_missing_column_families(create);
+/// Bits per key of the membership filter on a keyspace that is point-read.
+const FILTER_BITS_PER_KEY: u32 = 10;
 
-    // A batch spans regions and carries an invariant across them. This is what
-    // makes that invariant survive a crash rather than only a reader.
-    options.set_atomic_flush(true);
-
-    options.set_wal_recovery_mode(DBRecoveryMode::TolerateCorruptedTailRecords);
-    options.set_track_and_verify_wals_in_manifest(true);
-
-    options.set_db_write_buffer_size(config.memtable_bytes);
-
-    // The engine's default is unlimited, which leaves the table-reader term of
-    // the memory budget with no ceiling. Found by auditing the written OPTIONS
-    // file against the module's own claim that the term was bounded.
-    options.set_max_open_files(config.max_open_files);
-
-    // Wired before the first load rather than after the first incident.
-    options.enable_statistics();
-
-    options
+/// The table options of `keyspace`, with `memtable_bytes` of in-memory table.
+pub(crate) fn keyspace_options(
+    keyspace: Keyspace,
+    memtable_bytes: u64,
+) -> tessarikv::Result<KeyspaceOptions> {
+    let (upper, bottom, filter) = match keyspace {
+        Keyspace::META => (Compression::None, None, FILTER_BITS_PER_KEY),
+        Keyspace::LOG => (Compression::Zstd, Some(Compression::Zstd), 0),
+        _ => (
+            Compression::Lz4,
+            Some(Compression::Zstd),
+            FILTER_BITS_PER_KEY,
+        ),
+    };
+    KeyspaceOptions::builder()
+        .memtable_bytes(memtable_bytes)
+        .compression(upper)
+        .bottommost_compression(bottom)
+        .bloom_bits_per_key(filter)
+        .build()
 }
-
-/// zstd's own defaults for the window, level and strategy — only the
-/// dictionary is chosen here.
-const ZSTD_WINDOW_BITS: i32 = -14;
-const ZSTD_LEVEL: i32 = 3;
-const ZSTD_STRATEGY: i32 = 0;
-/// The dictionary trained per bottom-level compaction.
-const DICTIONARY_BYTES: i32 = 16 * 1024;
-/// How much sample data trains it: a hundred dictionaries' worth.
-const DICTIONARY_TRAINING_BYTES: i32 = 100 * DICTIONARY_BYTES;
-
-/// Options for one region.
-///
-/// Each region gets a profile matching how it is actually read and written. That
-/// difference is the only admissible reason for the regions to be separate at
-/// all — anything that differs only by which entity it holds belongs in the key
-/// prefix instead.
-fn region_options(keyspace: Keyspace, cache: &Cache) -> Options {
-    let mut options = Options::default();
-    options.set_compression_per_level(&compression_per_level(keyspace));
-    if let Some(bottom) = bottommost_compression(keyspace) {
-        options.set_bottommost_compression_type(bottom);
-        // A trained dictionary: records are small and alike, so a block alone
-        // gives zstd too little to learn from (G044 C10: 69 → 62 B/point).
-        options.set_bottommost_compression_options(
-            ZSTD_WINDOW_BITS,
-            ZSTD_LEVEL,
-            ZSTD_STRATEGY,
-            DICTIONARY_BYTES,
-            true,
-        );
-        options.set_bottommost_zstd_max_train_bytes(DICTIONARY_TRAINING_BYTES, true);
-    }
-    options.set_block_based_table_factory(&table_options(keyspace, cache));
-
-    // Pinned at the value the engine already resolves to, so that a release
-    // changing its default cannot change how often this store rewrites itself
-    // without anyone deciding to. See SST_REWRITE_SECONDS.
-    options.set_ttl(SST_REWRITE_SECONDS);
-    options
-}
-
-/// How hard each level is compressed.
-///
-/// The top levels are left uncompressed because they are rewritten constantly
-/// and hold the least data; the bottom is compressed hardest because it holds
-/// most of the bytes and is rewritten least.
-///
-/// The log is the exception, because its keys only ever grow: a flushed file
-/// overlaps nothing below it, so the engine relinks it level by level to the
-/// bottom without rewriting it, and it stays in whatever codec the flush used.
-/// With an uncompressed top that was a permanent uncompressed copy of every
-/// record (G044 C10: 51.7 → 28.2 B/point once the flush compresses densely).
-fn compression_per_level(keyspace: Keyspace) -> [DBCompressionType; LEVELS] {
-    const NONE: DBCompressionType = DBCompressionType::None;
-    const FAST: DBCompressionType = DBCompressionType::Lz4;
-    const DENSE: DBCompressionType = DBCompressionType::Zstd;
-
-    match keyspace {
-        // Metadata is a handful of keys read on the commit path. Compressing it
-        // costs CPU on the hottest read in the store and saves nothing worth
-        // measuring.
-        Keyspace::META => [NONE; LEVELS],
-        // The log is the store and is kept unless a node declares a retained
-        // record count (default off), so its bottom is a permanent second copy
-        // of every record — measured as the larger half of a series' bytes on
-        // disk (G044 C10: 148 → 69 B/point with dense compression here). Dense
-        // from the flush on, because its files reach the bottom unrewritten.
-        Keyspace::LOG => [DENSE; LEVELS],
-        _ => [NONE, NONE, FAST, FAST, FAST, DENSE, DENSE],
-    }
-}
-
-/// The compression the last level settles at, where it differs from the ladder.
-fn bottommost_compression(keyspace: Keyspace) -> Option<DBCompressionType> {
-    match keyspace {
-        Keyspace::META => None,
-        _ => Some(DBCompressionType::Zstd),
-    }
-}
-
-/// The engine's default level count. Changing it is a reopen, so the ladder
-/// above is sized to it deliberately rather than by coincidence.
-///
-/// Confirmed against the running release rather than assumed: the written
-/// OPTIONS file reports `num_levels=7`.
-const LEVELS: usize = 7;
-
-/// How old a file may get before compaction rewrites it: thirty days.
-///
-/// This is not a value chosen for a workload — it is the value the engine was
-/// **already applying**, discovered by auditing the OPTIONS file it writes. The
-/// header declares a sentinel default, and the engine resolves that sentinel to
-/// thirty days for leveled compaction, so reading the header alone says "unset"
-/// while the store rewrites every file monthly.
-///
-/// Pinning it changes nothing today. What it changes is that the rewrite is now
-/// a decision that survives a release changing its default, and that the
-/// alternative — disabling it, trading tombstone and space reclamation for less
-/// background writing on cold data — is a question the readiness checklist asks
-/// with a measurement rather than a question nobody knew existed.
-const SST_REWRITE_SECONDS: u64 = 30 * 24 * 60 * 60;
-
-/// Bits per key for the membership filter.
-const FILTER_BITS_PER_KEY: f64 = 10.0;
-
-fn table_options(keyspace: Keyspace, cache: &Cache) -> BlockBasedOptions {
-    let mut table = BlockBasedOptions::default();
-    table.set_block_cache(cache);
-
-    // Pinned at the release's current default. A checksum is part of the format
-    // a file is written in, so a release changing this default would change how
-    // new files are written while old ones stay readable — a divergence with no
-    // symptom until something needs to explain why two files differ.
-    table.set_checksum_type(ChecksumType::XXH3);
-
-    // Charged into the one cache above rather than growing beside it.
-    table.set_cache_index_and_filter_blocks(true);
-    table.set_pin_l0_filter_and_index_blocks_in_cache(true);
-
-    // A membership filter answers "is this key here" without reading the file,
-    // which is what a point read needs. The log is never point-read, so a filter
-    // there is bytes and CPU spent on a question nobody asks.
-    if keyspace != Keyspace::LOG {
-        table.set_bloom_filter(FILTER_BITS_PER_KEY, false);
-    }
-    table
-}
-
-/// The regions a store contains, with their options.
-///
-/// The set is fixed. It does not grow with tables, namespaces or tenants — those
-/// are key prefixes — because every region costs memtable memory and background
-/// scheduling whether or not anything writes to it.
-pub(crate) fn regions(cache: &Cache) -> Vec<(&'static str, Options)> {
-    let mut regions: Vec<(&'static str, Options)> = Keyspace::ALL
-        .iter()
-        .map(|keyspace| (keyspace.name(), region_options(*keyspace, cache)))
-        .collect();
-
-    // The engine always creates a region called `default`, whether or not
-    // anything uses it — and this store never does. Left alone it opens on
-    // engine defaults, which means its own block cache: a second cache beside
-    // the one this module calls the only one. It holds nothing and would never
-    // fill, so the cost is not the point; the point is that "one shared cache"
-    // is either true or it is a sentence. It is given the metadata profile,
-    // being the cheapest, and it stays empty.
-    regions.push((DEFAULT_REGION, region_options(Keyspace::META, cache)));
-    regions
-}
-
-/// The region the engine creates on its own, which this store never writes to.
-pub(crate) const DEFAULT_REGION: &str = "default";
 
 /// The engine's own record of the options a store is running with.
 ///
@@ -396,72 +190,18 @@ mod tests {
     }
 
     #[test]
-    fn the_compression_ladder_covers_every_level_and_never_compresses_the_top() {
-        for keyspace in Keyspace::ALL {
-            let ladder = compression_per_level(*keyspace);
-            assert_eq!(ladder.len(), LEVELS, "{keyspace}");
-            if *keyspace == Keyspace::LOG {
-                // Its files are relinked to the bottom, not rewritten; see below.
-                continue;
-            }
-            assert_eq!(
-                ladder[0],
-                DBCompressionType::None,
-                "{keyspace}: the newest level is rewritten constantly"
-            );
-        }
-    }
-
-    #[test]
-    fn metadata_is_never_compressed_because_it_is_read_on_the_commit_path() {
-        assert!(
-            compression_per_level(Keyspace::META)
-                .iter()
-                .all(|level| *level == DBCompressionType::None)
-        );
-        assert_eq!(bottommost_compression(Keyspace::META), None);
-    }
-
-    #[test]
-    fn the_log_is_compressed_densely_at_the_bottom_because_it_is_kept() {
-        // It used to stay on the cheap codec on the premise that retention
-        // discards it; retention is off by default, so the log is a permanent
-        // second copy, and G044 C10 measured it as the larger half of the bytes.
-        let ladder = compression_per_level(Keyspace::LOG);
-        // Every level, the flush included: a log key only grows, so a flushed
-        // file is relinked to the bottom without being rewritten and keeps the
-        // codec it was written with (G044 C10: 51.7 → 28.2 B/point).
-        assert!(
-            ladder.iter().all(|level| *level == DBCompressionType::Zstd),
-            "{ladder:?}"
-        );
-        assert_eq!(
-            bottommost_compression(Keyspace::LOG),
-            Some(DBCompressionType::Zstd)
-        );
-    }
-
-    #[test]
-    fn data_and_index_compress_hardest_where_most_bytes_live() {
+    fn each_keyspace_is_compressed_for_how_it_is_read() {
+        let meta = keyspace_options(Keyspace::META, 1 << 20).unwrap();
+        assert_eq!(meta.compression(), Compression::None);
+        assert_eq!(meta.bottommost_compression(), None);
+        let log = keyspace_options(Keyspace::LOG, 1 << 20).unwrap();
+        assert_eq!(log.compression(), Compression::Zstd);
+        assert_eq!(log.bloom_bits_per_key(), 0, "the log is never point-read");
         for keyspace in [Keyspace::DATA, Keyspace::INDEX] {
-            let ladder = compression_per_level(keyspace);
-            assert_eq!(ladder[LEVELS - 1], DBCompressionType::Zstd, "{keyspace}");
-            assert_eq!(
-                bottommost_compression(keyspace),
-                Some(DBCompressionType::Zstd),
-                "{keyspace}"
-            );
+            let options = keyspace_options(keyspace, 1 << 20).unwrap();
+            assert_eq!(options.compression(), Compression::Lz4, "{keyspace}");
+            assert_eq!(options.bottommost_compression(), Some(Compression::Zstd));
+            assert_eq!(options.memtable_bytes(), 1 << 20);
         }
-    }
-
-    #[test]
-    fn every_keyspace_becomes_one_region_and_the_engine_s_own_region_is_managed_too() {
-        let cache = Cache::new_lru_cache(1024 * 1024);
-        let regions = regions(&cache);
-        let names: Vec<&str> = regions.iter().map(|(name, _)| *name).collect();
-        // `default` is created by the engine whether or not anything uses it.
-        // Managing it is what makes "one shared block cache" true rather than
-        // nearly true; the audit found it opening on its own defaults.
-        assert_eq!(names, ["meta", "data", "index", "log", DEFAULT_REGION]);
     }
 }

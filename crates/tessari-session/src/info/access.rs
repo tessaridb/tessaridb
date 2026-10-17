@@ -25,7 +25,7 @@ impl Session<'_> {
     /// catalog holds — so the report is built field by field rather than from
     /// that value. Reusing it would put every hash in the store onto the wire
     /// and into whatever logs the answer.
-    pub(super) fn info_user(
+    pub(super) async fn info_user(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
@@ -33,7 +33,8 @@ impl Session<'_> {
     ) -> Result<BTreeMap<String, Value>> {
         let catalog = Catalog::new(transaction);
         let Some(user) = catalog
-            .users()?
+            .users()
+            .await?
             .into_iter()
             .find(|found| found.name == name.text)
         else {
@@ -54,26 +55,26 @@ impl Session<'_> {
                 span,
             });
         }
-        let grants = catalog.grants_for(user.id)?;
+        let grants = catalog.grants_for(user.id).await?;
         let mut described = Vec::new();
         for grant in &grants {
-            described.push(described_grant(&catalog, grant)?);
+            described.push(described_grant(&catalog, grant).await?);
         }
         let mut report = described_user(&user);
         if let Some(id) = user.namespace
-            && let Some(found) = catalog.namespace(id)?
+            && let Some(found) = catalog.namespace(id).await?
         {
             report.insert("namespace".to_owned(), Value::from(found.name.as_str()));
         }
         if let Some(id) = user.database
-            && let Some(found) = catalog.database(id)?
+            && let Some(found) = catalog.database(id).await?
         {
             report.insert("database".to_owned(), Value::from(found.name.as_str()));
         }
         report.insert("grants".to_owned(), Value::Array(described));
         report.insert(
             "authorities".to_owned(),
-            described_authorities(&catalog, &user)?,
+            described_authorities(&catalog, &user).await?,
         );
         Ok(report)
     }
@@ -94,24 +95,24 @@ impl Session<'_> {
     ///
     /// Grants are deliberately absent: they are per-user detail, one catalog read
     /// each, and `INFO FOR USER <name>` is where a single subject is examined.
-    pub(super) fn info_users(
+    pub(super) async fn info_users(
         &self,
         transaction: &mut Transaction<'_>,
     ) -> Result<BTreeMap<String, Value>> {
         let catalog = Catalog::new(transaction);
         let mut listed = Vec::new();
-        for user in catalog.users()? {
+        for user in catalog.users().await? {
             if !self.administers(&user) {
                 continue;
             }
             let mut described = described_user(&user);
             if let Some(id) = user.namespace
-                && let Some(found) = catalog.namespace(id)?
+                && let Some(found) = catalog.namespace(id).await?
             {
                 described.insert("namespace".to_owned(), Value::from(found.name.as_str()));
             }
             if let Some(id) = user.database
-                && let Some(found) = catalog.database(id)?
+                && let Some(found) = catalog.database(id).await?
             {
                 described.insert("database".to_owned(), Value::from(found.name.as_str()));
             }
@@ -150,7 +151,7 @@ impl Session<'_> {
     ///
     /// The probes never run. `authorize` decides from the statement's shape, so
     /// the record id below names nothing that has to exist.
-    pub(super) fn info_access(
+    pub(super) async fn info_access(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
@@ -158,16 +159,16 @@ impl Session<'_> {
     ) -> Result<BTreeMap<String, Value>> {
         // Resolved first, so a report is never produced for a table that is not
         // there: an empty access list is the same shape as a typo.
-        let (_, id) = self.resolve_table(transaction, table)?;
+        let (_, id) = self.resolve_table(transaction, table).await?;
         let catalog = Catalog::new(transaction);
-        let Some(definition) = catalog.table(id)? else {
+        let Some(definition) = catalog.table(id).await? else {
             return Err(Error::Unknown {
                 entity: "table",
                 name: table.name.text.clone(),
                 span: table.span,
             });
         };
-        let users = catalog.users()?;
+        let users = catalog.users().await?;
         // Three statements and not two. Reaching a table starts with selecting
         // the container it is in, and that first step is where a declared
         // tenancy is enforced — `within_tenancy` looks at `USE` and at nothing
@@ -191,10 +192,10 @@ impl Session<'_> {
             if !self.administers(&user) {
                 continue;
             }
-            let mut probe = self.probing(user.id)?;
-            let arrived = probe.authorize(self.store, &selecting, span).is_ok();
-            let read = arrived && probe.authorize(self.store, &reading, span).is_ok();
-            let write = arrived && probe.authorize(self.store, &writing, span).is_ok();
+            let mut probe = self.probing(user.id).await?;
+            let arrived = probe.authorize(self.store, &selecting, span).await.is_ok();
+            let read = arrived && probe.authorize(self.store, &reading, span).await.is_ok();
+            let write = arrived && probe.authorize(self.store, &writing, span).await.is_ok();
             listed.push(Value::Object(BTreeMap::from([
                 ("user".to_owned(), Value::from(user.name.as_str())),
                 ("read".to_owned(), Value::Bool(read)),

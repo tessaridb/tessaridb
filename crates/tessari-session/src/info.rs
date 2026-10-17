@@ -83,43 +83,48 @@ pub(crate) use vaults::id_value;
 
 impl Session<'_> {
     /// Report what the catalog holds about one subject.
-    pub(crate) fn info(
+    pub(crate) async fn info(
         &self,
         transaction: &mut Transaction<'_>,
         subject: &InfoSubject,
         span: Span,
     ) -> Result<Outcome> {
         let report = match subject {
-            InfoSubject::Store => self.info_store(transaction)?,
-            InfoSubject::Namespace => self.info_namespace(transaction, span)?,
-            InfoSubject::Database => self.info_database(transaction, span)?,
-            InfoSubject::Table(table) => self.info_table(transaction, table)?,
-            InfoSubject::Graph(name) => self.info_graph(transaction, name, span)?,
-            InfoSubject::Vector(name) => self.info_vector(transaction, name, span)?,
-            InfoSubject::Search(name) => self.info_search(transaction, name, span)?,
-            InfoSubject::Geo(name) => self.info_geo(transaction, name, span)?,
-            InfoSubject::Vault(name) => self.info_vault(transaction, name, span)?,
+            InfoSubject::Store => self.info_store(transaction).await?,
+            InfoSubject::Namespace => self.info_namespace(transaction, span).await?,
+            InfoSubject::Database => self.info_database(transaction, span).await?,
+            InfoSubject::Table(table) => self.info_table(transaction, table).await?,
+            InfoSubject::Graph(name) => self.info_graph(transaction, name, span).await?,
+            InfoSubject::Vector(name) => self.info_vector(transaction, name, span).await?,
+            InfoSubject::Search(name) => self.info_search(transaction, name, span).await?,
+            InfoSubject::Geo(name) => self.info_geo(transaction, name, span).await?,
+            InfoSubject::Vault(name) => self.info_vault(transaction, name, span).await?,
             InfoSubject::VaultRecords {
                 table,
                 after,
                 limit,
-            } => self.info_vault_records(transaction, table, after.as_deref(), *limit, span)?,
-            InfoSubject::Topic(table) => self.info_topic(transaction, table, span)?,
-            InfoSubject::Bucket(name) => self.info_bucket(transaction, name, span)?,
-            InfoSubject::Recipients(target) => self.info_recipients(transaction, target, span)?,
-            InfoSubject::Versions(target) => self.info_versions(transaction, target, span)?,
-            InfoSubject::History(target) => self.info_history(transaction, target, span)?,
-            InfoSubject::Audit(actor) => self.info_audit(actor.as_ref())?,
-            InfoSubject::Seal(None) => self.info_seal(transaction)?,
-            InfoSubject::Seal(Some(vault)) => self.info_seal_of(transaction, vault, span)?,
-            InfoSubject::User(name) => self.info_user(transaction, name, span)?,
-            InfoSubject::Users => self.info_users(transaction)?,
-            InfoSubject::Access(table) => self.info_access(transaction, table, span)?,
-            InfoSubject::Node => self.info_node(transaction)?,
-            InfoSubject::Consumer(name) => self.info_consumer(transaction, name, span)?,
-            InfoSubject::Consumers => self.info_consumers(transaction)?,
+            } => {
+                self.info_vault_records(transaction, table, after.as_deref(), *limit, span)
+                    .await?
+            }
+            InfoSubject::Topic(table) => self.info_topic(transaction, table, span).await?,
+            InfoSubject::Bucket(name) => self.info_bucket(transaction, name, span).await?,
+            InfoSubject::Recipients(target) => {
+                self.info_recipients(transaction, target, span).await?
+            }
+            InfoSubject::Versions(target) => self.info_versions(transaction, target, span).await?,
+            InfoSubject::History(target) => self.info_history(transaction, target, span).await?,
+            InfoSubject::Audit(actor) => self.info_audit(actor.as_ref()).await?,
+            InfoSubject::Seal(None) => self.info_seal(transaction).await?,
+            InfoSubject::Seal(Some(vault)) => self.info_seal_of(transaction, vault, span).await?,
+            InfoSubject::User(name) => self.info_user(transaction, name, span).await?,
+            InfoSubject::Users => self.info_users(transaction).await?,
+            InfoSubject::Access(table) => self.info_access(transaction, table, span).await?,
+            InfoSubject::Node => self.info_node(transaction).await?,
+            InfoSubject::Consumer(name) => self.info_consumer(transaction, name, span).await?,
+            InfoSubject::Consumers => self.info_consumers(transaction).await?,
             InfoSubject::TopicConsumer(name) => {
-                self.info_topic_consumer(transaction, name, span)?
+                self.info_topic_consumer(transaction, name, span).await?
             }
         };
         Ok(Outcome::Value(Value::Object(report)))

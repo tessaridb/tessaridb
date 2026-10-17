@@ -43,8 +43,8 @@ impl Transaction<'_> {
     ///
     /// Answers `false` for every table that is not a series, which is the
     /// overwhelming majority and costs one namespace comparison for them.
-    pub(super) fn below_series_floor(&self, address: &RecordAddress) -> Result<bool> {
-        let Some(floor) = self.series_floor(address.namespace, address.table)? else {
+    pub(super) async fn below_series_floor(&self, address: &RecordAddress) -> Result<bool> {
+        let Some(floor) = self.series_floor(address.namespace, address.table).await? else {
             return Ok(false);
         };
         Ok(is_below(&address.id, &floor))
@@ -54,7 +54,7 @@ impl Transaction<'_> {
     ///
     /// Cached per table for the transaction's life, so a walk over ten thousand
     /// records reads the catalog once.
-    pub(crate) fn series_floor(
+    pub(crate) async fn series_floor(
         &self,
         namespace: NamespaceId,
         table: TableId,
@@ -73,7 +73,8 @@ impl Transaction<'_> {
         // this process has declared or already looked up, which is what keeps a
         // point read on an ordinary table at one round trip.
         let floor = self
-            .series_declaration(namespace, table)?
+            .series_declaration(namespace, table)
+            .await?
             .and_then(|declared| self.floor_at(declared.retain));
         self.floors.borrow_mut().insert(table, floor.clone());
         Ok(floor)
@@ -89,9 +90,14 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Whatever reading the table's declaration returns.
-    pub fn series_time(&self, namespace: NamespaceId, table: TableId) -> Result<Option<String>> {
+    pub async fn series_time(
+        &self,
+        namespace: NamespaceId,
+        table: TableId,
+    ) -> Result<Option<String>> {
         Ok(self
-            .series_declaration(namespace, table)?
+            .series_declaration(namespace, table)
+            .await?
             .and_then(|declared| declared.time))
     }
 
@@ -112,12 +118,12 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Whatever reading the table's declaration returns.
-    pub fn below_floor(&self, address: &RecordAddress) -> Result<bool> {
-        self.below_series_floor(address)
+    pub async fn below_floor(&self, address: &RecordAddress) -> Result<bool> {
+        self.below_series_floor(address).await
     }
 
     /// The table's series declaration, from the registry or read once.
-    fn series_declaration(
+    async fn series_declaration(
         &self,
         namespace: NamespaceId,
         table: TableId,
@@ -129,14 +135,14 @@ impl Transaction<'_> {
         }
         match self.store().series().known(table) {
             Some(declared) => Ok(declared),
-            None => self.learn_kind(table),
+            None => self.learn_kind(table).await,
         }
     }
 
     /// Read the table's declaration once, and tell the registry what it says.
-    fn learn_kind(&self, table: TableId) -> Result<Option<SeriesDeclaration>> {
+    async fn learn_kind(&self, table: TableId) -> Result<Option<SeriesDeclaration>> {
         let entry = system::address(system::TABLES, RecordId::Int(i64::from(table.get())));
-        let Some(bytes) = self.get_uncovered(&entry)? else {
+        let Some(bytes) = self.get_uncovered(&entry).await? else {
             // Not found is **not** learned: a transaction whose snapshot
             // predates the table's creation would otherwise teach this process
             // that a series table is a plain one, permanently and silently.
@@ -159,14 +165,15 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Whatever reading the table's declaration returns.
-    pub(crate) fn series_floor_at(
+    pub(crate) async fn series_floor_at(
         &self,
         namespace: NamespaceId,
         table: TableId,
         millis: u64,
     ) -> Result<Option<RecordId>> {
         Ok(self
-            .series_declaration(namespace, table)?
+            .series_declaration(namespace, table)
+            .await?
             .and_then(|declared| floor_from(millis, declared.retain)))
     }
 

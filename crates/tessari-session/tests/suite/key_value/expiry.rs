@@ -7,6 +7,8 @@
 //! that never answered would pass the "after" half on its own.
 
 use std::thread;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_encoding::KeyKind;
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
@@ -190,7 +192,7 @@ fn a_transaction_sees_its_own_expiring_write_on_its_own_clock() {
     on_each_backend(|backend| {
         let mut session = opened(&backend.store);
         let answers = session
-            .run(
+            .run_now(
                 "BEGIN; SET cache:'t' = 1 EXPIRE 1h; SET cache:'gone' = 1; \
                  EXPIRE cache:'gone' -5s; RETURN [GET cache:'t', GET cache:'gone']; COMMIT;",
             )
@@ -241,6 +243,7 @@ fn index_entries(backend: &Backend) -> usize {
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .now()
         .unwrap()
         .len()
 }
@@ -282,13 +285,14 @@ fn an_expiry_survives_the_store_being_closed_and_opened_again() {
     let directory = tempfile::tempdir().unwrap();
     let open = || {
         let raw = std::sync::Arc::new(
-            tessari_lsm::LsmBackend::open(
+            tessari_lsm::TessariKvBackend::open(
                 directory.path(),
                 tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
             )
+            .now()
             .unwrap(),
         ) as std::sync::Arc<dyn tessari_kv::KvBackend>;
-        tessari_storage::Store::open(raw).unwrap()
+        tessari_storage::Store::open(raw).now().unwrap()
     };
     {
         let store = open();
@@ -298,7 +302,7 @@ fn an_expiry_survives_the_store_being_closed_and_opened_again() {
     let store = open();
     let mut session = tessari_session::Session::new(&store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE app;")
+        .run_now("USE NAMESPACE prod; USE DATABASE app;")
         .unwrap();
     assert!(matches!(
         value(&mut session, "RETURN TTL cache:'k';"),

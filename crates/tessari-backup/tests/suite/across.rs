@@ -6,6 +6,7 @@ use tessari_encoding::{
     Across, Decision, LogId, LogRecord, Mutation, Part, Participant, Provenance, RecordValue,
     StampedValue, TRANSACTION_ID_LEN, TransactionId, TransactionRecord,
 };
+use tessari_storage::Now;
 use tessari_storage::{Catalog, Reach, Store, TableShape};
 use tessari_types::{RecordId, Sequence};
 
@@ -13,14 +14,15 @@ use crate::restore::store;
 
 /// Two databases with a table each, and the address of `r` in each.
 fn homes(source: &Store) -> [(Reach, tessari_storage::RecordAddress); 2] {
-    let mut defining = source.begin().unwrap();
+    let mut defining = source.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut defining);
-    let namespace = catalog.create_namespace("ns").unwrap().id;
+    let namespace = catalog.create_namespace("ns").now().unwrap().id;
     let mut homes = Vec::new();
     for name in ["one", "two"] {
-        let database = catalog.create_database(namespace, name).unwrap().id;
+        let database = catalog.create_database(namespace, name).now().unwrap().id;
         let table = catalog
             .create_table(namespace, database, "t", TableShape::default())
+            .now()
             .unwrap()
             .id;
         homes.push((
@@ -28,7 +30,7 @@ fn homes(source: &Store) -> [(Reach, tessari_storage::RecordAddress); 2] {
             tessari_storage::RecordAddress::new(namespace, database, table, RecordId::from("r")),
         ));
     }
-    defining.commit().unwrap();
+    defining.commit().now().unwrap();
     homes.try_into().unwrap()
 }
 
@@ -63,6 +65,7 @@ fn prepare(
         });
         source
             .apply_record_in(LogId::line(*range), Sequence::new(at), &record)
+            .now()
             .unwrap();
     }
 }
@@ -92,6 +95,7 @@ fn a_restore_settles_what_its_cut_decided_and_nothing_else() {
     });
     source
         .apply_record_in(LogId::line(homes[0].0), Sequence::new(2), &staging)
+        .now()
         .unwrap();
     // One part of another, on a record of its own, and nothing decided.
     let other = [(
@@ -104,12 +108,17 @@ fn a_restore_settles_what_its_cut_decided_and_nothing_else() {
     prepare(&source, &other, undecided, 3);
 
     let mut file = Vec::new();
-    tessari_backup::write_state(&source, &mut file).unwrap();
+    tessari_backup::write_state(&source, &mut file)
+        .now()
+        .unwrap();
     let (_, restored) = store();
-    tessari_backup::read_state(&restored, || Ok(file.as_slice())).unwrap();
+    tessari_backup::read_state(&restored, || Ok(file.as_slice()))
+        .now()
+        .unwrap();
 
     let standing: Vec<_> = restored
         .standing_across()
+        .now()
         .unwrap()
         .into_iter()
         .map(|(transaction, _)| transaction)
@@ -118,13 +127,17 @@ fn a_restore_settles_what_its_cut_decided_and_nothing_else() {
     assert_eq!(
         restored
             .transaction_record(staged)
+            .now()
             .unwrap()
             .map(|record| record.decision),
         Some(Decision::Committed)
     );
-    let reading = restored.begin().unwrap();
+    let reading = restored.begin().now().unwrap();
     for (_, address) in &homes {
-        assert_eq!(reading.get(address).unwrap().as_deref(), Some(&b"new"[..]));
+        assert_eq!(
+            reading.get(address).now().unwrap().as_deref(),
+            Some(&b"new"[..])
+        );
     }
-    assert_eq!(reading.get(&other[0].1).unwrap(), None);
+    assert_eq!(reading.get(&other[0].1).now().unwrap(), None);
 }

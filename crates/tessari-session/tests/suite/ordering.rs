@@ -20,6 +20,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -28,13 +30,13 @@ use tessari_types::Value;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION items;",
@@ -46,7 +48,7 @@ fn ready(store: &Store) -> Session<'_> {
 /// The value of one field of every record a statement answered with, in the
 /// order the answer put them.
 fn column(session: &mut Session<'_>, script: &str, field: &str) -> Vec<Value> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a select answers with records")
     };
@@ -72,7 +74,7 @@ fn text(value: &str) -> Value {
 /// read that ordered by the wrong one is visible rather than coincidental.
 fn three_items(session: &mut Session<'_>) {
     session
-        .run(
+        .run_now(
             "CREATE items:1 = { label: 'alpha', rank: 3 };\n\
              CREATE items:2 = { label: 'beta',  rank: 1 };\n\
              CREATE items:3 = { label: 'gamma', rank: 2 };",
@@ -145,7 +147,7 @@ fn an_alias_still_wins_when_a_second_key_forces_the_source_into_view() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE items:1 = { label: 'alpha', tag: 'A', rank: 3, hidden: 1 };\n\
              CREATE items:2 = { label: 'beta',  tag: 'B', rank: 1, hidden: 1 };\n\
              CREATE items:3 = { label: 'gamma', tag: 'C', rank: 1, hidden: 0 };",
@@ -208,7 +210,7 @@ fn a_computed_key_over_a_dropped_field_orders_by_what_it_computes() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE items:1 = { label: 'alpha', code: 'zzz' };\n\
              CREATE items:2 = { label: 'beta',  code: 'a' };\n\
              CREATE items:3 = { label: 'gamma', code: 'mm' };",
@@ -232,7 +234,7 @@ fn two_keys_are_read_from_wherever_each_of_them_lives() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE items:1 = { label: 'alpha', group: 2, rank: 1 };\n\
              CREATE items:2 = { label: 'beta',  group: 1, rank: 2 };\n\
              CREATE items:3 = { label: 'gamma', group: 1, rank: 1 };",

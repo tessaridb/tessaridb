@@ -16,7 +16,7 @@ use crate::store::Store;
 ///
 /// Never lowers it: a finalize to the format the store already holds, or below
 /// it, changes nothing.
-pub(crate) fn maintain(
+pub(crate) async fn maintain(
     store: &Store,
     record: &LogRecord,
     mut batch: WriteBatch,
@@ -26,7 +26,7 @@ pub(crate) fn maintain(
         let Some(finalized) = finalized_in(mutation)? else {
             continue;
         };
-        if store.held_format()? < finalized {
+        if store.held_format().await? < finalized {
             batch = batch.put(
                 FormatVersionKey::keyspace(),
                 FormatVersionKey.encode(),
@@ -34,7 +34,7 @@ pub(crate) fn maintain(
             );
             // A store finalized to format 8 keeps retired index entries from
             // this commit on, in the batch that raises the stamp (Q-S3-34).
-            batch = crate::retired::keep_from(store, batch, finalized, version)?;
+            batch = crate::retired::keep_from(store, batch, finalized, version).await?;
         }
     }
     Ok(batch)

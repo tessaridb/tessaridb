@@ -35,33 +35,43 @@ use tessari_storage::Store;
 /// because one round can carry the logs of several lines and each line counts
 /// its own leaderships. A copy whose tail cannot be read refuses the answer
 /// rather than applying what could not be judged.
-pub(super) fn refused(into: &Store, fetched: Vec<Result<Collected>>) -> Vec<Result<Collected>> {
-    fetched
-        .into_iter()
-        .map(|answer| {
-            let collected = answer?;
-            let Some(stated) = collected.epoch else {
-                return Ok(collected);
-            };
-            let newest = into
-                .tail_leadership(collected.log)
-                .map_err(|why| Error::Refused {
-                    message: format!(
-                        "this node cannot say which leadership its copy reaches: {why}"
-                    ),
-                    class: None,
-                })?;
-            if stated < newest {
-                return Err(Error::Deposed { stated, newest });
+pub(super) async fn refused(
+    into: &Store,
+    fetched: Vec<Result<Collected>>,
+) -> Vec<Result<Collected>> {
+    let mut judged = Vec::with_capacity(fetched.len());
+    for answer in fetched {
+        judged.push(
+            async {
+                let collected = answer?;
+                let Some(stated) = collected.epoch else {
+                    return Ok(collected);
+                };
+                let newest =
+                    into.tail_leadership(collected.log)
+                        .await
+                        .map_err(|why| Error::Refused {
+                            message: format!(
+                                "this node cannot say which leadership its copy reaches: {why}"
+                            ),
+                            class: None,
+                        })?;
+                if stated < newest {
+                    return Err(Error::Deposed { stated, newest });
+                }
+                Ok(collected)
             }
-            Ok(collected)
-        })
-        .collect()
+            .await,
+        );
+    }
+    judged
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tessari_session::Now;
+    use tessari_session::RunNow;
     use tessari_storage::{LEASE_TTL, Lease, LogId};
     use tessari_types::{Epoch, Sequence};
     use tessaridb::Db;
@@ -80,9 +90,10 @@ mod tests {
 
     /// The one log `db` has written, after one statement.
     fn written(db: &Db, statement: &str) -> LogId {
-        db.session().run(statement).expect("the write commits");
+        db.session().run_now(statement).expect("the write commits");
         *db.store()
             .logs()
+            .now()
             .expect("the logs")
             .first()
             .expect("the write filed a log")
@@ -95,11 +106,13 @@ mod tests {
         // superseded — what it serves may be records leadership 5 never held. An
         // answer stating 5 or more is the line's current leader, and one stating
         // nothing leads no line governing that home and is not judged here.
-        let db = Db::in_memory().expect("an in-memory store");
-        db.store().hold(Epoch::new(5), Lease::taken(LEASE_TTL));
+        let db = Db::in_memory().now().expect("an in-memory store");
+        db.store()
+            .hold(Epoch::new(5), Lease::taken(LEASE_TTL))
+            .now();
         let line = written(&db, "DEFINE NAMESPACE led");
         assert_eq!(
-            db.store().tail_leadership(line).expect("its tail"),
+            db.store().tail_leadership(line).now().expect("its tail"),
             Epoch::new(5)
         );
 
@@ -111,7 +124,8 @@ mod tests {
                 stating(line, Some(6)),
                 stating(line, None),
             ],
-        );
+        )
+        .now();
         assert!(
             matches!(
                 judged[0],
@@ -130,9 +144,9 @@ mod tests {
         // written under a leadership, so an answer stating 6 is applied —
         // whatever ballots this node was shown at 7, nothing at 7 has written,
         // and nothing says leadership 6 is over.
-        let db = Db::in_memory().expect("an in-memory store");
+        let db = Db::in_memory().now().expect("an in-memory store");
         let own = written(&db, "DEFINE NAMESPACE own");
-        let judged = refused(db.store(), vec![stating(own, Some(6))]);
+        let judged = refused(db.store(), vec![stating(own, Some(6))]).now();
         assert!(judged[0].is_ok(), "{judged:?}");
     }
 
@@ -141,10 +155,12 @@ mod tests {
         // DB-15: records written by the store line's leader under leadership 3
         // stay in the range's own log, so the line that takes the range over
         // has to stand above 3 or every follower reads its answers as deposed.
-        let db = Db::in_memory().expect("an in-memory store");
-        db.store().hold(Epoch::new(3), Lease::taken(LEASE_TTL));
+        let db = Db::in_memory().now().expect("an in-memory store");
+        db.store()
+            .hold(Epoch::new(3), Lease::taken(LEASE_TTL))
+            .now();
         db.session()
-            .run("DEFINE NAMESPACE s3; USE NAMESPACE s3; DEFINE DATABASE us; USE DATABASE us; DEFINE TABLE o SCHEMALESS; CREATE o:1 = { a: 1 };")
+            .run_now("DEFINE NAMESPACE s3; USE NAMESPACE s3; DEFINE DATABASE us; USE DATABASE us; DEFINE TABLE o SCHEMALESS; CREATE o:1 = { a: 1 };")
             .expect("the writes commit");
         let us = tessari_types::Reach::Database(
             tessari_types::NamespaceId::new(1),
@@ -153,6 +169,7 @@ mod tests {
         assert_eq!(
             db.store()
                 .newest_leadership_in(us)
+                .now()
                 .expect("the range's logs"),
             Epoch::new(3)
         );
@@ -161,7 +178,10 @@ mod tests {
             tessari_types::DatabaseId::new(9),
         );
         assert_eq!(
-            db.store().newest_leadership_in(elsewhere).expect("no logs"),
+            db.store()
+                .newest_leadership_in(elsewhere)
+                .now()
+                .expect("no logs"),
             Epoch::ZERO,
             "the control: a home nobody wrote holds no leadership"
         );

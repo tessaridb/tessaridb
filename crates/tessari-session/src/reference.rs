@@ -75,7 +75,7 @@ impl Session<'_> {
     /// address at one snapshot must answer the same thing — so batching the
     /// distinct set asks for exactly what was going to be asked for anyway,
     /// rather than for a batch's worth of whatever happens to be nearby.
-    pub(crate) fn follow(
+    pub(crate) async fn follow(
         &self,
         transaction: &mut Transaction<'_>,
         records: &mut [(RecordId, Value)],
@@ -87,7 +87,9 @@ impl Session<'_> {
         if wanted.is_empty() {
             return Ok(());
         }
-        let seen = self.resolve_each(transaction, context, &wanted, notes)?;
+        let seen = self
+            .resolve_each(transaction, context, &wanted, notes)
+            .await?;
         for (_, record) in records {
             for route in routes {
                 let Some(held) = route.path.resolve_mut(record) else {
@@ -133,7 +135,7 @@ impl Session<'_> {
     /// it lacks, is fetched from that shard's leader (G057 C2) — read as nothing
     /// here it would be a record that is not there (G031 S3.3, Q-792) — and
     /// refused `NotHeldHere` where gathering is withheld.
-    fn resolve_each(
+    async fn resolve_each(
         &self,
         transaction: &mut Transaction<'_>,
         context: Context,
@@ -143,14 +145,14 @@ impl Session<'_> {
         let mut visible: BTreeMap<TableId, crate::redact::Visible> = BTreeMap::new();
         for (table, _) in wanted {
             if !visible.contains_key(table) {
-                let held = self.visible_in(transaction, *table)?;
+                let held = self.visible_in(transaction, *table).await?;
                 visible.insert(*table, held);
             }
         }
         let mut here = Vec::with_capacity(wanted.len());
         let mut payloads = Vec::with_capacity(wanted.len());
         for (table, id) in wanted {
-            match self.gathered_record(transaction, *table, id, notes)? {
+            match self.gathered_record(transaction, *table, id, notes).await? {
                 Some(found) => payloads.push(found.into_iter().next().map(|(_, held)| held)),
                 None => {
                     here.push(payloads.len());
@@ -165,7 +167,7 @@ impl Session<'_> {
                 RecordAddress::new(context.namespace, context.database, *table, id.clone())
             })
             .collect();
-        for (at, held) in here.iter().zip(transaction.get_each(&addresses)?) {
+        for (at, held) in here.iter().zip(transaction.get_each(&addresses).await?) {
             if let Some(slot) = payloads.get_mut(*at) {
                 *slot = held;
             }

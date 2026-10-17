@@ -25,6 +25,7 @@
 
 use std::io::Cursor;
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_wire::Node;
 use tessaridb::{Db, Parameters, Value};
@@ -111,8 +112,8 @@ fn said(store: &mut dyn Store, script: &str) -> String {
 
 #[test]
 fn every_answer_shape_reads_the_same_from_a_socket_as_from_this_process() {
-    let here = Db::in_memory().unwrap();
-    let there = Arc::new(Db::in_memory().unwrap());
+    let here = Db::in_memory().now().unwrap();
+    let there = Arc::new(Db::in_memory().now().unwrap());
     for db in [&here, there.as_ref()] {
         let mut store = Embedded::new(db, None, Parameters::new()).expect("a session");
         store.run(SEED).expect("a seeded store");
@@ -142,8 +143,8 @@ fn a_parameterised_script_reads_the_same_from_a_socket_as_from_this_process() {
     // hold their own bindings and neither is allowed to reach a different
     // answer — which is the half a `--param` flag could silently get wrong, by
     // binding on one side and interpolating on the other.
-    let here = Db::in_memory().unwrap();
-    let there = Arc::new(Db::in_memory().unwrap());
+    let here = Db::in_memory().now().unwrap();
+    let there = Arc::new(Db::in_memory().now().unwrap());
     for db in [&here, there.as_ref()] {
         let mut store = Embedded::new(db, None, Parameters::new()).expect("a session");
         store.run(SEED).expect("a seeded store");
@@ -175,7 +176,7 @@ fn a_reference_renders_as_a_name_over_the_wire_and_not_as_an_id() {
     // Without the names the answer carries, this reads `<record 3:2>` — which is
     // exactly what the renderer exists to avoid, since what is printed is
     // supposed to paste back into the next statement.
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     {
         let mut store = Embedded::new(&db, None, Parameters::new()).expect("a session");
         store.run(SEED).expect("a seeded store");
@@ -194,8 +195,8 @@ fn a_reference_renders_as_a_name_over_the_wire_and_not_as_an_id() {
 
 #[test]
 fn a_refusal_from_a_node_reads_like_a_refusal_from_a_store() {
-    let here = Db::in_memory().unwrap();
-    let there = Arc::new(Db::in_memory().unwrap());
+    let here = Db::in_memory().now().unwrap();
+    let there = Arc::new(Db::in_memory().now().unwrap());
     let node = Arc::new(Node::bind(Arc::clone(&there), "127.0.0.1:0").unwrap());
     let address = node.address().unwrap();
     let serving = Arc::clone(&node);

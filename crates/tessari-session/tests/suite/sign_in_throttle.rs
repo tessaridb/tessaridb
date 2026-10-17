@@ -30,6 +30,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_constants::FREE_SIGN_IN_FAILURES;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -41,10 +43,10 @@ const PASSWORD: &str = "correct horse battery";
 /// A store holding one user under `name`.
 fn store_with(name: &str) -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(backend).unwrap();
+    let store = Store::open(backend).now().unwrap();
     let mut opening = Session::new(&store);
     opening
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE USER {name} ROLE owner PASSWORD '{PASSWORD}';"
         ))
         .unwrap();
@@ -60,7 +62,7 @@ fn guessing_is_refused_outright_once_the_allowance_is_spent() {
     // Every miss inside the allowance is answered by the credential check —
     // `SignInRefused` is only reachable after `verifies` has run.
     for attempt in 1..FREE_SIGN_IN_FAILURES {
-        let refused = session.sign_in("adaline", "wrong").unwrap_err();
+        let refused = session.sign_in("adaline", "wrong").now().unwrap_err();
         assert!(
             matches!(refused, Error::SignInRefused),
             "attempt {attempt} of the allowance was throttled instead of checked: {refused}"
@@ -68,13 +70,13 @@ fn guessing_is_refused_outright_once_the_allowance_is_spent() {
     }
     // The last one of the allowance is still checked, and spends it.
     assert!(matches!(
-        session.sign_in("adaline", "wrong").unwrap_err(),
+        session.sign_in("adaline", "wrong").now().unwrap_err(),
         Error::SignInRefused
     ));
 
     // And now the node stops looking. A different error, from a different place
     // in the function — which is what "without reaching the hasher" means here.
-    let throttled = session.sign_in("adaline", "wrong").unwrap_err();
+    let throttled = session.sign_in("adaline", "wrong").now().unwrap_err();
     assert!(
         matches!(throttled, Error::SignInThrottled),
         "the attempt past the allowance still reached the password check: {throttled}"
@@ -90,9 +92,9 @@ fn a_correct_password_is_refused_too_while_the_wait_stands() {
     let store = store_with("bartholomew");
     let mut session = Session::new(&store);
     for _ in 0..FREE_SIGN_IN_FAILURES {
-        assert!(session.sign_in("bartholomew", "wrong").is_err());
+        assert!(session.sign_in("bartholomew", "wrong").now().is_err());
     }
-    let held = session.sign_in("bartholomew", PASSWORD).unwrap_err();
+    let held = session.sign_in("bartholomew", PASSWORD).now().unwrap_err();
     assert!(
         matches!(held, Error::SignInThrottled),
         "the wait was skipped for a password that happened to be right: {held}"
@@ -107,12 +109,12 @@ fn a_new_connection_inherits_the_wait() {
     let store = store_with("charlemagne");
     let mut first = Session::new(&store);
     for _ in 0..FREE_SIGN_IN_FAILURES {
-        assert!(first.sign_in("charlemagne", "wrong").is_err());
+        assert!(first.sign_in("charlemagne", "wrong").now().is_err());
     }
     drop(first);
 
     let mut second = Session::new(&store);
-    let throttled = second.sign_in("charlemagne", "wrong").unwrap_err();
+    let throttled = second.sign_in("charlemagne", "wrong").now().unwrap_err();
     assert!(
         matches!(throttled, Error::SignInThrottled),
         "a reconnect got a fresh allowance: {throttled}"
@@ -128,11 +130,17 @@ fn a_name_that_does_not_exist_is_counted_like_any_other() {
     let mut session = Session::new(&store);
     for _ in 0..FREE_SIGN_IN_FAILURES {
         assert!(matches!(
-            session.sign_in("nobody-of-that-name", "wrong").unwrap_err(),
+            session
+                .sign_in("nobody-of-that-name", "wrong")
+                .now()
+                .unwrap_err(),
             Error::SignInRefused
         ));
     }
-    let throttled = session.sign_in("nobody-of-that-name", "wrong").unwrap_err();
+    let throttled = session
+        .sign_in("nobody-of-that-name", "wrong")
+        .now()
+        .unwrap_err();
     assert!(
         matches!(throttled, Error::SignInThrottled),
         "a name the catalog does not hold was never throttled: {throttled}"
@@ -147,13 +155,13 @@ fn signing_in_correctly_leaves_the_allowance_whole() {
     let store = store_with("evangeline");
     let mut session = Session::new(&store);
     for _ in 1..FREE_SIGN_IN_FAILURES {
-        assert!(session.sign_in("evangeline", "wrong").is_err());
+        assert!(session.sign_in("evangeline", "wrong").now().is_err());
     }
-    session.sign_in("evangeline", PASSWORD).unwrap();
+    session.sign_in("evangeline", PASSWORD).now().unwrap();
 
     for _ in 0..FREE_SIGN_IN_FAILURES {
         assert!(matches!(
-            session.sign_in("evangeline", "wrong").unwrap_err(),
+            session.sign_in("evangeline", "wrong").now().unwrap_err(),
             Error::SignInRefused,
         ));
     }
@@ -170,15 +178,16 @@ fn misses_against_one_store_do_not_make_another_store_wait() {
     let elsewhere = store_with("fredegund");
     let mut guessing = Session::new(&missed_at);
     for _ in 0..FREE_SIGN_IN_FAILURES {
-        assert!(guessing.sign_in("fredegund", "wrong").is_err());
+        assert!(guessing.sign_in("fredegund", "wrong").now().is_err());
     }
     // The control: the misses did spend the allowance where they were made.
     assert!(matches!(
-        guessing.sign_in("fredegund", PASSWORD).unwrap_err(),
+        guessing.sign_in("fredegund", PASSWORD).now().unwrap_err(),
         Error::SignInThrottled
     ));
 
     let mut user = Session::new(&elsewhere);
     user.sign_in("fredegund", PASSWORD)
+        .now()
         .expect("another store's misses made this store's user wait");
 }

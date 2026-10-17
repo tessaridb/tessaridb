@@ -25,7 +25,7 @@ impl Session<'_> {
     /// Answers the stored value, which the script runner writes into the
     /// statements after this one and then reports as done — the same way a
     /// `LET` reaches the statements below it.
-    pub(crate) fn define_param(
+    pub(crate) async fn define_param(
         &self,
         transaction: &mut Transaction<'_>,
         name: &str,
@@ -33,8 +33,9 @@ impl Session<'_> {
         mode: &Mode,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
-        let Some(mut definition) = Catalog::new(transaction).database(context.database)? else {
+        let context = self.context(transaction, None, span).await?;
+        let Some(mut definition) = Catalog::new(transaction).database(context.database).await?
+        else {
             return Err(Error::NoDatabaseSelected { span });
         };
         if let Some(held) = definition.params.get(name)
@@ -48,21 +49,24 @@ impl Session<'_> {
                 span,
             });
         }
-        let computed = self.evaluate(transaction, value)?;
+        let computed = self.evaluate(transaction, value).await?;
         definition.params.insert(name.to_owned(), computed.clone());
-        Catalog::new(transaction).set_params(context.database, definition.params)?;
+        Catalog::new(transaction)
+            .set_params(context.database, definition.params)
+            .await?;
         Ok(Outcome::Value(computed))
     }
 
     /// `DROP PARAM $name`.
-    pub(crate) fn drop_param(
+    pub(crate) async fn drop_param(
         &self,
         transaction: &mut Transaction<'_>,
         name: &str,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
-        let Some(mut definition) = Catalog::new(transaction).database(context.database)? else {
+        let context = self.context(transaction, None, span).await?;
+        let Some(mut definition) = Catalog::new(transaction).database(context.database).await?
+        else {
             return Err(Error::NoDatabaseSelected { span });
         };
         if definition.params.remove(name).is_none() {
@@ -72,7 +76,9 @@ impl Session<'_> {
                 span,
             });
         }
-        Catalog::new(transaction).set_params(context.database, definition.params)?;
+        Catalog::new(transaction)
+            .set_params(context.database, definition.params)
+            .await?;
         Ok(Outcome::Done)
     }
 }

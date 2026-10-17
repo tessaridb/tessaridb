@@ -1,4 +1,5 @@
 use super::*;
+use tessari_session::Now;
 
 #[test]
 fn a_ballot_crosses_the_link_and_comes_back_a_vote() {
@@ -100,7 +101,7 @@ fn a_ballot_naming_somebody_else_never_reaches_the_voter() {
     let mine = hello(HERE);
     let answering = std::thread::spawn(move || {
         let voter = Deciding::holding(settled());
-        let met = peers.greet(|| Ok(mine), &HERE, &voter, &NoLog);
+        let met = peers.greet(|| Ok(mine), &HERE, &voter, &NoLog).now();
         // The voter is handed back untouched: nothing was decided, which is
         // the half a refusal-shaped answer would not have given.
         (met, voter.decided())
@@ -144,7 +145,9 @@ fn a_refusal_keeps_its_reason_and_its_wait_across_the_wire() {
     // granted, because re-granting to the holder adds no second holder.
     let mine = hello(HERE);
     let answering = std::thread::spawn(move || {
-        peers.greet(|| Ok(mine), &HERE, &Deciding::holding(incumbent()), &NoLog)
+        peers
+            .greet(|| Ok(mine), &HERE, &Deciding::holding(incumbent()), &NoLog)
+            .now()
     });
 
     let refused = call_with(

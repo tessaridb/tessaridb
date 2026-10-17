@@ -156,11 +156,16 @@ impl Runner {
     /// # Errors
     ///
     /// Returns the store's failure when the catalog cannot be read at all.
-    pub fn start(
+    ///
+    /// Each consumer runs on a thread of its own, outside `runtime`'s workers;
+    /// it writes each batch through the store's asynchronous entry points,
+    /// driven to their end on that thread by `runtime`.
+    pub async fn start(
         store: &Store,
         broker: Arc<dyn Broker>,
+        runtime: &tokio::runtime::Handle,
     ) -> Result<Started, tessari_storage::Error> {
-        let declared = declarations(store)?;
+        let declared = declarations(store).await?;
         let stopping = Arc::new(AtomicBool::new(false));
         let mut threads = Vec::new();
         for (definition, table) in declared {
@@ -185,6 +190,7 @@ impl Runner {
                     definition: definition.clone(),
                     table: table.clone(),
                     stopping: Arc::clone(&stopping),
+                    runtime: runtime.clone(),
                 };
                 let named = format!("consumer:{}#{index}", definition.name);
                 match std::thread::Builder::new()
@@ -244,6 +250,10 @@ struct Consuming {
     definition: ConsumerDefinition,
     table: Destination,
     stopping: Arc<AtomicBool>,
+    /// Drives the batch writes on this thread, which is outside the runtime's
+    /// workers: the Kafka client's poll blocks, so the consumer keeps a thread
+    /// of its own and awaits the store from it through the handle.
+    runtime: tokio::runtime::Handle,
 }
 
 impl Consuming {
@@ -407,7 +417,7 @@ impl Consuming {
             // outage delivered as a migration — and `INFO FOR KAFKA CONSUMER` reports
             // the absence so an operator can find it and redeclare.
             if let Some(declarer) = self.definition.declarer
-                && let Err(refused) = session.acting_as(declarer)
+                && let Err(refused) = self.runtime.block_on(session.acting_as(declarer))
             {
                 // A deleted declarer. Reported and retried rather than swallowed,
                 // because the batch is not written and a consumer that silently
@@ -417,15 +427,16 @@ impl Consuming {
                     self.definition.name
                 ));
             }
-            let written = session.atomically(|work| {
+            let written = self.runtime.block_on(session.atomically(async |work| {
                 if !records.is_empty() {
-                    work.run_with(&script, &parameters)?;
+                    work.run_with(&script, &parameters).await?;
                 }
                 for (at, record) in parked_at.iter().zip(parked) {
-                    work.keep_quarantined(self.definition.id, *at, record)?;
+                    work.keep_quarantined(self.definition.id, *at, record)
+                        .await?;
                 }
                 Ok::<(), tessari_session::Error>(())
-            });
+            }));
             match written {
                 Ok(()) => return Ok(()),
                 Err(failure) => {

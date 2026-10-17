@@ -9,6 +9,7 @@
 //! would have to move.
 
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessaridb::Db;
 
@@ -30,7 +31,7 @@ const BODY: &str = "a note that carries enough words to make analysing it cost s
 pub fn update(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run(
+    session.run_now(
         "USE NAMESPACE bench; USE DATABASE bench;\n\
          DEFINE ANALYZER plain FILTERS lowercase, ascii, stemmer;\n\
          DEFINE TABLE docs SCHEMALESS;\n\
@@ -39,7 +40,7 @@ pub fn update(db: &Db) -> Failable<Vec<Report>> {
          DEFINE INDEX by_body ON docs FIELDS body SEARCH;",
     )?;
     for n in 0..RECORDS {
-        session.run(&format!(
+        session.run_now(&format!(
             "CREATE docs:{n} = {{ body: '{BODY} {n}', city: 'city {}', seen: 0 }};",
             n % CITIES
         ))?;
@@ -48,14 +49,14 @@ pub fn update(db: &Db) -> Failable<Vec<Report>> {
     let mut unindexed = Samples::with_capacity(usize::try_from(RECORDS).unwrap_or(0));
     for n in 0..RECORDS {
         let started = Instant::now();
-        session.run(&format!("UPDATE docs:{n} SET seen = seen + 1;"))?;
+        session.run_now(&format!("UPDATE docs:{n} SET seen = seen + 1;"))?;
         unindexed.push(started.elapsed());
     }
 
     let mut indexed = Samples::with_capacity(usize::try_from(RECORDS).unwrap_or(0));
     for n in 0..RECORDS {
         let started = Instant::now();
-        session.run(&format!(
+        session.run_now(&format!(
             "UPDATE docs:{n} SET city = 'city {}';",
             n.wrapping_add(1) % CITIES
         ))?;
@@ -65,7 +66,8 @@ pub fn update(db: &Db) -> Failable<Vec<Report>> {
     let mut grouped = Samples::with_capacity(100);
     for _ in 0..100 {
         let started = Instant::now();
-        session.run("SELECT city, count(*) AS n, mean(seen) AS seen FROM docs GROUP BY city;")?;
+        session
+            .run_now("SELECT city, count(*) AS n, mean(seen) AS seen FROM docs GROUP BY city;")?;
         grouped.push(started.elapsed());
     }
 

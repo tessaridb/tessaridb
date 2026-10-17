@@ -21,13 +21,14 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_http::Node;
 use tessaridb::Db;
 
 /// A node on a loopback port the operating system picked, plus its address.
 pub(crate) fn node() -> (Arc<Node>, String) {
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);

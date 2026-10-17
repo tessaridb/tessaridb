@@ -44,7 +44,7 @@ pub(crate) fn state_key(window: i64, key: &Value, column: &str) -> Vec<u8> {
 impl Row {
     /// Merge each sketch column's kept state into this row; `false` when one
     /// is missing or not a sketch, and the row must be recomputed instead.
-    pub(super) fn take_sketches(
+    pub(super) async fn take_sketches(
         &mut self,
         transaction: &mut Transaction<'_>,
         rollup: &RollupDeclaration,
@@ -55,7 +55,7 @@ impl Row {
             .filter(|compute| is_sketch(compute.fold))
         {
             let key = state_key(self.window, &self.key, &compute.name);
-            let Some(state) = transaction.rollup_state(rollup.table, &key)? else {
+            let Some(state) = transaction.rollup_state(rollup.table, &key).await? else {
                 return Ok(false);
             };
             let Some(accumulator) = self.values.get_mut(&compute.name) else {

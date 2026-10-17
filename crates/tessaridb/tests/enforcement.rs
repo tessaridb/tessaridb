@@ -523,7 +523,12 @@ const TABLES: &[Table] = &[
         // as the node on the node's own store — moving a leadership, settling a
         // transaction this node coordinated, or choosing where a read goes. None
         // returns a record to anybody.
-        expected: 40,
+        //
+        // 41 since the close (G077 W6b): `Db::close` closes the store and waits
+        // for its directory to be released. **Exempt under E3**: it takes the
+        // database by value, so no session can be open on it, takes no reach and
+        // returns no record; the binary calls it when it stops.
+        expected: 41,
         count: |text| public_functions(&every_block(text, "impl Db")),
     },
     Table {
@@ -1076,7 +1081,21 @@ const TABLES: &[Table] = &[
         // already carries. Its one caller is the binary's leadership round.
         // Re-classification trigger: `tail_leadership`'s, and any caller
         // reachable from a session or a route.
-        expected: 79,
+        //
+        // 80 since the store opens over a natively async engine (G077 W5a):
+        // `Store::open_async`. **Exempt, as a constructor**: it takes the
+        // engine already in its async form, runs the same startup readers
+        // `Store::open` runs and returns the `Store`; no session exists until it
+        // returns, so nothing it reads or writes was asked for by a caller.
+        // Re-classification trigger: any caller reachable from a session or a
+        // route.
+        //
+        // Still 80 at one async backend trait (G077 W6b): `Store::open_async`
+        // became `Store::open` (the synchronous one is gone with its trait), and
+        // `Store::close` arrived. **Exempt, as the end of a lifetime**: it takes
+        // the store by value, so no session or transaction can be open on it,
+        // reads and writes no record, and refuses while another handle lives.
+        expected: 80,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1325,7 +1344,11 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 165 since a snapshot streams (ADR-0125): the `Part` frame, not an entry
     // point, classified above.
     // 166 since `Store::newest_leadership_in` (DB-15), classified above.
-    assert_eq!(total, 166, "the counted tables no longer sum to 166");
+    //
+    // 167 since `Store::open_async` (G077 W5a), classified above.
+    //
+    // 168 since `Db::close` (G077 W6b), classified above.
+    assert_eq!(total, 168, "the counted tables no longer sum to 168");
 }
 
 /// Every `.rs` file under a directory.
@@ -1502,39 +1525,41 @@ const CLASSIFIED: &[(&str, &str)] = &[
     // above (Q-621, Q-641).
     (
         "tessari-cli/src/greeting_round.rs",
-        "let tail = store.committed_tail(own)?;",
+        "let tail = store.committed_tail(own).await?;",
     ),
     (
         "tessari-cli/src/collection_round.rs",
-        "let seed = match store.committed_tail(log) {",
+        "let seed = match store.committed_tail(log).await {",
     ),
     (
         "tessari-cli/src/collection_round/placed.rs",
-        "let seed = match store.committed_tail(log) {",
+        "let seed = match store.committed_tail(log).await {",
     ),
     (
         "tessari-cli/src/greeting_round.rs",
-        "tail: store.committed_tail(log)?,",
+        "tail: store.committed_tail(log).await?,",
     ),
     (
         "tessari-cli/src/collection_round.rs",
-        "let tail = store.committed_tail(log).ok()?;",
+        "let Ok(tail) = store.committed_tail(log).await else {",
     ),
     (
         "tessari-cli/src/streaming.rs",
-        "let tail = store.committed_tail(log).map_err(|why| why.to_string())?;",
+        // rustfmt splits the awaited read over four lines; the call is the
+        // one that names the read.
+        ".committed_tail(log)",
     ),
     (
         "tessari-wire/src/collection/serving.rs",
-        "tail: self.log.committed_tail(log).map_err(refused)?,",
+        "tail: self.log.committed_tail(log).await.map_err(refused)?,",
     ),
     (
         "tessari-wire/src/collection/serving.rs",
-        "let page = match self.log.log_records_within(",
+        ".log_records_within(over, log, cursor, room.min(COLLECTION_PAGE_RECORDS))",
     ),
     (
         "tessari-wire/src/collection/serving.rs",
-        "let held = match store.log_records_within(over, log, before, 1) {",
+        "let held = match store.log_records_within(over, log, before, 1).await {",
     ),
 ];
 
@@ -1577,6 +1602,17 @@ fn no_serving_surface_reaches_the_raw_change_feed() {
     );
 }
 
+/// The name of the function a line declares, whatever its visibility, and
+/// whether it is `const` or `async`; `None` for any other line.
+fn declared_fn(line: &str) -> Option<String> {
+    let mut rest = line.trim_start();
+    for prefix in ["pub(crate) ", "pub(super) ", "pub ", "const ", "async "] {
+        rest = rest.strip_prefix(prefix).unwrap_or(rest);
+    }
+    rest.strip_prefix("fn ")
+        .map(|name| name.split(['(', '<']).next().unwrap_or_default().to_owned())
+}
+
 /// Where an epoch may be turned back into an [`Epoch`] from something that
 /// already carried one, classified by the name of the function doing it.
 ///
@@ -1588,11 +1624,11 @@ const DECODERS: [&str; 3] = ["decode", "from_value", "split_epoch"];
 
 /// The one function allowed to CREATE an epoch, and the file it lives in.
 ///
-/// `Renewing::once` computes `max(standing, stood, heard) + 1`. Both halves of
+/// `Renewing::due` computes `max(standing, stood, heard) + 1`. Both halves of
 /// this pair are asserted: that nothing else creates one, and that this still
 /// does — a ratchet whose subject has been renamed away passes by finding
 /// nothing, which is the failure mode of every allow-list nobody re-reads.
-const PRODUCER: (&str, &str) = ("tessari-wire/src/driver/leadership/renewing.rs", "once");
+const PRODUCER: (&str, &str) = ("tessari-wire/src/driver/leadership/renewing.rs", "due");
 
 #[test]
 fn the_campaign_is_the_only_place_an_epoch_is_created() {
@@ -1624,14 +1660,7 @@ fn the_campaign_is_the_only_place_an_epoch_is_created() {
                 let enclosing = lines[..=number]
                     .iter()
                     .rev()
-                    .find_map(|above| {
-                        above
-                            .trim_start()
-                            .trim_start_matches("pub ")
-                            .trim_start_matches("const ")
-                            .strip_prefix("fn ")
-                            .map(|rest| rest.split('(').next().unwrap_or_default().to_owned())
-                    })
+                    .find_map(|above| declared_fn(above))
                     .unwrap_or_default();
                 if DECODERS.contains(&enclosing.as_str()) {
                     continue;
@@ -1653,7 +1682,7 @@ fn the_campaign_is_the_only_place_an_epoch_is_created() {
         created.is_empty(),
         "an epoch is created outside the campaign:\n  {}\n\n\
          An epoch is the cluster's count of leaderships and the campaign is the \
-         only thing entitled to advance it: `Renewing::once` takes the highest \
+         only thing entitled to advance it: `Renewing::due` takes the highest \
          number this node holds, has stood for, or has heard granted, and adds \
          one. A second producer allocates a number somebody else may already \
          hold, which is two leaders with one epoch — the exact ambiguity the \
@@ -1720,14 +1749,7 @@ fn a_write_claims_no_epoch_it_was_not_already_carrying() {
                 let enclosing = lines[..=number]
                     .iter()
                     .rev()
-                    .find_map(|above| {
-                        above
-                            .trim_start()
-                            .trim_start_matches("pub ")
-                            .trim_start_matches("const ")
-                            .strip_prefix("fn ")
-                            .map(|rest| rest.split('(').next().unwrap_or_default().to_owned())
-                    })
+                    .find_map(|above| declared_fn(above))
                     .unwrap_or_default();
                 // The epoch argument is classified by SHAPE, the way the
                 // producer ratchet classifies by name: a call that reads the

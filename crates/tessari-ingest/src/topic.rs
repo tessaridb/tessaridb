@@ -4,9 +4,9 @@
 //!
 //! A Kafka consumer is an OS thread because its client is a blocking C library.
 //! A topic consumer has no such client: each member is a task on the node's
-//! runtime, and each batch — which is a store transaction and therefore
-//! synchronous — crosses through `spawn_blocking`, as every other store call on
-//! the serving edge does (ADR-0085). A batch is bounded, so the crossing ends.
+//! runtime, and each batch (one store transaction) runs in a task of its own,
+//! so a batch that panics is reported rather than taking its member down. A
+//! batch is bounded, so the wait for it ends.
 //!
 //! # Reconciled, not only started
 //!
@@ -78,25 +78,31 @@ fn plain_group(name: &str) -> bool {
 /// Every topic consumer declared, with the names its batches are written in.
 /// A declaration whose topic or table is gone, or whose names cannot stand in
 /// a statement, is left out and logged.
-fn declared(store: &Store) -> Result<Vec<(ConsumerDefinition, Names)>, tessari_storage::Error> {
-    let mut transaction = store.begin()?;
+async fn declared(
+    store: &Store,
+) -> Result<Vec<(ConsumerDefinition, Names)>, tessari_storage::Error> {
+    let mut transaction = store.begin().await?;
     let catalog = Catalog::new(&mut transaction);
     let mut found = Vec::new();
-    for definition in catalog.consumers()? {
+    for definition in catalog.consumers().await? {
         let Feed::Topic { table: topic } = definition.feed else {
             continue;
         };
         let namespace = catalog
-            .namespaces()?
+            .namespaces()
+            .await?
             .into_iter()
             .find(|held| held.id == definition.namespace)
             .map(|held| held.name);
         let database = catalog
-            .databases_in(definition.namespace)?
+            .databases_in(definition.namespace)
+            .await?
             .into_iter()
             .find(|held| held.id == definition.database)
             .map(|held| held.name);
-        let tables = catalog.tables_in(definition.namespace, definition.database)?;
+        let tables = catalog
+            .tables_in(definition.namespace, definition.database)
+            .await?;
         let named = |id| {
             tables
                 .iter()
@@ -172,15 +178,10 @@ pub async fn run_topic_consumers(store: Store, mut stop: watch::Receiver<bool>) 
 
 /// Bring what runs here into line with what is declared.
 async fn reconcile(store: &Store, running: &mut HashMap<String, Members>) {
-    let reading = store.clone();
-    let declared = match tokio::task::spawn_blocking(move || declared(&reading)).await {
-        Ok(Ok(declared)) => declared,
-        Ok(Err(failure)) => {
-            tracing::warn!(error = %failure, "the topic consumers could not be read");
-            return;
-        }
+    let declared = match declared(store).await {
+        Ok(declared) => declared,
         Err(failure) => {
-            tracing::warn!(error = %failure, "reading the topic consumers ended abnormally");
+            tracing::warn!(error = %failure, "the topic consumers could not be read");
             return;
         }
     };
@@ -271,10 +272,12 @@ async fn member(
     while !*stop.borrow() {
         let (held, declared, named) = (store.clone(), Arc::clone(&definition), Arc::clone(&names));
         let narrowed = refused.clone();
-        let outcome = tokio::task::spawn_blocking(move || match narrowed {
-            // One message's write was refused on its own: the policy decides it.
-            Some(why) => hand_back_one(&held, &declared, &named, &why),
-            None => run_batch(&held, &declared, &named, limit),
+        let outcome = tokio::spawn(async move {
+            match narrowed {
+                // One message's write was refused on its own: the policy decides it.
+                Some(why) => hand_back_one(&held, &declared, &named, &why).await,
+                None => run_batch(&held, &declared, &named, limit).await,
+            }
         })
         .await
         .unwrap_or_else(|failure| Err(format!("a batch ended abnormally: {failure}")));

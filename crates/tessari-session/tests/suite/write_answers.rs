@@ -17,6 +17,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -25,13 +27,13 @@ use tessari_types::{Number, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION users;\n\
@@ -43,7 +45,7 @@ fn ready(store: &Store) -> Session<'_> {
 
 /// The single value a statement answered with.
 fn answered(session: &mut Session<'_>, statement: &str) -> Value {
-    let outcome = session.run(statement).unwrap();
+    let outcome = session.run_now(statement).unwrap();
     match outcome.last().expect("an outcome") {
         Outcome::Value(value) => value.clone(),
         other => panic!("expected a value, got {other:?}"),
@@ -71,7 +73,7 @@ fn a_write_without_the_clause_still_answers_done() {
     let store = store();
     let mut session = ready(&store);
 
-    let outcome = session.run("UPDATE users:1 SET visits = 4;").unwrap();
+    let outcome = session.run_now("UPDATE users:1 SET visits = 4;").unwrap();
 
     assert_eq!(
         outcome.last().expect("an outcome"),
@@ -192,12 +194,12 @@ fn the_two_meaningless_pairings_are_refused() {
 
     assert!(
         session
-            .run("CREATE users:3 = { name: 'x' } RETURN BEFORE;")
+            .run_now("CREATE users:3 = { name: 'x' } RETURN BEFORE;")
             .is_err(),
         "there is no record before a create"
     );
     assert!(
-        session.run("DELETE users:1 RETURN AFTER;").is_err(),
+        session.run_now("DELETE users:1 RETURN AFTER;").is_err(),
         "there is no record after a delete"
     );
 }
@@ -208,9 +210,9 @@ fn a_refused_clause_writes_nothing() {
     let mut session = ready(&store);
 
     // Refused when the statement is read, so the write never starts.
-    let _ = session.run("CREATE users:3 = { name: 'x' } RETURN BEFORE;");
+    let _ = session.run_now("CREATE users:3 = { name: 'x' } RETURN BEFORE;");
 
-    let outcome = session.run("SELECT * FROM users;").unwrap();
+    let outcome = session.run_now("SELECT * FROM users;").unwrap();
     let records = outcome
         .last()
         .expect("an outcome")
@@ -226,12 +228,12 @@ fn return_needs_one_of_the_two_words() {
 
     assert!(
         session
-            .run("UPDATE users:1 SET visits = 4 RETURN;")
+            .run_now("UPDATE users:1 SET visits = 4 RETURN;")
             .is_err()
     );
     assert!(
         session
-            .run("UPDATE users:1 SET visits = 4 RETURN DIFF;")
+            .run_now("UPDATE users:1 SET visits = 4 RETURN DIFF;")
             .is_err(),
         "DIFF is not built, and is refused rather than silently ignored"
     );

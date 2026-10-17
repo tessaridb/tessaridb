@@ -237,7 +237,7 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns [`Error::NameTaken`] when the name is already declared.
-    pub fn create_user(
+    pub async fn create_user(
         &mut self,
         name: &str,
         namespace: Option<NamespaceId>,
@@ -246,8 +246,8 @@ impl Catalog<'_, '_> {
         secret: &str,
     ) -> Result<UserDefinition> {
         let qualified = qualify(Level::User, &[], name);
-        self.reserve_name(&qualified)?;
-        let id = self.allocate(Level::User)?;
+        self.reserve_name(&qualified).await?;
+        let id = self.allocate(Level::User).await?;
         // A database without its namespace never reaches here through the
         // language; refusing it keeps that true for a caller of this layer too.
         let Some(reach) = Reach::of(namespace, database) else {
@@ -280,13 +280,17 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn users(&self) -> Result<Vec<UserDefinition>> {
+    pub async fn users(&self) -> Result<Vec<UserDefinition>> {
         let mut found = Vec::new();
-        for (_, payload) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::USERS,
-        )? {
+        for (_, payload) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::USERS,
+            )
+            .await?
+        {
             found.push(UserDefinition::from_value(&decode_payload(&payload)?)?);
         }
         Ok(found)
@@ -302,8 +306,8 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn user(&self, id: u32) -> Result<Option<UserDefinition>> {
-        let Some(value) = self.read(system::USERS, id)? else {
+    pub async fn user(&self, id: u32) -> Result<Option<UserDefinition>> {
+        let Some(value) = self.read(system::USERS, id).await? else {
             return Ok(None);
         };
         UserDefinition::from_value(&value).map(Some)
@@ -318,14 +322,15 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn is_open(&self) -> Result<bool> {
+    pub async fn is_open(&self) -> Result<bool> {
         Ok(self
             .transaction
             .scan_table(
                 system::SYSTEM_NAMESPACE,
                 system::SYSTEM_DATABASE,
                 system::USERS,
-            )?
+            )
+            .await?
             .is_empty())
     }
 

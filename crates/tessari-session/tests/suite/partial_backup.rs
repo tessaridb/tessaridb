@@ -8,6 +8,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
@@ -18,13 +20,13 @@ const PASSWORD: &str = "a long one";
 
 fn empty() -> Store {
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn store() -> Store {
     let store = empty();
     Session::new(&store)
-        .run(
+        .run_now(
             "DEFINE ANALYZER used FILTERS lowercase;
              DEFINE ANALYZER unused FILTERS lowercase;
              DEFINE NAMESPACE prod; USE NAMESPACE prod;
@@ -52,12 +54,12 @@ fn store() -> Store {
 
 fn owner(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.sign_in("root", PASSWORD).unwrap();
+    session.sign_in("root", PASSWORD).now().unwrap();
     session
 }
 
 fn script(session: &mut Session<'_>, statement: &str) -> String {
-    match session.run(statement).unwrap().pop() {
+    match session.run_now(statement).unwrap().pop() {
         Some(Outcome::Value(Value::String(text))) => text,
         other => panic!("{statement} answered {other:?}"),
     }
@@ -65,8 +67,12 @@ fn script(session: &mut Session<'_>, statement: &str) -> String {
 
 /// How many records a read answers, or `None` when the place is refused.
 fn held(session: &mut Session<'_>, place: &str, table: &str) -> Option<usize> {
-    session.run(place).ok()?;
-    match session.run(&format!("SELECT * FROM {table};")).ok()?.pop() {
+    session.run_now(place).ok()?;
+    match session
+        .run_now(&format!("SELECT * FROM {table};"))
+        .ok()?
+        .pop()
+    {
         Some(Outcome::Records { records, .. }) => Some(records.len()),
         other => panic!("SELECT answered {other:?}"),
     }
@@ -88,7 +94,7 @@ fn a_partial_script_restores_the_chosen_places_and_nothing_else() {
 
     let restored = empty();
     let mut session = Session::new(&restored);
-    session.run(&text).unwrap();
+    session.run_now(&text).unwrap();
 
     assert_eq!(
         held(
@@ -131,16 +137,16 @@ fn a_partial_script_restores_the_chosen_places_and_nothing_else() {
     // The analyzer the carried field uses came with it; the other did not.
     assert!(
         session
-            .run("DEFINE ANALYZER used FILTERS lowercase;")
+            .run_now("DEFINE ANALYZER used FILTERS lowercase;")
             .is_err()
     );
     assert!(
         session
-            .run("DEFINE ANALYZER unused FILTERS lowercase;")
+            .run_now("DEFINE ANALYZER unused FILTERS lowercase;")
             .is_ok()
     );
     // No user came across, so the restored store is still open.
-    assert!(session.run("INFO FOR USERS;").is_ok());
+    assert!(session.run_now("INFO FOR USERS;").is_ok());
     assert!(
         !text.contains("DEFINE USER"),
         "a partial script carries a user"
@@ -156,7 +162,7 @@ fn a_place_the_store_does_not_hold_is_refused_by_name() {
         "BACKUP SCRIPT OF NAMESPACE nowhere;",
         "BACKUP SCRIPT OF prod.nowhere;",
     ] {
-        let error = root.run(statement).unwrap_err();
+        let error = root.run_now(statement).unwrap_err();
         assert!(
             matches!(error, Error::Unknown { .. }),
             "{statement} was refused as {error:?}"

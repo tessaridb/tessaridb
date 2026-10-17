@@ -22,7 +22,7 @@ const WEIGHT_CEILING: i64 = 1_000_000;
 /// # Errors
 ///
 /// [`Error::StillDepended`] naming the first search found.
-pub(crate) fn refuse_named_by_a_search(
+pub(crate) async fn refuse_named_by_a_search(
     transaction: &mut Transaction<'_>,
     depended: Depended,
     name: &str,
@@ -30,7 +30,8 @@ pub(crate) fn refuse_named_by_a_search(
     names: impl Fn(&EngineMember) -> bool,
 ) -> Result<()> {
     let searches: BTreeSet<String> = Catalog::new(transaction)
-        .engine_members()?
+        .engine_members()
+        .await?
         .into_iter()
         .filter_map(|member| member.engine)
         .filter(|engine| names(engine))
@@ -51,16 +52,17 @@ pub(crate) fn refuse_named_by_a_search(
 impl Session<'_> {
     /// `DEFINE SEARCH`: one member index per table, written in this
     /// transaction and built from the table's records in the same batch.
-    pub(crate) fn define_search(
+    pub(crate) async fn define_search(
         &self,
         transaction: &mut Transaction<'_>,
         (name, members, analyzer, stopwords): (&Name, &[SearchMember], &Name, Option<&Name>),
         if_not_exists: bool,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         if !Catalog::new(transaction)
-            .members_of(context.namespace, context.database, &name.text)?
+            .members_of(context.namespace, context.database, &name.text)
+            .await?
             .is_empty()
         {
             if if_not_exists {
@@ -72,7 +74,8 @@ impl Session<'_> {
             });
         }
         if !Catalog::new(transaction)
-            .analyzers()?
+            .analyzers()
+            .await?
             .iter()
             .any(|held| held.name == analyzer.text)
         {
@@ -83,19 +86,20 @@ impl Session<'_> {
             });
         }
         if let Some(set) = stopwords {
-            self.known_set(transaction, WordSetKind::Stopwords, set)?;
+            self.known_set(transaction, WordSetKind::Stopwords, set)
+                .await?;
         }
         let mut tables = BTreeSet::new();
         let mut planned = Vec::with_capacity(members.len());
         for member in members {
-            let (_, table) = self.resolve_table(transaction, &member.table)?;
+            let (_, table) = self.resolve_table(transaction, &member.table).await?;
             if !tables.insert(table) {
                 return Err(Error::SearchNamesTableTwice {
                     table: member.table.name.text.clone(),
                     span: member.table.span,
                 });
             }
-            let Some(definition) = Catalog::new(transaction).table(table)? else {
+            let Some(definition) = Catalog::new(transaction).table(table).await? else {
                 continue;
             };
             if definition.is_vault() {
@@ -114,7 +118,8 @@ impl Session<'_> {
                     });
                 }
                 if let Some(set) = &field.synonyms {
-                    self.known_set(transaction, WordSetKind::Synonyms, set)?;
+                    self.known_set(transaction, WordSetKind::Synonyms, set)
+                        .await?;
                 }
                 paths.push(field.path.path.clone());
                 fields.push(EngineField {
@@ -129,33 +134,33 @@ impl Session<'_> {
             planned.push((table, paths, fields));
         }
         for (table, paths, fields) in planned {
-            Catalog::new(transaction).create_member(
-                table,
-                paths,
-                EngineMember {
-                    search: name.text.clone(),
-                    analyzer: analyzer.text.clone(),
-                    stopwords: stopwords.map(|set| set.text.clone()),
-                    fields,
-                },
-            )?;
+            Catalog::new(transaction)
+                .create_member(
+                    table,
+                    paths,
+                    EngineMember {
+                        search: name.text.clone(),
+                        analyzer: analyzer.text.clone(),
+                        stopwords: stopwords.map(|set| set.text.clone()),
+                        fields,
+                    },
+                )
+                .await?;
         }
         Ok(Outcome::Done)
     }
 
     /// `DROP SEARCH`: every member goes, and the index path sweeps its entries.
-    pub(crate) fn drop_search(
+    pub(crate) async fn drop_search(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
-        let members = Catalog::new(transaction).members_of(
-            context.namespace,
-            context.database,
-            &name.text,
-        )?;
+        let context = self.context(transaction, None, span).await?;
+        let members = Catalog::new(transaction)
+            .members_of(context.namespace, context.database, &name.text)
+            .await?;
         if members.is_empty() {
             return Err(Error::Unknown {
                 entity: "search",
@@ -164,13 +169,13 @@ impl Session<'_> {
             });
         }
         for member in members {
-            Catalog::new(transaction).drop_index(member.id)?;
+            Catalog::new(transaction).drop_index(member.id).await?;
         }
         Ok(Outcome::Done)
     }
 
     /// `DEFINE SYNONYMS` and `DEFINE STOPWORDS`.
-    pub(crate) fn define_word_set(
+    pub(crate) async fn define_word_set(
         &self,
         transaction: &mut Transaction<'_>,
         kind: WordSetKind,
@@ -179,7 +184,8 @@ impl Session<'_> {
         if_not_exists: bool,
     ) -> Result<Outcome> {
         if Catalog::new(transaction)
-            .word_set(kind, &name.text)?
+            .word_set(kind, &name.text)
+            .await?
             .is_some()
             && if_not_exists
         {
@@ -200,16 +206,18 @@ impl Session<'_> {
                 });
             }
         }
-        Catalog::new(transaction).create_word_set(&WordSet {
-            kind,
-            name: name.text.clone(),
-            entries,
-        })?;
+        Catalog::new(transaction)
+            .create_word_set(&WordSet {
+                kind,
+                name: name.text.clone(),
+                entries,
+            })
+            .await?;
         Ok(Outcome::Done)
     }
 
     /// `DROP SYNONYMS` and `DROP STOPWORDS`, refused while a search names it.
-    pub(crate) fn drop_word_set(
+    pub(crate) async fn drop_word_set(
         &self,
         transaction: &mut Transaction<'_>,
         kind: WordSetKind,
@@ -228,8 +236,12 @@ impl Session<'_> {
         };
         refuse_named_by_a_search(transaction, depended, &name.text, name.span, |engine| {
             named(engine, &name.text)
-        })?;
-        if !Catalog::new(transaction).drop_word_set(kind, &name.text)? {
+        })
+        .await?;
+        if !Catalog::new(transaction)
+            .drop_word_set(kind, &name.text)
+            .await?
+        {
             return Err(Error::Unknown {
                 entity: kind.word(),
                 name: name.text.clone(),
@@ -239,14 +251,15 @@ impl Session<'_> {
         Ok(Outcome::Done)
     }
 
-    fn known_set(
+    async fn known_set(
         &self,
         transaction: &mut Transaction<'_>,
         kind: WordSetKind,
         set: &Name,
     ) -> Result<()> {
         if Catalog::new(transaction)
-            .word_set(kind, &set.text)?
+            .word_set(kind, &set.text)
+            .await?
             .is_none()
         {
             return Err(Error::Unknown {
@@ -260,18 +273,16 @@ impl Session<'_> {
 
     /// `INFO FOR SEARCH`: the analyzer, the stop words and, per member, its
     /// table, fields and documents.
-    pub(crate) fn info_search(
+    pub(crate) async fn info_search(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
-        let context = self.context(transaction, None, span)?;
-        let mut members = Catalog::new(transaction).members_of(
-            context.namespace,
-            context.database,
-            &name.text,
-        )?;
+        let context = self.context(transaction, None, span).await?;
+        let mut members = Catalog::new(transaction)
+            .members_of(context.namespace, context.database, &name.text)
+            .await?;
         let Some(engine) = members.first().and_then(|member| member.engine.clone()) else {
             return Err(Error::Unknown {
                 entity: "search",
@@ -282,13 +293,13 @@ impl Session<'_> {
         let mut described = Vec::with_capacity(members.len());
         let mut tables = BTreeMap::new();
         for member in &members {
-            if let Some(table) = Catalog::new(transaction).table(member.table)? {
+            if let Some(table) = Catalog::new(transaction).table(member.table).await? {
                 tables.insert(member.id, table.name);
             }
         }
         members.sort_by_key(|member| tables.get(&member.id).cloned());
         for member in &members {
-            let (statistics, _) = transaction.member_statistics(member)?;
+            let (statistics, _) = transaction.member_statistics(member).await?;
             let fields = member
                 .fields
                 .iter()
@@ -376,10 +387,10 @@ fn weight_text(thousandths: u32) -> String {
 
 /// Every word set, once, as the statements that declare them — `IF NOT EXISTS`
 /// in a part of the store, whose target may hold its own of that name.
-pub(crate) fn word_sets_script(catalog: &Catalog<'_, '_>, part: bool) -> Result<String> {
+pub(crate) async fn word_sets_script(catalog: &Catalog<'_, '_>, part: bool) -> Result<String> {
     let mut written = String::new();
     let guard = if part { "IF NOT EXISTS " } else { "" };
-    for set in catalog.word_sets()? {
+    for set in catalog.word_sets().await? {
         let quoted = |word: &str| format!("'{}'", word.replace('\\', "\\\\").replace('\'', "\\'"));
         let body = match set.kind {
             WordSetKind::Synonyms => format!(
@@ -418,20 +429,20 @@ pub(crate) fn word_sets_script(catalog: &Catalog<'_, '_>, part: bool) -> Result<
 }
 
 /// The `DEFINE SEARCH` statements of one database, members in table order.
-pub(crate) fn searches_script(
+pub(crate) async fn searches_script(
     catalog: &Catalog<'_, '_>,
     namespace: NamespaceId,
     database: DatabaseId,
 ) -> Result<String> {
     let mut by_search: BTreeMap<String, Vec<(String, IndexDefinition)>> = BTreeMap::new();
-    for member in catalog.engine_members()? {
+    for member in catalog.engine_members().await? {
         if member.namespace != namespace || member.database != database {
             continue;
         }
         let Some(engine) = &member.engine else {
             continue;
         };
-        let Some(table) = catalog.table(member.table)? else {
+        let Some(table) = catalog.table(member.table).await? else {
             continue;
         };
         by_search

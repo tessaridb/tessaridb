@@ -3,6 +3,7 @@
 //! the same version written as a resolved one is read, so a test that passed
 //! because the version was never reached would fail its control.
 
+use crate::now::Now;
 use std::sync::Arc;
 
 use tessari_encoding::{
@@ -27,27 +28,28 @@ impl Fixture {
     /// A table holding `r = "old"`, then one more commit elsewhere, so that a
     /// version written at the newest position is inside every later snapshot.
     fn new() -> Result<Self> {
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)?;
-        let mut transaction = store.begin()?;
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).now()?;
+        let mut transaction = store.begin().now()?;
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("ns")?.id;
-        let database = catalog.create_database(namespace, "db")?.id;
+        let namespace = catalog.create_namespace("ns").now()?.id;
+        let database = catalog.create_database(namespace, "db").now()?.id;
         let table = catalog
-            .create_table(namespace, database, "t", TableShape::default())?
+            .create_table(namespace, database, "t", TableShape::default())
+            .now()?
             .id;
-        transaction.commit()?;
+        transaction.commit().now()?;
         let fixture = Self {
             store,
             namespace,
             database,
             table,
         };
-        let mut transaction = fixture.store.begin()?;
+        let mut transaction = fixture.store.begin().now()?;
         transaction.put(fixture.address("r"), b"old".to_vec());
-        transaction.commit()?;
-        let mut transaction = fixture.store.begin()?;
+        transaction.commit().now()?;
+        let mut transaction = fixture.store.begin().now()?;
         transaction.put(fixture.address("other"), b"x".to_vec());
-        transaction.commit()?;
+        transaction.commit().now()?;
         Ok(fixture)
     }
 
@@ -63,7 +65,7 @@ impl Fixture {
     /// Write `r = "new"` at the newest version, as an intent or as a resolved
     /// version of the same transaction.
     fn write_new(&self, provisional: bool) -> Result<()> {
-        let version = self.store.committed_version()?;
+        let version = self.store.committed_version().now()?;
         let key = tessari_encoding::RecordKey::new(
             self.namespace,
             self.database,
@@ -103,21 +105,23 @@ impl Fixture {
                 version.encode(),
             );
         }
-        self.store.backend().apply(batch)?;
+        self.store.engine().apply(batch).now()?;
         Ok(())
     }
 
     /// What a fresh reader sees of `r`, by each read path.
     fn seen(&self) -> Result<[Option<Vec<u8>>; 3]> {
-        let reader = self.store.begin()?;
-        let single = reader.get(&self.address("r"))?;
+        let reader = self.store.begin().now()?;
+        let single = reader.get(&self.address("r")).now()?;
         let batched = reader
-            .get_each(&[self.address("r")])?
+            .get_each(&[self.address("r")])
+            .now()?
             .into_iter()
             .next()
             .flatten();
         let scanned = reader
-            .first_records_of(self.namespace, self.database, self.table, 10)?
+            .first_records_of(self.namespace, self.database, self.table, 10)
+            .now()?
             .into_iter()
             .find(|(id, _)| *id == RecordId::from("r"))
             .map(|(_, payload)| payload);
@@ -149,9 +153,9 @@ fn a_write_onto_a_standing_intent_is_refused_whatever_its_snapshot() -> Result<(
     fixture.write_new(true)?;
     // Begun after the intent, so the intent is not newer than its snapshot:
     // only the intent rule can refuse it.
-    let mut writer = fixture.store.begin()?;
+    let mut writer = fixture.store.begin().now()?;
     writer.put(fixture.address("r"), b"lost".to_vec());
-    let refused = writer.commit();
+    let refused = writer.commit().now();
     assert!(
         matches!(
             refused,
@@ -180,9 +184,9 @@ fn a_write_onto_a_standing_intent_is_refused_whatever_its_snapshot() -> Result<(
 fn control_a_write_onto_a_resolved_version_commits() -> Result<()> {
     let fixture = Fixture::new()?;
     fixture.write_new(false)?;
-    let mut writer = fixture.store.begin()?;
+    let mut writer = fixture.store.begin().now()?;
     writer.put(fixture.address("r"), b"later".to_vec());
-    writer.commit()?;
+    writer.commit().now()?;
     Ok(())
 }
 
@@ -191,12 +195,13 @@ fn reclaiming_below_an_intent_keeps_the_version_every_reader_reads() -> Result<(
     let fixture = Fixture::new()?;
     fixture.write_new(true)?;
     // Move the floor past the intent, so reclamation reaches it.
-    let mut writer = fixture.store.begin()?;
+    let mut writer = fixture.store.begin().now()?;
     writer.put(fixture.address("later"), b"y".to_vec());
-    writer.commit()?;
+    writer.commit().now()?;
     fixture
         .store
-        .reclaim_table(fixture.namespace, fixture.database, fixture.table)?;
+        .reclaim_table(fixture.namespace, fixture.database, fixture.table)
+        .now()?;
     let old = Some(b"old".to_vec());
     assert_eq!(fixture.seen()?, [old.clone(), old.clone(), old]);
     Ok(())

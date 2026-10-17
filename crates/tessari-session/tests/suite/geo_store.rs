@@ -37,6 +37,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -44,7 +46,9 @@ use tessari_storage::Store;
 use tessari_types::Value;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 const PLACE: &str = "\
@@ -58,18 +62,23 @@ const PARIS: &str = "geometry { type: 'Point', coordinates: [2.35, 48.85] }";
 /// A session holding a geo store called `places`.
 fn declared(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.run(&format!("{PLACE}DEFINE GEO places;")).unwrap();
+    session
+        .run_now(&format!("{PLACE}DEFINE GEO places;"))
+        .unwrap();
     session
 }
 
 /// What a statement said when it was refused, or `None` when it was accepted.
 fn refusal(session: &mut Session<'_>, statement: &str) -> Option<String> {
-    session.run(statement).err().map(|error| error.to_string())
+    session
+        .run_now(statement)
+        .err()
+        .map(|error| error.to_string())
 }
 
 /// The one value a statement answered with.
 fn reported(session: &mut Session<'_>, statement: &str) -> Value {
-    match session.run(statement).unwrap().pop().unwrap() {
+    match session.run_now(statement).unwrap().pop().unwrap() {
         Outcome::Value(value) => value,
         other => panic!("{other:?}"),
     }
@@ -83,13 +92,16 @@ fn a_geo_store_takes_places_and_gives_them_back() {
     let mut session = declared(&held);
 
     session
-        .run(&format!(
+        .run_now(&format!(
             "CREATE places:'paris' = {{ geometry: {PARIS}, name: 'Paris' }};"
         ))
         .unwrap();
 
-    let Outcome::Records { records, .. } =
-        session.run("SELECT * FROM places;").unwrap().pop().unwrap()
+    let Outcome::Records { records, .. } = session
+        .run_now("SELECT * FROM places;")
+        .unwrap()
+        .pop()
+        .unwrap()
     else {
         panic!("a select answered with something other than records");
     };
@@ -110,7 +122,7 @@ fn the_store_and_the_field_refuse_the_same_write_with_the_same_words() {
     let two = store();
     let mut session = Session::new(&two);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}DEFINE COLLECTION places;\n\
              DEFINE FIELD geometry ON places TYPE geometry REQUIRED;"
         ))
@@ -150,7 +162,7 @@ fn a_region_is_a_place_because_the_store_narrows_no_shape() {
     let mut session = declared(&held);
 
     session
-        .run(
+        .run_now(
             "CREATE places:'square' = { \
                geometry: geometry { type: 'Polygon', \
                  coordinates: [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]] }, \
@@ -158,8 +170,11 @@ fn a_region_is_a_place_because_the_store_narrows_no_shape() {
         )
         .unwrap();
 
-    let Outcome::Records { records, .. } =
-        session.run("SELECT * FROM places;").unwrap().pop().unwrap()
+    let Outcome::Records { records, .. } = session
+        .run_now("SELECT * FROM places;")
+        .unwrap()
+        .pop()
+        .unwrap()
     else {
         panic!("a select answered with something other than records");
     };
@@ -237,7 +252,7 @@ fn a_rebuild_measures_what_the_covering_offers_against_what_the_boxes_keep() {
     let held = store();
     let mut session = declared(&held);
     session
-        .run(
+        .run_now(
             "CREATE places:'ward' = { geometry: geometry { type: 'Polygon', \
              coordinates: [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]] }, name: 'a ward' }; \
              CREATE places:'corner' = { geometry: geometry { type: 'Point', \
@@ -250,7 +265,9 @@ fn a_rebuild_measures_what_the_covering_offers_against_what_the_boxes_keep() {
     // which is the one statement that walks every row.
     assert_eq!(refinement(&mut session), None, "a write does not measure");
 
-    session.run("REBUILD INDEX geometry ON places;").unwrap();
+    session
+        .run_now("REBUILD INDEX geometry ON places;")
+        .unwrap();
     let measured = refinement(&mut session).expect("a rebuild measures");
 
     assert_eq!(measured.get("sample"), Some(&Value::from(2_i64)));
@@ -281,7 +298,7 @@ fn a_rebuild_with_nothing_to_measure_takes_the_previous_figure_with_it() {
     let held = store();
     let mut session = declared(&held);
     session
-        .run(
+        .run_now(
             "CREATE places:'ward' = { geometry: geometry { type: 'Polygon', \
              coordinates: [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]] }, name: 'a ward' }; \
              CREATE places:'corner' = { geometry: geometry { type: 'Point', \
@@ -295,7 +312,7 @@ fn a_rebuild_with_nothing_to_measure_takes_the_previous_figure_with_it() {
     );
 
     session
-        .run("DELETE places:'corner'; REBUILD INDEX geometry ON places;")
+        .run_now("DELETE places:'corner'; REBUILD INDEX geometry ON places;")
         .unwrap();
 
     assert_eq!(
@@ -311,15 +328,15 @@ fn dropping_a_geo_store_needs_the_word_that_made_it_to_name_a_geo_store() {
     // the blast radius of a table.
     let held = store();
     let mut session = declared(&held);
-    session.run("DEFINE COLLECTION notes;").unwrap();
+    session.run_now("DEFINE COLLECTION notes;").unwrap();
 
     let said = refusal(&mut session, "DROP GEO notes;").expect("DROP GEO removed a collection");
     assert!(said.contains("notes"), "{said}");
 
     // And the collection is still there to be found.
-    session.run("INFO FOR TABLE notes;").unwrap();
+    session.run_now("INFO FOR TABLE notes;").unwrap();
 
-    session.run("DROP GEO places;").unwrap();
+    session.run_now("DROP GEO places;").unwrap();
     refusal(&mut session, "INFO FOR GEO places;").expect("the store outlived its own DROP");
 }
 
@@ -329,7 +346,7 @@ fn asking_a_table_that_is_not_a_store_for_its_store_report_is_refused() {
     // would report a field and an index that mean something else.
     let held = store();
     let mut session = declared(&held);
-    session.run("DEFINE COLLECTION notes;").unwrap();
+    session.run_now("DEFINE COLLECTION notes;").unwrap();
 
     let said = refusal(&mut session, "INFO FOR GEO notes;").expect("a collection reported as one");
     assert!(said.contains("notes"), "{said}");

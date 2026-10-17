@@ -2,6 +2,7 @@
 //! window writes nothing (ADR-0124 D8).
 
 use std::time::Duration;
+use tessari_session::Now;
 
 use tessari_session::{Error, Outcome};
 use tessari_types::{RefusalClass, Value};
@@ -226,6 +227,7 @@ fn a_topic_script_carries_its_window_and_key_and_reads_back() {
     let restored =
         tessari_storage::Store::open(std::sync::Arc::new(tessari_kv::MemoryBackend::new())
             as std::sync::Arc<dyn tessari_kv::KvBackend>)
+        .now()
         .unwrap();
     let mut again = tessari_session::Session::new(&restored);
     run(&mut again, &script);

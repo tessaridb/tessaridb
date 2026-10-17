@@ -32,18 +32,20 @@ use crate::session::Session;
 impl Session<'_> {
     /// Read `name` from the backup folder, vet it, and run it: its new
     /// namespaces, then its new databases, then what fills them.
-    pub(crate) fn restore(&self, name: &str) -> Result<Outcome> {
+    pub(crate) async fn restore(&self, name: &str) -> Result<Outcome> {
         let folder = self.backups.as_deref().ok_or(Error::NoBackupFolder)?;
         let path = crate::backup_to::readable(folder, name)?;
         // A sealed script opens with this node's key and is read whole before
         // any of it is vetted, so a file cut or altered refuses here.
         let mut text = String::new();
-        fs::File::open(&path)
-            .and_then(|file| tessari_vault::at_rest::reading(self.at_rest.as_deref(), file))
-            .and_then(|mut opened| std::io::Read::read_to_string(&mut opened, &mut text))
-            .map_err(|failure| Error::BackupFailed {
-                reason: format!("{}: {failure}", path.display()),
-            })?;
+        tessari_vault::off_the_worker(|| {
+            fs::File::open(&path)
+                .and_then(|file| tessari_vault::at_rest::reading(self.at_rest.as_deref(), file))
+                .and_then(|mut opened| std::io::Read::read_to_string(&mut opened, &mut text))
+        })
+        .map_err(|failure| Error::BackupFailed {
+            reason: format!("{}: {failure}", path.display()),
+        })?;
         let script = tessari_ql::parse(&text)
             .and_then(|script| script.bind(&Parameters::new()))
             .map_err(|failure| {
@@ -51,7 +53,7 @@ impl Session<'_> {
                     "{name} is not a script this node reads: {failure}"
                 ))
             })?;
-        let (script, created) = vetted(self, script, &text)?;
+        let (script, created) = vetted(self, script, &text).await?;
         let statements = script.statements.len();
         let (places, body): (Vec<_>, Vec<_>) =
             script.statements.into_iter().partition(|statement| {
@@ -83,21 +85,34 @@ impl Session<'_> {
 
         let mut restorer = Session::new(self.store);
         restorer.identity = self.identity.clone();
-        restorer.atomically(|held| held.run_with(&namespaces, &Parameters::new()))?;
-        if let Err(failure) =
-            restorer.atomically(|held| held.run_with(&databases, &Parameters::new()))
-        {
-            undone(&mut restorer, &[], &defined);
+        let mut held = restorer.atomic().await?;
+        let answered = held.run_with(&namespaces, &Parameters::new()).await;
+        held.conclude(answered).await?;
+        let defining = match restorer.atomic().await {
+            Ok(mut held) => {
+                let answered = held.run_with(&databases, &Parameters::new()).await;
+                held.conclude(answered).await
+            }
+            Err(failure) => Err(failure),
+        };
+        if let Err(failure) = defining {
+            undone(&mut restorer, &[], &defined).await;
             return Err(failure);
         }
-        let filled = restorer.atomically(|held| {
-            held.run_parsed(Script {
-                statements: body,
-                span: script.span,
-            })
-        });
+        let filled = match restorer.atomic().await {
+            Ok(mut held) => {
+                let answered = held
+                    .run_parsed(Script {
+                        statements: body,
+                        span: script.span,
+                    })
+                    .await;
+                held.conclude(answered).await
+            }
+            Err(failure) => Err(failure),
+        };
         if let Err(failure) = filled {
-            undone(&mut restorer, &created, &defined);
+            undone(&mut restorer, &created, &defined).await;
             return Err(failure);
         }
 
@@ -138,8 +153,8 @@ fn undo(created: &[String], defined: &BTreeSet<String>) -> String {
 /// Take away what a failed restore created, and say so on the node's log when
 /// that is refused too — the caller is answered with the refusal that stopped
 /// the restore, and the operator is the one who can remove what is left.
-fn undone(restorer: &mut Session<'_>, created: &[String], defined: &BTreeSet<String>) {
-    if let Err(failure) = restorer.run(&undo(created, defined)) {
+async fn undone(restorer: &mut Session<'_>, created: &[String], defined: &BTreeSet<String>) {
+    if let Err(failure) = restorer.run_boxed(&undo(created, defined)).await {
         tracing::warn!(
             created = %created.join(", "),
             defined = %defined.iter().cloned().collect::<Vec<_>>().join(", "),
@@ -197,8 +212,12 @@ const fn placed(kind: &StatementKind) -> bool {
 
 /// The script with the definitions of namespaces that already exist taken out,
 /// and the databases it creates — or the refusal that says why it may not run.
-fn vetted(session: &Session<'_>, script: Script, text: &str) -> Result<(Script, Vec<String>)> {
-    let mut view = session.store.begin()?;
+async fn vetted(
+    session: &Session<'_>,
+    script: Script,
+    text: &str,
+) -> Result<(Script, Vec<String>)> {
+    let mut view = session.store.begin().await?;
     let catalog = Catalog::new(&mut view);
     let mut namespaces = BTreeSet::new();
     let mut created: Vec<(String, String)> = Vec::new();
@@ -209,7 +228,7 @@ fn vetted(session: &Session<'_>, script: Script, text: &str) -> Result<(Script, 
         match &statement.kind {
             StatementKind::DefineNamespace { name, .. } => {
                 namespaces.insert(name.text.clone());
-                if catalog.namespace_id(&name.text)?.is_some() {
+                if catalog.namespace_id(&name.text).await?.is_some() {
                     continue;
                 }
             }
@@ -220,8 +239,8 @@ fn vetted(session: &Session<'_>, script: Script, text: &str) -> Result<(Script, 
                         named(text, &statement)
                     )));
                 };
-                let exists = match catalog.namespace_id(within)? {
-                    Some(id) => catalog.database_id(id, &name.text)?.is_some(),
+                let exists = match catalog.namespace_id(within).await? {
+                    Some(id) => catalog.database_id(id, &name.text).await?.is_some(),
                     None => false,
                 };
                 if exists {

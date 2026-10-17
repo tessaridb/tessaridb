@@ -13,6 +13,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Note, Session};
@@ -23,7 +25,7 @@ use crate::gathered_reads::{answer, follower_of_the_middle_of, leader, pair_of, 
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// `obs` holding `n` = 1 to 1000 as integers in group `all`; then, in group
@@ -49,13 +51,13 @@ fn ready(store: &Store) -> Session<'_> {
          CREATE obs:1005 = { g: 'kinds' };\n\
          COMMIT;",
     );
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     session
 }
 
 /// The fields of the one record a read answers.
 fn fields(session: &mut Session<'_>, read: &str) -> BTreeMap<String, Value> {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let records = outcomes.last().unwrap().records().unwrap();
     assert_eq!(records.len(), 1, "{read}: {records:?}");
     let Value::Object(fields) = &records[0].1 else {
@@ -112,7 +114,7 @@ fn a_distinct_count_past_the_small_set_is_within_its_bound() {
         script.push_str(&format!("CREATE wide:{} = {{ n: {n} }};\n", n + 10_000));
     }
     script.push_str("COMMIT;");
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     let held = fields(&mut session, "SELECT approx_distinct(n) AS d FROM wide;");
     let d = integer(held.get("d"));
     // 2 000 distinct values, each written twice; 2.5 % of 2 000 is 50.
@@ -139,7 +141,7 @@ fn a_quantile_places_negatives_below_zero_and_answers_zero_exactly() {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION t; CREATE t:1 = { n: -100 }; CREATE t:2 = { n: -10 }; CREATE t:3 = { n: 0 };\n\
              CREATE t:4 = { n: 0.0 }; CREATE t:5 = { n: 10 };",
@@ -194,7 +196,7 @@ fn a_quantile_refuses_what_it_cannot_fold_and_a_rank_it_cannot_use() {
             "a rank that differs between records",
         ),
     ] {
-        match session.run(read) {
+        match session.run_now(read) {
             Err(Error::NotSummable {
                 fold, found: was, ..
             }) => {
@@ -206,7 +208,7 @@ fn a_quantile_refuses_what_it_cannot_fold_and_a_rank_it_cannot_use() {
     }
     // The rank is part of the fold, so leaving it out is a mistake in the
     // statement, refused before any record is read.
-    match session.run("SELECT approx_quantile(n) AS m FROM obs;") {
+    match session.run_now("SELECT approx_quantile(n) AS m FROM obs;") {
         Err(Error::Script(tessari_ql::Error::UnexpectedToken { expected, .. })) => {
             assert_eq!(expected, "`,` and the rank, a number from 0 to 1");
         }
@@ -219,7 +221,7 @@ fn an_answer_with_an_approximate_fold_says_so_once_per_fold() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run(
+        .run_now(
             "SELECT g, approx_distinct(n) AS d, approx_distinct(g) AS e, \
              approx_quantile(n, 0.5) AS m, count(*) AS c FROM obs WHERE g = 'all' GROUP BY g;",
         )
@@ -249,7 +251,7 @@ fn an_answer_with_an_approximate_fold_says_so_once_per_fold() {
     );
     // An exact read carries no such note.
     let exact = session
-        .run("SELECT count(*) AS c, median(n) AS m FROM obs WHERE g = 'all';")
+        .run_now("SELECT count(*) AS c, median(n) AS m FROM obs WHERE g = 'all';")
         .unwrap();
     assert!(
         exact
@@ -284,7 +286,7 @@ fn a_sketch_is_folded_on_the_leaders_and_equals_a_whole_node() {
         ));
     }
     script.push_str("COMMIT;");
-    signed_in(&leader, "root").run(&script).unwrap();
+    signed_in(&leader, "root").run_now(&script).unwrap();
     let follower = follower_of_the_middle_of(&leader, "samples");
     let pair = pair_of(leader, follower);
     let mut on_the_follower = pair.on_the_follower("reader");

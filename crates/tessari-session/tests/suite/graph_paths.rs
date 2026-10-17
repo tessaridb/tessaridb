@@ -13,6 +13,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Note, Outcome, Session};
@@ -61,7 +63,9 @@ fn generated(seed: u64) -> Edges {
 }
 
 fn store_of(edges: &Edges) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     let mut script = String::from(
         "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE town; USE DATABASE town;\n\
@@ -78,7 +82,7 @@ fn store_of(edges: &Edges) -> Store {
             ));
         }
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     store
 }
 
@@ -148,7 +152,7 @@ fn brute(
 
 /// The store's path and the cost its note states.
 fn asked(session: &mut Session<'_>, read: &str) -> (Vec<i64>, Option<(u64, f64)>) {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, notes, .. }) = outcomes.last() else {
         panic!("{read}: {:?}", outcomes.last());
     };
@@ -182,7 +186,7 @@ fn the_shortest_path_equals_the_brute_force_on_generated_graphs() {
         let store = store_of(&edges);
         let mut session = Session::new(&store);
         session
-            .run("USE NAMESPACE prod; USE DATABASE town;")
+            .run_now("USE NAMESPACE prod; USE DATABASE town;")
             .unwrap();
         let mut rolls = Rolls(seed);
         for _ in 0..6 {
@@ -232,7 +236,7 @@ fn a_cheaper_path_with_too_many_steps_is_not_the_answer() {
     let store = store_of(&edges);
     let mut session = Session::new(&store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE town;")
+        .run_now("USE NAMESPACE prod; USE DATABASE town;")
         .unwrap();
     let read = |depth: u64| {
         format!("SELECT * FROM place:1->road->place PATH TO place:4 DEPTH {depth} WEIGHT km;")
@@ -274,7 +278,7 @@ fn a_large_depth_over_a_dense_graph_costs_the_graph() {
     let store = store_of(&edges);
     let mut session = Session::new(&store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE town;")
+        .run_now("USE NAMESPACE prod; USE DATABASE town;")
         .unwrap();
     let started = std::time::Instant::now();
     for weight in ["", " WEIGHT km"] {
@@ -284,7 +288,7 @@ fn a_large_depth_over_a_dense_graph_costs_the_graph() {
     }
     // An end nothing reaches: the walk stops when the reachable set is spent,
     // not when the number written runs out.
-    session.run("CREATE place:13 = { n: 13 };").unwrap();
+    session.run_now("CREATE place:13 = { n: 13 };").unwrap();
     for weight in ["", " WEIGHT km"] {
         let read =
             format!("SELECT * FROM place:1->road->place PATH TO place:13 DEPTH 1000000{weight};");
@@ -300,10 +304,10 @@ fn an_unbounded_or_unweighable_path_is_refused_by_name() {
     let store = store_of(&edges);
     let mut session = Session::new(&store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE town;")
+        .run_now("USE NAMESPACE prod; USE DATABASE town;")
         .unwrap();
     let error = session
-        .run("SELECT * FROM place:1->road->place PATH TO place:2;")
+        .run_now("SELECT * FROM place:1->road->place PATH TO place:2;")
         .unwrap_err();
     assert!(error.to_string().contains("DEPTH"), "{error}");
     assert!(
@@ -314,18 +318,18 @@ fn an_unbounded_or_unweighable_path_is_refused_by_name() {
         "{error:?}"
     );
     session
-        .run("RELATE place:6->road->place:7 = { km: 'far' }; RELATE place:8->road->place:9 = { km: -1 };")
+        .run_now("RELATE place:6->road->place:7 = { km: 'far' }; RELATE place:8->road->place:9 = { km: -1 };")
         .unwrap();
     for (from, to) in [(6, 7), (8, 9)] {
         let error = session
-            .run(&format!(
+            .run_now(&format!(
                 "SELECT * FROM place:{from}->road->place PATH TO place:{to} DEPTH 3 WEIGHT km;"
             ))
             .unwrap_err();
         assert!(matches!(error, Error::PathWeight { .. }), "{error:?}");
     }
     // An edge with no weight is no road at all for a weighted path.
-    session.run("RELATE place:1->road->place:5;").unwrap();
+    session.run_now("RELATE place:1->road->place:5;").unwrap();
     assert_eq!(
         asked(
             &mut session,

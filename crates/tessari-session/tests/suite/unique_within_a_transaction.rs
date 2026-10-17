@@ -20,20 +20,24 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
 use tessari_storage::Store;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// A table with one unique field, holding one record.
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION holds;\n\
@@ -50,7 +54,7 @@ fn a_unique_value_is_freed_by_this_transactions_own_delete_before_it_is_taken_ag
     let mut session = ready(&store);
 
     session
-        .run(
+        .run_now(
             "BEGIN;\n\
              DELETE FROM holds WHERE object = 'tasks:7' LIMIT 1;\n\
              CREATE holds:2 = { object: 'tasks:7', by: 'second' };\n\
@@ -59,7 +63,7 @@ fn a_unique_value_is_freed_by_this_transactions_own_delete_before_it_is_taken_ag
         .expect("the value the same transaction released is the transaction's to take");
 
     let after = session
-        .run("SELECT by FROM holds WHERE object = 'tasks:7';")
+        .run_now("SELECT by FROM holds WHERE object = 'tasks:7';")
         .unwrap();
     let last = after.last().unwrap();
     assert!(
@@ -77,7 +81,7 @@ fn the_index_still_refuses_a_second_record_when_nothing_released_the_value() {
     // entry is the answer and it still refuses — otherwise the fix above would
     // have removed the guarantee rather than corrected it.
     let refusal = session
-        .run("CREATE holds:2 = { object: 'tasks:7', by: 'second' };")
+        .run_now("CREATE holds:2 = { object: 'tasks:7', by: 'second' };")
         .unwrap_err()
         .to_string();
 
@@ -92,13 +96,13 @@ fn a_delete_of_a_different_record_does_not_free_the_value() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("CREATE holds:9 = { object: 'tasks:8', by: 'elsewhere' };")
+        .run_now("CREATE holds:9 = { object: 'tasks:8', by: 'elsewhere' };")
         .unwrap();
 
     // A batch that deletes *something* must not be read as a batch that deleted
     // *this*. The check is per key, and this is what says so.
     let refusal = session
-        .run(
+        .run_now(
             "BEGIN;\n\
              DELETE FROM holds WHERE object = 'tasks:8' LIMIT 1;\n\
              CREATE holds:2 = { object: 'tasks:7', by: 'second' };\n\

@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use tessari_kv::KvBackend;
 
 use tessari_encoding::Roles;
-use tessari_kv::KvBackend;
 
 use crate::error::Result;
 use crate::followers::Followers;
@@ -16,6 +16,22 @@ use super::{
 };
 
 impl Store {
+    /// Close the store: its backend finishes its background work and releases
+    /// what it holds, the directory included, before this answers.
+    ///
+    /// A store that is only dropped is closed in the background, and a process
+    /// that exits first leaves the files a kill would have left.
+    ///
+    /// # Errors
+    ///
+    /// A lifecycle refusal when another handle to this store is still alive (a
+    /// clone, or a reader holding the backend); the store stays open for it.
+    pub async fn close(self) -> Result<()> {
+        let backend = Arc::clone(&self.backend);
+        drop(self);
+        Ok(backend.close().await?)
+    }
+
     /// Open a store on `backend`, creating its metadata if it is new.
     ///
     /// A store whose on-disk format is newer than this build understands is
@@ -26,25 +42,25 @@ impl Store {
     ///
     /// Returns an error when the backend fails, when the stored metadata cannot
     /// be decoded, or when the on-disk format is newer than this build.
-    pub fn open(backend: Arc<dyn KvBackend>) -> Result<Self> {
+    pub async fn open(backend: Arc<dyn KvBackend>) -> Result<Self> {
         // The format is settled before anything else is written, the node
         // identity included: a store this build is about to refuse must not be
         // modified on the way to refusing it.
-        match read_format_version(Arc::clone(&backend))? {
+        match read_format_version(Arc::clone(&backend)).await? {
             Some(found) => {
                 found.check_supported()?;
-                give_an_older_log_its_home(Arc::clone(&backend), found)?;
-                give_an_older_log_its_writer(Arc::clone(&backend), found)?;
+                give_an_older_log_its_home(Arc::clone(&backend), found).await?;
+                give_an_older_log_its_writer(Arc::clone(&backend), found).await?;
             }
             None => {
-                refuse_data_without_a_stamp(backend.as_ref())?;
-                write_initial_metadata(Arc::clone(&backend))?;
+                refuse_data_without_a_stamp(backend.as_ref()).await?;
+                write_initial_metadata(Arc::clone(&backend)).await?;
             }
         }
-        seed_version_position(Arc::clone(&backend))?;
-        crate::node::ensure(Arc::clone(&backend))?;
-        let served = Arc::new(crate::served::Served::load(backend.as_ref())?);
-        let expiring = Arc::new(crate::lapse::Expiring::load(backend.as_ref())?);
+        seed_version_position(Arc::clone(&backend)).await?;
+        crate::node::ensure(Arc::clone(&backend)).await?;
+        let served = Arc::new(crate::served::Served::load(backend.as_ref()).await?);
+        let expiring = Arc::new(crate::lapse::Expiring::load(backend.as_ref()).await?);
         let writing = Arc::new(crate::gate::WriteGate::default());
         let store = Self {
             // Every read the turn's holder makes sees what is staged behind it;
@@ -88,18 +104,21 @@ impl Store {
             writing,
             decisions: Arc::default(),
         };
+        // Before the first transaction begins: everything written so far landed
+        // before this open, and every landing from here publishes its own.
+        store.landed_at(store.committed_version().await?);
         // Last, because it reads the catalog: the format is settled and the
         // identity exists by the time this asks which node it is.
-        store.reconcile_roles()?;
+        store.reconcile_roles().await?;
         // And after it for the same reason: a finalize this node's older build
         // applied left the record and not the stamp (ADR-0118).
-        store.catch_up_with_the_finalized_format()?;
+        store.catch_up_with_the_finalized_format().await?;
         // After the stamp is settled: a store holding format 8 keeps retired
         // index entries from the first commit after this open (Q-S3-34).
-        store.begin_keeping_retired_entries()?;
+        store.begin_keeping_retired_entries().await?;
         // Rows are held only for readers at or above this: history before the
         // open is not known to have left them unchanged.
-        store.catalog_rows.changed(store.committed_version()?);
+        store.catalog_rows.changed(store.committed_version().await?);
         Ok(store)
     }
 
@@ -138,10 +157,10 @@ impl Store {
     ///
     /// Returns the substrate's failure, and a decoding failure when the node
     /// identity cannot be read.
-    pub fn effective_roles(&self) -> Result<Roles> {
-        let identity = self.node_identity()?;
+    pub async fn effective_roles(&self) -> Result<Roles> {
+        let identity = self.node_identity().await?;
         let adopted = identity.roles;
-        if self.lease.spent().is_none() && !self.awaiting(&identity.id)? {
+        if self.lease.spent().is_none() && !self.awaiting(&identity.id).await? {
             return Ok(adopted);
         }
         let without_writing = adopted.bits() & !Roles::WRITABLE.bits();

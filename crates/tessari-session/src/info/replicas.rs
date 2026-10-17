@@ -10,7 +10,7 @@ use tessari_types::{NamespaceId, Value};
 /// An object rather than a bare endpoint, because a peer has a name an operator
 /// wrote and an address they may change, and a list of addresses could not say
 /// which one moved.
-pub(crate) fn described_replica(
+pub(crate) async fn described_replica(
     replica: &ReplicaDefinition,
     catalog: &Catalog<'_, '_>,
 ) -> Result<Value> {
@@ -59,7 +59,7 @@ pub(crate) fn described_replica(
             "replicates".to_owned(),
             match replica.replicates {
                 None => Value::Null,
-                Some(reach) => Value::from(spelled_reach(reach, catalog)?.as_str()),
+                Some(reach) => Value::from(spelled_reach(reach, catalog).await?.as_str()),
             },
         ),
         // The placement (ADR-0082), in the spelling `LEADS` takes, so the answer
@@ -68,7 +68,7 @@ pub(crate) fn described_replica(
             "leads".to_owned(),
             match replica.leads {
                 None => Value::Null,
-                Some(reach) => Value::from(spelled_reach(reach, catalog)?.as_str()),
+                Some(reach) => Value::from(spelled_reach(reach, catalog).await?.as_str()),
             },
         ),
         // Whether that placement is being given back to the store line
@@ -112,34 +112,40 @@ pub(crate) fn described_replica(
 /// against what they meant. A name the catalog has lost is reported as the id it
 /// could not resolve rather than omitted — a row pointing at a namespace that no
 /// longer exists is precisely the state worth seeing.
-pub(crate) fn spelled_reach(reach: Reach, catalog: &Catalog<'_, '_>) -> Result<String> {
+pub(crate) async fn spelled_reach(reach: Reach, catalog: &Catalog<'_, '_>) -> Result<String> {
     Ok(match reach {
         Reach::Store => "STORE".to_owned(),
         Reach::Namespace(namespace) => {
-            format!("NAMESPACE {}", namespace_named(namespace, catalog)?)
+            format!("NAMESPACE {}", namespace_named(namespace, catalog).await?)
         }
         Reach::Database(namespace, database) => {
             let held = catalog
-                .databases_in(namespace)?
+                .databases_in(namespace)
+                .await?
                 .into_iter()
                 .find(|found| found.id == database)
                 .map_or_else(|| database.get().to_string(), |found| found.name);
-            format!("DATABASE {}.{held}", namespace_named(namespace, catalog)?)
+            format!(
+                "DATABASE {}.{held}",
+                namespace_named(namespace, catalog).await?
+            )
         }
         // `SHARD prod.shop.orders 2` — the clause's own spelling (G031), so the
         // report pastes back into the statement that would correct it.
         Reach::Shard(namespace, database, table, shard) => {
             let held = catalog
-                .databases_in(namespace)?
+                .databases_in(namespace)
+                .await?
                 .into_iter()
                 .find(|found| found.id == database)
                 .map_or_else(|| database.get().to_string(), |found| found.name);
             let named = catalog
-                .table(table)?
+                .table(table)
+                .await?
                 .map_or_else(|| table.get().to_string(), |found| found.name);
             format!(
                 "SHARD {}.{held}.{named} {}",
-                namespace_named(namespace, catalog)?,
+                namespace_named(namespace, catalog).await?,
                 shard.get()
             )
         }
@@ -151,13 +157,13 @@ pub(crate) fn spelled_reach(reach: Reach, catalog: &Catalog<'_, '_>) -> Result<S
 /// From the `leaderships` rows the winner wrote under its own epoch — so this
 /// is *as of epoch E, node N led range R*, a claim about the log and never about
 /// who is alive now; the lease and the follower rows answer that.
-pub(crate) fn described_leaders(catalog: &Catalog<'_, '_>) -> Result<Value> {
+pub(crate) async fn described_leaders(catalog: &Catalog<'_, '_>) -> Result<Value> {
     let mut described = Vec::new();
-    for held in catalog.leaderships()? {
+    for held in catalog.leaderships().await? {
         described.push(Value::Object(BTreeMap::from([
             (
                 "range".to_owned(),
-                Value::from(spelled_reach(held.range, catalog)?.as_str()),
+                Value::from(spelled_reach(held.range, catalog).await?.as_str()),
             ),
             ("node".to_owned(), Value::Uuid(held.node)),
             (
@@ -170,9 +176,13 @@ pub(crate) fn described_leaders(catalog: &Catalog<'_, '_>) -> Result<Value> {
 }
 
 /// One namespace's name, or its id when the catalog no longer holds it.
-pub(crate) fn namespace_named(namespace: NamespaceId, catalog: &Catalog<'_, '_>) -> Result<String> {
+pub(crate) async fn namespace_named(
+    namespace: NamespaceId,
+    catalog: &Catalog<'_, '_>,
+) -> Result<String> {
     Ok(catalog
-        .namespace(namespace)?
+        .namespace(namespace)
+        .await?
         .map_or_else(|| namespace.get().to_string(), |found| found.name))
 }
 

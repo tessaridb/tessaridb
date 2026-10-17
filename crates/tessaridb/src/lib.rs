@@ -5,10 +5,13 @@
 //! store is built rather than how it is used, and is deliberately not reachable
 //! from here.
 //!
+//! Running a script is asynchronous, so it is awaited on a Tokio runtime:
+//!
 //! ```
 //! use tessaridb::{Db, Value};
 //!
-//! let db = Db::in_memory()?;
+//! # tokio::runtime::Builder::new_current_thread().build().expect("a runtime").block_on(async {
+//! let db = Db::in_memory().await?;
 //! let mut session = db.session();
 //! session.run(
 //!     "DEFINE NAMESPACE prod;
@@ -17,11 +20,13 @@
 //!      USE DATABASE orders;
 //!      DEFINE COLLECTION users;
 //!      CREATE users:1 = { name: 'ada' };",
-//! )?;
+//! ).await?;
 //!
-//! let found = session.run("SELECT name FROM users:1;")?;
+//! let found = session.run("SELECT name FROM users:1;").await?;
 //! let records = found[0].records().expect("a read answers with records");
 //! assert_eq!(records.len(), 1);
+//! # Ok::<(), tessaridb::Error>(())
+//! # })?;
 //! # Ok::<(), tessaridb::Error>(())
 //! ```
 //!
@@ -48,7 +53,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_lsm::LsmBackend;
+use tessari_lsm::TessariKvBackend;
 use tessari_storage::{Catalog, ReplicaDefinition, Roles, Store};
 use tessari_types::ShardId;
 
@@ -66,7 +71,7 @@ mod wiring;
 
 pub use across::SettledAcross;
 pub use balance::{Balanced, LeadershipMoves, Moved, ShardSamples};
-pub use coordinate::{Coordinate, Coordinated, Coordination, Surface};
+pub use coordinate::{Coordinate, Coordinated, Coordinating, Coordination, Surface};
 pub use db::Db;
 pub use tessari_lsm::{AtRestKey, Durability, StoreConfig};
 pub use tessari_session::redact::{Visible, seen};

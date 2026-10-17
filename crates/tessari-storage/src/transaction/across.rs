@@ -67,7 +67,7 @@ impl Transaction<'_> {
     /// Whatever a commit returns, [`Error::Conflict`] for a record written
     /// after `seen` or under a standing intent, and [`Error::AcrossReadTooOld`]
     /// when this log no longer reaches back to `seen`.
-    pub fn prepare_across(
+    pub async fn prepare_across(
         mut self,
         transaction: TransactionId,
         coordinator: Reach,
@@ -82,7 +82,7 @@ impl Transaction<'_> {
             seen: Some(seen),
             participants: Vec::new(),
         });
-        self.commit_placed()
+        self.commit_placed().await
     }
 
     /// Write a change of `transaction`'s record, in the coordinator's range.
@@ -94,7 +94,7 @@ impl Transaction<'_> {
     ///
     /// Whatever a commit returns, and [`Error::AcrossDecided`] for a change the
     /// record's present state refuses.
-    pub fn decide_across(
+    pub async fn decide_across(
         mut self,
         transaction: TransactionId,
         decided: TransactionRecord,
@@ -117,7 +117,7 @@ impl Transaction<'_> {
             seen: None,
             participants: Vec::new(),
         });
-        self.commit_placed()
+        self.commit_placed().await
     }
 
     /// Bar `transaction`'s part in `range` for good, its prepare not having
@@ -129,7 +129,11 @@ impl Transaction<'_> {
     ///
     /// Whatever a commit returns, and [`Error::AcrossDecided`] (`prepared`)
     /// when the part has landed here, which no bar can undo.
-    pub fn prevent_across(mut self, transaction: TransactionId, range: Reach) -> Result<Committed> {
+    pub async fn prevent_across(
+        mut self,
+        transaction: TransactionId,
+        range: Reach,
+    ) -> Result<Committed> {
         self.writes.clear();
         self.across = Some(Work {
             across: Across {
@@ -140,7 +144,7 @@ impl Transaction<'_> {
             seen: None,
             participants: Vec::new(),
         });
-        self.commit_placed()
+        self.commit_placed().await
     }
 
     /// Begin `transaction` in the coordinator's range: its record written
@@ -156,7 +160,7 @@ impl Transaction<'_> {
     ///
     /// Whatever [`Self::prepare_across`] returns, and [`Error::AcrossDecided`]
     /// when the record already stands.
-    pub fn begin_across(
+    pub async fn begin_across(
         mut self,
         transaction: TransactionId,
         begun: TransactionRecord,
@@ -172,7 +176,7 @@ impl Transaction<'_> {
             seen: Some(seen),
             participants: Vec::new(),
         });
-        self.commit_placed()
+        self.commit_placed().await
     }
 
     /// Conclude `transaction` in the coordinator's range: its record decided
@@ -184,7 +188,7 @@ impl Transaction<'_> {
     ///
     /// Whatever [`Self::decide_across`] returns, and [`Error::AcrossMalformed`]
     /// for a committed record missing a participant's prepare position.
-    pub fn conclude_across(
+    pub async fn conclude_across(
         mut self,
         transaction: TransactionId,
         decided: TransactionRecord,
@@ -204,7 +208,8 @@ impl Transaction<'_> {
             });
         }
         self.writes.clear();
-        self.buffer_resolutions(transaction, committed, records)?;
+        self.buffer_resolutions(transaction, committed, records)
+            .await?;
         let participants = if committed {
             decided.participants.clone()
         } else {
@@ -219,7 +224,7 @@ impl Transaction<'_> {
             seen: None,
             participants,
         });
-        self.commit_placed()
+        self.commit_placed().await
     }
 
     /// Forget `transaction`'s decided record, in the coordinator's range, once
@@ -229,7 +234,7 @@ impl Transaction<'_> {
     ///
     /// Whatever a commit returns, and [`Error::AcrossMalformed`] for a record
     /// that has not decided.
-    pub fn forget_across(
+    pub async fn forget_across(
         mut self,
         transaction: TransactionId,
         coordinator: Reach,
@@ -244,7 +249,7 @@ impl Transaction<'_> {
             seen: None,
             participants: Vec::new(),
         });
-        self.commit_placed()
+        self.commit_placed().await
     }
 }
 

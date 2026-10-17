@@ -1,4 +1,6 @@
 use super::*;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 #[test]
 fn a_node_nobody_subscribed_is_refused_the_log_it_asks_for() {
@@ -94,21 +96,25 @@ fn an_answer_says_what_it_was_served_under_and_an_older_answer_says_nothing() {
 
 #[test]
 fn a_follower_asks_only_for_logs_its_served_reach_touches() {
-    let db = Db::in_memory().expect("an in-memory store");
+    let db = Db::in_memory().now().expect("an in-memory store");
     db.session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
                  USE DATABASE shop; DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT 'g';",
         )
         .expect("a split table");
-    let every = logs_to_collect(db.store()).expect("this node's own logs");
+    let every = logs_to_collect(db.store())
+        .now()
+        .expect("this node's own logs");
     let second = every
         .iter()
         .copied()
         .find(|home| matches!(home, Reach::Shard(_, _, _, shard) if shard.get() == 2))
         .expect("shard 2 is a log");
-    db.store().record_served(second).expect("recorded");
-    let narrowed = logs_to_collect(db.store()).expect("this node's own logs");
+    db.store().record_served(second).now().expect("recorded");
+    let narrowed = logs_to_collect(db.store())
+        .now()
+        .expect("this node's own logs");
     assert!(narrowed.contains(&second));
     assert!(narrowed.contains(&Reach::Store), "the chain above it stays");
     assert!(
@@ -124,15 +130,16 @@ fn a_follower_still_asks_for_a_shard_a_split_retired() {
     // ADR-0095 D3: a retired shard's log holds what was written to it before
     // the split, and a follower that had not collected all of it yet when it
     // applied the split would otherwise never ask for the rest.
-    let db = Db::in_memory().expect("an in-memory store");
+    let db = Db::in_memory().now().expect("an in-memory store");
     db.session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
                  USE DATABASE shop; DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT 'g'; \
                  ALTER TABLE orders SPLIT AT 'm';",
         )
         .expect("a split table, split again");
     let shards: Vec<u32> = logs_to_collect(db.store())
+        .now()
         .expect("this node's own logs")
         .into_iter()
         .filter_map(|home| match home {
@@ -158,7 +165,7 @@ fn a_round_applies_a_writers_logs_in_the_order_it_committed_them() {
     let leader = granting(" REPLICATES NAMESPACE prod");
     leader
         .session()
-        .run(
+        .run_now(
             "USE NAMESPACE prod; DEFINE DATABASE notes; USE DATABASE notes; \
                  DEFINE COLLECTION pad; CREATE pad:1 = { n: 0 }; \
                  USE DATABASE orders; UPDATE users:1 MERGE { n: 3 }; \
@@ -168,14 +175,17 @@ fn a_round_applies_a_writers_logs_in_the_order_it_committed_them() {
         .expect("the leader's writes");
     // The store's log, then the four logs it makes known in one round.
     let (address, door) = declaring_for(&authority, &leader, 5);
-    let follower = Db::in_memory().expect("an in-memory store");
+    let follower = Db::in_memory().now().expect("an in-memory store");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
     let collector = collector(&mine, &said, &address, 1024);
     let store = collector
         .collect(follower.store(), Reach::Store, Sequence::new(1))
+        .now()
         .expect("the store's log");
-    let logs = logs_to_collect(follower.store()).expect("this node's own logs");
+    let logs = logs_to_collect(follower.store())
+        .now()
+        .expect("this node's own logs");
     assert_eq!(
         logs.len(),
         4,
@@ -192,14 +202,14 @@ fn a_round_applies_a_writers_logs_in_the_order_it_committed_them() {
             (*home, from)
         })
         .collect();
-    for reached in collector.round(follower.store(), &asks) {
+    for reached in collector.round(follower.store(), &asks).now() {
         reached.expect("every log collects");
     }
     door.join().expect("the door's thread");
     let read = |db: &Db| {
         let outcomes = db
             .session()
-            .run("USE NAMESPACE prod; USE DATABASE orders; SELECT n FROM users:1;")
+            .run_now("USE NAMESPACE prod; USE DATABASE orders; SELECT n FROM users:1;")
             .expect("a read");
         format!("{:?}", outcomes.last())
     };
@@ -225,7 +235,7 @@ fn writes_across_a_split_and_a_merge_are_all_kept_and_all_collected() {
     let leader = granting(" REPLICATES STORE");
     leader
         .session()
-        .run(
+        .run_now(
             "USE NAMESPACE prod; USE DATABASE orders; \
                  DEFINE TABLE ledger (n int) IDENTITY uuid SPLIT AT 'm';",
         )
@@ -239,7 +249,7 @@ fn writes_across_a_split_and_a_merge_are_all_kept_and_all_collected() {
                 scope.spawn(move || {
                     let mut session = leader.session();
                     session
-                        .run("USE NAMESPACE prod; USE DATABASE orders;")
+                        .run_now("USE NAMESPACE prod; USE DATABASE orders;")
                         .expect("tenancy");
                     let mut kept = Vec::new();
                     for n in 0..EACH {
@@ -251,7 +261,7 @@ fn writes_across_a_split_and_a_merge_are_all_kept_and_all_collected() {
                         let id = format!("{letter}{writer}{n:03}");
                         let statement = format!("CREATE ledger:'{id}' = {{ n: {n} }};");
                         for _ in 0..8 {
-                            if session.run(&statement).is_ok() {
+                            if session.run_now(&statement).is_ok() {
                                 kept.push(id.clone());
                                 break;
                             }
@@ -264,21 +274,21 @@ fn writes_across_a_split_and_a_merge_are_all_kept_and_all_collected() {
             .collect();
         let mut changes = leader.session();
         changes
-            .run("USE NAMESPACE prod; USE DATABASE orders;")
+            .run_now("USE NAMESPACE prod; USE DATABASE orders;")
             .expect("tenancy");
         while written.load(Ordering::Relaxed) < 40 {
             std::thread::yield_now();
         }
         // Shard 1 (before 'm') into 3 and 4, while the writers write.
         changes
-            .run("ALTER TABLE ledger SPLIT AT 'f';")
+            .run_now("ALTER TABLE ledger SPLIT AT 'f';")
             .expect("the split commits");
         while written.load(Ordering::Relaxed) < 120 {
             std::thread::yield_now();
         }
         // 4 ('f'..'m') and 2 ('m'..) into 5.
         changes
-            .run("ALTER TABLE ledger MERGE SHARD 4, 2;")
+            .run_now("ALTER TABLE ledger MERGE SHARD 4, 2;")
             .expect("the merge commits");
         writers
             .into_iter()
@@ -292,7 +302,7 @@ fn writes_across_a_split_and_a_merge_are_all_kept_and_all_collected() {
     );
 
     let (address, door) = declaring_for(&authority, &leader, ROUNDS);
-    let follower = Db::in_memory().expect("an in-memory store");
+    let follower = Db::in_memory().now().expect("an in-memory store");
     let mine = authority.keys(THERE, Purpose::Peer);
     let said = hello(THERE);
     let collector = collector(&mine, &said, &address, 1024);
@@ -300,7 +310,9 @@ fn writes_across_a_split_and_a_merge_are_all_kept_and_all_collected() {
     let mut used = 0_usize;
     let mut settled = false;
     for _ in 0..12 {
-        let logs = logs_to_collect(follower.store()).expect("this node's own logs");
+        let logs = logs_to_collect(follower.store())
+            .now()
+            .expect("this node's own logs");
         let asks: Vec<(Reach, Sequence)> = logs
             .iter()
             .map(|home| {
@@ -314,7 +326,10 @@ fn writes_across_a_split_and_a_merge_are_all_kept_and_all_collected() {
             "the walk needs more rounds than the door serves"
         );
         let mut moved = false;
-        for ((home, _), answer) in asks.iter().zip(collector.round(follower.store(), &asks)) {
+        for ((home, _), answer) in asks
+            .iter()
+            .zip(collector.round(follower.store(), &asks).now())
+        {
             if let Ok(at) = answer
                 && reached.get(home) != Some(&at)
             {
@@ -322,7 +337,9 @@ fn writes_across_a_split_and_a_merge_are_all_kept_and_all_collected() {
                 moved = true;
             }
         }
-        let again = logs_to_collect(follower.store()).expect("this node's own logs");
+        let again = logs_to_collect(follower.store())
+            .now()
+            .expect("this node's own logs");
         if !moved && again == logs {
             settled = true;
             break;
@@ -341,7 +358,11 @@ fn writes_across_a_split_and_a_merge_are_all_kept_and_all_collected() {
             .get(&Reach::Store)
             .copied()
             .unwrap_or(Sequence::ZERO);
-        drop(collector.collect(follower.store(), Reach::Store, Sequence::new(at.get() + 1)));
+        drop(
+            collector
+                .collect(follower.store(), Reach::Store, Sequence::new(at.get() + 1))
+                .now(),
+        );
     }
     door.join().expect("the door's thread");
     assert!(settled, "the follower never caught up: {reached:?}");
@@ -349,7 +370,7 @@ fn writes_across_a_split_and_a_merge_are_all_kept_and_all_collected() {
     let read = |db: &Db, script: &str| -> Outcome {
         let mut outcomes = db
             .session()
-            .run(&format!(
+            .run_now(&format!(
                 "USE NAMESPACE prod; USE DATABASE orders; {script}"
             ))
             .expect("a read");
@@ -403,14 +424,16 @@ fn writes_across_a_split_and_a_merge_are_all_kept_and_all_collected() {
 
 #[test]
 fn a_split_tables_shards_are_logs_a_follower_asks_for_after_its_database() {
-    let db = Db::in_memory().expect("an in-memory store");
+    let db = Db::in_memory().now().expect("an in-memory store");
     db.session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
                  USE DATABASE shop; DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT 'g';",
         )
         .expect("a split table");
-    let logs = logs_to_collect(db.store()).expect("this node's own logs");
+    let logs = logs_to_collect(db.store())
+        .now()
+        .expect("this node's own logs");
     let at = logs
         .iter()
         .position(|home| matches!(home, Reach::Database(..)))

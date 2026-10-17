@@ -4,7 +4,7 @@ use tessari_encoding::IndexValues;
 impl Session<'_> {
     /// Offer a candidate on every containment index for each path a
     /// `CONTAINS <document>` conjunct of `condition` asks about (ADR-0116 D4).
-    pub(super) fn offer_containing(
+    pub(super) async fn offer_containing(
         &self,
         transaction: &mut Transaction<'_>,
         condition: &Expr,
@@ -23,7 +23,7 @@ impl Session<'_> {
                 continue;
             }
             // Evaluated once, here, like every other bound.
-            let held = self.evaluate(transaction, document)?;
+            let held = self.evaluate(transaction, document).await?;
             let pairs: Vec<IndexValues> = tessari_types::containment::asked_pairs(&held)
                 .iter()
                 .map(|pair| IndexValues::of(pair))

@@ -35,7 +35,7 @@ impl Session<'_> {
     /// # Errors
     ///
     /// [`Error::LatestNeedsSeries`] and [`Error::LatestBesideGroup`].
-    pub(super) fn check_latest(
+    pub(super) async fn check_latest(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
@@ -50,9 +50,10 @@ impl Session<'_> {
             }
             _ => return Err(Error::LatestNeedsSeries { span: latest.span }),
         };
-        let (_, id) = self.resolve_table(transaction, table)?;
+        let (_, id) = self.resolve_table(transaction, table).await?;
         let series = Catalog::new(transaction)
-            .table(id)?
+            .table(id)
+            .await?
             .is_some_and(|found| matches!(found.kind, TableKind::Series(_)));
         if series {
             Ok(())
@@ -63,7 +64,7 @@ impl Session<'_> {
 
     /// The newest record per value of `latest`, read from an index leading on
     /// it — or [`Walked::NotServed`] where no such index may answer.
-    pub(super) fn walk_latest(
+    pub(super) async fn walk_latest(
         &self,
         transaction: &mut Transaction<'_>,
         context: Context,
@@ -73,12 +74,13 @@ impl Session<'_> {
         // The same admission an ordered walk has, for the same reason: the
         // entry's position is the answer, so the entries have to be current and
         // the field visible to this caller.
-        let Some((index, visible)) =
-            self.index_serving_order(transaction, context, table, &latest.path, true)?
+        let Some((index, visible)) = self
+            .index_serving_order(transaction, context, table, &latest.path, true)
+            .await?
         else {
             return Ok(Walked::NotServed);
         };
-        let rows = transaction.newest_per_value(&index)?;
+        let rows = transaction.newest_per_value(&index).await?;
         Ok(Walked::Served {
             found: self.records_of(rows, &visible)?,
             index: index.name,

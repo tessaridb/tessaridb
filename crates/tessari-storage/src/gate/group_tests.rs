@@ -8,12 +8,14 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
+use crate::now::Now;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use tessari_kv::{GroupFuture, KvFuture};
 use tessari_kv::{
-    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value, WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value, WriteBatch,
 };
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
@@ -64,35 +66,39 @@ impl KvBackend for HeldOpen {
         "held-open"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<Value>> {
-        self.engine.get(keyspace, key)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<Value>> {
+        Box::pin(async move { self.engine.get(keyspace, key).await })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
-        self.engine.scan(request)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
+        Box::pin(async move { self.engine.scan(request).await })
     }
 
-    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
-        self.engine.count(keyspace, range)
+    fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
+        Box::pin(async move { self.engine.count(keyspace, range).await })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.writes.fetch_add(1, Ordering::SeqCst);
-        self.engine.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            self.engine.apply(batch).await
+        })
     }
 
     fn groups_writes(&self) -> bool {
         true
     }
 
-    fn apply_group(&self, batches: Vec<WriteBatch>) -> (usize, Result<()>) {
-        if self.writes.fetch_add(1, Ordering::SeqCst) == 0 {
-            let mut released = self.released.lock().unwrap();
-            while !*released {
-                released = self.let_go.wait(released).unwrap();
+    fn apply_group(&self, batches: Vec<WriteBatch>) -> GroupFuture<'_> {
+        Box::pin(async move {
+            if self.writes.fetch_add(1, Ordering::SeqCst) == 0 {
+                let mut released = self.released.lock().unwrap();
+                while !*released {
+                    released = self.let_go.wait(released).unwrap();
+                }
             }
-        }
-        self.engine.apply_group(batches)
+            self.engine.apply_group(batches).await
+        })
     }
 }
 
@@ -106,15 +112,17 @@ fn address(id: usize) -> RecordAddress {
 }
 
 fn write(store: &Store, id: usize) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(address(id), format!("{{\"n\":{id}}}").into_bytes());
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 }
 
 #[test]
 fn commits_arriving_while_one_lands_land_together() {
     let backend = Arc::new(HeldOpen::new());
-    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     // Opening the store writes; only the commits below are counted.
     backend.writes.store(0, Ordering::SeqCst);
     // And each commit that landed in a group is announced to whatever follows
@@ -163,10 +171,10 @@ fn commits_arriving_while_one_lands_land_together() {
         BEHIND + 1,
         "a commit that landed in a group was not announced"
     );
-    let transaction = store.begin().unwrap();
+    let transaction = store.begin().now().unwrap();
     for id in 0..=BEHIND {
         assert_eq!(
-            transaction.get(&address(id)).unwrap(),
+            transaction.get(&address(id)).now().unwrap(),
             Some(format!("{{\"n\":{id}}}").into_bytes()),
             "record {id}"
         );
@@ -185,27 +193,29 @@ impl KvBackend for PanicsOnce {
         "panics-once"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<Value>> {
-        self.engine.get(keyspace, key)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<Value>> {
+        Box::pin(async move { self.engine.get(keyspace, key).await })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
-        self.engine.scan(request)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
+        Box::pin(async move { self.engine.scan(request).await })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.engine.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move { self.engine.apply(batch).await })
     }
 
     fn groups_writes(&self) -> bool {
         true
     }
 
-    fn apply_group(&self, batches: Vec<WriteBatch>) -> (usize, Result<()>) {
-        if self.groups.fetch_add(1, Ordering::SeqCst) == 0 {
-            panic!("the engine panicked while landing a group");
-        }
-        self.engine.apply_group(batches)
+    fn apply_group(&self, batches: Vec<WriteBatch>) -> GroupFuture<'_> {
+        Box::pin(async move {
+            if self.groups.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("the engine panicked while landing a group");
+            }
+            self.engine.apply_group(batches).await
+        })
     }
 }
 
@@ -215,7 +225,9 @@ fn a_landing_that_panicked_does_not_stop_every_later_commit() {
         engine: MemoryBackend::new(),
         groups: AtomicUsize::new(0),
     });
-    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let first = {
         let store = store.clone();
         std::thread::spawn(move || write(&store, 0))
@@ -239,9 +251,9 @@ fn a_landing_that_panicked_does_not_stop_every_later_commit() {
         std::thread::yield_now();
     }
     second.join().unwrap();
-    let transaction = store.begin().unwrap();
+    let transaction = store.begin().now().unwrap();
     assert_eq!(
-        transaction.get(&address(1)).unwrap(),
+        transaction.get(&address(1)).now().unwrap(),
         Some(b"{\"n\":1}".to_vec())
     );
 }

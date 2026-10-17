@@ -38,12 +38,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+use tessari_storage::Now;
 
 use tessari_constants::SEARCH_FUZZY_EXAMINATION_CAP;
 use tessari_encoding::encode_payload;
+use tessari_kv::KvFuture;
 use tessari_kv::{
-    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
-    WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value as KvValue, WriteBatch,
 };
 use tessari_storage::{
     Catalog, FieldShape, IndexDefinition, IndexShape, RecordAddress, Store, TableShape,
@@ -97,23 +98,25 @@ impl KvBackend for Counting {
         "counting"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<KvValue>> {
-        self.inner.get(keyspace, key)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<KvValue>> {
+        Box::pin(async move { self.inner.get(keyspace, key).await })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, KvValue)>> {
-        self.scans.fetch_add(1, Ordering::Relaxed);
-        let found = self.inner.scan(request)?;
-        self.entries.fetch_add(found.len(), Ordering::Relaxed);
-        Ok(found)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, KvValue)>> {
+        Box::pin(async move {
+            self.scans.fetch_add(1, Ordering::Relaxed);
+            let found = self.inner.scan(request).await?;
+            self.entries.fetch_add(found.len(), Ordering::Relaxed);
+            Ok(found)
+        })
     }
 
-    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
-        self.inner.count(keyspace, range)
+    fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
+        Box::pin(async move { self.inner.count(keyspace, range).await })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.inner.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move { self.inner.apply(batch).await })
     }
 }
 
@@ -132,16 +135,20 @@ impl Vocabulary {
     /// one and their own shape is not what is being measured.
     fn of(size: usize) -> Self {
         let counting = Counting::new();
-        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
-        let mut transaction = store.begin().unwrap();
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("prod").unwrap();
-        let database = catalog.create_database(namespace.id, "shop").unwrap();
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog.create_database(namespace.id, "shop").now().unwrap();
         let table = catalog
             .create_table(namespace.id, database.id, "notes", TableShape::default())
+            .now()
             .unwrap();
         catalog
             .create_analyzer("plain", Analyzer::new(vec![Filter::Lowercase]))
+            .now()
             .unwrap();
         catalog
             .create_field(
@@ -156,6 +163,7 @@ impl Vocabulary {
                     assert: None,
                 },
             )
+            .now()
             .unwrap();
         let index = catalog
             .create_index(
@@ -172,8 +180,9 @@ impl Vocabulary {
                     costs: tessari_storage::SearchCosts::default(),
                 },
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
 
         // The probe's three terms, and then filler up to `size`. The filler is
         // spelled so that none of it can begin with `zzq` — the answer must be
@@ -188,7 +197,7 @@ impl Vocabulary {
         // One transaction. The dictionary is the subject; how many commits built
         // it is not, and a commit per record would spend the test's whole budget
         // on the write path.
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         for (n, word) in words.iter().enumerate() {
             let mut fields = BTreeMap::new();
             fields.insert("body".to_owned(), Value::from(word.as_str()));
@@ -202,7 +211,7 @@ impl Vocabulary {
                 encode_payload(&Value::Object(fields)).into_bytes(),
             );
         }
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
 
         Self {
             counting,
@@ -214,9 +223,10 @@ impl Vocabulary {
     /// The probe, run once, with the backend counted from zero.
     fn probe(&self) -> (Vec<String>, usize, usize) {
         self.counting.reset();
-        let transaction = self.store.begin().unwrap();
+        let transaction = self.store.begin().now().unwrap();
         let found = transaction
             .terms_with_prefix(&self.index, "zzq", CAP)
+            .now()
             .unwrap();
         assert!(!found.capped, "the probe was cut — the cap is too small");
         (found.terms, self.counting.entries(), self.counting.scans())
@@ -229,9 +239,10 @@ impl Vocabulary {
     /// two different numbers.
     fn fuzzy_probe(&self, word: &str) -> (Vec<String>, usize, bool, usize) {
         self.counting.reset();
-        let transaction = self.store.begin().unwrap();
+        let transaction = self.store.begin().now().unwrap();
         let found = transaction
             .terms_within_distance(&self.index, word, 2, 3, CAP)
+            .now()
             .unwrap();
         (
             found.terms,
@@ -243,11 +254,12 @@ impl Vocabulary {
 
     /// The probe repeated, timed.
     fn timed(&self) -> Duration {
-        let transaction = self.store.begin().unwrap();
+        let transaction = self.store.begin().now().unwrap();
         let start = Instant::now();
         for _ in 0..REPEATS {
             let found = transaction
                 .terms_with_prefix(&self.index, "zzq", CAP)
+                .now()
                 .unwrap();
             assert_eq!(found.terms.len(), MATCHES);
         }
@@ -314,10 +326,11 @@ fn an_expansion_that_runs_out_of_room_says_so_rather_than_reporting_a_subset() {
     // and "the first n words beginning with this". A caller that got exactly the
     // cap and no signal would report the second as the first.
     let vocabulary = Vocabulary::of(1_000);
-    let transaction = vocabulary.store.begin().unwrap();
+    let transaction = vocabulary.store.begin().now().unwrap();
 
     let room = transaction
         .terms_with_prefix(&vocabulary.index, "zzq", 5)
+        .now()
         .unwrap();
     assert_eq!(room.terms.len(), MATCHES);
     assert!(!room.capped);
@@ -325,12 +338,14 @@ fn an_expansion_that_runs_out_of_room_says_so_rather_than_reporting_a_subset() {
     // Exactly the cap: the boundary a naive implementation reports as complete.
     let exact = transaction
         .terms_with_prefix(&vocabulary.index, "zzq", MATCHES)
+        .now()
         .unwrap();
     assert_eq!(exact.terms.len(), MATCHES);
     assert!(!exact.capped, "a complete expansion was reported as cut");
 
     let cut = transaction
         .terms_with_prefix(&vocabulary.index, "zzq", 2)
+        .now()
         .unwrap();
     assert_eq!(cut.terms.len(), 2);
     assert!(cut.capped, "a cut expansion was reported as complete");
@@ -338,6 +353,7 @@ fn an_expansion_that_runs_out_of_room_says_so_rather_than_reporting_a_subset() {
     // And a prefix nothing begins with is an empty answer rather than a cut one.
     let none = transaction
         .terms_with_prefix(&vocabulary.index, "qqq", CAP)
+        .now()
         .unwrap();
     assert!(none.terms.is_empty());
     assert!(!none.capped);

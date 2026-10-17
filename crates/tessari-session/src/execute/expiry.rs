@@ -29,7 +29,7 @@ const STILL_EXPIRE: &str = "still expire at their instants";
 impl Session<'_> {
     /// Refuse an expiry declaration the table's kind or the store's format
     /// cannot carry, before anything is written.
-    pub(super) fn refuse_an_expiry_it_cannot_carry(
+    pub(super) async fn refuse_an_expiry_it_cannot_carry(
         &self,
         table: &str,
         kind: &TableKind,
@@ -46,30 +46,40 @@ impl Session<'_> {
             "a table whose records expire",
             FormatVersion::TABLE_EXPIRY,
         )
+        .await
     }
 
     /// Whether the session's database already holds a table by this name — the
     /// one fact `IF NOT EXISTS` turns on, asked before the definition so an
     /// existing table's declaration is never rewritten by a `DEFINE`.
-    pub(super) fn names_a_table(&self, transaction: &mut Transaction<'_>, name: &Name) -> bool {
+    pub(super) async fn names_a_table(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+    ) -> bool {
         self.resolve_any_table(transaction, &table_named(name))
+            .await
             .is_ok()
     }
 
     /// Write the declaration a `DEFINE` carried onto the table it created.
-    pub(super) fn declare_expiry_on(
+    pub(super) async fn declare_expiry_on(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         expire: TableExpiry,
     ) -> Result<()> {
-        let (_, table) = self.resolve_any_table(transaction, &table_named(name))?;
-        Catalog::new(transaction).set_expiry(table, stored(expire))?;
+        let (_, table) = self
+            .resolve_any_table(transaction, &table_named(name))
+            .await?;
+        Catalog::new(transaction)
+            .set_expiry(table, stored(expire))
+            .await?;
         Ok(())
     }
 
     /// `ALTER TABLE … SET EXPIRE [AFTER d]` and `… DROP EXPIRE`.
-    pub(super) fn alter_expiry(
+    pub(super) async fn alter_expiry(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
@@ -79,11 +89,14 @@ impl Session<'_> {
     ) -> Result<Outcome> {
         // Resolved by name a moment ago in this transaction, so there is a
         // definition; one that vanished in between has nothing to declare.
-        let Some(definition) = Catalog::new(transaction).table(table)? else {
+        let Some(definition) = Catalog::new(transaction).table(table).await? else {
             return Ok(Outcome::Done);
         };
         match change {
-            Some(_) => self.refuse_an_expiry_it_cannot_carry(name, &definition.kind, span)?,
+            Some(_) => {
+                self.refuse_an_expiry_it_cannot_carry(name, &definition.kind, span)
+                    .await?
+            }
             // Nothing to retire on a table that never declared it.
             None if definition.expire.is_none() => {
                 return Err(Error::TableDoesNotExpire {
@@ -105,7 +118,9 @@ impl Session<'_> {
                 STILL_EXPIRE,
             ),
         };
-        Catalog::new(transaction).set_expiry(table, declared)?;
+        Catalog::new(transaction)
+            .set_expiry(table, declared)
+            .await?;
         Ok(Outcome::Value(Value::Object(BTreeMap::from([
             ("expire".to_owned(), crate::info::described_expiry(declared)),
             ("existing".to_owned(), Value::from(existing)),
@@ -143,7 +158,7 @@ pub(super) enum Settled {
 impl Session<'_> {
     /// Resolve a write's `EXPIRE` clause against its table and the
     /// transaction's clock, refusing before anything is written (ADR-0122 A2).
-    pub(super) fn resolve_write_expiry(
+    pub(super) async fn resolve_write_expiry(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
@@ -154,7 +169,7 @@ impl Session<'_> {
             Some(WriteExpiry::Never(_)) => return Ok(Some(Settled::Never)),
             Some(WriteExpiry::At(when)) => when,
         };
-        let definition = Catalog::new(transaction).table(table)?;
+        let definition = Catalog::new(transaction).table(table).await?;
         if !definition
             .as_ref()
             .and_then(|held| held.expire)
@@ -165,7 +180,7 @@ impl Session<'_> {
                 span: when.span,
             });
         }
-        match self.instant(transaction, when)? {
+        match self.instant(transaction, when).await? {
             Instant::Future(at) => Ok(Some(Settled::At(at))),
             Instant::Passed => Err(Error::InvalidExpiry {
                 reason: "a write's EXPIRE must be in the future",

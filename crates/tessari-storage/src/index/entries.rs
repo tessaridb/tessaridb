@@ -13,7 +13,7 @@ use tessari_geo::{Bounds, Cell};
 use tessari_kv::{Key, Keyspace, WriteBatch, WriteOp};
 use tessari_types::{RecordId, Value};
 
-pub(crate) fn insert(
+pub(crate) async fn insert(
     store: &Store,
     batch: WriteBatch,
     definition: &IndexDefinition,
@@ -56,7 +56,7 @@ pub(crate) fn insert(
     // The concurrency guarantee is untouched, because the precondition below is
     // still the committed entry: a second transaction that claims the value
     // first still wins and this batch still fails.
-    let batch = match store.backend().get(keyspace, &key)? {
+    let batch = match store.backend().get(keyspace, &key).await? {
         Some(existing) => {
             if !releases(&batch, keyspace, &key)
                 && IndexTarget::decode(existing.as_slice())?.id != *id

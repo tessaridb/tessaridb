@@ -17,6 +17,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Error, Session};
@@ -25,13 +27,13 @@ use tessari_types::RecordId;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
              DEFINE COLLECTION items;",
@@ -45,7 +47,7 @@ fn populate(session: &mut Session<'_>, count: i64) {
     for n in 0..count {
         let x = f64::from(i32::try_from(n).unwrap());
         session
-            .run(&format!("CREATE items:{n} = {{ at: [{x:.1}, 0.0] }};"))
+            .run_now(&format!("CREATE items:{n} = {{ at: [{x:.1}, 0.0] }};"))
             .unwrap();
     }
 }
@@ -56,7 +58,7 @@ fn populate(session: &mut Session<'_>, count: i64) {
 /// read in this store an index answers *differently* from a scan, and the word
 /// that says so is the word `EXPLAIN` has always used for it.
 fn read(session: &mut Session<'_>, script: &str) -> (Vec<RecordId>, AccessPath) {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let path = outcomes[0].path().unwrap();
     let ids = outcomes[0]
         .records()
@@ -82,7 +84,7 @@ fn without_the_word_the_index_does_not_serve_the_read() {
     assert_eq!(path, AccessPath::Scan);
 
     session
-        .run("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
+        .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
         .unwrap();
 
     let (after, path) = read(&mut session, &format!("{NEAR_ZERO};"));
@@ -113,7 +115,7 @@ fn with_the_word_and_a_matching_index_the_graph_runs() {
     let mut session = ready(&store);
     populate(&mut session, 40);
     session
-        .run("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
+        .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
         .unwrap();
 
     let (found, path) = read(&mut session, &format!("{NEAR_ZERO} APPROXIMATE;"));
@@ -137,7 +139,7 @@ fn an_index_built_for_another_distance_does_not_serve_the_read() {
     let mut session = ready(&store);
     populate(&mut session, 40);
     session
-        .run("DEFINE INDEX by_at ON items FIELDS at VECTOR cosine;")
+        .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR cosine;")
         .unwrap();
 
     let (_, path) = read(&mut session, &format!("{NEAR_ZERO} APPROXIMATE;"));
@@ -157,7 +159,7 @@ fn a_shape_the_graph_does_not_answer_falls_back_to_the_scan() {
     let mut session = ready(&store);
     populate(&mut session, 40);
     session
-        .run("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
+        .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
         .unwrap();
 
     for script in [
@@ -189,9 +191,9 @@ fn a_deleted_record_is_never_answered_with() {
     let mut session = ready(&store);
     populate(&mut session, 40);
     session
-        .run("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
+        .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
         .unwrap();
-    session.run("DELETE items:0; DELETE items:1;").unwrap();
+    session.run_now("DELETE items:0; DELETE items:1;").unwrap();
 
     let (found, path) = read(&mut session, &format!("{NEAR_ZERO} APPROXIMATE;"));
     assert_eq!(path, AccessPath::Approximate);
@@ -206,12 +208,12 @@ fn a_changed_vector_moves_the_record_in_the_graph() {
     let mut session = ready(&store);
     populate(&mut session, 40);
     session
-        .run("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
+        .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
         .unwrap();
 
     // Record 39 was the furthest; move it to the origin.
     session
-        .run("UPDATE items:39 = { at: [0.0, 0.0] };")
+        .run_now("UPDATE items:39 = { at: [0.0, 0.0] };")
         .unwrap();
     let (found, path) = read(&mut session, &format!("{NEAR_ZERO} APPROXIMATE;"));
     assert_eq!(path, AccessPath::Approximate);
@@ -228,13 +230,13 @@ fn defining_the_index_after_the_rows_reaches_the_same_answer_as_before_them() {
         let mut session = ready(&store);
         if before {
             session
-                .run("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
+                .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
                 .unwrap();
             populate(&mut session, 40);
         } else {
             populate(&mut session, 40);
             session
-                .run("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
+                .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
                 .unwrap();
         }
         read(&mut session, &format!("{NEAR_ZERO} APPROXIMATE;")).0
@@ -248,7 +250,7 @@ fn a_record_with_no_vector_is_not_in_the_graph() {
     let mut session = ready(&store);
     populate(&mut session, 10);
     session
-        .run(
+        .run_now(
             "CREATE items:100 = { name: 'no vector here' };\n\
              CREATE items:101 = { at: 'not an array' };\n\
              CREATE items:102 = { at: [] };\n\
@@ -272,7 +274,7 @@ fn a_distance_the_store_does_not_have_is_refused_where_it_is_written() {
     let store = store();
     let mut session = ready(&store);
     let refused = session
-        .run("DEFINE INDEX by_at ON items FIELDS at VECTOR manhattan;")
+        .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR manhattan;")
         .unwrap_err();
     match refused {
         Error::NoSuchDistance { name, .. } => assert_eq!(name, "manhattan"),
@@ -289,12 +291,12 @@ fn one_index_kind_and_not_two() {
     let mut session = ready(&store);
     assert!(
         session
-            .run("DEFINE INDEX by_at ON items FIELDS at UNIQUE SEARCH;")
+            .run_now("DEFINE INDEX by_at ON items FIELDS at UNIQUE SEARCH;")
             .is_err()
     );
     assert!(
         session
-            .run("DEFINE INDEX by_at ON items FIELDS at SEARCH VECTOR cosine;")
+            .run_now("DEFINE INDEX by_at ON items FIELDS at SEARCH VECTOR cosine;")
             .is_err()
     );
 }
@@ -306,10 +308,10 @@ fn approximate_and_vector_are_still_usable_as_names() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("CREATE items:1 = { vector: [1.0], approximate: true };")
+        .run_now("CREATE items:1 = { vector: [1.0], approximate: true };")
         .unwrap();
     let outcomes = session
-        .run("SELECT vector, approximate FROM items:1;")
+        .run_now("SELECT vector, approximate FROM items:1;")
         .unwrap();
     assert_eq!(outcomes[0].records().unwrap().len(), 1);
 }
@@ -335,25 +337,25 @@ fn a_graph_written_in_one_transaction_is_the_graph_written_one_record_at_a_time(
     };
     let one_at_a_time = {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        let store = Store::open(Arc::clone(&backend)).unwrap();
+        let store = Store::open(Arc::clone(&backend)).now().unwrap();
         let mut session = ready(&store);
         session
-            .run("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
+            .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
             .unwrap();
         for id in 1..=40 {
-            session.run(&script(id)).unwrap();
+            session.run_now(&script(id)).unwrap();
         }
         graph(&backend)
     };
     let together = {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        let store = Store::open(Arc::clone(&backend)).unwrap();
+        let store = Store::open(Arc::clone(&backend)).now().unwrap();
         let mut session = ready(&store);
         session
-            .run("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
+            .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
             .unwrap();
         let body: String = (1..=40).map(script).collect();
-        session.run(&format!("BEGIN; {body} COMMIT;")).unwrap();
+        session.run_now(&format!("BEGIN; {body} COMMIT;")).unwrap();
         graph(&backend)
     };
     assert_eq!(together.len(), 40, "not every vector has a node");
@@ -371,6 +373,7 @@ fn graph(backend: &Arc<dyn KvBackend>) -> Vec<(Vec<u8>, Vec<u8>)> {
     );
     backend
         .scan(&request)
+        .now()
         .unwrap()
         .into_iter()
         .map(|(key, value)| (key.as_slice().to_vec(), value.as_slice().to_vec()))

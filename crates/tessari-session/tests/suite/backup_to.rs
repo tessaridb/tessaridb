@@ -10,6 +10,8 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
@@ -20,10 +22,10 @@ const PASSWORD: &str = "a long one";
 
 fn store() -> Store {
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
-    let store = Store::open(backend).unwrap();
+    let store = Store::open(backend).now().unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE app; USE DATABASE app;
              DEFINE COLLECTION notes; CREATE notes:1 = { body: 'kept' };
              BEGIN;
@@ -37,13 +39,13 @@ fn store() -> Store {
 
 fn owner<'a>(store: &'a Store, folder: &Path) -> Session<'a> {
     let mut session = Session::new(store).backing_up_into(Arc::from(folder));
-    session.sign_in("root", PASSWORD).unwrap();
+    session.sign_in("root", PASSWORD).now().unwrap();
     session
 }
 
 /// The one value a one-statement script answered.
 fn answer(session: &mut Session<'_>, script: &str) -> Value {
-    match session.run(script).unwrap().pop() {
+    match session.run_now(script).unwrap().pop() {
         Some(Outcome::Value(value)) => value,
         other => panic!("{script} answered {other:?}"),
     }
@@ -59,7 +61,7 @@ fn field<'v>(answer: &'v Value, name: &str) -> &'v Value {
 }
 
 fn refused(session: &mut Session<'_>, script: &str) -> Error {
-    match session.run(script) {
+    match session.run_now(script) {
         Ok(answered) => panic!("{script} was not refused: {answered:?}"),
         Err(error) => error,
     }
@@ -208,7 +210,7 @@ fn an_existing_file_is_never_overwritten() {
 fn a_node_with_no_folder_refuses_and_backup_without_to_still_answers() {
     let store = store();
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
 
     let error = refused(&mut root, "BACKUP STATE TO 'state.tessarisnap';");
 
@@ -227,7 +229,7 @@ fn only_a_store_wide_owner_may_write_one() {
     let store = store();
     let folder = tempfile::tempdir().unwrap();
     let mut nina = Session::new(&store).backing_up_into(Arc::from(folder.path()));
-    nina.sign_in("nina", PASSWORD).unwrap();
+    nina.sign_in("nina", PASSWORD).now().unwrap();
 
     let error = refused(&mut nina, "BACKUP TO 'nightly.tessarilog';");
 
@@ -246,7 +248,7 @@ fn a_snapshot_of_one_namespace_restores_that_namespace_and_nothing_else() {
     let store = store();
     let folder = tempfile::tempdir().unwrap();
     let mut root = owner(&store, folder.path());
-    root.run(
+    root.run_now(
         "DEFINE NAMESPACE crm; USE NAMESPACE crm; DEFINE DATABASE people; USE DATABASE people;
          DEFINE COLLECTION contacts; CREATE contacts:1 = { name: 'left behind' };",
     )
@@ -256,25 +258,27 @@ fn a_snapshot_of_one_namespace_restores_that_namespace_and_nothing_else() {
         panic!("a snapshot is bytes");
     };
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
-    let restored = Store::open(backend).unwrap();
-    tessari_backup::read_state(&restored, || Ok(std::io::Cursor::new(snapshot.clone()))).unwrap();
+    let restored = Store::open(backend).now().unwrap();
+    tessari_backup::read_state(&restored, || Ok(std::io::Cursor::new(snapshot.clone())))
+        .now()
+        .unwrap();
 
     // The store-wide users come with the place, so the restored store is as
     // closed as the one the snapshot was taken of: an open store would answer
     // anybody.
     assert!(
         Session::new(&restored)
-            .run("USE NAMESPACE prod; USE DATABASE app; SELECT * FROM notes;")
+            .run_now("USE NAMESPACE prod; USE DATABASE app; SELECT * FROM notes;")
             .is_err(),
         "a restored part answered a caller who never signed in"
     );
     let mut reader = Session::new(&restored);
-    reader.sign_in("root", PASSWORD).unwrap();
+    reader.sign_in("root", PASSWORD).now().unwrap();
     let kept = reader
-        .run("USE NAMESPACE prod; USE DATABASE app; SELECT body FROM notes;")
+        .run_now("USE NAMESPACE prod; USE DATABASE app; SELECT body FROM notes;")
         .unwrap();
     assert!(format!("{kept:?}").contains("kept"), "{kept:?}");
-    let other = reader.run("USE NAMESPACE crm;");
+    let other = reader.run_now("USE NAMESPACE crm;");
     assert!(
         other.is_err(),
         "the namespace the snapshot was not of came back with it: {other:?}"
@@ -283,7 +287,7 @@ fn a_snapshot_of_one_namespace_restores_that_namespace_and_nothing_else() {
     // One database is a place too, and the records of the database beside it
     // stay out. Its definition travels, as it does to a follower subscribed at
     // one database: a database is defined in its namespace's catalog.
-    root.run(
+    root.run_now(
         "USE NAMESPACE prod; DEFINE DATABASE elsewhere; USE DATABASE elsewhere;
          DEFINE COLLECTION notes; CREATE notes:9 = { body: 'left behind' };",
     )
@@ -292,15 +296,17 @@ fn a_snapshot_of_one_namespace_restores_that_namespace_and_nothing_else() {
         panic!("a snapshot is bytes");
     };
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
-    let restored = Store::open(backend).unwrap();
-    tessari_backup::read_state(&restored, || Ok(std::io::Cursor::new(snapshot.clone()))).unwrap();
+    let restored = Store::open(backend).now().unwrap();
+    tessari_backup::read_state(&restored, || Ok(std::io::Cursor::new(snapshot.clone())))
+        .now()
+        .unwrap();
     let mut reader = Session::new(&restored);
-    reader.sign_in("root", PASSWORD).unwrap();
+    reader.sign_in("root", PASSWORD).now().unwrap();
     let kept = reader
-        .run("USE NAMESPACE prod; USE DATABASE app; SELECT body FROM notes;")
+        .run_now("USE NAMESPACE prod; USE DATABASE app; SELECT body FROM notes;")
         .unwrap();
     assert!(format!("{kept:?}").contains("kept"), "{kept:?}");
-    let beside = reader.run("USE DATABASE elsewhere; SELECT * FROM notes;");
+    let beside = reader.run_now("USE DATABASE elsewhere; SELECT * FROM notes;");
     assert!(
         !format!("{beside:?}").contains("left behind"),
         "the records of the database the snapshot was not of came back: {beside:?}"
@@ -332,7 +338,7 @@ fn a_streamed_snapshot_is_the_answered_one_and_a_refused_caller_streams_nothing(
 
     let streamed = Shared::default();
     let mut root = Session::new(&store).snapshot_into(Box::new(streamed.clone()));
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     let summary = answer(&mut root, "BACKUP STATE;");
     assert_eq!(field(&summary, "form"), &Value::String("state".to_owned()));
     assert_eq!(*streamed.0.lock().unwrap(), answered);
@@ -341,8 +347,8 @@ fn a_streamed_snapshot_is_the_answered_one_and_a_refused_caller_streams_nothing(
     // is never written.
     let refused_sink = Shared::default();
     let mut nina = Session::new(&store).snapshot_into(Box::new(refused_sink.clone()));
-    nina.sign_in("nina", PASSWORD).unwrap();
-    assert!(nina.run("BACKUP STATE;").is_err());
+    nina.sign_in("nina", PASSWORD).now().unwrap();
+    assert!(nina.run_now("BACKUP STATE;").is_err());
     assert!(refused_sink.0.lock().unwrap().is_empty());
 }
 
@@ -400,7 +406,7 @@ fn a_node_with_a_key_seals_every_backup_it_produces() {
     let mut streaming = Session::new(&store)
         .sealing_backups(key)
         .snapshot_into(Box::new(streamed.clone()));
-    streaming.sign_in("root", PASSWORD).unwrap();
+    streaming.sign_in("root", PASSWORD).now().unwrap();
     answer(&mut streaming, "BACKUP STATE;");
     let sent = streamed.0.lock().unwrap().clone();
     assert!(sent.starts_with(tessari_vault::at_rest::SEALED_MAGIC));
@@ -411,4 +417,80 @@ fn a_node_with_a_key_seals_every_backup_it_produces() {
     )
     .unwrap();
     tessari_backup::verify_state(&mut opened.as_slice()).unwrap();
+}
+
+/// A sink that, on its first write, waits for a task it spawned on the same
+/// runtime: the task can run only if the write gave its worker up.
+struct WaitsForTheRuntime {
+    starved: Arc<std::sync::atomic::AtomicBool>,
+    asked: bool,
+}
+
+impl std::io::Write for WaitsForTheRuntime {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if !self.asked {
+            self.asked = true;
+            let (answered, answer) = std::sync::mpsc::channel();
+            tokio::runtime::Handle::current().spawn(async move {
+                let _sent = answered.send(());
+            });
+            if answer
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .is_err()
+            {
+                // Relaxed: read after the statement's task has been joined.
+                self.starved
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_snapshot_streamed_to_a_sink_writes_without_holding_its_worker() {
+    // A served `GET /backup` and a wire `--at --backup` hand the session a
+    // file; a write that held the worker would stall every connection on it
+    // for as long as the disk takes.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    // An open store: signing in would run Argon2 off the worker first, which
+    // hands the worker on and leaves the write off it by accident.
+    let open = {
+        let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
+        let open = Store::open(backend).now().unwrap();
+        Session::new(&open)
+            .run_now(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE app; \
+                 USE DATABASE app; DEFINE COLLECTION notes; CREATE notes:1 = { body: 'kept' };",
+            )
+            .unwrap();
+        open
+    };
+    let store: &'static Store = Box::leak(Box::new(open));
+    let starved = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sink = WaitsForTheRuntime {
+        starved: Arc::clone(&starved),
+        asked: false,
+    };
+    let backed_up = runtime.block_on(async move {
+        tokio::spawn(async move {
+            let mut root = Session::new(store).snapshot_into(Box::new(sink));
+            root.run("BACKUP STATE;").await
+        })
+        .await
+        .unwrap()
+    });
+    assert!(backed_up.is_ok(), "{backed_up:?}");
+    assert!(
+        !starved.load(std::sync::atomic::Ordering::Relaxed),
+        "the snapshot's write held the only worker"
+    );
 }

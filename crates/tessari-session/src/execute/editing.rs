@@ -39,7 +39,7 @@ impl Session<'_> {
     /// Shared by `UPDATE` and `UPSERT` so the two cannot drift: the only thing
     /// that separates them is what they assert about the record beforehand, and
     /// a second copy of this match is how that stops being true.
-    pub(super) fn applied(
+    pub(super) async fn applied(
         &self,
         transaction: &mut Transaction<'_>,
         edit: &Edit,
@@ -72,18 +72,21 @@ impl Session<'_> {
             // defaults apply to it the same way — and so does the fresh data
             // key, which is why `= { … }` still clears the recipient set while
             // the two edits below no longer do.
-            Edit::Whole(value) => Ok((self.evaluate(transaction, value)?, None)),
+            Edit::Whole(value) => Ok((self.evaluate(transaction, value).await?, None)),
             Edit::Fields(assignments) if sealed_record => {
                 let (base, keys) = without_the_key_set(existing);
                 let named = assignments
                     .iter()
                     .map(|assignment| assignment.route.path.root().to_owned())
                     .collect();
-                let payload = self.edited(transaction, base, assignments, span, true)?;
+                let payload = self
+                    .edited(transaction, base, assignments, span, true)
+                    .await?;
                 Ok((payload, Some(PartialSeal { keys, named })))
             }
             Edit::Fields(assignments) => Ok((
-                self.edited(transaction, existing, assignments, span, false)?,
+                self.edited(transaction, existing, assignments, span, false)
+                    .await?,
                 None,
             )),
             Edit::Merge(value) => {
@@ -91,7 +94,7 @@ impl Session<'_> {
                 // `Edit::Merge`. Computing from the record is `SET`'s job, which
                 // is also why `MERGE` needs no restriction on a vault: it never
                 // reads the record in the first place.
-                let incoming = self.evaluate(transaction, value)?;
+                let incoming = self.evaluate(transaction, value).await?;
                 let Value::Object(supplied) = &incoming else {
                     return Err(Error::MergeIsNotAnObject {
                         found: incoming.type_name(),
@@ -108,7 +111,7 @@ impl Session<'_> {
         }
     }
 
-    pub(super) fn edited(
+    pub(super) async fn edited(
         &self,
         transaction: &mut Transaction<'_>,
         existing: Value,
@@ -132,6 +135,7 @@ impl Session<'_> {
             };
             let held = self
                 .evaluate_in(transaction, &assignment.value, scope)
+                .await
                 .map_err(|error| match error {
                     Error::NoRecordInScope { .. } if sealed => {
                         Error::VaultEditComputesFromTheRecord { span }

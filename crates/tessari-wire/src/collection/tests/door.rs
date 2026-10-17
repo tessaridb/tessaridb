@@ -1,4 +1,7 @@
 use super::*;
+use crate::gathering::{Gather, Page};
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 #[test]
 fn a_door_places_a_candidate_only_where_its_own_row_leads() {
@@ -7,13 +10,19 @@ fn a_door_places_a_candidate_only_where_its_own_row_leads() {
     let db = granting(" LEADS NAMESPACE prod");
     use super::super::Origin;
     let serving = Serving::declared(db.store());
-    let mut transaction = db.store().begin().expect("a transaction");
-    let declared = Catalog::new(&mut transaction).replicas().expect("the rows");
+    let mut transaction = db.store().begin().now().expect("a transaction");
+    let declared = Catalog::new(&mut transaction)
+        .replicas()
+        .now()
+        .expect("the rows");
     transaction.rollback();
     let placed = declared[0].leads.expect("the row places a namespace");
-    assert!(serving.places(THERE, placed));
-    assert!(!serving.places(LEADER, placed), "a node no row places");
-    assert!(!serving.places(THERE, Reach::Store));
+    assert!(serving.places(THERE, placed).now());
+    assert!(
+        !serving.places(LEADER, placed).now(),
+        "a node no row places"
+    );
+    assert!(!serving.places(THERE, Reach::Store).now());
 }
 
 /// The door the node actually runs — `Peers::serve`, on a runtime — over
@@ -24,51 +33,99 @@ struct OnTheRuntime {
 }
 
 impl super::super::Origin for OnTheRuntime {
-    fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
-        Serving::declared(self.db.store()).collected(follower, asked)
-    }
-
-    fn collected_pushed(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
-        Serving::declared(self.db.store()).collected_pushed(follower, asked)
-    }
-
-    fn held(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<()> {
-        Serving::declared(self.db.store()).held(follower, asked)
-    }
-
-    fn gathered(
-        &self,
-        asker: [u8; NODE_ID_LEN],
-        asked: &crate::gathering::Gather,
-    ) -> Result<crate::gathering::Page> {
-        Serving::declared(self.db.store()).gathered(asker, asked)
-    }
-
-    fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> bool {
-        Serving::declared(self.db.store()).places(candidate, range)
-    }
-
-    fn copied(
+    fn collected(
         &self,
         follower: [u8; NODE_ID_LEN],
-        write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
-    ) -> Result<()> {
-        Serving::declared(self.db.store()).copied(follower, write)
+        asked: Collect,
+    ) -> crate::collection::Answering<'_, crate::Result<Collected>> {
+        Box::pin(async move {
+            Serving::declared(self.db.store())
+                .collected(follower, asked)
+                .await
+        })
+    }
+
+    fn collected_pushed(
+        &self,
+        follower: [u8; NODE_ID_LEN],
+        asked: Collect,
+    ) -> crate::collection::Answering<'_, crate::Result<Collected>> {
+        Box::pin(async move {
+            Serving::declared(self.db.store())
+                .collected_pushed(follower, asked)
+                .await
+        })
+    }
+
+    fn held(
+        &self,
+        follower: [u8; NODE_ID_LEN],
+        asked: Collect,
+    ) -> crate::collection::Answering<'_, crate::Result<()>> {
+        Box::pin(async move {
+            Serving::declared(self.db.store())
+                .held(follower, asked)
+                .await
+        })
+    }
+
+    fn gathered<'a>(
+        &'a self,
+        asker: [u8; NODE_ID_LEN],
+        asked: &'a Gather,
+    ) -> crate::collection::Answering<'a, crate::Result<Page>> {
+        Box::pin(async move {
+            Serving::declared(self.db.store())
+                .gathered(asker, asked)
+                .await
+        })
+    }
+
+    fn places(
+        &self,
+        candidate: [u8; NODE_ID_LEN],
+        range: Reach,
+    ) -> crate::collection::Answering<'_, bool> {
+        Box::pin(async move {
+            Serving::declared(self.db.store())
+                .places(candidate, range)
+                .await
+        })
+    }
+
+    fn copied<'a>(
+        &'a self,
+        follower: [u8; NODE_ID_LEN],
+        write: &'a mut (
+                    dyn FnMut(
+            u8,
+            Vec<u8>,
+        ) -> crate::collection::Answering<'static, crate::Result<()>>
+                        + Send
+                ),
+    ) -> crate::collection::Answering<'a, crate::Result<()>> {
+        Box::pin(async move {
+            Serving::declared(self.db.store())
+                .copied(follower, write)
+                .await
+        })
     }
 }
 
 impl crate::door::Holding for OnTheRuntime {
-    fn hello(&self) -> Result<crate::peer::Hello> {
-        Ok(hello(LEADER))
+    fn hello(&self) -> crate::collection::Answering<'_, Result<crate::peer::Hello>> {
+        Box::pin(std::future::ready(Ok(hello(LEADER))))
     }
 
-    fn met(&self, _: &crate::link::Met) {}
+    fn met<'a>(&'a self, _: &'a crate::link::Met) -> crate::collection::Answering<'a, ()> {
+        Box::pin(std::future::ready(()))
+    }
 
     fn commits(&self) -> tokio::sync::watch::Receiver<u64> {
         self.db.commits().watching()
     }
 
-    fn coordinated(
+    async fn coordinated(
         &self,
         _: [u8; NODE_ID_LEN],
         _: &crate::assertion::Assertion,
@@ -77,16 +134,17 @@ impl crate::door::Holding for OnTheRuntime {
         Err("this test door carries no requests".to_owned())
     }
 
-    fn across(
-        &self,
+    fn across<'a>(
+        &'a self,
         _: [u8; NODE_ID_LEN],
-        _: &crate::assertion::Assertion,
-        _: &[u8],
-    ) -> std::result::Result<Vec<u8>, tessari_session::PartRefused> {
-        Err(tessari_session::PartRefused {
+        _: &'a crate::assertion::Assertion,
+        _: &'a [u8],
+    ) -> crate::collection::Answering<'a, std::result::Result<Vec<u8>, tessari_session::PartRefused>>
+    {
+        Box::pin(std::future::ready(Err(tessari_session::PartRefused {
             kind: tessari_session::RefusalKind::Invalid,
             reason: "this test door writes no cross-leader records".to_owned(),
-        })
+        })))
     }
 }
 
@@ -169,9 +227,12 @@ fn a_held_stream_is_sent_a_commit_the_moment_it_lands() {
         &hello(THERE),
         Duration::from_secs(5),
     )
+    .now()
     .expect("a held stream");
     // Every log the leader holds, as a follower of the whole store asks.
-    let homes = super::super::logs_to_collect(leader.store()).expect("the leader's logs");
+    let homes = super::super::logs_to_collect(leader.store())
+        .now()
+        .expect("the leader's logs");
     let ask = |from: &[Sequence]| super::super::StreamAsk {
         asks: homes
             .iter()
@@ -186,9 +247,9 @@ fn a_held_stream_is_sent_a_commit_the_moment_it_lands() {
     // Everything the leader holds, first: one round with records, or, if
     // every log is empty, heartbeats only.
     let start = vec![Sequence::new(1); homes.len()];
-    following.ask(&ask(&start)).expect("the first ask");
+    following.ask(&ask(&start)).now().expect("the first ask");
     let first = loop {
-        let round = following.heard().expect("the first round");
+        let round = following.heard().now().expect("the first round");
         if !round.is_heartbeat() {
             break round;
         }
@@ -209,6 +270,7 @@ fn a_held_stream_is_sent_a_commit_the_moment_it_lands() {
     let next: Vec<Sequence> = held.iter().map(|at| Sequence::new(at.get() + 1)).collect();
     following
         .ask(&ask(&next))
+        .now()
         .expect("the ask from where the follower stands");
     let committing = Arc::clone(&leader);
     let committer = std::thread::spawn(move || {
@@ -216,14 +278,14 @@ fn a_held_stream_is_sent_a_commit_the_moment_it_lands() {
         let committed = std::time::Instant::now();
         committing
             .session()
-            .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
+            .run_now("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
             .expect("the leader commits");
         committed
     });
     let mut heartbeats = 0_u32;
     let waiting = std::time::Instant::now();
     let round = loop {
-        let round = following.heard().expect("a frame from the leader");
+        let round = following.heard().now().expect("a frame from the leader");
         if round.is_heartbeat() {
             heartbeats += 1;
             assert!(
@@ -299,7 +361,9 @@ fn a_pushing_door(
 
 /// Every log `leader` holds, asked from `from`.
 fn asked_from(leader: &Db, from: &[Sequence]) -> super::super::StreamAsk {
-    let homes = super::super::logs_to_collect(leader.store()).expect("the leader's logs");
+    let homes = super::super::logs_to_collect(leader.store())
+        .now()
+        .expect("the leader's logs");
     super::super::StreamAsk {
         asks: homes
             .iter()
@@ -318,7 +382,11 @@ fn asked_from(leader: &Db, from: &[Sequence]) -> super::super::StreamAsk {
 fn next_round(following: &mut super::super::Following) -> Option<super::super::Streamed> {
     let waiting = std::time::Instant::now();
     loop {
-        match following.next_pushed().expect("a frame from the leader") {
+        match following
+            .next_pushed()
+            .now()
+            .expect("a frame from the leader")
+        {
             super::super::Pushed::Round(round) => return Some(round),
             super::super::Pushed::Restarted => return None,
             super::super::Pushed::Heartbeat => assert!(
@@ -357,13 +425,16 @@ fn a_pushed_round_is_held_only_once_the_follower_says_so() {
         &hello(THERE),
         Duration::from_secs(5),
     )
+    .now()
     .expect("a held stream");
     let logs = super::super::logs_to_collect(leader.store())
+        .now()
         .expect("the leader's logs")
         .len();
     let start = vec![Sequence::new(1); logs];
     following
         .stream_from(&asked_from(&leader, &start))
+        .now()
         .expect("the opening");
     let first = next_round(&mut following).expect("the first round");
     let sent: Vec<(tessari_encoding::LogId, Sequence)> = first
@@ -375,7 +446,7 @@ fn a_pushed_round_is_held_only_once_the_follower_says_so() {
     // Not asked again: the commit has to be pushed.
     leader
         .session()
-        .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
         .expect("the leader commits");
     let second = next_round(&mut following).expect("the pushed round");
     assert!(!second.is_quiet(), "the round carried the commit");
@@ -384,6 +455,7 @@ fn a_pushed_round_is_held_only_once_the_follower_says_so() {
         assert!(
             store
                 .await_held(*log, *at, &[THERE], 1, Duration::ZERO)
+                .now()
                 .is_empty(),
             "a round was counted as held because it was sent: {log:?} through {at:?}"
         );
@@ -391,10 +463,13 @@ fn a_pushed_round_is_held_only_once_the_follower_says_so() {
     let after_first = past(&first, &start);
     following
         .held(&asked_from(&leader, &after_first))
+        .now()
         .expect("the held report");
     for (log, at) in &sent {
         assert_eq!(
-            store.await_held(*log, *at, &[THERE], 1, Duration::from_secs(3)),
+            store
+                .await_held(*log, *at, &[THERE], 1, Duration::from_secs(3))
+                .now(),
             vec![THERE],
             "`Held` was not counted for {log:?} through {at:?}"
         );
@@ -415,18 +490,22 @@ fn a_restart_is_marked_and_sends_from_where_it_names() {
         &hello(THERE),
         Duration::from_secs(5),
     )
+    .now()
     .expect("a held stream");
     let logs = super::super::logs_to_collect(leader.store())
+        .now()
         .expect("the leader's logs")
         .len();
     let start = vec![Sequence::new(1); logs];
     following
         .stream_from(&asked_from(&leader, &start))
+        .now()
         .expect("the opening");
     let first = next_round(&mut following).expect("the first round");
     // As if the first round had not applied at all: start again from 1.
     following
         .stream_from(&asked_from(&leader, &start))
+        .now()
         .expect("the restart");
     // Rounds before the mark are the ones to throw away; there may be none.
     while next_round(&mut following).is_some() {}

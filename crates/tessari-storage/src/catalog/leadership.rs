@@ -207,13 +207,17 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn leaderships(&self) -> Result<Vec<LeadershipDefinition>> {
+    pub async fn leaderships(&self) -> Result<Vec<LeadershipDefinition>> {
         let mut found = Vec::new();
-        for (_, payload) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::LEADERSHIPS,
-        )? {
+        for (_, payload) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::LEADERSHIPS,
+            )
+            .await?
+        {
             found.push(LeadershipDefinition::from_value(&decode_payload(
                 &payload,
             )?)?);
@@ -245,8 +249,8 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn leader_of(&self, range: Reach) -> Result<Option<LeadershipDefinition>> {
-        Ok(covering(&self.leaderships()?, range).copied())
+    pub async fn leader_of(&self, range: Reach) -> Result<Option<LeadershipDefinition>> {
+        Ok(covering(&self.leaderships().await?, range).copied())
     }
 }
 

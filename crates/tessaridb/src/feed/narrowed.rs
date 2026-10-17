@@ -120,7 +120,7 @@ impl Narrowed {
     /// What judging the condition refuses, and
     /// [`FeedRefused::PreviousVersionGone`] when the version a non-matching
     /// change must be compared with is no longer held.
-    pub(super) fn judge(
+    pub(super) async fn judge(
         &self,
         db: &Db,
         session: &Session<'_>,
@@ -129,12 +129,14 @@ impl Narrowed {
         visible: &Visible,
     ) -> Result<Verdict, FeedRefused> {
         if let ChangeKind::Written(value) = &change.kind
-            && session.holds_for(
-                transaction,
-                &self.condition,
-                (&change.id, value.clone()),
-                visible,
-            )?
+            && session
+                .holds_for(
+                    transaction,
+                    &self.condition,
+                    (&change.id, value.clone()),
+                    visible,
+                )
+                .await?
         {
             return Ok(Verdict::Deliver);
         }
@@ -157,7 +159,7 @@ impl Narrowed {
                 change.table,
                 change.id.clone(),
             );
-            match db.store().held_at(Sequence::new(at), &address) {
+            match db.store().held_at(Sequence::new(at), &address).await {
                 Ok(held) => held,
                 Err(tessari_storage::Error::VersionReclaimed { .. }) => return Err(gone()),
                 Err(failure) => return Err(failure.into()),
@@ -165,7 +167,9 @@ impl Narrowed {
         };
         let matched = match before {
             Some(held) => {
-                session.holds_for(transaction, &self.condition, (&change.id, held), visible)?
+                session
+                    .holds_for(transaction, &self.condition, (&change.id, held), visible)
+                    .await?
             }
             None => false,
         };

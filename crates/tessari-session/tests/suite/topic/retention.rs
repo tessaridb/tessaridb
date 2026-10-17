@@ -2,6 +2,8 @@
 //! tells a reader what it missed.
 
 use std::thread;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_session::Note;
 
@@ -36,7 +38,7 @@ fn retention_removes_messages_and_a_reader_behind_it_is_told_how_many_it_missed(
         assert_eq!(missed(&notes), Some(3), "{}: {notes:?}", backend.name);
 
         // Removed through the log: both indexes lose them, the numbering does not.
-        let removed = backend.store.remove_expired().unwrap();
+        let removed = backend.store.remove_expired().now().unwrap();
         assert_eq!(removed.records, 4, "{}: {removed:?}", backend.name);
         let (by_position, by_message) = entries(backend);
         assert!(
@@ -62,7 +64,7 @@ fn a_message_whose_retention_has_not_passed_is_not_removed_by_the_pass() {
         let mut session = opened(&backend.store);
         run(&mut session, "DEFINE TOPIC long RETAIN 1h;");
         run(&mut session, "CREATE long:'kept' = { n: 1 };");
-        let removed = backend.store.remove_expired().unwrap();
+        let removed = backend.store.remove_expired().now().unwrap();
         assert_eq!(removed.records, 0, "{}", backend.name);
         let (answered, notes) = read(&mut session, "READ FROM long;");
         assert_eq!(answered.len(), 1, "{}", backend.name);
@@ -146,7 +148,7 @@ fn a_message_larger_than_the_size_retention_is_refused() {
         let mut session = opened(&backend.store);
         run(&mut session, "DEFINE TOPIC tiny RETAIN BYTES 8;");
         let refused = session
-            .run("CREATE tiny:'big' = { body: 'far more than eight bytes' };")
+            .run_now("CREATE tiny:'big' = { body: 'far more than eight bytes' };")
             .unwrap_err();
         assert!(
             matches!(
@@ -174,7 +176,7 @@ fn a_commit_that_alone_outgrows_the_size_retention_is_refused() {
             script.push_str(&format!(" CREATE small:'m{n}' = {{ body: 'aaaaaaaaaa' }};"));
         }
         script.push_str(" COMMIT;");
-        let refused = session.run(&script).unwrap_err();
+        let refused = session.run_now(&script).unwrap_err();
         assert!(
             matches!(
                 refused,
@@ -211,6 +213,7 @@ fn a_size_retention_recounts_what_it_holds_when_the_count_is_gone() {
                 direction: tessari_kv::ScanDirection::Forward,
                 limit: None,
             })
+            .now()
             .unwrap()
             .into_iter()
             .map(|(key, _)| key)
@@ -220,7 +223,7 @@ fn a_size_retention_recounts_what_it_holds_when_the_count_is_gone() {
         for key in keys {
             batch = batch.delete(kind.keyspace(), key);
         }
-        backend.raw.apply(batch).unwrap();
+        backend.raw.apply(batch).now().unwrap();
         for n in 4..=12 {
             run(
                 &mut session,

@@ -70,14 +70,18 @@ pub(crate) fn kept(index: &IndexDefinition) -> bool {
 /// # Errors
 ///
 /// Returns an error when the backend fails or a held counter cannot be decoded.
-pub(crate) fn count_changes(
+pub(crate) async fn count_changes(
     store: &Store,
     mut batch: WriteBatch,
     changes: &BTreeMap<IndexAddress, u64>,
 ) -> Result<WriteBatch> {
     for (address, changed) in changes {
         let key = IndexChangesKey::new(*address).encode();
-        let held = match store.backend().get(IndexChangesKey::keyspace(), &key)? {
+        let held = match store
+            .backend()
+            .get(IndexChangesKey::keyspace(), &key)
+            .await?
+        {
             Some(bytes) => IndexChanges::decode(bytes.as_slice())?.0,
             None => 0,
         };
@@ -91,10 +95,14 @@ pub(crate) fn count_changes(
 }
 
 /// How many entries of one index have changed on this node, ever.
-fn changes_of(store: &Store, address: IndexAddress) -> Result<u64> {
+async fn changes_of(store: &Store, address: IndexAddress) -> Result<u64> {
     let key = IndexChangesKey::new(address).encode();
     Ok(
-        match store.backend().get(IndexChangesKey::keyspace(), &key)? {
+        match store
+            .backend()
+            .get(IndexChangesKey::keyspace(), &key)
+            .await?
+        {
             Some(bytes) => IndexChanges::decode(bytes.as_slice())?.0,
             None => 0,
         },
@@ -106,9 +114,13 @@ fn address_of(index: &IndexDefinition) -> IndexAddress {
 }
 
 /// The statistic one index held, as read from this node.
-fn held_statistics(store: &Store, address: IndexAddress) -> Result<Option<IndexStatistics>> {
+async fn held_statistics(store: &Store, address: IndexAddress) -> Result<Option<IndexStatistics>> {
     let key = IndexStatisticsKey::new(address).encode();
-    match store.backend().get(IndexStatisticsKey::keyspace(), &key)? {
+    match store
+        .backend()
+        .get(IndexStatisticsKey::keyspace(), &key)
+        .await?
+    {
         Some(bytes) => Ok(Some(IndexStatistics::decode(bytes.as_slice())?)),
         None => Ok(None),
     }
@@ -132,9 +144,13 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or an entry cannot be decoded.
-    pub fn analyze_index(&self, index: &IndexDefinition, records: u64) -> Result<IndexStatistics> {
+    pub async fn analyze_index(
+        &self,
+        index: &IndexDefinition,
+        records: u64,
+    ) -> Result<IndexStatistics> {
         let address = address_of(index);
-        let changes = changes_of(self.store(), address)?;
+        let changes = changes_of(self.store(), address).await?;
         let arity = index.fields.len().max(1);
         let prefix = address.prefix(KeyKind::SecondaryIndex);
         let end = crate::transaction::after(prefix.clone());
@@ -148,7 +164,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(RANGE_SCAN_BATCH_ENTRIES),
             };
-            let entries = self.store().backend().scan(&request)?;
+            let entries = self.store().backend().scan(&request).await?;
             for (key, _) in &entries {
                 walk.take(&SecondaryIndexKey::decode(key.as_slice())?.values)?;
             }
@@ -161,11 +177,14 @@ impl Transaction<'_> {
             from = crate::transaction::resuming_after(last.as_slice().to_vec());
         }
         let statistics = walk.finish(records, changes);
-        self.store().backend().apply(WriteBatch::new().put(
-            IndexStatisticsKey::keyspace(),
-            IndexStatisticsKey::new(address).encode(),
-            statistics.encode(),
-        ))?;
+        self.store()
+            .backend()
+            .apply(WriteBatch::new().put(
+                IndexStatisticsKey::keyspace(),
+                IndexStatisticsKey::new(address).encode(),
+                statistics.encode(),
+            ))
+            .await?;
         Ok(statistics)
     }
 
@@ -177,22 +196,23 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the catalog or the backend cannot be read.
-    pub fn analyze_table(
+    pub async fn analyze_table(
         &mut self,
         namespace: tessari_types::NamespaceId,
         database: tessari_types::DatabaseId,
         table: tessari_types::TableId,
     ) -> Result<Vec<(IndexDefinition, IndexStatistics)>> {
         let mut catalog = Catalog::new(self);
-        let records = catalog.record_count(table)?.unwrap_or(0);
+        let records = catalog.record_count(table).await?.unwrap_or(0);
         let indexes: Vec<IndexDefinition> = catalog
-            .indexes_on(namespace, database, table)?
+            .indexes_on(namespace, database, table)
+            .await?
             .into_iter()
             .filter(kept)
             .collect();
         let mut taken = Vec::with_capacity(indexes.len());
         for index in indexes {
-            let statistics = self.analyze_index(&index, records)?;
+            let statistics = self.analyze_index(&index, records).await?;
             taken.push((index, statistics));
         }
         Ok(taken)
@@ -209,15 +229,18 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or a held value cannot be
     /// decoded.
-    pub fn fresh_statistics(&self, index: &IndexDefinition) -> Result<Option<IndexStatistics>> {
+    pub async fn fresh_statistics(
+        &self,
+        index: &IndexDefinition,
+    ) -> Result<Option<IndexStatistics>> {
         if !kept(index) {
             return Ok(None);
         }
         let address = address_of(index);
-        let Some(statistics) = held_statistics(self.store(), address)? else {
+        let Some(statistics) = held_statistics(self.store(), address).await? else {
             return Ok(None);
         };
-        let now = changes_of(self.store(), address)?;
+        let now = changes_of(self.store(), address).await?;
         Ok(still_fresh(&statistics, now).then_some(statistics))
     }
 }
@@ -233,23 +256,28 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the backend fails or the catalog cannot be read.
-    pub fn refresh_statistics(&self) -> Result<usize> {
-        let transaction = self.begin()?;
+    pub async fn refresh_statistics(&self) -> Result<usize> {
+        let transaction = self.begin().await?;
         let mut stale = Vec::new();
         {
-            let mut reading = self.begin()?;
+            let mut reading = self.begin().await?;
             let mut catalog = Catalog::new(&mut reading);
-            'tables: for namespace in catalog.namespaces()? {
-                for database in catalog.databases_in(namespace.id)? {
-                    for table in catalog.tables_in(namespace.id, database.id)? {
-                        let Some(records) = catalog.record_count(table.id)? else {
+            'tables: for namespace in catalog.namespaces().await? {
+                for database in catalog.databases_in(namespace.id).await? {
+                    for table in catalog.tables_in(namespace.id, database.id).await? {
+                        let Some(records) = catalog.record_count(table.id).await? else {
                             continue;
                         };
                         if records < PLANNER_SCAN_FLOOR_RECORDS {
                             continue;
                         }
-                        for index in catalog.indexes_on(namespace.id, database.id, table.id)? {
-                            if !kept(&index) || transaction.fresh_statistics(&index)?.is_some() {
+                        for index in catalog
+                            .indexes_on(namespace.id, database.id, table.id)
+                            .await?
+                        {
+                            if !kept(&index)
+                                || transaction.fresh_statistics(&index).await?.is_some()
+                            {
                                 continue;
                             }
                             stale.push((index, records));
@@ -262,7 +290,7 @@ impl Store {
             }
         }
         for (index, records) in &stale {
-            transaction.analyze_index(index, *records)?;
+            transaction.analyze_index(index, *records).await?;
         }
         Ok(stale.len())
     }

@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -15,7 +17,7 @@ use tessari_types::Value;
 fn opened(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE t; USE NAMESPACE t; DEFINE DATABASE d; USE DATABASE d; \
              DEFINE SERIES quotes RETAIN 36500d TIME at; \
              DEFINE SERIES trades RETAIN 36500d TIME at;",
@@ -51,7 +53,9 @@ fn at(millis: u64) -> String {
 fn every_trade_gets_the_newest_quote_at_or_before_it_or_none() {
     let mut draw = Draw(0x5eed);
     for case in 0..1_000 {
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let mut session = opened(&store);
         // Quotes at distinct instants per symbol, so "newest" has one answer.
         let mut quotes: Vec<(u64, u64, u64)> = Vec::new();
@@ -80,7 +84,7 @@ fn every_trade_gets_the_newest_quote_at_or_before_it_or_none() {
             ));
         }
         script.push_str(" COMMIT;");
-        session.run(&script).unwrap();
+        session.run_now(&script).unwrap();
 
         let expected: BTreeMap<u64, Option<u64>> = trades
             .iter()
@@ -95,7 +99,7 @@ fn every_trade_gets_the_newest_quote_at_or_before_it_or_none() {
             .collect();
 
         let Outcome::Records { records, .. } = session
-            .run("SELECT * FROM trades ASOF JOIN quotes ON trades.sym = quotes.sym;")
+            .run_now("SELECT * FROM trades ASOF JOIN quotes ON trades.sym = quotes.sym;")
             .unwrap()
             .pop()
             .unwrap()
@@ -132,14 +136,16 @@ fn every_trade_gets_the_newest_quote_at_or_before_it_or_none() {
 
 #[test]
 fn an_asof_join_needs_two_event_time_series() {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = opened(&store);
     session
-        .run("DEFINE SERIES arrivals RETAIN 1d; DEFINE COLLECTION plain;")
+        .run_now("DEFINE SERIES arrivals RETAIN 1d; DEFINE COLLECTION plain;")
         .unwrap();
     for other in ["arrivals", "plain"] {
         let refused = session
-            .run(&format!(
+            .run_now(&format!(
                 "SELECT * FROM trades ASOF JOIN {other} ON trades.sym = {other}.sym;"
             ))
             .unwrap_err()

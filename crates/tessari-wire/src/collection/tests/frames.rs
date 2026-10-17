@@ -1,4 +1,5 @@
 use super::*;
+use tessari_session::Now;
 
 #[test]
 fn a_collection_frame_round_trips() {
@@ -183,13 +184,16 @@ fn an_ask_tells_the_leader_what_the_follower_holds() {
     let (address, door) = serving(&authority, &leader, 3);
     let log = store_log(&leader);
     let held = |at: u64| {
-        leader.store().await_held(
-            log,
-            Sequence::new(at),
-            &[THERE],
-            1,
-            std::time::Duration::ZERO,
-        )
+        leader
+            .store()
+            .await_held(
+                log,
+                Sequence::new(at),
+                &[THERE],
+                1,
+                std::time::Duration::ZERO,
+            )
+            .now()
     };
 
     drop(served(
@@ -287,6 +291,7 @@ fn a_collection_is_recorded_on_the_leader() {
         leader
             .store()
             .follower_lag()
+            .now()
             .expect("a leader can be asked")
             .is_empty(),
         "nothing has collected yet"
@@ -298,6 +303,7 @@ fn a_collection_is_recorded_on_the_leader() {
     let lag = leader
         .store()
         .follower_lag()
+        .now()
         .expect("a leader can be asked");
     assert_eq!(lag.len(), 1, "{lag:?}");
     let seen = lag.first().expect("one follower");

@@ -52,7 +52,7 @@ use crate::outcome::{Nearest, Suggestion};
 /// declares no analyzer or has no `SEARCH` index behind it — and that is a
 /// different answer from [`Suggestion::NothingNearer`], which is a dictionary
 /// saying it holds everything asked for.
-pub(crate) fn suggested(
+pub(crate) async fn suggested(
     transaction: &mut Transaction<'_>,
     indexes: &[IndexDefinition],
     analyzers: &BTreeMap<Path, Analyzer>,
@@ -86,13 +86,13 @@ pub(crate) fn suggested(
             Word::Prefix(_) => None,
         });
         for term in terms {
-            if transaction.document_frequency(index, &term)? > 0 {
+            if transaction.document_frequency(index, &term).await? > 0 {
                 continue;
             }
             if nearest.iter().any(|held: &Nearest| held.typed == term) {
                 continue;
             }
-            if let Some(instead) = nearby(transaction, index, &term)? {
+            if let Some(instead) = nearby(transaction, index, &term).await? {
                 nearest.push(Nearest {
                     typed: term,
                     instead,
@@ -111,22 +111,24 @@ pub(crate) fn suggested(
 }
 
 /// The held term nearest an unheld one, at one edit before two.
-fn nearby(
+async fn nearby(
     transaction: &mut Transaction<'_>,
     index: &IndexDefinition,
     term: &str,
 ) -> Result<Option<String>> {
     for edits in 1..=SEARCH_FUZZY_MAX_EDITS {
-        let found = transaction.terms_within_distance(
-            index,
-            term,
-            edits,
-            SEARCH_FUZZY_PREFIX,
-            SEARCH_FUZZY_EXPANSION_CAP,
-        )?;
+        let found = transaction
+            .terms_within_distance(
+                index,
+                term,
+                edits,
+                SEARCH_FUZZY_PREFIX,
+                SEARCH_FUZZY_EXPANSION_CAP,
+            )
+            .await?;
         let mut ranked = Vec::with_capacity(found.terms.len());
         for candidate in found.terms {
-            let held = transaction.document_frequency(index, &candidate)?;
+            let held = transaction.document_frequency(index, &candidate).await?;
             ranked.push((held, candidate));
         }
         // Most-held first, then the term itself, so two equally common words

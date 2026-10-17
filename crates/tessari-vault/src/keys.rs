@@ -40,6 +40,7 @@ use zeroize::Zeroize;
 use crate::envelope::{self, Binding, Level};
 use crate::error::{Error, Result};
 use crate::secret::{KEY_BYTES, KeyId, SecretBytes};
+use crate::worker::off_the_worker;
 
 /// How much memory the key derivation uses, in kibibytes.
 ///
@@ -220,7 +221,8 @@ pub fn derive(passphrase: &str, salt: &[u8]) -> Result<SecretBytes> {
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
     let mut derived = [0_u8; KEY_BYTES];
-    let outcome = argon.hash_password_into(passphrase.as_bytes(), salt, &mut derived);
+    let outcome =
+        off_the_worker(|| argon.hash_password_into(passphrase.as_bytes(), salt, &mut derived));
     let held = outcome
         .map(|()| SecretBytes::adopt(derived))
         .map_err(|_| Error::Derivation);

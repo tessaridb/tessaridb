@@ -11,7 +11,7 @@ use crate::outcome::Outcome;
 use crate::session::Session;
 
 impl Session<'_> {
-    pub(super) fn define_namespace(
+    pub(super) async fn define_namespace(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
@@ -24,7 +24,8 @@ impl Session<'_> {
     ) -> Result<Outcome> {
         if if_not_exists
             && Catalog::new(transaction)
-                .namespace_id(&name.text)?
+                .namespace_id(&name.text)
+                .await?
                 .is_some()
         {
             // The clause is not applied on this branch, and that is the same
@@ -43,7 +44,7 @@ impl Session<'_> {
         // decision somebody is making — ADR-0060's whole point — so it is
         // written down rather than inherited.
         if replication.is_none() {
-            let peers = Catalog::new(transaction).replicas()?.len();
+            let peers = Catalog::new(transaction).replicas().await?.len();
             if peers > 0 {
                 return Err(Error::ReplicationUnstated {
                     namespace: name.text.clone(),
@@ -52,22 +53,30 @@ impl Session<'_> {
                 });
             }
         }
-        let definition = Catalog::new(transaction).create_namespace(&name.text)?;
+        let definition = Catalog::new(transaction)
+            .create_namespace(&name.text)
+            .await?;
         if let Some(replication) = replication {
             // Through the same call an `ALTER` makes, so the two statements
             // cannot set this field differently.
-            Catalog::new(transaction).set_replication(definition.id, replication)?;
+            Catalog::new(transaction)
+                .set_replication(definition.id, replication)
+                .await?;
         }
         if let Some(class) = class {
             // The same route for the same reason. No `ALTER` sets the class
             // today — G027 S2.1 needs only a declaration — and the setter
             // exists in the shape an `ALTER` would use so that adding one later
             // is a statement rather than a second write path.
-            Catalog::new(transaction).set_replication_class(definition.id, class)?;
+            Catalog::new(transaction)
+                .set_replication_class(definition.id, class)
+                .await?;
         }
         if let Some(acknowledge) = acknowledge {
             // Through the setter an `ALTER NAMESPACE … ACKNOWLEDGE` uses.
-            Catalog::new(transaction).set_acknowledgement(definition.id, acknowledge)?;
+            Catalog::new(transaction)
+                .set_acknowledgement(definition.id, acknowledge)
+                .await?;
         }
         Ok(Outcome::Done)
     }
@@ -81,13 +90,13 @@ impl Session<'_> {
     /// begins subscribing replays it from origin. Cassandra's `ALTER KEYSPACE`
     /// needs a `nodetool repair` afterwards because its replicas hold data
     /// rather than a history; ours needs none because the history is the store.
-    pub(super) fn alter_namespace(
+    pub(super) async fn alter_namespace(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         change: NamespaceChange,
     ) -> Result<Outcome> {
-        let Some(namespace) = Catalog::new(transaction).namespace_id(&name.text)? else {
+        let Some(namespace) = Catalog::new(transaction).namespace_id(&name.text).await? else {
             return Err(Error::Unknown {
                 entity: "namespace",
                 name: name.text.clone(),
@@ -96,31 +105,38 @@ impl Session<'_> {
         };
         match change {
             NamespaceChange::Replication(replication) => {
-                Catalog::new(transaction).set_replication(namespace, replication)?;
+                Catalog::new(transaction)
+                    .set_replication(namespace, replication)
+                    .await?;
             }
             NamespaceChange::Acknowledge(acknowledge) => {
-                Catalog::new(transaction).set_acknowledgement(namespace, acknowledge)?;
+                Catalog::new(transaction)
+                    .set_acknowledgement(namespace, acknowledge)
+                    .await?;
             }
         }
         Ok(Outcome::Done)
     }
 
-    pub(super) fn define_database(
+    pub(super) async fn define_database(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         if_not_exists: bool,
         span: Span,
     ) -> Result<Outcome> {
-        let namespace = self.namespace_id(transaction, span)?;
+        let namespace = self.namespace_id(transaction, span).await?;
         if if_not_exists
             && Catalog::new(transaction)
-                .database_id(namespace, &name.text)?
+                .database_id(namespace, &name.text)
+                .await?
                 .is_some()
         {
             return Ok(Outcome::Done);
         }
-        Catalog::new(transaction).create_database(namespace, &name.text)?;
+        Catalog::new(transaction)
+            .create_database(namespace, &name.text)
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -131,14 +147,18 @@ impl Session<'_> {
     /// can be asked to run, and the person writing it is thinking about one
     /// name. The refusal counts and names, so acting on it needs no second
     /// query.
-    pub(super) fn drop_database(
+    pub(super) async fn drop_database(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, Some(name.text.as_str()), span)?;
-        let held = Catalog::new(transaction).tables_in(context.namespace, context.database)?;
+        let context = self
+            .context(transaction, Some(name.text.as_str()), span)
+            .await?;
+        let held = Catalog::new(transaction)
+            .tables_in(context.namespace, context.database)
+            .await?;
         if let Some(first) = held.first() {
             return Err(Error::StillDepended {
                 depended: Depended::DatabaseByTable,
@@ -148,7 +168,9 @@ impl Session<'_> {
                 span,
             });
         }
-        Catalog::new(transaction).drop_database(context.database)?;
+        Catalog::new(transaction)
+            .drop_database(context.database)
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -158,20 +180,21 @@ impl Session<'_> {
     /// ground. Resolved by name against the catalog rather than through the
     /// session's tenancy, because a namespace is what a tenancy is selected
     /// *within* — asking the context for it would require having selected it.
-    pub(super) fn drop_namespace(
+    pub(super) async fn drop_namespace(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
         let id = Catalog::new(transaction)
-            .namespace_id(&name.text)?
+            .namespace_id(&name.text)
+            .await?
             .ok_or_else(|| Error::Unknown {
                 entity: "namespace",
                 name: name.text.clone(),
                 span,
             })?;
-        let held = Catalog::new(transaction).databases_in(id)?;
+        let held = Catalog::new(transaction).databases_in(id).await?;
         if let Some(first) = held.first() {
             return Err(Error::StillDepended {
                 depended: Depended::NamespaceByDatabase,
@@ -181,7 +204,7 @@ impl Session<'_> {
                 span,
             });
         }
-        Catalog::new(transaction).drop_namespace(id)?;
+        Catalog::new(transaction).drop_namespace(id).await?;
         Ok(Outcome::Done)
     }
 }

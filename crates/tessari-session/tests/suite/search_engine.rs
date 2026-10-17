@@ -11,6 +11,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_constants::{BM25_B, BM25_K1};
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -33,22 +35,24 @@ const CORPUS: &str = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE
      CREATE articles:2 = { headline: 'Looms', text: 'jacquard cards and patterns' };";
 
 fn store(definition: &str) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
-    session.run(CORPUS).unwrap();
-    session.run(definition).unwrap();
+    session.run_now(CORPUS).unwrap();
+    session.run_now(definition).unwrap();
     store
 }
 
 fn session(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
     session
 }
 
 /// `(table, id, score)` in the order the read answered.
 fn ranked(session: &mut Session<'_>, read: &str) -> Vec<(String, String, f64)> {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("{read}: {:?}", outcomes.last());
     };
@@ -221,7 +225,7 @@ fn one_field_of_weight_one_ranks_as_its_field_index_scores() {
          FROM SEARCH bodies MATCHES 'engine';",
     );
     let outcomes = reader
-        .run(
+        .run_now(
             "SELECT id, search::score(body, 'engine') AS score FROM notes \
              WHERE body MATCHES 'engine' ORDER BY score DESC;",
         )
@@ -268,8 +272,8 @@ fn tables_rank_together_and_each_answers_under_its_own_grants() {
          DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
     );
     let mut root = Session::new(&held);
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now(
         "DEFINE USER notes_only ON prod.shop ROLE viewer PASSWORD 'correct horse battery';\n\
          DEFINE USER half ON prod.shop ROLE viewer PASSWORD 'correct horse battery';\n\
          USE NAMESPACE prod; USE DATABASE shop;\n\
@@ -284,8 +288,10 @@ fn tables_rank_together_and_each_answers_under_its_own_grants() {
     // A search is listed to a caller who reads one of its tables, and to nobody else.
     let searches = |name: &str| {
         let mut session = Session::new(&held);
-        session.sign_in(name, PASSWORD).unwrap();
-        let outcomes = session.run(&format!("{USE} INFO FOR DATABASE;")).unwrap();
+        session.sign_in(name, PASSWORD).now().unwrap();
+        let outcomes = session
+            .run_now(&format!("{USE} INFO FOR DATABASE;"))
+            .unwrap();
         let Some(Outcome::Value(Value::Object(info))) = outcomes.last() else {
             panic!("{outcomes:?}");
         };
@@ -314,8 +320,8 @@ fn tables_rank_together_and_each_answers_under_its_own_grants() {
 
     let signed = |name: &str| {
         let mut session = Session::new(&held);
-        session.sign_in(name, PASSWORD).unwrap();
-        session.run(USE).unwrap();
+        session.sign_in(name, PASSWORD).now().unwrap();
+        session.run_now(USE).unwrap();
         session
     };
     // A table the reader may not read is not searched at all.
@@ -400,17 +406,21 @@ fn the_definition_is_said_back_and_survives_a_script_and_a_reopen() {
     let definition = "DEFINE SEARCH knowledge ON articles FIELDS headline WEIGHT 2.5 SNIPPET, \
                       text NO FUZZY ON notes FIELDS title WEIGHT 3, body NO PHRASE ANALYZER plain;";
     let held = store(definition);
-    let script = tessari_session::write_script(&held).unwrap().text;
+    let script = tessari_session::write_script(&held).now().unwrap().text;
     assert!(script.contains(definition), "{script}");
     assert!(!script.contains("DEFINE INDEX knowledge"), "{script}");
 
-    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
-    Session::new(&restored).run(&script).unwrap();
+    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
+    Session::new(&restored).run_now(&script).unwrap();
     let before = ranked(&mut session(&held), READ);
     assert!(before.len() >= 2, "{before:?}");
     assert_eq!(ranked(&mut session(&restored), READ), before);
 
-    let outcomes = session(&held).run("INFO FOR SEARCH knowledge;").unwrap();
+    let outcomes = session(&held)
+        .run_now("INFO FOR SEARCH knowledge;")
+        .unwrap();
     let Some(Outcome::Value(Value::Object(info))) = outcomes.last() else {
         panic!("{outcomes:?}");
     };
@@ -422,7 +432,7 @@ fn the_definition_is_said_back_and_survives_a_script_and_a_reopen() {
     assert_eq!(documents(info), [("articles", 2), ("notes", 4)]);
     // A database lists its searches by name, once each whatever their members
     // — the one enumeration that reaches them, since INFO FOR TABLE skips members.
-    let outcomes = session(&held).run("INFO FOR DATABASE;").unwrap();
+    let outcomes = session(&held).run_now("INFO FOR DATABASE;").unwrap();
     let Some(Outcome::Value(Value::Object(database))) = outcomes.last() else {
         panic!("{outcomes:?}");
     };
@@ -435,18 +445,19 @@ fn the_definition_is_said_back_and_survives_a_script_and_a_reopen() {
     // On disk, closed and opened again.
     let directory = tempfile::tempdir().unwrap();
     let open = || {
-        let backend = tessari_lsm::LsmBackend::open(
+        let backend = tessari_lsm::TessariKvBackend::open(
             directory.path(),
             tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
         )
+        .now()
         .unwrap();
-        Store::open(Arc::new(backend) as Arc<dyn KvBackend>).unwrap()
+        Store::open(Arc::new(backend)).now().unwrap()
     };
     {
         let disk = open();
         let mut writer = Session::new(&disk);
-        writer.run(CORPUS).unwrap();
-        writer.run(definition).unwrap();
+        writer.run_now(CORPUS).unwrap();
+        writer.run_now(definition).unwrap();
         assert_eq!(ranked(&mut session(&disk), READ), before);
     }
     let disk = open();
@@ -481,21 +492,21 @@ fn every_write_keeps_the_search_current() {
     let loom = |writer: &mut Session<'_>| ids(writer, "knowledge", "MATCHES 'loom'");
     assert_eq!(loom(&mut writer), ["4"]);
     writer
-        .run("UPDATE notes:4 MERGE { body: 'punched cards' };")
+        .run_now("UPDATE notes:4 MERGE { body: 'punched cards' };")
         .unwrap();
     assert!(
         loom(&mut writer).is_empty(),
         "an update leaves the old words"
     );
     writer
-        .run("CREATE notes:5 = { title: 'Loom', body: 'the jacquard loom' };")
+        .run_now("CREATE notes:5 = { title: 'Loom', body: 'the jacquard loom' };")
         .unwrap();
     assert_eq!(loom(&mut writer), ["5"]);
-    writer.run("DELETE notes:5;").unwrap();
+    writer.run_now("DELETE notes:5;").unwrap();
     assert!(loom(&mut writer).is_empty());
     // A transaction's own writes are answered inside it.
     let outcomes = writer
-        .run(
+        .run_now(
             "BEGIN; CREATE notes:6 = { title: 'Loom' };\n\
              SELECT search::table_name() AS source, search::score() AS score \
              FROM SEARCH knowledge MATCHES 'loom';\n\
@@ -514,8 +525,10 @@ fn every_write_keeps_the_search_current() {
     );
     assert!(loom(&mut writer).is_empty());
     // A record with no text in any member field is not a document.
-    writer.run("CREATE notes:7 = { other: 'loom' };").unwrap();
-    let outcomes = writer.run("INFO FOR SEARCH knowledge;").unwrap();
+    writer
+        .run_now("CREATE notes:7 = { other: 'loom' };")
+        .unwrap();
+    let outcomes = writer.run_now("INFO FOR SEARCH knowledge;").unwrap();
     let Some(Outcome::Value(Value::Object(info))) = outcomes.last() else {
         panic!();
     };
@@ -528,7 +541,7 @@ fn what_cannot_be_searched_is_refused_by_name() {
     let mut session = session(&held);
     assert!(
         matches!(
-            session.run("SELECT * FROM SEARCH nothing MATCHES 'ada';"),
+            session.run_now("SELECT * FROM SEARCH nothing MATCHES 'ada';"),
             Err(Error::Unknown {
                 entity: "search",
                 ..
@@ -586,18 +599,18 @@ fn what_cannot_be_searched_is_refused_by_name() {
         }),
     ];
     for (refused, expected) in refusals {
-        match session.run(refused) {
+        match session.run_now(refused) {
             Err(error) => assert!(expected(&error), "{refused}: {error:?}"),
             Ok(_) => panic!("{refused} was accepted"),
         }
     }
     assert!(
         session
-            .run("DEFINE SEARCH IF NOT EXISTS knowledge ON notes FIELDS body ANALYZER plain;")
+            .run_now("DEFINE SEARCH IF NOT EXISTS knowledge ON notes FIELDS body ANALYZER plain;")
             .is_ok()
     );
     assert!(matches!(
-        session.run("DROP ANALYZER plain;"),
+        session.run_now("DROP ANALYZER plain;"),
         Err(Error::StillDepended {
             depended: tessari_session::Depended::AnalyzerBySearch,
             ..
@@ -608,19 +621,19 @@ fn what_cannot_be_searched_is_refused_by_name() {
         "SELECT * FROM SEARCH knowledge MATCHES 'ada' TIMEOUT 1s;",
     ] {
         assert!(
-            matches!(session.run(refused), Err(Error::Script(_))),
+            matches!(session.run_now(refused), Err(Error::Script(_))),
             "{refused} was accepted"
         );
     }
-    session.run("DROP SEARCH knowledge;").unwrap();
+    session.run_now("DROP SEARCH knowledge;").unwrap();
     assert!(matches!(
-        session.run(READ),
+        session.run_now(READ),
         Err(Error::Unknown {
             entity: "search",
             ..
         })
     ));
-    session.run("DROP ANALYZER plain;").unwrap();
+    session.run_now("DROP ANALYZER plain;").unwrap();
 }
 
 /// T9.2 — query-time words: synonyms per field, stop words per search.
@@ -649,11 +662,11 @@ fn synonyms_answer_per_field_and_stop_words_leave_the_query() {
     // search names it, so it is dropped with the search's leave, not under it.
     let mut writer = session(&held);
     assert!(matches!(
-        writer.run("DROP SYNONYMS machines;"),
+        writer.run_now("DROP SYNONYMS machines;"),
         Err(Error::StillDepended { .. })
     ));
     assert!(matches!(
-        writer.run("DROP STOPWORDS common;"),
+        writer.run_now("DROP STOPWORDS common;"),
         Err(Error::StillDepended { .. })
     ));
     for refused in [
@@ -662,10 +675,10 @@ fn synonyms_answer_per_field_and_stop_words_leave_the_query() {
         "DEFINE SEARCH t ON notes FIELDS title SYNONYMS missing ANALYZER plain;",
         "DEFINE SEARCH t ON notes FIELDS title ANALYZER plain STOPWORDS missing;",
     ] {
-        assert!(writer.run(refused).is_err(), "{refused} was accepted");
+        assert!(writer.run_now(refused).is_err(), "{refused} was accepted");
     }
     // The script carries both sets, and a fresh store answers the same.
-    let script = tessari_session::write_script(&held).unwrap().text;
+    let script = tessari_session::write_script(&held).now().unwrap().text;
     assert!(
         script.contains("DEFINE SYNONYMS machines { 'engine': ['loom', 'machine'] };"),
         "{script}"
@@ -674,8 +687,10 @@ fn synonyms_answer_per_field_and_stop_words_leave_the_query() {
         script.contains("DEFINE STOPWORDS common ['for', 'on', 'the'];"),
         "{script}"
     );
-    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
-    Session::new(&restored).run(&script).unwrap();
+    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
+    Session::new(&restored).run_now(&script).unwrap();
     assert_eq!(
         ids(&mut session(&restored), "s", "MATCHES 'the engine'"),
         ids(&mut session(&held), "s", "MATCHES 'the engine'")
@@ -693,7 +708,7 @@ fn a_snippet_and_the_marks_are_byte_ranges_of_the_matched_words() {
     );
     let mut reader = session(&held);
     let outcomes = reader
-        .run(
+        .run_now(
             "SELECT search::snippet() AS snippet, search::highlight(body) AS marks, body \
              FROM SEARCH s MATCHES 'ada lovelace';",
         )
@@ -742,7 +757,7 @@ fn a_snippet_and_the_marks_are_byte_ranges_of_the_matched_words() {
     assert_eq!(one.get("snippet"), None, "{one:?}");
     // Outside a search there is no ranked record to answer about.
     assert!(matches!(
-        reader.run("SELECT search::snippet() AS s FROM notes;"),
+        reader.run_now("SELECT search::snippet() AS s FROM notes;"),
         Err(Error::NotSearched { .. })
     ));
 }
@@ -757,11 +772,11 @@ fn completions_are_ranked_by_how_many_records_hold_them() {
          DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
     );
     let mut reader = Session::new(&held);
-    reader.sign_in("root", PASSWORD).unwrap();
-    reader.run(USE).unwrap();
+    reader.sign_in("root", PASSWORD).now().unwrap();
+    reader.run_now(USE).unwrap();
     let completed = |reader: &mut Session<'_>, typed: &str| -> Vec<(String, i64)> {
         let outcomes = reader
-            .run(&format!(
+            .run_now(&format!(
                 "SELECT term, documents FROM SEARCH knowledge COMPLETE '{typed}';"
             ))
             .unwrap();
@@ -787,19 +802,19 @@ fn completions_are_ranked_by_how_many_records_hold_them() {
         [("note".to_owned(), 2), ("notes".to_owned(), 2)]
     );
     assert!(matches!(
-        reader.run("SELECT term FROM SEARCH knowledge COMPLETE 'no';"),
+        reader.run_now("SELECT term FROM SEARCH knowledge COMPLETE 'no';"),
         Err(Error::PrefixTooShort { .. })
     ));
     // A reader of the notes alone is offered only what the notes hold.
     reader
-        .run(
+        .run_now(
             "DEFINE USER narrow ON prod.shop ROLE viewer PASSWORD 'correct horse battery';\n\
              GRANT read ON notes TO narrow;",
         )
         .unwrap();
     let mut narrow = Session::new(&held);
-    narrow.sign_in("narrow", PASSWORD).unwrap();
-    narrow.run(USE).unwrap();
+    narrow.sign_in("narrow", PASSWORD).now().unwrap();
+    narrow.run_now(USE).unwrap();
     assert_eq!(
         completed(&mut narrow, "not"),
         [("notes".to_owned(), 2), ("note".to_owned(), 1)]
@@ -817,7 +832,7 @@ fn facets_are_counts_over_the_whole_answer() {
     );
     let mut reader = session(&held);
     let outcomes = reader
-        .run(
+        .run_now(
             "SELECT kind, count(*) AS n FROM SEARCH knowledge MATCHES 'ada NOT babbage' \
              GROUP BY kind;",
         )
@@ -845,12 +860,12 @@ fn facets_are_counts_over_the_whole_answer() {
     );
     // A ranked read of a search is ordered by its rank and nothing else.
     assert!(matches!(
-        reader.run("SELECT * FROM SEARCH knowledge MATCHES 'ada' ORDER BY kind;"),
+        reader.run_now("SELECT * FROM SEARCH knowledge MATCHES 'ada' ORDER BY kind;"),
         Err(Error::SearchIsItsOwnOrder { .. })
     ));
     // EXPLAIN names the search and the postings that serve it.
     let outcomes = reader
-        .run("EXPLAIN SELECT * FROM SEARCH knowledge MATCHES 'ada';")
+        .run_now("EXPLAIN SELECT * FROM SEARCH knowledge MATCHES 'ada';")
         .unwrap();
     let Some(Outcome::Value(Value::Object(plan))) = outcomes.last() else {
         panic!("{outcomes:?}");
@@ -874,7 +889,7 @@ fn an_infix_is_answered_by_the_index_as_the_scan_answers_it() {
     let read = |held: &Store, piece: &str| -> (BTreeSet<String>, Option<Value>) {
         let mut reader = session(held);
         let outcomes = reader
-            .run(&format!(
+            .run_now(&format!(
                 "SELECT id FROM notes WHERE body MATCHES INFIX '{piece}';\n\
                  EXPLAIN SELECT id FROM notes WHERE body MATCHES INFIX '{piece}';"
             ))
@@ -907,12 +922,12 @@ fn an_infix_is_answered_by_the_index_as_the_scan_answers_it() {
         assert_eq!(shape, Some(Value::from("infix-terms")), "{piece}");
     }
     assert!(matches!(
-        session(&indexed).run("SELECT id FROM notes WHERE body MATCHES INFIX 'ov';"),
+        session(&indexed).run_now("SELECT id FROM notes WHERE body MATCHES INFIX 'ov';"),
         Err(Error::PrefixTooShort { .. })
     ));
     // The marks are the words holding the piece.
     let outcomes = session(&indexed)
-        .run("SELECT search::highlight(body) AS marks, body FROM notes WHERE body MATCHES INFIX 'ovela';")
+        .run_now("SELECT search::highlight(body) AS marks, body FROM notes WHERE body MATCHES INFIX 'ovela';")
         .unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!();
@@ -947,11 +962,13 @@ fn the_suffixes_are_exactly_those_of_the_dictionary() {
     use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 
     let backend = Arc::new(MemoryBackend::new());
-    let held = Store::open(backend.clone() as Arc<dyn KvBackend>).unwrap();
+    let held = Store::open(backend.clone() as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut writer = Session::new(&held);
-    writer.run(CORPUS).unwrap();
+    writer.run_now(CORPUS).unwrap();
     writer
-        .run(
+        .run_now(
             "DEFINE FIELD body ON notes TYPE string ANALYZER plain;\n\
              DEFINE INDEX by_body ON notes FIELDS body SEARCH;\n\
              UPDATE notes:4 MERGE { body: 'punched cards' };\n\
@@ -959,7 +976,7 @@ fn the_suffixes_are_exactly_those_of_the_dictionary() {
              DELETE notes:3;",
         )
         .unwrap();
-    let mut reading = held.begin().unwrap();
+    let mut reading = held.begin().now().unwrap();
     let catalog = tessari_storage::Catalog::new(&mut reading);
     let table = catalog
         .table_id(
@@ -967,6 +984,7 @@ fn the_suffixes_are_exactly_those_of_the_dictionary() {
             tessari_types::DatabaseId::new(1),
             "notes",
         )
+        .now()
         .unwrap()
         .unwrap();
     let index = catalog
@@ -975,6 +993,7 @@ fn the_suffixes_are_exactly_those_of_the_dictionary() {
             tessari_types::DatabaseId::new(1),
             table,
         )
+        .now()
         .unwrap()
         .into_iter()
         .find(|index| index.name == "by_body")
@@ -988,6 +1007,7 @@ fn the_suffixes_are_exactly_those_of_the_dictionary() {
                 direction: ScanDirection::Forward,
                 limit: None,
             })
+            .now()
             .unwrap()
             .into_iter()
             .map(|(key, _)| key)
@@ -1050,7 +1070,7 @@ fn a_search_answers_an_infix_from_its_members() {
     assert_eq!(found, set(&["1", "3"]));
     assert_eq!(ids(&mut reader, "s", "MATCHES INFIX 'ovela'").len(), 3);
     let outcomes = reader
-        .run("EXPLAIN SELECT * FROM SEARCH s MATCHES INFIX 'ovela';")
+        .run_now("EXPLAIN SELECT * FROM SEARCH s MATCHES INFIX 'ovela';")
         .unwrap();
     let Some(Outcome::Value(Value::Object(plan))) = outcomes.last() else {
         panic!();
@@ -1064,10 +1084,12 @@ fn a_search_answers_an_infix_from_its_members() {
 /// itself; without the weight the two tie and `a` comes first by identity.
 #[test]
 fn a_fuzzy_search_reaches_surfaces_and_ranks_the_exact_word_first() {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
              DEFINE COLLECTION notes;\n\
@@ -1115,7 +1137,7 @@ fn a_search_ranked_from_postings_equals_the_one_ranked_from_text() {
             )
         };
         let shape = |session: &mut Session<'_>, read: &str| {
-            let outcomes = session.run(read).unwrap();
+            let outcomes = session.run_now(read).unwrap();
             let Some(Outcome::Records { plan, .. }) = outcomes.last() else {
                 panic!("{read}: {:?}", outcomes.last());
             };
@@ -1145,7 +1167,7 @@ fn a_search_ranked_from_postings_equals_the_one_ranked_from_text() {
     // A transaction that wrote a member's table is answered from its text: its
     // own write has no postings yet.
     let outcomes = session
-        .run(
+        .run_now(
             "BEGIN; CREATE notes:9 = { title: 'Ada again', body: 'more ada' }; \
              SELECT search::score() AS score FROM SEARCH s MATCHES 'ada'; COMMIT;",
         )

@@ -56,7 +56,7 @@ impl Session<'_> {
     /// constant width, [`Error::FillNeedsRange`] unless both ends are instants,
     /// [`Error::FillTooWide`] past [`MOST_WINDOWS`], and whatever evaluating a
     /// fill value refuses.
-    pub(crate) fn fill_windows(
+    pub(crate) async fn fill_windows(
         &self,
         transaction: &mut Transaction<'_>,
         rows: Vec<Row>,
@@ -64,8 +64,8 @@ impl Session<'_> {
         group: &[Expr],
         fill: &Fill,
     ) -> Result<(Vec<(RecordId, Value)>, u64)> {
-        let window = self.window_of(transaction, group, fill.span)?;
-        let (first, end) = self.range_of(transaction, fill, window.seconds)?;
+        let window = self.window_of(transaction, group, fill.span).await?;
+        let (first, end) = self.range_of(transaction, fill, window.seconds).await?;
 
         // Written rows by the rest of their key, then by window start.
         let mut by_rest: BTreeMap<Vec<Value>, Written> = BTreeMap::new();
@@ -103,7 +103,9 @@ impl Session<'_> {
             });
         }
         let constant = match &fill.mode {
-            FillMode::Value(expr) => Some(self.evaluate_in(transaction, expr, Scope::none())?),
+            FillMode::Value(expr) => {
+                Some(self.evaluate_in(transaction, expr, Scope::none()).await?)
+            }
             FillMode::Previous | FillMode::Linear => None,
         };
 
@@ -141,7 +143,7 @@ impl Session<'_> {
     }
 
     /// The one `time::bucket` key and its width.
-    fn window_of(
+    async fn window_of(
         &self,
         transaction: &mut Transaction<'_>,
         group: &[Expr],
@@ -161,7 +163,7 @@ impl Session<'_> {
                 return Err(Error::FillNeedsWindow { span });
             }
             let width = match arguments.get(1) {
-                Some(width) => self.evaluate_in(transaction, width, Scope::none())?,
+                Some(width) => self.evaluate_in(transaction, width, Scope::none()).await?,
                 None => Value::None,
             };
             let Value::Duration(width) = width else {
@@ -179,14 +181,18 @@ impl Session<'_> {
     }
 
     /// The first window's start and the range's end, in seconds.
-    fn range_of(
+    async fn range_of(
         &self,
         transaction: &mut Transaction<'_>,
         fill: &Fill,
         width: i64,
     ) -> Result<(i64, i64)> {
-        let from = self.evaluate_in(transaction, &fill.from, Scope::none())?;
-        let to = self.evaluate_in(transaction, &fill.to, Scope::none())?;
+        let from = self
+            .evaluate_in(transaction, &fill.from, Scope::none())
+            .await?;
+        let to = self
+            .evaluate_in(transaction, &fill.to, Scope::none())
+            .await?;
         let (Value::Datetime(from), Value::Datetime(to)) = (from, to) else {
             return Err(Error::FillNeedsRange { span: fill.span });
         };

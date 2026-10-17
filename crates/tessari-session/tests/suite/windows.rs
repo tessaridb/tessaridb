@@ -13,6 +13,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Session};
@@ -21,13 +23,13 @@ use tessari_types::{Number, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
              DEFINE COLLECTION readings;",
@@ -48,7 +50,7 @@ fn populate(session: &mut Session<'_>) {
         (6, "2026-03-01T03:10:00Z"),
     ] {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE readings:{n} = {{ at: datetime '{at}', level: {n} }};"
             ))
             .unwrap();
@@ -78,7 +80,7 @@ fn a_window_is_a_group_key_like_any_other() {
     populate(&mut session);
 
     let outcomes = session
-        .run(
+        .run_now(
             "SELECT count(*) AS held, time::bucket(at, 1h) AS window FROM readings \
              GROUP BY time::bucket(at, 1h);",
         )
@@ -112,7 +114,7 @@ fn a_window_has_no_row_for_an_hour_nothing_happened_in() {
     populate(&mut session);
 
     let outcomes = session
-        .run(
+        .run_now(
             "SELECT count(*) AS held, time::bucket(at, 1h) AS window FROM readings \
              GROUP BY time::bucket(at, 1h);",
         )
@@ -128,7 +130,7 @@ fn the_window_width_is_the_whole_of_what_changes_the_answer() {
 
     for (width, groups) in [("1h", 3), ("2h", 2), ("1d", 1), ("30m", 5)] {
         let outcomes = session
-            .run(&format!(
+            .run_now(&format!(
                 "SELECT count(*) AS held, time::bucket(at, {width}) AS window FROM readings \
                  GROUP BY time::bucket(at, {width});"
             ))
@@ -149,14 +151,14 @@ fn windows_are_anchored_at_the_epoch_and_not_at_the_data() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE readings:1 = { at: datetime '2026-03-01T00:40:00Z' };\n\
              CREATE readings:2 = { at: datetime '2026-03-01T01:10:00Z' };",
         )
         .unwrap();
 
     let outcomes = session
-        .run("SELECT time::bucket(at, 1h) AS window FROM readings;")
+        .run_now("SELECT time::bucket(at, 1h) AS window FROM readings;")
         .unwrap();
     let records = outcomes[0].records().unwrap();
     // 00:40 and 01:10 are forty minutes apart and in different windows, because
@@ -180,11 +182,11 @@ fn an_instant_before_the_epoch_lands_in_the_window_that_contains_it() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("CREATE readings:1 = { at: datetime '1969-12-31T23:30:00Z' };")
+        .run_now("CREATE readings:1 = { at: datetime '1969-12-31T23:30:00Z' };")
         .unwrap();
 
     let outcomes = session
-        .run("SELECT time::bucket(at, 1h) AS window FROM readings;")
+        .run_now("SELECT time::bucket(at, 1h) AS window FROM readings;")
         .unwrap();
     assert_eq!(
         field(&outcomes[0].records().unwrap()[0].1, "window"),
@@ -200,7 +202,7 @@ fn a_group_by_over_a_path_still_means_what_it_always_did() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE readings:1 = { city: 'london', level: 1 };\n\
              CREATE readings:2 = { city: 'york', level: 2 };\n\
              CREATE readings:3 = { city: 'london', level: 3 };",
@@ -208,7 +210,7 @@ fn a_group_by_over_a_path_still_means_what_it_always_did() {
         .unwrap();
 
     let outcomes = session
-        .run("SELECT count(*) AS held, city FROM readings GROUP BY city;")
+        .run_now("SELECT count(*) AS held, city FROM readings GROUP BY city;")
         .unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(records.len(), 2);
@@ -227,7 +229,7 @@ fn a_projection_that_is_not_a_group_key_is_still_refused() {
 
     assert!(
         session
-            .run(
+            .run_now(
                 "SELECT count(*) AS held, level FROM readings \
                  GROUP BY time::bucket(at, 1h);"
             )
@@ -243,7 +245,7 @@ fn a_window_of_nothing_is_refused_rather_than_dividing_by_it() {
 
     for width in ["0s", "500ms"] {
         let refused = session
-            .run(&format!(
+            .run_now(&format!(
                 "SELECT time::bucket(at, {width}) AS window FROM readings;"
             ))
             .unwrap_err();
@@ -261,7 +263,7 @@ fn bucketing_something_that_is_not_an_instant_names_what_it_wanted() {
     populate(&mut session);
 
     let refused = session
-        .run("SELECT time::bucket(level, 1h) AS window FROM readings;")
+        .run_now("SELECT time::bucket(level, 1h) AS window FROM readings;")
         .unwrap_err();
     match refused {
         Error::WrongArgument { expected, .. } => assert_eq!(expected, "a datetime"),
@@ -278,7 +280,7 @@ fn a_window_composes_with_a_filter_and_an_ordering() {
     populate(&mut session);
 
     let outcomes = session
-        .run(
+        .run_now(
             "SELECT count(*) AS held, time::bucket(at, 1h) AS window FROM readings \
              WHERE at >= datetime '2026-03-01T01:00:00Z' \
              GROUP BY time::bucket(at, 1h) ORDER BY held DESC;",
@@ -300,14 +302,14 @@ fn a_retention_statement_removes_a_range_and_says_how_much() {
     populate(&mut session);
 
     let outcomes = session
-        .run("DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z' LIMIT ALL;")
+        .run_now("DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z' LIMIT ALL;")
         .unwrap();
     match outcomes[0] {
         tessari_session::Outcome::Removed { count } => assert_eq!(count, 3),
         ref other => panic!("not a removal: {other:?}"),
     }
 
-    let left = session.run("SELECT * FROM readings;").unwrap();
+    let left = session.run_now("SELECT * FROM readings;").unwrap();
     assert_eq!(left[0].records().unwrap().len(), 3);
 }
 
@@ -321,11 +323,11 @@ fn a_retention_statement_is_served_by_an_index_like_any_other_read() {
     let mut session = ready(&store);
     populate(&mut session);
     session
-        .run("DEFINE INDEX by_at ON readings FIELDS at;")
+        .run_now("DEFINE INDEX by_at ON readings FIELDS at;")
         .unwrap();
 
     let outcomes = session
-        .run("DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z' LIMIT ALL;")
+        .run_now("DELETE FROM readings WHERE at < datetime '2026-03-01T01:00:00Z' LIMIT ALL;")
         .unwrap();
     match outcomes[0] {
         tessari_session::Outcome::Removed { count } => assert_eq!(count, 3),
@@ -333,7 +335,7 @@ fn a_retention_statement_is_served_by_an_index_like_any_other_read() {
     }
     // And the index no longer answers for what is gone.
     let left = session
-        .run("SELECT * FROM readings WHERE at < datetime '2026-03-01T01:00:00Z';")
+        .run_now("SELECT * FROM readings WHERE at < datetime '2026-03-01T01:00:00Z';")
         .unwrap();
     assert!(left[0].records().unwrap().is_empty());
 }
@@ -345,14 +347,14 @@ fn a_condition_nothing_satisfies_removes_nothing_and_is_not_an_error() {
     populate(&mut session);
 
     let outcomes = session
-        .run("DELETE FROM readings WHERE at < datetime '2020-01-01T00:00:00Z' LIMIT ALL;")
+        .run_now("DELETE FROM readings WHERE at < datetime '2020-01-01T00:00:00Z' LIMIT ALL;")
         .unwrap();
     match outcomes[0] {
         tessari_session::Outcome::Removed { count } => assert_eq!(count, 0),
         ref other => panic!("not a removal: {other:?}"),
     }
     assert_eq!(
-        session.run("SELECT * FROM readings;").unwrap()[0]
+        session.run_now("SELECT * FROM readings;").unwrap()[0]
             .records()
             .unwrap()
             .len(),
@@ -371,14 +373,14 @@ fn a_retention_run_is_one_commit() {
     populate(&mut session);
 
     session
-        .run(
+        .run_now(
             "BEGIN;\n\
              DELETE FROM readings WHERE at < datetime '2026-03-01T02:00:00Z' LIMIT ALL;\n\
              CANCEL;",
         )
         .unwrap();
     assert_eq!(
-        session.run("SELECT * FROM readings;").unwrap()[0]
+        session.run_now("SELECT * FROM readings;").unwrap()[0]
             .records()
             .unwrap()
             .len(),
@@ -394,18 +396,21 @@ fn what_retention_removes_is_reclaimed_rather_than_left_behind() {
     // reader still needs the version. Asserted end to end rather than assumed:
     // the versions are counted on disk before and after.
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     {
         let mut session = ready(&store);
         populate(&mut session);
         session
-            .run("DELETE FROM readings WHERE at < datetime '2026-03-01T02:00:00Z' LIMIT ALL;")
+            .run_now("DELETE FROM readings WHERE at < datetime '2026-03-01T02:00:00Z' LIMIT ALL;")
             .unwrap();
     }
 
     let (namespace, database, table) = tenancy(&store);
     let before = versions(&backend, namespace, database, table);
-    let reclaimed = store.reclaim_table(namespace, database, table).unwrap();
+    let reclaimed = store
+        .reclaim_table(namespace, database, table)
+        .now()
+        .unwrap();
     let after = versions(&backend, namespace, database, table);
 
     assert!(
@@ -423,12 +428,17 @@ fn tenancy(
     tessari_types::DatabaseId,
     tessari_types::TableId,
 ) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = tessari_storage::Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "orders").unwrap().unwrap();
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "orders")
+        .now()
+        .unwrap()
+        .unwrap();
     let table = catalog
         .table_id(namespace, database, "readings")
+        .now()
         .unwrap()
         .unwrap();
     (namespace, database, table)
@@ -452,5 +462,5 @@ fn versions(
         direction: tessari_kv::ScanDirection::Forward,
         limit: None,
     };
-    backend.scan(&request).unwrap().len()
+    backend.scan(&request).now().unwrap().len()
 }

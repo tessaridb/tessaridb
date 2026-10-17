@@ -43,9 +43,9 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the store cannot be read or the state cannot be
     /// decoded.
-    pub fn rollup_state(&self, rollup: TableId, key: &[u8]) -> Result<Option<Value>> {
+    pub async fn rollup_state(&self, rollup: TableId, key: &[u8]) -> Result<Option<Value>> {
         let address = system::address(ROLLUP_STATES, state_id(rollup, key));
-        Ok(match self.get(&address)? {
+        Ok(match self.get(&address).await? {
             Some(payload) => Some(decode_payload(&payload)?),
             None => None,
         })
@@ -69,8 +69,11 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the store cannot be read.
-    pub fn forget_rollup_states(&mut self, rollup: TableId) -> Result<()> {
-        for (id, _) in self.system_rows_prefixed(ROLLUP_STATES, &rollup_prefix(rollup))? {
+    pub async fn forget_rollup_states(&mut self, rollup: TableId) -> Result<()> {
+        for (id, _) in self
+            .system_rows_prefixed(ROLLUP_STATES, &rollup_prefix(rollup))
+            .await?
+        {
             self.delete(system::address(ROLLUP_STATES, id));
         }
         Ok(())

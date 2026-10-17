@@ -27,15 +27,17 @@
 
 use std::io::{Read, Write};
 
-use tessari_encoding::{LogId, LogRecord, NodeVersion, StoreValue};
-use tessari_storage::{Store, TopicHead};
-use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, TableId};
+use tessari_encoding::{LogId, NodeVersion, StoreValue};
+use tessari_storage::Store;
+use tessari_types::{Reach, Sequence};
 
-use crate::format::{Head, fill};
+use crate::format::fill;
+
+mod frames;
 use crate::{
-    Error, FRAME_SECTION, FRAME_SHARD_SECTION, Filled, Result, check, log_bytes, log_in,
-    shard_log_bytes, shard_log_in,
+    Error, FRAME_SECTION, FRAME_SHARD_SECTION, Filled, Result, check, log_bytes, shard_log_bytes,
 };
+use frames::{Frame, Frames, Item};
 
 /// What every snapshot file begins with.
 pub const STATE_MAGIC: &[u8; 11] = b"TESSARISNAP";
@@ -76,8 +78,8 @@ pub fn is_state(opening: &[u8]) -> bool {
 /// # Errors
 ///
 /// Returns an error when the store or the stream fails.
-pub fn write_state(store: &Store, out: &mut impl Write) -> Result<StateTaken> {
-    write_state_within(store, Reach::Store, out)
+pub async fn write_state(store: &Store, out: &mut impl Write) -> Result<StateTaken> {
+    write_state_within(store, Reach::Store, out).await
 }
 
 /// Write the state of one place in `store` — a namespace or a database — to
@@ -91,12 +93,12 @@ pub fn write_state(store: &Store, out: &mut impl Write) -> Result<StateTaken> {
 /// # Errors
 ///
 /// Returns an error when the store or the stream fails.
-pub fn write_state_within(
+pub async fn write_state_within(
     store: &Store,
     within: Reach,
     out: &mut impl Write,
 ) -> Result<StateTaken> {
-    let mut reader = store.read_state_within(within)?;
+    let mut reader = store.read_state_within(within).await?;
     let writer = NodeVersion::current();
     out.write_all(STATE_MAGIC)?;
     out.write_all(&[STATE_FORMAT, tessari_encoding::CODEC_VERSION])?;
@@ -119,7 +121,7 @@ pub fn write_state_within(
     }
     let mut chunks = 0_u64;
     let mut records = 0_u64;
-    while let Some(chunk) = reader.next_chunk(CHUNK)? {
+    while let Some(chunk) = reader.next_chunk(CHUNK).await? {
         let bytes = chunk.encode();
         let body = bytes.as_slice();
         let length = u32::try_from(body.len()).unwrap_or(u32::MAX);
@@ -131,7 +133,7 @@ pub fn write_state_within(
         let held = u64::try_from(chunk.mutations().len()).unwrap_or(u64::MAX);
         records = records.saturating_add(held);
     }
-    let topics = reader.topic_heads()?;
+    let topics = reader.topic_heads().await?;
     for topic in &topics {
         out.write_all(&[FRAME_TOPIC])?;
         out.write_all(&topic.namespace.get().to_be_bytes())?;
@@ -161,7 +163,12 @@ pub fn write_state_within(
 /// The refusals [`read_state`] gives before applying anything, and
 /// [`Error::StateIncomplete`] or [`Error::Damaged`] for a file that is not whole.
 pub fn verify_state(input: &mut impl Read) -> Result<StateTaken> {
-    walk(input, |_| Ok(()))
+    let mut frames = Frames::open(input)?;
+    loop {
+        if let Frame::End(taken) = frames.next()? {
+            return Ok(taken);
+        }
+    }
 }
 
 /// Restore a snapshot into an **empty** store.
@@ -179,147 +186,32 @@ pub fn verify_state(input: &mut impl Read) -> Result<StateTaken> {
 ///
 /// [`Error::WrongBase`] when the store holds anything, the refusals of
 /// [`verify_state`], and the store's own error when a chunk cannot be written.
-pub fn read_state<R: Read>(
+pub async fn read_state<R: Read>(
     store: &Store,
     mut open: impl FnMut() -> std::io::Result<R>,
 ) -> Result<StateTaken> {
-    if !store.holds_nothing()? {
+    if !store.holds_nothing().await? {
         return Err(Error::WrongBase {
             needs: 0,
-            found: store.committed_version()?.get(),
+            found: store.committed_version().await?.get(),
         });
     }
     verify_state(&mut open()?)?;
     let mut topics = Vec::new();
-    let taken = walk(&mut open()?, |item| {
-        match item {
-            Item::Chunk(chunk) => store.restore_state_chunk(&chunk)?,
-            Item::Topic(topic) => topics.push(topic),
+    let mut input = open()?;
+    let mut frames = Frames::open(&mut input)?;
+    let taken = loop {
+        match frames.next()? {
+            Frame::Item(Item::Chunk(chunk)) => store.restore_state_chunk(&chunk).await?,
+            Frame::Item(Item::Topic(topic)) => topics.push(topic),
+            Frame::End(taken) => break taken,
         }
-        Ok(())
-    })?;
-    store.finish_state(&taken.positions, &topics)?;
+    };
+    store.finish_state(&taken.positions, &topics).await?;
     // Restored on its own, nobody else will finish what the cut decided: the
     // store settles it, leaving the undecided for the log above (Q-922b).
-    store.settle_restored()?;
+    store.settle_restored().await?;
     Ok(taken)
-}
-
-/// One thing a snapshot carries after its head.
-enum Item {
-    Chunk(LogRecord),
-    Topic(TopicHead),
-}
-
-/// Read a snapshot through, handing each chunk and topic to `each`.
-fn walk(input: &mut impl Read, mut each: impl FnMut(Item) -> Result<()>) -> Result<StateTaken> {
-    let mut magic = [0_u8; 11];
-    input
-        .read_exact(&mut magic)
-        .map_err(|_| Error::NotABackup)?;
-    if !is_state(&magic) {
-        return Err(Error::NotABackup);
-    }
-    let [format, codec] = exact::<2>(input)?;
-    if format != STATE_FORMAT {
-        return Err(Error::Unsupported {
-            what: "snapshot format",
-            found: format,
-            supported: STATE_FORMAT,
-        });
-    }
-    if codec != tessari_encoding::CODEC_VERSION {
-        return Err(Error::Unsupported {
-            what: "record codec",
-            found: codec,
-            supported: tessari_encoding::CODEC_VERSION,
-        });
-    }
-    let writer = Head::writer(input)?;
-    let running = NodeVersion::current();
-    if writer > running {
-        return Err(Error::WrittenByNewer {
-            found: writer.to_string(),
-            supported: running.to_string(),
-        });
-    }
-    let version = Sequence::new(u64::from_be_bytes(exact::<8>(input)?));
-    let logs = u32::from_be_bytes(exact::<4>(input)?);
-    let mut positions = Vec::new();
-    for _ in 0..logs {
-        let log = match exact::<1>(input)? {
-            [FRAME_SECTION] => log_in(exact::<25>(input)?),
-            [FRAME_SHARD_SECTION] => shard_log_in(exact::<33>(input)?),
-            _ => None,
-        }
-        .ok_or(Error::NotABackup)?;
-        let at = Sequence::new(u64::from_be_bytes(exact::<8>(input)?));
-        positions.push((log, at));
-    }
-    let mut chunks = 0_u64;
-    let mut records = 0_u64;
-    let mut topics = 0_usize;
-    loop {
-        match exact::<1>(input) {
-            Ok([FRAME_CHUNK]) => {
-                let length = u32::from_be_bytes(exact::<4>(input)?);
-                let sum = u32::from_be_bytes(exact::<4>(input)?);
-                // Read through `take` rather than into a buffer of the stated
-                // length: a damaged length would otherwise allocate up to four
-                // gigabytes before the checksum could refuse the frame, while
-                // this grows only as far as the file actually goes.
-                let mut body = Vec::new();
-                input
-                    .by_ref()
-                    .take(u64::from(length))
-                    .read_to_end(&mut body)?;
-                if u64::try_from(body.len()).unwrap_or(u64::MAX) != u64::from(length) {
-                    return Err(Error::StateIncomplete);
-                }
-                if check::crc32(&body) != sum {
-                    return Err(Error::Damaged { sequence: chunks });
-                }
-                let chunk = LogRecord::decode(&body)?;
-                let held = u64::try_from(chunk.mutations().len()).unwrap_or(u64::MAX);
-                records = records.saturating_add(held);
-                chunks = chunks.saturating_add(1);
-                each(Item::Chunk(chunk))?;
-            }
-            Ok([FRAME_TOPIC]) => {
-                let namespace = NamespaceId::new(u32::from_be_bytes(exact::<4>(input)?));
-                let database = DatabaseId::new(u32::from_be_bytes(exact::<4>(input)?));
-                let table = TableId::new(u32::from_be_bytes(exact::<4>(input)?));
-                let last = u64::from_be_bytes(exact::<8>(input)?);
-                topics = topics.saturating_add(1);
-                each(Item::Topic(TopicHead {
-                    namespace,
-                    database,
-                    table,
-                    last,
-                }))?;
-            }
-            Ok([FRAME_END]) => {
-                let end = exact::<16>(input)?;
-                let sum = u32::from_be_bytes(exact::<4>(input)?);
-                let (counted, held) = end.split_at(8);
-                let whole = check::crc32(&end) == sum
-                    && counted == chunks.to_be_bytes()
-                    && held == records.to_be_bytes();
-                if !whole {
-                    return Err(Error::StateIncomplete);
-                }
-                return Ok(StateTaken {
-                    writer,
-                    version,
-                    positions,
-                    records,
-                    topics,
-                });
-            }
-            Ok(_) => return Err(Error::NotABackup),
-            Err(_) => return Err(Error::StateIncomplete),
-        }
-    }
 }
 
 /// Exactly `N` bytes, or the file ended before its end frame.

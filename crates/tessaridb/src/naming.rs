@@ -32,7 +32,10 @@ impl Db {
     /// # Errors
     ///
     /// Returns an error when the catalog cannot be read.
-    pub fn names_in(&self, records: &[(RecordId, Value)]) -> Result<BTreeMap<TableId, String>> {
+    pub async fn names_in(
+        &self,
+        records: &[(RecordId, Value)],
+    ) -> Result<BTreeMap<TableId, String>> {
         let mut wanted = BTreeSet::new();
         for (_, held) in records {
             tessari_types::json::referenced_tables(held, &mut wanted);
@@ -41,13 +44,13 @@ impl Db {
         if wanted.is_empty() {
             return Ok(named);
         }
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let catalog = Catalog::new(&mut transaction);
         for table in wanted {
             // A reference to a table that has been dropped keeps its id and
             // gains no name, the same way a reference to a deleted record keeps
             // its id: the field still says what it says.
-            if let Some(held) = catalog.table(table)? {
+            if let Some(held) = catalog.table(table).await? {
                 named.insert(table, held.name);
             }
         }
@@ -64,10 +67,11 @@ impl Db {
     /// # Errors
     ///
     /// Returns an error when the catalog cannot be read.
-    pub fn table_name(&self, table: TableId) -> Result<Option<String>> {
-        let mut transaction = self.store.begin()?;
+    pub async fn table_name(&self, table: TableId) -> Result<Option<String>> {
+        let mut transaction = self.store.begin().await?;
         Ok(Catalog::new(&mut transaction)
-            .table(table)?
+            .table(table)
+            .await?
             .map(|held| held.name))
     }
 
@@ -78,20 +82,20 @@ impl Db {
     /// # Errors
     ///
     /// Returns an error when the catalog cannot be read.
-    pub fn is_series(&self, namespace: &str, database: &str, table: &str) -> Result<bool> {
-        let mut transaction = self.store.begin()?;
+    pub async fn is_series(&self, namespace: &str, database: &str, table: &str) -> Result<bool> {
+        let mut transaction = self.store.begin().await?;
         let catalog = Catalog::new(&mut transaction);
-        let Some(namespace) = catalog.namespace_id(namespace)? else {
+        let Some(namespace) = catalog.namespace_id(namespace).await? else {
             return Ok(false);
         };
-        let Some(database) = catalog.database_id(namespace, database)? else {
+        let Some(database) = catalog.database_id(namespace, database).await? else {
             return Ok(false);
         };
-        let Some(table) = catalog.table_id(namespace, database, table)? else {
+        let Some(table) = catalog.table_id(namespace, database, table).await? else {
             return Ok(false);
         };
         Ok(matches!(
-            catalog.table(table)?.map(|held| held.kind),
+            catalog.table(table).await?.map(|held| held.kind),
             Some(tessari_storage::TableKind::Series(_))
         ))
     }
@@ -103,20 +107,20 @@ impl Db {
     /// # Errors
     ///
     /// Returns an error when the catalog cannot be read.
-    pub fn is_space(&self, namespace: &str, database: &str, table: &str) -> Result<bool> {
-        let mut transaction = self.store.begin()?;
+    pub async fn is_space(&self, namespace: &str, database: &str, table: &str) -> Result<bool> {
+        let mut transaction = self.store.begin().await?;
         let catalog = Catalog::new(&mut transaction);
-        let Some(namespace) = catalog.namespace_id(namespace)? else {
+        let Some(namespace) = catalog.namespace_id(namespace).await? else {
             return Ok(false);
         };
-        let Some(database) = catalog.database_id(namespace, database)? else {
+        let Some(database) = catalog.database_id(namespace, database).await? else {
             return Ok(false);
         };
-        let Some(table) = catalog.table_id(namespace, database, table)? else {
+        let Some(table) = catalog.table_id(namespace, database, table).await? else {
             return Ok(false);
         };
         Ok(matches!(
-            catalog.table(table)?.map(|held| held.kind),
+            catalog.table(table).await?.map(|held| held.kind),
             Some(tessari_storage::TableKind::Space(_))
         ))
     }
@@ -130,18 +134,19 @@ impl Db {
     ///
     /// Returns an error when the catalog cannot be read. A name that is not
     /// there is `None`: not existing is an answer.
-    pub fn tenancy_in(
+    pub async fn tenancy_in(
         &self,
         namespace: &str,
         database: &str,
     ) -> Result<Option<(NamespaceId, DatabaseId)>> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let catalog = Catalog::new(&mut transaction);
-        let Some(namespace) = catalog.namespace_id(namespace)? else {
+        let Some(namespace) = catalog.namespace_id(namespace).await? else {
             return Ok(None);
         };
         Ok(catalog
-            .database_id(namespace, database)?
+            .database_id(namespace, database)
+            .await?
             .map(|database| (namespace, database)))
     }
 
@@ -155,21 +160,21 @@ impl Db {
     ///
     /// Returns an error when the catalog cannot be read. A name that is not
     /// there is `None` rather than an error: not existing is an answer.
-    pub fn table_in(
+    pub async fn table_in(
         &self,
         namespace: &str,
         database: &str,
         table: &str,
     ) -> Result<Option<TableId>> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         let catalog = Catalog::new(&mut transaction);
-        let Some(namespace) = catalog.namespace_id(namespace)? else {
+        let Some(namespace) = catalog.namespace_id(namespace).await? else {
             return Ok(None);
         };
-        let Some(database) = catalog.database_id(namespace, database)? else {
+        let Some(database) = catalog.database_id(namespace, database).await? else {
             return Ok(None);
         };
-        Ok(catalog.table_id(namespace, database, table)?)
+        Ok(catalog.table_id(namespace, database, table).await?)
     }
 
     /// The split tables in one database, each with its shards (G031, ADR-0080).
@@ -180,14 +185,15 @@ impl Db {
     /// # Errors
     ///
     /// Returns an error when the catalog cannot be read.
-    pub(crate) fn split_tables_in(
+    pub(crate) async fn split_tables_in(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
     ) -> Result<Vec<(String, TableId, Vec<ShardId>)>> {
-        let mut transaction = self.store.begin()?;
+        let mut transaction = self.store.begin().await?;
         Ok(Catalog::new(&mut transaction)
-            .tables_in(namespace, database)?
+            .tables_in(namespace, database)
+            .await?
             .into_iter()
             .filter_map(|table| {
                 // Every log that may hold its records — a retired shard's

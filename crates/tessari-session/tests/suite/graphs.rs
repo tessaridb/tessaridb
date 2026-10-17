@@ -32,6 +32,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
@@ -40,14 +42,14 @@ use tessari_types::{RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// A tenancy with two ordinary tables for an edge table to join.
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE social; USE DATABASE social;\n\
              DEFINE COLLECTION users;\n\
@@ -59,7 +61,7 @@ fn ready(store: &Store) -> Session<'_> {
 
 /// The report a script's last statement answered with.
 fn report(session: &mut Session<'_>, script: &str) -> Value {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     match outcomes.last() {
         Some(Outcome::Value(value)) => value.clone(),
         other => panic!("expected a report, got {other:?}"),
@@ -105,10 +107,10 @@ fn an_edge_table_reports_the_pair_it_joins_in_the_direction_it_was_declared() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE wrote EDGE FROM users TO posts;")
+        .run_now("DEFINE TABLE wrote EDGE FROM users TO posts;")
         .unwrap();
     session
-        .run("DEFINE TABLE about EDGE FROM posts TO users;")
+        .run_now("DEFINE TABLE about EDGE FROM posts TO users;")
         .unwrap();
 
     let wrote = declared(&mut session, "wrote");
@@ -130,10 +132,10 @@ fn an_edge_table_reports_the_order_its_edges_are_held_in_and_which_way_it_runs()
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE recent (at datetime) EDGE FROM users TO posts ORDER BY at DESC;")
+        .run_now("DEFINE TABLE recent (at datetime) EDGE FROM users TO posts ORDER BY at DESC;")
         .unwrap();
     session
-        .run("DEFINE TABLE earliest (at datetime) EDGE FROM users TO posts ORDER BY at;")
+        .run_now("DEFINE TABLE earliest (at datetime) EDGE FROM users TO posts ORDER BY at;")
         .unwrap();
 
     let recent = declared(&mut session, "recent");
@@ -154,7 +156,7 @@ fn an_edge_table_declared_without_an_order_reports_none() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE follows EDGE FROM users TO users;")
+        .run_now("DEFINE TABLE follows EDGE FROM users TO users;")
         .unwrap();
 
     let follows = declared(&mut session, "follows");
@@ -170,7 +172,7 @@ fn an_endpoint_the_catalog_does_not_hold_is_refused_and_leaves_no_table_behind()
     let mut session = ready(&store);
 
     let error = session
-        .run("DEFINE TABLE wrote EDGE FROM users TO nowhere;")
+        .run_now("DEFINE TABLE wrote EDGE FROM users TO nowhere;")
         .unwrap_err();
     let Error::Unknown { entity, name, .. } = &error else {
         panic!("{error}");
@@ -193,7 +195,7 @@ fn an_order_naming_a_field_the_table_does_not_declare_is_refused() {
     let mut session = ready(&store);
 
     let error = session
-        .run("DEFINE TABLE recent (at datetime) EDGE FROM users TO posts ORDER BY seen DESC;")
+        .run_now("DEFINE TABLE recent (at datetime) EDGE FROM users TO posts ORDER BY seen DESC;")
         .unwrap_err();
     let Error::Unknown { entity, name, .. } = &error else {
         panic!("{error}");
@@ -213,7 +215,7 @@ fn a_declared_pair_accepts_relate_and_is_walked_the_way_a_bare_edge_table_is() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE follows EDGE FROM users TO users;\n\
              CREATE users:1 = { handle: 'ada' };\n\
              CREATE users:2 = { handle: 'grace' };\n\
@@ -228,7 +230,7 @@ fn a_declared_pair_accepts_relate_and_is_walked_the_way_a_bare_edge_table_is() {
     // `RELATE` would have been refused and the walk would have returned nothing —
     // with the catalog, the parser and every match arm compiling perfectly.
     let outcomes = session
-        .run("SELECT * FROM users:1->follows->users;")
+        .run_now("SELECT * FROM users:1->follows->users;")
         .unwrap();
     let reached: Vec<RecordId> = outcomes[0]
         .records()
@@ -239,7 +241,7 @@ fn a_declared_pair_accepts_relate_and_is_walked_the_way_a_bare_edge_table_is() {
     assert_eq!(reached, vec![RecordId::Int(2)]);
 
     let outcomes = session
-        .run("SELECT * FROM users:1->follows->users->follows->users;")
+        .run_now("SELECT * FROM users:1->follows->users->follows->users;")
         .unwrap();
     let two_hops: Vec<RecordId> = outcomes[0]
         .records()
@@ -255,13 +257,13 @@ fn dropping_the_table_undefines_the_declaration_it_carries() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE TABLE follows EDGE FROM users TO users;")
+        .run_now("DEFINE TABLE follows EDGE FROM users TO users;")
         .unwrap();
     assert!(tables(&mut session).contains(&"follows".to_owned()));
 
     // Dropping the table takes the declaration with it, because the declaration
     // is not a second entity beside the table — it rides on the table's own kind.
-    session.run("DROP TABLE follows;").unwrap();
+    session.run_now("DROP TABLE follows;").unwrap();
     assert!(!tables(&mut session).contains(&"follows".to_owned()));
 }
 
@@ -270,7 +272,7 @@ fn a_relate_off_the_declared_pair_is_refused_in_both_of_the_ways_it_can_be_wrong
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE wrote EDGE FROM users TO posts;\n\
              CREATE users:1 = { handle: 'ada' };\n\
              CREATE users:2 = { handle: 'grace' };\n\
@@ -281,11 +283,13 @@ fn a_relate_off_the_declared_pair_is_refused_in_both_of_the_ways_it_can_be_wrong
     // The pair as declared is accepted. This assertion is what stops the refusal
     // from passing by refusing everything, which is the cheap way to make the two
     // below go green.
-    session.run("RELATE users:1->wrote->posts:1;").unwrap();
+    session.run_now("RELATE users:1->wrote->posts:1;").unwrap();
 
     // Wrong on the right-hand side: `posts` is what the table declared it leads
     // into, and `users` is not.
-    let error = session.run("RELATE users:1->wrote->users:2;").unwrap_err();
+    let error = session
+        .run_now("RELATE users:1->wrote->users:2;")
+        .unwrap_err();
     let Error::EndpointsNotDeclared { table, .. } = &error else {
         panic!("{error}");
     };
@@ -295,7 +299,9 @@ fn a_relate_off_the_declared_pair_is_refused_in_both_of_the_ways_it_can_be_wrong
     // says, so a check that compared the two tables as an unordered set would
     // accept this — and every walk written against `wrote` would then meet edges
     // pointing the way it does not read.
-    let error = session.run("RELATE posts:1->wrote->users:1;").unwrap_err();
+    let error = session
+        .run_now("RELATE posts:1->wrote->users:1;")
+        .unwrap_err();
     assert!(
         matches!(error, Error::EndpointsNotDeclared { .. }),
         "{error}"
@@ -307,7 +313,7 @@ fn a_bare_edge_table_still_accepts_the_link_a_declared_one_refuses() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE wrote EDGE FROM users TO posts;\n\
              DEFINE TABLE linked EDGE;\n\
              CREATE users:1 = { handle: 'ada' };\n\
@@ -320,8 +326,10 @@ fn a_bare_edge_table_still_accepts_the_link_a_declared_one_refuses() {
     // the refusal comes from the declaration rather than from some new rule that
     // narrowed `RELATE` for everybody — which would silently break every edge
     // table written before the clause existed.
-    session.run("RELATE users:1->linked->users:2;").unwrap();
-    let error = session.run("RELATE users:1->wrote->users:2;").unwrap_err();
+    session.run_now("RELATE users:1->linked->users:2;").unwrap();
+    let error = session
+        .run_now("RELATE users:1->wrote->users:2;")
+        .unwrap_err();
     assert!(
         matches!(error, Error::EndpointsNotDeclared { .. }),
         "{error}"
@@ -333,7 +341,7 @@ fn an_edge_table_edge_is_deleted_by_its_endpoints_too() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE follows EDGE FROM users TO users;\n\
              CREATE users:1 = { handle: 'ada' };\n\
              CREATE users:2 = { handle: 'grace' };\n\
@@ -346,10 +354,12 @@ fn an_edge_table_edge_is_deleted_by_its_endpoints_too() {
     // The statement is the same one the declared-kind path takes, and it has to
     // be: the identity is derived by one rule for both, so a delete that worked
     // on only one of them would mean the rule had been written twice.
-    session.run("DELETE users:1->follows->users:2;").unwrap();
+    session
+        .run_now("DELETE users:1->follows->users:2;")
+        .unwrap();
 
     let outcomes = session
-        .run("SELECT * FROM users:1->follows->users;")
+        .run_now("SELECT * FROM users:1->follows->users;")
         .unwrap();
     let reached: Vec<RecordId> = outcomes[0]
         .records()
@@ -361,15 +371,17 @@ fn an_edge_table_edge_is_deleted_by_its_endpoints_too() {
 
     // The endpoint indexes go with the record, so the edge is gone from the
     // walk rather than merely from the table it lived in.
-    let outcomes = session.run("SELECT * FROM users:1->follows;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM users:1->follows;").unwrap();
     assert_eq!(outcomes[0].records().unwrap().len(), 1);
 
     // And a pair the table declared it does not join is refused here as it is
     // on `RELATE`, rather than deleting nothing and reporting success.
     session
-        .run("DEFINE TABLE wrote EDGE FROM users TO posts;")
+        .run_now("DEFINE TABLE wrote EDGE FROM users TO posts;")
         .unwrap();
-    let error = session.run("DELETE users:1->wrote->users:2;").unwrap_err();
+    let error = session
+        .run_now("DELETE users:1->wrote->users:2;")
+        .unwrap_err();
     assert!(
         matches!(error, Error::EndpointsNotDeclared { .. }),
         "{error}"

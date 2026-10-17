@@ -7,6 +7,7 @@
 
 use tessari_encoding::{RecordKey, StoreKey};
 use tessari_kv::{KeyRange, Keyspace, ScanDirection, ScanRequest};
+use tessari_storage::Now;
 use tessari_storage::{Expired, RecordAddress, SeriesDeclaration, TableKind};
 use tessari_types::IdentityKind;
 
@@ -28,6 +29,7 @@ fn expire(fixture: &Fixture) -> Expired {
     fixture
         .store
         .expire_series(fixture.namespace, fixture.database, fixture.table)
+        .now()
         .unwrap()
 }
 
@@ -35,6 +37,7 @@ fn entries(fixture: &Fixture, keyspace: Keyspace) -> usize {
     fixture
         .backend
         .scan(&ScanRequest::new(keyspace, KeyRange::all()))
+        .now()
         .unwrap()
         .len()
 }
@@ -89,8 +92,11 @@ fn a_reader_begun_earlier_keeps_what_it_could_see() {
         edge.clone(),
     );
 
-    let reader = fixture.store.begin().unwrap();
-    assert!(reader.get(&address).unwrap().is_some(), "above its floor");
+    let reader = fixture.store.begin().now().unwrap();
+    assert!(
+        reader.get(&address).now().unwrap().is_some(),
+        "above its floor"
+    );
     // Until the clock has moved the floor past the record. A spin rather than
     // a sleep: it only has to observe the clock move.
     while now_millis() < base + 200 {
@@ -100,8 +106,10 @@ fn a_reader_begun_earlier_keeps_what_it_could_see() {
         fixture
             .store
             .begin()
+            .now()
             .unwrap()
             .get(&address)
+            .now()
             .unwrap()
             .is_none(),
         "below the floor a transaction begun now reads at"
@@ -118,10 +126,11 @@ fn a_reader_begun_earlier_keeps_what_it_could_see() {
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .now()
         .unwrap();
     assert_eq!(held.len(), 1, "the edge's bytes are still there");
     assert!(
-        reader.get(&address).unwrap().is_some(),
+        reader.get(&address).now().unwrap().is_some(),
         "and still answered"
     );
 
@@ -140,14 +149,14 @@ fn a_reader_begun_earlier_keeps_what_it_could_see() {
 #[test]
 fn the_sweep_finds_every_series_table() {
     let fixture = series();
-    assert_eq!(fixture.store.expire_every_series().unwrap().ranges, 1);
+    assert_eq!(fixture.store.expire_every_series().now().unwrap().ranges, 1);
     assert_eq!(
         fixture.stored_entries(),
         1,
         "only the current record is left"
     );
     assert_eq!(
-        fixture.store.expire_every_series().unwrap(),
+        fixture.store.expire_every_series().now().unwrap(),
         Expired::default()
     );
 }

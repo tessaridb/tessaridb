@@ -110,7 +110,7 @@ impl Session<'_> {
     /// A `search::score` whose field has no analyzer *or* no search index gets
     /// no corpus, and is refused when it is evaluated — for the reason
     /// [`crate::rank`] sets out at length.
-    pub(crate) fn searched_for(
+    pub(crate) async fn searched_for(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
@@ -139,7 +139,7 @@ impl Session<'_> {
         let mut matched: Vec<(Path, String)> = Vec::with_capacity(phrased.len());
         let mut matched_at: Vec<Span> = Vec::with_capacity(phrased.len());
         for (path, query) in phrased {
-            let Value::String(text) = self.evaluate(transaction, query)? else {
+            let Value::String(text) = self.evaluate(transaction, query).await? else {
                 continue;
             };
             if let Some(marker) = malformed_slop(&text) {
@@ -159,7 +159,7 @@ impl Session<'_> {
             return Ok(Searched::default());
         }
 
-        let declared = Catalog::new(transaction).declared_fields(table)?;
+        let declared = Catalog::new(transaction).declared_fields(table).await?;
         let mut named = BTreeMap::new();
         for field in declared {
             let Some(analyzer) = field.analyzer else {
@@ -171,7 +171,7 @@ impl Session<'_> {
             named.insert(field.name, analyzer);
         }
         let mut analyzers = BTreeMap::new();
-        for definition in Catalog::new(transaction).analyzers()? {
+        for definition in Catalog::new(transaction).analyzers().await? {
             for path in &wanted {
                 if named.get(path.root()) == Some(&definition.name) {
                     analyzers.insert((*path).clone(), definition.analyzer.clone());
@@ -188,7 +188,7 @@ impl Session<'_> {
             let Some(analyzer) = analyzers.get(path) else {
                 continue;
             };
-            let Value::String(text) = self.evaluate(transaction, query)? else {
+            let Value::String(text) = self.evaluate(transaction, query).await? else {
                 continue;
             };
             asked_of
@@ -247,7 +247,7 @@ impl Session<'_> {
         // and neither ever touches the record the grant redacted — so the field
         // the grant hides has to be hidden here as well, or a caller who cannot
         // read it could rank the table by it and be told the words it holds.
-        let visible = self.visible_in(transaction, table)?;
+        let visible = self.visible_in(transaction, table).await?;
         let hidden = |path: &Path| {
             visible
                 .as_ref()
@@ -258,11 +258,11 @@ impl Session<'_> {
         // field this session may read, current at this snapshot, and holding
         // no posting this transaction has written past.
         let mut offsets = BTreeMap::new();
-        if let Some(definition) = Catalog::new(transaction).table(table)?
+        if let Some(definition) = Catalog::new(transaction).table(table).await?
             && !transaction.writes_in(definition.namespace, definition.database, table)
         {
             for path in asked_of.keys().filter(|path| !hidden(path)) {
-                if let Some(index) = self.index_on_path(transaction, table, path)?
+                if let Some(index) = self.index_on_path(transaction, table, path).await?
                     && index.search
                     && !index.needs_rebuild()
                     && index.costs.offsets
@@ -277,7 +277,7 @@ impl Session<'_> {
             let Some(analyzer) = analyzers.get(path) else {
                 continue;
             };
-            let Some(index) = self.index_on_path(transaction, table, path)? else {
+            let Some(index) = self.index_on_path(transaction, table, path).await? else {
                 continue;
             };
             // An unscored index keeps no statistics to measure against, so a
@@ -309,7 +309,7 @@ impl Session<'_> {
             }
             // Only the terms this statement asks about: counting the rest would
             // be reading the index to answer a question nobody put.
-            let text = match self.evaluate(transaction, query)? {
+            let text = match self.evaluate(transaction, query).await? {
                 Value::String(text) => text,
                 _ => String::new(),
             };
@@ -336,33 +336,35 @@ impl Session<'_> {
             // ADR-0104 D5: which terms a prefix blends is a question about the
             // whole collection's dictionary, and this node may hold part of it.
             if !starred.is_empty() || !near.is_empty() {
-                self.refuse_reading_a_part(transaction, table, Part::Whole)?;
+                self.refuse_reading_a_part(transaction, table, Part::Whole)
+                    .await?;
             }
-            let statistics = transaction.search_statistics(&index)?;
+            let statistics = transaction.search_statistics(&index).await?;
             let mut terms = BTreeMap::new();
             for term in &asked {
                 if terms.contains_key(term) {
                     continue;
                 }
-                let held = transaction.term_statistics(&index, term)?;
+                let held = transaction.term_statistics(&index, term).await?;
                 terms.insert(term.clone(), held);
             }
             let mut blends = Vec::with_capacity(starred.len());
             for alternatives in &starred {
-                let blend = blended(transaction, &index, alternatives)?;
+                let blend = blended(transaction, &index, alternatives).await?;
                 for term in &blend.expansions {
                     if !terms.contains_key(term) {
-                        let held = transaction.term_statistics(&index, term)?;
+                        let held = transaction.term_statistics(&index, term).await?;
                         terms.insert(term.clone(), held);
                     }
                 }
                 blends.push(blend);
             }
             for alternatives in &near {
-                let blend = super::weighted::fuzzy_blended(transaction, &index, alternatives)?;
+                let blend =
+                    super::weighted::fuzzy_blended(transaction, &index, alternatives).await?;
                 for term in &blend.expansions {
                     if !terms.contains_key(term) {
-                        let held = transaction.term_statistics(&index, term)?;
+                        let held = transaction.term_statistics(&index, term).await?;
                         terms.insert(term.clone(), held);
                     }
                 }
@@ -373,7 +375,9 @@ impl Session<'_> {
             // count alone — the bounds a pruned walk reads describe this node's
             // postings, and a gathered read walks none of them.
             let distinct: Vec<String> = terms.keys().cloned().collect();
-            let elsewhere = self.counted_elsewhere(transaction, table, &index, &distinct)?;
+            let elsewhere = self
+                .counted_elsewhere(transaction, table, &index, &distinct)
+                .await?;
             let statistics = match &elsewhere {
                 Some(counted) => {
                     for (term, more) in distinct.iter().zip(&counted.holding) {
@@ -418,20 +422,26 @@ impl Session<'_> {
         // ADR-0103 D3: on a node holding part of the table, its dictionary is
         // part of the collection's, and "nothing nearer" from it is false
         // whenever the nearer word sits in a shard it lacks.
-        let suggestion = if self.missing(transaction, table, Part::Whole)?.is_some() {
+        let suggestion = if self
+            .missing(transaction, table, Part::Whole)
+            .await?
+            .is_some()
+        {
             None
         } else {
-            let indexes = Catalog::new(transaction).field_indexes_on(table)?;
-            suggested(transaction, &indexes, &analyzers, &matched)?
+            let indexes = Catalog::new(transaction).field_indexes_on(table).await?;
+            suggested(transaction, &indexes, &analyzers, &matched).await?
         };
 
         // A field the grant hides is a field with no index as far as this caller
         // can tell, so its index is not named here either.
-        let rebuild = self.rebuild_notes_for(
-            transaction,
-            table,
-            asked_of.keys().filter(|path| !hidden(path)),
-        )?;
+        let rebuild = self
+            .rebuild_notes_for(
+                transaction,
+                table,
+                asked_of.keys().filter(|path| !hidden(path)),
+            )
+            .await?;
         Ok(Searched {
             analyzers,
             corpora,
@@ -443,18 +453,18 @@ impl Session<'_> {
     }
 
     /// The notes for every searched path whose search index needs rebuilding.
-    fn rebuild_notes_for<'p>(
+    async fn rebuild_notes_for<'p>(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
         paths: impl Iterator<Item = &'p Path>,
     ) -> Result<Vec<crate::Note>> {
         let mut notes = Vec::new();
-        let Some(definition) = Catalog::new(transaction).table(table)? else {
+        let Some(definition) = Catalog::new(transaction).table(table).await? else {
             return Ok(notes);
         };
         for path in paths {
-            if let Some(index) = self.index_on_path(transaction, table, path)?
+            if let Some(index) = self.index_on_path(transaction, table, path).await?
                 && index.search
                 && index.needs_rebuild()
             {

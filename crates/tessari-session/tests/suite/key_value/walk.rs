@@ -3,9 +3,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
+use tessari_session::Now;
 
 use tessari_kv::{
-    Key, Keyspace, KvBackend, Result as KvResult, ScanRequest, Value as KvValue, WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, KvFuture, Result as KvResult, ScanRequest,
+    Value as KvValue, WriteBatch,
 };
 use tessari_session::{Outcome, Session};
 use tessari_storage::Store;
@@ -127,8 +129,8 @@ fn an_expired_key_is_not_listed() {
     });
 }
 
-/// A backend that answers as the one beneath it and counts the entries it hands
-/// back.
+/// A backend that answers as the one beneath it and counts the entries its range
+/// reads hand back.
 #[derive(Debug)]
 struct Counting {
     inner: Arc<dyn KvBackend>,
@@ -139,16 +141,65 @@ impl KvBackend for Counting {
     fn name(&self) -> &'static str {
         "counting"
     }
-    fn get(&self, keyspace: Keyspace, key: &Key) -> KvResult<Option<KvValue>> {
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<KvValue>> {
         self.inner.get(keyspace, key)
     }
-    fn scan(&self, request: &ScanRequest) -> KvResult<Vec<(Key, KvValue)>> {
-        let found = self.inner.scan(request)?;
-        self.entries.fetch_add(found.len(), Ordering::Relaxed);
-        Ok(found)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, KvValue)>> {
+        Box::pin(async move {
+            let found = self.inner.scan(request).await?;
+            self.entries.fetch_add(found.len(), Ordering::Relaxed);
+            Ok(found)
+        })
     }
-    fn apply(&self, batch: WriteBatch) -> KvResult<()> {
+    fn sweep<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, KvValue)>> {
+        Box::pin(async move {
+            let found = self.inner.sweep(request).await?;
+            self.entries.fetch_add(found.len(), Ordering::Relaxed);
+            Ok(found)
+        })
+    }
+    fn first_of_each<'a>(
+        &'a self,
+        keyspace: Keyspace,
+        ranges: &'a [KeyRange],
+    ) -> KvFuture<'a, Vec<Option<(Key, KvValue)>>> {
+        Box::pin(async move {
+            let found = self.inner.first_of_each(keyspace, ranges).await?;
+            self.entries
+                .fetch_add(found.iter().flatten().count(), Ordering::Relaxed);
+            Ok(found)
+        })
+    }
+    fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
+        self.inner.count(keyspace, range)
+    }
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
         self.inner.apply(batch)
+    }
+    fn apply_unsynced(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        self.inner.apply_unsynced(batch)
+    }
+    fn sync_applied(&self) -> KvFuture<'_, ()> {
+        self.inner.sync_applied()
+    }
+    fn apply_group(
+        &self,
+        batches: Vec<WriteBatch>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = (usize, KvResult<()>)> + Send + '_>>
+    {
+        Box::pin(async move { self.inner.apply_group(batches).await })
+    }
+    fn groups_writes(&self) -> bool {
+        self.inner.groups_writes()
+    }
+    fn background_errors(&self) -> KvFuture<'_, u64> {
+        self.inner.background_errors()
+    }
+    fn contains<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, bool> {
+        self.inner.contains(keyspace, key)
+    }
+    fn delete_range<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, ()> {
+        self.inner.delete_range(keyspace, range)
     }
 }
 
@@ -161,7 +212,9 @@ fn a_prefix_walk_reads_its_stretch_and_not_the_space() {
             inner: Arc::clone(&backend.raw),
             entries: AtomicUsize::new(0),
         });
-        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         let mut session = opened(&store);
         let mut script = String::new();
         for n in 0..1_000 {

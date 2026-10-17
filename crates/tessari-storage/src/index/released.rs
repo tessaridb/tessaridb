@@ -36,7 +36,7 @@ use crate::transaction::RecordAddress;
 /// # Errors
 ///
 /// A backend, catalog or decoding error.
-pub(crate) fn release_expired_holders(
+pub(crate) async fn release_expired_holders(
     store: &Store,
     record: &LogRecord,
     now: u64,
@@ -48,7 +48,7 @@ pub(crate) fn release_expired_holders(
     if !store.expiring().seen() {
         return Ok(None);
     }
-    let mut view = store.begin_local()?;
+    let mut view = store.begin_local().await?;
     let mut written: BTreeSet<RecordAddress> = record
         .mutations()
         .iter()
@@ -67,7 +67,8 @@ pub(crate) fn release_expired_holders(
             continue;
         };
         let unique: Vec<_> = Catalog::new(&mut view)
-            .indexes_on(mutation.namespace, mutation.database, mutation.table)?
+            .indexes_on(mutation.namespace, mutation.database, mutation.table)
+            .await?
             .into_iter()
             .filter(|definition| definition.unique)
             .collect();
@@ -84,7 +85,11 @@ pub(crate) fn release_expired_holders(
             );
             for values in project(definition, &value) {
                 let key = UniqueIndexKey::new(address, values).encode();
-                let Some(entry) = store.backend().get(UniqueIndexKey::keyspace(), &key)? else {
+                let Some(entry) = store
+                    .backend()
+                    .get(UniqueIndexKey::keyspace(), &key)
+                    .await?
+                else {
                     continue;
                 };
                 let holder = IndexTarget::decode(entry.as_slice())?.id;
@@ -100,7 +105,7 @@ pub(crate) fn release_expired_holders(
                 if written.contains(&held_at) {
                     continue;
                 }
-                let Some((_, held)) = view.read_newest_stamped(&held_at)? else {
+                let Some((_, held)) = view.read_newest_stamped(&held_at).await? else {
                     continue;
                 };
                 if held.value().is_tombstone() || !held.is_expired_at(now) {

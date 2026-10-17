@@ -20,13 +20,13 @@ use crate::session::Session;
 impl Session<'_> {
     /// The span of identities `condition` confines a read of table `id` to,
     /// when the table is partitioned and the condition fixes the partition.
-    pub(crate) fn partition_span(
+    pub(crate) async fn partition_span(
         &self,
         transaction: &mut Transaction<'_>,
         id: TableId,
         condition: &Expr,
     ) -> Result<Option<(RecordId, RecordId)>> {
-        let Some(definition) = Catalog::new(transaction).table(id)? else {
+        let Some(definition) = Catalog::new(transaction).table(id).await? else {
             return Ok(None);
         };
         Ok(definition
@@ -43,13 +43,13 @@ impl Session<'_> {
 
     /// The shards of table `id` that `part` touches, in key order, or `None`
     /// for a table that is not split.
-    pub(crate) fn shards_touched(
+    pub(crate) async fn shards_touched(
         &self,
         transaction: &mut Transaction<'_>,
         id: TableId,
         part: Part<'_>,
     ) -> Result<Option<Vec<u32>>> {
-        let Some(definition) = Catalog::new(transaction).table(id)? else {
+        let Some(definition) = Catalog::new(transaction).table(id).await? else {
             return Ok(None);
         };
         Ok(definition.shards.map(|map| {

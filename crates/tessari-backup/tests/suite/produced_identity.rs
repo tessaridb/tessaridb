@@ -23,6 +23,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -35,17 +37,19 @@ DEFINE DATABASE orders; USE DATABASE orders;\n\
 DEFINE COLLECTION readings;";
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// The identities a store holds in `readings`, in the order it reads them back.
 fn held(store: &Store) -> Vec<RecordId> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
     session
-        .run("SELECT * FROM readings;")
+        .run_now("SELECT * FROM readings;")
         .unwrap()
         .pop()
         .expect("one outcome")
@@ -62,9 +66,9 @@ fn leader() -> (Store, Vec<RecordId>, Vec<u8>) {
     let store = store();
     let answered = {
         let mut session = Session::new(&store);
-        session.run(TENANCY).unwrap();
+        session.run_now(TENANCY).unwrap();
         session
-            .run("INSERT INTO readings (n) VALUES (1), (2), (3);")
+            .run_now("INSERT INTO readings (n) VALUES (1), (2), (3);")
             .unwrap()
             .pop()
             .expect("one outcome")
@@ -75,14 +79,16 @@ fn leader() -> (Store, Vec<RecordId>, Vec<u8>) {
     assert_eq!(answered.len(), 3);
 
     let mut prefix = Vec::new();
-    let written = tessari_backup::write(&store, &mut prefix).unwrap();
+    let written = tessari_backup::write(&store, &mut prefix).now().unwrap();
     assert!(written.records > 0, "a log that carried nothing");
     (store, answered, prefix)
 }
 
 fn follower_of(prefix: &[u8]) -> Store {
     let store = store();
-    let brought_up = tessari_backup::bootstrap(&store, &mut { prefix }).unwrap();
+    let brought_up = tessari_backup::bootstrap(&store, &mut { prefix })
+        .now()
+        .unwrap();
     assert!(brought_up.records > 0, "a bootstrap that applied nothing");
     store
 }

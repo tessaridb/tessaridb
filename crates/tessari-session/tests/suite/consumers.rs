@@ -28,6 +28,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -49,10 +51,10 @@ fn backend() -> Arc<dyn KvBackend> {
 
 /// A store holding `prod.shop.orders`, with nobody declared.
 fn shaped(backend: &Arc<dyn KvBackend>) -> Store {
-    let store = Store::open(Arc::clone(backend)).unwrap();
+    let store = Store::open(Arc::clone(backend)).now().unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
              DEFINE DATABASE shop; USE DATABASE shop; DEFINE COLLECTION orders;",
         )
@@ -64,7 +66,7 @@ fn shaped(backend: &Arc<dyn KvBackend>) -> Store {
 fn inside(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -93,9 +95,13 @@ fn a_declared_consumer_is_read_back_field_for_field() {
     let backend = backend();
     let store = shaped(&backend);
     let mut session = inside(&store);
-    session.run(DECLARE).unwrap();
+    session.run_now(DECLARE).unwrap();
 
-    let report = reported(session.run("INFO FOR KAFKA CONSUMER orders_in;").unwrap());
+    let report = reported(
+        session
+            .run_now("INFO FOR KAFKA CONSUMER orders_in;")
+            .unwrap(),
+    );
     let declared = group(&report, "declared");
     assert_eq!(declared.get("name"), Some(&Value::from("orders_in")));
     assert_eq!(declared.get("topic"), Some(&Value::from("orders")));
@@ -124,12 +130,12 @@ fn the_declaration_survives_a_reopen_and_the_running_half_does_not() {
     let backend = backend();
     {
         let store = shaped(&backend);
-        inside(&store).run(DECLARE).unwrap();
+        inside(&store).run_now(DECLARE).unwrap();
     }
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     let report = reported(
         inside(&store)
-            .run("INFO FOR KAFKA CONSUMER orders_in;")
+            .run_now("INFO FOR KAFKA CONSUMER orders_in;")
             .unwrap(),
     );
     assert_eq!(
@@ -154,9 +160,13 @@ fn the_report_states_the_delivery_guarantee_where_it_is_configured() {
     let backend = backend();
     let store = shaped(&backend);
     let mut session = inside(&store);
-    session.run(DECLARE).unwrap();
+    session.run_now(DECLARE).unwrap();
 
-    let report = reported(session.run("INFO FOR KAFKA CONSUMER orders_in;").unwrap());
+    let report = reported(
+        session
+            .run_now("INFO FOR KAFKA CONSUMER orders_in;")
+            .unwrap(),
+    );
     let guarantees = group(&report, "guarantees");
     assert_eq!(
         guarantees.get("delivery"),
@@ -181,15 +191,15 @@ fn a_destination_that_does_not_exist_is_refused_at_declaration() {
     let store = shaped(&backend);
     let mut session = inside(&store);
     let failure = session
-        .run(&DECLARE.replace("INTO orders", "INTO nowhere"))
+        .run_now(&DECLARE.replace("INTO orders", "INTO nowhere"))
         .unwrap_err()
         .to_string();
     assert!(failure.contains("table"), "{failure}");
     assert!(
-        session.run("INFO FOR KAFKA CONSUMERS;").is_ok(),
+        session.run_now("INFO FOR KAFKA CONSUMERS;").is_ok(),
         "the failed declaration broke the listing"
     );
-    let report = reported(session.run("INFO FOR KAFKA CONSUMERS;").unwrap());
+    let report = reported(session.run_now("INFO FOR KAFKA CONSUMERS;").unwrap());
     let Some(Value::Array(listed)) = report.get("consumers") else {
         panic!("no listing");
     };
@@ -201,7 +211,7 @@ fn a_format_this_store_cannot_read_is_refused_where_it_is_written() {
     let backend = backend();
     let store = shaped(&backend);
     let failure = inside(&store)
-        .run(&DECLARE.replace("FORMAT json", "FORMAT protobuf"))
+        .run_now(&DECLARE.replace("FORMAT json", "FORMAT protobuf"))
         .unwrap_err()
         .to_string();
     assert!(failure.contains("protobuf"), "{failure}");
@@ -216,7 +226,7 @@ fn one_record_field_may_not_be_mapped_twice() {
     let backend = backend();
     let store = shaped(&backend);
     let failure = inside(&store)
-        .run(&DECLARE.replace(
+        .run_now(&DECLARE.replace(
             "MAP amount AS total, placed.at AS placed_at",
             "MAP amount AS total, gross AS total",
         ))
@@ -230,10 +240,13 @@ fn a_name_is_claimed_once_and_if_not_exists_is_the_way_to_re_run_a_script() {
     let backend = backend();
     let store = shaped(&backend);
     let mut session = inside(&store);
-    session.run(DECLARE).unwrap();
-    assert!(session.run(DECLARE).is_err(), "the name was taken twice");
+    session.run_now(DECLARE).unwrap();
+    assert!(
+        session.run_now(DECLARE).is_err(),
+        "the name was taken twice"
+    );
     session
-        .run(&DECLARE.replace("CONSUMER orders_in", "CONSUMER IF NOT EXISTS orders_in"))
+        .run_now(&DECLARE.replace("CONSUMER orders_in", "CONSUMER IF NOT EXISTS orders_in"))
         .unwrap();
 }
 
@@ -242,19 +255,23 @@ fn dropping_forgets_it_and_dropping_an_unknown_one_says_so() {
     let backend = backend();
     let store = shaped(&backend);
     let mut session = inside(&store);
-    session.run(DECLARE).unwrap();
-    session.run("DROP KAFKA CONSUMER orders_in;").unwrap();
+    session.run_now(DECLARE).unwrap();
+    session.run_now("DROP KAFKA CONSUMER orders_in;").unwrap();
 
-    assert!(session.run("INFO FOR KAFKA CONSUMER orders_in;").is_err());
+    assert!(
+        session
+            .run_now("INFO FOR KAFKA CONSUMER orders_in;")
+            .is_err()
+    );
     let failure = session
-        .run("DROP KAFKA CONSUMER orders_in;")
+        .run_now("DROP KAFKA CONSUMER orders_in;")
         .unwrap_err()
         .to_string();
     assert!(failure.contains("consumer"), "{failure}");
 
     // And the name is free again, which is what makes a drop a drop rather than
     // a tombstone somebody has to work around.
-    session.run(DECLARE).unwrap();
+    session.run_now(DECLARE).unwrap();
 }
 
 #[test]
@@ -262,16 +279,16 @@ fn the_listing_says_which_ones_this_node_is_running() {
     let backend = backend();
     let store = shaped(&backend);
     let mut session = inside(&store);
-    session.run(DECLARE).unwrap();
+    session.run_now(DECLARE).unwrap();
     session
-        .run(
+        .run_now(
             &DECLARE
                 .replace("orders_in", "orders_late")
                 .replace("GROUP 'shop-orders'", "GROUP 'shop-orders-late'"),
         )
         .unwrap();
 
-    let report = reported(session.run("INFO FOR KAFKA CONSUMERS;").unwrap());
+    let report = reported(session.run_now("INFO FOR KAFKA CONSUMERS;").unwrap());
     let Some(Value::Array(listed)) = report.get("consumers") else {
         panic!("no listing");
     };
@@ -296,10 +313,14 @@ fn a_destination_dropped_under_a_consumer_is_reported_as_gone() {
     let backend = backend();
     let store = shaped(&backend);
     let mut session = inside(&store);
-    session.run(DECLARE).unwrap();
-    session.run("DROP TABLE orders;").unwrap();
+    session.run_now(DECLARE).unwrap();
+    session.run_now("DROP TABLE orders;").unwrap();
 
-    let report = reported(session.run("INFO FOR KAFKA CONSUMER orders_in;").unwrap());
+    let report = reported(
+        session
+            .run_now("INFO FOR KAFKA CONSUMER orders_in;")
+            .unwrap(),
+    );
     assert_eq!(
         group(&report, "declared").get("destination"),
         Some(&Value::from("<dropped>"))
@@ -312,17 +333,17 @@ fn a_destination_dropped_under_a_consumer_is_reported_as_gone() {
 fn peopled(store: &Store) {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE secret; USE NAMESPACE secret; \
              DEFINE DATABASE vault; USE DATABASE vault; DEFINE COLLECTION holdings;",
         )
         .unwrap();
     session
-        .run("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now(
         "DEFINE USER nina ON prod.shop ROLE owner PASSWORD 'correct horse battery'; \
          DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';",
     )
@@ -331,9 +352,9 @@ fn peopled(store: &Store) {
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -353,12 +374,14 @@ fn declaring_a_consumer_demands_the_write_it_will_perform() {
     let store = shaped(&backend);
     peopled(&store);
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run("DEFINE USER pat ON prod.shop AUTHORITIES manage PASSWORD 'correct horse battery';")
-        .unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now(
+        "DEFINE USER pat ON prod.shop AUTHORITIES manage PASSWORD 'correct horse battery';",
+    )
+    .unwrap();
 
     let failure = signed_in(&store, "pat")
-        .run(DECLARE)
+        .run_now(DECLARE)
         .unwrap_err()
         .to_string();
     assert!(failure.contains("write"), "{failure}");
@@ -375,7 +398,7 @@ fn an_editor_may_declare_a_consumer_into_their_own_table() {
     let backend = backend();
     let store = shaped(&backend);
     peopled(&store);
-    signed_in(&store, "ada").run(DECLARE).unwrap();
+    signed_in(&store, "ada").run_now(DECLARE).unwrap();
 }
 
 #[test]
@@ -386,7 +409,7 @@ fn an_owner_of_one_database_may_declare_a_consumer_into_their_own_table() {
     let backend = backend();
     let store = shaped(&backend);
     peopled(&store);
-    signed_in(&store, "nina").run(DECLARE).unwrap();
+    signed_in(&store, "nina").run_now(DECLARE).unwrap();
 }
 
 #[test]
@@ -404,7 +427,7 @@ fn a_consumer_cannot_be_aimed_at_a_table_the_caller_may_not_write() {
     let store = shaped(&backend);
     let mut setup = Session::new(&store);
     setup
-        .run(
+        .run_now(
             "USE NAMESPACE prod; DEFINE DATABASE payroll; USE DATABASE payroll; \
              DEFINE COLLECTION salaries;",
         )
@@ -412,7 +435,7 @@ fn a_consumer_cannot_be_aimed_at_a_table_the_caller_may_not_write() {
     peopled(&store);
 
     let failure = signed_in(&store, "nina")
-        .run(&DECLARE.replace("INTO orders", "INTO payroll.salaries"))
+        .run_now(&DECLARE.replace("INTO orders", "INTO payroll.salaries"))
         .unwrap_err()
         .to_string();
     assert!(
@@ -427,8 +450,8 @@ fn a_consumer_cannot_be_aimed_at_a_table_the_caller_may_not_write() {
 
     // And nothing was declared, so the refusal is not a half-write.
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
-    let report = reported(root.run("INFO FOR KAFKA CONSUMERS;").unwrap());
+    root.sign_in("root", PASSWORD).now().unwrap();
+    let report = reported(root.run_now("INFO FOR KAFKA CONSUMERS;").unwrap());
     let Some(Value::Array(listed)) = report.get("consumers") else {
         panic!("no listing");
     };
@@ -443,7 +466,7 @@ fn the_store_owner_may_aim_a_consumer_at_any_of_it() {
     let store = shaped(&backend);
     let mut setup = Session::new(&store);
     setup
-        .run(
+        .run_now(
             "USE NAMESPACE prod; DEFINE DATABASE payroll; USE DATABASE payroll; \
              DEFINE COLLECTION salaries;",
         )
@@ -451,9 +474,10 @@ fn the_store_owner_may_aim_a_consumer_at_any_of_it() {
     peopled(&store);
 
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
-    root.run(&DECLARE.replace("INTO orders", "INTO payroll.salaries"))
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    root.run_now(&DECLARE.replace("INTO orders", "INTO payroll.salaries"))
         .unwrap();
 }
 
@@ -465,26 +489,26 @@ fn asking_about_a_consumer_needs_more_than_being_signed_in() {
     let backend = backend();
     let store = shaped(&backend);
     let mut session = inside(&store);
-    session.run(DECLARE).unwrap();
+    session.run_now(DECLARE).unwrap();
     peopled(&store);
 
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run("DEFINE USER vic ON prod.shop ROLE viewer PASSWORD 'correct horse battery';")
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now("DEFINE USER vic ON prod.shop ROLE viewer PASSWORD 'correct horse battery';")
         .unwrap();
 
     assert!(
         signed_in(&store, "vic")
-            .run("INFO FOR KAFKA CONSUMER orders_in;")
+            .run_now("INFO FOR KAFKA CONSUMER orders_in;")
             .is_err()
     );
     assert!(
         signed_in(&store, "vic")
-            .run("INFO FOR KAFKA CONSUMERS;")
+            .run_now("INFO FOR KAFKA CONSUMERS;")
             .is_err()
     );
     signed_in(&store, "nina")
-        .run("INFO FOR KAFKA CONSUMER orders_in;")
+        .run_now("INFO FOR KAFKA CONSUMER orders_in;")
         .unwrap();
 }
 
@@ -504,31 +528,34 @@ fn a_grant_governed_caller_may_only_feed_the_tables_they_were_granted() {
     let store = shaped(&backend);
     let mut setup = Session::new(&store);
     setup
-        .run("USE NAMESPACE prod; USE DATABASE shop; DEFINE COLLECTION salaries;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; DEFINE COLLECTION salaries;")
         .unwrap();
     setup
-        .run("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
+        .run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
         .unwrap();
 
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
-    root.run("DEFINE USER pat ROLE owner PASSWORD 'correct horse battery';")
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
-    root.run("GRANT read, write ON orders TO pat;").unwrap();
+    root.run_now("DEFINE USER pat ROLE owner PASSWORD 'correct horse battery';")
+        .unwrap();
+    root.run_now("GRANT read, write ON orders TO pat;").unwrap();
 
     // Granted the destination: accepted.
     let mut pat = Session::new(&store);
-    pat.sign_in("pat", PASSWORD).unwrap();
-    pat.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
-    pat.run(DECLARE).unwrap();
+    pat.sign_in("pat", PASSWORD).now().unwrap();
+    pat.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    pat.run_now(DECLARE).unwrap();
 
     // Not granted it: refused, and the refusal names the table and the verb.
     let mut pat = Session::new(&store);
-    pat.sign_in("pat", PASSWORD).unwrap();
-    pat.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+    pat.sign_in("pat", PASSWORD).now().unwrap();
+    pat.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
     let failure = pat
-        .run(
+        .run_now(
             &DECLARE
                 .replace("INTO orders", "INTO salaries")
                 .replace("CONSUMER orders_in", "CONSUMER wages_in"),
@@ -558,12 +585,12 @@ fn a_consumer_records_who_declared_it_and_writes_with_their_authority() {
     let backend = backend();
     let store = shaped(&backend);
     peopled(&store);
-    signed_in(&store, "nina").run(DECLARE).unwrap();
+    signed_in(&store, "nina").run_now(DECLARE).unwrap();
 
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
     let report = reported(
-        root.run("USE NAMESPACE prod; USE DATABASE shop; INFO FOR KAFKA CONSUMER orders_in;")
+        root.run_now("USE NAMESPACE prod; USE DATABASE shop; INFO FOR KAFKA CONSUMER orders_in;")
             .unwrap(),
     );
     let declared = group(&report, "declared");
@@ -577,19 +604,19 @@ fn a_consumer_records_who_declared_it_and_writes_with_their_authority() {
     let id = u32::try_from(*id).unwrap();
 
     let mut acting = Session::new(&store);
-    acting.acting_as(id).unwrap();
+    acting.acting_as(id).now().unwrap();
     acting
-        .run("USE NAMESPACE prod; USE DATABASE shop; UPSERT orders:1 = { total: 5 };")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; UPSERT orders:1 = { total: 5 };")
         .expect("the consumer writes with the authority of whoever declared it");
 
     // And the half that was impossible before: take the authority away, and the
     // next batch is refused rather than written.
-    root.run("REVOKE write ON DATABASE prod.shop FROM nina;")
+    root.run_now("REVOKE write ON DATABASE prod.shop FROM nina;")
         .unwrap();
     let mut again = Session::new(&store);
-    again.acting_as(id).unwrap();
+    again.acting_as(id).now().unwrap();
     let refusal = again
-        .run("USE NAMESPACE prod; USE DATABASE shop; UPSERT orders:2 = { total: 6 };")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; UPSERT orders:2 = { total: 6 };")
         .unwrap_err()
         .to_string();
     assert!(refusal.contains("write"), "{refusal}");
@@ -606,7 +633,7 @@ fn deleting_the_declarer_stops_the_consumer_rather_than_freeing_it() {
     peopled(&store);
 
     let mut acting = Session::new(&store);
-    let refusal = acting.acting_as(9999).unwrap_err().to_string();
+    let refusal = acting.acting_as(9999).now().unwrap_err().to_string();
     assert!(
         refusal.contains("no user"),
         "a deleted declarer must refuse rather than fall back to nobody: {refusal}"
@@ -622,17 +649,18 @@ fn a_parked_payload_is_shown_only_to_who_may_read_its_destination_whole() {
     let store = shaped(&backend);
     peopled(&store);
     let mut root = Session::new(&store);
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop; \
          DEFINE USER pat ON prod.shop AUTHORITIES manage PASSWORD 'correct horse battery';",
     )
     .unwrap();
-    root.run(DECLARE).unwrap();
+    root.run_now(DECLARE).unwrap();
     {
-        let mut transaction = store.begin().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let consumer = tessari_storage::Catalog::new(&mut transaction)
             .consumers()
+            .now()
             .unwrap()
             .into_iter()
             .find(|held| held.name == "orders_in")
@@ -643,13 +671,14 @@ fn a_parked_payload_is_shown_only_to_who_may_read_its_destination_whole() {
         ]));
         transaction
             .keep_quarantined(consumer.id, 0, 2, &parked)
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
     let payload = |name: &str| {
         let report = reported(
             signed_in(&store, name)
-                .run("INFO FOR KAFKA CONSUMER orders_in;")
+                .run_now("INFO FOR KAFKA CONSUMER orders_in;")
                 .unwrap(),
         );
         let Some(Value::Array(parked)) = report.get("quarantine") else {

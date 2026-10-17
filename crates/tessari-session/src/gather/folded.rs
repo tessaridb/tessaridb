@@ -13,7 +13,7 @@ impl Session<'_> {
     /// cannot be put end to end, and the read is asked again, of every leader,
     /// for the samples; the second asking replaces the first wholesale, so the
     /// answer is still one asking of each leader (ADR-0121 D3).
-    pub(crate) fn gather_folded(
+    pub(crate) async fn gather_folded(
         &self,
         transaction: &mut Transaction<'_>,
         id: TableId,
@@ -22,7 +22,9 @@ impl Session<'_> {
         noticed: &Noticed,
         within: Option<crate::budget::Deadline>,
     ) -> Result<Option<(Groups, Note)>> {
-        let folded = self.folded_once(transaction, id, reduce, read, noticed, within)?;
+        let folded = self
+            .folded_once(transaction, id, reduce, read, noticed, within)
+            .await?;
         if !folded
             .as_ref()
             .is_some_and(|(groups, _)| needs_samples(groups))
@@ -33,14 +35,16 @@ impl Session<'_> {
             samples: true,
             ..reduce.clone()
         };
-        let folded = self.folded_once(transaction, id, &samples, read, noticed, within)?;
+        let folded = self
+            .folded_once(transaction, id, &samples, read, noticed, within)
+            .await?;
         // Samples always put themselves in order; a leader that answered a
         // summary anyway is not trusted with the answer, and the records are.
         Ok(folded.filter(|(groups, _)| !needs_samples(groups)))
     }
 
     /// One asking of every leader [`Self::gather_folded`] needs.
-    fn folded_once(
+    async fn folded_once(
         &self,
         transaction: &mut Transaction<'_>,
         id: TableId,
@@ -54,11 +58,11 @@ impl Session<'_> {
         // budget a records path spends per record never sees this work (Q-856).
         let mut folded: u64 = 0;
         let in_time = |folded: u64| within.map_or(Ok(()), |deadline| deadline.check(folded));
-        let Some(missing) = self.missing(transaction, id, Part::Whole)? else {
+        let Some(missing) = self.missing(transaction, id, Part::Whole).await? else {
             return Ok(None);
         };
         let (Some(gatherer), Some(map)) = (self.gather.as_ref(), missing.map.as_ref()) else {
-            return Err(self.not_held_here(&missing)?);
+            return Err(self.not_held_here(&missing).await?);
         };
         let occurrences = occurrences(select.projection.written());
         let mut groups = Groups::new();
@@ -81,13 +85,13 @@ impl Session<'_> {
                     ordered: None,
                     counting: None,
                 };
-                let partials = match gatherer.gather(&asked) {
+                let partials = match gatherer.gather(&asked).await {
                     Ok(Gathered {
                         reduced: Some(crate::Reduced::Partials(partials)),
                         ..
                     }) => partials,
                     Ok(_) => return Ok(None),
-                    Err(why) => return Err(self.unanswered(&missing, span.id, why)?),
+                    Err(why) => return Err(self.unanswered(&missing, span.id, why).await?),
                 };
                 if !merge_partials(&mut groups, &occurrences, partials)? {
                     return Ok(None);
@@ -97,25 +101,29 @@ impl Session<'_> {
                 // a local read tests it — notes and refusals included.
                 let mut after: Option<RecordId> = None;
                 loop {
-                    let page = transaction.records_between(
-                        missing.namespace,
-                        missing.database,
-                        id,
-                        window,
-                        after.as_ref(),
-                        GATHER_PAGE_RECORDS,
-                    )?;
+                    let page = transaction
+                        .records_between(
+                            missing.namespace,
+                            missing.database,
+                            id,
+                            window,
+                            after.as_ref(),
+                            GATHER_PAGE_RECORDS,
+                        )
+                        .await?;
                     let full = page.len() == GATHER_PAGE_RECORDS;
                     folded = folded.saturating_add(u64::try_from(page.len()).unwrap_or(u64::MAX));
                     after = page.last().map(|(id, _)| id.clone());
                     let mut kept = Vec::with_capacity(page.len());
                     for (record_id, record) in self.records_of(page, &reduce.visible)? {
                         if let Some(condition) = condition {
-                            let held = self.evaluate_in(
-                                transaction,
-                                condition,
-                                Scope::of(&record).identified(&record_id).noticing(noticed),
-                            )?;
+                            let held = self
+                                .evaluate_in(
+                                    transaction,
+                                    condition,
+                                    Scope::of(&record).identified(&record_id).noticing(noticed),
+                                )
+                                .await?;
                             if !boolean(&held, condition.span)? {
                                 continue;
                             }
@@ -128,7 +136,8 @@ impl Session<'_> {
                         kept,
                         &occurrences,
                         (&select.group, None),
-                    )?;
+                    )
+                    .await?;
                     if !full {
                         break;
                     }

@@ -21,7 +21,7 @@ use crate::session::Session;
 impl Session<'_> {
     /// The completions of `text`, best first, each a row `{ term, documents }`
     /// whose identity is the term.
-    pub(crate) fn complete(
+    pub(crate) async fn complete(
         &self,
         transaction: &mut Transaction<'_>,
         resolved: &Resolved,
@@ -43,13 +43,11 @@ impl Session<'_> {
         let mut held: BTreeMap<String, u64> = BTreeMap::new();
         for member in &resolved.members {
             for spelling in &typed {
-                let found = transaction.terms_with_prefix(
-                    &member.index,
-                    spelling,
-                    SEARCH_PREFIX_SCORE_EXAMINATION_CAP,
-                )?;
+                let found = transaction
+                    .terms_with_prefix(&member.index, spelling, SEARCH_PREFIX_SCORE_EXAMINATION_CAP)
+                    .await?;
                 for term in found.terms {
-                    let documents = transaction.document_frequency(&member.index, &term)?;
+                    let documents = transaction.document_frequency(&member.index, &term).await?;
                     let entry = held.entry(term).or_default();
                     *entry = entry.saturating_add(documents);
                 }

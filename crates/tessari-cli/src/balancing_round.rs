@@ -24,8 +24,8 @@ pub(crate) async fn balance(db: std::sync::Arc<Db>, stop: tokio_util::sync::Canc
         "balancing",
         std::time::Duration::from_secs(tessari_constants::BALANCE_SECONDS),
         &stop,
-        move |_| {
-            match db.balance_shards(&mut samples) {
+        async move |_| {
+            match db.balance_shards(&mut samples).await {
                 Ok(balanced) => {
                     if balanced.split > 0 || balanced.merged > 0 {
                         tracing::info!(
@@ -40,7 +40,7 @@ pub(crate) async fn balance(db: std::sync::Arc<Db>, stop: tokio_util::sync::Canc
                 }
                 Err(why) => tracing::warn!(error = %why, "this node cannot balance table shards"),
             }
-            match db.hand_back_ranges() {
+            match db.hand_back_ranges().await {
                 Ok(folded) => {
                     for row in folded {
                         tracing::info!(placement = %row, "a range was handed back to the store line");
@@ -48,7 +48,7 @@ pub(crate) async fn balance(db: std::sync::Arc<Db>, stop: tokio_util::sync::Canc
                 }
                 Err(why) => tracing::warn!(error = %why, "this node cannot hand ranges back"),
             }
-            match db.balance_leaderships(&mut moves) {
+            match db.balance_leaderships(&mut moves).await {
                 Ok(Some(moved)) => tracing::info!(
                     range = ?moved.range,
                     from = %moved.from,

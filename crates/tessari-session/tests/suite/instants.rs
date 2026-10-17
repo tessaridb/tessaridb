@@ -35,6 +35,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -50,7 +52,9 @@ use tessari_types::Value;
 const MANY: usize = 200;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
@@ -65,13 +69,13 @@ DEFINE COLLECTION ticks;
     for at in 1..=MANY {
         script.push_str(&format!("CREATE ticks:{at} = {{ n: {at} }};\n"));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     session
 }
 
 fn run(session: &mut Session<'_>, script: &str) -> Outcome {
     session
-        .run(script)
+        .run_now(script)
         .unwrap_or_else(|error| panic!("{script}: {error}"))
         .pop()
         .expect("one outcome")
@@ -219,13 +223,13 @@ fn a_default_may_still_be_the_instant() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE TABLE events SCHEMALESS; \
              DEFINE FIELD seen ON events TYPE datetime DEFAULT time::now();",
         )
         .unwrap();
     session
-        .run("CREATE events:1 = { what: 'opened' };")
+        .run_now("CREATE events:1 = { what: 'opened' };")
         .unwrap();
     let answered = run(&mut session, "SELECT seen FROM events;");
     let seen = column(&answered, "seen");

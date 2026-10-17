@@ -20,6 +20,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -29,14 +31,14 @@ const PASSWORD: &str = "correct horse battery staple";
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// One table the caller may read and one they may not.
 fn ready(store: &Store) {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION public; CREATE public:1 = { n: 1 };\n\
@@ -45,8 +47,8 @@ fn ready(store: &Store) {
         )
         .unwrap();
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run(
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now(
         "USE NAMESPACE prod; USE DATABASE shop;\n\
          DEFINE USER spy ON prod.shop ROLE viewer PASSWORD 'correct horse battery staple';\n\
          GRANT read ON public TO spy;\n\
@@ -58,9 +60,9 @@ fn ready(store: &Store) {
 
 fn spy(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.sign_in("spy", PASSWORD).unwrap();
+    session.sign_in("spy", PASSWORD).now().unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -76,11 +78,11 @@ fn refused(store: &Store, script: &str) {
 /// role check refuses first and the grant this file is about is never reached.
 fn refused_as(store: &Store, who: &str, script: &str) {
     let mut session = Session::new(store);
-    session.sign_in(who, PASSWORD).unwrap();
+    session.sign_in(who, PASSWORD).now().unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
-    let failed = session.run(script);
+    let failed = session.run_now(script);
     let message = match failed {
         Err(failure) => format!("{failure}"),
         Ok(answered) => panic!("{script}\nwas allowed, and answered {answered:?}"),
@@ -221,6 +223,6 @@ fn the_granted_table_still_reads() {
     let store = store();
     ready(&store);
     let mut session = spy(&store);
-    let outcomes = session.run("SELECT * FROM public;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM public;").unwrap();
     assert_eq!(outcomes[0].records().map(<[_]>::len), Some(1));
 }

@@ -8,12 +8,12 @@ impl<'a> Transaction<'a> {
     /// that carrying is the entire reason a later comparison can tell ignorance
     /// from sequence — a producer that started from an empty stamp would make
     /// every write concurrent with every other one.
-    pub(crate) fn read_newest_stamped(
+    pub(crate) async fn read_newest_stamped(
         &self,
         address: &RecordAddress,
     ) -> Result<Option<(Sequence, StampedValue)>> {
         let prefix = address.versions_prefix();
-        self.first_in_range(KeyRange::prefix(&prefix))
+        self.first_in_range(KeyRange::prefix(&prefix)).await
     }
 
     /// The versions of a record that nothing has superseded, newest first.
@@ -43,11 +43,11 @@ impl<'a> Transaction<'a> {
     /// An unstamped version carries the empty stamp, and two empty stamps are
     /// `Same` — so a store written before stamps existed folds to exactly one
     /// survivor and is never contested.
-    pub(in crate::transaction) fn surviving_versions(
+    pub(in crate::transaction) async fn surviving_versions(
         &self,
         address: &RecordAddress,
     ) -> Result<Vec<(Sequence, CausalStamp)>> {
-        let held = self.held_versions(address)?;
+        let held = self.held_versions(address).await?;
         let mut surviving = CausalVersions::new();
         for (_, stamp) in &held {
             surviving.record(stamp.clone());
@@ -94,11 +94,11 @@ impl<'a> Transaction<'a> {
     /// [`Self::surviving_versions`] folds through [`CausalVersions::record`]:
     /// two routines answering one question come to disagree, and here the
     /// disagreement would be a contested record reported as settled.
-    pub fn surviving_writers(
+    pub async fn surviving_writers(
         &self,
         address: &RecordAddress,
     ) -> Result<(Vec<WrittenVersion>, bool)> {
-        let held = self.held_versions(address)?;
+        let held = self.held_versions(address).await?;
         let mut surviving = CausalVersions::new();
         for (_, stamp) in &held {
             surviving.record(stamp.clone());
@@ -118,7 +118,7 @@ impl<'a> Transaction<'a> {
     ///
     /// Extracted so that the survivor walk and the writer walk read one scan
     /// rather than two that could drift apart.
-    fn held_versions(&self, address: &RecordAddress) -> Result<Vec<(Sequence, CausalStamp)>> {
+    async fn held_versions(&self, address: &RecordAddress) -> Result<Vec<(Sequence, CausalStamp)>> {
         let prefix = address.versions_prefix();
         let request = ScanRequest {
             keyspace: RecordKey::keyspace(),
@@ -127,7 +127,7 @@ impl<'a> Transaction<'a> {
             limit: None,
         };
         let mut held: Vec<(Sequence, CausalStamp)> = Vec::new();
-        for (key, value) in self.store.backend().scan(&request)? {
+        for (key, value) in self.store.backend().scan(&request).await? {
             let version = RecordKey::decode(key.as_slice())?.version;
             let stored = StampedValue::decode(value.as_slice())?;
             // An intent is not a version anybody wrote yet (ADR-0112 D5).
@@ -140,26 +140,31 @@ impl<'a> Transaction<'a> {
     }
 
     /// The newest version of a record at or before `snapshot`.
-    pub(super) fn read_at(
+    pub(super) async fn read_at(
         &self,
         address: &RecordAddress,
         snapshot: Sequence,
     ) -> Result<Option<(Sequence, RecordValue)>> {
         let now = self.reading_at();
         Ok(self
-            .read_stamped_as_of(address, snapshot)?
+            .read_stamped_as_of(address, snapshot)
+            .await?
             .map(|(version, stamped)| (version, stamped.into_visible_at(now))))
     }
 
     /// The version a reader at this transaction's snapshot resolves to, stamp
     /// and expiry included and **not** judged against the clock.
-    pub(crate) fn read_stamped_at(&self, address: &RecordAddress) -> Result<Option<StampedValue>> {
+    pub(crate) async fn read_stamped_at(
+        &self,
+        address: &RecordAddress,
+    ) -> Result<Option<StampedValue>> {
         Ok(self
-            .read_stamped_as_of(address, self.snapshot)?
+            .read_stamped_as_of(address, self.snapshot)
+            .await?
             .map(|(_, stamped)| stamped))
     }
 
-    fn read_stamped_as_of(
+    async fn read_stamped_as_of(
         &self,
         address: &RecordAddress,
         snapshot: Sequence,
@@ -170,7 +175,7 @@ impl<'a> Transaction<'a> {
             Bound::Included(address.key_at(snapshot).encode()),
             bounds.end().clone(),
         );
-        self.first_in_range(range)
+        self.first_in_range(range).await
     }
 
     /// The newest entry in a span of one record's versions, stamp and all.
@@ -187,7 +192,7 @@ impl<'a> Transaction<'a> {
     /// snapshot does not all hold — is passed over and the version under it
     /// answers (ADR-0112 D5, D6a). One read per such version, which is none for
     /// every record no transaction across leaders wrote.
-    pub(in crate::transaction) fn first_in_range(
+    pub(in crate::transaction) async fn first_in_range(
         &self,
         mut range: KeyRange,
     ) -> Result<Option<(Sequence, StampedValue)>> {
@@ -198,12 +203,12 @@ impl<'a> Transaction<'a> {
                 direction: ScanDirection::Forward,
                 limit: Some(1),
             };
-            let found = self.store.backend().scan(&request)?;
+            let found = self.store.backend().scan(&request).await?;
             let Some((key, value)) = found.first() else {
                 return Ok(None);
             };
             let decoded_value = StampedValue::decode(value.as_slice())?;
-            if self.passes_over(&decoded_value)? {
+            if self.passes_over(&decoded_value).await? {
                 range = KeyRange::from_bounds(Bound::Excluded(key.clone()), range.end().clone());
                 continue;
             }
@@ -219,7 +224,7 @@ impl<'a> Transaction<'a> {
     /// write landing on a standing intent would replace a value a transaction
     /// across leaders has prepared, whatever this writer's snapshot. And by a
     /// resolution, which reads the intent it turns into a value.
-    pub(in crate::transaction) fn newest_stored_value(
+    pub(in crate::transaction) async fn newest_stored_value(
         &self,
         address: &RecordAddress,
     ) -> Result<Option<(Sequence, Option<tessari_encoding::Provenance>, RecordValue)>> {
@@ -229,7 +234,7 @@ impl<'a> Transaction<'a> {
             direction: ScanDirection::Forward,
             limit: Some(1),
         };
-        let found = self.store.backend().scan(&request)?;
+        let found = self.store.backend().scan(&request).await?;
         let Some((key, value)) = found.first() else {
             return Ok(None);
         };

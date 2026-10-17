@@ -23,13 +23,13 @@ impl Db {
     /// # Errors
     ///
     /// The store's failure to read the catalog or commit.
-    pub fn hand_back_ranges(&self) -> Result<Vec<String>> {
+    pub async fn hand_back_ranges(&self) -> Result<Vec<String>> {
         let store = self.store();
-        if !store.leads(Reach::Store)? {
+        if !store.leads(Reach::Store).await? {
             return Ok(Vec::new());
         }
-        let mut reading = store.begin()?;
-        let rows = Catalog::new(&mut reading).replicas()?;
+        let mut reading = store.begin().await?;
+        let rows = Catalog::new(&mut reading).replicas().await?;
         reading.rollback();
         let mut folded = Vec::new();
         for row in rows.iter().filter(|row| row.releasing) {
@@ -39,12 +39,12 @@ impl Db {
             let placed_again = rows
                 .iter()
                 .any(|other| !other.releasing && other.leads == Some(range));
-            if !placed_again && !store.leads(range)? {
+            if !placed_again && !store.leads(range).await? {
                 continue;
             }
-            let mut writing = store.begin()?;
-            if Catalog::new(&mut writing).finish_release(&row.name)? {
-                writing.commit()?;
+            let mut writing = store.begin().await?;
+            if Catalog::new(&mut writing).finish_release(&row.name).await? {
+                writing.commit().await?;
                 folded.push(row.name.clone());
             } else {
                 writing.rollback();

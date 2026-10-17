@@ -23,6 +23,8 @@ use std::collections::BTreeMap;
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_wire::{Answer, Client, Served};
 
@@ -740,8 +742,8 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
     // The binary then starts on the same directory and is therefore the same
     // node: an identity is generated once and is stable across restarts, which
     // is exactly the property this relies on.
-    let db = tessaridb::Db::open(&store).unwrap();
-    let identity = db.store().node_identity().unwrap();
+    let db = tessaridb::Db::open(&store).now().unwrap();
+    let identity = db.store().node_identity().now().unwrap();
     let node = identity.id;
     let build = identity.version;
     // One write, so the log this node will greet with is not empty. A fresh
@@ -749,8 +751,8 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
     // first-user bootstrap writes only when both environment variables are set —
     // so without this the greeting's tail could not tell what the store holds
     // apart from a constant somebody typed.
-    db.session().run("DEFINE NAMESPACE probe;").unwrap();
-    drop(db);
+    db.session().run_now("DEFINE NAMESPACE probe;").unwrap();
+    db.close().now().unwrap();
     let (leaf, key, authority) = credentials(&minted, node, directory.path());
 
     let child = Command::new(TESSARIDB)
@@ -820,6 +822,7 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
         },
         tessari_wire::Ask::Nothing,
     )
+    .now()
     .expect("a peer holding a credential this cluster issued is answered");
 
     assert_eq!(heard.node, node, "the node greets under its own identity");
@@ -939,10 +942,10 @@ fn a_cluster_node_told_nothing_about_its_clients_serves_them_in_the_clear_and_it
     let log = directory.path().join("node.log");
     let minted = Minted::new();
     // The build a caller greets with, read from a store this binary will open.
-    let db = tessaridb::Db::open(&store).unwrap();
-    let identity = db.store().node_identity().unwrap();
+    let db = tessaridb::Db::open(&store).now().unwrap();
+    let identity = db.store().node_identity().now().unwrap();
     let (node, build) = (identity.id, identity.version);
-    drop(db);
+    db.close().now().unwrap();
     let (leaf, key, authority) = credentials(&minted, node, directory.path());
     let args: Vec<std::ffi::OsString> = [
         store.as_os_str(),
@@ -1032,7 +1035,8 @@ fn a_cluster_node_told_nothing_about_its_clients_serves_them_in_the_clear_and_it
             line: None,
         },
         tessari_wire::Ask::Nothing,
-    );
+    )
+    .now();
     assert!(
         refused.is_err(),
         "a peer whose certificate this cluster never issued was answered"
@@ -1339,9 +1343,9 @@ fn a_joiner_restarted_without_its_seed_still_finds_the_leader() {
         let home = directory.path().join(format!("n{index}"));
         std::fs::create_dir_all(&home).unwrap();
         let store = home.join("store");
-        let db = tessaridb::Db::open(&store).unwrap();
-        let id = db.store().node_identity().unwrap().id;
-        drop(db);
+        let db = tessaridb::Db::open(&store).now().unwrap();
+        let id = db.store().node_identity().now().unwrap().id;
+        db.close().now().unwrap();
         papers.push(credentials(&minted, id, &home));
         ids.push(id);
         stores.push(store);
@@ -1352,11 +1356,11 @@ fn a_joiner_restarted_without_its_seed_still_finds_the_leader() {
     // `Roles::ALONE` already is, so the row agrees with what this node is
     // rather than asking it to become something.
     {
-        let db = tessaridb::Db::open(&stores[0]).unwrap();
+        let db = tessaridb::Db::open(&stores[0]).now().unwrap();
         let joiner = tessari_types::RecordId::Uuid(ids[1]).to_string();
         let leader = tessari_types::RecordId::Uuid(ids[0]).to_string();
         db.session()
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE REPLICA joiner AT '{}' NODE '{joiner}' ROLES serving \
                  REPLICATES STORE; \
                  DEFINE REPLICA origin AT '{}' NODE '{leader}' ROLES serving, writable; \
@@ -1364,14 +1368,14 @@ fn a_joiner_restarted_without_its_seed_still_finds_the_leader() {
                 NAMED[1].1, NAMED[0].1
             ))
             .expect("a leader that knows who is joining it, and who it is itself");
-        drop(db);
+        db.close().now().unwrap();
     }
     {
-        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        let db = tessaridb::Db::open(&stores[1]).now().unwrap();
         db.session()
-            .run("DEFINE NODE ROLES serving;")
+            .run_now("DEFINE NODE ROLES serving;")
             .expect("a node that knows it is not the cluster");
-        drop(db);
+        db.close().now().unwrap();
     }
 
     let start = |index: usize, seed: bool| {
@@ -1571,9 +1575,9 @@ fn a_row_waiting_on_a_join_token_is_bound_by_the_node_that_offers_it() {
         let home = directory.path().join(format!("n{index}"));
         std::fs::create_dir_all(&home).unwrap();
         let store = home.join("store");
-        let db = tessaridb::Db::open(&store).unwrap();
-        let id = db.store().node_identity().unwrap().id;
-        drop(db);
+        let db = tessaridb::Db::open(&store).now().unwrap();
+        let id = db.store().node_identity().now().unwrap().id;
+        db.close().now().unwrap();
         papers.push(credentials(&minted, id, &home));
         ids.push(id);
         stores.push(store);
@@ -1583,10 +1587,10 @@ fn a_row_waiting_on_a_join_token_is_bound_by_the_node_that_offers_it() {
     // row carries no `NODE`. The operator wrote down where the peer will be and
     // what it is for, and left the identity to be proved rather than typed.
     let token = {
-        let db = tessaridb::Db::open(&stores[0]).unwrap();
+        let db = tessaridb::Db::open(&stores[0]).now().unwrap();
         let leader = tessari_types::RecordId::Uuid(ids[0]).to_string();
         db.session()
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE REPLICA joiner AT '{}' ROLES serving REPLICATES STORE; \
                  DEFINE REPLICA origin AT '{}' NODE '{leader}' ROLES serving, writable; \
                  {WRITTEN}",
@@ -1595,7 +1599,7 @@ fn a_row_waiting_on_a_join_token_is_bound_by_the_node_that_offers_it() {
             .expect("a leader that declared a peer it has not met");
         let answered = db
             .session()
-            .run("CREATE JOIN TOKEN FOR REPLICA joiner EXPIRES 10m;")
+            .run_now("CREATE JOIN TOKEN FOR REPLICA joiner EXPIRES 10m;")
             .expect("a join token");
         let Some(tessari_session::Outcome::Value(tessari_types::Value::String(token))) =
             answered.first()
@@ -1603,15 +1607,15 @@ fn a_row_waiting_on_a_join_token_is_bound_by_the_node_that_offers_it() {
             panic!("no token: {answered:?}");
         };
         let token = token.clone();
-        drop(db);
+        db.close().now().unwrap();
         token
     };
     {
-        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        let db = tessaridb::Db::open(&stores[1]).now().unwrap();
         db.session()
-            .run("DEFINE NODE ROLES serving;")
+            .run_now("DEFINE NODE ROLES serving;")
             .expect("a node that knows it is not the cluster");
-        drop(db);
+        db.close().now().unwrap();
     }
 
     let start = |index: usize, token: Option<&str>| {
@@ -1753,18 +1757,18 @@ fn a_node_dials_the_peer_its_catalog_declares() {
     let directory = tempfile::tempdir().unwrap();
     let store = directory.path().join("store");
     let minted = Minted::new();
-    let db = tessaridb::Db::open(&store).unwrap();
-    let node = db.store().node_identity().unwrap().id;
+    let db = tessaridb::Db::open(&store).now().unwrap();
+    let node = db.store().node_identity().now().unwrap().id;
     // A peer that is emphatically NOT this node: `greet_round` skips its own row
     // on purpose, so declaring this node's own id here would make the test pass
     // for the wrong reason — or rather, fail for the right one.
     let peer = tessari_types::RecordId::Uuid([9u8; 16]).to_string();
     db.session()
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE REPLICA watcher AT '{DIALLED}' NODE '{peer}' ROLES serving;"
         ))
         .expect("a declared peer with an id is the only diallable kind");
-    drop(db);
+    db.close().now().unwrap();
     let (leaf, key, authority) = credentials(&minted, node, directory.path());
 
     let child = Command::new(TESSARIDB)
@@ -2124,9 +2128,9 @@ fn a_cluster_of_rows_by(
                 .unwrap();
             assert!(created.status.success(), "{created:?}");
         }
-        let db = tessaridb::Db::open(&store).unwrap();
-        let id = db.store().node_identity().unwrap().id;
-        drop(db);
+        let db = tessaridb::Db::open(&store).now().unwrap();
+        let id = db.store().node_identity().now().unwrap().id;
+        db.close().now().unwrap();
         let (paper, fingerprint) = credentials_fingerprinted(&minted, id, &home);
         papers.push(paper);
         fingerprints.push(fingerprint);
@@ -2170,7 +2174,7 @@ fn a_cluster_of_rows_by(
     // subscription this fixture actually grants is the whole store, on every
     // node, and the criterion's replication is observed over that.
     for (index, store) in stores.iter().enumerate() {
-        let db = tessaridb::Db::open(store).unwrap();
+        let db = tessaridb::Db::open(store).now().unwrap();
         // The peers FIRST and the role LAST, and the order is load-bearing.
         // `DEFINE NODE ROLES` takes effect immediately and locally, so a node
         // that adopts `coordinating` holds no lease from that instant and
@@ -2202,9 +2206,9 @@ fn a_cluster_of_rows_by(
             .unwrap();
         script.push_str(&format!(" DEFINE NODE ROLES {own}; COMMIT;"));
         db.session()
-            .run(&script)
+            .run_now(&script)
             .expect("a cluster of three, declared");
-        drop(db);
+        db.close().now().unwrap();
     }
 
     let mut running: Vec<Option<Running>> = Vec::new();
@@ -2868,9 +2872,9 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
         let home = directory.path().join(format!("j{index}"));
         std::fs::create_dir_all(&home).unwrap();
         let store = home.join("store");
-        let db = tessaridb::Db::open(&store).unwrap();
-        let id = db.store().node_identity().unwrap().id;
-        drop(db);
+        let db = tessaridb::Db::open(&store).now().unwrap();
+        let id = db.store().node_identity().now().unwrap().id;
+        db.close().now().unwrap();
         papers.push(credentials(&minted, id, &home));
         ids.push(id);
         stores.push(store);
@@ -2886,16 +2890,16 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
     // `COORDINATING`). One node is a cluster here; what is being demonstrated is
     // the join, not the election, and the election has its own test above.
     {
-        let db = tessaridb::Db::open(&stores[0]).unwrap();
+        let db = tessaridb::Db::open(&stores[0]).now().unwrap();
         let joiner = tessari_types::RecordId::Uuid(ids[1]).to_string();
         db.session()
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE REPLICA joiner AT '{}' NODE '{joiner}' ROLES serving \
                  REPLICATES STORE; {WRITTEN}",
                 JOIN[1].1
             ))
             .expect("a leader that knows who is joining it");
-        drop(db);
+        db.close().now().unwrap();
     }
 
     // The newcomer's side, and this is the whole of what it is told. No replica
@@ -2904,12 +2908,13 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
     // and not `writable`, because a node that collects while it also writes is
     // the divergence this design refuses everywhere else.
     {
-        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        let db = tessaridb::Db::open(&stores[1]).now().unwrap();
         db.session()
-            .run("DEFINE NODE ROLES serving;")
+            .run_now("DEFINE NODE ROLES serving;")
             .expect("a node that knows it is not the cluster");
-        let peers = tessari_storage::Catalog::new(&mut db.store().begin().unwrap())
+        let peers = tessari_storage::Catalog::new(&mut db.store().begin().now().unwrap())
             .replicas()
+            .now()
             .unwrap();
         assert!(
             peers.is_empty(),
@@ -2917,7 +2922,7 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
              names {} peer(s)",
             peers.len()
         );
-        drop(db);
+        db.close().now().unwrap();
     }
 
     let mut running = Vec::new();
@@ -3039,9 +3044,12 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
     // exactly once — which is what the second-write assertion above now
     // catches. The seed is spent when the catalog names somebody ELSE.
     drop(running);
-    let db = tessaridb::Db::open(&stores[1]).expect("the joiner's store, once it has stopped");
-    let peers = tessari_storage::Catalog::new(&mut db.store().begin().unwrap())
+    let db = tessaridb::Db::open(&stores[1])
+        .now()
+        .expect("the joiner's store, once it has stopped");
+    let peers = tessari_storage::Catalog::new(&mut db.store().begin().now().unwrap())
         .replicas()
+        .now()
         .unwrap();
     assert!(
         peers.iter().any(|peer| peer.name == "joiner"),
@@ -3247,15 +3255,17 @@ const ITS_OWN: &str = "DEFINE NAMESPACE research REPLICATION NONE; USE NAMESPACE
 
 /// Every namespace a store on disk can name, opened offline.
 fn namespaces_on(store: &std::path::Path) -> Vec<String> {
-    let db = tessaridb::Db::open(store).expect("the store opens");
-    let mut transaction = db.store().begin().expect("a read");
+    let db = tessaridb::Db::open(store).now().expect("the store opens");
+    let mut transaction = db.store().begin().now().expect("a read");
     let names = tessari_storage::Catalog::new(&mut transaction)
         .namespaces()
+        .now()
         .expect("the catalog answers")
         .into_iter()
         .map(|namespace| namespace.name)
         .collect();
     transaction.rollback();
+    db.close().now().expect("the store closes");
     names
 }
 
@@ -3299,32 +3309,32 @@ fn a_join_that_would_reinterpret_a_tenancy_is_refused_until_the_operator_removes
         let home = directory.path().join(format!("r{index}"));
         std::fs::create_dir_all(&home).unwrap();
         let store = home.join("store");
-        let db = tessaridb::Db::open(&store).unwrap();
-        let id = db.store().node_identity().unwrap().id;
-        drop(db);
+        let db = tessaridb::Db::open(&store).now().unwrap();
+        let id = db.store().node_identity().now().unwrap().id;
+        db.close().now().unwrap();
         papers.push(credentials(&minted, id, &home));
         ids.push(id);
         stores.push(store);
     }
 
     {
-        let db = tessaridb::Db::open(&stores[0]).unwrap();
+        let db = tessaridb::Db::open(&stores[0]).now().unwrap();
         let joiner = tessari_types::RecordId::Uuid(ids[1]).to_string();
         db.session()
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE REPLICA joiner AT '{}' NODE '{joiner}' ROLES serving \
                  REPLICATES STORE; {WRITTEN}",
                 REFUSING[1].1
             ))
             .expect("a leader that knows who is joining it");
-        drop(db);
+        db.close().now().unwrap();
     }
     {
-        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        let db = tessaridb::Db::open(&stores[1]).now().unwrap();
         db.session()
-            .run(&format!("DEFINE NODE ROLES serving; {ITS_OWN}"))
+            .run_now(&format!("DEFINE NODE ROLES serving; {ITS_OWN}"))
             .expect("a node with a tenancy of its own");
-        drop(db);
+        db.close().now().unwrap();
     }
     // Both stores really do file their first namespace at the same address —
     // asserted rather than assumed, because a build that numbered them
@@ -3392,10 +3402,10 @@ fn a_join_that_would_reinterpret_a_tenancy_is_refused_until_the_operator_removes
         what_the_nodes_said(&REFUSING, &logs)
     );
     {
-        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        let db = tessaridb::Db::open(&stores[1]).now().unwrap();
         let answers = db
             .session()
-            .run("USE NAMESPACE research; USE DATABASE notebooks; SELECT * FROM note;")
+            .run_now("USE NAMESPACE research; USE DATABASE notebooks; SELECT * FROM note;")
             .expect("the joiner's own tenancy still reads");
         assert!(
             matches!(
@@ -3404,7 +3414,7 @@ fn a_join_that_would_reinterpret_a_tenancy_is_refused_until_the_operator_removes
             ),
             "and its own record is still under it: {answers:?}"
         );
-        drop(db);
+        db.close().now().unwrap();
     }
 
     // The destruction, stated by being performed. The language walks the
@@ -3412,7 +3422,7 @@ fn a_join_that_would_reinterpret_a_tenancy_is_refused_until_the_operator_removes
     // is under it, and a database will not drop while a table is — so every
     // object destroyed is one they named.
     {
-        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        let db = tessaridb::Db::open(&stores[1]).now().unwrap();
         // The role comes first, and finding that out is what this half of the
         // test is for: the joiner is configured `ROLES serving`, `Effect::admits`
         // refuses a write on a node without `Roles::WRITABLE`, and every
@@ -3422,22 +3432,22 @@ fn a_join_that_would_reinterpret_a_tenancy_is_refused_until_the_operator_removes
         // is a detour rather than a dead end. The refusal says so in its own
         // words; this asserts the sequence it names actually runs.
         db.session()
-            .run("DEFINE NODE ROLES writable;")
+            .run_now("DEFINE NODE ROLES writable;")
             .expect("a serving node can always restore its own write authority");
         db.session()
-            .run("USE NAMESPACE research; USE DATABASE notebooks; DROP TABLE note;")
+            .run_now("USE NAMESPACE research; USE DATABASE notebooks; DROP TABLE note;")
             .expect("the operator drops their table");
         db.session()
-            .run("USE NAMESPACE research; DROP DATABASE notebooks;")
+            .run_now("USE NAMESPACE research; DROP DATABASE notebooks;")
             .expect("then the database");
         db.session()
-            .run("DROP NAMESPACE research;")
+            .run_now("DROP NAMESPACE research;")
             .expect("then the namespace the cluster's would have replaced");
-        db.session().run("DEFINE NODE ROLES serving;").expect(
+        db.session().run_now("DEFINE NODE ROLES serving;").expect(
             "and the role goes back, because a node that collects while \
                      it also writes is the divergence this design refuses",
         );
-        drop(db);
+        db.close().now().unwrap();
     }
     assert!(
         namespaces_on(&stores[1]).is_empty(),
@@ -3764,8 +3774,11 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
         panic!("a snapshot is bytes: {answers:?}");
     };
     let directory = tempfile::tempdir().unwrap();
-    let restored = tessaridb::Db::open(directory.path().join("restored")).unwrap();
+    let restored = tessaridb::Db::open(directory.path().join("restored"))
+        .now()
+        .unwrap();
     tessari_backup::read_state(restored.store(), || Ok(std::io::Cursor::new(file.clone())))
+        .now()
         .unwrap();
     // Read whole on both and split by the table's `SPLIT AT 'g', 'p'`: an
     // identity compared with text in a `WHERE` matches nothing, so a shard
@@ -3774,7 +3787,7 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
     let source = read_at(ACROSS[2].0, read).unwrap();
     let outcomes = restored
         .session()
-        .run(&format!("USE NAMESPACE prod; USE DATABASE shop; {read}"))
+        .run_now(&format!("USE NAMESPACE prod; USE DATABASE shop; {read}"))
         .unwrap();
     let Some(tessari_session::Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a read answers records: {outcomes:?}");
@@ -5058,7 +5071,23 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
     };
     let gathered = answered(GATHERING[2].0);
     assert_eq!(gathered.matches("Integer(1)").count(), 3, "{gathered}");
-    assert_eq!(gathered, answered(GATHERING[0].0));
+    // Node 0 answers from its own copy, and a read that says nothing about
+    // staleness may be answered by a copy still collecting (`ANSWERED BY ANY`):
+    // it is compared once it holds the three records, not before.
+    let began = Instant::now();
+    let whole_at_zero = loop {
+        let held = answered(GATHERING[0].0);
+        if held.matches("Integer(1)").count() == 3 {
+            break held;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(90),
+            "node 0 never held the three records; last: {held}{}",
+            what_the_nodes_said(&GATHERING, &logs)
+        );
+        std::thread::sleep(POLL);
+    };
+    assert_eq!(gathered, whole_at_zero);
     let in_the_middle = whole.get(1).unwrap().clone();
     assert_eq!(
         read_at(
@@ -5866,7 +5895,12 @@ fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() 
     );
     cluster.running[stopped] = None;
     for n in 1..=60 {
-        write(RESEEDED[leader].0, n).unwrap();
+        if let Err(refused) = write(RESEEDED[leader].0, n) {
+            panic!(
+                "write {n} was refused: {refused}{}",
+                what_the_nodes_said(&RESEEDED, &logs)
+            );
+        }
     }
     // The leader says it pruned; until it does, the follower is not below it.
     assert!(
@@ -5943,12 +5977,15 @@ fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() 
         panic!("a snapshot is bytes: {answers:?}");
     };
     let directory = tempfile::tempdir().unwrap();
-    let restored = tessaridb::Db::open(directory.path().join("restored")).unwrap();
+    let restored = tessaridb::Db::open(directory.path().join("restored"))
+        .now()
+        .unwrap();
     tessari_backup::read_state(restored.store(), || Ok(std::io::Cursor::new(file.clone())))
+        .now()
         .unwrap();
     let counted = restored
         .session()
-        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT count(*) AS n FROM item;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop; SELECT count(*) AS n FROM item;")
         .unwrap();
     assert!(
         format!("{counted:?}").contains("Integer(62)"),
@@ -6355,7 +6392,8 @@ fn a_local_majority_counts_the_voters_of_the_leaders_region() {
         .run(
             &format!(
                 "ALTER REPLICA n{leader} REGION 'eu'; ALTER REPLICA n{local} REGION 'eu'; \
-                 ALTER REPLICA n{remote} REGION 'us';"
+                 ALTER REPLICA n{remote} REGION 'us'; \
+                 ALTER NAMESPACE prod ACKNOWLEDGE MAJORITY OR WEAKER;"
             ),
             None,
         )
@@ -7116,10 +7154,10 @@ fn a_snapshot_above_one_frame_is_taken_from_a_running_node_with_at_and_backup() 
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("store");
     {
-        let db = tessaridb::Db::open(&path).unwrap();
+        let db = tessaridb::Db::open(&path).now().unwrap();
         let mut session = db.session();
         session
-            .run(
+            .run_now(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
                  USE DATABASE orders; DEFINE COLLECTION big;",
             )
@@ -7130,8 +7168,12 @@ fn a_snapshot_above_one_frame_is_taken_from_a_running_node_with_at_and_backup() 
             "CREATE big:1 = { body: $body };",
             "CREATE big:2 = { body: $body };",
         ] {
-            session.run_with(statement, &body).unwrap();
+            session.run_with_now(statement, &body).unwrap();
         }
+        drop(session);
+        // Closed, not dropped: the node is another process, and a store only
+        // dropped is still closing in this one when the node opens it.
+        db.close().now().unwrap();
     }
     let _node = Running(serving(&path, STREAMING_WIRE));
     let file = root.path().join("taken.tessarisnap");

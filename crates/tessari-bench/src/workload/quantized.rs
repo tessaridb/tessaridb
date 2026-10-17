@@ -8,15 +8,16 @@
 use super::{FILTERED_RECORDS, Failable, QUERIES, embedding, ids, prepared};
 use crate::samples::{Report, Samples};
 use std::time::Instant;
+use tessari_session::RunNow;
 use tessaridb::Db;
 
 pub(crate) fn vector_quantized(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench;")?;
     let mut reports = Vec::new();
     for (store, word) in [("full", ""), ("coded", " QUANTIZED")] {
-        session.run(&format!(
+        session.run_now(&format!(
             "DEFINE VECTOR {store} DIMENSION {} DISTANCE euclidean{word};",
             super::DIMENSIONS
         ))?;
@@ -30,10 +31,10 @@ pub(crate) fn vector_quantized(db: &Db) -> Failable<Vec<Report>> {
         }
         script.push_str("COMMIT;");
         let mut built = Samples::with_capacity(1);
-        timed!(built, session.run(&script)?);
+        timed!(built, session.run_now(&script)?);
         reports.push(built.summarise(&format!("{store} write + build")));
-        session.run(&format!("REBUILD INDEX vector ON {store};"))?;
-        let info = session.run(&format!("INFO FOR VECTOR {store};"))?;
+        session.run_now(&format!("REBUILD INDEX vector ON {store};"))?;
+        let info = session.run_now(&format!("INFO FOR VECTOR {store};"))?;
         let held = info
             .first()
             .and_then(|outcome| match outcome {
@@ -68,10 +69,10 @@ pub(crate) fn vector_quantized(db: &Db) -> Failable<Vec<Report>> {
             let read = format!(
                 "SELECT * FROM {store} ORDER BY vector::euclidean(vector, {query}) LIMIT 10"
             );
-            let truth = ids(timed!(exact, session.run(&format!("{read};"))?));
+            let truth = ids(timed!(exact, session.run_now(&format!("{read};"))?));
             let found = ids(timed!(
                 walked,
-                session.run(&format!("{read} APPROXIMATE;"))?
+                session.run_now(&format!("{read} APPROXIMATE;"))?
             ));
             overlap = overlap.saturating_add(
                 u64::try_from(found.iter().filter(|id| truth.contains(id)).count()).unwrap_or(0),

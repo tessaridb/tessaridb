@@ -19,13 +19,15 @@ impl Session<'_> {
     /// divided into. The values themselves are not answered — they are stored
     /// as the index encodes them, and a summary that printed them would be a
     /// way to read a field through its index.
-    pub(super) fn analyze_table(
+    pub(super) async fn analyze_table(
         &self,
         transaction: &mut Transaction<'_>,
         table: &TableRef,
     ) -> Result<Outcome> {
-        let (context, id) = self.resolve_table(transaction, table)?;
-        let taken = transaction.analyze_table(context.namespace, context.database, id)?;
+        let (context, id) = self.resolve_table(transaction, table).await?;
+        let taken = transaction
+            .analyze_table(context.namespace, context.database, id)
+            .await?;
         let count =
             |held: u64| Value::Number(Number::Integer(i64::try_from(held).unwrap_or(i64::MAX)));
         let mut answer = Vec::with_capacity(taken.len());

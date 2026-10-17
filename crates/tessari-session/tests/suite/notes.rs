@@ -29,6 +29,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Note, Outcome, Session};
@@ -37,13 +39,13 @@ use tessari_types::RecordId;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION events;",
@@ -69,18 +71,18 @@ fn populate(session: &mut Session<'_>, records: u32) {
             n % 2
         ));
         if n % 200 == 0 {
-            session.run(&script).unwrap();
+            session.run_now(&script).unwrap();
             script.clear();
         }
     }
     if !script.is_empty() {
-        session.run(&script).unwrap();
+        session.run_now(&script).unwrap();
     }
 }
 
 /// The answer and its notes, together, because every test here needs both.
 fn answered(session: &mut Session<'_>, script: &str) -> (Vec<RecordId>, Vec<Note>, AccessPath) {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let Some(Outcome::Records {
         records,
         plan,
@@ -112,7 +114,7 @@ fn an_index_that_could_not_fill_the_bound_says_so() {
     assert_eq!(path, AccessPath::Scan);
     assert!(notes.is_empty(), "a read with no index raised {notes:?}");
 
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
 
     let (with, notes, path) = answered(&mut session, THIN);
     assert_eq!(path, AccessPath::Scan, "the walk filled a bound it cannot");
@@ -168,7 +170,7 @@ fn an_index_that_served_the_order_raises_nothing() {
     let store = store();
     let mut session = ready(&store);
     populate(&mut session, 200);
-    session.run(INDEX).unwrap();
+    session.run_now(INDEX).unwrap();
 
     let (found, notes, path) = answered(
         &mut session,
@@ -247,7 +249,7 @@ fn an_approximate_answer_says_that_it_is_one() {
     // leaving to whoever remembers writing `APPROXIMATE`.
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE COLLECTION items;").unwrap();
+    session.run_now("DEFINE COLLECTION items;").unwrap();
     let mut script = String::new();
     for n in 0..40_u32 {
         script.push_str(&format!(
@@ -256,7 +258,7 @@ fn an_approximate_answer_says_that_it_is_one() {
             n * 2
         ));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
 
     const NEAR: &str = "SELECT * FROM items ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 5";
 
@@ -266,7 +268,7 @@ fn an_approximate_answer_says_that_it_is_one() {
     assert!(notes.is_empty(), "an exact answer raised {notes:?}");
 
     session
-        .run("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
+        .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
         .unwrap();
 
     let (near, notes, path) = answered(&mut session, &format!("{NEAR} APPROXIMATE;"));
@@ -287,14 +289,14 @@ fn a_read_that_did_not_ask_for_an_approximation_raises_nothing() {
     // that did not say it. The path already says so; the note must agree.
     let store = store();
     let mut session = ready(&store);
-    session.run("DEFINE COLLECTION items;").unwrap();
+    session.run_now("DEFINE COLLECTION items;").unwrap();
     let mut script = String::new();
     for n in 0..40_u32 {
         script.push_str(&format!("CREATE items:{n} = {{ at: [{n}.0, 0.0] }};\n"));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     session
-        .run("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
+        .run_now("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
         .unwrap();
 
     let (found, notes, path) = answered(
@@ -334,7 +336,7 @@ fn a_note_from_a_joined_read_reaches_the_answer() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION people;\n\
              CREATE people:1 = { name: 'ada', slot: 0 };\n\
              CREATE people:2 = { name: 'grace', slot: 0 };\n\
@@ -364,7 +366,7 @@ fn a_note_never_reaches_an_outcome_that_is_not_records() {
         "DEFINE COLLECTION other;",
         "DELETE FROM events WHERE slot = 0 LIMIT ALL;",
     ] {
-        let outcomes = session.run(script).unwrap();
+        let outcomes = session.run_now(script).unwrap();
         assert!(
             outcomes.last().unwrap().notes().is_empty(),
             "`{script}` carried notes",
@@ -380,7 +382,7 @@ fn membership_is_judged_by_its_members_and_not_by_the_collection() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE events:1 = { x: 1, tags: [1, 2] };\n\
              CREATE events:2 = { x: 3, tags: [3.0] };\n\
              CREATE events:3 = { x: 5, tags: [] };",

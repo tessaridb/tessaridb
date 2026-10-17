@@ -8,11 +8,11 @@ use tessari_storage::{Catalog, ConsumerDefinition, Feed, Store};
 /// The destination is resolved to **names** here, once, rather than per batch:
 /// the runner writes through the language, and the only text it composes comes
 /// from the catalog. No byte of any message ever reaches a statement.
-pub(crate) fn declarations(
+pub(crate) async fn declarations(
     store: &Store,
 ) -> Result<Vec<(ConsumerDefinition, Destination)>, tessari_storage::Error> {
-    let mut transaction = store.begin()?;
-    let declared = Catalog::new(&mut transaction).consumers()?;
+    let mut transaction = store.begin().await?;
+    let declared = Catalog::new(&mut transaction).consumers().await?;
     let mut found = Vec::new();
     // Kafka declarations only: a topic consumer is run by the topic runner, and
     // opening one here would fail against a broker and mark it stopped in the
@@ -21,7 +21,7 @@ pub(crate) fn declarations(
         .into_iter()
         .filter(|definition| matches!(definition.feed, Feed::Kafka { .. }))
     {
-        match destination_of(&mut transaction, &definition) {
+        match destination_of(&mut transaction, &definition).await {
             Some(table) => found.push((definition, table)),
             None => tracing::warn!(
                 consumer = %definition.name,
@@ -34,25 +34,28 @@ pub(crate) fn declarations(
 }
 
 /// Resolve a declaration's ids back to the names a statement uses.
-pub(crate) fn destination_of(
+pub(crate) async fn destination_of(
     transaction: &mut tessari_storage::Transaction<'_>,
     definition: &ConsumerDefinition,
 ) -> Option<Destination> {
     let catalog = Catalog::new(transaction);
     let namespace = catalog
         .namespaces()
+        .await
         .ok()?
         .into_iter()
         .find(|held| held.id == definition.namespace)?
         .name;
     let database = catalog
         .databases_in(definition.namespace)
+        .await
         .ok()?
         .into_iter()
         .find(|held| held.id == definition.database)?
         .name;
     let table = catalog
         .tables_in(definition.namespace, definition.database)
+        .await
         .ok()?
         .into_iter()
         .find(|held| held.id == definition.destination)?

@@ -17,6 +17,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_encoding::{KeyKind, StoreKey, StoreValue, VectorNode, VectorNodeKey};
 use tessari_kv::{KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
@@ -31,14 +33,14 @@ use tessari_storage::Store;
 /// answer here.
 fn store() -> (Store, Arc<dyn KvBackend>) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     (store, backend)
 }
 
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE papers; USE DATABASE papers;\n\
              DEFINE TABLE notes SCHEMALESS;",
@@ -59,7 +61,7 @@ fn keys_of(backend: &Arc<dyn KvBackend>, kind: KeyKind) -> usize {
         direction: ScanDirection::Forward,
         limit: None,
     };
-    backend.scan(&request).unwrap().len()
+    backend.scan(&request).now().unwrap().len()
 }
 
 #[test]
@@ -71,16 +73,18 @@ fn a_rebuild_leaves_the_same_entries_a_first_build_would_have_written() {
     let mut session = ready(&store);
     for n in 0..20 {
         session
-            .run(&format!("CREATE notes:{n} = {{ author: 'a{n}' }};"))
+            .run_now(&format!("CREATE notes:{n} = {{ author: 'a{n}' }};"))
             .unwrap();
     }
     session
-        .run("DEFINE INDEX by_author ON notes FIELDS author;")
+        .run_now("DEFINE INDEX by_author ON notes FIELDS author;")
         .unwrap();
     let before = keys_of(&backend, KeyKind::SecondaryIndex);
     assert_eq!(before, 20);
 
-    session.run("REBUILD INDEX by_author ON notes;").unwrap();
+    session
+        .run_now("REBUILD INDEX by_author ON notes;")
+        .unwrap();
     assert_eq!(keys_of(&backend, KeyKind::SecondaryIndex), before);
 }
 
@@ -91,24 +95,26 @@ fn a_rebuild_answers_the_same_question_the_same_way() {
     let mut session = ready(&store);
     for n in 0..10 {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE notes:{n} = {{ author: 'ada', page: {n} }};"
             ))
             .unwrap();
     }
     session
-        .run("DEFINE INDEX by_author ON notes FIELDS author;")
+        .run_now("DEFINE INDEX by_author ON notes FIELDS author;")
         .unwrap();
 
     let before = session
-        .run("SELECT * FROM notes WHERE author = 'ada';")
+        .run_now("SELECT * FROM notes WHERE author = 'ada';")
         .unwrap()[0]
         .records()
         .unwrap()
         .len();
-    session.run("REBUILD INDEX by_author ON notes;").unwrap();
+    session
+        .run_now("REBUILD INDEX by_author ON notes;")
+        .unwrap();
     let after = session
-        .run("SELECT * FROM notes WHERE author = 'ada';")
+        .run_now("SELECT * FROM notes WHERE author = 'ada';")
         .unwrap()[0]
         .records()
         .unwrap()
@@ -130,28 +136,28 @@ fn a_rebuild_counts_a_searchable_document_once_and_not_twice() {
     let (store, backend) = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE ANALYZER plain FILTERS lowercase;")
+        .run_now("DEFINE ANALYZER plain FILTERS lowercase;")
         .unwrap();
     session
-        .run("DEFINE FIELD body ON notes TYPE string ANALYZER plain;")
+        .run_now("DEFINE FIELD body ON notes TYPE string ANALYZER plain;")
         .unwrap();
     // Different lengths on purpose: the average document length is one of the
     // statistics, so documents of one size would hide half of a drift.
     for n in 0..8 {
         let padding = "word ".repeat(usize::try_from(n).unwrap());
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE notes:{n} = {{ body: 'salary spreadsheet {padding}' }};"
             ))
             .unwrap();
     }
     session
-        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
         .unwrap();
 
     let scores = |session: &mut Session<'_>| {
         session
-            .run("SELECT search::score(body, 'salary') AS relevance FROM notes;")
+            .run_now("SELECT search::score(body, 'salary') AS relevance FROM notes;")
             .unwrap()[0]
             .records()
             .unwrap()
@@ -163,7 +169,7 @@ fn a_rebuild_counts_a_searchable_document_once_and_not_twice() {
     let postings = keys_of(&backend, KeyKind::Posting);
     assert!(postings > 0, "nothing was indexed, so nothing is proved");
 
-    session.run("REBUILD INDEX by_body ON notes;").unwrap();
+    session.run_now("REBUILD INDEX by_body ON notes;").unwrap();
 
     assert_eq!(
         keys_of(&backend, KeyKind::Posting),
@@ -186,17 +192,17 @@ fn a_rebuild_of_a_unique_index_does_not_collide_with_its_own_entries() {
     let mut session = ready(&store);
     for n in 0..5 {
         session
-            .run(&format!("CREATE notes:{n} = {{ email: 'a{n}@x' }};"))
+            .run_now(&format!("CREATE notes:{n} = {{ email: 'a{n}@x' }};"))
             .unwrap();
     }
     session
-        .run("DEFINE INDEX by_email ON notes FIELDS email UNIQUE;")
+        .run_now("DEFINE INDEX by_email ON notes FIELDS email UNIQUE;")
         .unwrap();
-    session.run("REBUILD INDEX by_email ON notes;").unwrap();
+    session.run_now("REBUILD INDEX by_email ON notes;").unwrap();
     assert_eq!(keys_of(&backend, KeyKind::UniqueIndex), 5);
 
     // And the constraint is still a constraint afterwards.
-    let refused = session.run("CREATE notes:99 = { email: 'a1@x' };");
+    let refused = session.run_now("CREATE notes:99 = { email: 'a1@x' };");
     assert!(
         matches!(refused, Err(Error::Store(_))),
         "the unique index stopped refusing: {refused:?}"
@@ -213,16 +219,18 @@ fn a_rebuild_forgets_the_rows_that_have_gone() {
     let mut session = ready(&store);
     for n in 0..12 {
         session
-            .run(&format!("CREATE notes:{n} = {{ author: 'a{n}' }};"))
+            .run_now(&format!("CREATE notes:{n} = {{ author: 'a{n}' }};"))
             .unwrap();
     }
     session
-        .run("DEFINE INDEX by_author ON notes FIELDS author;")
+        .run_now("DEFINE INDEX by_author ON notes FIELDS author;")
         .unwrap();
     for n in 0..6 {
-        session.run(&format!("DELETE notes:{n};")).unwrap();
+        session.run_now(&format!("DELETE notes:{n};")).unwrap();
     }
-    session.run("REBUILD INDEX by_author ON notes;").unwrap();
+    session
+        .run_now("REBUILD INDEX by_author ON notes;")
+        .unwrap();
     assert_eq!(keys_of(&backend, KeyKind::SecondaryIndex), 6);
 }
 
@@ -235,15 +243,15 @@ fn rebuilding_and_writing_in_one_transaction_ends_with_both() {
     let mut session = ready(&store);
     for n in 0..4 {
         session
-            .run(&format!("CREATE notes:{n} = {{ author: 'a{n}' }};"))
+            .run_now(&format!("CREATE notes:{n} = {{ author: 'a{n}' }};"))
             .unwrap();
     }
     session
-        .run("DEFINE INDEX by_author ON notes FIELDS author;")
+        .run_now("DEFINE INDEX by_author ON notes FIELDS author;")
         .unwrap();
 
     session
-        .run(
+        .run_now(
             "BEGIN;\n\
              CREATE notes:100 = { author: 'later' };\n\
              REBUILD INDEX by_author ON notes;\n\
@@ -253,7 +261,7 @@ fn rebuilding_and_writing_in_one_transaction_ends_with_both() {
     assert_eq!(keys_of(&backend, KeyKind::SecondaryIndex), 5);
 
     let found = session
-        .run("SELECT * FROM notes WHERE author = 'later';")
+        .run_now("SELECT * FROM notes WHERE author = 'later';")
         .unwrap()[0]
         .records()
         .unwrap()
@@ -268,7 +276,7 @@ fn rebuilding_and_writing_in_one_transaction_ends_with_both() {
 fn a_rebuild_needs_the_index_to_exist() {
     let (store, _backend) = store();
     let mut session = ready(&store);
-    let refused = session.run("REBUILD INDEX nothing ON notes;");
+    let refused = session.run_now("REBUILD INDEX nothing ON notes;");
     assert!(
         matches!(
             refused,
@@ -296,7 +304,7 @@ fn dangling_edges(backend: &Arc<dyn KvBackend>) -> usize {
         direction: ScanDirection::Forward,
         limit: None,
     };
-    let found = backend.scan(&request).unwrap();
+    let found = backend.scan(&request).now().unwrap();
     let present: Vec<_> = found
         .iter()
         .map(|(key, _)| VectorNodeKey::decode(key.as_slice()).unwrap().id)
@@ -316,27 +324,27 @@ fn rebuilding_a_vector_index_takes_back_the_edges_churn_left() {
     // a churned vector index answers it *worse and worse*, and says nothing.
     let (store, backend) = store();
     let mut session = ready(&store);
-    session.run("DEFINE COLLECTION points;").unwrap();
+    session.run_now("DEFINE COLLECTION points;").unwrap();
     for n in 0..200 {
         let x = f64::from(n) * 0.5;
         session
-            .run(&format!("CREATE points:{n} = {{ at: [{x:.2}, 0.0] }};"))
+            .run_now(&format!("CREATE points:{n} = {{ at: [{x:.2}, 0.0] }};"))
             .unwrap();
     }
     session
-        .run("DEFINE INDEX by_at ON points FIELDS at VECTOR euclidean;")
+        .run_now("DEFINE INDEX by_at ON points FIELDS at VECTOR euclidean;")
         .unwrap();
     assert_eq!(dangling_edges(&backend), 0, "a fresh index already dangles");
 
     // Half of them go, taken from across the line rather than off one end: what
     // is being damaged is the links, not the presence of a region.
     for n in (1..200).step_by(2) {
-        session.run(&format!("DELETE points:{n};")).unwrap();
+        session.run_now(&format!("DELETE points:{n};")).unwrap();
     }
     let churned = dangling_edges(&backend);
     assert!(churned > 0, "the fixture did not churn the index");
 
-    session.run("REBUILD INDEX by_at ON points;").unwrap();
+    session.run_now("REBUILD INDEX by_at ON points;").unwrap();
     assert_eq!(
         dangling_edges(&backend),
         0,
@@ -346,7 +354,9 @@ fn rebuilding_a_vector_index_takes_back_the_edges_churn_left() {
     // And the index still answers — approximately, because that is the one
     // question in this store where a statement has to say so.
     let found = session
-        .run("SELECT * FROM points ORDER BY vector::euclidean(at, [1.0, 0.0]) LIMIT 3 APPROXIMATE;")
+        .run_now(
+            "SELECT * FROM points ORDER BY vector::euclidean(at, [1.0, 0.0]) LIMIT 3 APPROXIMATE;",
+        )
         .unwrap()[0]
         .records()
         .unwrap()
@@ -356,7 +366,7 @@ fn rebuilding_a_vector_index_takes_back_the_edges_churn_left() {
 
 /// The ids a full-text read answers, and the path it took.
 fn matched(session: &mut Session<'_>, read: &str) -> (Vec<String>, AccessPath) {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("{read}: {:?}", outcomes.last());
     };
@@ -377,11 +387,11 @@ CREATE notes:2 = { body: 'a Shell' };\n";
 fn postings_one_at_a_time() -> usize {
     let (store, backend) = store();
     let mut session = ready(&store);
-    session.run(ANALYSED).unwrap();
+    session.run_now(ANALYSED).unwrap();
     session
-        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
         .unwrap();
-    session.run(SHELLS).unwrap();
+    session.run_now(SHELLS).unwrap();
     keys_of(&backend, KeyKind::Posting)
 }
 
@@ -394,7 +404,7 @@ fn an_index_built_beside_its_fields_analyzer_indexes_the_rows() {
     let (store, backend) = store();
     let mut session = ready(&store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "BEGIN;\n{ANALYSED}DEFINE INDEX by_body ON notes FIELDS body SEARCH;\n{SHELLS}COMMIT;"
         ))
         .unwrap();
@@ -420,13 +430,13 @@ fn rows_written_beside_their_fields_analyzer_are_indexed() {
     let (store, backend) = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;")
+        .run_now("DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;")
         .unwrap();
     session
-        .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
         .unwrap();
     session
-        .run(&format!(
+        .run_now(&format!(
             "BEGIN;\nDEFINE FIELD body ON notes TYPE string ANALYZER english;\n{SHELLS}COMMIT;"
         ))
         .unwrap();

@@ -32,10 +32,12 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use tessari_session::Now;
+use tessari_session::RunNow;
 
+use tessari_kv::KvFuture;
 use tessari_kv::{
-    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
-    WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value as KvValue, WriteBatch,
 };
 use tessari_session::{AccessPath, Outcome, Session};
 use tessari_storage::Store;
@@ -81,33 +83,39 @@ impl KvBackend for Counting {
         "counting"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<KvValue>> {
-        let found = self.inner.get(keyspace, key)?;
-        if found.is_some() {
-            self.rows.fetch_add(1, AtomicOrdering::Relaxed);
-        }
-        Ok(found)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<KvValue>> {
+        Box::pin(async move {
+            let found = self.inner.get(keyspace, key).await?;
+            if found.is_some() {
+                self.rows.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            Ok(found)
+        })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, KvValue)>> {
-        let found = self.inner.scan(request)?;
-        self.rows.fetch_add(found.len(), AtomicOrdering::Relaxed);
-        Ok(found)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, KvValue)>> {
+        Box::pin(async move {
+            let found = self.inner.scan(request).await?;
+            self.rows.fetch_add(found.len(), AtomicOrdering::Relaxed);
+            Ok(found)
+        })
     }
 
-    fn first_of_each(
-        &self,
+    fn first_of_each<'a>(
+        &'a self,
         keyspace: Keyspace,
-        ranges: &[KeyRange],
-    ) -> Result<Vec<Option<(Key, KvValue)>>> {
-        let found = self.inner.first_of_each(keyspace, ranges)?;
-        self.rows
-            .fetch_add(found.iter().flatten().count(), AtomicOrdering::Relaxed);
-        Ok(found)
+        ranges: &'a [KeyRange],
+    ) -> KvFuture<'a, Vec<Option<(Key, KvValue)>>> {
+        Box::pin(async move {
+            let found = self.inner.first_of_each(keyspace, ranges).await?;
+            self.rows
+                .fetch_add(found.iter().flatten().count(), AtomicOrdering::Relaxed);
+            Ok(found)
+        })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.inner.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move { self.inner.apply(batch).await })
     }
 }
 
@@ -125,7 +133,7 @@ impl KvBackend for Counting {
 fn ready<'a>(store: &'a Store, index: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE events SCHEMALESS;\n\
@@ -140,15 +148,15 @@ fn ready<'a>(store: &'a Store, index: &str) -> Session<'a> {
             RECORDS.saturating_sub(n)
         ));
         if n % 100 == 0 {
-            session.run(&script).unwrap();
+            session.run_now(&script).unwrap();
             script.clear();
         }
     }
     if !script.is_empty() {
-        session.run(&script).unwrap();
+        session.run_now(&script).unwrap();
     }
     if !index.is_empty() {
-        session.run(index).unwrap();
+        session.run_now(index).unwrap();
     }
     session
 }
@@ -157,7 +165,7 @@ fn ready<'a>(store: &'a Store, index: &str) -> Session<'a> {
 const COMPOSITE: &str = "DEFINE INDEX by_at_tag ON events FIELDS at, tag;";
 
 fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
-    let outcomes = session.run(&format!("EXPLAIN {read}")).unwrap();
+    let outcomes = session.run_now(&format!("EXPLAIN {read}")).unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
         panic!("a plan answered with {:?}", outcomes.last());
     };
@@ -167,7 +175,7 @@ fn plan(session: &mut Session<'_>, read: &str, field: &str) -> String {
 /// The identities a read answers with, **in the order it answered**, and the
 /// path it took.
 fn answered(session: &mut Session<'_>, read: &str) -> (Vec<RecordId>, AccessPath) {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -182,7 +190,9 @@ const DESCENDING: &str = "SELECT * FROM events ORDER BY at DESC LIMIT 10;";
 
 #[test]
 fn a_composite_index_is_offered_for_an_order_on_its_leading_field() {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, COMPOSITE);
     for read in [ASCENDING, DESCENDING] {
         assert_eq!(plan(&mut session, read, "access"), r#"String("ordered")"#);
@@ -205,7 +215,9 @@ fn the_tie_group_at_the_bound_is_drained_and_not_cut() {
     // entries run by `tag`, which this fixture makes the reverse of identity —
     // so a walk that stopped at the bound would answer with the group's largest
     // identities. The answer wants its smallest.
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, COMPOSITE);
 
     let (ids, path) = answered(&mut session, ASCENDING);
@@ -219,9 +231,13 @@ fn the_tie_group_at_the_bound_is_drained_and_not_cut() {
 
 #[test]
 fn both_directions_answer_what_the_scan_answers_in_the_same_order() {
-    let served = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let served = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut with = ready(&served, COMPOSITE);
-    let scanned = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let scanned = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut without = ready(&scanned, "");
 
     for read in [ASCENDING, DESCENDING] {
@@ -240,7 +256,9 @@ fn both_directions_answer_what_the_scan_answers_in_the_same_order() {
 #[test]
 fn a_served_composite_order_reads_its_group_and_not_the_table() {
     let counting = Counting::new();
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, COMPOSITE);
 
     counting.reset();
@@ -250,7 +268,7 @@ fn a_served_composite_order_reads_its_group_and_not_the_table() {
     assert_eq!(ids.len(), LIMIT);
 
     counting.reset();
-    session.run("SELECT * FROM events;").unwrap();
+    session.run_now("SELECT * FROM events;").unwrap();
     let whole = counting.rows();
 
     // A drained group is not free — it reads the whole group rather than the
@@ -268,7 +286,9 @@ fn an_order_on_a_later_field_of_the_composite_is_refused() {
     // `tag`'s entries are grouped inside each `at`, so reading them in key order
     // yields `tag` restarted once per group — not that field's order at any
     // point, and not an approximation of it either.
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, COMPOSITE);
     for read in [
         "SELECT * FROM events ORDER BY tag LIMIT 10;",
@@ -289,10 +309,12 @@ fn a_single_field_index_is_preferred_to_a_composite_holding_the_same_order() {
     // keeps every read this store already served on the path it already took —
     // which is why widening the candidate set had to be additive rather than a
     // change of ranking.
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = ready(&store, COMPOSITE);
     session
-        .run("DEFINE INDEX by_at ON events FIELDS at;")
+        .run_now("DEFINE INDEX by_at ON events FIELDS at;")
         .unwrap();
     assert_eq!(plan(&mut session, ASCENDING, "index"), r#"String("by_at")"#);
     assert_eq!(
@@ -306,10 +328,12 @@ fn an_ascending_composite_order_is_still_refused_over_an_optional_leading_field(
     // The previous wave's admission rule, inherited unchanged: a record with no
     // `at` has no entry in any index leading with `at`, and ascending those
     // records come first. Being composite changes nothing about that.
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE events SCHEMALESS;\n\

@@ -32,22 +32,22 @@ impl Session<'_> {
     /// only where the read fell back — which the planner cannot know, because
     /// whether an index will fill the statement's bound is the read itself. That
     /// difference is the honest answer, and a note on the answer names it.
-    pub(crate) fn explain(
+    pub(crate) async fn explain(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
     ) -> Result<crate::outcome::Outcome> {
-        let plan = self.plan_of(transaction, select)?;
+        let plan = self.plan_of(transaction, select).await?;
         Ok(crate::outcome::Outcome::Value(plan.to_value()))
     }
 
     /// The plan, before it is a value.
-    fn plan_of(&self, transaction: &mut Transaction<'_>, select: &Select) -> Result<Plan> {
+    async fn plan_of(&self, transaction: &mut Transaction<'_>, select: &Select) -> Result<Plan> {
         match &select.from {
             // Planned from the dictionary alone: whether every word can be
             // walked decides between the postings and a scan, and no record is
             // read to say so.
-            Source::Search { .. } => self.explain_search(transaction, select),
+            Source::Search { .. } => self.explain_search(transaction, select).await,
             // One value out of `meta`, with no table, no index and no choice.
             Source::Node => Ok(Plan {
                 source: Some("node"),
@@ -55,8 +55,11 @@ impl Session<'_> {
             }),
             // Straight to one record by its identity: there is nothing to choose.
             Source::Record(target) => {
-                let (_, id) = self.resolve_readable_table(transaction, &target.table)?;
-                self.refuse_reading_a_vault(transaction, id, &target.table)?;
+                let (_, id) = self
+                    .resolve_readable_table(transaction, &target.table)
+                    .await?;
+                self.refuse_reading_a_vault(transaction, id, &target.table)
+                    .await?;
                 Ok(Plan::new(AccessPath::Record).on(target.table.name.text.as_str()))
             }
             // The span is decided by the statement and not by what exists, so
@@ -69,8 +72,8 @@ impl Session<'_> {
                 inclusive,
                 span,
             } => {
-                let (_, id) = self.resolve_readable_table(transaction, table)?;
-                self.refuse_reading_a_vault(transaction, id, table)?;
+                let (_, id) = self.resolve_readable_table(transaction, table).await?;
+                self.refuse_reading_a_vault(transaction, id, table).await?;
                 let part = crate::evaluate::Part::Span {
                     lower: lower.fixed(*span)?,
                     upper: upper.fixed(*span)?,
@@ -78,7 +81,7 @@ impl Session<'_> {
                 };
                 Ok(Plan::new(AccessPath::Span)
                     .on(table.name.text.as_str())
-                    .touching(self.shards_touched(transaction, id, part)?))
+                    .touching(self.shards_touched(transaction, id, part).await?))
             }
             Source::Table(table) => {
                 let named = table.name.text.as_str();
@@ -88,17 +91,18 @@ impl Session<'_> {
                 // answer. A `SELECT` over a vault is refused, so there is no
                 // plan — and reporting `scan` for it said a read would walk the
                 // table when the store would not have let it start.
-                let (_, gated) = self.resolve_readable_table(transaction, table)?;
-                self.refuse_reading_a_vault(transaction, gated, table)?;
+                let (_, gated) = self.resolve_readable_table(transaction, table).await?;
+                self.refuse_reading_a_vault(transaction, gated, table)
+                    .await?;
                 // A read with no condition has nothing for an index to narrow —
                 // except the one shape an index answers differently from a scan,
                 // which says so by name rather than hiding inside "index".
                 if let Some(walk) = nearest(select) {
-                    let (_, id) = self.resolve_readable_table(transaction, table)?;
+                    let (_, id) = self.resolve_readable_table(transaction, table).await?;
                     // Asked by path, exactly as the read asks it. Taking the
                     // first declared index carrying a vector named a different
                     // index than the read used whenever a table carried two.
-                    if let Some(index) = self.index_on_path(transaction, id, walk.path)?
+                    if let Some(index) = self.index_on_path(transaction, id, walk.path).await?
                         && index.vector.is_some()
                     {
                         return Ok(Plan {
@@ -110,8 +114,9 @@ impl Session<'_> {
                 }
                 if let Some(place) = closest(select)
                     && let Some((index, _)) = {
-                        let (context, id) = self.resolve_readable_table(transaction, table)?;
-                        self.index_serving_place(transaction, context, id, place.path)?
+                        let (context, id) = self.resolve_readable_table(transaction, table).await?;
+                        self.index_serving_place(transaction, context, id, place.path)
+                            .await?
                     }
                 {
                     // Named `nearest` rather than left inside "ordered", because
@@ -135,13 +140,14 @@ impl Session<'_> {
                 if let Some(read) = scored(select)
                     && read.wanted > 0
                 {
-                    let (context, id) = self.resolve_readable_table(transaction, table)?;
-                    if let Some(index) = self.index_on_path(transaction, id, read.field)?
+                    let (context, id) = self.resolve_readable_table(transaction, table).await?;
+                    if let Some(index) = self.index_on_path(transaction, id, read.field).await?
                         && index.search
                         && !index.needs_rebuild()
                         && !index.costs.unscored
                         && self
-                            .index_serving_score(transaction, context, id, read.field)?
+                            .index_serving_score(transaction, context, id, read.field)
+                            .await?
                             .is_some()
                     {
                         return Ok(Plan {
@@ -153,14 +159,15 @@ impl Session<'_> {
                 }
                 if let Some(bound) = ordered(select)
                     && let Some((index, _)) = {
-                        let (context, id) = self.resolve_readable_table(transaction, table)?;
+                        let (context, id) = self.resolve_readable_table(transaction, table).await?;
                         self.index_serving_order(
                             transaction,
                             context,
                             id,
                             bound.path,
                             bound.descending,
-                        )?
+                        )
+                        .await?
                     }
                 {
                     // Every condition but one, and the one it cannot ask is
@@ -177,12 +184,14 @@ impl Session<'_> {
                 Ok(Plan::new(AccessPath::Scan).on(named))
             }
             Source::Where { table, condition } => {
-                let (context, id) = self.resolve_readable_table(transaction, table)?;
-                self.refuse_reading_a_vault(transaction, id, table)?;
+                let (context, id) = self.resolve_readable_table(transaction, table).await?;
+                self.refuse_reading_a_vault(transaction, id, table).await?;
                 let named = table.name.text.as_str();
                 // A condition fixing the partition reads that partition's span,
                 // asked first because the read asks it first (ADR-0096 D3).
-                if let Some((lower, upper)) = self.partition_span(transaction, id, condition)? {
+                if let Some((lower, upper)) =
+                    self.partition_span(transaction, id, condition).await?
+                {
                     let part = crate::evaluate::Part::Span {
                         lower: &lower,
                         upper: &upper,
@@ -190,7 +199,7 @@ impl Session<'_> {
                     };
                     return Ok(Plan::new(AccessPath::Span)
                         .on(named)
-                        .touching(self.shards_touched(transaction, id, part)?));
+                        .touching(self.shards_touched(transaction, id, part).await?));
                 }
                 // A filtered nearest read the statement let be approximate is
                 // walked through the graph, asked first because the read asks it
@@ -201,20 +210,22 @@ impl Session<'_> {
                 // read's own: a walk that cannot fill the bound falls back with
                 // a note.
                 if let Some(walk) = nearest(select)
-                    && let Some(index) = self.index_on_path(transaction, id, walk.path)?
+                    && let Some(index) = self.index_on_path(transaction, id, walk.path).await?
                     && index.vector.is_some()
                 {
-                    let searched = self.searched_for(transaction, id, &[condition])?;
-                    let declared = Catalog::new(transaction).field_indexes_on(id)?;
-                    let offered = self.enumerate(transaction, condition, &declared, &searched)?;
+                    let searched = self.searched_for(transaction, id, &[condition]).await?;
+                    let declared = Catalog::new(transaction).field_indexes_on(id).await?;
+                    let offered = self
+                        .enumerate(transaction, condition, &declared, &searched)
+                        .await?;
                     if let Some(chosen) =
-                        super::serving(transaction, id, offered, select.lift_scan_guard)?
+                        super::serving(transaction, id, offered, select.lift_scan_guard).await?
                     {
-                        let visible = self.visible_in(transaction, id)?;
+                        let visible = self.visible_in(transaction, id).await?;
                         let plan = chosen.plan(Some(named)).seen_by(&chosen.index, &visible);
                         let range = chosen.ranged();
                         let ceiling = tessari_storage::filtered_ceiling(walk.wanted, walk.effort);
-                        if super::narrows_to(transaction, &plan, range, ceiling)? {
+                        if super::narrows_to(transaction, &plan, range, ceiling).await? {
                             return Ok(plan);
                         }
                     }
@@ -227,8 +238,9 @@ impl Session<'_> {
                 // asked here first because the read asks it first (G058 C1).
                 // Whether it settles within its cap is the read's own question.
                 if let Some(place) = closest(select)
-                    && let Some((index, _)) =
-                        self.index_serving_place(transaction, context, id, place.path)?
+                    && let Some((index, _)) = self
+                        .index_serving_place(transaction, context, id, place.path)
+                        .await?
                 {
                     return Ok(Plan {
                         shape: Some("nearest"),
@@ -244,41 +256,43 @@ impl Session<'_> {
                 // order sends the read back to the scan, and this reports the
                 // path the planner chose rather than the one it settled for.
                 if let Some(bound) = ordered(select)
-                    && let Some((index, _)) = self.index_serving_order(
-                        transaction,
-                        context,
-                        id,
-                        bound.path,
-                        bound.descending,
-                    )?
+                    && let Some((index, _)) = self
+                        .index_serving_order(transaction, context, id, bound.path, bound.descending)
+                        .await?
                 {
                     return Ok(Plan {
                         index: Some(index.name.clone()),
                         ..Plan::new(AccessPath::Ordered).on(named)
                     });
                 }
-                let searched = self.searched_for(transaction, id, &[condition])?;
+                let searched = self.searched_for(transaction, id, &[condition]).await?;
                 // The gate the read's own enumeration passes (`candidates`): an
                 // index the read may not believe is one it does not have.
-                let (declared, _) = crate::evaluate::declared_for(transaction, id)?;
-                let offered = self.enumerate(transaction, condition, &declared, &searched)?;
+                let (declared, _) = crate::evaluate::declared_for(transaction, id).await?;
+                let offered = self
+                    .enumerate(transaction, condition, &declared, &searched)
+                    .await?;
                 // The same guard the read applies, from the same function: a
                 // winner that does not beat reading the table is not the path
                 // the read will take, and an `EXPLAIN` that reported it would
                 // be describing a plan nothing runs.
-                let chosen = super::serving(transaction, id, offered, select.lift_scan_guard)?;
+                let chosen =
+                    super::serving(transaction, id, offered, select.lift_scan_guard).await?;
                 if let Some(chosen) = chosen {
-                    let visible = self.visible_in(transaction, id)?;
+                    let visible = self.visible_in(transaction, id).await?;
                     return Ok(chosen.plan(Some(named)).seen_by(&chosen.index, &visible));
                 }
                 Ok(
-                    match self.union_of(
-                        transaction,
-                        id,
-                        condition,
-                        (&declared, &searched),
-                        select.lift_scan_guard,
-                    )? {
+                    match self
+                        .union_of(
+                            transaction,
+                            id,
+                            condition,
+                            (&declared, &searched),
+                            select.lift_scan_guard,
+                        )
+                        .await?
+                    {
                         Some(sides) => super::union_plan(&sides, Some(named)),
                         None => Plan::new(AccessPath::Scan).on(named),
                     },
@@ -298,10 +312,11 @@ impl Session<'_> {
                 let JoinSide::Table { table, .. } = right.as_ref() else {
                     return Ok(Plan::new(AccessPath::Join));
                 };
-                let (_, id) = self.resolve_readable_table(transaction, table)?;
-                self.refuse_reading_a_vault(transaction, id, table)?;
+                let (_, id) = self.resolve_readable_table(transaction, table).await?;
+                self.refuse_reading_a_vault(transaction, id, table).await?;
                 Ok(Plan {
-                    index: crate::evaluate::ordered_index_on(transaction, id, right_key)?
+                    index: crate::evaluate::ordered_index_on(transaction, id, right_key)
+                        .await?
                         .map(|index| index.name),
                     ..Plan::new(AccessPath::Join)
                 })

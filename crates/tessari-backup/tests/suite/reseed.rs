@@ -8,6 +8,8 @@
 //! leader's own — not merely that the copy ran.
 
 use tessari_kv::Keyspace;
+use tessari_session::RunNow;
+use tessari_storage::Now;
 use tessari_storage::Store;
 use tessari_types::Reach;
 
@@ -15,16 +17,16 @@ use crate::restore::{INTERROGATION, dump, original, signed_in, store};
 
 /// Copy `source`'s state at `within` onto `onto`, the way a follower re-seeds.
 fn copied(source: &Store, onto: &Store, within: Reach) -> u64 {
-    let before = onto.committed_version().unwrap();
-    let mut reader = source.read_state_within(within).unwrap();
+    let before = onto.committed_version().now().unwrap();
+    let mut reader = source.read_state_within(within).now().unwrap();
     let positions = reader.positions().to_vec();
-    while let Some(chunk) = reader.next_chunk(500).unwrap() {
-        onto.restore_state_chunk(&chunk).unwrap();
+    while let Some(chunk) = reader.next_chunk(500).now().unwrap() {
+        onto.restore_state_chunk(&chunk).now().unwrap();
     }
-    let topics = reader.topic_heads().unwrap();
+    let topics = reader.topic_heads().now().unwrap();
     drop(reader);
-    let removed = onto.sweep_unreplaced(within, before).unwrap();
-    onto.finish_state(&positions, &topics).unwrap();
+    let removed = onto.sweep_unreplaced(within, before).now().unwrap();
+    onto.finish_state(&positions, &topics).now().unwrap();
     removed
 }
 
@@ -44,7 +46,7 @@ fn a_follower_that_fell_behind_answers_what_its_leader_answers_after_a_copy() {
     let (_, source, _) = original();
     let (follower_backend, follower) = store();
     copied(&source, &follower, Reach::Store);
-    signed_in(&source).run(MOVED_ON).unwrap();
+    signed_in(&source).run_now(MOVED_ON).unwrap();
 
     let removed = copied(&source, &follower, Reach::Store);
     assert!(
@@ -61,8 +63,8 @@ fn a_follower_that_fell_behind_answers_what_its_leader_answers_after_a_copy() {
         .chain(["SELECT * FROM kept;", "INFO FOR DATABASE;"])
     {
         assert_eq!(
-            format!("{:?}", here.run(script).unwrap()),
-            format!("{:?}", there.run(script).unwrap()),
+            format!("{:?}", here.run_now(script).unwrap()),
+            format!("{:?}", there.run_now(script).unwrap()),
             "the follower and its leader disagree about {script}"
         );
     }

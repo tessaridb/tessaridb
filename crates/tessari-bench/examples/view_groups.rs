@@ -11,9 +11,11 @@
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::KvBackend;
-use tessari_lsm::{LsmBackend, StoreConfig};
+use tessari_lsm::{StoreConfig, TessariKvBackend};
 use tessari_session::{Session, maintain_views};
 use tessari_storage::Store;
 
@@ -26,7 +28,7 @@ fn rows(
     session: &mut Session<'_>,
     script: &str,
 ) -> Result<Vec<tessari_types::Value>, Box<dyn Error>> {
-    let outcomes = session.run(script)?;
+    let outcomes = session.run_now(script)?;
     Ok(outcomes
         .last()
         .and_then(|outcome| outcome.records())
@@ -38,10 +40,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let dir = std::env::args()
         .nth(1)
         .ok_or("usage: view_groups <empty directory>")?;
-    let backend: Arc<dyn KvBackend> = Arc::new(LsmBackend::open(&dir, StoreConfig::default())?);
-    let store = Store::open(backend)?;
+    let backend: Arc<dyn KvBackend> =
+        Arc::new(TessariKvBackend::open(&dir, StoreConfig::default()).now()?);
+    let store = Store::open(backend).now()?;
     let mut session = Session::new(&store);
-    session.run(
+    session.run_now(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench; DEFINE DATABASE v; USE DATABASE v; \
          DEFINE COLLECTION t;",
     )?;
@@ -56,10 +59,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             ));
         }
         script.push_str(" COMMIT;");
-        session.run(&script)?;
+        session.run_now(&script)?;
     }
     let defining = Instant::now();
-    session.run(&format!("DEFINE VIEW kept MATERIALIZED AS {READ};"))?;
+    session.run_now(&format!("DEFINE VIEW kept MATERIALIZED AS {READ};"))?;
     println!(
         "{RECORDS} records in {GROUPS} groups; view defined in {:.1} ms (disk, release)",
         defining.elapsed().as_secs_f64() * 1e3
@@ -67,9 +70,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut timings = Vec::new();
     for batch in 0..BATCHES {
         let n = batch.wrapping_mul(4_099) % RECORDS;
-        session.run(&format!("UPDATE t:{n} SET v = {};", batch % 1_000))?;
+        session.run_now(&format!("UPDATE t:{n} SET v = {};", batch % 1_000))?;
         let began = Instant::now();
-        maintain_views(&store)?;
+        maintain_views(&store).now()?;
         timings.push(began.elapsed().as_micros());
     }
     timings.sort_unstable();

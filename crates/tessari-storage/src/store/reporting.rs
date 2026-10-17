@@ -45,16 +45,18 @@ impl Store {
     /// # Errors
     ///
     /// Returns the backend's failure when the counts cannot be read.
-    pub fn health(&self) -> Result<Health> {
+    pub async fn health(&self) -> Result<Health> {
         // The log this node's history on the line is in (ADR-0107): the line's
         // once a leadership has written it, its own on a store standing alone.
-        let own = self.history_log(UNPARTITIONED_REPORT_HOME)?;
+        let own = self.history_log(UNPARTITIONED_REPORT_HOME).await?;
         let (across_committed, across_aborted, across_in_doubt) = self.tally.outcomes();
         let (across_pending, across_with_intents) = self.tally.standing();
         Ok(Health {
-            background_errors: self.backend.background_errors()?,
-            committed: self.committed_tail(own)?,
-            elsewhere: self.furthest_other_log(UNPARTITIONED_REPORT_HOME, own)?,
+            background_errors: self.backend.background_errors().await?,
+            committed: self.committed_tail(own).await?,
+            elsewhere: self
+                .furthest_other_log(UNPARTITIONED_REPORT_HOME, own)
+                .await?,
             log_divergences: self.divergences.load(Ordering::Relaxed),
             discarded_writes: self.discarded.load(Ordering::Relaxed),
             campaigns: self.campaigns.load(Ordering::Relaxed),
@@ -161,11 +163,11 @@ impl Store {
     /// Wait until `needed` of `voters` hold `log` through `at`, for at most
     /// `within`, and answer the voters that do.
     ///
-    /// Blocks the calling thread, so it is called off the async runtime — where
-    /// a commit already runs. The answer is the same shape whether the wait was
-    /// met or ran out, because a refusal names who held the write.
-    #[must_use]
-    pub fn await_held(
+    /// Suspends the caller without holding its thread, because the asks that
+    /// end the wait are answered on the same runtime. The answer is the same
+    /// shape whether the wait was met or ran out, because a refusal names who
+    /// held the write.
+    pub async fn await_held(
         &self,
         log: LogId,
         at: Sequence,
@@ -176,7 +178,9 @@ impl Store {
         let deadline = std::time::Instant::now()
             .checked_add(within)
             .unwrap_or_else(std::time::Instant::now);
-        self.holds.await_held(log, at, voters, needed, deadline)
+        self.holds
+            .await_held(log, at, voters, needed, deadline)
+            .await
     }
 
     /// Record what this node collected for itself, and whether it arrived.
@@ -232,7 +236,7 @@ impl Store {
     /// # Errors
     ///
     /// Returns the backend's failure when the committed tail cannot be read.
-    pub fn follower_lag(&self) -> Result<Vec<FollowerLag>> {
+    pub async fn follower_lag(&self) -> Result<Vec<FollowerLag>> {
         let mut rows = Vec::new();
         for (node, held) in self.followers.seen() {
             // The tail of the follower's OWN log. Reading one log's tail against
@@ -240,7 +244,9 @@ impl Store {
             // counters are unrelated and the subtraction is meaningless (Q-622).
             // The log this leader serves, which is the one the position was
             // taken in (ADR-0107).
-            let tail = self.committed_tail(self.history_log(held.home)?)?;
+            let tail = self
+                .committed_tail(self.history_log(held.home).await?)
+                .await?;
             rows.push(FollowerLag {
                 node,
                 home: held.home,
@@ -273,13 +279,13 @@ impl Store {
     /// # Errors
     ///
     /// Returns the backend's failure when the committed tail cannot be read.
-    pub fn mark_tail(&self, home: Reach) -> Result<()> {
+    pub async fn mark_tail(&self, home: Reach) -> Result<()> {
         // This node's OWN log for the home, which is what a diagnostic asking
         // *how far is this range* has always meant here. A home with two
         // writers has a second tail this mark does not carry, and reporting it
         // is Q-622's, not this diagnostic's.
-        let log = self.history_log(home)?;
-        self.tailmarks.mark(home, self.committed_tail(log)?);
+        let log = self.history_log(home).await?;
+        self.tailmarks.mark(home, self.committed_tail(log).await?);
         Ok(())
     }
 }

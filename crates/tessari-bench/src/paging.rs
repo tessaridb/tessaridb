@@ -25,6 +25,7 @@
 //! deepest depth is the last one that still holds a full page.
 
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessaridb::Db;
 
@@ -55,9 +56,9 @@ const DEPTHS: [u64; 4] = [0, 1_000, 10_000, 99_000];
 pub fn paging(db: &Db) -> Failable<Vec<Report>> {
     prepared(db)?;
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION paged;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench; DEFINE COLLECTION paged;")?;
     for n in 0..PAGED {
-        session.run(&format!(
+        session.run_now(&format!(
             "CREATE paged:{n} = {{ name: 'person {n}', city: 'city {}' }};",
             n % 50
         ))?;
@@ -73,7 +74,7 @@ pub fn paging(db: &Db) -> Failable<Vec<Report>> {
         let mut offset = Samples::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
             let started = Instant::now();
-            session.run(&format!("SELECT * FROM paged START {depth} LIMIT {PAGE};"))?;
+            session.run_now(&format!("SELECT * FROM paged START {depth} LIMIT {PAGE};"))?;
             offset.push(started.elapsed());
         }
         reports.push(offset.summarise(&format!("offset at {depth}")));
@@ -84,7 +85,7 @@ pub fn paging(db: &Db) -> Failable<Vec<Report>> {
         let mut cursor = Samples::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
             let started = Instant::now();
-            session.run(&format!(
+            session.run_now(&format!(
                 "SELECT * FROM paged AFTER paged:{anchor} LIMIT {PAGE};"
             ))?;
             cursor.push(started.elapsed());
@@ -103,7 +104,7 @@ pub fn paging(db: &Db) -> Failable<Vec<Report>> {
         let mut ordered = Samples::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
             let started = Instant::now();
-            session.run(&format!(
+            session.run_now(&format!(
                 "SELECT * FROM paged ORDER BY name START {depth} LIMIT {PAGE};"
             ))?;
             ordered.push(started.elapsed());
@@ -113,7 +114,7 @@ pub fn paging(db: &Db) -> Failable<Vec<Report>> {
         let mut walked = Samples::with_capacity(SAMPLES);
         for _ in 0..SAMPLES {
             let started = Instant::now();
-            session.run(&format!(
+            session.run_now(&format!(
                 "SELECT * FROM paged ORDER BY name AFTER paged:{anchor} LIMIT {PAGE};"
             ))?;
             walked.push(started.elapsed());

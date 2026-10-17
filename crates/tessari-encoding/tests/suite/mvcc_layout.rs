@@ -5,7 +5,7 @@
 //! plus taking the first entry, and it lands on the newest version at or before
 //! the snapshot without scanning past the record it asked for.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::ops::Bound;
 
@@ -16,6 +16,19 @@ use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 const NAMESPACE: NamespaceId = NamespaceId::new(1);
 const DATABASE: DatabaseId = DatabaseId::new(1);
 const TABLE: TableId = TableId::new(1);
+
+/// Drives a future the in-memory backend answers on its first poll.
+trait Now: std::future::Future + Sized {
+    fn now(self) -> Self::Output {
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        match std::pin::pin!(self).poll(&mut context) {
+            std::task::Poll::Ready(answer) => answer,
+            std::task::Poll::Pending => panic!("the in-memory backend's future waited"),
+        }
+    }
+}
+
+impl<F: std::future::Future> Now for F {}
 
 fn record_key(id: &RecordId, version: u64) -> RecordKey {
     RecordKey::new(
@@ -32,6 +45,7 @@ fn write_version(backend: &MemoryBackend, id: &RecordId, version: u64, value: &R
     let key = record_key(id, version);
     backend
         .apply(WriteBatch::new().put(RecordKey::keyspace(), key.encode(), value.encode()))
+        .now()
         .unwrap();
 }
 
@@ -52,7 +66,7 @@ fn read_at_snapshot(
         direction: ScanDirection::Forward,
         limit: Some(1),
     };
-    let found = backend.scan(&request).unwrap();
+    let found = backend.scan(&request).now().unwrap();
     found.first().map(|(key, value)| {
         let decoded_key = RecordKey::decode(key.as_slice()).unwrap();
         let decoded_value = RecordValue::decode(value.as_slice()).unwrap();
@@ -81,6 +95,7 @@ fn versions_of_one_record_scan_newest_first() {
     };
     let versions: Vec<u64> = backend
         .scan(&request)
+        .now()
         .unwrap()
         .iter()
         .map(|(key, _)| RecordKey::decode(key.as_slice()).unwrap().version.get())
@@ -179,6 +194,7 @@ fn records_of_different_tables_never_appear_in_one_table_scan() {
                 key.encode(),
                 RecordValue::Present(vec![u8::try_from(table).unwrap()]).encode(),
             ))
+            .now()
             .unwrap();
     }
 
@@ -192,7 +208,7 @@ fn records_of_different_tables_never_appear_in_one_table_scan() {
         direction: ScanDirection::Forward,
         limit: None,
     };
-    let found = backend.scan(&request).unwrap();
+    let found = backend.scan(&request).now().unwrap();
     assert_eq!(found.len(), 1);
     let decoded = RecordKey::decode(found[0].0.as_slice()).unwrap();
     assert_eq!(decoded.table, TableId::new(1));

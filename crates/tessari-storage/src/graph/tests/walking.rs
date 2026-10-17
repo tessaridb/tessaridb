@@ -1,4 +1,5 @@
 use super::*;
+use crate::now::Now;
 
 #[test]
 fn a_vector_is_read_the_same_way_the_distances_read_one() {
@@ -29,8 +30,14 @@ fn a_squared_distance_orders_the_way_the_real_one_does() {
 #[test]
 fn an_empty_graph_answers_with_nothing_rather_than_failing() {
     let graph = Graph::empty(VectorDistance::Euclidean, false);
-    assert!(graph.is_empty().unwrap());
-    assert!(graph.nearest(&[1.0, 1.0], 10, None).unwrap().is_empty());
+    assert!(graph.is_empty().now().unwrap());
+    assert!(
+        graph
+            .nearest(&[1.0, 1.0], 10, None)
+            .now()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -44,7 +51,7 @@ fn the_walk_finds_the_nearest_on_a_line() {
         (4, [3.0, 0.0]),
         (5, [4.0, 0.0]),
     ]);
-    let found = graph.nearest(&[0.1, 0.0], 2, None).unwrap();
+    let found = graph.nearest(&[0.1, 0.0], 2, None).now().unwrap();
     assert_eq!(found, vec![RecordId::Int(1), RecordId::Int(2)]);
 }
 
@@ -60,7 +67,7 @@ fn every_record_is_reachable_because_the_reverse_edge_is_written() {
         (4, [30.0, 0.0]),
     ]);
     for (id, point) in [(2_i64, [10.0, 0.0]), (3, [20.0, 0.0]), (4, [30.0, 0.0])] {
-        let found = graph.nearest(&point, 1, None).unwrap();
+        let found = graph.nearest(&point, 1, None).now().unwrap();
         assert_eq!(found, vec![RecordId::Int(id)], "could not reach {id}");
     }
 }
@@ -85,7 +92,7 @@ fn the_same_records_in_the_same_order_build_the_same_graph() {
 fn a_removed_record_is_no_longer_answered_with() {
     let mut graph = built(&[(1, [0.0, 0.0]), (2, [1.0, 0.0]), (3, [2.0, 0.0])]);
     graph.remove(&RecordId::Int(1));
-    let found = graph.nearest(&[0.0, 0.0], 3, None).unwrap();
+    let found = graph.nearest(&[0.0, 0.0], 3, None).now().unwrap();
     assert!(!found.contains(&RecordId::Int(1)), "{found:?}");
 }
 

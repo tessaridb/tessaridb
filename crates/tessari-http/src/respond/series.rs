@@ -51,7 +51,7 @@ pub(crate) fn target(url: &str) -> Option<Aimed<'_>> {
 }
 
 /// Append the batch in `body` to the series `aimed` names.
-pub(crate) fn append(
+pub(crate) async fn append(
     db: &Db,
     aimed: &Aimed<'_>,
     body: &str,
@@ -71,17 +71,23 @@ pub(crate) fn append(
             "the body is one TessariQL array of objects, every value in it a literal",
         );
     };
-    let mut session = match session_for(db, tokens, presented) {
+    let mut session = match session_for(db, tokens, presented).await {
         Ok(session) => session,
         Err(answer) => return answer,
     };
-    if let Err(error) = session.run(&format!(
-        "USE NAMESPACE {}; USE DATABASE {};",
-        aimed.namespace, aimed.database
-    )) {
+    if let Err(error) = session
+        .run(&format!(
+            "USE NAMESPACE {}; USE DATABASE {};",
+            aimed.namespace, aimed.database
+        ))
+        .await
+    {
         return failure(&error);
     }
-    match db.is_series(aimed.namespace, aimed.database, aimed.series) {
+    match db
+        .is_series(aimed.namespace, aimed.database, aimed.series)
+        .await
+    {
         Ok(true) => {}
         Ok(false) => {
             return Answer::new(
@@ -102,7 +108,7 @@ pub(crate) fn append(
         given.insert(format!("e{position}"), event);
     }
     script.push_str(" COMMIT;");
-    match session.run_with(&script, &given) {
+    match session.run_with(&script, &given).await {
         Ok(_) => Answer::new(200, format!(r#"{{"appended":{count}}}"#)),
         Err(error) => failure(&error),
     }

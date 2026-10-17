@@ -28,6 +28,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -35,7 +37,9 @@ use tessari_storage::Store;
 use tessari_types::Value;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 const PLACE: &str = "\
@@ -47,7 +51,7 @@ DEFINE DATABASE library; USE DATABASE library;
 fn declared(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}DEFINE VECTOR embeddings DIMENSION 3 DISTANCE cosine;"
         ))
         .unwrap();
@@ -56,12 +60,15 @@ fn declared(store: &Store) -> Session<'_> {
 
 /// What a statement said when it was refused, or `None` when it was accepted.
 fn refusal(session: &mut Session<'_>, statement: &str) -> Option<String> {
-    session.run(statement).err().map(|error| error.to_string())
+    session
+        .run_now(statement)
+        .err()
+        .map(|error| error.to_string())
 }
 
 /// The object a statement answered with.
 fn reported(session: &mut Session<'_>, statement: &str) -> Value {
-    match session.run(statement).unwrap().pop().unwrap() {
+    match session.run_now(statement).unwrap().pop().unwrap() {
         Outcome::Value(value) => value,
         other => panic!("expected a value, got {other:?}"),
     }
@@ -75,14 +82,14 @@ fn a_vector_store_takes_records_and_gives_them_back() {
     let mut session = declared(&held);
 
     session
-        .run("CREATE embeddings:'intro' = { vector: [1.0, 0.0, 0.0], label: 'intro' };")
+        .run_now("CREATE embeddings:'intro' = { vector: [1.0, 0.0, 0.0], label: 'intro' };")
         .unwrap();
     session
-        .run("CREATE embeddings:'body' = { vector: [0.0, 1.0, 0.0], label: 'body' };")
+        .run_now("CREATE embeddings:'body' = { vector: [0.0, 1.0, 0.0], label: 'body' };")
         .unwrap();
 
     let Outcome::Records { records, .. } = session
-        .run("SELECT * FROM embeddings;")
+        .run_now("SELECT * FROM embeddings;")
         .unwrap()
         .pop()
         .unwrap()
@@ -109,7 +116,7 @@ fn the_store_and_the_field_refuse_the_same_write_with_the_same_words() {
     let two = store();
     let mut session = Session::new(&two);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}DEFINE COLLECTION embeddings;\n\
              DEFINE FIELD vector ON embeddings TYPE vector<3>;"
         ))
@@ -188,7 +195,7 @@ fn the_store_reports_its_width_its_distance_and_that_nobody_has_measured_it() {
 fn a_distance_this_store_does_not_have_is_refused_by_name() {
     let held = store();
     let mut session = Session::new(&held);
-    session.run(PLACE).unwrap();
+    session.run_now(PLACE).unwrap();
 
     let said = refusal(
         &mut session,
@@ -205,17 +212,17 @@ fn dropping_a_vector_store_needs_the_word_that_made_it_to_name_a_vector_store() 
     // with the blast radius of a table.
     let held = store();
     let mut session = declared(&held);
-    session.run("DEFINE COLLECTION notes;").unwrap();
+    session.run_now("DEFINE COLLECTION notes;").unwrap();
 
     let said = refusal(&mut session, "DROP VECTOR notes;")
         .expect("`DROP VECTOR` removed a table that is not a vector store");
     assert!(said.contains("notes"), "{said}");
 
-    session.run("DROP VECTOR embeddings;").unwrap();
+    session.run_now("DROP VECTOR embeddings;").unwrap();
     // Gone, and the name is free again — which is the check that the field and
     // the index went with it rather than being left behind to collide.
     session
-        .run("DEFINE VECTOR embeddings DIMENSION 8 DISTANCE euclidean;")
+        .run_now("DEFINE VECTOR embeddings DIMENSION 8 DISTANCE euclidean;")
         .unwrap();
 }
 
@@ -223,7 +230,7 @@ fn dropping_a_vector_store_needs_the_word_that_made_it_to_name_a_vector_store() 
 fn a_width_the_declaration_could_not_write_back_is_refused_where_it_was_written() {
     let held = store();
     let mut session = Session::new(&held);
-    session.run(PLACE).unwrap();
+    session.run_now(PLACE).unwrap();
 
     let said = refusal(
         &mut session,

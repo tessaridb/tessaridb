@@ -28,6 +28,8 @@
 
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -71,11 +73,13 @@ impl AuditDevice for Watching {
 }
 
 fn holding() -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     {
         let mut session = Session::new(&store);
         session
-            .run(&format!(
+            .run_now(&format!(
                 "{TENANCY}
                  UNSEAL VAULT WITH 'an operator passphrase';
                  DEFINE VAULT team;
@@ -89,13 +93,14 @@ fn holding() -> Store {
 
 fn session_on(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
-    session.run(USING).unwrap();
+    session.run_now(USING).unwrap();
     session
 }
 
 /// Every entry in the trail, as one blob of text to search.
 fn trail_text(store: &Store) -> String {
     tessari_storage::audit_entries(store)
+        .now()
         .unwrap()
         .iter()
         .map(|entry| format!("{entry:?}"))
@@ -106,9 +111,9 @@ fn trail_text(store: &Store) -> String {
 fn a_read_leaves_a_record_naming_who_and_what() {
     let store = holding();
     let mut session = session_on(&store);
-    session.run("REVEAL token FROM team:'github';").unwrap();
+    session.run_now("REVEAL token FROM team:'github';").unwrap();
 
-    let entries = tessari_storage::audit_entries(&store).unwrap();
+    let entries = tessari_storage::audit_entries(&store).now().unwrap();
     assert_eq!(entries.len(), 1, "expected exactly one recorded read");
     let Value::Object(entry) = &entries[0] else {
         panic!("the entry is not an object");
@@ -136,11 +141,11 @@ fn the_record_survives_a_transaction_the_reader_cancels() {
     // the reader's own transaction, `CANCEL` would have taken it away — and the
     // store would have served a secret with nothing anywhere to say so.
     session
-        .run("BEGIN; REVEAL token FROM team:'github'; CANCEL;")
+        .run_now("BEGIN; REVEAL token FROM team:'github'; CANCEL;")
         .unwrap();
 
     assert_eq!(
-        tessari_storage::audit_entries(&store).unwrap().len(),
+        tessari_storage::audit_entries(&store).now().unwrap().len(),
         1,
         "the record was rolled away with the reader's transaction",
     );
@@ -153,7 +158,7 @@ fn a_read_that_cannot_be_recorded_is_refused() {
     let mut session = session_on(&store);
 
     let refused = session
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .expect_err("the read was served with a broken trail");
     let message = refused.to_string();
     assert!(message.contains("recorded"), "{message}");
@@ -178,9 +183,9 @@ fn a_refused_read_is_recorded_too() {
         .install(Arc::clone(&watching) as Arc<dyn AuditDevice>);
     let mut session = session_on(&store);
 
-    session.run("SEAL VAULT;").unwrap();
+    session.run_now("SEAL VAULT;").unwrap();
     session
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .expect_err("a sealed store served a secret");
 
     // A denial is the reconnaissance signal, and a trail that keeps only
@@ -195,7 +200,7 @@ fn a_refused_read_is_recorded_too() {
 fn the_trail_records_identity_and_never_value() {
     let store = holding();
     let mut session = session_on(&store);
-    let opened = session.run("REVEAL token FROM team:'github';").unwrap();
+    let opened = session.run_now("REVEAL token FROM team:'github';").unwrap();
     // The control: the secret really was served, so a clean trail below is a
     // trail that withheld it rather than one describing a read that never
     // happened.
@@ -224,11 +229,11 @@ fn the_forensic_question_is_answered_against_real_data_and_timed() {
     {
         let mut owner = session_on(&store);
         owner
-            .run("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
+            .run_now("DEFINE USER root ROLE owner PASSWORD 'correct horse battery';")
             .unwrap();
         let mut root = Session::new(&store);
-        root.sign_in("root", PASSWORD).unwrap();
-        root.run(&format!(
+        root.sign_in("root", PASSWORD).now().unwrap();
+        root.run_now(&format!(
             "{USING}
              DEFINE USER ada ON prod.work ROLE editor PASSWORD 'correct horse battery';
              GRANT read, write ON team TO ada;"
@@ -241,15 +246,15 @@ fn the_forensic_question_is_answered_against_real_data_and_timed() {
     for name in ["ada", "root"] {
         for _ in 0..25 {
             let mut session = Session::new(&store);
-            session.sign_in(name, PASSWORD).unwrap();
-            session.run(USING).unwrap();
-            session.run("REVEAL token FROM team:'github';").unwrap();
+            session.sign_in(name, PASSWORD).now().unwrap();
+            session.run_now(USING).unwrap();
+            session.run_now("REVEAL token FROM team:'github';").unwrap();
         }
     }
 
     // *This credential was compromised; what did it read?*
     let started = Instant::now();
-    let reads = tessari_storage::reads_by(&store, "ada").unwrap();
+    let reads = tessari_storage::reads_by(&store, "ada").now().unwrap();
     let took = started.elapsed();
 
     assert_eq!(reads.len(), 25, "the answer is not ada's reads alone");
@@ -294,11 +299,13 @@ const PASSWORD: &str = "correct horse battery";
 /// demanded — and the thing worth proving is the other half, that holding it
 /// over a tenancy is not holding it over the store.
 fn peopled() -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     {
         let mut session = Session::new(&store);
         session
-            .run(&format!(
+            .run_now(&format!(
                 "{TENANCY}
                  UNSEAL VAULT WITH 'an operator passphrase';
                  DEFINE VAULT team;
@@ -309,8 +316,8 @@ fn peopled() -> Store {
             ))
             .unwrap();
         let mut root = Session::new(&store);
-        root.sign_in("root", "correct horse battery").unwrap();
-        root.run(&format!(
+        root.sign_in("root", "correct horse battery").now().unwrap();
+        root.run_now(&format!(
             "{USING}
              DEFINE USER ada ON prod.work ROLE owner PASSWORD '{PASSWORD}';
              GRANT read ON team TO ada;"
@@ -322,8 +329,11 @@ fn peopled() -> Store {
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, "correct horse battery").unwrap();
-    session.run(USING).unwrap();
+    session
+        .sign_in(name, "correct horse battery")
+        .now()
+        .unwrap();
+    session.run_now(USING).unwrap();
     session
 }
 
@@ -331,9 +341,9 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
 fn the_forensic_question_is_answerable_with_a_statement() {
     let store = holding();
     let mut session = session_on(&store);
-    session.run("REVEAL token FROM team:'github';").unwrap();
+    session.run_now("REVEAL token FROM team:'github';").unwrap();
 
-    let reported = format!("{:?}", session.run("INFO FOR AUDIT;").unwrap());
+    let reported = format!("{:?}", session.run_now("INFO FOR AUDIT;").unwrap());
 
     // What the operator came for: which vault, which record, which field, and
     // whether it was served.
@@ -353,21 +363,21 @@ fn the_forensic_question_is_answerable_with_a_statement() {
 fn by_narrows_the_trail_to_one_actor() {
     let store = peopled();
     signed_in(&store, "root")
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .unwrap();
     signed_in(&store, "ada")
-        .run("REVEAL token FROM team:'gitlab';")
+        .run_now("REVEAL token FROM team:'gitlab';")
         .unwrap();
 
     let mut root = signed_in(&store, "root");
 
     // The control: unnarrowed, both reads are there. Without it a `BY` that
     // returned nothing at all would pass the assertions below.
-    let whole = format!("{:?}", root.run("INFO FOR AUDIT;").unwrap());
+    let whole = format!("{:?}", root.run_now("INFO FOR AUDIT;").unwrap());
     assert!(whole.contains("github"), "{whole}");
     assert!(whole.contains("gitlab"), "{whole}");
 
-    let ada = format!("{:?}", root.run("INFO FOR AUDIT BY 'ada';").unwrap());
+    let ada = format!("{:?}", root.run_now("INFO FOR AUDIT BY 'ada';").unwrap());
     assert!(ada.contains("gitlab"), "{ada}");
     assert!(
         !ada.contains("github"),
@@ -376,7 +386,7 @@ fn by_narrows_the_trail_to_one_actor() {
 
     // Bare and quoted name the same actor — a user whose name is a keyword is
     // still askable about.
-    let bare = format!("{:?}", root.run("INFO FOR AUDIT BY ada;").unwrap());
+    let bare = format!("{:?}", root.run_now("INFO FOR AUDIT BY ada;").unwrap());
     assert_eq!(bare, ada, "the bare name and the quoted one disagree");
 }
 
@@ -384,19 +394,21 @@ fn by_narrows_the_trail_to_one_actor() {
 fn an_owner_of_one_tenancy_may_not_read_the_whole_stores_trail() {
     let store = peopled();
     signed_in(&store, "root")
-        .run("REVEAL token FROM team:'github';")
+        .run_now("REVEAL token FROM team:'github';")
         .unwrap();
 
     // The control: the same statement, from the caller who administers the
     // store, is served. So the refusal below is about who is asking.
     let served = format!(
         "{:?}",
-        signed_in(&store, "root").run("INFO FOR AUDIT;").unwrap()
+        signed_in(&store, "root")
+            .run_now("INFO FOR AUDIT;")
+            .unwrap()
     );
     assert!(served.contains("github"), "{served}");
 
     let refused = signed_in(&store, "ada")
-        .run("INFO FOR AUDIT;")
+        .run_now("INFO FOR AUDIT;")
         .expect_err("an owner of one tenancy read the whole store's trail");
     let message = refused.to_string();
     // Pinned to the words only this refusal produces. A looser check passes on

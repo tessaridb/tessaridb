@@ -23,7 +23,7 @@ pub(crate) fn described_user(user: &UserDefinition) -> BTreeMap<String, Value> {
 /// whether it is right, and deciding that is the only reason to ask. Until the
 /// enforcement wave lands this is also the **only** observable effect a grant
 /// has, so a report without it would leave a grant unverifiable.
-pub(crate) fn described_authorities(
+pub(crate) async fn described_authorities(
     catalog: &Catalog<'_, '_>,
     user: &UserDefinition,
 ) -> Result<Value> {
@@ -31,21 +31,22 @@ pub(crate) fn described_authorities(
     for held in user.authorities.iter() {
         let reach = match held.reach {
             Reach::Store => "store".to_owned(),
-            Reach::Namespace(namespace) => named_namespace(catalog, namespace)?,
+            Reach::Namespace(namespace) => named_namespace(catalog, namespace).await?,
             Reach::Database(namespace, database) => format!(
                 "{}.{}",
-                named_namespace(catalog, namespace)?,
-                named_database(catalog, database)?
+                named_namespace(catalog, namespace).await?,
+                named_database(catalog, database).await?
             ),
             // Never held — no authority comes at a shard's reach — and reported
             // faithfully if a stored row ever says so, because a report that
             // hid it would hide exactly the row worth seeing.
             Reach::Shard(namespace, database, table, shard) => format!(
                 "{}.{}.{} shard {}",
-                named_namespace(catalog, namespace)?,
-                named_database(catalog, database)?,
+                named_namespace(catalog, namespace).await?,
+                named_database(catalog, database).await?,
                 catalog
-                    .table(table)?
+                    .table(table)
+                    .await?
                     .map_or_else(|| table.get().to_string(), |found| found.name),
                 shard.get()
             ),
@@ -62,22 +63,33 @@ pub(crate) fn described_authorities(
 ///
 /// A dropped namespace can still be named by an authority somebody holds, and
 /// the number is a truthful answer where inventing a name would not be.
-pub(crate) fn named_namespace(catalog: &Catalog<'_, '_>, namespace: NamespaceId) -> Result<String> {
+pub(crate) async fn named_namespace(
+    catalog: &Catalog<'_, '_>,
+    namespace: NamespaceId,
+) -> Result<String> {
     Ok(catalog
-        .namespace(namespace)?
+        .namespace(namespace)
+        .await?
         .map_or_else(|| namespace.get().to_string(), |found| found.name))
 }
 
 /// A database's name, on the same terms.
-pub(crate) fn named_database(catalog: &Catalog<'_, '_>, database: DatabaseId) -> Result<String> {
+pub(crate) async fn named_database(
+    catalog: &Catalog<'_, '_>,
+    database: DatabaseId,
+) -> Result<String> {
     Ok(catalog
-        .database(database)?
+        .database(database)
+        .await?
         .map_or_else(|| database.get().to_string(), |found| found.name))
 }
 
 /// One grant, with the table named rather than numbered.
-pub(crate) fn described_grant(catalog: &Catalog<'_, '_>, grant: &GrantDefinition) -> Result<Value> {
-    let named = table_named(catalog, grant.table)?;
+pub(crate) async fn described_grant(
+    catalog: &Catalog<'_, '_>,
+    grant: &GrantDefinition,
+) -> Result<Value> {
+    let named = table_named(catalog, grant.table).await?;
     Ok(Value::Object(BTreeMap::from([
         ("table".to_owned(), named),
         (
@@ -108,8 +120,9 @@ pub(crate) fn described_grant(catalog: &Catalog<'_, '_>, grant: &GrantDefinition
 /// A grant outlives the table it names — dropping a table removes the definition
 /// and leaves the grant — so this is an absence the report has to be able to
 /// say rather than an error it can raise.
-pub(crate) fn table_named(catalog: &Catalog<'_, '_>, table: TableId) -> Result<Value> {
+pub(crate) async fn table_named(catalog: &Catalog<'_, '_>, table: TableId) -> Result<Value> {
     Ok(catalog
-        .table(table)?
+        .table(table)
+        .await?
         .map_or(Value::None, |found| Value::from(found.name.as_str())))
 }

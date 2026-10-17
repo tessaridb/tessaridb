@@ -1,15 +1,18 @@
-//! The one way serving code reaches the synchronous store (ADR-0085 §2).
+//! The one way serving code reaches the store (ADR-0085 §2).
 //!
-//! The store blocks — on the engine, on a commit's flush — and a blocked worker
-//! thread is a runtime that has stopped serving everybody else. So every store
-//! call is moved to the blocking pool, and the number of them running at once is
-//! bounded here rather than by the pool, whose own bound queues instead of
-//! refusing.
+//! Every store call takes a slot here, so the number running at once is
+//! bounded and a call past the bound is refused *busy* rather than queued. The
+//! store is asynchronous, so a call runs as a task on the runtime's workers:
+//! [`Bridge::call_async`] spawns it, so a caller that stops waiting does not
+//! cancel it, and [`Bridge::call_here`] polls it in the caller's own task, for a
+//! caller nothing cancels mid-call.
 
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tracing::Instrument as _;
 
 /// What a bridged call came back with.
 ///
@@ -52,7 +55,7 @@ impl Bridge {
         }
     }
 
-    /// Run `work` on the blocking pool if a slot is free, or refuse it.
+    /// Run `work` in a task of its own if a slot is free, or refuse it.
     ///
     /// The slot travels with the work and is released when the work ends — on
     /// return and on panic alike. A caller that stops waiting does not cancel
@@ -67,21 +70,67 @@ impl Bridge {
         S: Send + 'static,
         T: Send + 'static,
     {
+        self.call_async(state, move |state| std::future::ready(work(state)))
+            .await
+    }
+
+    /// [`Bridge::call`] for work that is a future: admitted by the same slots
+    /// and driven to its end in a task of its own, so dropping the caller does
+    /// not cancel it: an HTTP handler whose client hung up, for one.
+    ///
+    /// Must be awaited inside a Tokio runtime.
+    pub async fn call_async<S, T, F, W>(&self, state: S, work: F) -> Bridged<T, S>
+    where
+        F: FnOnce(S) -> W + Send + 'static,
+        W: Future<Output = T> + Send + 'static,
+        S: Send + 'static,
+        T: Send + 'static,
+    {
         let Ok(slot) = Arc::clone(&self.slots).try_acquire_owned() else {
             self.refused.fetch_add(1, Ordering::Relaxed);
             return Bridged::Busy(state);
         };
-        // The blocking pool runs the work on a thread of its own, which is in no
-        // span; the caller's — the connection, the request — goes with it, so
-        // what the work reports says whose work it was.
-        let span = tracing::Span::current();
-        let ran = tokio::task::spawn_blocking(move || {
-            let _inside = span.enter();
-            let answer = work(state);
-            drop(slot);
-            answer
-        })
+        // A task of its own, so a caller that stops waiting does not cancel the
+        // work; the caller's span goes with it, so what the work reports says
+        // whose work it was.
+        let ran = tokio::spawn(
+            async move {
+                let answer = work(state).await;
+                drop(slot);
+                answer
+            }
+            .instrument(tracing::Span::current()),
+        )
         .await;
+        match ran {
+            Ok(answer) => Bridged::Answered(answer),
+            Err(_) => Bridged::Panicked,
+        }
+    }
+
+    /// [`Bridge::call_async`], with the work polled in the caller's own task
+    /// rather than spawned: one task less per call, and no hand-off to another
+    /// worker between reading a request and answering it.
+    ///
+    /// For a caller that is never dropped while the call runs: a connection
+    /// task that awaits each answer before reading the next request. Dropping
+    /// this future drops the work wherever it stands, which a caller that may be
+    /// cancelled must not allow; that caller uses [`Bridge::call_async`]. A
+    /// panic in the work is caught and reported as [`Bridged::Panicked`], and
+    /// the slot is given back on return, panic and drop alike.
+    pub async fn call_here<S, T, F, W>(&self, state: S, work: F) -> Bridged<T, S>
+    where
+        F: FnOnce(S) -> W,
+        W: Future<Output = T>,
+    {
+        let Ok(slot) = Arc::clone(&self.slots).try_acquire_owned() else {
+            self.refused.fetch_add(1, Ordering::Relaxed);
+            return Bridged::Busy(state);
+        };
+        // Unwind safety: on a panic nothing of the work is observed again; its
+        // state went into it and is dropped with it, and the caller is told so.
+        let ran = futures_util::FutureExt::catch_unwind(AssertUnwindSafe(work(state))).await;
+        drop(slot);
         match ran {
             Ok(answer) => Bridged::Answered(answer),
             Err(_) => Bridged::Panicked,
@@ -135,6 +184,18 @@ mod tests {
     }
 
     #[test]
+    fn asynchronous_work_is_awaited_to_its_end_and_answers_untouched() {
+        let bridge = Bridge::new(1);
+        let answer = runtime().block_on(bridge.call_async(40_u8, |state| async move {
+            // A suspension the work comes back from: the answer is what the
+            // future ends with, not what it held when first polled.
+            tokio::task::yield_now().await;
+            state + 2
+        }));
+        assert!(matches!(answer, Bridged::Answered(42)));
+    }
+
+    #[test]
     fn a_full_bridge_refuses_at_once_and_serves_again_when_a_slot_frees() {
         let bridge = Bridge::new(1);
         // Taken rather than raced for: the one slot is held by the test itself.
@@ -171,6 +232,43 @@ mod tests {
         assert!(matches!(panicked, Bridged::Panicked));
         assert!(matches!(
             runtime.block_on(bridge.call((), |()| 3)),
+            Bridged::Answered(3)
+        ));
+    }
+
+    #[test]
+    fn work_polled_here_is_awaited_to_its_end_and_answers_untouched() {
+        let bridge = Bridge::new(1);
+        let answer = runtime().block_on(bridge.call_here(40_u8, |state| async move {
+            tokio::task::yield_now().await;
+            state + 2
+        }));
+        assert!(matches!(answer, Bridged::Answered(42)));
+    }
+
+    #[test]
+    fn work_polled_here_is_refused_by_a_full_bridge_with_its_state() {
+        let bridge = Bridge::new(1);
+        let held = Arc::clone(&bridge.slots)
+            .try_acquire_owned()
+            .expect("the only slot");
+        let refused = runtime().block_on(bridge.call_here(7_u8, |state| async move { state }));
+        assert!(matches!(refused, Bridged::Busy(7)));
+        assert_eq!(bridge.refused(), 1);
+        drop(held);
+    }
+
+    #[test]
+    fn work_polled_here_that_panics_is_reported_and_gives_its_slot_back() {
+        let bridge = Bridge::new(1);
+        let runtime = runtime();
+        let panicked = runtime.block_on(bridge.call_here((), |()| async move {
+            tokio::task::yield_now().await;
+            std::panic::resume_unwind(Box::new("failed"))
+        }));
+        assert!(matches!(panicked, Bridged::<(), ()>::Panicked));
+        assert!(matches!(
+            runtime.block_on(bridge.call_here((), |()| async { 3 })),
             Bridged::Answered(3)
         ));
     }

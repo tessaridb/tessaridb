@@ -12,6 +12,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Outcome, Plan, Session};
@@ -20,14 +22,14 @@ use tessari_types::{RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Two users and three orders, one of the orders for nobody.
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION users; DEFINE COLLECTION orders;\n\
@@ -49,7 +51,7 @@ const JOINED: &str = "SELECT * FROM users JOIN orders ON users.name = orders.who
 /// however its sides were read — what tells a probe from a map of the whole
 /// right table is the index the plan names, not the word.
 fn answered(session: &mut Session<'_>, script: &str) -> (Vec<(RecordId, Value)>, Plan) {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let last = outcomes.last().unwrap();
     match last {
         Outcome::Records { records, plan, .. } => (records.clone(), plan.clone()),
@@ -103,7 +105,7 @@ fn an_index_on_the_right_key_changes_the_path_and_not_the_answer() {
     assert_eq!(plan.index, None, "there was no index to probe through");
 
     session
-        .run("DEFINE INDEX by_who ON orders FIELDS who;")
+        .run_now("DEFINE INDEX by_who ON orders FIELDS who;")
         .unwrap();
     let (indexed, plan) = answered(&mut session, JOINED);
     assert_eq!(plan.access, AccessPath::Join);
@@ -123,7 +125,7 @@ fn the_join_agrees_with_the_operator_it_is_spelled_with() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE users:3 = { name: 'exact', qty: 3 };\n\
              CREATE orders:4 = { who: 'exact', qty: 3.0 };",
         )
@@ -139,7 +141,7 @@ fn the_join_agrees_with_the_operator_it_is_spelled_with() {
 
     // Through the index too, whose encoding normalises for its own reasons.
     session
-        .run("DEFINE INDEX by_qty ON orders FIELDS qty;")
+        .run_now("DEFINE INDEX by_qty ON orders FIELDS qty;")
         .unwrap();
     let (indexed, plan) = answered(&mut session, across);
     assert_eq!(plan.index.as_deref(), Some("by_qty"));
@@ -186,7 +188,7 @@ fn a_join_of_a_table_to_itself_is_refused_with_its_reason() {
     let store = store();
     let mut session = ready(&store);
     let refused = session
-        .run("SELECT * FROM users JOIN users ON users.name = users.city;")
+        .run_now("SELECT * FROM users JOIN users ON users.name = users.city;")
         .expect_err("a refusal");
     assert!(refused.to_string().contains("users"), "{refused}");
 }
@@ -196,7 +198,7 @@ fn an_on_naming_a_third_table_says_which_two_it_could_have_named() {
     let store = store();
     let mut session = ready(&store);
     let refused = session
-        .run("SELECT * FROM users JOIN orders ON users.name = customers.who;")
+        .run_now("SELECT * FROM users JOIN orders ON users.name = customers.who;")
         .expect_err("a refusal");
     let said = refused.to_string();
     assert!(said.contains("customers"), "{said}");
@@ -214,7 +216,7 @@ fn a_join_cannot_reach_a_table_outside_the_session_users_tenancy() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE DATABASE elsewhere; USE DATABASE elsewhere;\n\
              DEFINE COLLECTION secrets; CREATE secrets:1 = { who: 'ada' };\n\
              USE DATABASE shop;\n\
@@ -225,18 +227,18 @@ fn a_join_cannot_reach_a_table_outside_the_session_users_tenancy() {
     // Signed in first: the store is closed the moment it has a user, so even a
     // `USE` needs an identity.
     let mut scoped = Session::new(&store);
-    scoped.sign_in("ada", "correct horse").unwrap();
+    scoped.sign_in("ada", "correct horse").now().unwrap();
     scoped
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
 
     // The join it is allowed to run still works.
-    let allowed = scoped.run(JOINED).unwrap();
+    let allowed = scoped.run_now(JOINED).unwrap();
     assert!(!allowed.is_empty());
 
     // And the one reaching into the other database does not.
     let refused = scoped
-        .run("SELECT * FROM users JOIN elsewhere.secrets ON users.name = secrets.who;")
+        .run_now("SELECT * FROM users JOIN elsewhere.secrets ON users.name = secrets.who;")
         .expect_err("a refusal");
     assert!(refused.to_string().contains("elsewhere"), "{refused}");
 }

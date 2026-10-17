@@ -9,6 +9,7 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
+use tessari_session::Now;
 mod a_catalog_record_is_not_a_users_row;
 mod acknowledge;
 mod across;
@@ -192,12 +193,16 @@ mod write_shapes;
 /// store and then be compared against the whole of it (S6.2, Q-620).
 pub(crate) fn replay(source: &tessari_storage::Store, target: &tessari_storage::Store) -> usize {
     let mut applied = 0_usize;
-    for log in source.logs().unwrap() {
+    for log in source.logs().now().unwrap() {
         for (sequence, record) in source
             .log_records(log, tessari_types::Sequence::ZERO, 4096)
+            .now()
             .unwrap()
         {
-            target.apply_record(log.writer, sequence, &record).unwrap();
+            target
+                .apply_record(log.writer, sequence, &record)
+                .now()
+                .unwrap();
             applied = applied.saturating_add(1);
         }
     }

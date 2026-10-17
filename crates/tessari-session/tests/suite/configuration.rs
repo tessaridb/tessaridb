@@ -27,6 +27,8 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
@@ -41,11 +43,11 @@ fn backend() -> Arc<dyn KvBackend> {
 
 /// A store closed by an owner, so that permission is actually being tested.
 fn closed(backend: &Arc<dyn KvBackend>) -> Store {
-    let store = Store::open(Arc::clone(backend)).unwrap();
+    let store = Store::open(Arc::clone(backend)).now().unwrap();
     {
         let mut session = Session::new(&store);
         session
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE USER root ROLE owner PASSWORD '{PASSWORD}';"
             ))
             .unwrap();
@@ -68,7 +70,7 @@ fn closed(backend: &Arc<dyn KvBackend>) -> Store {
 fn signed_in<'store>(store: &'store Store, name: &str) -> Session<'store> {
     let mut session = Session::new(store);
     for _ in 0..1_000 {
-        match session.sign_in(name, PASSWORD) {
+        match session.sign_in(name, PASSWORD).now() {
             Ok(()) => return session,
             // A place is held for as long as a hash takes, so yielding would
             // spin a thousand times inside one of them and learn nothing.
@@ -85,7 +87,7 @@ fn owner(store: &Store) -> Session<'_> {
 
 /// What `INFO FOR NODE` reports, as an owner.
 fn reported(store: &Store) -> std::collections::BTreeMap<String, Value> {
-    let outcomes = owner(store).run("INFO FOR NODE;").unwrap();
+    let outcomes = owner(store).run_now("INFO FOR NODE;").unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.first() else {
         panic!("not a report: {outcomes:?}");
     };
@@ -240,10 +242,12 @@ fn a_node_reports_the_leadership_it_writes_under_beside_the_time_left_on_it() {
     );
 
     // And a granted one carries both across the seam together.
-    store.hold(
-        tessari_types::Epoch::new(6),
-        tessari_storage::Lease::taken(Duration::from_secs(120)),
-    );
+    store
+        .hold(
+            tessari_types::Epoch::new(6),
+            tessari_storage::Lease::taken(Duration::from_secs(120)),
+        )
+        .now();
     assert_eq!(epoch(&reported(&store)), Some(Value::from(6_i64)));
 }
 
@@ -308,7 +312,7 @@ fn the_local_half_and_the_replicated_half_are_named_apart() {
     // follow a backup, and remembering that is what fails on the bad day.
     let store = closed(&backend());
     owner(&store)
-        .run("DEFINE NODE ROLES serving ENDPOINTS 'here:9000'; DEFINE REPLICA second AT 'there:9001';")
+        .run_now("DEFINE NODE ROLES serving ENDPOINTS 'here:9000'; DEFINE REPLICA second AT 'there:9001';")
         .unwrap();
     let report = reported(&store);
 
@@ -335,11 +339,11 @@ fn what_the_statement_sets_survives_a_restart() {
     let held = backend();
     let store = closed(&held);
     owner(&store)
-        .run("DEFINE NODE ROLES serving, coordinating ENDPOINTS 'here:9000', 'here:9443';")
+        .run_now("DEFINE NODE ROLES serving, coordinating ENDPOINTS 'here:9000', 'here:9443';")
         .unwrap();
     drop(store);
 
-    let reopened = Store::open(Arc::clone(&held)).unwrap();
+    let reopened = Store::open(Arc::clone(&held)).now().unwrap();
     let report = reported(&reopened);
     assert_eq!(
         report.get("roles"),
@@ -368,9 +372,11 @@ fn a_clause_left_out_leaves_its_field_alone() {
     let store = closed(&backend());
     let mut session = owner(&store);
     session
-        .run("DEFINE NODE ROLES coordinating ENDPOINTS 'here:9000';")
+        .run_now("DEFINE NODE ROLES coordinating ENDPOINTS 'here:9000';")
         .unwrap();
-    session.run("DEFINE NODE ENDPOINTS 'moved:9000';").unwrap();
+    session
+        .run_now("DEFINE NODE ENDPOINTS 'moved:9000';")
+        .unwrap();
     let report = reported(&store);
 
     assert_eq!(
@@ -393,9 +399,9 @@ fn what_a_clause_names_replaces_what_was_there() {
     let store = closed(&backend());
     let mut session = owner(&store);
     session
-        .run("DEFINE NODE ROLES serving, writable, coordinating;")
+        .run_now("DEFINE NODE ROLES serving, writable, coordinating;")
         .unwrap();
-    session.run("DEFINE NODE ROLES serving;").unwrap();
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
 
     assert_eq!(
         reported(&store).get("roles"),
@@ -411,7 +417,7 @@ fn a_role_the_store_does_not_know_is_refused_and_named() {
     // have to guess which of three they misspelled.
     let store = closed(&backend());
     let refused = owner(&store)
-        .run("DEFINE NODE ROLES serving, leader;")
+        .run_now("DEFINE NODE ROLES serving, leader;")
         .unwrap_err()
         .to_string();
     assert!(refused.contains("leader"), "{refused}");
@@ -421,7 +427,7 @@ fn a_role_the_store_does_not_know_is_refused_and_named() {
 fn a_statement_that_sets_nothing_is_refused_rather_than_accepted_as_a_no_op() {
     // A half-written statement that succeeds is how an operator comes to believe
     // a node was configured.
-    assert!(owner(&closed(&backend())).run("DEFINE NODE;").is_err());
+    assert!(owner(&closed(&backend())).run_now("DEFINE NODE;").is_err());
 }
 
 #[test]
@@ -431,15 +437,15 @@ fn a_peer_declared_twice_is_refused_unless_the_statement_says_otherwise() {
     let store = closed(&backend());
     let mut session = owner(&store);
     session
-        .run("DEFINE REPLICA second AT 'there:9001';")
+        .run_now("DEFINE REPLICA second AT 'there:9001';")
         .unwrap();
     assert!(
         session
-            .run("DEFINE REPLICA second AT 'there:9001';")
+            .run_now("DEFINE REPLICA second AT 'there:9001';")
             .is_err()
     );
     session
-        .run("DEFINE REPLICA IF NOT EXISTS second AT 'elsewhere:9001';")
+        .run_now("DEFINE REPLICA IF NOT EXISTS second AT 'elsewhere:9001';")
         .unwrap();
 
     // And the accepted re-run left the first declaration standing rather than
@@ -457,7 +463,7 @@ fn peers_are_reported_in_name_order_whatever_order_they_were_declared_in() {
     // compared.
     let store = closed(&backend());
     owner(&store)
-        .run(
+        .run_now(
             "DEFINE REPLICA charlie AT 'c:9001'; \
              DEFINE REPLICA alpha AT 'a:9001'; \
              DEFINE REPLICA bravo AT 'b:9001';",
@@ -480,7 +486,7 @@ fn a_viewer_is_refused_all_three_rather_than_passed_over_by_an_empty_grant_check
     // address of every machine holding this store's data.
     let store = closed(&backend());
     owner(&store)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE USER ada ROLE viewer PASSWORD '{PASSWORD}';"
         ))
         .unwrap();
@@ -491,7 +497,7 @@ fn a_viewer_is_refused_all_three_rather_than_passed_over_by_an_empty_grant_check
         "DEFINE NODE ROLES serving;",
         "DEFINE REPLICA second AT 'there:9001';",
     ] {
-        let refused = viewer.run(statement).unwrap_err().to_string();
+        let refused = viewer.run_now(statement).unwrap_err().to_string();
         // Refused for what the statement *needs*, not for a table it failed to
         // name — which is the difference between a rule and an emptiness. The
         // authority is named rather than a rank, so the reader is sent to
@@ -507,19 +513,19 @@ fn an_editor_may_shape_data_and_still_not_configure_the_node() {
     // own, and these two are not that.
     let store = closed(&backend());
     owner(&store)
-        .run(&format!("DEFINE USER e ROLE editor PASSWORD '{PASSWORD}';"))
+        .run_now(&format!("DEFINE USER e ROLE editor PASSWORD '{PASSWORD}';"))
         .unwrap();
 
     let mut editor = signed_in(&store, "e");
-    editor.run("DEFINE NAMESPACE prod;").unwrap();
-    assert!(editor.run("DEFINE NODE ROLES serving;").is_err());
+    editor.run_now("DEFINE NAMESPACE prod;").unwrap();
+    assert!(editor.run_now("DEFINE NODE ROLES serving;").is_err());
     assert!(
         editor
-            .run("DEFINE REPLICA second AT 'there:9001';")
+            .run_now("DEFINE REPLICA second AT 'there:9001';")
             .is_err()
     );
     // Moving a placement decides which node writes a range (ADR-0098).
-    let refused = format!("{:?}", editor.run("ALTER REPLICA second LEADS NONE;"));
+    let refused = format!("{:?}", editor.run_now("ALTER REPLICA second LEADS NONE;"));
     assert!(refused.contains("RoleForbids"), "{refused}");
 }
 
@@ -532,20 +538,20 @@ fn a_table_called_node_is_still_an_ordinary_table() {
     let store = closed(&backend());
     let mut session = owner(&store);
     session
-        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE d; USE DATABASE d;")
+        .run_now("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE d; USE DATABASE d;")
         .unwrap();
     session
-        .run("DEFINE COLLECTION node; CREATE node:1 = { name: 'a' };")
+        .run_now("DEFINE COLLECTION node; CREATE node:1 = { name: 'a' };")
         .unwrap();
 
-    let outcomes = session.run("SELECT * FROM node;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM node;").unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.first() else {
         panic!("not a read: {outcomes:?}");
     };
     assert_eq!(records.len(), 1);
     // And the statement family still works beside it, which is what makes the
     // two genuinely unambiguous rather than merely both accepted.
-    assert!(session.run("INFO FOR NODE;").is_ok());
+    assert!(session.run_now("INFO FOR NODE;").is_ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +578,7 @@ fn a_node_no_membership_row_names_has_no_desired_role_at_all() {
     // A peer that names no node leaves it that way — the row every existing
     // declaration writes.
     owner(&store)
-        .run("DEFINE REPLICA second AT 'there:9001' ROLES serving, writable;")
+        .run_now("DEFINE REPLICA second AT 'there:9001' ROLES serving, writable;")
         .unwrap();
     let after = reported(&store);
     assert_eq!(desired(&after), None, "{after:?}");
@@ -588,7 +594,7 @@ fn the_id_the_report_prints_is_the_id_the_clause_reads_back() {
     let store = closed(&backend());
     let id = own_id(&reported(&store));
     owner(&store)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE REPLICA here AT 'here:9000' NODE '{id}' ROLES serving;"
         ))
         .unwrap();
@@ -612,7 +618,7 @@ fn declaring_a_desired_role_does_not_move_the_effective_one() {
     assert_eq!(before, vec!["serving".to_owned(), "writable".to_owned()]);
 
     owner(&store)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE REPLICA here AT 'here:9000' NODE '{id}' ROLES serving, coordinating;"
         ))
         .unwrap();
@@ -645,13 +651,13 @@ fn reopening_the_store_converges_the_effective_role_on_the_desired_one() {
     let store = closed(&held);
     let id = own_id(&reported(&store));
     owner(&store)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE REPLICA here AT 'here:9000' NODE '{id}' ROLES serving, coordinating;"
         ))
         .unwrap();
     drop(store);
 
-    let reopened = Store::open(Arc::clone(&held)).unwrap();
+    let reopened = Store::open(Arc::clone(&held)).now().unwrap();
     let report = reported(&reopened);
     assert_eq!(
         effective(&report),
@@ -676,16 +682,16 @@ fn a_row_bound_to_another_node_moves_nothing_here() {
     let held = backend();
     let store = closed(&held);
     let before = effective(&reported(&store));
-    let adopted = store.node_identity().unwrap().roles;
+    let adopted = store.node_identity().now().unwrap().roles;
     owner(&store)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE REPLICA elsewhere AT 'there:9001' NODE '{}' ROLES coordinating;",
             "ab".repeat(16)
         ))
         .unwrap();
     drop(store);
 
-    let reopened = Store::open(Arc::clone(&held)).unwrap();
+    let reopened = Store::open(Arc::clone(&held)).now().unwrap();
     let report = reported(&reopened);
     assert_eq!(
         desired(&report),
@@ -693,7 +699,7 @@ fn a_row_bound_to_another_node_moves_nothing_here() {
         "somebody else's row was read as ours: {report:?}"
     );
     assert_eq!(
-        reopened.node_identity().unwrap().roles,
+        reopened.node_identity().now().unwrap().roles,
         adopted,
         "the row moved what this node ADOPTED, which is the subject here: \
          {report:?}"
@@ -723,11 +729,11 @@ fn a_bound_row_that_names_no_roles_drains_the_node() {
     let store = closed(&held);
     let id = own_id(&reported(&store));
     owner(&store)
-        .run(&format!("DEFINE REPLICA here AT 'here:9000' NODE '{id}';"))
+        .run_now(&format!("DEFINE REPLICA here AT 'here:9000' NODE '{id}';"))
         .unwrap();
     drop(store);
 
-    let reopened = Store::open(Arc::clone(&held)).unwrap();
+    let reopened = Store::open(Arc::clone(&held)).now().unwrap();
     let report = reported(&reopened);
     assert!(
         effective(&report).is_empty(),
@@ -744,7 +750,7 @@ fn the_binding_is_reported_beside_the_peer_it_binds() {
     let store = closed(&backend());
     let id = own_id(&reported(&store));
     owner(&store)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE REPLICA here AT 'here:9000' NODE '{id}';             DEFINE REPLICA second AT 'there:9001';"
         ))
         .unwrap();
@@ -787,7 +793,7 @@ fn a_node_id_that_is_not_one_is_refused_where_it_was_written() {
     // node nobody will ever be is indistinguishable from a row nobody bound.
     let store = closed(&backend());
     let failure = owner(&store)
-        .run("DEFINE REPLICA here AT 'here:9000' NODE 'not-an-id' ROLES serving;")
+        .run_now("DEFINE REPLICA here AT 'here:9000' NODE 'not-an-id' ROLES serving;")
         .unwrap_err();
     assert!(
         format!("{failure:?}").contains("Uuid"),
@@ -807,7 +813,9 @@ fn a_lapsed_lease_takes_writable_out_of_the_role_the_node_reports() {
     // was already true.
     let store = closed(&backend());
     let mut session = owner(&store);
-    session.run("DEFINE NODE ROLES serving, writable;").unwrap();
+    session
+        .run_now("DEFINE NODE ROLES serving, writable;")
+        .unwrap();
     assert_eq!(
         reported(&store).get("roles"),
         Some(&Value::Array(vec![
@@ -831,12 +839,12 @@ fn the_node_record_and_the_node_report_give_one_answer_about_roles() {
     // got one.
     let store = closed(&backend());
     owner(&store)
-        .run("DEFINE NODE ROLES serving, writable;")
+        .run_now("DEFINE NODE ROLES serving, writable;")
         .unwrap();
     store.hold_lease(Duration::ZERO);
 
     let reported_roles = reported(&store).get("roles").cloned();
-    let selected = owner(&store).run("SELECT roles FROM $node;").unwrap();
+    let selected = owner(&store).run_now("SELECT roles FROM $node;").unwrap();
     let rendered = format!("{selected:?}");
     assert!(!rendered.contains("writable"), "{rendered}");
     assert_eq!(
@@ -858,12 +866,12 @@ fn a_lapsed_lease_refuses_a_write_as_the_clusters_fault_and_not_the_nodes_role()
     // one is here.
     let store = closed(&backend());
     owner(&store)
-        .run("DEFINE NODE ROLES serving, writable;")
+        .run_now("DEFINE NODE ROLES serving, writable;")
         .unwrap();
     store.hold_lease(Duration::ZERO);
 
     let refused = owner(&store)
-        .run("DEFINE NAMESPACE prod;")
+        .run_now("DEFINE NAMESPACE prod;")
         .expect_err("a node whose lease has lapsed takes no writes");
     let said = refused.to_string();
     assert!(said.contains("lease"), "{said}");
@@ -887,7 +895,7 @@ fn a_peer_declared_without_the_clause_is_subscribed_to_nothing() {
     let store = closed(&backend());
     let mut session = owner(&store);
     session
-        .run("DEFINE REPLICA second AT 'there:9001';")
+        .run_now("DEFINE REPLICA second AT 'there:9001';")
         .unwrap();
 
     assert_eq!(
@@ -911,7 +919,7 @@ fn a_subscription_reads_back_in_the_spelling_that_wrote_it() {
     // holds no leadership. One commit is judged once, against a catalog that
     // still names nobody.
     session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
              BEGIN; \
              DEFINE REPLICA whole AT 'a:9001' NODE '{SOMEBODY}' REPLICATES STORE; \
@@ -949,10 +957,10 @@ fn a_subscription_on_a_row_that_names_no_node_is_declared_and_holds_nobody() {
     // proves which node it is.
     let store = closed(&backend());
     let mut session = owner(&store);
-    session.run("DEFINE NAMESPACE prod;").unwrap();
+    session.run_now("DEFINE NAMESPACE prod;").unwrap();
 
     session
-        .run("DEFINE REPLICA second AT 'there:9001' REPLICATES NAMESPACE prod;")
+        .run_now("DEFINE REPLICA second AT 'there:9001' REPLICATES NAMESPACE prod;")
         .expect("a peer declared before anybody has spoken to it");
 
     assert_eq!(
@@ -970,7 +978,7 @@ fn a_subscription_naming_a_namespace_that_is_not_there_is_refused() {
     let mut session = owner(&store);
 
     let refused = session
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE REPLICA second AT 'there:9001' NODE '{SOMEBODY}' REPLICATES NAMESPACE ghost;"
         ))
         .unwrap_err()
@@ -1011,7 +1019,7 @@ fn a_cluster_nobody_configured_reports_no_policy_rather_than_the_defaults() {
 fn a_policy_is_set_by_a_statement_and_reads_back_with_the_pair_that_orders_it() {
     let store = closed(&backend());
     owner(&store)
-        .run(
+        .run_now(
             "DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s CAMPAIGN 3s \
              LEASE 40s;",
         )
@@ -1043,14 +1051,14 @@ fn a_policy_asks_for_balanced_leaderships_and_one_that_does_not_turns_it_off() {
         policy(&reported(store)).and_then(|held| held.get("balance_leaderships").cloned())
     };
     owner(&store)
-        .run(
+        .run_now(
             "DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s CAMPAIGN 3s \
              LEASE 40s BALANCE LEADERSHIPS;",
         )
         .unwrap();
     assert_eq!(balancing(&store), Some(Value::Bool(true)));
     owner(&store)
-        .run("DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s CAMPAIGN 3s LEASE 40s;")
+        .run_now("DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s CAMPAIGN 3s LEASE 40s;")
         .unwrap();
     assert_eq!(balancing(&store), Some(Value::Bool(false)));
 }
@@ -1064,7 +1072,7 @@ fn a_second_policy_under_one_leadership_carries_the_next_version() {
     let store = closed(&backend());
     for lease in ["40s", "50s"] {
         owner(&store)
-            .run(&format!(
+            .run_now(&format!(
                 "DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s \
                  CAMPAIGN 3s LEASE {lease};"
             ))
@@ -1093,7 +1101,7 @@ fn a_policy_whose_periods_do_not_hold_together_is_refused_with_the_direction_nam
     // CAMPAIGN above twice ROUND: the leader steps over the moment it should
     // have stood, and nothing reports a failure because no round was attempted.
     let refused = owner(&store)
-        .run(
+        .run_now(
             "DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 1s CAMPAIGN 9s \
              LEASE 40s;",
         )
@@ -1130,7 +1138,7 @@ fn a_node_reports_its_retention_and_who_decided_it() {
         Some(&Value::from("environment"))
     );
 
-    owner(&store).run("DEFINE NODE RETAIN NONE;").unwrap();
+    owner(&store).run_now("DEFINE NODE RETAIN NONE;").unwrap();
     let chosen = reported(&store);
     assert_eq!(chosen.get("retain"), Some(&Value::Null));
     assert_eq!(chosen.get("retain_source"), Some(&Value::from("statement")));
@@ -1199,10 +1207,10 @@ fn a_revoked_certificate_is_listed_once_in_one_spelling() {
         .collect::<Vec<_>>()
         .join(":");
     owner(&store)
-        .run(&format!("REVOKE CERTIFICATE '{printed}';"))
+        .run_now(&format!("REVOKE CERTIFICATE '{printed}';"))
         .unwrap();
     owner(&store)
-        .run(&format!("REVOKE CERTIFICATE '{FINGERPRINT}';"))
+        .run_now(&format!("REVOKE CERTIFICATE '{FINGERPRINT}';"))
         .unwrap();
     assert_eq!(revoked(&reported(&store)), vec![FINGERPRINT.to_owned()]);
 }
@@ -1216,7 +1224,7 @@ fn a_fingerprint_that_is_not_a_sha256_is_refused_where_it_was_written() {
         &format!("{}zz", &FINGERPRINT[2..]),
     ] {
         let refused = owner(&store)
-            .run(&format!("REVOKE CERTIFICATE '{written}';"))
+            .run_now(&format!("REVOKE CERTIFICATE '{written}';"))
             .expect_err("not a fingerprint");
         assert!(
             refused.to_string().contains("SHA-256 fingerprint"),
@@ -1230,11 +1238,11 @@ fn a_fingerprint_that_is_not_a_sha256_is_refused_where_it_was_written() {
 fn only_an_operator_of_the_store_revokes_a_certificate() {
     let store = closed(&backend());
     owner(&store)
-        .run(&format!("DEFINE USER e ROLE editor PASSWORD '{PASSWORD}';"))
+        .run_now(&format!("DEFINE USER e ROLE editor PASSWORD '{PASSWORD}';"))
         .unwrap();
     let refused = format!(
         "{:?}",
-        signed_in(&store, "e").run(&format!("REVOKE CERTIFICATE '{FINGERPRINT}';"))
+        signed_in(&store, "e").run_now(&format!("REVOKE CERTIFICATE '{FINGERPRINT}';"))
     );
     assert!(refused.contains("RoleForbids"), "{refused}");
     assert!(revoked(&reported(&store)).is_empty());
@@ -1246,7 +1254,7 @@ fn a_grant_named_certificate_is_still_a_grant() {
     // that name, followed by `ON`, is the grant statement it always was.
     let refused = format!(
         "{:?}",
-        owner(&closed(&backend())).run("REVOKE certificate ON orders FROM ada;")
+        owner(&closed(&backend())).run_now("REVOKE certificate ON orders FROM ada;")
     );
     assert!(!refused.contains("SHA-256 fingerprint"), "{refused}");
 }
@@ -1281,10 +1289,10 @@ const JOINER: &str = "3f9a1c04-b7e2-489d-b561-0af3d82c7e46";
 fn a_join_token_is_answered_once_and_the_catalog_keeps_only_when_it_ends() {
     let store = closed(&backend());
     owner(&store)
-        .run("DEFINE REPLICA joiner AT '10.0.0.2:9000' ROLES serving;")
+        .run_now("DEFINE REPLICA joiner AT '10.0.0.2:9000' ROLES serving;")
         .unwrap();
     let answered = owner(&store)
-        .run("CREATE JOIN TOKEN FOR REPLICA joiner EXPIRES 10m;")
+        .run_now("CREATE JOIN TOKEN FOR REPLICA joiner EXPIRES 10m;")
         .unwrap();
     let Some(Outcome::Value(Value::String(token))) = answered.first() else {
         panic!("no token: {answered:?}");
@@ -1324,7 +1332,7 @@ fn a_join_token_is_answered_once_and_the_catalog_keeps_only_when_it_ends() {
 fn a_join_token_needs_a_row_that_does_not_yet_name_its_node() {
     let store = closed(&backend());
     let unknown = owner(&store)
-        .run("CREATE JOIN TOKEN FOR REPLICA nobody EXPIRES 10m;")
+        .run_now("CREATE JOIN TOKEN FOR REPLICA nobody EXPIRES 10m;")
         .expect_err("no such row");
     assert!(
         matches!(
@@ -1339,7 +1347,7 @@ fn a_join_token_needs_a_row_that_does_not_yet_name_its_node() {
     // One transaction, so the peer it names never makes this store a cluster
     // whose writes need a leadership.
     let bound = owner(&store)
-        .run(&format!(
+        .run_now(&format!(
             "BEGIN; DEFINE REPLICA known AT '10.0.0.3:9000' NODE '{JOINER}' ROLES serving; \
              CREATE JOIN TOKEN FOR REPLICA known EXPIRES 10m; COMMIT;"
         ))
@@ -1349,7 +1357,7 @@ fn a_join_token_needs_a_row_that_does_not_yet_name_its_node() {
         "{bound}"
     );
     let unsaid = owner(&store)
-        .run("CREATE JOIN TOKEN FOR REPLICA nobody;")
+        .run_now("CREATE JOIN TOKEN FOR REPLICA nobody;")
         .expect_err("a token with no life");
     assert!(unsaid.to_string().contains("EXPIRES"), "{unsaid}");
 }
@@ -1358,7 +1366,7 @@ fn a_join_token_needs_a_row_that_does_not_yet_name_its_node() {
 fn a_pinned_certificate_reads_back_in_one_spelling() {
     let store = closed(&backend());
     owner(&store)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE REPLICA joiner AT '10.0.0.2:9000' ROLES serving FINGERPRINT '{}';",
             FINGERPRINT.to_ascii_uppercase()
         ))
@@ -1373,7 +1381,7 @@ fn a_pinned_certificate_reads_back_in_one_spelling() {
 fn a_dropped_node_is_never_declared_again() {
     let store = closed(&backend());
     owner(&store)
-        .run(&format!(
+        .run_now(&format!(
             "BEGIN; DEFINE REPLICA gone AT '10.0.0.4:9000' NODE '{JOINER}' ROLES serving; \
              DROP REPLICA gone; DEFINE REPLICA open AT '10.0.0.5:9000' ROLES serving; \
              DROP REPLICA open; COMMIT;"
@@ -1392,7 +1400,7 @@ fn a_dropped_node_is_never_declared_again() {
         "the row that named a node removed it, the open row removed nobody: {tombstoned:?}"
     );
     let refused = owner(&store)
-        .run(&format!(
+        .run_now(&format!(
             "BEGIN; DEFINE REPLICA back AT '10.0.0.4:9000' NODE '{JOINER}' ROLES serving; \
              DROP REPLICA back; COMMIT;"
         ))
@@ -1407,14 +1415,14 @@ fn a_dropped_node_is_never_declared_again() {
 fn only_an_operator_of_the_store_makes_a_join_token() {
     let store = closed(&backend());
     owner(&store)
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE USER e ROLE editor PASSWORD '{PASSWORD}'; \
              DEFINE REPLICA joiner AT '10.0.0.2:9000' ROLES serving;"
         ))
         .unwrap();
     let refused = format!(
         "{:?}",
-        signed_in(&store, "e").run("CREATE JOIN TOKEN FOR REPLICA joiner EXPIRES 10m;")
+        signed_in(&store, "e").run_now("CREATE JOIN TOKEN FOR REPLICA joiner EXPIRES 10m;")
     );
     assert!(refused.contains("RoleForbids"), "{refused}");
 }
@@ -1518,7 +1526,7 @@ fn a_node_reports_the_certificates_it_presents_beside_its_own_settings() {
     let store = closed(&backend());
     let outcomes = owner(&store)
         .presenting(Arc::new(Shown))
-        .run("INFO FOR NODE;")
+        .run_now("INFO FOR NODE;")
         .unwrap();
     let Some(Outcome::Value(Value::Object(report))) = outcomes.first() else {
         panic!("not a report: {outcomes:?}");
@@ -1563,7 +1571,7 @@ fn a_node_reports_how_it_serves_its_clients() {
             Some(certificates) => session.presenting(certificates),
             None => session,
         };
-        let outcomes = session.run("INFO FOR NODE;").unwrap();
+        let outcomes = session.run_now("INFO FOR NODE;").unwrap();
         let Some(Outcome::Value(Value::Object(report))) = outcomes.first() else {
             panic!("not a report: {outcomes:?}");
         };
@@ -1589,13 +1597,13 @@ fn a_node_reports_how_it_serves_its_clients() {
 fn a_node_reports_who_the_log_says_leads_each_range() {
     let store = closed(&backend());
     owner(&store)
-        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders;")
+        .run_now("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders;")
         .unwrap();
-    let me = store.node_identity().unwrap().id;
+    let me = store.node_identity().now().unwrap().id;
     let other = [7_u8; 16];
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = tessari_storage::Catalog::new(&mut transaction);
-    let prod = catalog.namespace_id("prod").unwrap().expect("prod");
+    let prod = catalog.namespace_id("prod").now().unwrap().expect("prod");
     catalog
         .record_leadership(
             tessari_storage::Reach::Store,
@@ -1610,7 +1618,7 @@ fn a_node_reports_who_the_log_says_leads_each_range() {
             tessari_types::Epoch::new(5),
         )
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let report = reported(&store);
     let Some(Value::Object(cluster)) = report.get("cluster") else {

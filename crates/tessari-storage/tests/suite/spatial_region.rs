@@ -32,6 +32,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_constants::{SPATIAL_INDEX_CELLS_PER_RECORD, SPATIAL_QUERY_CELLS};
 use tessari_geo::{Bounds, Relation, Snapped};
@@ -59,13 +60,17 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        let store = Store::open(backend).unwrap();
-        let mut transaction = store.begin().unwrap();
+        let store = Store::open(backend).now().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("atlas").unwrap();
-        let database = catalog.create_database(namespace.id, "world").unwrap();
+        let namespace = catalog.create_namespace("atlas").now().unwrap();
+        let database = catalog
+            .create_database(namespace.id, "world")
+            .now()
+            .unwrap();
         let table = catalog
             .create_table(namespace.id, database.id, "places", TableShape::default())
+            .now()
             .unwrap();
         let index = catalog
             .create_index(
@@ -82,8 +87,9 @@ impl Fixture {
                     costs: tessari_storage::SearchCosts::default(),
                 },
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         Self {
             store,
             namespace: namespace.id,
@@ -95,9 +101,9 @@ impl Fixture {
 
     /// Write one rectangle under the given name.
     fn write(&self, name: &str, corners: Bounds) {
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         transaction.put(self.at(name), payload(corners));
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     fn at(&self, name: &str) -> RecordAddress {
@@ -116,7 +122,7 @@ impl Fixture {
     /// **exact** box has to ask the store what it stored rather than assume.
     fn box_of(&self, name: &str) -> Bounds {
         let transaction = self.begin();
-        let payload = transaction.get(&self.at(name)).unwrap().unwrap();
+        let payload = transaction.get(&self.at(name)).now().unwrap().unwrap();
         let record = tessari_encoding::decode_payload(&payload).unwrap();
         let Some(Value::Geometry(geometry)) = Path::field("at").resolve(&record) else {
             panic!("the record should carry a geometry");
@@ -125,7 +131,7 @@ impl Fixture {
     }
 
     fn begin(&self) -> Transaction<'_> {
-        self.store.begin().unwrap()
+        self.store.begin().now().unwrap()
     }
 
     /// Every record whose stored box the relation admits, found by looking at
@@ -137,6 +143,7 @@ impl Fixture {
         let transaction = self.begin();
         let found = transaction
             .scan_table(self.namespace, self.database, self.table)
+            .now()
             .unwrap();
         let mut kept = Vec::new();
         for (id, payload) in found {
@@ -162,6 +169,7 @@ impl Fixture {
         let transaction = self.begin();
         let region = transaction
             .records_in_region(&self.index, &cells, query, relation)
+            .now()
             .unwrap();
         let mut ids: Vec<RecordId> = region.rows.into_iter().map(|(id, _)| id).collect();
         ids.sort();
@@ -386,6 +394,7 @@ fn a_record_written_and_not_committed_is_offered_whatever_its_place() {
         .collect();
     let region = transaction
         .records_in_region(&fixture.index, &cells, query, Relation::Meets)
+        .now()
         .unwrap();
     let ids: Vec<RecordId> = region.rows.into_iter().map(|(id, _)| id).collect();
     assert!(ids.contains(&RecordId::from("pending")));
@@ -419,6 +428,7 @@ fn the_counts_separate_the_traversal_from_what_survives_it() {
     let transaction = fixture.begin();
     let region = transaction
         .records_in_region(&fixture.index, &cells, query, Relation::Meets)
+        .now()
         .unwrap();
 
     assert!(region.reached > 0, "the traversal should reach something");
@@ -501,6 +511,7 @@ fn the_candidate_to_result_ratio_is_measured_at_every_scale() {
             let transaction = fixture.begin();
             let region = transaction
                 .records_in_region(&fixture.index, &cells, query, Relation::Meets)
+                .now()
                 .unwrap();
             entries = entries.saturating_add(region.entries);
             reached = reached.saturating_add(region.reached);
@@ -601,6 +612,7 @@ fn truly_meeting(fixture: &Fixture, query: Bounds) -> Vec<RecordId> {
     let transaction = fixture.begin();
     let found = transaction
         .scan_table(fixture.namespace, fixture.database, fixture.table)
+        .now()
         .unwrap();
     let mut kept = Vec::new();
     for (id, payload) in found {

@@ -7,6 +7,7 @@ use crate::peer::{Hello, Purpose};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use tessari_encoding::NODE_ID_LEN;
+use tessari_session::Now;
 use tessari_storage::{LEASE_GUARD, LEASE_TTL, Lease};
 use tessari_types::Epoch;
 
@@ -88,7 +89,10 @@ fn kept_voting(
     let deciding = std::sync::Arc::new(Deciding::holding(settled()));
     let held = std::sync::Arc::clone(&deciding);
     let answering = std::thread::spawn(move || {
-        drop(door.greet(|| Ok(hello(id)), &id, &held, &crate::collection::NoLog));
+        drop(
+            door.greet(|| Ok(hello(id)), &id, &held, &crate::collection::NoLog)
+                .now(),
+        );
     });
     (address, deciding, answering)
 }

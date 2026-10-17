@@ -78,22 +78,22 @@ pub const VAULT_RECIPIENT: &str = "#vault";
 /// - [`Error::VaultNotAnObject`] when a vault is written a payload that is not
 ///   an object, since there are then no fields to seal and nothing that could
 ///   carry the key set.
-pub fn seal_secrets(
+pub async fn seal_secrets(
     transaction: &mut Transaction<'_>,
     address: &RecordAddress,
     payload: Value,
 ) -> Result<Value> {
-    let Some(definition) = Catalog::new(transaction).table(address.table)? else {
+    let Some(definition) = Catalog::new(transaction).table(address.table).await? else {
         return Ok(payload);
     };
     if !definition.is_vault() {
         return Ok(payload);
     }
-    seal_into_vault(transaction, address, &definition, payload)
+    seal_into_vault(transaction, address, &definition, payload).await
 }
 
 /// The vault half, once the table is known to be one.
-fn seal_into_vault(
+async fn seal_into_vault(
     transaction: &mut Transaction<'_>,
     address: &RecordAddress,
     definition: &TableDefinition,
@@ -113,7 +113,8 @@ fn seal_into_vault(
     // absent — sealing has nothing to do, and inventing a value here would
     // write a secret nobody supplied.
     let secrets: Vec<(String, tessari_types::FieldKind)> = Catalog::new(transaction)
-        .fields_on(definition.namespace, definition.database, definition.id)?
+        .fields_on(definition.namespace, definition.database, definition.id)
+        .await?
         .into_iter()
         .filter(|field| field.secret && fields.contains_key(&field.name))
         .map(|field| (field.name, field.kind))
@@ -189,14 +190,14 @@ fn seal_into_vault(
 ///
 /// The errors of [`seal_secrets`], plus [`Error::VaultNoKey`] when `keys` is not
 /// a key set this store wrote.
-pub fn reseal_named(
+pub async fn reseal_named(
     transaction: &mut Transaction<'_>,
     address: &RecordAddress,
     payload: Value,
     keys_of_record: &Value,
     named: &std::collections::BTreeSet<String>,
 ) -> Result<Value> {
-    let Some(definition) = Catalog::new(transaction).table(address.table)? else {
+    let Some(definition) = Catalog::new(transaction).table(address.table).await? else {
         return Ok(payload);
     };
     if !definition.is_vault() {
@@ -216,7 +217,8 @@ pub fn reseal_named(
     // already an envelope in `fields`, and sealing it again would seal the
     // ciphertext.
     let secrets: Vec<(String, tessari_types::FieldKind)> = Catalog::new(transaction)
-        .fields_on(definition.namespace, definition.database, definition.id)?
+        .fields_on(definition.namespace, definition.database, definition.id)
+        .await?
         .into_iter()
         .filter(|field| {
             field.secret && named.contains(&field.name) && fields.contains_key(&field.name)

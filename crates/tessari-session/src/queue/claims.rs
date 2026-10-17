@@ -70,13 +70,13 @@ pub(crate) fn nothing_claimed(table: &str) -> Outcome {
 }
 
 /// The declaration of the queue a statement named, or the refusal.
-pub(crate) fn queue_declaration(
+pub(crate) async fn queue_declaration(
     transaction: &mut Transaction<'_>,
     table: tessari_types::TableId,
     named: &str,
     span: Span,
 ) -> Result<QueueDeclaration> {
-    let definition: Option<TableDefinition> = Catalog::new(transaction).table(table)?;
+    let definition: Option<TableDefinition> = Catalog::new(transaction).table(table).await?;
     match definition.map(|found| found.kind) {
         Some(TableKind::Queue(declared)) => Ok(declared),
         _ => Err(Error::NotAQueue {
@@ -166,7 +166,7 @@ pub(crate) fn claimable(
 /// Returns [`Error::QueueFieldIsTheEngines`] naming the field, so a caller whose
 /// payload happens to use one of these names is told exactly what happened
 /// rather than silently losing it (Q-461).
-pub(crate) fn hold_engine_fields(
+pub(crate) async fn hold_engine_fields(
     transaction: &mut Transaction<'_>,
     address: &RecordAddress,
     payload: &mut Value,
@@ -179,7 +179,8 @@ pub(crate) fn hold_engine_fields(
     // early return was the whole defect: a payload mentioning none of them is
     // exactly a whole-record write, which is the one that drops all three.
     let is_queue = Catalog::new(transaction)
-        .table(address.table)?
+        .table(address.table)
+        .await?
         .is_some_and(|found| matches!(found.kind, TableKind::Queue(_)));
     if !is_queue {
         return Ok(());
@@ -199,7 +200,7 @@ pub(crate) fn hold_engine_fields(
     // Carrying one forward unchanged is not writing it: the value that reaches
     // storage is the value the engine put there, so nothing a caller could lie
     // about has moved.
-    let stored = match transaction.get(address)? {
+    let stored = match transaction.get(address).await? {
         Some(bytes) => match decode_payload(&bytes)? {
             Value::Object(held) => held,
             _ => BTreeMap::new(),

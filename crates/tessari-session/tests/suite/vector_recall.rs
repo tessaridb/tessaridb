@@ -24,6 +24,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -31,7 +33,9 @@ use tessari_storage::Store;
 use tessari_types::Value;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 const PLACE: &str = "\
@@ -46,7 +50,7 @@ const FILLED: i64 = 30;
 fn declared(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}DEFINE VECTOR embeddings DIMENSION 3 DISTANCE euclidean;"
         ))
         .unwrap();
@@ -58,7 +62,7 @@ fn fill(session: &mut Session<'_>, from: i64, count: i64) {
     for n in from..from.saturating_add(count) {
         let x = f64::from(i32::try_from(n).unwrap());
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE embeddings:{n} = {{ vector: [{x}, {}, 0.5] }};",
                 x / 2.0
             ))
@@ -69,7 +73,7 @@ fn fill(session: &mut Session<'_>, from: i64, count: i64) {
 /// The `recall` field of `INFO FOR VECTOR embeddings`.
 fn recall(session: &mut Session<'_>) -> Value {
     let report = match session
-        .run("INFO FOR VECTOR embeddings;")
+        .run_now("INFO FOR VECTOR embeddings;")
         .unwrap()
         .pop()
         .unwrap()
@@ -113,7 +117,9 @@ fn a_rebuild_measures_the_store_and_the_report_says_what_it_measured() {
     let store = store();
     let mut session = declared(&store);
     fill(&mut session, 0, FILLED);
-    session.run("REBUILD INDEX vector ON embeddings;").unwrap();
+    session
+        .run_now("REBUILD INDEX vector ON embeddings;")
+        .unwrap();
 
     let measured = recall(&mut session);
     assert_ne!(measured, Value::None, "a rebuild measured nothing");
@@ -143,7 +149,9 @@ fn the_figure_keeps_saying_how_large_the_store_was_when_it_was_taken() {
     let store = store();
     let mut session = declared(&store);
     fill(&mut session, 0, FILLED);
-    session.run("REBUILD INDEX vector ON embeddings;").unwrap();
+    session
+        .run_now("REBUILD INDEX vector ON embeddings;")
+        .unwrap();
     fill(&mut session, FILLED, FILLED.saturating_mul(2));
 
     let measured = recall(&mut session);
@@ -162,9 +170,13 @@ fn a_second_rebuild_publishes_a_figure_for_the_graph_that_now_exists() {
     let store = store();
     let mut session = declared(&store);
     fill(&mut session, 0, FILLED);
-    session.run("REBUILD INDEX vector ON embeddings;").unwrap();
+    session
+        .run_now("REBUILD INDEX vector ON embeddings;")
+        .unwrap();
     fill(&mut session, FILLED, FILLED.saturating_mul(2));
-    session.run("REBUILD INDEX vector ON embeddings;").unwrap();
+    session
+        .run_now("REBUILD INDEX vector ON embeddings;")
+        .unwrap();
 
     let measured = recall(&mut session);
     assert_eq!(
@@ -189,13 +201,17 @@ fn a_rebuild_with_nothing_left_to_measure_takes_the_old_figure_away() {
     let store = store();
     let mut session = declared(&store);
     fill(&mut session, 0, FILLED);
-    session.run("REBUILD INDEX vector ON embeddings;").unwrap();
+    session
+        .run_now("REBUILD INDEX vector ON embeddings;")
+        .unwrap();
     assert_ne!(recall(&mut session), Value::None, "nothing was measured");
 
     for n in 1..FILLED {
-        session.run(&format!("DELETE embeddings:{n};")).unwrap();
+        session.run_now(&format!("DELETE embeddings:{n};")).unwrap();
     }
-    session.run("REBUILD INDEX vector ON embeddings;").unwrap();
+    session
+        .run_now("REBUILD INDEX vector ON embeddings;")
+        .unwrap();
 
     assert_eq!(
         recall(&mut session),

@@ -25,6 +25,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_geo::Snapped;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -49,13 +50,17 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-        let store = Store::open(backend).unwrap();
-        let mut transaction = store.begin().unwrap();
+        let store = Store::open(backend).now().unwrap();
+        let mut transaction = store.begin().now().unwrap();
         let mut catalog = Catalog::new(&mut transaction);
-        let namespace = catalog.create_namespace("atlas").unwrap();
-        let database = catalog.create_database(namespace.id, "world").unwrap();
+        let namespace = catalog.create_namespace("atlas").now().unwrap();
+        let database = catalog
+            .create_database(namespace.id, "world")
+            .now()
+            .unwrap();
         let table = catalog
             .create_table(namespace.id, database.id, "places", TableShape::default())
+            .now()
             .unwrap();
         let index = catalog
             .create_index(
@@ -72,8 +77,9 @@ impl Fixture {
                     costs: tessari_storage::SearchCosts::default(),
                 },
             )
+            .now()
             .unwrap();
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
         Self {
             store,
             namespace: namespace.id,
@@ -93,7 +99,7 @@ impl Fixture {
     }
 
     fn begin(&self) -> Transaction<'_> {
-        self.store.begin().unwrap()
+        self.store.begin().now().unwrap()
     }
 
     /// Write one record holding one geometry.
@@ -103,12 +109,12 @@ impl Fixture {
                 .into_iter()
                 .collect(),
         );
-        let mut transaction = self.store.begin().unwrap();
+        let mut transaction = self.store.begin().now().unwrap();
         transaction.put(
             self.at(name),
             tessari_encoding::encode_payload(&record).into_bytes(),
         );
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     fn write_point(&self, name: &str, longitude: i64, latitude: i64) {
@@ -123,6 +129,7 @@ impl Fixture {
         let transaction = self.begin();
         let found = transaction
             .scan_table(self.namespace, self.database, self.table)
+            .now()
             .unwrap();
         let mut placed = Vec::new();
         for (id, payload) in found {
@@ -157,6 +164,7 @@ impl Fixture {
         let transaction = self.begin();
         transaction
             .scan_table(self.namespace, self.database, self.table)
+            .now()
             .unwrap()
             .into_iter()
             .filter_map(|(_, payload)| {
@@ -185,10 +193,10 @@ impl Fixture {
             } else {
                 f64::INFINITY
             };
-            let Some((floor, id)) = walk.next(&transaction, beyond).unwrap() else {
+            let Some((floor, id)) = walk.next(&transaction, beyond).now().unwrap() else {
                 break;
             };
-            let payload = transaction.get(&self.at_id(&id)).unwrap().unwrap();
+            let payload = transaction.get(&self.at_id(&id)).now().unwrap().unwrap();
             let record = tessari_encoding::decode_payload(&payload).unwrap();
             let metres = measured(target, &record).unwrap();
             assert!(

@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use tessari_kv::KvBackend;
 
 use tessari_encoding::{NodeIdentity, Roles};
-use tessari_kv::KvBackend;
 use tessari_types::{ConflictPolicy, Sequence, TableId};
 
 use crate::catalog::Reach;
@@ -39,8 +39,10 @@ impl Store {
     /// Returns the substrate's failure, [`Error::NoIdentity`] when the key has
     /// gone, or a decoding failure when the stored bytes carry a revision, role
     /// or membership this build does not know.
-    pub fn node_identity(&self) -> Result<NodeIdentity> {
-        crate::node::read(Arc::clone(&self.backend))?.ok_or(Error::NoIdentity)
+    pub async fn node_identity(&self) -> Result<NodeIdentity> {
+        crate::node::read(Arc::clone(&self.backend))
+            .await?
+            .ok_or(Error::NoIdentity)
     }
 
     /// What this process is doing with the consumers the catalog declares.
@@ -145,7 +147,7 @@ impl Store {
     ///
     /// Returns [`Error::NoIdentity`] when the store holds none, and the
     /// substrate's failure when the write is refused.
-    pub fn configure_node(
+    pub async fn configure_node(
         &self,
         roles: Option<Roles>,
         endpoints: Option<Vec<String>>,
@@ -157,9 +159,9 @@ impl Store {
         // every store written by a newer build unreadable by an older one for a
         // number neither of them needs to agree on.
         if let Some(keep) = retain {
-            self.set_log_retention(keep)?;
+            self.set_log_retention(keep).await?;
         }
-        crate::node::configure(Arc::clone(&self.backend), roles, endpoints)
+        crate::node::configure(Arc::clone(&self.backend), roles, endpoints).await
     }
 
     /// Begin a transaction at the newest version this store has written.
@@ -171,14 +173,36 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the version position cannot be read or decoded.
-    pub fn begin(&self) -> Result<Transaction<'_>> {
-        Ok(Transaction::new(self, self.committed_version()?))
+    pub async fn begin(&self) -> Result<Transaction<'_>> {
+        // The turn's holder derives on what is staged behind it, which only the
+        // engine's view through the gate shows; every other reader begins at
+        // the newest version landed, held in memory (`crate::landed`).
+        let at = if self.writing.holding() {
+            // Read once per turn: nothing but the holder moves it meanwhile.
+            match self.writing.kept_version() {
+                Some(kept) => kept,
+                None => {
+                    let read = self.committed_version().await?;
+                    self.writing.keep_version(read);
+                    read
+                }
+            }
+        } else {
+            self.writing.landed_version()
+        };
+        Ok(Transaction::new(self, at))
+    }
+
+    /// Record that the batch at `version` has landed, before whoever wrote it
+    /// is answered (`crate::landed`).
+    pub(crate) fn landed_at(&self, version: Sequence) {
+        self.writing.landed_at(version);
     }
 
     /// [`Self::begin`], deciding every intent from this node's own copy —
     /// the view a commit or an apply derives from (see `Transaction::local`).
-    pub(crate) fn begin_local(&self) -> Result<Transaction<'_>> {
-        Ok(self.begin()?.local())
+    pub(crate) async fn begin_local(&self) -> Result<Transaction<'_>> {
+        Ok(self.begin().await?.local())
     }
 
     /// Begin a transaction reading the store as it stood at `at`.
@@ -204,15 +228,15 @@ impl Store {
     /// Returns [`Error::VersionReclaimed`] when `at` is below the reclaim floor,
     /// [`Error::VersionInTheFuture`] when it is above the newest version
     /// written, or a backend error when either bound cannot be read.
-    pub fn begin_at(&self, at: Sequence) -> Result<Transaction<'_>> {
-        let floor = self.reclaim_floor()?;
+    pub async fn begin_at(&self, at: Sequence) -> Result<Transaction<'_>> {
+        let floor = self.reclaim_floor().await?;
         if at < floor {
             return Err(Error::VersionReclaimed {
                 asked: at.get(),
                 floor: floor.get(),
             });
         }
-        let tail = self.committed_version()?;
+        let tail = self.committed_version().await?;
         if at > tail {
             return Err(Error::VersionInTheFuture {
                 asked: at.get(),
@@ -226,17 +250,19 @@ impl Store {
     ///
     /// Versions strictly older than the newest version at or below this may be
     /// reclaimed; nothing at or above it may be. With no reader live the floor is
-    /// the newest version written, because a transaction that begins next will
+    /// the newest version landed, because a transaction that begins next will
     /// begin there.
     ///
     /// # Errors
     ///
-    /// Returns an error when the version position cannot be read, which is only
-    /// consulted when no snapshot is live.
-    pub fn retention_floor(&self) -> Result<Sequence> {
+    /// None today; the signature keeps a floor that is read rather than held.
+    pub async fn retention_floor(&self) -> Result<Sequence> {
         match self.snapshots.oldest() {
             Some(oldest) => Ok(oldest),
-            None => self.committed_version(),
+            // What a transaction beginning next would begin at, which may be
+            // below the engine's tail for a moment after a landing: a floor
+            // above it would reclaim what that transaction reads.
+            None => Ok(self.writing.landed_version()),
         }
     }
 
@@ -288,9 +314,12 @@ impl Store {
     /// refusal for the same reason [`Store::admits_two_writers`] answers `false`
     /// on a missing namespace: an absent declaration is not a declaration, and
     /// of the two readings it is the one that loses nothing.
-    pub(crate) fn conflict_policy(&self, table: TableId) -> Result<ConflictPolicy> {
-        let mut transaction = self.begin()?;
-        let Some(definition) = crate::catalog::Catalog::new(&mut transaction).table(table)? else {
+    pub(crate) async fn conflict_policy(&self, table: TableId) -> Result<ConflictPolicy> {
+        let mut transaction = self.begin().await?;
+        let Some(definition) = crate::catalog::Catalog::new(&mut transaction)
+            .table(table)
+            .await?
+        else {
             return Ok(ConflictPolicy::Refuse);
         };
         Ok(definition.conflict.unwrap_or(ConflictPolicy::Refuse))
@@ -310,13 +339,14 @@ impl Store {
     /// enforced. A class stored by a later build that this one cannot read is a
     /// decoding failure from the catalog and propagates as one, rather than
     /// being read as either answer.
-    pub(crate) fn admits_two_writers(&self, home: Reach) -> Result<bool> {
+    pub(crate) async fn admits_two_writers(&self, home: Reach) -> Result<bool> {
         let (Some(namespace), _) = home.parts() else {
             return Ok(false);
         };
-        let mut transaction = self.begin()?;
-        let Some(definition) =
-            crate::catalog::Catalog::new(&mut transaction).namespace(namespace)?
+        let mut transaction = self.begin().await?;
+        let Some(definition) = crate::catalog::Catalog::new(&mut transaction)
+            .namespace(namespace)
+            .await?
         else {
             // The namespace is gone while its log is still being applied. Not a
             // declaration, so not an exemption — the fence stands, which is the
@@ -328,8 +358,14 @@ impl Store {
             .is_some_and(tessari_types::ReplicationClass::admits_two_writers))
     }
 
-    /// The backend, for the transaction's read and commit paths.
-    pub(crate) fn backend(&self) -> &Arc<dyn KvBackend> {
+    /// The backend, for the transaction's read and commit paths: its reads and
+    /// writes are futures, so no store call blocks the thread that drives it.
+    pub(crate) fn backend(&self) -> &dyn tessari_kv::KvBackend {
+        &*self.backend
+    }
+
+    /// The backend as shared, for what holds it beyond one call.
+    pub(crate) fn engine(&self) -> &Arc<dyn KvBackend> {
         &self.backend
     }
 

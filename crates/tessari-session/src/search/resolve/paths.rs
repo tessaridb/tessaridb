@@ -103,20 +103,21 @@ pub(super) fn too_short(prefixes: &[&[String]], span: Span) -> Result<()> {
 /// — never in dictionary order, which would keep whichever rare words sort first
 /// and drop the common one being typed. Ties fall to the term, so the same
 /// dictionary always blends the same terms.
-pub(super) fn blended(
+pub(super) async fn blended(
     transaction: &Transaction<'_>,
     index: &IndexDefinition,
     alternatives: &[String],
 ) -> Result<Blend> {
     let mut reached = std::collections::BTreeSet::new();
     for spelling in alternatives {
-        let found =
-            transaction.terms_with_prefix(index, spelling, SEARCH_PREFIX_SCORE_EXAMINATION_CAP)?;
+        let found = transaction
+            .terms_with_prefix(index, spelling, SEARCH_PREFIX_SCORE_EXAMINATION_CAP)
+            .await?;
         reached.extend(found.terms);
     }
     let mut ranked = Vec::with_capacity(reached.len());
     for term in reached {
-        ranked.push((transaction.document_frequency(index, &term)?, term));
+        ranked.push((transaction.document_frequency(index, &term).await?, term));
     }
     ranked.sort_by(|(left, one), (right, other)| right.cmp(left).then_with(|| one.cmp(other)));
     ranked.truncate(SEARCH_PREFIX_EXPANSION_CAP);

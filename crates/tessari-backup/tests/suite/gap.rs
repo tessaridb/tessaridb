@@ -31,6 +31,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_encoding::{AppliedPositionKey, LogId, LogKey, StoreKey, StoreValue};
 use tessari_kv::{KvBackend, MemoryBackend, WriteBatch};
@@ -84,14 +86,14 @@ const STORE_RECORDS: u64 = 5;
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     (backend, store)
 }
 
 fn session(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
     session
 }
@@ -101,7 +103,7 @@ fn leader() -> (Arc<dyn KvBackend>, Store) {
     let (backend, store) = store();
     {
         let mut opening = Session::new(&store);
-        opening.run(LEADER).unwrap();
+        opening.run_now(LEADER).unwrap();
     }
     // The numbers this file addresses records by, asserted rather than trusted:
     // a fixture that grew a statement would otherwise move `MISSING` onto an
@@ -110,7 +112,7 @@ fn leader() -> (Arc<dyn KvBackend>, Store) {
         crate::tails(&store),
         vec![
             (
-                store.own_log(Reach::Store).unwrap(),
+                store.own_log(Reach::Store).now().unwrap(),
                 Sequence::new(STORE_RECORDS)
             ),
             (data_log(&store), Sequence::new(DATA_RECORDS)),
@@ -122,7 +124,7 @@ fn leader() -> (Arc<dyn KvBackend>, Store) {
 
 /// The log the fixture's records land in — the database's, not the store's.
 fn data_log(store: &Store) -> LogId {
-    let mut logs = store.logs().unwrap();
+    let mut logs = store.logs().now().unwrap();
     logs.retain(|log| log.home != Reach::Store);
     match logs.as_slice() {
         [one] => *one,
@@ -143,17 +145,24 @@ fn follower_at(leader: &Store, upto: u64) -> Store {
     tessari_backup::write_from(
         leader,
         &mut definitions,
-        leader.own_log(Reach::Store).unwrap(),
+        leader.own_log(Reach::Store).now().unwrap(),
         Sequence::new(1),
     )
+    .now()
     .unwrap();
-    tessari_backup::read(&store, &mut definitions.as_slice()).unwrap();
+    tessari_backup::read(&store, &mut definitions.as_slice())
+        .now()
+        .unwrap();
 
     let mut records = Vec::new();
-    tessari_backup::write_from(leader, &mut records, home, Sequence::new(1)).unwrap();
-    tessari_backup::read_until(&store, &mut records.as_slice(), Some(Sequence::new(upto))).unwrap();
+    tessari_backup::write_from(leader, &mut records, home, Sequence::new(1))
+        .now()
+        .unwrap();
+    tessari_backup::read_until(&store, &mut records.as_slice(), Some(Sequence::new(upto)))
+        .now()
+        .unwrap();
     assert_eq!(
-        store.committed_tail(home).unwrap(),
+        store.committed_tail(home).now().unwrap(),
         Sequence::new(upto),
         "the follower did not stop where this test needs it to"
     );
@@ -166,11 +175,11 @@ fn cut(backend: &Arc<dyn KvBackend>, home: LogId, sequence: u64) {
         LogKey::keyspace(),
         LogKey::new(home, Sequence::new(sequence)).encode(),
     );
-    backend.apply(batch).unwrap();
+    backend.apply(batch).now().unwrap();
 }
 
 fn answers(store: &Store, script: &str) -> String {
-    format!("{:?}", session(store).run(script).unwrap())
+    format!("{:?}", session(store).run_now(script).unwrap())
 }
 
 #[test]
@@ -182,7 +191,10 @@ fn a_log_that_no_longer_reaches_the_follower_is_refused_and_names_the_missing_se
     cut(&leader_backend, home, MISSING);
     // Vacuity guard: if the cut removed nothing, everything below passes while
     // showing nothing at all.
-    let after_the_cut = held.log_records(home, Sequence::new(MISSING), 1).unwrap();
+    let after_the_cut = held
+        .log_records(home, Sequence::new(MISSING), 1)
+        .now()
+        .unwrap();
     assert_ne!(
         after_the_cut[0].0,
         Sequence::new(MISSING),
@@ -198,9 +210,12 @@ fn a_log_that_no_longer_reaches_the_follower_is_refused_and_names_the_missing_se
         home,
         Sequence::new(FOLLOWER_STOPS_AT.saturating_add(1)),
     )
+    .now()
     .unwrap();
 
-    let refused = tessari_backup::bootstrap(&follower, &mut truncated.as_slice()).unwrap_err();
+    let refused = tessari_backup::bootstrap(&follower, &mut truncated.as_slice())
+        .now()
+        .unwrap_err();
 
     // Named, not merely refused: the numbers are the point, because "it
     // errored" does not tell an operator which record to go and find.
@@ -215,7 +230,7 @@ fn a_log_that_no_longer_reaches_the_follower_is_refused_and_names_the_missing_se
     // It stopped *at* the gap, having applied what came before it. The position
     // reflects what was actually applied, not what the header promised.
     assert_eq!(
-        follower.committed_tail(home).unwrap(),
+        follower.committed_tail(home).now().unwrap(),
         Sequence::new(MISSING.saturating_sub(1)),
         "the follower's position does not match what it applied"
     );
@@ -253,10 +268,13 @@ fn the_same_truncated_log_is_refused_again_rather_than_accepted_on_retry() {
         home,
         Sequence::new(FOLLOWER_STOPS_AT.saturating_add(1)),
     )
+    .now()
     .unwrap();
 
-    tessari_backup::bootstrap(&follower, &mut truncated.as_slice()).unwrap_err();
-    let stopped_at = follower.committed_tail(home).unwrap();
+    tessari_backup::bootstrap(&follower, &mut truncated.as_slice())
+        .now()
+        .unwrap_err();
+    let stopped_at = follower.committed_tail(home).now().unwrap();
 
     // Offering the same stream again must not become an acceptance. A refusal
     // that heals itself on retry is worse than one that never fired, because a
@@ -271,8 +289,9 @@ fn the_same_truncated_log_is_refused_again_rather_than_accepted_on_retry() {
     // the applier ever sees a record. Asserting `LogGap`
     // again would be asserting that the follower had *not* advanced, which is
     // the opposite of what the first test just proved.
-    let refused_again =
-        tessari_backup::bootstrap(&follower, &mut truncated.as_slice()).unwrap_err();
+    let refused_again = tessari_backup::bootstrap(&follower, &mut truncated.as_slice())
+        .now()
+        .unwrap_err();
     assert!(
         matches!(
             refused_again,
@@ -282,7 +301,7 @@ fn the_same_truncated_log_is_refused_again_rather_than_accepted_on_retry() {
         "the retry was refused, but by neither gap guard: {refused_again}"
     );
     assert_eq!(
-        follower.committed_tail(home).unwrap(),
+        follower.committed_tail(home).now().unwrap(),
         stopped_at,
         "the retry moved the follower"
     );
@@ -295,11 +314,12 @@ fn the_same_truncated_log_is_refused_again_rather_than_accepted_on_retry() {
 /// writer of the day put them, while today each one derives a database home.
 fn file_the_data_in_the_store_log(backend: &Arc<dyn KvBackend>, store: &Store) {
     let data = data_log(store);
-    let own = store.own_log(Reach::Store).unwrap();
+    let own = store.own_log(Reach::Store).now().unwrap();
     let mut batch = WriteBatch::new();
-    for (at, _) in store.log_records(data, Sequence::new(1), 64).unwrap() {
+    for (at, _) in store.log_records(data, Sequence::new(1), 64).now().unwrap() {
         let body = backend
             .get(LogKey::keyspace(), &LogKey::new(data, at).encode())
+            .now()
             .unwrap()
             .unwrap();
         let moved = Sequence::new(STORE_RECORDS.saturating_add(at.get()));
@@ -318,14 +338,14 @@ fn file_the_data_in_the_store_log(backend: &Arc<dyn KvBackend>, store: &Store) {
             AppliedPositionKey::keyspace(),
             AppliedPositionKey::new(data).encode(),
         );
-    backend.apply(batch).unwrap();
+    backend.apply(batch).now().unwrap();
 }
 
 #[test]
 fn a_record_is_restored_into_the_log_it_was_backed_up_from() {
     let (backend, held) = leader();
     file_the_data_in_the_store_log(&backend, &held);
-    let own = held.own_log(Reach::Store).unwrap();
+    let own = held.own_log(Reach::Store).now().unwrap();
     // Vacuity guard: the store log must now carry records that derive a
     // database home, or this restores nothing the old path refused.
     assert_eq!(
@@ -338,9 +358,11 @@ fn a_record_is_restored_into_the_log_it_was_backed_up_from() {
     );
 
     let mut whole = Vec::new();
-    tessari_backup::write(&held, &mut whole).unwrap();
+    tessari_backup::write(&held, &mut whole).now().unwrap();
     let (_backend, restored) = store();
-    tessari_backup::read(&restored, &mut whole.as_slice()).unwrap();
+    tessari_backup::read(&restored, &mut whole.as_slice())
+        .now()
+        .unwrap();
 
     assert_eq!(crate::tails(&restored), crate::tails(&held));
     assert_eq!(

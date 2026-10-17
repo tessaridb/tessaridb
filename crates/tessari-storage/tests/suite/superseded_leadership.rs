@@ -28,6 +28,7 @@
 
 use std::sync::Arc;
 use std::time::Instant;
+use tessari_storage::Now;
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -47,8 +48,10 @@ const NEW_EPOCH: u64 = 18;
 /// `None` is the node nobody elected, and it is a different statement from
 /// `Some(Epoch::ZERO)`.
 fn after_a_failover(granted: Option<u64>) -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
-    let mut transaction = store.begin().unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
     catalog
         .create_replica(
@@ -59,22 +62,25 @@ fn after_a_failover(granted: Option<u64>) -> Store {
             None,
             None,
         )
+        .now()
         .unwrap();
     catalog
         .record_leadership(Reach::Store, OLD_NODE, Epoch::new(OLD_EPOCH))
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     if let Some(epoch) = granted {
-        store.hold(
-            Epoch::new(epoch),
-            Lease::taken_at(Instant::now(), LEASE_TTL),
-        );
+        store
+            .hold(
+                Epoch::new(epoch),
+                Lease::taken_at(Instant::now(), LEASE_TTL),
+            )
+            .now();
     }
     store
 }
 
 fn write(store: &Store, id: &str) -> Result<(), Error> {
-    let mut transaction = store.begin()?;
+    let mut transaction = store.begin().now()?;
     transaction.put(
         RecordAddress::new(
             NamespaceId::new(1),
@@ -84,7 +90,7 @@ fn write(store: &Store, id: &str) -> Result<(), Error> {
         ),
         b"{}".to_vec(),
     );
-    transaction.commit().map(|_| ())
+    transaction.commit().now().map(|_| ())
 }
 
 #[test]
@@ -97,16 +103,17 @@ fn a_node_holding_a_greater_epoch_can_record_the_leadership_it_won() {
     // The exact call the instrumented run watched fail, once every six seconds,
     // for twenty-one consecutive epochs.
     let store = after_a_failover(Some(NEW_EPOCH));
-    let me = store.node_identity().unwrap().id;
-    let mut transaction = store.begin().unwrap();
+    let me = store.node_identity().now().unwrap().id;
+    let mut transaction = store.begin().now().unwrap();
     Catalog::new(&mut transaction)
         .record_leadership(Reach::Store, me, Epoch::new(NEW_EPOCH))
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let recorded = Catalog::new(&mut transaction)
         .leader_of(Reach::Store)
+        .now()
         .unwrap()
         .expect("the store has a leadership row");
     assert_eq!(

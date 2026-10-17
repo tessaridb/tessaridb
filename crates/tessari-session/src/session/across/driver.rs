@@ -56,10 +56,10 @@ impl Session<'_> {
     /// # Errors
     ///
     /// What [`Transaction::across_plan`] refuses.
-    pub(in crate::session) fn across_parts(
+    pub(in crate::session) async fn across_parts(
         transaction: &Transaction<'_>,
     ) -> Result<Option<Vec<AcrossPart>>> {
-        let parts = transaction.across_plan()?;
+        let parts = transaction.across_plan().await?;
         let mut leaders: Vec<Option<[u8; NODE_ID_LEN]>> =
             parts.iter().map(|part| part.leader).collect();
         leaders.sort_unstable();
@@ -75,7 +75,7 @@ impl Session<'_> {
     /// [`Error::AcrossAborted`] when nothing was committed,
     /// [`Error::AcrossInDoubt`] when the decision was sent and not confirmed,
     /// and [`Error::AcrossUnavailable`] on a node with no carrier.
-    pub(in crate::session) fn drive_across(
+    pub(in crate::session) async fn drive_across(
         &mut self,
         store: &Store,
         transaction: Transaction<'_>,
@@ -86,21 +86,23 @@ impl Session<'_> {
             .participants
             .clone()
             .ok_or(Error::AcrossUnavailable { span })?;
-        let lapse = across_lapse_millis(store)?;
-        let merged = self.merges_records(store)?;
+        let lapse = across_lapse_millis(store).await?;
+        let merged = self.merges_records(store).await?;
         // The writes travel in `parts`; the snapshot is released now rather
         // than held across every round trip.
         transaction.rollback();
         let user = self.identity.user().cloned();
         let id = fresh_id();
-        let answered = self.drive(
-            store,
-            carrier,
-            &parts,
-            (id, lapse, merged),
-            user.as_ref(),
-            span,
-        );
+        let answered = self
+            .drive(
+                store,
+                carrier,
+                &parts,
+                (id, lapse, merged),
+                user.as_ref(),
+                span,
+            )
+            .await;
         // Counted where the client hears it (ADR-0112 D11), whichever way.
         store.across_finished(match &answered {
             Ok(()) => AcrossOutcome::Committed,
@@ -111,7 +113,7 @@ impl Session<'_> {
     }
 
     /// The protocol itself, from the first record to the resolutions.
-    fn drive(
+    async fn drive(
         &mut self,
         store: &Store,
         carrying: std::sync::Arc<dyn Participants>,
@@ -140,14 +142,15 @@ impl Session<'_> {
                 })
                 .collect(),
         };
-        let deciding = |this: &mut Self, record: &TransactionRecord| {
-            let asked = AcrossAsk::Decide {
-                transaction: id,
-                record: record.clone(),
-            };
-            this.ask_one(carrier, coordinator_leader, user, &asked)
+        let deciding = |record: &TransactionRecord| AcrossAsk::Decide {
+            transaction: id,
+            record: record.clone(),
         };
-        if !merged && let Err(refusal) = deciding(self, &record) {
+        if !merged
+            && let Err(refusal) = self
+                .ask_one(carrier, coordinator_leader, user, &deciding(&record))
+                .await
+        {
             return Err(Error::AcrossAborted { refusal, span });
         }
         let prepares: Vec<AcrossAsk> = parts
@@ -174,6 +177,7 @@ impl Session<'_> {
         let prepared = self.ask_parts(carrier, parts, user, &prepares);
         let mut refused = None;
         for ((answer, participant), part) in prepared
+            .await
             .into_iter()
             .zip(&mut record.participants)
             .zip(parts)
@@ -201,14 +205,18 @@ impl Session<'_> {
             refused.get_or_insert(refusal);
         }
         if merged {
-            return self.finish_parallel(store, carrying, parts, (id, record, refused), user, span);
+            return self
+                .finish_parallel(store, carrying, parts, (id, record, refused), user, span)
+                .await;
         }
         record.decision = if refused.is_some() {
             Decision::Aborted
         } else {
             Decision::Committed
         };
-        let decided = deciding(self, &record);
+        let decided = self
+            .ask_one(carrier, coordinator_leader, user, &deciding(&record))
+            .await;
         let committed = record.decision == Decision::Committed && decided.is_ok();
         // A committed resolution's versions carry where every prepare landed
         // (D6a); an aborted one writes no versions and needs none.
@@ -232,11 +240,11 @@ impl Session<'_> {
             // decided is the outcome even when no majority confirmed it yet.
             // The intents can go.
             (_, Some(refusal)) => {
-                self.resolve_parts(carrying, parts, user, resolves);
+                self.resolve_parts(carrying, parts, user, resolves).await;
                 Err(Error::AcrossAborted { refusal, span })
             }
             (Ok(_), None) => {
-                self.resolve_parts(carrying, parts, user, resolves);
+                self.resolve_parts(carrying, parts, user, resolves).await;
                 Ok(())
             }
             // The record had already been decided — a lapse aborted it while
@@ -255,10 +263,10 @@ impl Session<'_> {
 
     /// Whether every peer that may collect the log is known to read a begun
     /// and a concluded record — heard greeting at [`MERGED_FROM`] or later.
-    fn merges_records(&self, store: &Store) -> Result<bool> {
-        let me = store.node_identity()?.id;
-        let mut reading = store.begin()?;
-        let rows = Catalog::new(&mut reading).replicas()?;
+    async fn merges_records(&self, store: &Store) -> Result<bool> {
+        let me = store.node_identity().await?.id;
+        let mut reading = store.begin().await?;
+        let rows = Catalog::new(&mut reading).replicas().await?;
         reading.rollback();
         Ok(every_peer_reads_merged(&rows, me, |endpoint| {
             self.elsewhere
@@ -268,7 +276,7 @@ impl Session<'_> {
     }
 
     /// Ask the leader of one part — this node itself when it leads it.
-    fn ask_one(
+    async fn ask_one(
         &mut self,
         carrier: &dyn Participants,
         leader: Option<[u8; NODE_ID_LEN]>,
@@ -278,58 +286,62 @@ impl Session<'_> {
         match leader {
             None => self
                 .answer_across(asked)
+                .await
                 .map_err(|refused| AcrossRefusal::Here(Box::new(refused))),
-            Some(node) => carrier.ask(node, user, asked).map_err(AcrossRefusal::There),
+            Some(node) => carrier
+                .ask(node, user, asked)
+                .await
+                .map_err(AcrossRefusal::There),
         }
     }
 
     /// Ask every part's leader, remote ones at once, answers in part order.
-    fn ask_parts(
+    async fn ask_parts(
         &mut self,
         carrier: &dyn Participants,
         parts: &[AcrossPart],
         user: Option<&tessari_storage::UserDefinition>,
         asks: &[AcrossAsk],
     ) -> Vec<Answered> {
-        let mut answers: Vec<Option<Answered>> = parts.iter().map(|_| None).collect();
-        std::thread::scope(|scope| {
-            let remote: Vec<_> = parts
-                .iter()
-                .zip(asks)
-                .enumerate()
-                .filter_map(|(at, (part, asked))| {
-                    part.leader.map(|node| {
-                        (
-                            at,
-                            scope.spawn(move || {
-                                let began = std::time::Instant::now();
-                                let answered =
-                                    carrier.ask(node, user, asked).map_err(AcrossRefusal::There);
-                                answered_after(part, false, began);
-                                answered
-                            }),
-                        )
-                    })
+        // Every remote ask is a future, polled beside this node's own parts in
+        // this one task: the parts' leaders answer at once and nothing waits on
+        // a thread.
+        let remote = futures_util::future::join_all(parts.iter().zip(asks).enumerate().filter_map(
+            |(at, (part, asked))| {
+                part.leader.map(|node| async move {
+                    let began = std::time::Instant::now();
+                    let answered = carrier
+                        .ask(node, user, asked)
+                        .await
+                        .map_err(AcrossRefusal::There);
+                    answered_after(part, false, began);
+                    (at, answered)
                 })
-                .collect();
+            },
+        ));
+        let local = async {
+            let mut answered = Vec::new();
             for (at, (part, asked)) in parts.iter().zip(asks).enumerate() {
                 if part.leader.is_none() {
                     let began = std::time::Instant::now();
-                    answers[at] = Some(
+                    answered.push((
+                        at,
                         self.answer_across(asked)
+                            .await
                             .map_err(|refused| AcrossRefusal::Here(Box::new(refused))),
-                    );
+                    ));
                     answered_after(part, true, began);
                 }
             }
-            for (at, waiting) in remote {
-                answers[at] = Some(waiting.join().unwrap_or_else(|_| {
-                    Err(AcrossRefusal::There(PartRefused::retriable(
-                        "the ask's thread panicked",
-                    )))
-                }));
+            answered
+        };
+        let (local, remote) = futures_util::future::join(local, remote).await;
+        let mut answers: Vec<Option<Answered>> = parts.iter().map(|_| None).collect();
+        for (at, answered) in local.into_iter().chain(remote) {
+            if let Some(slot) = answers.get_mut(at) {
+                *slot = Some(answered);
             }
-        });
+        }
         answers
             .into_iter()
             .map(|answer| {
@@ -347,10 +359,10 @@ impl Session<'_> {
     /// changes nothing the caller is told.
     ///
     /// This node's own parts are resolved before the caller is answered — a
-    /// local write, no majority wait. The other leaders' are asked on a thread
+    /// local write, no majority wait. The other leaders' are asked in a task
     /// of their own and not waited for (D13c): their readers ask the record's
     /// leader until the resolution lands (D13d).
-    fn resolve_parts(
+    async fn resolve_parts(
         &mut self,
         carrying: std::sync::Arc<dyn Participants>,
         parts: &[AcrossPart],
@@ -361,7 +373,7 @@ impl Session<'_> {
         for (part, asked) in parts.iter().zip(resolves) {
             match part.leader {
                 None => {
-                    if let Err(why) = self.answer_across(&asked) {
+                    if let Err(why) = self.answer_across(&asked).await {
                         tracing::warn!(
                             range = ?part.home,
                             error = %why,
@@ -375,31 +387,24 @@ impl Session<'_> {
         if remote.is_empty() {
             return;
         }
-        let carrier = carrying;
         let user = user.cloned();
-        let behind = std::thread::Builder::new()
-            .name("across-resolve".to_owned())
-            .spawn(move || {
-                std::thread::scope(|scope| {
-                    for (node, home, asked) in &remote {
-                        let (carrier, user) = (&carrier, user.as_ref());
-                        scope.spawn(move || {
-                            if let Err(why) = carrier.ask(*node, user, asked) {
-                                tracing::warn!(
-                                    range = ?home,
-                                    error = %why.reason,
-                                    "a cross-leader resolution did not land and is left to its record"
-                                );
-                            }
-                        });
+        // Not joined: a resolution that does not land is the record's to
+        // finish, which the housekeeping of every participant does (D7).
+        drop(tokio::spawn(async move {
+            let asks = remote.iter().map(|(node, home, asked)| {
+                let (carrier, user) = (&carrying, user.as_ref());
+                async move {
+                    if let Err(why) = carrier.ask(*node, user, asked).await {
+                        tracing::warn!(
+                            range = ?home,
+                            error = %why.reason,
+                            "a cross-leader resolution did not land and is left to its record"
+                        );
                     }
-                });
+                }
             });
-        // No thread to be had: the resolutions are the record's to finish,
-        // which the housekeeping of every participant does (D7).
-        if let Err(why) = behind {
-            tracing::warn!(error = %why, "cross-leader resolutions left to their records");
-        }
+            futures_util::future::join_all(asks).await;
+        }));
     }
 }
 
@@ -454,10 +459,11 @@ fn records_of(part: &AcrossPart) -> Vec<RecordAddress> {
 /// # Errors
 ///
 /// Whatever the store returns reading the failover policy.
-pub fn across_lapse_millis(store: &Store) -> Result<u64> {
-    let mut reading = store.begin()?;
+pub async fn across_lapse_millis(store: &Store) -> Result<u64> {
+    let mut reading = store.begin().await?;
     let round = Catalog::new(&mut reading)
-        .failover()?
+        .failover()
+        .await?
         .map_or(Failover::DEFAULT, |definition| definition.policy)
         .round();
     reading.rollback();

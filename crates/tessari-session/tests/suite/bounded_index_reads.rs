@@ -54,10 +54,12 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tessari_session::Now;
+use tessari_session::RunNow;
 
+use tessari_kv::KvFuture;
 use tessari_kv::{
-    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
-    WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value as KvValue, WriteBatch,
 };
 use tessari_session::{AccessPath, Outcome, Session};
 use tessari_storage::Store;
@@ -106,33 +108,39 @@ impl KvBackend for Counting {
         "counting"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<KvValue>> {
-        let found = self.inner.get(keyspace, key)?;
-        if found.is_some() {
-            self.entries.fetch_add(1, Ordering::Relaxed);
-        }
-        Ok(found)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<KvValue>> {
+        Box::pin(async move {
+            let found = self.inner.get(keyspace, key).await?;
+            if found.is_some() {
+                self.entries.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(found)
+        })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, KvValue)>> {
-        let found = self.inner.scan(request)?;
-        self.entries.fetch_add(found.len(), Ordering::Relaxed);
-        Ok(found)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, KvValue)>> {
+        Box::pin(async move {
+            let found = self.inner.scan(request).await?;
+            self.entries.fetch_add(found.len(), Ordering::Relaxed);
+            Ok(found)
+        })
     }
 
-    fn first_of_each(
-        &self,
+    fn first_of_each<'a>(
+        &'a self,
         keyspace: Keyspace,
-        ranges: &[KeyRange],
-    ) -> Result<Vec<Option<(Key, KvValue)>>> {
-        let found = self.inner.first_of_each(keyspace, ranges)?;
-        self.entries
-            .fetch_add(found.iter().flatten().count(), Ordering::Relaxed);
-        Ok(found)
+        ranges: &'a [KeyRange],
+    ) -> KvFuture<'a, Vec<Option<(Key, KvValue)>>> {
+        Box::pin(async move {
+            let found = self.inner.first_of_each(keyspace, ranges).await?;
+            self.entries
+                .fetch_add(found.iter().flatten().count(), Ordering::Relaxed);
+            Ok(found)
+        })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.inner.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move { self.inner.apply(batch).await })
     }
 }
 
@@ -140,7 +148,9 @@ impl KvBackend for Counting {
 fn counted() -> (Store, Arc<Counting>) {
     let inner = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let counting = Arc::new(Counting::new(inner));
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     (store, counting)
 }
 
@@ -158,7 +168,7 @@ fn counted() -> (Store, Arc<Counting>) {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION spans;\n\
@@ -174,10 +184,10 @@ fn ready(store: &Store) -> Session<'_> {
             n % 4
         );
         session
-            .run(&format!("CREATE spans:{n} = {record};"))
+            .run_now(&format!("CREATE spans:{n} = {record};"))
             .unwrap();
         session
-            .run(&format!("CREATE mirror:{n} = {record};"))
+            .run_now(&format!("CREATE mirror:{n} = {record};"))
             .unwrap();
     }
     session
@@ -186,7 +196,7 @@ fn ready(store: &Store) -> Session<'_> {
 /// How the planner reached the records, so a test cannot pass by quietly taking
 /// the scan it was written to compare against.
 fn path(session: &mut Session<'_>, read: &str) -> AccessPath {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -197,7 +207,7 @@ fn path(session: &mut Session<'_>, read: &str) -> AccessPath {
 /// identity.
 fn answer(session: &mut Session<'_>, read: &str) -> Vec<(RecordId, Value)> {
     session
-        .run(read)
+        .run_now(read)
         .unwrap()
         .last()
         .unwrap()

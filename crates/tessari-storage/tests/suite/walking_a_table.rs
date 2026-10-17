@@ -17,13 +17,13 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
-use std::ops::ControlFlow;
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::encode_payload;
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_storage::{Error, RecordAddress, Store, Transaction, Window};
+use tessari_storage::{RecordAddress, Store, Transaction, Window};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
 
 const NAMESPACE: NamespaceId = NamespaceId::new(1);
@@ -31,7 +31,9 @@ const DATABASE: DatabaseId = DatabaseId::new(1);
 const TABLE: TableId = TableId::new(1);
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn at(id: &str) -> RecordAddress {
@@ -46,18 +48,22 @@ fn payload(mark: &str) -> Vec<u8> {
 /// What the walk hands over, in the order it hands it over.
 fn walked(transaction: &mut Transaction<'_>) -> Vec<(RecordId, Vec<u8>)> {
     let mut found = Vec::new();
-    transaction
-        .walk_table(NAMESPACE, DATABASE, TABLE, |_, id, record| {
-            found.push((id, record));
-            Ok::<_, Error>(ControlFlow::Continue(()))
-        })
+    let mut walk = transaction
+        .walk_table(NAMESPACE, DATABASE, TABLE)
+        .now()
         .unwrap();
+    while let Some(round) = walk.next_round(transaction).now().unwrap() {
+        found.extend(round);
+    }
     found
 }
 
 /// What reading the whole table hands back.
 fn scanned(transaction: &Transaction<'_>) -> Vec<(RecordId, Vec<u8>)> {
-    transaction.scan_table(NAMESPACE, DATABASE, TABLE).unwrap()
+    transaction
+        .scan_table(NAMESPACE, DATABASE, TABLE)
+        .now()
+        .unwrap()
 }
 
 /// Enough records to need three batches, so a boundary is crossed twice.
@@ -67,13 +73,13 @@ const RECORDS: usize = RANGE_SCAN_BATCH_ENTRIES * 2 + 500;
 /// deleted — so the walk meets old versions and tombstones, not only rows.
 fn populated() -> Store {
     let store = store();
-    let mut writing = store.begin().unwrap();
+    let mut writing = store.begin().now().unwrap();
     for n in 0..RECORDS {
         writing.put(at(&format!("r{n:06}")), payload("first"));
     }
-    writing.commit().unwrap();
+    writing.commit().now().unwrap();
 
-    let mut rewriting = store.begin().unwrap();
+    let mut rewriting = store.begin().now().unwrap();
     // One on each side of a batch boundary and one far from any, because a
     // record's versions straddling a boundary is the case `resolved` carries
     // across batches for.
@@ -88,14 +94,14 @@ fn populated() -> Store {
     }
     rewriting.delete(at(&format!("r{:06}", RANGE_SCAN_BATCH_ENTRIES * 2)));
     rewriting.delete(at("r000007"));
-    rewriting.commit().unwrap();
+    rewriting.commit().now().unwrap();
     store
 }
 
 #[test]
 fn the_walk_answers_exactly_what_the_scan_answers() {
     let store = populated();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let whole = scanned(&transaction);
     assert_eq!(whole.len(), RECORDS - 2, "two records were deleted");
     assert_eq!(walked(&mut transaction), whole);
@@ -104,7 +110,7 @@ fn the_walk_answers_exactly_what_the_scan_answers() {
 #[test]
 fn a_record_rewritten_across_a_batch_boundary_is_read_once_at_its_newest_version() {
     let store = populated();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let found = walked(&mut transaction);
 
     for n in [RANGE_SCAN_BATCH_ENTRIES - 1, RANGE_SCAN_BATCH_ENTRIES] {
@@ -122,20 +128,22 @@ fn a_record_rewritten_across_a_batch_boundary_is_read_once_at_its_newest_version
 #[test]
 fn the_walk_stops_where_the_caller_says_stop() {
     let store = populated();
-    let mut transaction = store.begin().unwrap();
+    let transaction = store.begin().now().unwrap();
     let whole = scanned(&transaction);
 
     let mut found = Vec::new();
-    transaction
-        .walk_table(NAMESPACE, DATABASE, TABLE, |_, id, record| {
-            found.push((id, record));
-            Ok::<_, Error>(if found.len() == 3 {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            })
-        })
+    let mut walk = transaction
+        .walk_table(NAMESPACE, DATABASE, TABLE)
+        .now()
         .unwrap();
+    'walk: while let Some(round) = walk.next_round(&transaction).now().unwrap() {
+        for record in round {
+            found.push(record);
+            if found.len() == 3 {
+                break 'walk;
+            }
+        }
+    }
 
     // Three, and the same three the whole read would have started with: a walk
     // that stopped early in the wrong place would also hand over three.
@@ -145,7 +153,7 @@ fn the_walk_stops_where_the_caller_says_stop() {
 #[test]
 fn a_record_written_in_this_transaction_arrives_in_key_order() {
     let store = populated();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     // An identity that sorts into the middle of the committed records rather
     // than after all of them, which is the only arrangement that can tell a
     // merge from an append.
@@ -166,7 +174,7 @@ fn a_record_written_in_this_transaction_arrives_in_key_order() {
 #[test]
 fn a_record_deleted_in_this_transaction_is_not_handed_over() {
     let store = populated();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let before = walked(&mut transaction).len();
 
     let removed = RecordId::from("r000100");
@@ -181,7 +189,7 @@ fn a_record_deleted_in_this_transaction_is_not_handed_over() {
 #[test]
 fn a_record_rewritten_in_this_transaction_is_handed_over_at_its_new_value() {
     let store = populated();
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.put(at("r000100"), payload("pending"));
 
     let found = walked(&mut transaction);
@@ -213,6 +221,7 @@ fn paged(
                 after.as_ref(),
                 page,
             )
+            .now()
             .unwrap();
         assert!(next.len() <= page, "a page of {page} held {}", next.len());
         let short = next.len() < page;
@@ -229,7 +238,7 @@ fn paged(
 #[test]
 fn a_window_read_in_pages_is_the_scan_narrowed_to_the_window() {
     let store = populated();
-    let transaction = store.begin().unwrap();
+    let transaction = store.begin().now().unwrap();
     let everything = scanned(&transaction);
     let low = RecordId::from("r000700");
     let high = RecordId::from("r001900");

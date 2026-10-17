@@ -16,6 +16,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_encoding::LogId;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -49,14 +51,14 @@ const INTERROGATION: &[&str] = &[
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     (backend, store)
 }
 
 fn session(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
     session
 }
@@ -66,10 +68,10 @@ fn leader() -> (Store, Vec<u8>) {
     let (_, store) = store();
     {
         let mut opening = Session::new(&store);
-        opening.run(LEADER).unwrap();
+        opening.run_now(LEADER).unwrap();
     }
     let mut prefix = Vec::new();
-    let written = tessari_backup::write(&store, &mut prefix).unwrap();
+    let written = tessari_backup::write(&store, &mut prefix).now().unwrap();
     assert!(written.records > 0);
     (store, prefix)
 }
@@ -90,7 +92,7 @@ fn interrogate(store: &Store) -> Vec<String> {
     let mut session = session(store);
     INTERROGATION
         .iter()
-        .map(|script| format!("{:?}", session.run(script).unwrap()))
+        .map(|script| format!("{:?}", session.run_now(script).unwrap()))
         .collect()
 }
 
@@ -102,7 +104,9 @@ fn an_empty_node_ends_up_holding_what_the_leader_holds() {
     let (held, prefix) = leader();
     let (_, follower) = store();
 
-    let brought_up = tessari_backup::bootstrap(&follower, &mut prefix.as_slice()).unwrap();
+    let brought_up = tessari_backup::bootstrap(&follower, &mut prefix.as_slice())
+        .now()
+        .unwrap();
     assert!(!brought_up.truncated);
     assert!(brought_up.records > 0, "a bootstrap that applied nothing");
 
@@ -118,7 +122,9 @@ fn an_empty_node_ends_up_holding_what_the_leader_holds() {
 fn a_bootstrapped_node_follows_from_where_it_stopped_and_neither_replays_nor_skips() {
     let (held, prefix) = leader();
     let (_, follower) = store();
-    let _brought_up = tessari_backup::bootstrap(&follower, &mut prefix.as_slice()).unwrap();
+    let _brought_up = tessari_backup::bootstrap(&follower, &mut prefix.as_slice())
+        .now()
+        .unwrap();
 
     // The leader moves on, in both of the ways it can: a schema change and a
     // record change. Both must arrive, and the schema one is the half a change
@@ -126,10 +132,10 @@ fn a_bootstrapped_node_follows_from_where_it_stopped_and_neither_replays_nor_ski
     {
         let mut moving = session(&held);
         moving
-            .run("DEFINE FIELD city ON people TYPE string;")
+            .run_now("DEFINE FIELD city ON people TYPE string;")
             .unwrap();
         moving
-            .run("CREATE people:4 = { name: 'katherine', email: 'd@x', city: 'hampton' };")
+            .run_now("CREATE people:4 = { name: 'katherine', email: 'd@x', city: 'hampton' };")
             .unwrap();
     }
 
@@ -140,8 +146,12 @@ fn a_bootstrapped_node_follows_from_where_it_stopped_and_neither_replays_nor_ski
     let mut sent_in_all = 0_u64;
     for (home, from) in following(&follower) {
         let mut next = Vec::new();
-        let sent = tessari_backup::write_from(&held, &mut next, home, from).unwrap();
-        let caught_up = tessari_backup::bootstrap(&follower, &mut next.as_slice()).unwrap();
+        let sent = tessari_backup::write_from(&held, &mut next, home, from)
+            .now()
+            .unwrap();
+        let caught_up = tessari_backup::bootstrap(&follower, &mut next.as_slice())
+            .now()
+            .unwrap();
         // Nothing replayed: the records applied on the way up are exactly the
         // ones written after the bootstrap, not those plus the history again.
         assert_eq!(caught_up.records, sent.records);
@@ -169,12 +179,14 @@ fn the_change_feed_is_not_the_replication_channel() {
     // call apart at the call site, and the wrong one type-checks.
     let (held, prefix) = leader();
     let (_, follower) = store();
-    let brought_up = tessari_backup::bootstrap(&follower, &mut prefix.as_slice()).unwrap();
+    let brought_up = tessari_backup::bootstrap(&follower, &mut prefix.as_slice())
+        .now()
+        .unwrap();
 
     {
         let mut moving = session(&held);
         moving
-            .run("DEFINE FIELD city ON people TYPE string;")
+            .run_now("DEFINE FIELD city ON people TYPE string;")
             .unwrap();
     }
 
@@ -186,7 +198,7 @@ fn the_change_feed_is_not_the_replication_channel() {
         .iter()
         .max_by_key(|(_, at)| at.get())
         .unwrap();
-    let seen = held.changes_since(home, from, 100).unwrap().changes;
+    let seen = held.changes_since(home, from, 100).now().unwrap().changes;
     assert!(
         seen.is_empty(),
         "the feed carried a catalog change, so this boundary has moved and the \
@@ -194,7 +206,7 @@ fn the_change_feed_is_not_the_replication_channel() {
     );
     // The log did carry it, which is what makes the omission a property of the
     // feed rather than of the commit.
-    assert_eq!(held.log_records(home, from, 100).unwrap().len(), 1);
+    assert_eq!(held.log_records(home, from, 100).now().unwrap().len(), 1);
 }
 
 #[test]
@@ -216,7 +228,9 @@ fn a_prefix_cut_in_transit_leaves_the_node_where_it_actually_reached() {
     const HEADER_LEN: usize = 10 + 1 + 1 + (4 + 4 + 4) + 4;
     for cut in (HEADER_LEN..prefix.len()).step_by(7) {
         let (_, follower) = store();
-        let brought_up = tessari_backup::bootstrap(&follower, &mut &prefix[..cut]).unwrap();
+        let brought_up = tessari_backup::bootstrap(&follower, &mut &prefix[..cut])
+            .now()
+            .unwrap();
         assert!(brought_up.truncated, "a cut at {cut} went unnoticed");
         assert_eq!(
             brought_up.follow_from,
@@ -252,11 +266,13 @@ fn a_node_that_already_holds_something_is_refused_rather_than_merged() {
     {
         let mut its_own = Session::new(&occupied);
         its_own
-            .run("DEFINE NAMESPACE mine; USE NAMESPACE mine; DEFINE DATABASE theirs;")
+            .run_now("DEFINE NAMESPACE mine; USE NAMESPACE mine; DEFINE DATABASE theirs;")
             .unwrap();
     }
 
-    let refused = tessari_backup::bootstrap(&occupied, &mut prefix.as_slice()).unwrap_err();
+    let refused = tessari_backup::bootstrap(&occupied, &mut prefix.as_slice())
+        .now()
+        .unwrap_err();
     assert!(
         matches!(refused, tessari_backup::Error::WrongBase { .. }),
         "refused for the wrong reason: {refused}"

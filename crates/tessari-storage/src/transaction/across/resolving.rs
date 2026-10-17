@@ -17,7 +17,7 @@ impl Transaction<'_> {
     ///
     /// Whatever a commit returns, and [`Error::AcrossMalformed`] for a
     /// committed resolution missing a participant's prepare position.
-    pub fn resolve_across(
+    pub async fn resolve_across(
         mut self,
         transaction: TransactionId,
         committed: bool,
@@ -36,7 +36,10 @@ impl Transaction<'_> {
             });
         }
         self.writes.clear();
-        let Some(coordinator) = self.buffer_resolutions(transaction, committed, records)? else {
+        let Some(coordinator) = self
+            .buffer_resolutions(transaction, committed, records)
+            .await?
+        else {
             return Ok(None);
         };
         self.across = Some(Work {
@@ -52,13 +55,13 @@ impl Transaction<'_> {
                 Vec::new()
             },
         });
-        self.commit_placed().map(Some)
+        self.commit_placed().await.map(Some)
     }
 
     /// Buffer the resolution of `transaction`'s intents on `records` — every
     /// intent of it this node holds when none is named — and answer the
     /// coordinator's range the intents name, or `None` when none is left.
-    pub(super) fn buffer_resolutions(
+    pub(super) async fn buffer_resolutions(
         &mut self,
         transaction: TransactionId,
         committed: bool,
@@ -73,7 +76,7 @@ impl Transaction<'_> {
         let every_held = records.is_empty();
         let held;
         let records = if every_held {
-            held = self.store.intents_of(transaction)?;
+            held = self.store.intents_of(transaction).await?;
             held.as_slice()
         } else {
             records
@@ -82,7 +85,7 @@ impl Transaction<'_> {
         // every prepare stamped with it: a resolution cannot name another.
         let mut coordinator = None;
         for address in records {
-            let Some((intent, named)) = self.intent_of(address, transaction)? else {
+            let Some((intent, named)) = self.intent_of(address, transaction).await? else {
                 continue;
             };
             coordinator.get_or_insert(named);
@@ -96,7 +99,7 @@ impl Transaction<'_> {
         }
         if every_held && !self.writes.is_empty() {
             // Buffered first, so the placement knows every table they fall in.
-            let placement = self.placement()?;
+            let placement = self.placement().await?;
             let mut elsewhere = Vec::new();
             for address in self.writes.keys() {
                 let home =
@@ -108,7 +111,7 @@ impl Transaction<'_> {
                         shard: placement.shard_of(address),
                         value: tessari_encoding::StampedValue::new(RecordValue::Tombstone),
                     }]))?;
-                if !self.store.leads(home)? {
+                if !self.store.leads(home).await? {
                     elsewhere.push(address.clone());
                 }
             }
@@ -124,12 +127,12 @@ impl Transaction<'_> {
 
     /// The value `transaction` holds as an intent on `address`, and the
     /// coordinator's range the intent names, if it holds one.
-    fn intent_of(
+    async fn intent_of(
         &self,
         address: &RecordAddress,
         transaction: TransactionId,
     ) -> Result<Option<(RecordValue, Reach)>> {
-        let Some((_, provenance, value)) = self.newest_stored_value(address)? else {
+        let Some((_, provenance, value)) = self.newest_stored_value(address).await? else {
             return Ok(None);
         };
         Ok(provenance
@@ -146,21 +149,22 @@ impl Transaction<'_> {
     ///
     /// [`Error::AcrossNotHeldHere`] for a home this node holds no copy of, a
     /// conflict on this copy, and the substrate's failures.
-    pub fn across_plan(&self) -> Result<Vec<AcrossPart>> {
-        let me = self.store.node_identity()?.id;
-        let placement = self.placement()?;
-        let record = self.log_record(me, &placement)?;
+    pub async fn across_plan(&self) -> Result<Vec<AcrossPart>> {
+        let me = self.store.node_identity().await?.id;
+        let placement = self.placement().await?;
+        let record = self.log_record(me, &placement).await?;
         let mut homes: std::collections::BTreeMap<Reach, Vec<tessari_encoding::Mutation>> =
             std::collections::BTreeMap::new();
         for mutation in record.mutations() {
             let home = crate::catalog::home_of(&LogRecord::new(vec![mutation.clone()]))?;
             homes.entry(home).or_default().push(mutation.clone());
         }
-        let mut reading = self.store.begin()?;
+        let mut reading = self.store.begin().await?;
         let catalog = crate::catalog::Catalog::new(&mut reading);
-        let held = catalog.leaderships()?;
+        let held = catalog.leaderships().await?;
         let placed: std::collections::BTreeSet<Reach> = catalog
-            .replicas()?
+            .replicas()
+            .await?
             .into_iter()
             .filter_map(|peer| peer.leads)
             .collect();
@@ -171,7 +175,7 @@ impl Transaction<'_> {
             if served.is_some_and(|over| !over.contains(home)) {
                 return Err(Error::AcrossNotHeldHere { range: home });
             }
-            let leader = match self.store.led(&held, &placed, home, &me)? {
+            let leader = match self.store.led(&held, &placed, home, &me).await? {
                 crate::store::Led::Elsewhere(leader) => Some(leader.node),
                 crate::store::Led::Here | crate::store::Led::Unled | crate::store::Led::Shared => {
                     None
@@ -184,9 +188,9 @@ impl Transaction<'_> {
             {
                 LogId::line(home)
             } else {
-                self.store.own_log(home)?
+                self.store.own_log(home).await?
             };
-            let seen = self.store.committed_tail(log)?;
+            let seen = self.store.committed_tail(log).await?;
             parts.push(AcrossPart {
                 home,
                 leader,
@@ -197,7 +201,7 @@ impl Transaction<'_> {
         // After every position was read: a commit landing between a read and
         // this check is either below its position — and seen here — or above
         // it, and seen by the participant's walk.
-        self.check_for_conflicts()?;
+        self.check_for_conflicts().await?;
         Ok(parts)
     }
 
@@ -271,11 +275,11 @@ impl Transaction<'_> {
     /// The second half of a prepare's conflict check (ADR-0112 D3a): refuse
     /// if any record of `log` after the position the transaction had seen
     /// writes one of these records.
-    pub(in crate::transaction) fn written_since_seen(&self, log: LogId) -> Result<()> {
+    pub(in crate::transaction) async fn written_since_seen(&self, log: LogId) -> Result<()> {
         let Some(seen) = self.across.as_ref().and_then(|work| work.seen) else {
             return Ok(());
         };
-        let start = self.store.log_start(log)?;
+        let start = self.store.log_start(log).await?;
         let next = Sequence::new(seen.get().saturating_add(1));
         if start > next {
             return Err(Error::AcrossReadTooOld { seen, start });
@@ -285,12 +289,16 @@ impl Transaction<'_> {
             std::ops::Bound::Included(LogKey::new(log, next).encode()),
             KeyRange::prefix(&prefix).end().clone(),
         );
-        let entries = self.store.backend().scan(&ScanRequest {
-            keyspace: LogKey::keyspace(),
-            range,
-            direction: ScanDirection::Forward,
-            limit: None,
-        })?;
+        let entries = self
+            .store
+            .backend()
+            .scan(&ScanRequest {
+                keyspace: LogKey::keyspace(),
+                range,
+                direction: ScanDirection::Forward,
+                limit: None,
+            })
+            .await?;
         for (key, value) in entries {
             let record = LogRecord::decode(value.as_slice())?;
             for mutation in record.mutations() {

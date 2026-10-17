@@ -18,10 +18,12 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use tessari_session::RunNow;
+use tessari_storage::Now;
 
 use tessari_encoding::LogId;
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_lsm::{Durability, LsmBackend, StoreConfig};
+use tessari_lsm::{Durability, StoreConfig, TessariKvBackend};
 use tessari_session::Session;
 use tessari_storage::Store;
 use tessari_types::Sequence;
@@ -59,19 +61,23 @@ const INTERROGATION: &[&str] = &[
 /// point of the helper, and holding a spare handle here would quietly turn every
 /// test in this file back into `bootstrap.rs`.
 fn durable(path: &Path) -> Store {
-    let backend = LsmBackend::open(path, StoreConfig::new(Durability::ProcessCrashSafe)).unwrap();
-    Store::open(Arc::new(backend) as Arc<dyn KvBackend>).unwrap()
+    let backend = TessariKvBackend::open(path, StoreConfig::new(Durability::ProcessCrashSafe))
+        .now()
+        .unwrap();
+    Store::open(Arc::new(backend)).now().unwrap()
 }
 
 /// The leader is not the subject here, so it stays in memory.
 fn in_memory() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 fn session(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run("USE NAMESPACE prod; USE DATABASE orders;")
+        .run_now("USE NAMESPACE prod; USE DATABASE orders;")
         .unwrap();
     session
 }
@@ -81,10 +87,10 @@ fn leader() -> (Store, Vec<u8>) {
     let store = in_memory();
     {
         let mut opening = Session::new(&store);
-        opening.run(LEADER).unwrap();
+        opening.run_now(LEADER).unwrap();
     }
     let mut prefix = Vec::new();
-    let written = tessari_backup::write(&store, &mut prefix).unwrap();
+    let written = tessari_backup::write(&store, &mut prefix).now().unwrap();
     assert!(written.records > 0);
     (store, prefix)
 }
@@ -94,7 +100,7 @@ fn interrogate(store: &Store) -> Vec<String> {
     let mut session = session(store);
     INTERROGATION
         .iter()
-        .map(|script| format!("{:?}", session.run(script).unwrap()))
+        .map(|script| format!("{:?}", session.run_now(script).unwrap()))
         .collect()
 }
 
@@ -118,7 +124,9 @@ fn a_follower_that_was_stopped_recovers_its_position_from_its_own_store() {
 
     let reported = {
         let follower = durable(&path);
-        let brought_up = tessari_backup::bootstrap(&follower, &mut prefix.as_slice()).unwrap();
+        let brought_up = tessari_backup::bootstrap(&follower, &mut prefix.as_slice())
+            .now()
+            .unwrap();
         assert!(brought_up.records > 0, "a bootstrap that applied nothing");
         brought_up.follow_from
         // `follower` drops here: last `Arc` gone, backend closed, directory
@@ -143,7 +151,9 @@ fn a_follower_that_was_down_catches_up_on_what_it_missed_without_replaying() {
 
     {
         let follower = durable(&path);
-        tessari_backup::bootstrap(&follower, &mut prefix.as_slice()).unwrap();
+        tessari_backup::bootstrap(&follower, &mut prefix.as_slice())
+            .now()
+            .unwrap();
     }
     // The follower is down from here. Note that no position was carried out of
     // that block — deliberately, because carrying one is what would make this
@@ -155,10 +165,10 @@ fn a_follower_that_was_down_catches_up_on_what_it_missed_without_replaying() {
     {
         let mut moving = session(&held);
         moving
-            .run("DEFINE FIELD city ON people TYPE string;")
+            .run_now("DEFINE FIELD city ON people TYPE string;")
             .unwrap();
         moving
-            .run("CREATE people:4 = { name: 'katherine', email: 'd@x', city: 'hampton' };")
+            .run_now("CREATE people:4 = { name: 'katherine', email: 'd@x', city: 'hampton' };")
             .unwrap();
     }
 
@@ -169,8 +179,12 @@ fn a_follower_that_was_down_catches_up_on_what_it_missed_without_replaying() {
     let mut sent_in_all = 0_u64;
     for (home, from) in resume_from(&reopened) {
         let mut missed = Vec::new();
-        let sent = tessari_backup::write_from(&held, &mut missed, home, from).unwrap();
-        let caught = tessari_backup::bootstrap(&reopened, &mut missed.as_slice()).unwrap();
+        let sent = tessari_backup::write_from(&held, &mut missed, home, from)
+            .now()
+            .unwrap();
+        let caught = tessari_backup::bootstrap(&reopened, &mut missed.as_slice())
+            .now()
+            .unwrap();
         // Nothing replayed: what arrived is exactly what was written during the
         // outage, not that plus the history again.
         assert_eq!(caught.records, sent.records);

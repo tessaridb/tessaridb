@@ -3,6 +3,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_encoding::encode_payload;
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -11,20 +12,24 @@ use tessari_types::{RecordId, Sequence, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// A namespace, database and table, committed.
 fn tree(store: &Store) -> (u32, u32, u32) {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("prod").unwrap();
-    let database = catalog.create_database(namespace.id, "orders").unwrap();
+    let namespace = catalog.create_namespace("prod").now().unwrap();
+    let database = catalog
+        .create_database(namespace.id, "orders")
+        .now()
+        .unwrap();
     let table = catalog
         .create_table(namespace.id, database.id, "users", TableShape::default())
+        .now()
         .unwrap();
     let ids = (namespace.id.get(), database.id.get(), table.id.get());
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     ids
 }
 
@@ -37,15 +42,15 @@ fn tree(store: &Store) -> (u32, u32, u32) {
 /// the position would keep passing and would stop meaning what its callers
 /// read it as (Q-614).
 fn write(store: &Store, at: &RecordAddress, name: &str) -> Sequence {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let mut object = std::collections::BTreeMap::new();
     object.insert("name".to_owned(), Value::String(name.to_owned()));
     transaction.put(
         at.clone(),
         encode_payload(&Value::Object(object)).into_bytes(),
     );
-    transaction.commit().unwrap();
-    store.committed_version().unwrap()
+    transaction.commit().now().unwrap();
+    store.committed_version().now().unwrap()
 }
 
 #[test]
@@ -54,8 +59,8 @@ fn the_floor_is_the_committed_version_when_nothing_is_being_read() {
     let _ = tree(&store);
     assert_eq!(store.live_snapshots(), 0);
     assert_eq!(
-        store.retention_floor().unwrap(),
-        store.committed_version().unwrap()
+        store.retention_floor().now().unwrap(),
+        store.committed_version().now().unwrap()
     );
     assert_eq!(store.oldest_snapshot_age(), None);
 }
@@ -72,16 +77,16 @@ fn a_live_reader_holds_the_floor_where_it_began() {
     );
 
     write(&store, &at, "ada");
-    let reader = store.begin().unwrap();
+    let reader = store.begin().now().unwrap();
     let held = reader.snapshot();
 
     // The store moves on while the reader is still working.
     write(&store, &at, "grace");
     write(&store, &at, "hopper");
 
-    assert!(store.committed_version().unwrap() > held);
+    assert!(store.committed_version().now().unwrap() > held);
     assert_eq!(
-        store.retention_floor().unwrap(),
+        store.retention_floor().now().unwrap(),
         held,
         "the floor may not pass a reader that is still reading"
     );
@@ -90,8 +95,8 @@ fn a_live_reader_holds_the_floor_where_it_began() {
 
     drop(reader);
     assert_eq!(
-        store.retention_floor().unwrap(),
-        store.committed_version().unwrap()
+        store.retention_floor().now().unwrap(),
+        store.committed_version().now().unwrap()
     );
 }
 
@@ -102,10 +107,10 @@ fn a_transaction_dropped_without_commit_or_rollback_releases_its_snapshot() {
     // with an error, but as space that never comes back.
     let store = store();
     let _ = tree(&store);
-    let version = store.committed_version().unwrap();
+    let version = store.committed_version().now().unwrap();
 
     {
-        let transaction = store.begin().unwrap();
+        let transaction = store.begin().now().unwrap();
         assert_eq!(store.live_snapshots(), 1);
         // No commit. No rollback. Just let go.
         let _ = transaction.snapshot();
@@ -116,7 +121,7 @@ fn a_transaction_dropped_without_commit_or_rollback_releases_its_snapshot() {
         0,
         "the snapshot outlived its reader"
     );
-    assert_eq!(store.retention_floor().unwrap(), version);
+    assert_eq!(store.retention_floor().now().unwrap(), version);
 }
 
 #[test]
@@ -133,7 +138,7 @@ fn a_committed_transaction_releases_its_snapshot_too() {
     write(&store, &at, "ada");
     assert_eq!(store.live_snapshots(), 0);
 
-    let transaction = store.begin().unwrap();
+    let transaction = store.begin().now().unwrap();
     transaction.rollback();
     assert_eq!(store.live_snapshots(), 0);
 }
@@ -142,15 +147,15 @@ fn a_committed_transaction_releases_its_snapshot_too() {
 fn two_readers_at_one_sequence_both_have_to_finish_before_the_floor_moves() {
     let store = store();
     let _ = tree(&store);
-    let first = store.begin().unwrap();
-    let second = store.begin().unwrap();
+    let first = store.begin().now().unwrap();
+    let second = store.begin().now().unwrap();
     let held = first.snapshot();
     assert_eq!(second.snapshot(), held, "both began at the same tail");
     assert_eq!(store.live_snapshots(), 1, "one sequence, two holders");
 
     drop(first);
     assert_eq!(
-        store.retention_floor().unwrap(),
+        store.retention_floor().now().unwrap(),
         held,
         "one reader is still working at it"
     );
@@ -167,10 +172,10 @@ fn a_cloned_store_shares_one_registry_because_it_is_one_store() {
     let _ = tree(&store);
     let clone = store.clone();
 
-    let reader = clone.begin().unwrap();
+    let reader = clone.begin().now().unwrap();
     let held = reader.snapshot();
     assert_eq!(store.live_snapshots(), 1);
-    assert_eq!(store.retention_floor().unwrap(), held);
+    assert_eq!(store.retention_floor().now().unwrap(), held);
 
     drop(reader);
     assert_eq!(store.live_snapshots(), 0);
@@ -188,7 +193,7 @@ fn record(store: &Store, namespace: u32, database: u32, table: u32, id: i64) -> 
 
 /// The `name` field of the record a reader resolves to.
 fn name_seen_by(reader: &tessari_storage::Transaction<'_>, at: &RecordAddress) -> Option<String> {
-    let payload = reader.get(at).unwrap()?;
+    let payload = reader.get(at).now().unwrap()?;
     let Value::Object(object) = tessari_encoding::decode_payload(&payload).unwrap() else {
         panic!("expected an object");
     };
@@ -210,13 +215,14 @@ fn reclaiming_removes_older_versions_and_keeps_what_a_reader_at_the_floor_sees()
 
     let removed = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert_eq!(removed.versions, 2, "two versions nobody can reach");
     assert_eq!(removed.records, 0);
 
     // Asserted by reading rather than by counting keys, because over-reclaiming
     // does not raise anything — it just answers with an older value.
-    let reader = store.begin().unwrap();
+    let reader = store.begin().now().unwrap();
     assert_eq!(name_seen_by(&reader, &at).as_deref(), Some("hopper"));
 }
 
@@ -229,12 +235,13 @@ fn a_held_snapshot_keeps_every_version_it_can_still_reach() {
     let at = record(&store, ns, db, tb, 1);
 
     write(&store, &at, "ada");
-    let reader = store.begin().unwrap();
+    let reader = store.begin().now().unwrap();
     write(&store, &at, "grace");
     write(&store, &at, "hopper");
 
     let removed = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert_eq!(
         removed.versions, 0,
@@ -246,10 +253,11 @@ fn a_held_snapshot_keeps_every_version_it_can_still_reach() {
     drop(reader);
     let removed = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert_eq!(removed.versions, 2);
 
-    let after = store.begin().unwrap();
+    let after = store.begin().now().unwrap();
     assert_eq!(name_seen_by(&after, &at).as_deref(), Some("hopper"));
 }
 
@@ -261,20 +269,21 @@ fn a_deleted_record_stops_costing_space() {
 
     write(&store, &at, "ada");
     write(&store, &at, "grace");
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     transaction.delete(at.clone());
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let removed = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert_eq!(removed.records, 1, "the tombstone itself went too");
     assert_eq!(removed.versions, 3, "two writes and the tombstone");
 
     // A reader that finds a tombstone and one that finds nothing reach the same
     // conclusion, which is what makes removing it safe.
-    let reader = store.begin().unwrap();
-    assert!(reader.get(&at).unwrap().is_none());
+    let reader = store.begin().now().unwrap();
+    assert!(reader.get(&at).now().unwrap().is_none());
 }
 
 #[test]
@@ -287,10 +296,12 @@ fn reclaiming_twice_removes_nothing_the_second_time() {
 
     let first = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert!(first.versions > 0);
     let second = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert_eq!(second.versions, 0);
 }
@@ -308,10 +319,11 @@ fn reclaiming_does_not_disturb_a_neighbouring_record() {
 
     let removed = store
         .reclaim_table(first.namespace, first.database, first.table)
+        .now()
         .unwrap();
     assert_eq!(removed.versions, 1, "only the superseded one");
 
-    let reader = store.begin().unwrap();
+    let reader = store.begin().now().unwrap();
     assert_eq!(name_seen_by(&reader, &first).as_deref(), Some("grace"));
     assert_eq!(name_seen_by(&reader, &second).as_deref(), Some("hopper"));
 }
@@ -345,13 +357,14 @@ fn a_read_below_the_reclaim_floor_is_refused_rather_than_answered_from_what_surv
 
     let removed = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert_eq!(removed.versions, 2);
 
     // `first` is now unanswerable: the version that would have answered it is
     // gone. The failure this refusal prevents is not an error — it is the read
     // quietly resolving to "hopper" and being believed as the past.
-    match store.begin_at(first) {
+    match store.begin_at(first).now() {
         Err(tessari_storage::Error::VersionReclaimed { asked, floor }) => {
             assert_eq!(asked, first.get());
             assert!(
@@ -374,12 +387,12 @@ fn a_read_above_the_committed_tail_is_refused_rather_than_answered_with_the_pres
     // The VERSION, not a log position: `begin_at` names an MVCC moment, and the
     // two stopped being one number when B1 separated them and one log per range
     // made the difference observable (Q-614, Q-623).
-    let tail = store.committed_version().unwrap();
+    let tail = store.committed_version().now().unwrap();
     let ahead = Sequence::new(tail.get() + 1);
 
     // Answering with the present would make this succeed now and return a
     // different answer the next time it is asked, which is worse than refusing.
-    match store.begin_at(ahead) {
+    match store.begin_at(ahead).now() {
         Err(tessari_storage::Error::VersionInTheFuture {
             asked,
             tail: at_tail,
@@ -403,13 +416,14 @@ fn a_read_at_the_reclaim_floor_itself_is_answerable_and_exact() {
     write(&store, &at, "hopper");
     store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
 
     // The boundary is inclusive, and it has to be: reclamation keeps the newest
     // version at or below the floor, so the floor is exactly the oldest sequence
     // that still resolves to the right value rather than the first that does not.
-    let floor = store.reclaim_floor().unwrap();
-    let reader = store.begin_at(floor).unwrap();
+    let floor = store.reclaim_floor().now().unwrap();
+    let reader = store.begin_at(floor).now().unwrap();
     assert_eq!(name_seen_by(&reader, &at).as_deref(), Some("hopper"));
 }
 
@@ -430,15 +444,16 @@ fn a_store_that_has_never_reclaimed_answers_a_read_at_any_past_sequence() {
     // historical read fails the moment a newer write lands.
     let removed = store
         .reclaim_table(first.namespace, first.database, first.table)
+        .now()
         .unwrap();
     assert_eq!(removed.versions, 0, "one version each, nothing superseded");
-    assert_eq!(store.reclaim_floor().unwrap(), Sequence::ZERO);
+    assert_eq!(store.reclaim_floor().now().unwrap(), Sequence::ZERO);
     assert!(
-        store.retention_floor().unwrap() > earlier,
+        store.retention_floor().now().unwrap() > earlier,
         "the live bound has moved past the sequence being read, which is the point"
     );
 
-    let reader = store.begin_at(earlier).unwrap();
+    let reader = store.begin_at(earlier).now().unwrap();
     assert_eq!(name_seen_by(&reader, &first).as_deref(), Some("ada"));
     assert_eq!(
         name_seen_by(&reader, &second),
@@ -457,11 +472,12 @@ fn a_live_reader_bounds_how_far_the_floor_rises_and_that_bound_outlives_the_read
     let second = write(&store, &at, "grace");
 
     // Held at `second`, so the live bound stops there while the tail runs ahead.
-    let held = store.begin().unwrap();
+    let held = store.begin().now().unwrap();
     write(&store, &at, "hopper");
 
     let removed = store
         .reclaim_table(at.namespace, at.database, at.table)
+        .now()
         .unwrap();
     assert_eq!(
         removed.versions, 1,
@@ -476,13 +492,13 @@ fn a_live_reader_bounds_how_far_the_floor_rises_and_that_bound_outlives_the_read
     // the live bound would start refusing this read the instant the reader
     // finished, having removed nothing in between.
     drop(held);
-    assert!(store.retention_floor().unwrap() > second);
-    assert_eq!(store.reclaim_floor().unwrap(), second);
+    assert!(store.retention_floor().now().unwrap() > second);
+    assert_eq!(store.reclaim_floor().now().unwrap(), second);
 
-    let reader = store.begin_at(second).unwrap();
+    let reader = store.begin_at(second).now().unwrap();
     assert_eq!(name_seen_by(&reader, &at).as_deref(), Some("grace"));
     assert!(matches!(
-        store.begin_at(first),
+        store.begin_at(first).now(),
         Err(tessari_storage::Error::VersionReclaimed { .. })
     ));
 }

@@ -40,7 +40,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when a stored entry cannot be decoded.
-    pub fn neighbours(
+    pub async fn neighbours(
         &self,
         kind: &EdgeKindDefinition,
         node_table: TableId,
@@ -68,7 +68,7 @@ impl Transaction<'_> {
             limit: None,
         };
         let mut found = Vec::new();
-        for (key, value) in self.store.backend().scan(&request)? {
+        for (key, value) in self.store.backend().scan(&request).await? {
             let entry = AdjacencyKey::decode(key.as_slice())?;
             let properties = EdgeProperties::decode(value.as_slice())?;
             found.push(Neighbour {

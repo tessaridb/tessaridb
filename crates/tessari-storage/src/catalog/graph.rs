@@ -83,13 +83,13 @@ impl Catalog<'_, '_> {
     /// Returns [`Error::NoSuchParent`] when the database does not belong to the
     /// namespace, and [`Error::NameTaken`] when the name is already declared in
     /// that database.
-    pub fn create_graph(
+    pub async fn create_graph(
         &mut self,
         namespace: NamespaceId,
         database: DatabaseId,
         name: &str,
     ) -> Result<GraphDefinition> {
-        let parent = self.database(database)?;
+        let parent = self.database(database).await?;
         if parent.is_none_or(|found| found.namespace != namespace) {
             return Err(Error::NoSuchParent {
                 entity: "database",
@@ -97,8 +97,8 @@ impl Catalog<'_, '_> {
             });
         }
         let qualified = qualify(Level::Graph, &[namespace.get(), database.get()], name);
-        self.reserve_name(&qualified)?;
-        let id = GraphId::new(self.allocate(Level::Graph)?);
+        self.reserve_name(&qualified).await?;
+        let id = GraphId::new(self.allocate(Level::Graph).await?);
         let definition = GraphDefinition {
             id,
             namespace,
@@ -115,8 +115,9 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn graph(&self, id: GraphId) -> Result<Option<GraphDefinition>> {
-        self.read(system::GRAPHS, id.get())?
+    pub async fn graph(&self, id: GraphId) -> Result<Option<GraphDefinition>> {
+        self.read(system::GRAPHS, id.get())
+            .await?
             .as_ref()
             .map(GraphDefinition::from_value)
             .transpose()
@@ -127,7 +128,7 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored entry cannot be read.
-    pub fn graph_id(
+    pub async fn graph_id(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -138,7 +139,8 @@ impl Catalog<'_, '_> {
                 Level::Graph,
                 &[namespace.get(), database.get()],
                 name,
-            ))?
+            ))
+            .await?
             .map(GraphId::new))
     }
 
@@ -147,13 +149,14 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn graphs_in(
+    pub async fn graphs_in(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
     ) -> Result<Vec<GraphDefinition>> {
         Ok(self
-            .all(system::GRAPHS, GraphDefinition::from_value)?
+            .all(system::GRAPHS, GraphDefinition::from_value)
+            .await?
             .into_iter()
             .filter(|found| found.namespace == namespace && found.database == database)
             .collect())
@@ -176,8 +179,8 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn drop_graph(&mut self, id: GraphId) -> Result<bool> {
-        let Some(definition) = self.graph(id)? else {
+    pub async fn drop_graph(&mut self, id: GraphId) -> Result<bool> {
+        let Some(definition) = self.graph(id).await? else {
             return Ok(false);
         };
         let qualified = qualify(

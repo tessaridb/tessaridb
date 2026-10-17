@@ -36,3 +36,5 @@ private = { ignore = true }
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# The storage engine, by git tag until it is on crates.io (G077 D6); branch-only.
+allow-git = ["https://github.com/TessariDB/tessarikv"]

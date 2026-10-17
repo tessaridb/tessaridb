@@ -44,17 +44,17 @@ use super::worth::worth_serving;
 /// # Errors
 ///
 /// Returns an error when the catalog, a statistic or an index cannot be read.
-pub(crate) fn serving(
+pub(crate) async fn serving(
     transaction: &mut Transaction<'_>,
     table: TableId,
     offered: Vec<Candidate>,
     lifted: bool,
 ) -> Result<Option<Candidate>> {
-    let offered = estimated(transaction, table, offered)?;
+    let offered = estimated(transaction, table, offered).await?;
     let Some(mut chosen) = choose(offered) else {
         return Ok(None);
     };
-    match worth_serving(transaction, table, &chosen, lifted)? {
+    match worth_serving(transaction, table, &chosen, lifted).await? {
         Some(rows) => {
             chosen.rows = rows;
             Ok(Some(chosen))
@@ -85,7 +85,7 @@ pub(crate) type Ranged<'a> = (
 /// # Errors
 ///
 /// Returns an error when the index cannot be read.
-pub(crate) fn narrows_to(
+pub(crate) async fn narrows_to(
     transaction: &Transaction<'_>,
     plan: &Plan,
     range: Option<Ranged<'_>>,
@@ -97,14 +97,15 @@ pub(crate) fn narrows_to(
     }
     Ok(match range {
         Some((index, fixed, lower, upper)) => transaction
-            .count_in_range(index, fixed, lower, upper, ceiling)?
+            .count_in_range(index, fixed, lower, upper, ceiling)
+            .await?
             .is_some(),
         None => false,
     })
 }
 
 /// Every `Unknown` candidate a fresh statistic can estimate, estimated.
-fn estimated(
+async fn estimated(
     transaction: &mut Transaction<'_>,
     table: TableId,
     mut offered: Vec<Candidate>,
@@ -115,12 +116,12 @@ fn estimated(
     {
         return Ok(offered);
     }
-    let records = Catalog::new(transaction).record_count(table)?;
+    let records = Catalog::new(transaction).record_count(table).await?;
     for candidate in &mut offered {
         if candidate.rows != Rows::Unknown {
             continue;
         }
-        let Some(statistics) = transaction.fresh_statistics(&candidate.index)? else {
+        let Some(statistics) = transaction.fresh_statistics(&candidate.index).await? else {
             continue;
         };
         let counted = match &candidate.served {

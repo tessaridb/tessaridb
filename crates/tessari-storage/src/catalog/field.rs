@@ -248,14 +248,14 @@ impl Catalog<'_, '_> {
     ///
     /// Returns [`Error::NoSuchParent`] when the table does not exist, and
     /// [`Error::NameTaken`] when the field is already declared on it.
-    pub fn create_field(
+    pub async fn create_field(
         &mut self,
         table: TableId,
         name: &str,
         kind: FieldKind,
         shape: FieldShape,
     ) -> Result<FieldDefinition> {
-        let Some(parent) = self.table(table)? else {
+        let Some(parent) = self.table(table).await? else {
             return Err(Error::NoSuchParent {
                 entity: "table",
                 id: table.get(),
@@ -270,8 +270,8 @@ impl Catalog<'_, '_> {
             ],
             name,
         );
-        self.reserve_name(&qualified)?;
-        let id = FieldId::new(self.allocate(Level::Field)?);
+        self.reserve_name(&qualified).await?;
+        let id = FieldId::new(self.allocate(Level::Field).await?);
         let definition = FieldDefinition {
             id,
             namespace: parent.namespace,
@@ -295,8 +295,9 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn field(&self, id: FieldId) -> Result<Option<FieldDefinition>> {
-        self.read(system::FIELDS, id.get())?
+    pub async fn field(&self, id: FieldId) -> Result<Option<FieldDefinition>> {
+        self.read(system::FIELDS, id.get())
+            .await?
             .as_ref()
             .map(FieldDefinition::from_value)
             .transpose()
@@ -312,13 +313,17 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn fields(&self) -> Result<Vec<FieldDefinition>> {
+    pub async fn fields(&self) -> Result<Vec<FieldDefinition>> {
         let mut found = Vec::new();
-        for (_, bytes) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::FIELDS,
-        )? {
+        for (_, bytes) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::FIELDS,
+            )
+            .await?
+        {
             found.push(FieldDefinition::from_value(&decode_payload(&bytes)?)?);
         }
         Ok(found)
@@ -333,8 +338,8 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn drop_field(&mut self, id: FieldId) -> Result<bool> {
-        let Some(definition) = self.field(id)? else {
+    pub async fn drop_field(&mut self, id: FieldId) -> Result<bool> {
+        let Some(definition) = self.field(id).await? else {
             return Ok(false);
         };
         let qualified = qualify(

@@ -28,7 +28,7 @@ impl Session<'_> {
     /// answer without touching the record is a covering read, which is a
     /// planner's decision about how to run the statement rather than a change to
     /// what the statement says.
-    pub(crate) fn read(
+    pub(crate) async fn read(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
@@ -57,7 +57,8 @@ impl Session<'_> {
             && asked.admits == tessari_ql::Admitted::Leader
             && !self
                 .store
-                .effective_roles()?
+                .effective_roles()
+                .await?
                 .has(tessari_encoding::Roles::WRITABLE)
         {
             return Err(
@@ -110,7 +111,8 @@ impl Session<'_> {
                 core::time::Duration::from_secs(u64::try_from(bound.within.seconds()).unwrap_or(0));
             if self
                 .store
-                .current_as_of()?
+                .current_as_of()
+                .await?
                 .is_none_or(|age| age > within_bound)
             {
                 // Asked only here, and asked only this. *Here* has already been
@@ -160,22 +162,25 @@ impl Session<'_> {
         // statement that earned it.
         let noticed = Noticed::default();
         if let Some(latest) = &select.latest {
-            self.check_latest(transaction, select, latest)?;
+            self.check_latest(transaction, select, latest).await?;
         }
         // A search ranks its records itself and projects them with what it
         // ranked them by; only a grouped read takes them through the stages
         // below, as an already-held source (ADR-0105 D6).
         if matches!(select.from, tessari_ql::Source::Search { .. }) && !groups(select) {
-            return self.search_answer(transaction, select, &noticed, notes);
+            return self
+                .search_answer(transaction, select, &noticed, notes)
+                .await;
         }
         // A grouping read of a table this node holds only part of is folded on
         // the leaders when it can be (ADR-0097 D2): its groups stand in for the
         // records, and every stage after the fold runs below as it always has.
         // A read merging a rollup's sketches reads them here, beside its rows,
         // and is never folded on the leaders (ADR-0122 C5).
-        let merging = self.rollup_merging(transaction, select)?;
+        let merging = self.rollup_merging(transaction, select).await?;
         let leaders = if merging.is_none() {
-            self.prepare_folded(transaction, select, (&mut notes, &noticed), within)?
+            self.prepare_folded(transaction, select, (&mut notes, &noticed), within)
+                .await?
         } else {
             None
         };
@@ -186,15 +191,17 @@ impl Session<'_> {
                 Some(groups),
             ),
             None => {
-                let (prepared, searched) = self.prepare_source(
-                    transaction,
-                    select,
-                    Reporting {
-                        collected: &mut notes,
-                        noticed: &noticed,
-                    },
-                    within,
-                )?;
+                let (prepared, searched) = self
+                    .prepare_source(
+                        transaction,
+                        select,
+                        Reporting {
+                            collected: &mut notes,
+                            noticed: &noticed,
+                        },
+                        within,
+                    )
+                    .await?;
                 notes.extend(searched.rebuild_notes().iter().cloned());
                 (prepared, searched, None)
             }
@@ -209,7 +216,7 @@ impl Session<'_> {
         // hold it before the first record arrives — a cursor applied to the
         // finished answer would let the bound keep the records the page has
         // already handed back and then throw them away.
-        let resuming = self.resuming(transaction, select)?;
+        let resuming = self.resuming(transaction, select).await?;
         // The seek reaches the source itself, so only the walk has anything to
         // report. Pushed here rather than beside the seek because it is a
         // property of the statement's shape, which is decided once.
@@ -221,8 +228,8 @@ impl Session<'_> {
             // The projection folded once, above the records rather than per
             // record: a projection's constant parts are constant across every
             // record it is applied to.
-            let wanted = self.shaped(transaction, select)?;
-            let keys = self.folded_order(transaction, &select.order)?;
+            let wanted = self.shaped(transaction, select).await?;
+            let keys = self.folded_order(transaction, &select.order).await?;
             let mut shaping = crate::consume::Shaping::new(
                 self,
                 wanted,
@@ -233,19 +240,21 @@ impl Session<'_> {
                 &noticed,
             );
             if let Some((id, record)) = resuming {
-                shaping.resume_after(transaction, id, record)?;
+                shaping.resume_after(transaction, id, record).await?;
             }
-            let plan = self.produce_source(
-                transaction,
-                select,
-                prepared,
-                &searched,
-                &mut shaping,
-                Reporting {
-                    collected: &mut notes,
-                    noticed: &noticed,
-                },
-            )?;
+            let plan = self
+                .produce_source(
+                    transaction,
+                    select,
+                    prepared,
+                    &searched,
+                    &mut shaping,
+                    Reporting {
+                        collected: &mut notes,
+                        noticed: &noticed,
+                    },
+                )
+                .await?;
             asserted(select, &plan)?;
             notes.extend(noticed.drained());
             let records = crate::shape::bounded(shaping.finish(), select.start, select.limit);
@@ -259,17 +268,19 @@ impl Session<'_> {
         }
 
         let mut collecting = crate::consume::Collecting::new(&mut budget, held_bound(select));
-        let plan = self.produce_source(
-            transaction,
-            select,
-            prepared,
-            &searched,
-            &mut collecting,
-            Reporting {
-                collected: &mut notes,
-                noticed: &noticed,
-            },
-        )?;
+        let plan = self
+            .produce_source(
+                transaction,
+                select,
+                prepared,
+                &searched,
+                &mut collecting,
+                Reporting {
+                    collected: &mut notes,
+                    noticed: &noticed,
+                },
+            )
+            .await?;
         let mut records = collecting.finish();
         // Before anything groups, projects or sorts, so a projection and a sort
         // key both see the record rather than the reference that named it.
@@ -277,14 +288,15 @@ impl Session<'_> {
             // A reference carries a table and an id and not a tenancy, so it
             // resolves in the read's own database — which is also why a fetch
             // cannot reach across one (ADR-0008).
-            let context = self.context(transaction, None, select.span)?;
+            let context = self.context(transaction, None, select.span).await?;
             self.follow(
                 transaction,
                 &mut records,
                 &select.fetch,
                 context,
                 &mut notes,
-            )?;
+            )
+            .await?;
         }
         // After the fetch — a reference resolved once and then opened is the
         // same answer as one opened and then resolved n times, and cheaper — and
@@ -299,13 +311,15 @@ impl Session<'_> {
             records = Self::newest_per_key(records, latest);
         }
         if select.fusion.is_some() {
-            return self.fused_answer(
-                transaction,
-                select,
-                records,
-                (&searched, &noticed),
-                (&mut budget, plan, notes),
-            );
+            return self
+                .fused_answer(
+                    transaction,
+                    select,
+                    records,
+                    (&searched, &noticed),
+                    (&mut budget, plan, notes),
+                )
+                .await;
         }
         let records = if groups(select) {
             // A grouping folds many records into one, and a fold answers about
@@ -313,31 +327,38 @@ impl Session<'_> {
             // contribute here and the grammar has already refused one written
             // beside a fold.
             let (rows, filled, estimated) = match folded.take() {
-                Some(groups) => self.grouped_from(
-                    transaction,
-                    groups,
-                    select.projection.written(),
-                    &select.group,
-                    select.fill.as_ref(),
-                )?,
-                None => self.grouped(
-                    transaction,
-                    records,
-                    select.projection.written(),
-                    (&select.group, merging.as_ref()),
-                    select.fill.as_ref(),
-                )?,
+                Some(groups) => {
+                    self.grouped_from(
+                        transaction,
+                        groups,
+                        select.projection.written(),
+                        &select.group,
+                        select.fill.as_ref(),
+                    )
+                    .await?
+                }
+                None => {
+                    self.grouped(
+                        transaction,
+                        records,
+                        select.projection.written(),
+                        (&select.group, merging.as_ref()),
+                        select.fill.as_ref(),
+                    )
+                    .await?
+                }
             };
             if filled > 0 {
                 notes.push(Note::Filled { windows: filled });
             }
             notes.extend(estimated);
             rows
-        } else if let Some(wanted) = self.shaped(transaction, select)? {
+        } else if let Some(wanted) = self.shaped(transaction, select).await? {
             let mut projected = Vec::with_capacity(records.len());
             for (id, record) in records {
-                let shaped =
-                    self.project(transaction, &id, &record, &wanted, &searched, &noticed)?;
+                let shaped = self
+                    .project(transaction, &id, &record, &wanted, &searched, &noticed)
+                    .await?;
                 projected.push((id, shaped));
             }
             projected
@@ -366,7 +387,7 @@ impl Session<'_> {
             //
             // `None` for the projection: these records have already been through
             // it, since the barrier that forced this path ran above.
-            let keys = self.folded_order(transaction, &select.order)?;
+            let keys = self.folded_order(transaction, &select.order).await?;
             let mut shaping = crate::consume::Shaping::new(
                 self,
                 None,
@@ -377,10 +398,10 @@ impl Session<'_> {
                 &noticed,
             );
             if let Some((id, record)) = resuming {
-                shaping.resume_after(transaction, id, record)?;
+                shaping.resume_after(transaction, id, record).await?;
             }
             for (id, record) in records {
-                if shaping.take(transaction, id, record)?.is_break() {
+                if shaping.take(transaction, id, record).await?.is_break() {
                     break;
                 }
             }
@@ -408,7 +429,7 @@ impl Session<'_> {
     /// otherwise. A read that named **an order** needs the anchor's value for
     /// that key, and there is nowhere to get it but the record: a missing anchor
     /// is refused rather than guessed at, because every guess picks a page.
-    pub(super) fn resuming(
+    pub(super) async fn resuming(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
@@ -416,12 +437,12 @@ impl Session<'_> {
         let Some(anchor) = &select.after else {
             return Ok(None);
         };
-        let (_, address) = self.address(transaction, anchor)?;
+        let (_, address) = self.address(transaction, anchor).await?;
         if select.order.is_empty() {
             return Ok(Some((address.id, None)));
         }
-        let visible = self.visible_in(transaction, address.table)?;
-        let Some(payload) = transaction.get(&address)? else {
+        let visible = self.visible_in(transaction, address.table).await?;
+        let Some(payload) = transaction.get(&address).await? else {
             return Err(Error::AnchorGone {
                 table: anchor.table.name.text.clone(),
                 span: anchor.span,
@@ -442,7 +463,7 @@ impl Session<'_> {
     /// constant parts are constant across every record it is applied to.
     /// Rebuilding them per record is what the benchmark harness once found
     /// dominating a nearest-neighbour read.
-    pub(crate) fn shaped(
+    pub(crate) async fn shaped(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
@@ -457,7 +478,7 @@ impl Session<'_> {
             Projection::Values { everything, values } => Ok(Some(Shaped {
                 everything: everything.is_some(),
                 omit: select.omit.clone(),
-                values: self.folded_projection(transaction, values)?,
+                values: self.folded_projection(transaction, values).await?,
             })),
         }
     }

@@ -16,8 +16,9 @@
 //! rather than a second path written for disasters and run once a year.
 //!
 //! A physical copy of the keyspaces would restore faster and would verify
-//! nothing. It would also bind the backup format to the engine underneath, which
-//! is what ADR-0004's "RocksDB first, not RocksDB only" exists to avoid.
+//! nothing. It would also bind the backup format to the engine underneath, and
+//! that engine did change: from `0.36.0` the store runs on TessariKV, and a
+//! backup taken by an earlier release is how a store moves onto it.
 //!
 //! # What that makes testable
 //!

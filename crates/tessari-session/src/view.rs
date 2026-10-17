@@ -67,7 +67,7 @@ impl Session<'_> {
     /// Returns [`Error::ViewsTooDeep`] when a chain of views is longer than this
     /// build follows, [`Error::ViewUnreadable`] when a stored read no longer
     /// parses, and a substrate failure when the catalog cannot be read.
-    pub(crate) fn expand_views(
+    pub(crate) async fn expand_views(
         &self,
         store: &Store,
         kind: &StatementKind,
@@ -81,7 +81,7 @@ impl Session<'_> {
         };
         let mut rewritten = read.clone();
         let mut chain = Vec::new();
-        if !self.expand_read(store, &mut rewritten, &mut chain)? {
+        if !self.expand_read(store, &mut rewritten, &mut chain).await? {
             return Ok(None);
         }
         Ok(Some(match kind {
@@ -91,7 +91,7 @@ impl Session<'_> {
     }
 
     /// Expand every view this read names, answering whether anything changed.
-    fn expand_read(
+    async fn expand_read(
         &self,
         store: &Store,
         read: &mut Select,
@@ -104,23 +104,24 @@ impl Session<'_> {
                 span: read.span,
             });
         }
-        let mut changed = self.expand_source(store, read, chain)?;
+        // Every expansion recurses through here, so the boxed future is here.
+        let mut changed = Box::pin(self.expand_source(store, read, chain)).await?;
         if let Projection::Values { values, .. } = &mut read.projection {
             for one in values {
-                changed |= self.expand_expr(store, &mut one.value, chain)?;
+                changed |= self.expand_expr(store, &mut one.value, chain).await?;
             }
         }
         for key in &mut read.group {
-            changed |= self.expand_expr(store, key, chain)?;
+            changed |= self.expand_expr(store, key, chain).await?;
         }
         for ordering in &mut read.order {
-            changed |= self.expand_expr(store, &mut ordering.key, chain)?;
+            changed |= self.expand_expr(store, &mut ordering.key, chain).await?;
         }
         Ok(changed)
     }
 
     /// Expand the read's source, which is the position a view is written in.
-    fn expand_source(
+    async fn expand_source(
         &self,
         store: &Store,
         read: &mut Select,
@@ -131,7 +132,7 @@ impl Session<'_> {
         let source = std::mem::replace(&mut read.from, Source::Node);
         let (source, changed) = match source {
             Source::Search { .. } => (source, false),
-            Source::Table(table) => match self.view_read(store, &table, chain)? {
+            Source::Table(table) => match self.view_read(store, &table, chain).await? {
                 Some(inner) => (
                     Source::Subquery {
                         read: Box::new(inner),
@@ -141,7 +142,8 @@ impl Session<'_> {
                 ),
                 None => (Source::Table(table), false),
             },
-            Source::Where { table, condition } => match self.view_read(store, &table, chain)? {
+            Source::Where { table, condition } => match self.view_read(store, &table, chain).await?
+            {
                 // The condition rides on the materialised source rather than
                 // into the view's own read: it may ask about a name the view
                 // produced, and it must never be tested against the base record.
@@ -154,7 +156,7 @@ impl Session<'_> {
                 ),
                 None => {
                     let mut condition = condition;
-                    let changed = self.expand_expr(store, &mut condition, chain)?;
+                    let changed = self.expand_expr(store, &mut condition, chain).await?;
                     (Source::Where { table, condition }, changed)
                 }
             },
@@ -162,9 +164,9 @@ impl Session<'_> {
                 mut read,
                 mut condition,
             } => {
-                let mut changed = self.expand_read(store, &mut read, chain)?;
+                let mut changed = self.expand_read(store, &mut read, chain).await?;
                 if let Some(condition) = &mut condition {
-                    changed |= self.expand_expr(store, condition, chain)?;
+                    changed |= self.expand_expr(store, condition, chain).await?;
                 }
                 (Source::Subquery { read, condition }, changed)
             }
@@ -176,10 +178,10 @@ impl Session<'_> {
                 asof,
                 mut condition,
             } => {
-                let mut changed = self.expand_join_side(store, &mut left, chain)?;
-                changed |= self.expand_join_side(store, &mut right, chain)?;
+                let mut changed = self.expand_join_side(store, &mut left, chain).await?;
+                changed |= self.expand_join_side(store, &mut right, chain).await?;
                 if let Some(condition) = &mut condition {
-                    changed |= self.expand_expr(store, condition, chain)?;
+                    changed |= self.expand_expr(store, condition, chain).await?;
                 }
                 (
                     Source::Join {
@@ -207,7 +209,7 @@ impl Session<'_> {
     }
 
     /// Expand a join side, whose read half may name a view like any other.
-    fn expand_join_side(
+    async fn expand_join_side(
         &self,
         store: &Store,
         side: &mut JoinSide,
@@ -219,7 +221,7 @@ impl Session<'_> {
             // into the other would take the row's key away. `FROM (SELECT * FROM
             // v LIMIT n) AS x JOIN …` is how a view joins, and it is written.
             JoinSide::Table { .. } => Ok(false),
-            JoinSide::Read { read, .. } => self.expand_read(store, read, chain),
+            JoinSide::Read { read, .. } => self.expand_read(store, read, chain).await,
         }
     }
 
@@ -227,20 +229,27 @@ impl Session<'_> {
     ///
     /// The same walk `reach::tables_named` makes over expressions, and for the
     /// same reason: an expression may hold a read, and a read may name a view.
-    fn expand_expr(&self, store: &Store, expr: &mut Expr, chain: &mut Vec<String>) -> Result<bool> {
+    async fn expand_expr(
+        &self,
+        store: &Store,
+        expr: &mut Expr,
+        chain: &mut Vec<String>,
+    ) -> Result<bool> {
         match &mut expr.kind {
-            ExprKind::Select(read) => self.expand_read(store, read, chain),
-            ExprKind::Not(inner) | ExprKind::Negate(inner) => self.expand_expr(store, inner, chain),
-            ExprKind::Route { value, .. } => self.expand_expr(store, value, chain),
+            ExprKind::Select(read) => Box::pin(self.expand_read(store, read, chain)).await,
+            ExprKind::Not(inner) | ExprKind::Negate(inner) => {
+                Box::pin(self.expand_expr(store, inner, chain)).await
+            }
+            ExprKind::Route { value, .. } => Box::pin(self.expand_expr(store, value, chain)).await,
             ExprKind::If {
                 condition,
                 then,
                 otherwise,
             } => {
-                let mut changed = self.expand_expr(store, condition, chain)?;
-                changed |= self.expand_expr(store, then, chain)?;
+                let mut changed = Box::pin(self.expand_expr(store, condition, chain)).await?;
+                changed |= Box::pin(self.expand_expr(store, then, chain)).await?;
                 if let Some(otherwise) = otherwise {
-                    changed |= self.expand_expr(store, otherwise, chain)?;
+                    changed |= Box::pin(self.expand_expr(store, otherwise, chain)).await?;
                 }
                 Ok(changed)
             }
@@ -249,38 +258,39 @@ impl Session<'_> {
             | ExprKind::Or(left, right)
             | ExprKind::Arithmetic { left, right, .. }
             | ExprKind::Binary { left, right, .. } => {
-                let mut changed = self.expand_expr(store, left, chain)?;
-                changed |= self.expand_expr(store, right, chain)?;
+                let mut changed = Box::pin(self.expand_expr(store, left, chain)).await?;
+                changed |= Box::pin(self.expand_expr(store, right, chain)).await?;
                 Ok(changed)
             }
             ExprKind::Fold { over, .. } => match over {
-                Some(over) => self.expand_expr(store, over, chain),
+                Some(over) => Box::pin(self.expand_expr(store, over, chain)).await,
                 None => Ok(false),
             },
             ExprKind::Call { arguments, .. } => {
                 let mut changed = false;
                 for argument in arguments {
-                    changed |= self.expand_expr(store, argument, chain)?;
+                    changed |= Box::pin(self.expand_expr(store, argument, chain)).await?;
                 }
                 Ok(changed)
             }
             ExprKind::Array(items) | ExprKind::Set(items) => {
                 let mut changed = false;
                 for item in items {
-                    changed |= self.expand_expr(store, item, chain)?;
+                    changed |= Box::pin(self.expand_expr(store, item, chain)).await?;
                 }
                 Ok(changed)
             }
             ExprKind::Object(fields) => {
                 let mut changed = false;
                 for field in fields {
-                    changed |= self.expand_expr(store, &mut field.value, chain)?;
+                    changed |= Box::pin(self.expand_expr(store, &mut field.value, chain)).await?;
                 }
                 Ok(changed)
             }
             ExprKind::Range(range) => {
-                let mut changed = self.expand_expr(store, &mut range.start, chain)?;
-                changed |= self.expand_expr(store, &mut range.end, chain)?;
+                let mut changed =
+                    Box::pin(self.expand_expr(store, &mut range.start, chain)).await?;
+                changed |= Box::pin(self.expand_expr(store, &mut range.end, chain)).await?;
                 Ok(changed)
             }
             // A literal, a parameter, a path, a bare table name and a point read
@@ -303,14 +313,14 @@ impl Session<'_> {
     /// function's refusal to make. A name that does not resolve is refused by
     /// whatever resolves it, with a message about the table rather than about a
     /// view, which is the rule the grant check already states for itself.
-    fn view_read(
+    async fn view_read(
         &self,
         store: &Store,
         table: &TableRef,
         chain: &mut Vec<String>,
     ) -> Result<Option<Select>> {
-        let mut transaction = store.begin()?;
-        let found = self.stored_view(&mut transaction, table);
+        let mut transaction = store.begin().await?;
+        let found = self.stored_view(&mut transaction, table).await;
         transaction.rollback();
         let Some((declared, params)) = found? else {
             return Ok(None);
@@ -329,34 +339,33 @@ impl Session<'_> {
         // A view's own read may name a view, so the expansion recurses — and the
         // depth check at the head of `expand_read` is what stops a chain, a
         // cycle included.
-        self.expand_read(store, &mut read, chain)?;
+        self.expand_read(store, &mut read, chain).await?;
         chain.pop();
         Ok(Some(read))
     }
 
     /// The stored read of a view, or `None` when this name is not one.
-    fn stored_view(
+    async fn stored_view(
         &self,
         transaction: &mut tessari_storage::Transaction<'_>,
         table: &TableRef,
     ) -> Result<Option<(String, tessari_ql::Parameters)>> {
         let qualified = table.database.as_ref().map(|name| name.text.as_str());
-        let Ok(context) = self.context(transaction, qualified, table.span) else {
+        let Ok(context) = self.context(transaction, qualified, table.span).await else {
             return Ok(None);
         };
-        let Some(id) = Catalog::new(transaction).table_id(
-            context.namespace,
-            context.database,
-            &table.name.text,
-        )?
+        let Some(id) = Catalog::new(transaction)
+            .table_id(context.namespace, context.database, &table.name.text)
+            .await?
         else {
             return Ok(None);
         };
         let params = Catalog::new(transaction)
-            .database(context.database)?
+            .database(context.database)
+            .await?
             .map(|database| database.params)
             .unwrap_or_default();
-        Ok(match Catalog::new(transaction).table(id)? {
+        Ok(match Catalog::new(transaction).table(id).await? {
             Some(definition) => match definition.kind {
                 // A materialized view is read for its stored rows, not expanded
                 // into its read (ADR-0109).

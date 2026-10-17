@@ -11,18 +11,18 @@ use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
 impl Transaction<'_> {
-    pub(crate) fn table_records(
+    pub(crate) async fn table_records(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
         table: TableId,
         walk: Walk<'_>,
     ) -> Result<Vec<(RecordId, Vec<u8>)>> {
-        self.records_of(namespace, database, table, walk)
+        self.records_of(namespace, database, table, walk).await
     }
 
     /// The walk all four of the readers above share.
-    pub(crate) fn records_of(
+    pub(crate) async fn records_of(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -68,7 +68,7 @@ impl Transaction<'_> {
             }
             None => opening,
         };
-        let floor = self.series_floor(namespace, table)?;
+        let floor = self.series_floor(namespace, table).await?;
         let opening = match &floor {
             Some(floor) => {
                 let at = RecordKey::versions_prefix(namespace, database, table, floor);
@@ -133,12 +133,12 @@ impl Transaction<'_> {
                 }),
             };
             let batch = match reading {
-                Reading::Serving => self.store.backend().scan(&request)?,
-                Reading::Sweep => self.store.backend().sweep(&request)?,
+                Reading::Serving => self.store.backend().scan(&request).await?,
+                Reading::Sweep => self.store.backend().sweep(&request).await?,
             };
             let last = batch.last().map(|(key, _)| key.as_slice().to_vec());
             let entries = batch.len();
-            for (id, value) in self.settled(batch, &mut resolved)? {
+            for (id, value) in self.settled(batch, &mut resolved).await? {
                 if matches!(value, RecordValue::Present(_)) {
                     present = present.saturating_add(1);
                 }
@@ -208,7 +208,7 @@ impl Transaction<'_> {
     /// Asked by both the collecting walk and the streaming one. The two answer
     /// different shapes and must not disagree about which version a reader sees;
     /// two copies of that rule would be two places for it to drift.
-    pub(crate) fn settled(
+    pub(crate) async fn settled(
         &self,
         batch: Vec<(Key, tessari_kv::Value)>,
         resolved: &mut Option<RecordId>,
@@ -224,7 +224,7 @@ impl Transaction<'_> {
             // transaction across leaders whose parts this snapshot does not all
             // hold — does not settle its record: the version under it, next in
             // this same walk, does (ADR-0112 D5, D6a).
-            if self.passes_over(&stored)? {
+            if self.passes_over(&stored).await? {
                 continue;
             }
             *resolved = Some(decoded.id.clone());
@@ -238,17 +238,21 @@ impl Transaction<'_> {
     /// Its own method so that a caller whose error type is not this crate's can
     /// still write `?` over the scan: everything fallible about the walk is on
     /// this side of the boundary, and the callback's side converts once.
-    pub(crate) fn batch_of(
+    pub(crate) async fn batch_of(
         &self,
         from: &[u8],
         end: &[u8],
         limit: Option<usize>,
     ) -> Result<Vec<(Key, tessari_kv::Value)>> {
-        Ok(self.store.backend().scan(&ScanRequest {
-            keyspace: RecordKey::keyspace(),
-            range: KeyRange::between(Key::from(from.to_vec()), Key::from(end.to_vec())),
-            direction: ScanDirection::Forward,
-            limit,
-        })?)
+        Ok(self
+            .store
+            .backend()
+            .scan(&ScanRequest {
+                keyspace: RecordKey::keyspace(),
+                range: KeyRange::between(Key::from(from.to_vec()), Key::from(end.to_vec())),
+                direction: ScanDirection::Forward,
+                limit,
+            })
+            .await?)
     }
 }

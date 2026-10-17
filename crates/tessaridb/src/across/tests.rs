@@ -4,7 +4,9 @@ use tessari_encoding::{
     Mutation, Participant, RecordValue, StampedValue, TRANSACTION_ID_LEN, TransactionId,
     TransactionRecord, decode_payload, encode_payload,
 };
+use tessari_session::RunNow;
 use tessari_session::{AcrossAnswer, AcrossAsk, Session};
+use tessari_storage::Now;
 use tessari_storage::{Catalog, Decision, RecordAddress};
 use tessari_types::{Reach, RecordId, Value};
 
@@ -16,20 +18,25 @@ const TRANSACTION: TransactionId = TransactionId::new([5; TRANSACTION_ID_LEN]);
 /// writing `'new'`, and the transaction's record written `decisions` in turn —
 /// what a coordinator that died part-way leaves behind.
 fn left_behind(decisions: &[Decision]) -> (Db, RecordAddress) {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     db.session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
              USE DATABASE shop; DEFINE COLLECTION notes; CREATE notes:1 = 'old';",
         )
         .unwrap();
     let store = db.store();
-    let mut reading = store.begin().unwrap();
+    let mut reading = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut reading);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "shop")
+        .now()
+        .unwrap()
+        .unwrap();
     let table = catalog
         .table_id(namespace, database, "notes")
+        .now()
         .unwrap()
         .unwrap();
     reading.rollback();
@@ -39,7 +46,10 @@ fn left_behind(decisions: &[Decision]) -> (Db, RecordAddress) {
         .answer_across(&AcrossAsk::Prepare {
             transaction: TRANSACTION,
             coordinator: home,
-            seen: store.committed_tail(store.own_log(home).unwrap()).unwrap(),
+            seen: store
+                .committed_tail(store.own_log(home).now().unwrap())
+                .now()
+                .unwrap(),
             writes: vec![Mutation {
                 namespace,
                 database,
@@ -51,6 +61,7 @@ fn left_behind(decisions: &[Decision]) -> (Db, RecordAddress) {
                 )),
             }],
         })
+        .now()
         .unwrap();
     let AcrossAnswer::Prepared(prepared_at) = prepared else {
         unreachable!("a prepare answers where it landed")
@@ -68,6 +79,7 @@ fn left_behind(decisions: &[Decision]) -> (Db, RecordAddress) {
                     }],
                 },
             })
+            .now()
             .unwrap();
     }
     let address = RecordAddress::new(namespace, database, table, RecordId::Int(1));
@@ -75,13 +87,23 @@ fn left_behind(decisions: &[Decision]) -> (Db, RecordAddress) {
 }
 
 fn note(db: &Db, address: &RecordAddress) -> Value {
-    decode_payload(&db.store().begin().unwrap().get(address).unwrap().unwrap()).unwrap()
+    decode_payload(
+        &db.store()
+            .begin()
+            .now()
+            .unwrap()
+            .get(address)
+            .now()
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap()
 }
 
 #[test]
 fn an_overdue_pending_record_is_aborted_and_its_intent_dropped() {
     let (db, address) = left_behind(&[Decision::Pending]);
-    let settled = db.settle_across().unwrap();
+    let settled = db.settle_across().now().unwrap();
     assert_eq!(
         settled,
         SettledAcross {
@@ -91,9 +113,9 @@ fn an_overdue_pending_record_is_aborted_and_its_intent_dropped() {
         }
     );
     assert_eq!(note(&db, &address), Value::from("old"));
-    assert!(db.store().standing_across().unwrap().is_empty());
+    assert!(db.store().standing_across().now().unwrap().is_empty());
     assert_eq!(
-        db.settle_across().unwrap(),
+        db.settle_across().now().unwrap(),
         SettledAcross {
             forgotten: 1,
             ..SettledAcross::default()
@@ -101,7 +123,7 @@ fn an_overdue_pending_record_is_aborted_and_its_intent_dropped() {
         "a second pass forgets the decided record nothing holds an intent of"
     );
     assert_eq!(
-        db.settle_across().unwrap(),
+        db.settle_across().now().unwrap(),
         SettledAcross::default(),
         "a third pass finds nothing left"
     );
@@ -113,23 +135,30 @@ fn a_record_nobody_wrote_is_aborted_by_the_participant_holding_its_intent() {
     // Absent, and its intent only just found: its begin may still be on its
     // way (ADR-0112 D13a), so this pass asks without aborting.
     let now = super::now_millis();
-    let first = db.settle_across_at(now).unwrap();
+    let first = db.settle_across_at(now).now().unwrap();
     assert_eq!(first.resolved, 0, "{first:?}");
-    assert_eq!(db.store().transaction_record(TRANSACTION).unwrap(), None);
+    assert_eq!(
+        db.store().transaction_record(TRANSACTION).now().unwrap(),
+        None
+    );
     assert!(
-        db.store().holds_intents_of(TRANSACTION).unwrap(),
+        db.store().holds_intents_of(TRANSACTION).now().unwrap(),
         "the intent stands"
     );
     // A lapse later the absence is an abort (D7).
-    let lapse = tessari_session::across_lapse_millis(db.store()).unwrap();
+    let lapse = tessari_session::across_lapse_millis(db.store())
+        .now()
+        .unwrap();
     let settled = db
         .settle_across_at(now.saturating_add(lapse).saturating_add(1))
+        .now()
         .unwrap();
     assert_eq!(settled.resolved, 1, "{settled:?}");
     assert_eq!(note(&db, &address), Value::from("old"));
     assert_eq!(
         db.store()
             .transaction_record(TRANSACTION)
+            .now()
             .unwrap()
             .map(|held| held.decision),
         Some(Decision::Aborted)
@@ -139,7 +168,7 @@ fn a_record_nobody_wrote_is_aborted_by_the_participant_holding_its_intent() {
 #[test]
 fn a_committed_record_whose_resolution_was_lost_is_finished_here() {
     let (db, address) = left_behind(&[Decision::Pending, Decision::Committed]);
-    let settled = db.settle_across().unwrap();
+    let settled = db.settle_across().now().unwrap();
     assert_eq!(
         settled,
         SettledAcross {
@@ -148,13 +177,13 @@ fn a_committed_record_whose_resolution_was_lost_is_finished_here() {
         }
     );
     assert_eq!(note(&db, &address), Value::from("new"));
-    assert!(db.store().standing_across().unwrap().is_empty());
+    assert!(db.store().standing_across().now().unwrap().is_empty());
 }
 
 #[test]
 fn a_pass_publishes_what_it_left_standing_and_nothing_before_the_first() {
     let (db, _) = left_behind(&[Decision::Pending]);
-    let held = db.store().health().unwrap();
+    let held = db.store().health().now().unwrap();
     assert_eq!(
         (held.across_pending, held.across_with_intents),
         (None, None),
@@ -162,17 +191,23 @@ fn a_pass_publishes_what_it_left_standing_and_nothing_before_the_first() {
     );
     // The coordinator is alive and renewed its record: nothing is overdue,
     // so the pass leaves both the record and the intent standing.
-    let mut record = db.store().transaction_record(TRANSACTION).unwrap().unwrap();
+    let mut record = db
+        .store()
+        .transaction_record(TRANSACTION)
+        .now()
+        .unwrap()
+        .unwrap();
     record.deadline = u64::MAX;
     db.session()
         .answer_across(&AcrossAsk::Decide {
             transaction: TRANSACTION,
             record,
         })
+        .now()
         .unwrap();
     assert_eq!(reported(&db, "pending"), Value::Null);
-    db.settle_across().unwrap();
-    let held = db.store().health().unwrap();
+    db.settle_across().now().unwrap();
+    let held = db.store().health().now().unwrap();
     assert_eq!(
         (held.across_pending, held.across_with_intents),
         (Some(1), Some(1))
@@ -186,7 +221,7 @@ fn a_pass_publishes_what_it_left_standing_and_nothing_before_the_first() {
 /// One figure of `INFO FOR NODE`'s `cluster.across` group — `NONE` when the
 /// report, the group or the figure is missing, which no assertion here expects.
 fn reported(db: &Db, figure: &str) -> Value {
-    let outcomes = db.session().run("INFO FOR NODE;").unwrap();
+    let outcomes = db.session().run_now("INFO FOR NODE;").unwrap();
     let object = |value: Option<&Value>| match value {
         Some(Value::Object(fields)) => Some(fields.clone()),
         _ => None,
@@ -205,8 +240,8 @@ fn reported(db: &Db, figure: &str) -> Value {
 #[test]
 fn a_pass_that_finishes_a_transaction_publishes_none_left() {
     let (db, _) = left_behind(&[Decision::Pending]);
-    db.settle_across().unwrap();
-    let held = db.store().health().unwrap();
+    db.settle_across().now().unwrap();
+    let held = db.store().health().now().unwrap();
     assert_eq!(
         (held.across_pending, held.across_with_intents),
         (Some(0), Some(0))
@@ -218,17 +253,21 @@ fn a_decided_record_is_forgotten_only_once_no_intent_of_it_stands() {
     let (db, address) = left_behind(&[Decision::Pending, Decision::Committed]);
     // The intent stands when the pass asks, so the record is kept; the same
     // pass then resolves the intent.
-    let first = db.settle_across().unwrap();
+    let first = db.settle_across().now().unwrap();
     assert_eq!((first.resolved, first.forgotten), (1, 0), "{first:?}");
     assert!(
         db.store()
             .transaction_record(TRANSACTION)
+            .now()
             .unwrap()
             .is_some()
     );
-    let second = db.settle_across().unwrap();
+    let second = db.settle_across().now().unwrap();
     assert_eq!(second.forgotten, 1, "{second:?}");
-    assert_eq!(db.store().transaction_record(TRANSACTION).unwrap(), None);
+    assert_eq!(
+        db.store().transaction_record(TRANSACTION).now().unwrap(),
+        None
+    );
     // What readers see is untouched by forgetting.
     assert_eq!(note(&db, &address), Value::from("new"));
 }
@@ -239,20 +278,25 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
     // other's intent. Resolving every intent it holds in one commit would span
     // two leaders and be refused, every pass, leaving its own intent standing
     // for good: it resolves what it leads, and the copy follows its leader.
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     db.session()
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
              USE DATABASE shop; DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT 'g';",
         )
         .unwrap();
     let store = db.store();
-    let mut reading = store.begin().unwrap();
+    let mut reading = store.begin().now().unwrap();
     let catalog = tessari_storage::Catalog::new(&mut reading);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "shop")
+        .now()
+        .unwrap()
+        .unwrap();
     let table = catalog
         .table_id(namespace, database, "orders")
+        .now()
         .unwrap()
         .unwrap();
     reading.rollback();
@@ -278,10 +322,12 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
                 transaction: TRANSACTION,
                 coordinator: shard(1),
                 seen: store
-                    .committed_tail(store.own_log(shard(at)).unwrap())
+                    .committed_tail(store.own_log(shard(at)).now().unwrap())
+                    .now()
                     .unwrap(),
                 writes: vec![write(id)],
             })
+            .now()
             .unwrap();
     }
     let committed = TransactionRecord {
@@ -304,12 +350,13 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
                     ..committed.clone()
                 },
             })
+            .now()
             .unwrap();
     }
-    let me = store.node_identity().unwrap().id;
+    let me = store.node_identity().now().unwrap().id;
     let other = [0x9f; tessari_storage::NODE_ID_LEN];
     session
-        .run(&format!(
+        .run_now(&format!(
             "USE NAMESPACE prod; USE DATABASE shop; \
              DEFINE REPLICA b AT 'b:9001' NODE '{}' LEADS SHARD prod.shop.orders 2;",
             other
@@ -318,7 +365,7 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
                 .collect::<String>()
         ))
         .unwrap();
-    let mut leading = store.begin().unwrap();
+    let mut leading = store.begin().now().unwrap();
     let mut catalog = tessari_storage::Catalog::new(&mut leading);
     catalog
         .record_leadership(shard(1), me, tessari_types::Epoch::new(1))
@@ -326,14 +373,15 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
     catalog
         .record_leadership(shard(2), other, tessari_types::Epoch::new(1))
         .unwrap();
-    leading.commit().unwrap();
-    assert!(store.leads(shard(1)).unwrap() && !store.leads(shard(2)).unwrap());
+    leading.commit().now().unwrap();
+    assert!(store.leads(shard(1)).now().unwrap() && !store.leads(shard(2)).now().unwrap());
 
-    let resolved =
-        store
-            .begin()
-            .unwrap()
-            .resolve_across(TRANSACTION, true, &[], &committed.participants);
+    let resolved = store
+        .begin()
+        .now()
+        .unwrap()
+        .resolve_across(TRANSACTION, true, &[], &committed.participants)
+        .now();
     assert!(
         matches!(resolved, Ok(Some(_))),
         "the intent this node leads is resolved: {resolved:?}"
@@ -342,14 +390,15 @@ fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy()
     // it does not lead still stands. (A read cannot tell them apart: a
     // committed record whose every part this node holds shows the copy as a
     // value already, D6a.)
-    let again =
-        store
-            .begin()
-            .unwrap()
-            .resolve_across(TRANSACTION, true, &[], &committed.participants);
+    let again = store
+        .begin()
+        .now()
+        .unwrap()
+        .resolve_across(TRANSACTION, true, &[], &committed.participants)
+        .now();
     assert!(matches!(again, Ok(None)), "{again:?}");
     assert!(
-        store.holds_intents_of(TRANSACTION).unwrap(),
+        store.holds_intents_of(TRANSACTION).now().unwrap(),
         "the other leader's copy is left to follow it"
     );
 }

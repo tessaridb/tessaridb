@@ -16,6 +16,10 @@ use tessari_kv::{
     Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value, WriteBatch,
 };
 
+use tessari_types::Sequence;
+
+use crate::now::Now;
+
 use super::{Overlaid, WriteGate};
 
 const SPACE: Keyspace = Keyspace::META;
@@ -30,7 +34,7 @@ fn stored() -> MemoryBackend {
     for n in (0..20).step_by(2) {
         batch = batch.put(SPACE, key(n), Value::new(format!("old{n}").into_bytes()));
     }
-    backend.apply(batch).unwrap();
+    KvBackend::apply(&backend, batch).now().unwrap();
     backend
 }
 
@@ -77,43 +81,47 @@ fn the_holder_reads_the_engine_with_the_pending_writes_applied() {
     let gate = Arc::new(WriteGate::default());
     let overlay = Overlaid::new(Arc::new(stored()), Arc::clone(&gate));
     let reference = stored();
-    reference.apply(pending()).unwrap();
+    KvBackend::apply(&reference, pending()).now().unwrap();
 
-    let turn = gate.hold();
-    let _ticket = gate.stage(pending());
+    let turn = gate.hold().now();
+    let _ticket = gate.stage(pending(), Sequence::new(1));
     for request in requests() {
         assert_eq!(
-            overlay.scan(&request).unwrap(),
-            reference.scan(&request).unwrap(),
+            overlay.scan(&request).now().unwrap(),
+            KvBackend::scan(&reference, &request).now().unwrap(),
             "{request:?}"
         );
         assert_eq!(
-            overlay.sweep(&request).unwrap(),
-            reference.sweep(&request).unwrap(),
+            overlay.sweep(&request).now().unwrap(),
+            KvBackend::sweep(&reference, &request).now().unwrap(),
             "{request:?}"
         );
     }
     for range in ranges() {
         assert_eq!(
-            overlay.count(SPACE, &range).unwrap(),
-            reference.count(SPACE, &range).unwrap(),
+            overlay.count(SPACE, &range).now().unwrap(),
+            KvBackend::count(&reference, SPACE, &range).now().unwrap(),
             "{range:?}"
         );
     }
     let firsts = ranges();
     assert_eq!(
-        overlay.first_of_each(SPACE, &firsts).unwrap(),
-        reference.first_of_each(SPACE, &firsts).unwrap()
+        overlay.first_of_each(SPACE, &firsts).now().unwrap(),
+        KvBackend::first_of_each(&reference, SPACE, &firsts)
+            .now()
+            .unwrap()
     );
     for n in 0..24 {
         assert_eq!(
-            overlay.get(SPACE, &key(n)).unwrap(),
-            reference.get(SPACE, &key(n)).unwrap(),
+            overlay.get(SPACE, &key(n)).now().unwrap(),
+            KvBackend::get(&reference, SPACE, &key(n)).now().unwrap(),
             "k{n}"
         );
         assert_eq!(
-            overlay.contains(SPACE, &key(n)).unwrap(),
-            reference.contains(SPACE, &key(n)).unwrap(),
+            overlay.contains(SPACE, &key(n)).now().unwrap(),
+            KvBackend::contains(&reference, SPACE, &key(n))
+                .now()
+                .unwrap(),
             "k{n}"
         );
     }
@@ -128,21 +136,21 @@ fn a_thread_without_the_turn_reads_the_engine_alone() {
     let overlay = Overlaid::new(Arc::new(stored()), Arc::clone(&gate));
     let engine = stored();
 
-    let turn = gate.hold();
-    let _ticket = gate.stage(pending());
+    let turn = gate.hold().now();
+    let _ticket = gate.stage(pending(), Sequence::new(1));
     std::thread::scope(|scope| {
         scope
             .spawn(|| {
                 for request in requests() {
                     assert_eq!(
-                        overlay.scan(&request).unwrap(),
-                        engine.scan(&request).unwrap(),
+                        overlay.scan(&request).now().unwrap(),
+                        KvBackend::scan(&engine, &request).now().unwrap(),
                         "{request:?}"
                     );
                 }
                 assert_eq!(
-                    overlay.get(SPACE, &key(4)).unwrap(),
-                    engine.get(SPACE, &key(4)).unwrap()
+                    overlay.get(SPACE, &key(4)).now().unwrap(),
+                    KvBackend::get(&engine, SPACE, &key(4)).now().unwrap()
                 );
             })
             .join()
@@ -151,7 +159,47 @@ fn a_thread_without_the_turn_reads_the_engine_alone() {
     drop(turn);
     // And the holder, once it has let go, is anybody else.
     assert_eq!(
-        overlay.get(SPACE, &key(4)).unwrap(),
-        engine.get(SPACE, &key(4)).unwrap()
+        overlay.get(SPACE, &key(4)).now().unwrap(),
+        KvBackend::get(&engine, SPACE, &key(4)).now().unwrap()
+    );
+}
+
+/// The turn belongs to the task that took it, not to the thread it ran on.
+///
+/// Two tasks on one thread: the first holds the turn with a write staged and
+/// yields; the second, which holds nothing, reads that key. It must read the
+/// engine alone. A holder recorded per thread shows it the staged write.
+#[test]
+fn a_task_that_shares_the_holders_thread_does_not_read_its_pending_writes() {
+    let gate = Arc::new(WriteGate::default());
+    let overlay = Arc::new(Overlaid::new(Arc::new(stored()), Arc::clone(&gate)));
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let tasks = tokio::task::LocalSet::new();
+    tasks.block_on(&runtime, async {
+        let holding = {
+            let gate = Arc::clone(&gate);
+            tasks.spawn_local(async move {
+                let turn = gate.hold().await;
+                let _ticket = gate.stage(pending(), Sequence::new(1));
+                tokio::task::yield_now().await;
+                drop(turn);
+            })
+        };
+        let reading = {
+            let (overlay, seen) = (Arc::clone(&overlay), Arc::clone(&seen));
+            tasks.spawn_local(async move {
+                *seen.lock().unwrap() = Some(overlay.get(SPACE, &key(4)).await.unwrap());
+            })
+        };
+        holding.await.unwrap();
+        reading.await.unwrap();
+    });
+    assert_eq!(
+        seen.lock().unwrap().take(),
+        Some(Some(Value::new(b"old4".to_vec()))),
+        "a task holding no turn read a write still pending behind another's"
     );
 }

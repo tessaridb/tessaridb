@@ -49,14 +49,15 @@ fn topic_guarantees() -> Value {
 impl Session<'_> {
     /// The report `INFO FOR TOPIC CONSUMER` answers: `declared`, `running` (this
     /// node) and `guarantees`, as the Kafka form's does.
-    pub(super) fn info_topic_consumer(
+    pub(super) async fn info_topic_consumer(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
         let found = Catalog::new(transaction)
-            .consumers()?
+            .consumers()
+            .await?
             .into_iter()
             .find(|held| held.name == name.text);
         let Some(consumer) = found else {
@@ -74,9 +75,10 @@ impl Session<'_> {
                 span,
             });
         };
-        let destination = self.named_table(transaction, &consumer)?;
+        let destination = self.named_table(transaction, &consumer).await?;
         let topic = Catalog::new(transaction)
-            .tables_in(consumer.namespace, consumer.database)?
+            .tables_in(consumer.namespace, consumer.database)
+            .await?
             .into_iter()
             .find(|held| held.id == table)
             .map_or_else(|| "<dropped>".to_owned(), |held| held.name);

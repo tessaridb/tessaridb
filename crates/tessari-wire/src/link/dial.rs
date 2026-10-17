@@ -1,5 +1,14 @@
 use super::*;
 
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
+use tokio::net::{TcpStream, ToSocketAddrs};
+use tokio_rustls::TlsConnector;
+
+use crate::frame_async;
+
+/// One dialled connection to a peer: TLS over a socket of the runtime's.
+pub(crate) type Link = tokio_rustls::client::TlsStream<tokio::net::TcpStream>;
+
 /// Reach the peer `at` on `address`, and exchange greetings.
 ///
 /// # Errors
@@ -9,7 +18,7 @@ use super::*;
 /// no admission rule of its own; [`Error::Uncollectable`] when a collection was
 /// asked for from a position the peer cannot state a predecessor for; and
 /// [`Error::OutOfTurn`] when the answer is not of the kind that was asked for.
-pub fn call(
+pub async fn call(
     address: impl ToSocketAddrs,
     keys: &PeerKeys,
     at: [u8; NODE_ID_LEN],
@@ -24,10 +33,11 @@ pub fn call(
         asking,
         Duration::from_secs(GREETING_SECONDS),
     )
+    .await
 }
 
-/// [`call`], with the connect and every read and write bounded by `bound`
-/// rather than by the greeting's deadline.
+/// [`call`], with the connect, the handshake and every read and write bounded
+/// by `bound` rather than by the greeting's deadline.
 ///
 /// For a caller that has a deadline of its own — a ballot is worth nothing once
 /// its round is over, and a member that accepts the connection and then says
@@ -40,7 +50,7 @@ pub fn call(
 /// # Errors
 ///
 /// As [`call`], plus [`Error::Io`] when `bound` passes on any one step.
-pub fn call_within(
+pub async fn call_within(
     address: impl ToSocketAddrs,
     (keys, mine): (&PeerKeys, Credential),
     at: [u8; NODE_ID_LEN],
@@ -48,65 +58,62 @@ pub fn call_within(
     asking: Ask<'_>,
     bound: Duration,
 ) -> Result<(Hello, Answered)> {
-    let (mut session, mut socket) = open_within(address, (keys, mine), at, bound)?;
-    let exchanged = exchange(&mut session, &mut socket, said, asking);
+    let mut link = open_within(address, (keys, mine), at, bound).await?;
+    let exchanged = exchange(&mut link, said, asking, bound).await;
 
     // Say goodbye properly even when the exchange failed. A TLS peer that just
     // drops the socket makes the other end's next read an error rather than an
     // end, so a caller that skipped this would leave every door it spoke to
     // reporting a fault it did not have.
-    session.send_close_notify();
-    drop(session.write_tls(&mut socket));
+    drop(within(bound, link.shutdown()).await);
     exchanged
 }
 
 /// Reach the peer `at` on `address` and open the TLS session a conversation
-/// rides, with every read and write bounded by the greeting's deadline.
-pub(crate) fn open(
+/// rides, with the connect and the handshake bounded by the greeting's deadline.
+pub(crate) async fn open(
     address: impl ToSocketAddrs,
     keys: &PeerKeys,
     at: [u8; NODE_ID_LEN],
-) -> Result<(ClientConnection, TcpStream)> {
+) -> Result<Link> {
     open_within(
         address,
         (keys, keys.duplicate()),
         at,
         Duration::from_secs(GREETING_SECONDS),
     )
+    .await
 }
 
-/// [`open`], with the connect and every read and write bounded by `bound`.
-pub(crate) fn open_within(
+/// [`open`], with the connect and the handshake each bounded by `bound`.
+pub(crate) async fn open_within(
     address: impl ToSocketAddrs,
     (keys, mine): (&PeerKeys, Credential),
     at: [u8; NODE_ID_LEN],
     bound: Duration,
-) -> Result<(ClientConnection, TcpStream)> {
+) -> Result<Link> {
     let settings = keys.dialling(mine)?;
     let expected = credential::names(at, Purpose::Peer);
     let name = ServerName::try_from(expected).map_err(|why| Error::Transport(why.to_string()))?;
-    let session = ClientConnection::new(Arc::new(settings), name)
-        .map_err(|why| Error::Transport(why.to_string()))?;
-
-    let socket = connect(address, bound)?;
-    // A zero would mean *no timeout at all* to the socket, the opposite of what
-    // a spent deadline asks for, so the least a step may have is a millisecond.
-    let bound = Some(bound.max(Duration::from_millis(1)));
-    socket.set_read_timeout(bound)?;
-    socket.set_write_timeout(bound)?;
-    Ok((session, socket))
+    let socket = connect(address, bound).await?;
+    // A handshake that fails is the transport refusing, kept apart from one
+    // that did not finish in time.
+    let handshake = TlsConnector::from(Arc::new(settings)).connect(name, socket);
+    tokio::time::timeout(bound.max(Duration::from_millis(1)), handshake)
+        .await
+        .map_err(|_| Error::Io(std::io::ErrorKind::TimedOut.into()))?
+        .map_err(|why| Error::Transport(why.to_string()))
 }
 
 /// Open the connection a call rides, giving up after `bound` per address.
 ///
 /// The reads and writes were always bounded and the connect was not, so a peer
 /// whose host drops SYNs held the calling round for the kernel's own connect
-/// limit — and the rounds dial their peers one after another (Q-836). Each
-/// resolved address is tried in turn, as `TcpStream::connect` does.
-pub(super) fn connect(address: impl ToSocketAddrs, bound: Duration) -> Result<TcpStream> {
+/// limit (Q-836). Each resolved address is tried in turn.
+pub(super) async fn connect(address: impl ToSocketAddrs, bound: Duration) -> Result<TcpStream> {
     let mut failed = None;
-    for at in address.to_socket_addrs()? {
-        match TcpStream::connect_timeout(&at, bound) {
+    for at in tokio::net::lookup_host(address).await? {
+        match within(bound, TcpStream::connect(at)).await {
             Ok(socket) => {
                 socket.set_nodelay(true)?;
                 return Ok(socket);
@@ -114,39 +121,57 @@ pub(super) fn connect(address: impl ToSocketAddrs, bound: Duration) -> Result<Tc
             Err(why) => failed = Some(why),
         }
     }
-    Err(failed
-        .unwrap_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "the peer's address resolved to nothing",
-            )
-        })
-        .into())
+    Err(failed.unwrap_or_else(|| {
+        Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the peer's address resolved to nothing",
+        ))
+    }))
+}
+
+/// `step`, or [`std::io::ErrorKind::TimedOut`] once `bound` has passed.
+///
+/// A zero would mean the step may not even start, so the least a step may have
+/// is a millisecond, as a socket timeout of zero would have meant none at all.
+pub(crate) async fn within<T>(
+    bound: Duration,
+    step: impl Future<Output = std::io::Result<T>>,
+) -> Result<T> {
+    match tokio::time::timeout(bound.max(Duration::from_millis(1)), step).await {
+        Ok(done) => Ok(done?),
+        Err(_) => Err(Error::Io(std::io::ErrorKind::TimedOut.into())),
+    }
+}
+
+/// A frame read or written within `bound`, its own failure kept as it was.
+pub(crate) async fn framed<T>(bound: Duration, step: impl Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(bound.max(Duration::from_millis(1)), step)
+        .await
+        .map_err(|_| Error::Io(std::io::ErrorKind::TimedOut.into()))?
 }
 
 /// The greeting and the one follow-up, on a session that is already open.
-pub(super) fn exchange(
-    session: &mut ClientConnection,
-    socket: &mut TcpStream,
+pub(super) async fn exchange(
+    link: &mut Link,
     said: &Hello,
     asking: Ask<'_>,
+    bound: Duration,
 ) -> Result<(Hello, Answered)> {
-    let mut link = rustls::Stream::new(session, socket);
-    say(&mut link, said)?;
+    framed(bound, say(link, said)).await?;
     // The ask goes out with the greeting rather than a round trip after it: it
     // depends on nothing the door says, the door's identity was proven by the
     // handshake, and every door reads the greeting, greets back and only then
     // reads the ask. A renewal's ballot is one round trip cheaper, which is
     // what lets a lease hold across a region (G075 C3).
     if let Some((tag, body)) = asked(&asking) {
-        frame::write_tagged(&mut link, tag, &body)?;
+        framed(bound, frame_async::write_tagged(link, tag, &body)).await?;
     }
-    let heard = hear(&mut link)?;
+    let heard = framed(bound, hear(link)).await?;
 
     match asking {
         Ask::Nothing => Ok((heard, Answered::Nothing)),
         Ask::Ballot(_) => {
-            let (tag, body) = answer(&mut link)?;
+            let (tag, body) = framed(bound, answer(link)).await?;
             match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::Vote) => Ok((heard, Answered::Voted(Vote::decode(&body)?))),
                 Some(_) => Err(Error::OutOfTurn { tag }),
@@ -154,7 +179,7 @@ pub(super) fn exchange(
             }
         }
         Ask::Records(_) => {
-            let (tag, body) = answer(&mut link)?;
+            let (tag, body) = framed(bound, answer(link)).await?;
             match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::Collected) => {
                     Ok((heard, Answered::Collected(Collected::decode(&body)?)))
@@ -173,7 +198,7 @@ pub(super) fn exchange(
             }
         }
         Ask::Join(_) => {
-            let (tag, body) = answer(&mut link)?;
+            let (tag, body) = framed(bound, answer(link)).await?;
             match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::Joined) => match body.as_slice() {
                     [bound] => Ok((heard, Answered::Joined(*bound == 1))),
@@ -184,7 +209,7 @@ pub(super) fn exchange(
             }
         }
         Ask::Attempt(_) => {
-            let (tag, body) = answer(&mut link)?;
+            let (tag, body) = framed(bound, answer(link)).await?;
             match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::Attempted) => match body.as_slice() {
                     [permitted] => Ok((heard, Answered::Attempted(*permitted == 1))),
@@ -195,7 +220,7 @@ pub(super) fn exchange(
             }
         }
         Ask::Across(_) => {
-            let (tag, body) = answer(&mut link)?;
+            let (tag, body) = framed(bound, answer(link)).await?;
             match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::AcrossDone) => Ok((
                     heard,
@@ -214,7 +239,7 @@ pub(super) fn exchange(
             }
         }
         Ask::Coordinate(_) => {
-            let (tag, body) = answer(&mut link)?;
+            let (tag, body) = framed(bound, answer(link)).await?;
             match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::Coordinated) => Ok((
                     heard,
@@ -228,7 +253,7 @@ pub(super) fn exchange(
             }
         }
         Ask::Gather(_) => {
-            let (tag, body) = answer(&mut link)?;
+            let (tag, body) = framed(bound, answer(link)).await?;
             match PeerFrame::from_tag(tag) {
                 Some(PeerFrame::Gathered) => Ok((heard, Answered::Gathered(Page::decode(&body)?))),
                 // The refusal as the leader sent it, for the reason the two
@@ -259,20 +284,20 @@ fn asked(asking: &Ask<'_>) -> Option<(u8, Vec<u8>)> {
 }
 
 /// The one frame that answers the one follow-up.
-pub(super) fn answer(
-    link: &mut rustls::Stream<'_, ClientConnection, TcpStream>,
-) -> Result<(u8, Vec<u8>)> {
-    frame::read_tagged(link)?.ok_or(Error::Truncated)
+pub(super) async fn answer(link: &mut (impl AsyncRead + Unpin)) -> Result<(u8, Vec<u8>)> {
+    frame_async::read_tagged(link)
+        .await?
+        .ok_or(Error::Truncated)
 }
 
 /// Put one greeting on the link.
-pub(crate) fn say(link: &mut impl std::io::Write, hello: &Hello) -> Result<()> {
-    frame::write_tagged(link, PeerFrame::Hello.tag(), &hello.encode())
+pub(crate) async fn say(link: &mut (impl AsyncWrite + Unpin), hello: &Hello) -> Result<()> {
+    frame_async::write_tagged(link, PeerFrame::Hello.tag(), &hello.encode()).await
 }
 
 /// Take one greeting off the link, and refuse anything else.
-pub(crate) fn hear(link: &mut impl std::io::Read) -> Result<Hello> {
-    let Some((tag, body)) = frame::read_tagged(link)? else {
+pub(crate) async fn hear(link: &mut (impl AsyncRead + Unpin)) -> Result<Hello> {
+    let Some((tag, body)) = frame_async::read_tagged(link).await? else {
         return Err(Error::Truncated);
     };
     greeting(tag, &body)

@@ -21,7 +21,7 @@ use crate::rank::Blend;
 
 /// The blend of one fuzzy word, given its spellings (as
 /// [`tessari_types::Analyzer::prefixes`] makes them: the typed and the stemmed).
-pub(super) fn fuzzy_blended(
+pub(super) async fn fuzzy_blended(
     transaction: &Transaction<'_>,
     index: &IndexDefinition,
     alternatives: &[String],
@@ -30,13 +30,15 @@ pub(super) fn fuzzy_blended(
     let mut reached: BTreeMap<String, f64> = BTreeMap::new();
     for spelling in alternatives {
         let allowed = budget(spelling);
-        let near = transaction.terms_within_distance(
-            index,
-            spelling,
-            allowed,
-            SEARCH_FUZZY_PREFIX,
-            SEARCH_FUZZY_EXPANSION_CAP,
-        )?;
+        let near = transaction
+            .terms_within_distance(
+                index,
+                spelling,
+                allowed,
+                SEARCH_FUZZY_PREFIX,
+                SEARCH_FUZZY_EXPANSION_CAP,
+            )
+            .await?;
         // A term reached through its surface (Q-867) is a stem nobody typed;
         // its distance was measured against the surface, which the dictionary
         // does not return, so it weighs as far as the word may reach.
@@ -47,7 +49,8 @@ pub(super) fn fuzzy_blended(
                 allowed,
                 SEARCH_FUZZY_PREFIX,
                 SEARCH_FUZZY_EXPANSION_CAP,
-            )?
+            )
+            .await?
             .map(|found| found.terms)
             .unwrap_or_default();
         for term in near.terms.into_iter().chain(surfaced) {
@@ -60,7 +63,11 @@ pub(super) fn fuzzy_blended(
     }
     let mut ranked = Vec::with_capacity(reached.len());
     for (term, weight) in reached {
-        ranked.push((transaction.document_frequency(index, &term)?, term, weight));
+        ranked.push((
+            transaction.document_frequency(index, &term).await?,
+            term,
+            weight,
+        ));
     }
     ranked
         .sort_by(|(left, one, _), (right, other, _)| right.cmp(left).then_with(|| one.cmp(other)));

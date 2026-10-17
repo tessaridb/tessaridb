@@ -39,6 +39,7 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
+use tessari_session::Now;
 mod baseline;
 mod concurrent;
 #[cfg(feature = "counting")]
@@ -339,12 +340,16 @@ fn run(asked: &Asked) -> Result<(), String> {
 fn measure(held: &Workload, backend: Backend) -> Result<Vec<Report>, String> {
     match backend {
         Backend::Memory => {
-            let db = Db::in_memory().map_err(|failure| failure.to_string())?;
+            let db = Db::in_memory()
+                .now()
+                .map_err(|failure| failure.to_string())?;
             (held.run)(&db).map_err(|failure| failure.to_string())
         }
         Backend::Disk => {
             let scratch = Scratch::new(held.name).map_err(|failure| failure.to_string())?;
-            let db = Db::open(scratch.path()).map_err(|failure| failure.to_string())?;
+            let db = Db::open(scratch.path())
+                .now()
+                .map_err(|failure| failure.to_string())?;
             let reports = (held.run)(&db).map_err(|failure| failure.to_string());
             // The database is dropped before the directory, so the engine has
             // closed its files by the time they are removed.

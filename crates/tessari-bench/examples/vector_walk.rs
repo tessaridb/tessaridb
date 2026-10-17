@@ -12,6 +12,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::error::Error;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessaridb::Db;
 
@@ -43,9 +45,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let dir = std::env::args()
         .nth(1)
         .ok_or("usage: vector_walk <empty directory>")?;
-    let db = Db::open(&dir)?;
+    let db = Db::open(&dir).now()?;
     let mut session = db.session();
-    session.run(&format!(
+    session.run_now(&format!(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench; DEFINE DATABASE v; USE DATABASE v; \
          DEFINE COLLECTION notes; DEFINE FIELD e ON notes TYPE vector<{WIDTH}>; \
          DEFINE INDEX by_e ON notes FIELDS e VECTOR cosine;"
@@ -65,7 +67,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ));
         }
         script.push_str(" COMMIT;");
-        session.run(&script)?;
+        session.run_now(&script)?;
     }
     println!(
         "built {RECORDS} × {WIDTH} in {:.1} s (disk, release)",
@@ -80,7 +82,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
         for repeat in 0..=REPEATS {
             let began = Instant::now();
-            let outcomes = session.run(&read)?;
+            let outcomes = session.run_now(&read)?;
             let spent = began.elapsed();
             if repeat == 0 {
                 let ids: Vec<String> = outcomes

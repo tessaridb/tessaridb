@@ -10,10 +10,12 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use tessari_session::Now;
+use tessari_session::RunNow;
 
+use tessari_kv::KvFuture;
 use tessari_kv::{
-    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
-    WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value as KvValue, WriteBatch,
 };
 use tessari_session::Session;
 use tessari_storage::Store;
@@ -21,14 +23,14 @@ use tessari_types::{RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// `posts` referring to `users`, with one post per interesting case.
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
              DEFINE COLLECTION users;\n\
@@ -52,7 +54,7 @@ fn field<'a>(value: &'a Value, name: &str) -> &'a Value {
 }
 
 fn one(session: &mut Session<'_>, script: &str) -> Value {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(records.len(), 1, "expected one record from {script:?}");
     records[0].1.clone()
@@ -97,7 +99,7 @@ fn an_order_by_sorts_on_a_fetched_value() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT * FROM posts FETCH author ORDER BY author.name DESC;")
+        .run_now("SELECT * FROM posts FETCH author ORDER BY author.name DESC;")
         .unwrap();
     let order: Vec<RecordId> = outcomes[0]
         .records()
@@ -116,7 +118,7 @@ fn a_reference_to_nothing_stays_a_reference() {
     // means the record was there and a reference means it was not.
     let store = store();
     let mut session = ready(&store);
-    session.run("DELETE users:2;").unwrap();
+    session.run_now("DELETE users:2;").unwrap();
 
     let post = one(&mut session, "SELECT * FROM posts:2 FETCH author;");
     assert_eq!(
@@ -138,7 +140,7 @@ fn an_array_of_references_is_followed_element_by_element() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("CREATE posts:3 = { title: 'third', authors: [users:1, users:2] };")
+        .run_now("CREATE posts:3 = { title: 'third', authors: [users:1, users:2] };")
         .unwrap();
 
     let post = one(&mut session, "SELECT * FROM posts:3 FETCH authors;");
@@ -155,7 +157,7 @@ fn an_element_that_is_not_a_reference_is_left_alone() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("CREATE posts:4 = { mixed: [users:1, 'a string', 7] };")
+        .run_now("CREATE posts:4 = { mixed: [users:1, 'a string', 7] };")
         .unwrap();
 
     let post = one(&mut session, "SELECT * FROM posts:4 FETCH mixed;");
@@ -185,7 +187,7 @@ fn a_nested_route_is_followed_and_only_one_level_is() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE users:3 = { name: 'edith', mentor: users:1 };\n\
              CREATE posts:5 = { title: 'fifth', meta: { editor: users:3 } };",
         )
@@ -205,7 +207,7 @@ fn several_routes_are_followed_in_one_read() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("CREATE posts:6 = { author: users:1, reviewer: users:2 };")
+        .run_now("CREATE posts:6 = { author: users:1, reviewer: users:2 };")
         .unwrap();
 
     let post = one(
@@ -227,7 +229,7 @@ fn fetch_is_still_usable_as_a_field_name() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("CREATE posts:7 = { fetch: 'a field called fetch', author: users:1 };")
+        .run_now("CREATE posts:7 = { fetch: 'a field called fetch', author: users:1 };")
         .unwrap();
 
     let post = one(&mut session, "SELECT * FROM posts:7 FETCH author;");
@@ -244,7 +246,7 @@ fn a_filtered_read_fetches_too() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT * FROM posts WHERE title = 'second' FETCH author;")
+        .run_now("SELECT * FROM posts WHERE title = 'second' FETCH author;")
         .unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(records.len(), 1);
@@ -268,12 +270,12 @@ fn one_reference_named_many_times_is_read_once_and_answers_the_same() {
     let mut session = ready(&store);
     for id in 10..20 {
         session
-            .run(&format!("CREATE posts:{id} = {{ author: users:1 }};"))
+            .run_now(&format!("CREATE posts:{id} = {{ author: users:1 }};"))
             .unwrap();
     }
 
     let outcomes = session
-        .run("SELECT * FROM posts WHERE author = users:1 FETCH author;")
+        .run_now("SELECT * FROM posts WHERE author = users:1 FETCH author;")
         .unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(records.len(), 11);
@@ -289,7 +291,7 @@ fn two_routes_naming_two_records_do_not_get_each_others_answers() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "CREATE posts:20 = { author: users:1, reviewer: users:2 };\n\
              CREATE posts:21 = { author: users:2, reviewer: users:1 };",
         )
@@ -306,7 +308,7 @@ fn two_routes_naming_two_records_do_not_get_each_others_answers() {
     );
 
     let outcomes = session
-        .run("SELECT * FROM posts WHERE title = NONE FETCH author, reviewer;")
+        .run_now("SELECT * FROM posts WHERE title = NONE FETCH author, reviewer;")
         .unwrap();
     for (id, post) in outcomes[0].records().unwrap() {
         let (author, reviewer) = match id {
@@ -357,36 +359,42 @@ impl KvBackend for Counting {
         "counting"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<KvValue>> {
-        self.asks.fetch_add(1, AtomicOrdering::Relaxed);
-        let found = self.inner.get(keyspace, key)?;
-        if found.is_some() {
-            self.rows.fetch_add(1, AtomicOrdering::Relaxed);
-        }
-        Ok(found)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<KvValue>> {
+        Box::pin(async move {
+            self.asks.fetch_add(1, AtomicOrdering::Relaxed);
+            let found = self.inner.get(keyspace, key).await?;
+            if found.is_some() {
+                self.rows.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            Ok(found)
+        })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, KvValue)>> {
-        self.asks.fetch_add(1, AtomicOrdering::Relaxed);
-        let found = self.inner.scan(request)?;
-        self.rows.fetch_add(found.len(), AtomicOrdering::Relaxed);
-        Ok(found)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, KvValue)>> {
+        Box::pin(async move {
+            self.asks.fetch_add(1, AtomicOrdering::Relaxed);
+            let found = self.inner.scan(request).await?;
+            self.rows.fetch_add(found.len(), AtomicOrdering::Relaxed);
+            Ok(found)
+        })
     }
 
-    fn first_of_each(
-        &self,
+    fn first_of_each<'a>(
+        &'a self,
         keyspace: Keyspace,
-        ranges: &[KeyRange],
-    ) -> Result<Vec<Option<(Key, KvValue)>>> {
-        self.asks.fetch_add(1, AtomicOrdering::Relaxed);
-        let found = self.inner.first_of_each(keyspace, ranges)?;
-        self.rows
-            .fetch_add(found.iter().flatten().count(), AtomicOrdering::Relaxed);
-        Ok(found)
+        ranges: &'a [KeyRange],
+    ) -> KvFuture<'a, Vec<Option<(Key, KvValue)>>> {
+        Box::pin(async move {
+            self.asks.fetch_add(1, AtomicOrdering::Relaxed);
+            let found = self.inner.first_of_each(keyspace, ranges).await?;
+            self.rows
+                .fetch_add(found.iter().flatten().count(), AtomicOrdering::Relaxed);
+            Ok(found)
+        })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.inner.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move { self.inner.apply(batch).await })
     }
 }
 
@@ -400,7 +408,7 @@ const AUTHORS: u64 = 5;
 fn crowded(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE orders; USE DATABASE orders;\n\
              DEFINE COLLECTION users;\n\
@@ -409,13 +417,13 @@ fn crowded(store: &Store) -> Session<'_> {
         .unwrap();
     for n in 1..=AUTHORS {
         session
-            .run(&format!("CREATE users:{n} = {{ name: 'n{n}' }};"))
+            .run_now(&format!("CREATE users:{n} = {{ name: 'n{n}' }};"))
             .unwrap();
     }
     for n in 1..=POSTS {
         let author = (n % AUTHORS).saturating_add(1);
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE posts:{n} = {{ title: 't{n}', author: users:{author} }};"
             ))
             .unwrap();
@@ -431,16 +439,20 @@ fn a_fetch_costs_one_ask_however_many_references_it_follows() {
     // carry a fudge factor and stop meaning anything the day the catalog changed
     // shape.
     let counting = Counting::new();
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut session = crowded(&store);
 
     counting.reset();
-    session.run("SELECT * FROM posts;").unwrap();
+    session.run_now("SELECT * FROM posts;").unwrap();
     let plain = counting.asks.load(AtomicOrdering::Relaxed);
     let plain_rows = counting.rows.load(AtomicOrdering::Relaxed);
 
     counting.reset();
-    let answered = session.run("SELECT * FROM posts FETCH author;").unwrap();
+    let answered = session
+        .run_now("SELECT * FROM posts FETCH author;")
+        .unwrap();
     let fetched = counting.asks.load(AtomicOrdering::Relaxed);
     let fetched_rows = counting.rows.load(AtomicOrdering::Relaxed);
 

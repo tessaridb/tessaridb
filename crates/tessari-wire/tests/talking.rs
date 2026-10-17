@@ -12,6 +12,8 @@
 use std::io::Write;
 use std::net::TcpStream;
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_wire::{Answer, Client, Node};
 use tessaridb::{Db, Value};
@@ -43,7 +45,7 @@ const READY: &str = "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
 
 #[test]
 fn a_script_runs_and_answers_one_outcome_per_statement() {
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
 
     let answers = client
@@ -68,7 +70,7 @@ fn a_value_crosses_the_network_as_the_value_it_was() {
     // The whole reason this protocol exists rather than the console reading the
     // HTTP endpoint. Every kind that JSON would have flattened into a string
     // comes back as itself, so a client decides nothing.
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
     client
         .run(&format!("{READY} DEFINE COLLECTION probe;"), None)
@@ -129,7 +131,7 @@ fn a_connection_remembers_what_it_selected() {
     // The difference between a connection and a sequence of unrelated sessions
     // that happen to share a socket. Without this a prompt over this protocol
     // would have to re-say where it was in every single statement.
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
 
     client.run(READY, None).unwrap();
@@ -152,7 +154,7 @@ fn a_connection_remembers_what_it_selected() {
 fn a_second_connection_starts_where_every_connection_starts() {
     // The memory above belongs to the connection and not to the store, which is
     // what makes two clients independent rather than two views of one session.
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut first = Client::connect(&address).unwrap();
     first.run(READY, None).unwrap();
     first.run("DEFINE COLLECTION users;", None).unwrap();
@@ -169,7 +171,7 @@ fn a_reference_arrives_with_the_name_the_client_could_not_have_looked_up() {
     // The catalog is on the server. A client rendering from ids alone prints
     // `<record 3:7>`, which is the one thing a console promising its output
     // pastes back cannot print.
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
     client
         .run(
@@ -202,7 +204,7 @@ fn a_reference_arrives_with_the_name_the_client_could_not_have_looked_up() {
 #[test]
 fn a_refusal_arrives_as_a_refusal_and_the_connection_lives() {
     // A client that mistyped a statement has not stopped being a client.
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
 
     let refused = client.run("SELECT * FROM;", None).expect_err("a refusal");
@@ -218,11 +220,11 @@ fn a_refusal_arrives_as_a_refusal_and_the_connection_lives() {
 fn a_closed_store_refuses_an_unauthenticated_request_with_the_sessions_own_words() {
     // The check is the session's. A second rule here would be a second place for
     // "who may do this" to be decided, and the two would eventually disagree.
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     {
         let mut session = db.session();
         session
-            .run("DEFINE USER root ROLE owner PASSWORD 'a long one';")
+            .run_now("DEFINE USER root ROLE owner PASSWORD 'a long one';")
             .unwrap();
     }
     let (_node, address) = serving(db);
@@ -251,7 +253,7 @@ fn a_frame_claiming_more_than_the_node_will_read_does_not_take_the_node_down() {
     // The oldest denial of service there is: a five-byte header claiming a
     // gibibyte. It is refused before the allocation, the connection closes, and
     // the node keeps serving — asserted by a second client arriving afterwards.
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     {
         let mut hostile = TcpStream::connect(&address).unwrap();
         // The greeting, so the node gets as far as reading a frame.
@@ -268,7 +270,7 @@ fn a_frame_claiming_more_than_the_node_will_read_does_not_take_the_node_down() {
 
 #[test]
 fn rubbish_on_the_socket_is_refused_at_the_greeting() {
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     {
         let mut hostile = TcpStream::connect(&address).unwrap();
         hostile.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
@@ -298,7 +300,7 @@ fn talking_to_something_that_is_not_a_node_says_so_rather_than_hanging() {
 
 #[test]
 fn two_clients_at_once_do_not_interfere() {
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     {
         let mut setup = Client::connect(&address).unwrap();
         setup
@@ -381,7 +383,7 @@ fn a_bounded_read_this_node_cannot_answer_is_redirected_over_the_wire() {
         std::time::Instant::now(),
     );
 
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     {
         // The schema first and the role second, in that order: a node that may
         // not write cannot define a collection either, so the two lines are not
@@ -390,9 +392,9 @@ fn a_bounded_read_this_node_cannot_answer_is_redirected_over_the_wire() {
         // puts its own copy outside every bound and sends the read elsewhere.
         let mut session = db.session();
         session
-            .run(&format!("{READY} DEFINE COLLECTION users;"))
+            .run_now(&format!("{READY} DEFINE COLLECTION users;"))
             .unwrap();
-        session.run("DEFINE NODE ROLES serving;").unwrap();
+        session.run_now("DEFINE NODE ROLES serving;").unwrap();
     }
     let (_node, address) = serving_among(db, Arc::new(tessari_wire::Published::holding(directory)));
     let mut client = Client::connect(&address).unwrap();
@@ -502,7 +504,7 @@ fn serving_tls() -> (Arc<Node>, String, String) {
     .unwrap()
     .server_config(&[]);
     let (node, address) = started(
-        Node::bind(Arc::new(Db::in_memory().unwrap()), "127.0.0.1:0")
+        Node::bind(Arc::new(Db::in_memory().now().unwrap()), "127.0.0.1:0")
             .unwrap()
             .securing(settings),
     );
@@ -578,7 +580,7 @@ fn a_node_with_a_certificate_refuses_a_client_that_offers_only_tls_1_2() {
 #[test]
 fn a_missing_record_and_an_event_that_met_one_arrive_as_conflicts() {
     // ADR-0124 D7: the class follows the cause, over the wire as in the session.
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
     client
         .run(
@@ -635,11 +637,11 @@ fn an_answer_above_the_frame_ceiling_is_refused_by_name_and_the_connection_lives
 /// A store holding two 9 MB records, so a read of both, or its snapshot, is
 /// more than one 16 MiB frame carries.
 fn above_the_ceiling() -> Db {
-    let db = Db::in_memory().unwrap();
+    let db = Db::in_memory().now().unwrap();
     {
         let mut session = db.session();
         session
-            .run(&format!("{READY} DEFINE COLLECTION big;"))
+            .run_now(&format!("{READY} DEFINE COLLECTION big;"))
             .unwrap();
         let nine_megabytes = Value::String("x".repeat(9 * 1024 * 1024));
         let body = std::collections::BTreeMap::from([("body".to_owned(), nine_megabytes)]);
@@ -647,7 +649,7 @@ fn above_the_ceiling() -> Db {
             "CREATE big:1 = { body: $body };",
             "CREATE big:2 = { body: $body };",
         ] {
-            session.run_with(statement, &body).unwrap();
+            session.run_with_now(statement, &body).unwrap();
         }
     }
     db
@@ -728,7 +730,7 @@ fn a_stream_the_script_never_took_does_not_catch_the_next_snapshot() {
     // Three requests back to back, because the node keeps one session attached
     // across requests that arrive close behind each other (`hot.rs`), and that is
     // the session a sink left behind would still be set on.
-    let (_node, address) = serving(Db::in_memory().unwrap());
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
     let mut client = Client::connect(&address).unwrap();
     client.run(READY, None).unwrap();
     let mut nothing = Vec::new();

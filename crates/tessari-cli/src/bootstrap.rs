@@ -63,7 +63,7 @@ pub const PASSWORD: &str = "TESSARIDB_INITIAL_PASSWORD";
 /// Returns a message when only one of the two variables is set, when the name is
 /// not one this can safely declare, or when the store refuses the statement for
 /// any reason other than already being closed.
-pub fn first_user(db: &Db) -> Result<Option<String>, String> {
+pub async fn first_user(db: &Db) -> Result<Option<String>, String> {
     let name = env::var(USER).ok().filter(|held| !held.is_empty());
     let password = env::var(PASSWORD).ok().filter(|held| !held.is_empty());
     let (name, password) = match (name, password) {
@@ -91,7 +91,7 @@ pub fn first_user(db: &Db) -> Result<Option<String>, String> {
         quoted(&password)
     );
     let mut session = db.session();
-    match session.run(&script) {
+    match session.run(&script).await {
         Ok(_) => {
             tracing::info!(user = %name, from = USER, "declared the store's first user");
             Ok(Some(name))

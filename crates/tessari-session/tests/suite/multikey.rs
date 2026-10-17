@@ -17,6 +17,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Error, Session};
@@ -25,14 +27,14 @@ use tessari_types::RecordId;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Notes with tags, one of which repeats an element and one of which has none.
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE work; USE DATABASE work;\n\
              DEFINE COLLECTION notes;\n\
@@ -47,7 +49,7 @@ fn ready(store: &Store) -> Session<'_> {
 }
 
 fn ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let mut found: Vec<RecordId> = outcomes
         .last()
         .unwrap()
@@ -61,7 +63,7 @@ fn ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
 }
 
 fn path(session: &mut Session<'_>, script: &str) -> AccessPath {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     outcomes.last().unwrap().path().unwrap()
 }
 
@@ -71,7 +73,7 @@ const DEFINE: &str = "DEFINE INDEX by_tag ON notes FIELDS tags[*];";
 fn an_element_is_found_through_the_index() {
     let store = store();
     let mut session = ready(&store);
-    session.run(DEFINE).unwrap();
+    session.run_now(DEFINE).unwrap();
     assert_eq!(
         path(&mut session, "SELECT * FROM notes WHERE tags[*] = 'draft';"),
         AccessPath::Index
@@ -103,7 +105,7 @@ fn the_index_answers_exactly_what_the_scan_answered() {
     let mut without = ready(&scanned);
     let indexed = store();
     let mut with = ready(&indexed);
-    with.run(DEFINE).unwrap();
+    with.run_now(DEFINE).unwrap();
 
     for script in [
         "SELECT * FROM notes WHERE tags[*] = 'draft';",
@@ -148,9 +150,9 @@ fn an_element_that_left_the_array_stops_being_an_answer() {
     // keys themselves and re-derives what they should be from the records.
     let store = store();
     let mut session = ready(&store);
-    session.run(DEFINE).unwrap();
+    session.run_now(DEFINE).unwrap();
     session
-        .run("UPDATE notes:1 = { title: 'first', tags: ['draft'] };")
+        .run_now("UPDATE notes:1 = { title: 'first', tags: ['draft'] };")
         .unwrap();
 
     assert!(
@@ -172,8 +174,8 @@ fn an_element_that_left_the_array_stops_being_an_answer() {
 fn a_deleted_record_leaves_no_entry_under_any_of_its_elements() {
     let store = store();
     let mut session = ready(&store);
-    session.run(DEFINE).unwrap();
-    session.run("DELETE notes:1;").unwrap();
+    session.run_now(DEFINE).unwrap();
+    session.run_now("DELETE notes:1;").unwrap();
     assert!(
         ids(
             &mut session,
@@ -191,9 +193,9 @@ fn a_deleted_record_leaves_no_entry_under_any_of_its_elements() {
 fn an_element_added_to_an_array_gains_an_entry_without_disturbing_the_others() {
     let store = store();
     let mut session = ready(&store);
-    session.run(DEFINE).unwrap();
+    session.run_now(DEFINE).unwrap();
     session
-        .run("UPDATE notes:2 = { title: 'second', tags: ['draft', 'urgent'] };")
+        .run_now("UPDATE notes:2 = { title: 'second', tags: ['draft', 'urgent'] };")
         .unwrap();
     assert_eq!(
         ids(
@@ -218,7 +220,7 @@ fn a_record_answers_once_even_when_several_of_its_elements_match() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE INDEX by_score ON notes FIELDS scores[*];")
+        .run_now("DEFINE INDEX by_score ON notes FIELDS scores[*];")
         .unwrap();
     let found = ids(&mut session, "SELECT * FROM notes WHERE scores[*] > 0;");
     assert_eq!(found, vec![RecordId::Int(1)], "{found:?}");
@@ -232,14 +234,14 @@ fn a_record_answers_once_even_when_several_of_its_elements_match() {
 fn duplicated_elements_are_one_entry_and_answer_once() {
     let store = store();
     let mut session = ready(&store);
-    session.run(DEFINE).unwrap();
+    session.run_now(DEFINE).unwrap();
     assert_eq!(
         ids(&mut session, "SELECT * FROM notes WHERE tags[*] = 'dup';"),
         vec![RecordId::Int(5)]
     );
     // …and removing the array removes the one entry rather than one of two.
     session
-        .run("UPDATE notes:5 = { title: 'fifth', tags: [] };")
+        .run_now("UPDATE notes:5 = { title: 'fifth', tags: [] };")
         .unwrap();
     assert!(ids(&mut session, "SELECT * FROM notes WHERE tags[*] = 'dup';").is_empty());
 }
@@ -251,9 +253,9 @@ fn a_rebuild_produces_what_incremental_maintenance_produced() {
     // property SGI.T2 built the rebuild for, now with several entries per record.
     let store = store();
     let mut session = ready(&store);
-    session.run(DEFINE).unwrap();
+    session.run_now(DEFINE).unwrap();
     session
-        .run("UPDATE notes:1 = { title: 'first', tags: ['draft', 'late'] };")
+        .run_now("UPDATE notes:1 = { title: 'first', tags: ['draft', 'late'] };")
         .unwrap();
     let before = [
         ids(&mut session, "SELECT * FROM notes WHERE tags[*] = 'draft';"),
@@ -263,7 +265,7 @@ fn a_rebuild_produces_what_incremental_maintenance_produced() {
             "SELECT * FROM notes WHERE tags[*] = 'urgent';",
         ),
     ];
-    session.run("REBUILD INDEX by_tag ON notes;").unwrap();
+    session.run_now("REBUILD INDEX by_tag ON notes;").unwrap();
     let after = [
         ids(&mut session, "SELECT * FROM notes WHERE tags[*] = 'draft';"),
         ids(&mut session, "SELECT * FROM notes WHERE tags[*] = 'late';"),
@@ -286,7 +288,7 @@ fn an_index_declared_on_the_field_is_still_not_offered_for_a_question_about_elem
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE INDEX by_tags ON notes FIELDS tags;")
+        .run_now("DEFINE INDEX by_tags ON notes FIELDS tags;")
         .unwrap();
     assert_eq!(
         path(&mut session, "SELECT * FROM notes WHERE tags[*] = 'draft';"),
@@ -320,7 +322,7 @@ fn the_shapes_without_a_rule_are_refused_each_for_its_own_reason() {
         // An entry per pair of elements, paid on every write.
         "DEFINE INDEX d ON notes FIELDS tags[*], scores[*];",
     ] {
-        let refused = session.run(script);
+        let refused = session.run_now(script);
         assert!(
             matches!(refused, Err(Error::Script(_))),
             "{script} was accepted: {refused:?}"
@@ -329,7 +331,7 @@ fn the_shapes_without_a_rule_are_refused_each_for_its_own_reason() {
     // …and one multi-valued route beside an ordinary one is fine, because only
     // one set of elements is being per.
     session
-        .run("DEFINE INDEX e ON notes FIELDS tags[*], title;")
+        .run_now("DEFINE INDEX e ON notes FIELDS tags[*], title;")
         .unwrap();
     assert_eq!(
         ids(

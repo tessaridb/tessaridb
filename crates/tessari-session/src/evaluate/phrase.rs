@@ -20,7 +20,7 @@ use crate::search::{Word, holds_run};
 /// From the stored ordinals of the terms each word reaches; from the record's
 /// text when a posting of this record carries none, which an index keeping
 /// positions never writes but which this answer does not depend on.
-pub(super) fn holds_phrase(
+pub(super) async fn holds_phrase(
     transaction: &Transaction<'_>,
     index: &IndexDefinition,
     analyzer: Option<&Analyzer>,
@@ -30,7 +30,7 @@ pub(super) fn holds_phrase(
 ) -> Result<bool> {
     let mut placed: BTreeMap<usize, &String> = BTreeMap::new();
     for term in groups.iter().flatten() {
-        let Some(located) = transaction.located(index, term, id)? else {
+        let Some(located) = transaction.located(index, term, id).await? else {
             continue;
         };
         if located.positions.is_empty() {

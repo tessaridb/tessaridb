@@ -3,7 +3,7 @@ use super::*;
 impl Session<'_> {
     /// Offer a candidate on every spatial index for each path a geometric
     /// conjunct of `condition` constrains, after every comparison was offered.
-    pub(super) fn offer_regional(
+    pub(super) async fn offer_regional(
         &self,
         transaction: &mut Transaction<'_>,
         condition: &Expr,
@@ -29,7 +29,7 @@ impl Session<'_> {
             // The query shape is evaluated here, once, like every other bound —
             // and for the extra reason that a covering is not cheap enough to
             // compute per index.
-            let Value::Geometry(geometry) = self.evaluate(transaction, reach.query)? else {
+            let Value::Geometry(geometry) = self.evaluate(transaction, reach.query).await? else {
                 continue;
             };
             // A query shape off the grid is not stored, so it is not held to the
@@ -46,7 +46,7 @@ impl Session<'_> {
             // anything else — a string, `none`, a negative or unbounded distance —
             // names no box, and the scan answers it exactly.
             if let Some(radius) = reach.widened_by {
-                let Value::Number(radius) = self.evaluate(transaction, radius)? else {
+                let Value::Number(radius) = self.evaluate(transaction, radius).await? else {
                     continue;
                 };
                 let Some(widened) = radius

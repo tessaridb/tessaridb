@@ -87,7 +87,9 @@ pub(super) async fn handle(
     let routing = Arc::clone(&node);
     let bridged = node
         .bridge
-        .call(incoming, move |incoming| answer(id, &routing, incoming))
+        .call_async(incoming, move |incoming| async move {
+            answer(id, &routing, incoming).await
+        })
         .await;
     drop(place);
     drop(busy);
@@ -129,7 +131,7 @@ fn refused_at_the_door() -> Response {
 /// Route one request and say what to answer.
 ///
 /// Runs on the blocking pool: every route here is synchronous.
-pub(super) fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
+pub(super) async fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
     let db = node.db.as_ref();
     let tokens = node.tokens.as_ref();
     let stopping = node.stopping.as_ref();
@@ -140,81 +142,98 @@ pub(super) fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
         // Health carries no data, so it answers a listening socket the same way
         // for everyone: a load balancer must not need a credential to tell a
         // live node from a dead one.
-        (Method::GET, "/health") => respond::health(db),
+        (Method::GET, "/health") => respond::health(db).await,
         // A different question, and a supervisor acts on the two in opposite
         // ways — a readiness failure means stop sending traffic, a liveness
         // failure means restart. No credential, for the same reason health
         // needs none.
-        (Method::GET, "/ready") => respond::ready(db, stopping.ready()),
+        (Method::GET, "/ready") => respond::ready(db, stopping.ready()).await,
         // Also without a credential, and for the third time the same reason: a
         // scraper that needs one is a scraper nobody configures. What it carries
         // is operational — an uptime, a sequence, some counts — with no user
         // data and no schema in it. A scraper that does present one is also
         // given each topic it may read, by name (G042).
-        (Method::GET, "/metrics") => respond::metrics(db, census, stopping, tokens, &presented),
+        (Method::GET, "/metrics") => {
+            respond::metrics(db, census, stopping, tokens, &presented).await
+        }
         // Split on `?` here rather than reaching for a URL parser: this route
         // takes one optional parameter and a dependency to read it would be a
         // poor trade.
-        (Method::GET, url) if url == "/backup" || url.starts_with("/backup?") => respond::backup(
-            db,
-            url.split_once('?').map(|(_, query)| query),
-            tokens,
-            &presented,
-        ),
+        (Method::GET, url) if url == "/backup" || url.starts_with("/backup?") => {
+            respond::backup(
+                db,
+                url.split_once('?').map(|(_, query)| query),
+                tokens,
+                &presented,
+            )
+            .await
+        }
         // Where a password is spent, once, for a token that stands in for it
         // afterwards. Both halves are here rather than only the first: a
         // credential a client cannot hand back is one it holds until it exits.
-        (Method::POST, "/session") => respond::open_session(db, &presented, tokens),
+        (Method::POST, "/session") => respond::open_session(db, &presented, tokens).await,
         (Method::DELETE, "/session") => respond::close_session(&presented, tokens),
         // Basic only, deliberately: the second proof is the whole route, and a
         // token is not proof of a password.
         (Method::POST, "/password") => match body::text(&mut request) {
-            Ok(body) => respond::change_password(db, &presented, body.trim_end_matches('\n')),
+            Ok(body) => respond::change_password(db, &presented, body.trim_end_matches('\n')).await,
             Err(refused) => refused,
         },
         // The vault's own surface. The passphrase is the body and nothing else,
         // so it is never script text; the body is trimmed of one trailing line
         // end exactly as `/password`'s is, so `curl -d @file` works.
-        (Method::GET, "/vault") => respond::vault::answer(
-            db,
-            tessaridb::VaultTarget::Store,
-            tessaridb::VaultAct::Status,
-            tokens,
-            &presented,
-        ),
-        (Method::POST, "/vault/seal") => respond::vault::answer(
-            db,
-            tessaridb::VaultTarget::Store,
-            tessaridb::VaultAct::Seal,
-            tokens,
-            &presented,
-        ),
+        (Method::GET, "/vault") => {
+            respond::vault::answer(
+                db,
+                tessaridb::VaultTarget::Store,
+                tessaridb::VaultAct::Status,
+                tokens,
+                &presented,
+            )
+            .await
+        }
+        (Method::POST, "/vault/seal") => {
+            respond::vault::answer(
+                db,
+                tessaridb::VaultTarget::Store,
+                tessaridb::VaultAct::Seal,
+                tokens,
+                &presented,
+            )
+            .await
+        }
         (Method::POST, "/vault/passphrase") => match body::text(&mut request) {
             Ok(body) => match request::passphrases(&body) {
-                Ok((current, new)) => respond::vault::answer(
-                    db,
-                    tessaridb::VaultTarget::Store,
-                    tessaridb::VaultAct::Change {
-                        current: &current,
-                        new: &new,
-                    },
-                    tokens,
-                    &presented,
-                ),
+                Ok((current, new)) => {
+                    respond::vault::answer(
+                        db,
+                        tessaridb::VaultTarget::Store,
+                        tessaridb::VaultAct::Change {
+                            current: &current,
+                            new: &new,
+                        },
+                        tokens,
+                        &presented,
+                    )
+                    .await
+                }
                 Err(shape) => Answer::bad_request(shape),
             },
             Err(refused) => refused,
         },
         (Method::POST, "/vault/unseal") => match body::text(&mut request) {
-            Ok(body) => respond::vault::answer(
-                db,
-                tessaridb::VaultTarget::Store,
-                tessaridb::VaultAct::Unseal {
-                    passphrase: body.trim_end_matches('\n'),
-                },
-                tokens,
-                &presented,
-            ),
+            Ok(body) => {
+                respond::vault::answer(
+                    db,
+                    tessaridb::VaultTarget::Store,
+                    tessaridb::VaultAct::Unseal {
+                        passphrase: body.trim_end_matches('\n'),
+                    },
+                    tokens,
+                    &presented,
+                )
+                .await
+            }
             Err(refused) => refused,
         },
         (Method::POST, "/script") => {
@@ -228,11 +247,12 @@ pub(super) fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
             match body::text(&mut request) {
                 Err(refused) => refused,
                 Ok(body) if !json => {
-                    respond::script(db, &body, &Default::default(), tokens, &presented)
+                    respond::script(db, &body, &Default::default(), tokens, &presented).await
                 }
                 Ok(body) => match request::envelope(&body) {
                     Ok(read) => {
                         respond::script(db, &read.script, &read.parameters, tokens, &presented)
+                            .await
                     }
                     Err(reason) => Answer::bad_request(&reason),
                 },
@@ -243,19 +263,19 @@ pub(super) fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
             if url.starts_with("/vault/")
                 && !matches!(url, "/vault/seal" | "/vault/unseal" | "/vault/passphrase") =>
         {
-            respond::vault::one_vault(db, method, url, &mut request, tokens, &presented)
+            respond::vault::one_vault(db, method, url, &mut request, tokens, &presented).await
         }
         // A batch of events for one series, in one transaction (G044 C12).
         (Method::POST, url) if url.starts_with("/series/") => match respond::series::target(url) {
             Some(aimed) => match body::text(&mut request) {
-                Ok(body) => respond::series::append(db, &aimed, &body, tokens, &presented),
+                Ok(body) => respond::series::append(db, &aimed, &body, tokens, &presented).await,
                 Err(refused) => refused,
             },
             None => Answer::new(404, r#"{"error":"no such route"}"#.to_owned()),
         },
         (method, url) if url.starts_with("/kv/") => match kv::target(url) {
             Some(aimed) => match body::text(&mut request) {
-                Ok(text) => kv::answer(db, &method, &aimed, &text, tokens, &presented),
+                Ok(text) => kv::answer(db, &method, &aimed, &text, tokens, &presented).await,
                 Err(refused) => refused,
             },
             None => Answer::new(404, r#"{"error":"no such route"}"#.to_owned()),
@@ -277,11 +297,11 @@ pub(super) fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
         (method, url) => match object::target(url) {
             Some(aimed) => match method {
                 Method::PUT | Method::POST => match body::bytes(&mut request) {
-                    Ok(body) => object::put(db, &aimed, body, tokens, &presented),
+                    Ok(body) => object::put(db, &aimed, body, tokens, &presented).await,
                     Err(refused) => refused,
                 },
-                Method::GET | Method::HEAD => object::get(db, &aimed, tokens, &presented),
-                Method::DELETE => object::delete(db, &aimed, tokens, &presented),
+                Method::GET | Method::HEAD => object::get(db, &aimed, tokens, &presented).await,
+                Method::DELETE => object::delete(db, &aimed, tokens, &presented).await,
                 _ => Answer::new(
                     405,
                     r#"{"error":"that route takes another method"}"#.to_owned(),

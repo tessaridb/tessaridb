@@ -1,5 +1,6 @@
 //! Tables and collections whose records expire (G069 SG2, ADR-0122 Part A).
 
+use tessari_session::RunNow;
 mod declaration;
 mod gathered;
 mod reads;
@@ -14,7 +15,7 @@ use tessari_types::Value;
 fn opened(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE app; USE DATABASE app;",
         )
@@ -24,7 +25,7 @@ fn opened(store: &Store) -> Session<'_> {
 
 /// The last statement's outcome.
 fn run(session: &mut Session<'_>, script: &str) -> Outcome {
-    session.run(script).unwrap().pop().unwrap()
+    session.run_now(script).unwrap().pop().unwrap()
 }
 
 /// What an `INFO FOR …` answers.

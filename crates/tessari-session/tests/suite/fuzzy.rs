@@ -26,13 +26,17 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Error, Outcome, Session};
 use tessari_storage::Store;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// The three words G022's baseline named, plus the distractors that make a wrong
@@ -45,7 +49,7 @@ fn peopled(indexed: bool) -> Store {
     let store = store();
     let mut session = Session::new(&store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
@@ -62,7 +66,7 @@ fn peopled(indexed: bool) -> Store {
         .unwrap();
     if indexed {
         session
-            .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+            .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
             .unwrap();
     }
     store
@@ -71,7 +75,7 @@ fn peopled(indexed: bool) -> Store {
 /// The ids a read answered with, sorted so two paths compare as sets, and the
 /// path it took.
 fn answered(session: &mut Session<'_>, read: &str) -> (Vec<String>, AccessPath) {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -95,8 +99,8 @@ fn both(statement: &str) -> Vec<String> {
     let (scanned, _) = opened(false);
     let mut with = Session::new(&indexed);
     let mut without = Session::new(&scanned);
-    with.run(use_it).unwrap();
-    without.run(use_it).unwrap();
+    with.run_now(use_it).unwrap();
+    without.run_now(use_it).unwrap();
     let (left, path) = answered(&mut with, statement);
     let (right, _) = answered(&mut without, statement);
     assert_eq!(
@@ -190,9 +194,9 @@ fn a_word_shorter_than_the_mandatory_prefix_is_refused_on_both_paths() {
     for indexed in [true, false] {
         let (held, use_it) = opened(indexed);
         let mut session = Session::new(&held);
-        session.run(use_it).unwrap();
+        session.run_now(use_it).unwrap();
         let error = session
-            .run("SELECT id FROM notes WHERE body MATCHES FUZZY 'v';")
+            .run_now("SELECT id FROM notes WHERE body MATCHES FUZZY 'v';")
             .expect_err("one character cannot carry a two-character prefix");
         assert!(
             matches!(error, Error::PrefixTooShort { .. }),
@@ -215,7 +219,7 @@ fn a_word_shorter_than_the_mandatory_prefix_is_refused_on_both_paths() {
 fn the_index_serves_it_and_the_scan_answers_without_one() {
     let (indexed, use_it) = opened(true);
     let mut with = Session::new(&indexed);
-    with.run(use_it).unwrap();
+    with.run_now(use_it).unwrap();
     let (_, path) = answered(
         &mut with,
         "SELECT id FROM notes WHERE body MATCHES FUZZY 'vectr';",
@@ -224,7 +228,7 @@ fn the_index_serves_it_and_the_scan_answers_without_one() {
 
     let (scanned, _) = opened(false);
     let mut without = Session::new(&scanned);
-    without.run(use_it).unwrap();
+    without.run_now(use_it).unwrap();
     let (_, path) = answered(
         &mut without,
         "SELECT id FROM notes WHERE body MATCHES FUZZY 'vectr';",
@@ -262,7 +266,7 @@ fn an_expanded_term_never_outranks_the_word_that_was_typed() {
     let held = store();
     let mut session = Session::new(&held);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
@@ -277,7 +281,7 @@ fn an_expanded_term_never_outranks_the_word_that_was_typed() {
         .unwrap();
 
     let outcomes = session
-        .run(
+        .run_now(
             "SELECT id, search::score(body, 'vector') AS relevance \
              FROM notes WHERE body MATCHES FUZZY 'vector';",
         )
@@ -379,10 +383,10 @@ fn an_index_without_surfaces_leaves_the_word_to_the_scan() {
     use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest, WriteBatch};
 
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let held = Store::open(Arc::clone(&backend)).unwrap();
+    let held = Store::open(Arc::clone(&backend)).now().unwrap();
     let mut session = Session::new(&held);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
@@ -405,13 +409,13 @@ fn an_index_without_surfaces_leaves_the_word_to_the_scan() {
         limit: None,
     };
     let mut batch = WriteBatch::new();
-    for (key, _) in backend.scan(&surfaces).unwrap() {
+    for (key, _) in backend.scan(&surfaces).now().unwrap() {
         batch = batch.delete(
             KeyKind::SearchSurface.keyspace(),
             Key::from(key.as_slice().to_vec()),
         );
     }
-    backend.apply(batch).unwrap();
+    backend.apply(batch).now().unwrap();
     assert_eq!(
         answered(&mut session, read),
         (vec!["6".to_owned()], AccessPath::Scan)
@@ -420,7 +424,7 @@ fn an_index_without_surfaces_leaves_the_word_to_the_scan() {
 
 /// The score of each answered record, by id.
 fn scores(session: &mut Session<'_>, read: &str) -> Vec<(String, f64)> {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("{read}: {:?}", outcomes.last());
     };
@@ -445,7 +449,7 @@ fn scores(session: &mut Session<'_>, read: &str) -> Vec<(String, f64)> {
 fn a_fuzzy_score_measures_what_the_read_reached_and_an_exact_term_weighs_most() {
     let (store, use_it) = opened(true);
     let mut session = Session::new(&store);
-    session.run(use_it).unwrap();
+    session.run_now(use_it).unwrap();
     let found = scores(
         &mut session,
         "SELECT id, search::score(body, 'vectr') AS score FROM notes \
@@ -457,7 +461,7 @@ fn a_fuzzy_score_measures_what_the_read_reached_and_an_exact_term_weighs_most() 
     // The same words but one, so only the spelling differs: the exact term must
     // outweigh the corrected one, not tie with it.
     session
-        .run("CREATE notes:8 = { body: 'Vectr search over a store' };")
+        .run_now("CREATE notes:8 = { body: 'Vectr search over a store' };")
         .unwrap();
     let ranked = scores(
         &mut session,

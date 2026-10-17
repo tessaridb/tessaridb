@@ -20,13 +20,17 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Session};
 use tessari_storage::Store;
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 const RECORDS: usize = 200;
@@ -35,7 +39,7 @@ const RECORDS: usize = 200;
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION events;\n\
@@ -50,7 +54,7 @@ fn ready(store: &Store) -> Session<'_> {
             n % 10
         ));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     session
 }
 
@@ -71,7 +75,7 @@ fn a_read_inside_its_ceiling_answers_in_full() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT * FROM events TIMEOUT 1h;")
+        .run_now("SELECT * FROM events TIMEOUT 1h;")
         .unwrap_or_else(|error| panic!("a generous ceiling refused a read: {error}"));
     assert_eq!(outcomes.last().unwrap().records().unwrap().len(), RECORDS);
 }
@@ -80,7 +84,7 @@ fn a_read_inside_its_ceiling_answers_in_full() {
 fn a_read_that_passes_its_ceiling_is_refused() {
     let store = store();
     let mut session = ready(&store);
-    match session.run("SELECT * FROM events TIMEOUT 1ns;") {
+    match session.run_now("SELECT * FROM events TIMEOUT 1ns;") {
         Err(Error::TimedOut {
             after, produced, ..
         }) => {
@@ -103,11 +107,11 @@ fn a_refused_read_answers_nothing_at_all() {
     // would cost nothing — which is exactly why a truncated answer is the easy
     // mistake here and why this asserts there is no answer rather than a short
     // one.
-    let refused = session.run("SELECT * FROM events TIMEOUT 1ns;");
+    let refused = session.run_now("SELECT * FROM events TIMEOUT 1ns;");
     assert!(refused.is_err(), "a passed ceiling answered");
     // And the session is still usable afterwards: a refusal is one statement's
     // failure, not the connection's.
-    let after = session.run("SELECT * FROM events;").unwrap();
+    let after = session.run_now("SELECT * FROM events;").unwrap();
     assert_eq!(after.last().unwrap().records().unwrap().len(), RECORDS);
 }
 
@@ -117,14 +121,14 @@ fn every_consumer_a_read_can_run_through_honours_the_ceiling() {
     let mut session = ready(&store);
     for read in BOTH_CONSUMERS {
         // Refused under a ceiling that has already passed …
-        match session.run(&format!("{read} TIMEOUT 1ns;")) {
+        match session.run_now(&format!("{read} TIMEOUT 1ns;")) {
             Err(Error::TimedOut { .. }) => {}
             other => panic!("{read} ignored its ceiling: {other:?}"),
         }
         // … and answering under one that has not. Without this half, a consumer
         // that refused unconditionally would pass.
         session
-            .run(&format!("{read} TIMEOUT 1h;"))
+            .run_now(&format!("{read} TIMEOUT 1h;"))
             .unwrap_or_else(|error| panic!("{read} was refused under 1h: {error}"));
     }
 }
@@ -137,7 +141,7 @@ fn a_ceiling_that_could_only_refuse_is_caught_when_the_statement_is_read() {
     // never have permitted. A clause that can only refuse is a mistake in the
     // statement, and a mistake in a statement is a thing to say when the
     // statement is read.
-    match session.run("SELECT * FROM events TIMEOUT 0s;") {
+    match session.run_now("SELECT * FROM events TIMEOUT 0s;") {
         Err(Error::Script(tessari_ql::Error::EmptyTimeout { written, .. })) => {
             assert_eq!(written, "0s");
         }
@@ -151,21 +155,22 @@ fn an_inner_ceiling_narrows_and_never_widens() {
     let mut session = ready(&store);
     // The inner read is the tight one: its own ceiling refuses it, and the
     // statement holding it fails with it.
-    match session.run("SELECT * FROM (SELECT * FROM events LIMIT 200 TIMEOUT 1ns);") {
+    match session.run_now("SELECT * FROM (SELECT * FROM events LIMIT 200 TIMEOUT 1ns);") {
         Err(Error::TimedOut { .. }) => {}
         other => panic!("an inner ceiling was ignored: {other:?}"),
     }
     // The outer read is the tight one, and the inner read's generous ceiling
     // does not lift it. This is the direction that matters: a subquery able to
     // raise the budget its caller set would make an outer ceiling a suggestion.
-    match session.run("SELECT * FROM (SELECT * FROM events LIMIT 200 TIMEOUT 1h) TIMEOUT 1ns;") {
+    match session.run_now("SELECT * FROM (SELECT * FROM events LIMIT 200 TIMEOUT 1h) TIMEOUT 1ns;")
+    {
         Err(Error::TimedOut { .. }) => {}
         other => panic!("an inner clause widened an outer ceiling: {other:?}"),
     }
     // And two generous ceilings still answer, so the test above is about
     // narrowing rather than about nesting refusing everything.
     let outcomes = session
-        .run("SELECT * FROM (SELECT * FROM events LIMIT 200 TIMEOUT 1h) TIMEOUT 1h;")
+        .run_now("SELECT * FROM (SELECT * FROM events LIMIT 200 TIMEOUT 1h) TIMEOUT 1h;")
         .unwrap();
     assert_eq!(outcomes.last().unwrap().records().unwrap().len(), RECORDS);
 }
@@ -176,7 +181,7 @@ fn a_read_with_no_ceiling_is_never_refused_for_time() {
     let mut session = ready(&store);
     // The ordinary read, which is nearly every read. It pays one branch on
     // `None` per record and can never fail this way.
-    let outcomes = session.run("SELECT * FROM events;").unwrap();
+    let outcomes = session.run_now("SELECT * FROM events;").unwrap();
     assert_eq!(outcomes.last().unwrap().records().unwrap().len(), RECORDS);
 }
 
@@ -189,12 +194,12 @@ fn a_ceiling_and_an_assertion_are_independent_clauses() {
     // the plan the read finished with. Written together they still mean what
     // each means alone.
     let outcomes = session
-        .run("SELECT * FROM events USING scan TIMEOUT 1h;")
+        .run_now("SELECT * FROM events USING scan TIMEOUT 1h;")
         .unwrap();
     assert_eq!(outcomes.last().unwrap().records().unwrap().len(), RECORDS);
     // The ceiling passes first, so the read never reaches the assertion — and
     // the refusal names the ceiling rather than the path.
-    match session.run("SELECT * FROM events USING index TIMEOUT 1ns;") {
+    match session.run_now("SELECT * FROM events USING index TIMEOUT 1ns;") {
         Err(Error::TimedOut { .. }) => {}
         other => panic!("a ceiling and an assertion did not compose: {other:?}"),
     }
@@ -208,12 +213,12 @@ fn an_index_may_still_be_called_timeout() {
     // rather than by reserving the word: both of these are sayable, and which
     // one is meant is decided by whether a duration follows.
     let named = session
-        .run("SELECT * FROM events WHERE rare = 3 USING INDEX timeout;")
+        .run_now("SELECT * FROM events WHERE rare = 3 USING INDEX timeout;")
         .unwrap_or_else(|error| panic!("an index called `timeout` was unnameable: {error}"));
     assert_eq!(named.last().unwrap().records().unwrap().len(), RECORDS / 10);
 
     let clause = session
-        .run("SELECT * FROM events USING index TIMEOUT 1h;")
+        .run_now("SELECT * FROM events USING index TIMEOUT 1h;")
         .unwrap_err();
     // The read scanned, so the assertion refuses — which is the point: the
     // statement was read as `USING index` plus a ceiling, not as an index named

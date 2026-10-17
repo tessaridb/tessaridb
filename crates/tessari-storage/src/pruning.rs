@@ -74,9 +74,9 @@ impl Store {
     ///
     /// Returns an error when the backend fails or the stored start cannot be
     /// decoded.
-    pub fn log_start(&self, log: LogId) -> Result<Sequence> {
+    pub async fn log_start(&self, log: LogId) -> Result<Sequence> {
         let key = LogStartKey::new(log).encode();
-        match self.backend().get(LogStartKey::keyspace(), &key)? {
+        match self.backend().get(LogStartKey::keyspace(), &key).await? {
             Some(value) => Ok(Sequence::decode(value.as_slice())?),
             None => Ok(Sequence::ZERO),
         }
@@ -102,9 +102,9 @@ impl Store {
     ///
     /// Returns an error when the backend fails or a stored value cannot be
     /// decoded.
-    pub fn prune_log(&self, log: LogId, upto: Sequence) -> Result<Pruned> {
-        let tail = self.committed_tail(log)?;
-        let held = self.log_start(log)?;
+    pub async fn prune_log(&self, log: LogId, upto: Sequence) -> Result<Pruned> {
+        let tail = self.committed_tail(log).await?;
+        let held = self.log_start(log).await?;
         // One below the tail, and never below zero.
         let ceiling = Sequence::new(tail.get().saturating_sub(1));
         let upto = upto.min(ceiling);
@@ -125,18 +125,22 @@ impl Store {
             LogStartKey::new(log).encode(),
             start.encode(),
         );
-        self.backend().apply(self.unbar_below(log, start, batch)?)?;
+        self.backend()
+            .apply(self.unbar_below(log, start, batch).await?)
+            .await?;
 
         // From below every real sequence rather than from the recorded start:
         // an interrupted earlier pass may have left records under it, and a
         // range that began at the start would walk past them forever.
-        self.backend().delete_range(
-            LogKey::keyspace(),
-            &KeyRange::between(
-                LogKey::new(log, Sequence::ZERO).encode(),
-                LogKey::new(log, start).encode(),
-            ),
-        )?;
+        self.backend()
+            .delete_range(
+                LogKey::keyspace(),
+                &KeyRange::between(
+                    LogKey::new(log, Sequence::ZERO).encode(),
+                    LogKey::new(log, start).encode(),
+                ),
+            )
+            .await?;
 
         Ok(Pruned {
             records: upto
@@ -157,18 +161,21 @@ impl Store {
     /// the prepare as reading what the log no longer holds (D3a) — the bar adds
     /// nothing, and goes. Each copy decides from its own log, so no leader ever
     /// logs the prepare for a follower still holding its bar to refuse.
-    fn unbar_below(
+    async fn unbar_below(
         &self,
         log: LogId,
         start: Sequence,
         mut batch: WriteBatch,
     ) -> Result<WriteBatch> {
-        let bars = self.backend().scan(&ScanRequest {
-            keyspace: AcrossBarredKey::keyspace(),
-            range: KeyRange::prefix(&[AcrossBarredKey::KIND.tag()]),
-            direction: ScanDirection::Forward,
-            limit: None,
-        })?;
+        let bars = self
+            .backend()
+            .scan(&ScanRequest {
+                keyspace: AcrossBarredKey::keyspace(),
+                range: KeyRange::prefix(&[AcrossBarredKey::KIND.tag()]),
+                direction: ScanDirection::Forward,
+                limit: None,
+            })
+            .await?;
         for (key, value) in bars {
             if let Some((written, at)) = Barred::decode(value.as_slice())?.written
                 && written == log
@@ -221,14 +228,14 @@ impl Store {
     ///
     /// Returns an error when the backend fails or a stored value cannot be
     /// decoded.
-    pub fn trim_logs(&self) -> Result<Option<Trimmed>> {
-        let (crate::Retention::Keep(keep), _) = self.effective_retention()? else {
+    pub async fn trim_logs(&self) -> Result<Option<Trimmed>> {
+        let (crate::Retention::Keep(keep), _) = self.effective_retention().await? else {
             return Ok(None);
         };
         let mut trimmed = Trimmed::default();
-        for log in self.logs()? {
+        for log in self.logs().await? {
             trimmed.logs = trimmed.logs.saturating_add(1);
-            let tail = self.committed_tail(log)?;
+            let tail = self.committed_tail(log).await?;
             // Everything at or below this is older than the window. A tail that
             // has not yet reached the window subtracts to zero, and `prune_log`
             // treats zero as *nothing to do*.
@@ -238,7 +245,7 @@ impl Store {
             if let Some(held) = self.log_holds().floor(log) {
                 upto = upto.min(Sequence::new(held.get().saturating_sub(1)));
             }
-            let pruned = self.prune_log(log, upto)?;
+            let pruned = self.prune_log(log, upto).await?;
             trimmed.records = trimmed.records.saturating_add(pruned.records);
         }
         Ok(Some(trimmed))

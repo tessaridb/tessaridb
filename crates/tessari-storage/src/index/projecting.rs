@@ -19,7 +19,7 @@ use tessari_types::{Analyzer, DatabaseId, NamespaceId, TableId, Value};
 /// analyzer, they post no terms, and a read served by the index answers without
 /// them while a scan finds them (DB-23). A read through a transaction passes no
 /// mutations, because the transaction already sees its own writes.
-pub(crate) fn analyzers_on(
+pub(crate) async fn analyzers_on(
     view: &mut Transaction<'_>,
     applying: &[Mutation],
     namespace: NamespaceId,
@@ -27,7 +27,8 @@ pub(crate) fn analyzers_on(
     table: TableId,
 ) -> Result<BTreeMap<String, Analyzer>> {
     let mut wanted: BTreeMap<String, String> = Catalog::new(view)
-        .fields_on(namespace, database, table)?
+        .fields_on(namespace, database, table)
+        .await?
         .into_iter()
         .filter_map(|field| field.analyzer.map(|named| (field.name, named)))
         .collect();
@@ -46,7 +47,7 @@ pub(crate) fn analyzers_on(
     if wanted.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let named = analyzers_named(view, applying)?;
+    let named = analyzers_named(view, applying).await?;
     Ok(wanted
         .into_iter()
         .filter_map(|(field, analyzer)| named.get(&analyzer).map(|held| (field, held.clone())))
@@ -350,12 +351,13 @@ pub(crate) fn analyzer_for<'a>(
 /// Every analyzer the store declares, by name — what a search member resolves
 /// its analyzer against, counting those `applying` declares (see
 /// [`analyzers_on`]).
-pub(crate) fn analyzers_named(
+pub(crate) async fn analyzers_named(
     view: &mut Transaction<'_>,
     applying: &[Mutation],
 ) -> Result<BTreeMap<String, Analyzer>> {
     let mut named: BTreeMap<String, Analyzer> = Catalog::new(view)
-        .analyzers()?
+        .analyzers()
+        .await?
         .into_iter()
         .map(|definition| (definition.name, definition.analyzer))
         .collect();

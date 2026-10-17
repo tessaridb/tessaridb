@@ -27,7 +27,7 @@ impl Session<'_> {
     /// One candidate per disjunct of `condition`'s top-level `OR`, when every
     /// disjunct has one worth serving; `None` for a condition that is not a
     /// disjunction, or one with a side no index serves.
-    pub(crate) fn union_of(
+    pub(crate) async fn union_of(
         &self,
         transaction: &mut Transaction<'_>,
         table: TableId,
@@ -42,8 +42,10 @@ impl Session<'_> {
         }
         let mut chosen = Vec::with_capacity(disjuncts.len());
         for disjunct in disjuncts {
-            let offered = self.enumerate(transaction, disjunct, declared, searched)?;
-            match super::serving(transaction, table, offered, lifted)? {
+            let offered = self
+                .enumerate(transaction, disjunct, declared, searched)
+                .await?;
+            match super::serving(transaction, table, offered, lifted).await? {
                 Some(candidate) => chosen.push(candidate),
                 None => return Ok(None),
             }

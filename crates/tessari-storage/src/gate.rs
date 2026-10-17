@@ -39,6 +39,15 @@
 //! write (G040 SG4). What a writer holding the turn reads includes what is
 //! pending ([`Overlaid`]); what anybody else reads does not.
 //!
+//! # The holder is a task, not a thread
+//!
+//! A commit holds the turn across awaits, and a task on a multi-threaded
+//! runtime resumes on whichever worker is free. So the gate records WHO holds
+//! the turn (the task, or the thread when the turn is taken outside any task),
+//! and a read asks whether it is that holder. A record per thread would hide a
+//! holder's own pending writes from it after a hop, and show them to another
+//! task that happens to run on its old thread.
+//!
 //! # Every landing is announced from here
 //!
 //! A commit's landing, a batch applied under the turn and a replica's apply all
@@ -48,6 +57,8 @@
 //! on a timer.
 
 #[cfg(test)]
+mod abandoned_tests;
+#[cfg(test)]
 mod fault_tests;
 #[cfg(test)]
 mod group_tests;
@@ -56,18 +67,14 @@ mod overlay;
 mod overlay_tests;
 mod pending;
 
-use std::cell::Cell;
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock, PoisonError, RwLock};
 
 use tessari_kv::{ErrorCategory, KvBackend, WriteBatch};
+use tessari_types::Sequence;
 
 pub(crate) use overlay::Overlaid;
 pub(crate) use pending::Ticket;
-
-thread_local! {
-    /// The gate this thread holds the turn of, by address; zero for none.
-    static HOLDING: Cell<usize> = const { Cell::new(0) };
-}
 
 /// How far an unstaged apply makes its batch durable before it answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,16 +88,29 @@ pub(crate) enum Landing {
 }
 
 /// The turn every in-process writer of log records takes.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct WriteGate {
-    turn: Mutex<()>,
+    /// Held across a commit's awaits, so an async mutex.
+    turn: tokio::sync::Mutex<()>,
+    /// Who holds the turn, set once it is taken and cleared before it is handed
+    /// on. Its lock is held for a compare and never across an await.
+    holder: Mutex<Option<Holder>>,
     pending: pending::Pending,
+    /// The version the turn's holder last read, so that the transactions it
+    /// begins under one turn read the version position once (`NOT_KEPT` when
+    /// none). Touched only by the holder: the turn orders one holder after the
+    /// next, so `Relaxed` is enough. Cleared whenever the holder moves the
+    /// version and before the turn is handed on.
+    kept: AtomicU64,
     landed: Hooks,
     /// Why this store stopped taking writes, once a write it could not make
     /// durable failed (G059 C4). Set once, never cleared: only reopening the
     /// store, which recovers from its log, takes writes again.
     stopped: OnceLock<String>,
 }
+
+/// `WriteGate::kept` holding no version.
+const NOT_KEPT: u64 = u64::MAX;
 
 /// What to call once a write that filed a log record has landed.
 #[derive(Default)]
@@ -102,34 +122,79 @@ impl std::fmt::Debug for Hooks {
     }
 }
 
+/// Who holds a turn: the task that took it, or the thread when it was taken
+/// outside any task (a `block_on`, which polls on one thread to the end).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Holder {
+    Task(tokio::task::Id),
+    Thread(std::thread::ThreadId),
+}
+
+impl Holder {
+    fn current() -> Self {
+        tokio::task::try_id().map_or_else(|| Self::Thread(std::thread::current().id()), Self::Task)
+    }
+}
+
 /// A held turn. Dropping it hands the turn on.
 #[derive(Debug)]
 pub(crate) struct Turn<'a> {
-    _held: MutexGuard<'a, ()>,
-    before: usize,
+    gate: &'a WriteGate,
+    _held: tokio::sync::MutexGuard<'a, ()>,
 }
 
 impl Drop for Turn<'_> {
+    // Runs before the guard field drops, so the holder is cleared before the
+    // next writer can take the turn and record itself.
     fn drop(&mut self) {
-        HOLDING.with(|holding| holding.set(self.before));
+        self.gate.forget_version();
+        *self.gate.holder_slot() = None;
+    }
+}
+
+impl Default for WriteGate {
+    fn default() -> Self {
+        Self {
+            turn: tokio::sync::Mutex::default(),
+            holder: Mutex::default(),
+            pending: pending::Pending::default(),
+            kept: AtomicU64::new(NOT_KEPT),
+            landed: Hooks::default(),
+            stopped: OnceLock::new(),
+        }
     }
 }
 
 impl WriteGate {
     /// Wait for this writer's turn, holding it until the guard is dropped.
-    pub(crate) fn hold(&self) -> Turn<'_> {
-        let held = self.turn.lock().unwrap_or_else(PoisonError::into_inner);
-        let before = HOLDING.with(|holding| holding.replace(self.address()));
+    pub(crate) async fn hold(&self) -> Turn<'_> {
+        let held = self.turn.lock().await;
+        *self.holder_slot() = Some(Holder::current());
         Turn {
+            gate: self,
             _held: held,
-            before,
         }
+    }
+
+    fn holder_slot(&self) -> std::sync::MutexGuard<'_, Option<Holder>> {
+        self.holder.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Hand a derived batch over to be landed with whatever else is staged.
     /// Called holding the turn; the answer comes from [`Self::land`].
-    pub(crate) fn stage(&self, batch: WriteBatch) -> Ticket {
-        self.pending.stage(batch)
+    pub(crate) fn stage(&self, batch: WriteBatch, version: Sequence) -> Ticket<'_> {
+        self.forget_version();
+        self.pending.stage(batch, version)
+    }
+
+    /// Record that the batch at `version` has landed (`crate::landed`).
+    pub(crate) fn landed_at(&self, version: Sequence) {
+        self.pending.landed_at(version);
+    }
+
+    /// The newest version landed, which a transaction begins at.
+    pub(crate) fn landed_version(&self) -> Sequence {
+        self.pending.landed_version()
     }
 
     /// Wait for a staged batch to land, landing a group when nobody else is.
@@ -139,9 +204,13 @@ impl WriteGate {
     ///
     /// The batch's own failure, or the retryable conflict when it was derived
     /// on a batch that did not land.
-    pub(crate) fn land(&self, ticket: Ticket, backend: &dyn KvBackend) -> tessari_kv::Result<()> {
+    pub(crate) async fn land(
+        &self,
+        ticket: Ticket<'_>,
+        backend: &dyn KvBackend,
+    ) -> tessari_kv::Result<()> {
         self.refuse_if_stopped()?;
-        let landed = self.pending.land(ticket, backend);
+        let landed = self.pending.land(ticket, backend).await;
         self.stop_on(&landed);
         if landed.is_ok() {
             self.announce();
@@ -156,16 +225,17 @@ impl WriteGate {
     /// # Errors
     ///
     /// The batch's own failure.
-    pub(crate) fn apply(
+    pub(crate) async fn apply(
         &self,
         batch: WriteBatch,
         backend: &dyn KvBackend,
         landing: Landing,
     ) -> tessari_kv::Result<()> {
         self.refuse_if_stopped()?;
+        self.forget_version();
         let applied = match landing {
-            Landing::Synced => backend.apply(batch),
-            Landing::Deferred => backend.apply_unsynced(batch),
+            Landing::Synced => backend.apply(batch).await,
+            Landing::Deferred => backend.apply_unsynced(batch).await,
         };
         self.stop_on(&applied);
         if applied.is_ok() {
@@ -230,8 +300,8 @@ impl WriteGate {
     /// Land everything pending. For a writer holding the turn that applies its
     /// own batch — a replica's apply — so that it allocates from a store with
     /// nothing in flight.
-    pub(crate) fn land_all(&self, backend: &dyn KvBackend) {
-        self.pending.land_all(backend);
+    pub(crate) async fn land_all(&self, backend: &dyn KvBackend) {
+        self.pending.land_all(backend).await;
     }
 
     /// How many commits are staged and not yet in flight.
@@ -246,19 +316,35 @@ impl WriteGate {
         self.pending.quiet()
     }
 
-    /// Whether this thread holds the turn, and so may read batches that have
+    /// The version the turn's holder kept with [`Self::keep_version`] since it
+    /// last moved the version. Only for the holder.
+    pub(crate) fn kept_version(&self) -> Option<tessari_types::Sequence> {
+        // Relaxed: only the holder reads and writes it (see `kept`).
+        let kept = self.kept.load(Ordering::Relaxed);
+        (kept != NOT_KEPT).then(|| tessari_types::Sequence::new(kept))
+    }
+
+    /// Keep the version the turn's holder just read. Only for the holder.
+    pub(crate) fn keep_version(&self, version: tessari_types::Sequence) {
+        // Relaxed: only the holder reads and writes it (see `kept`).
+        self.kept.store(version.get(), Ordering::Relaxed);
+    }
+
+    fn forget_version(&self) {
+        // Relaxed: only the holder reads and writes it (see `kept`).
+        self.kept.store(NOT_KEPT, Ordering::Relaxed);
+    }
+
+    /// Whether the caller holds the turn, and so may read batches that have
     /// not landed.
     pub(crate) fn holding(&self) -> bool {
         self.held_here()
     }
 
-    /// Whether this thread holds the turn.
+    /// Whether the caller (this task, or this thread outside a task) holds the
+    /// turn. Only the holder can match: task and thread ids are never reused.
     fn held_here(&self) -> bool {
-        HOLDING.with(Cell::get) == self.address()
-    }
-
-    fn address(&self) -> usize {
-        std::ptr::from_ref(self).addr()
+        *self.holder_slot() == Some(Holder::current())
     }
 }
 
@@ -266,6 +352,7 @@ impl WriteGate {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use crate::now::Now;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -275,7 +362,7 @@ mod tests {
     use crate::{Error, RecordAddress, Store};
 
     fn write(store: &Store) -> crate::Result<()> {
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().now()?;
         transaction.put(
             RecordAddress::new(
                 NamespaceId::new(1),
@@ -285,12 +372,12 @@ mod tests {
             ),
             b"{}".to_vec(),
         );
-        transaction.commit().map(|_| ())
+        transaction.commit().now().map(|_| ())
     }
 
     /// Hold the turn, let a writer queue on it, run `meanwhile`, then let it go.
     fn queued_behind(store: &Store, meanwhile: impl FnOnce()) -> crate::Result<()> {
-        let turn = store.write_gate().hold();
+        let turn = store.write_gate().hold().now();
         std::thread::scope(|scope| {
             let writer = scope.spawn(|| write(store));
             // Long enough for the writer to pass admission and reach the gate;
@@ -303,8 +390,55 @@ mod tests {
     }
 
     #[test]
+    fn the_holder_begins_above_a_batch_it_applied_under_its_turn() {
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
+        write(&store).unwrap();
+        let turn = store.write_gate().hold().now();
+        let before = store.begin().now().unwrap().snapshot();
+        let moved = tessari_types::Sequence::new(before.get() + 1);
+        let record = tessari_encoding::LogRecord::new(Vec::new());
+        store
+            .write_gate()
+            .apply(
+                crate::log::state_batch(moved, &record),
+                store.engine().as_ref(),
+                crate::gate::Landing::Synced,
+            )
+            .now()
+            .unwrap();
+        assert_eq!(store.begin().now().unwrap().snapshot(), moved);
+        drop(turn);
+    }
+
+    #[test]
+    fn a_version_kept_by_one_turn_is_not_read_by_the_next() {
+        // The kept version belongs to a turn. A version moved between two
+        // turns, by anything at all, is read again by the next holder.
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
+        write(&store).unwrap();
+        let turn = store.write_gate().hold().now();
+        let before = store.begin().now().unwrap().snapshot();
+        drop(turn);
+        let moved = tessari_types::Sequence::new(before.get() + 1);
+        let record = tessari_encoding::LogRecord::new(Vec::new());
+        store
+            .engine()
+            .apply(crate::log::state_batch(moved, &record))
+            .now()
+            .unwrap();
+        let _turn = store.write_gate().hold().now();
+        assert_eq!(store.begin().now().unwrap().snapshot(), moved);
+    }
+
+    #[test]
     fn a_commit_that_waited_for_its_turn_writes_when_the_fence_is_still_open() {
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         store.hold_lease(Duration::from_secs(60));
         queued_behind(&store, || {}).expect("the wait alone refuses nothing");
     }
@@ -314,7 +448,9 @@ mod tests {
         // Admitted under a live lease, then queued while the fence shut: a
         // write landing now could land after another node was granted the
         // leadership, which is what the fence exists to prevent.
-        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap();
         store.hold_lease(Duration::from_secs(60));
         let refused = queued_behind(&store, || store.hold_lease(Duration::ZERO));
         assert!(

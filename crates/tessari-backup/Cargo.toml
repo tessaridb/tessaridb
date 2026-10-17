@@ -18,7 +18,7 @@ thiserror.workspace = true
 [dev-dependencies]
 tessari-kv.workspace = true
 tessari-lsm.workspace = true
-tessari-session.workspace = true
+tessari-session = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 
 [lints]

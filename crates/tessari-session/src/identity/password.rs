@@ -6,6 +6,7 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use argon2::{Algorithm, Argon2, Params, Version};
 use tessari_constants::{PASSWORD_HASH_LANES, PASSWORD_HASH_MEMORY_KIB, PASSWORD_HASH_PASSES};
 use tessari_ql::Span;
+use tessari_vault::off_the_worker;
 
 /// The hasher both sides of a credential use, at parameters this project chose.
 ///
@@ -57,11 +58,13 @@ pub(crate) fn hash(password: &str, span: Span) -> Result<String> {
         return Err(Error::PasswordEmpty { span });
     }
     let salt = SaltString::generate(&mut OsRng);
-    hasher()
-        .ok_or(Error::PasswordUnusable { span })?
-        .hash_password(password.as_bytes(), &salt)
-        .map(|hashed| hashed.to_string())
-        .map_err(|_| Error::PasswordUnusable { span })
+    let argon = hasher().ok_or(Error::PasswordUnusable { span })?;
+    off_the_worker(|| {
+        argon
+            .hash_password(password.as_bytes(), &salt)
+            .map(|hashed| hashed.to_string())
+    })
+    .map_err(|_| Error::PasswordUnusable { span })
 }
 
 /// A stored hash given back by a state script, taken if this store could have
@@ -103,6 +106,8 @@ pub(crate) fn accepted(held: &str, span: Span) -> Result<String> {
 /// parameters are a set again.
 pub(crate) fn verifies(password: &str, stored: &str) -> bool {
     PasswordHash::new(stored).is_ok_and(|parsed| {
-        hasher().is_some_and(|argon| argon.verify_password(password.as_bytes(), &parsed).is_ok())
+        hasher().is_some_and(|argon| {
+            off_the_worker(|| argon.verify_password(password.as_bytes(), &parsed).is_ok())
+        })
     })
 }

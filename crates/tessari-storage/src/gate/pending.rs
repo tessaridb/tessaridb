@@ -15,7 +15,7 @@
 //! The next commit derives while the one before it is still on its way to the
 //! device, so it must see that commit's writes: its version, its tail, its index
 //! entries. [`super::Overlaid`] shows it the staged and in-flight writes — but
-//! only to the thread holding the turn. A reader anywhere else sees the engine
+//! only to the task holding the turn. A reader anywhere else sees the engine
 //! alone, and the engine publishes a synced write only once it is synced, so
 //! nothing is readable before it is durable. Index entries, counts and term
 //! statistics carry no version, which is why a design that let writes reach the
@@ -28,14 +28,20 @@
 //! group and still staged — answers the retryable conflict, because each asserted
 //! a state that is now not going to exist. They derive again from what did land.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Bound;
-use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::panic::{AssertUnwindSafe, resume_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+use futures_util::FutureExt as _;
+use tokio::sync::Notify;
 
 use tessari_constants::{MAX_GROUP_BYTES, MAX_GROUP_COMMITS};
 use tessari_kv::{Error, Key, Keyspace, KvBackend, Result, Value, WriteBatch, WriteOp};
+use tessari_types::Sequence;
+
+use crate::landed::Landed;
 
 /// What pending writes do to each key they touch: a value, or `None` for a
 /// delete.
@@ -44,19 +50,42 @@ type Ops = BTreeMap<Keyspace, BTreeMap<Vec<u8>, Option<Value>>>;
 /// A key range as the two bounds a map walks.
 pub(super) type Bounds<'a> = (Bound<&'a [u8]>, Bound<&'a [u8]>);
 
-/// A staged commit's claim on its answer.
+/// A staged commit's claim on its answer. Dropped before it collects the answer
+/// (its waiter gone), it takes the answer with it, or tells the landing not to
+/// keep one.
 #[derive(Debug)]
 #[must_use = "a staged commit has landed only once its ticket is answered"]
-pub(crate) struct Ticket(u64);
+pub(crate) struct Ticket<'a> {
+    pending: &'a Pending,
+    id: u64,
+    collected: bool,
+}
+
+impl Drop for Ticket<'_> {
+    fn drop(&mut self) {
+        if self.collected {
+            return;
+        }
+        let mut state = self.pending.lock();
+        if state.answers.remove(&self.id).is_none() {
+            state.gone.insert(self.id);
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub(super) struct Pending {
     state: Mutex<State>,
-    settled: Condvar,
+    /// Woken when a landing has recorded its answers. A waiter registers under
+    /// the state lock and a landing notifies only after taking it, so no wake is
+    /// lost between a waiter's check and its wait.
+    settled: Notify,
     /// Whether anything is staged or in flight, readable without the lock:
     /// the turn's holder asks on every read, and almost always the answer is
     /// no. Written under the lock whenever the state changes.
     any: AtomicBool,
+    /// The newest version landed, which a transaction begins at.
+    landed: Landed,
 }
 
 #[derive(Debug, Default)]
@@ -70,11 +99,16 @@ pub(super) struct State {
     flushing: bool,
     next: u64,
     answers: HashMap<u64, Result<()>>,
+    /// Tickets dropped before their answer was recorded, whose answer is
+    /// therefore not kept.
+    gone: HashSet<u64>,
 }
 
 #[derive(Debug)]
 struct Member {
     ticket: u64,
+    /// The version this commit's batch moves the store to.
+    version: Sequence,
     batch: WriteBatch,
     bytes: usize,
     /// Where a refusal on this commit's behalf says it was refused.
@@ -86,7 +120,17 @@ impl Pending {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub(super) fn stage(&self, batch: WriteBatch) -> Ticket {
+    /// Record that the batch at `version` has landed.
+    pub(super) fn landed_at(&self, version: Sequence) {
+        self.landed.publish(version);
+    }
+
+    /// The newest version landed.
+    pub(super) fn landed_version(&self) -> Sequence {
+        self.landed.version()
+    }
+
+    pub(super) fn stage(&self, batch: WriteBatch, version: Sequence) -> Ticket<'_> {
         let mut state = self.lock();
         let ticket = state.next;
         state.next = ticket.saturating_add(1);
@@ -112,11 +156,16 @@ impl Pending {
         self.any.store(true, Ordering::Release);
         state.staged.push_back(Member {
             ticket,
+            version,
             batch,
             bytes,
             named,
         });
-        Ticket(ticket)
+        Ticket {
+            pending: self,
+            id: ticket,
+            collected: false,
+        }
     }
 
     #[cfg(test)]
@@ -124,74 +173,120 @@ impl Pending {
         self.lock().staged.len()
     }
 
+    /// How many answers are held for commits that have not collected them.
+    #[cfg(test)]
+    pub(super) fn held_answers(&self) -> usize {
+        self.lock().answers.len()
+    }
+
     /// Wait for a staged commit's answer, landing a group when nobody else is.
-    pub(super) fn land(&self, ticket: Ticket, backend: &dyn KvBackend) -> Result<()> {
-        let mut state = self.lock();
+    pub(super) async fn land(&self, mut ticket: Ticket<'_>, backend: &dyn KvBackend) -> Result<()> {
         loop {
-            if let Some(answer) = state.answers.remove(&ticket.0) {
-                return answer;
-            }
-            state = if !state.flushing && !state.staged.is_empty() {
-                self.flush(state, backend)
-            } else {
-                self.settled
-                    .wait(state)
-                    .unwrap_or_else(PoisonError::into_inner)
+            let notified = self.settled.notified();
+            let mut notified = std::pin::pin!(notified);
+            let next = {
+                let mut state = self.lock();
+                if let Some(answer) = state.answers.remove(&ticket.id) {
+                    ticket.collected = true;
+                    return answer;
+                }
+                if !state.flushing && !state.staged.is_empty() {
+                    Next::Land(state.take_group())
+                } else {
+                    notified.as_mut().enable();
+                    Next::Wait
+                }
             };
+            match next {
+                Next::Land(group) => self.flush(group, backend).await,
+                Next::Wait => notified.await,
+            }
         }
     }
 
     /// Land everything pending before a writer that does not stage — a
     /// replica's apply — allocates from the store. Called holding the turn, so
     /// nothing is staged behind it.
-    pub(super) fn land_all(&self, backend: &dyn KvBackend) {
-        let mut state = self.lock();
+    pub(super) async fn land_all(&self, backend: &dyn KvBackend) {
         loop {
-            state = if state.flushing {
-                self.settled
-                    .wait(state)
-                    .unwrap_or_else(PoisonError::into_inner)
-            } else if state.staged.is_empty() {
-                return;
-            } else {
-                self.flush(state, backend)
+            let notified = self.settled.notified();
+            let mut notified = std::pin::pin!(notified);
+            let next = {
+                let mut state = self.lock();
+                if state.flushing {
+                    notified.as_mut().enable();
+                    Next::Wait
+                } else if state.staged.is_empty() {
+                    return;
+                } else {
+                    Next::Land(state.take_group())
+                }
             };
+            match next {
+                Next::Land(group) => self.flush(group, backend).await,
+                Next::Wait => notified.await,
+            }
         }
     }
 
-    fn flush<'a>(
-        &'a self,
-        mut state: MutexGuard<'a, State>,
-        backend: &dyn KvBackend,
-    ) -> MutexGuard<'a, State> {
-        let group = state.take_group();
-        drop(state);
+    async fn flush(&self, group: Vec<Member>, backend: &dyn KvBackend) {
         let mut tickets = Vec::with_capacity(group.len());
+        let mut versions = Vec::with_capacity(group.len());
         let mut named = Vec::with_capacity(group.len());
         let mut batches = Vec::with_capacity(group.len());
         for member in group {
             tickets.push(member.ticket);
+            versions.push(member.version);
             named.push(member.named);
             batches.push(member.batch);
         }
-        let count = batches.len();
+        let landing = Landing {
+            pending: self,
+            members: Some((tickets, versions, named)),
+            backend: backend.name(),
+        };
         // A panic while landing is contained here: left to unwind, it would
         // leave the landing marked as running and every later commit waiting
         // for it for ever. The group's writes are answered as unknown — the
         // engine may or may not have taken them — and the panic goes on up this
-        // thread afterwards.
-        let landing = catch_unwind(AssertUnwindSafe(|| backend.apply_group(batches)));
+        // task afterwards. A landing whose future is dropped part way is
+        // answered the same way, by `Landing`'s drop.
+        let outcome = AssertUnwindSafe(backend.apply_group(batches))
+            .catch_unwind()
+            .await;
+        landing.settle(outcome);
+    }
+
+    /// Record a group's outcome: `None` when the landing was abandoned before it
+    /// answered.
+    fn record(
+        &self,
+        tickets: Vec<u64>,
+        versions: &[Sequence],
+        named: Vec<(Keyspace, Key)>,
+        backend: &'static str,
+        outcome: Option<std::thread::Result<(usize, Result<()>)>>,
+    ) {
+        let count = tickets.len();
         let mut state = self.lock();
         state.in_flight.clear();
         state.flushing = false;
-        let (landed, outcome, panicked) = match landing {
-            Ok((landed, outcome)) => (landed, outcome, None),
-            Err(payload) => (0, Ok(()), Some(payload)),
+        let (landed, outcome, panicked, unknown_reason) = match outcome {
+            Some(Ok((landed, outcome))) => (landed, outcome, None, None),
+            Some(Err(payload)) => (0, Ok(()), Some(payload), Some(PANICKED)),
+            None => (0, Ok(()), None, Some(ABANDONED)),
         };
+        // Before any waiter is answered, and whether or not its waiter is still
+        // there to be: what landed is counted as landed here, by the landing,
+        // because a waiter that is gone publishes nothing (`crate::landed`). A
+        // group whose outcome is unknown publishes nothing either.
+        if let Some(newest) = versions.iter().take(landed).max() {
+            self.landed.publish(*newest);
+        }
         let mut failure = outcome.err();
         for (index, (ticket, (keyspace, key))) in tickets.into_iter().zip(named).enumerate() {
-            let answer = if panicked.is_some() {
-                Err(unknown(backend.name()))
+            let answer = if let Some(reason) = unknown_reason {
+                Err(unknown(backend, reason))
             } else if index < landed {
                 Ok(())
             } else if let Some(stopped) = failure.take() {
@@ -199,18 +294,17 @@ impl Pending {
             } else {
                 Err(refused(keyspace, key))
             };
-            state.answers.insert(ticket, answer);
+            state.answer(ticket, answer);
         }
-        if panicked.is_some() || landed < count {
+        if unknown_reason.is_some() || landed < count {
             state.refuse_staged();
         }
         self.any.store(!state.is_empty(), Ordering::Release);
-        self.settled.notify_all();
+        drop(state);
+        self.settled.notify_waiters();
         if let Some(payload) = panicked {
-            drop(state);
             resume_unwind(payload);
         }
-        state
     }
 
     /// Whether nothing is pending, without taking the lock.
@@ -284,11 +378,17 @@ impl State {
         group
     }
 
+    /// Keep `answer` for `ticket`, unless its ticket is already gone.
+    fn answer(&mut self, ticket: u64, answer: Result<()>) {
+        if !self.gone.remove(&ticket) {
+            self.answers.insert(ticket, answer);
+        }
+    }
+
     fn refuse_staged(&mut self) {
         while let Some(member) = self.staged.pop_front() {
             let (keyspace, key) = member.named;
-            self.answers
-                .insert(member.ticket, Err(refused(keyspace, key)));
+            self.answer(member.ticket, Err(refused(keyspace, key)));
         }
         self.staged_ops.clear();
     }
@@ -307,12 +407,55 @@ fn record(ops: &mut Ops, batch: &WriteBatch) {
     }
 }
 
-/// The answer for a commit whose group write panicked: it may have landed.
-fn unknown(backend: &'static str) -> Error {
+/// Why a commit's group write leaves its landing unknown.
+const PANICKED: &str = "a group write panicked, so whether it landed is unknown";
+const ABANDONED: &str = "a group write was abandoned part way, so whether it landed is unknown";
+
+/// The answer for a commit whose group write did not answer: it may have landed.
+fn unknown(backend: &'static str, reason: &str) -> Error {
     Error::Backend {
         backend,
-        reason: "a group write panicked, so whether it landed is unknown".to_owned(),
+        reason: reason.to_owned(),
         source: None,
+    }
+}
+
+/// What a waiter does once it has looked at the state.
+enum Next {
+    /// Land this group, which nobody else is landing.
+    Land(Vec<Member>),
+    /// Wait for the landing that is running.
+    Wait,
+}
+
+/// A landing group's tickets, the versions its batches move the store to, and
+/// the keys its writes name.
+type Members = (Vec<u64>, Vec<Sequence>, Vec<(Keyspace, Key)>);
+
+/// A group on its way to the engine. Answering its outcome settles it; dropped
+/// unsettled (the landing's future abandoned part way), it answers every
+/// member unknown, so no commit waits for a landing that will never record.
+struct Landing<'a> {
+    pending: &'a Pending,
+    members: Option<Members>,
+    backend: &'static str,
+}
+
+impl Landing<'_> {
+    fn settle(mut self, outcome: std::thread::Result<(usize, Result<()>)>) {
+        if let Some((tickets, versions, named)) = self.members.take() {
+            self.pending
+                .record(tickets, &versions, named, self.backend, Some(outcome));
+        }
+    }
+}
+
+impl Drop for Landing<'_> {
+    fn drop(&mut self) {
+        if let Some((tickets, versions, named)) = self.members.take() {
+            self.pending
+                .record(tickets, &versions, named, self.backend, None);
+        }
     }
 }
 

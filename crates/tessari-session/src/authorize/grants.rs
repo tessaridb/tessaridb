@@ -34,7 +34,7 @@ impl<'a> Session<'a> {
     /// names is held* passes for reasons that have nothing to do with
     /// permission, which is the shape this store has already had to refuse
     /// `BACKUP` by name for.
-    pub(crate) fn within_authority(
+    pub(crate) async fn within_authority(
         &self,
         store: &'a Store,
         kind: &StatementKind,
@@ -47,7 +47,7 @@ impl<'a> Session<'a> {
         if needs.kinds().is_empty() {
             return Ok(());
         }
-        for reach in self.reaches(store, kind, needs, span)? {
+        for reach in self.reaches(store, kind, needs, span).await? {
             for demanded in needs.kinds() {
                 if !user.authorities.permits(*demanded, reach) {
                     return Err(Error::RoleForbids {
@@ -72,7 +72,7 @@ impl<'a> Session<'a> {
     /// whatever resolves it, with a message about the table rather than about an
     /// authority, and answering here first would turn *no such table* into a
     /// permission refusal that tells the reader less.
-    pub(crate) fn reaches(
+    pub(crate) async fn reaches(
         &self,
         store: &'a Store,
         kind: &StatementKind,
@@ -84,8 +84,8 @@ impl<'a> Session<'a> {
         }
         let mut reaches = Vec::new();
         for table in crate::reach::tables_named(kind) {
-            let mut transaction = store.begin()?;
-            let resolved = self.resolve_readable_table(&mut transaction, table);
+            let mut transaction = store.begin().await?;
+            let resolved = self.resolve_readable_table(&mut transaction, table).await;
             transaction.rollback();
             if let Ok((context, _)) = resolved {
                 reaches.push(Reach::Database(context.namespace, context.database));
@@ -102,8 +102,8 @@ impl<'a> Session<'a> {
             // and that is correct rather than a hole: it has resolved no name,
             // so there is nothing for an authority to be held over, and every
             // statement that goes on to name one is asked again at the naming.
-            let mut transaction = store.begin()?;
-            let selected = self.context(&mut transaction, None, span).ok();
+            let mut transaction = store.begin().await?;
+            let selected = self.context(&mut transaction, None, span).await.ok();
             transaction.rollback();
             if let Some(context) = selected {
                 reaches.push(Reach::Database(context.namespace, context.database));
@@ -125,7 +125,7 @@ impl<'a> Session<'a> {
     /// Which tables a statement names comes from [`crate::reach::tables_named`],
     /// an exhaustive match — so a statement form added later cannot reach a
     /// table until somebody has decided whether grants apply to it.
-    pub(crate) fn within_grants(
+    pub(crate) async fn within_grants(
         &self,
         store: &'a Store,
         kind: &StatementKind,
@@ -134,8 +134,8 @@ impl<'a> Session<'a> {
         let Some(user) = self.identity.user() else {
             return Ok(());
         };
-        let mut transaction = store.begin()?;
-        let grants = Catalog::new(&mut transaction).grants_for(user.id)?;
+        let mut transaction = store.begin().await?;
+        let grants = Catalog::new(&mut transaction).grants_for(user.id).await?;
         transaction.rollback();
         if grants.is_empty() {
             return Ok(());
@@ -187,17 +187,17 @@ impl<'a> Session<'a> {
         // so this mapping is about the reach rather than about them.
         let verbs: Vec<Verb> = Needs::of(kind).grant_verbs().collect();
         for table in crate::reach::tables_named(kind) {
-            let mut transaction = store.begin()?;
+            let mut transaction = store.begin().await?;
             // A materialized view is named, not expanded, and a grant on a view
             // is never written — so its grant is its source's (ADR-0109 D7).
-            let resolved = self
-                .resolve_readable_table(&mut transaction, table)
-                .and_then(|(context, id)| {
-                    Ok(match self.materialized_view(&mut transaction, id)? {
-                        Some(kept) => (context, kept.source),
-                        None => (context, id),
-                    })
-                });
+            let resolved = match self.resolve_readable_table(&mut transaction, table).await {
+                Ok((context, id)) => match self.materialized_view(&mut transaction, id).await {
+                    Ok(Some(kept)) => Ok((context, kept.source)),
+                    Ok(None) => Ok((context, id)),
+                    Err(failure) => Err(failure),
+                },
+                Err(failure) => Err(failure),
+            };
             transaction.rollback();
             // A table that does not resolve is refused by whatever resolves it,
             // with a message about the table rather than about a grant.

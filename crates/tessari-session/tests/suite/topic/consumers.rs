@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::thread;
+use tessari_session::RunNow;
 
 use tessari_types::{Number, RecordId, Value};
 
@@ -28,7 +29,7 @@ fn a_position_moves_with_the_readers_commit_and_not_without_it() {
         // Read, write the result, and give both up: the next read is given the
         // same messages, and the result is not there.
         let given = |session: &mut tessari_session::Session<'_>, script: &str| {
-            let outcomes = session.run(script).unwrap();
+            let outcomes = session.run_now(script).unwrap();
             let tessari_session::Outcome::Records { records, .. } = &outcomes[2] else {
                 panic!("{outcomes:?}");
             };
@@ -112,7 +113,9 @@ fn readers_of_one_name_are_given_every_message_exactly_once_between_them() {
                                 round < 1_000,
                                 "a reader was still being given messages after {round} reads"
                             );
-                            match session.run("READ FROM events FOR CONSUMER 'workers' LIMIT 3;") {
+                            match session
+                                .run_now("READ FROM events FOR CONSUMER 'workers' LIMIT 3;")
+                            {
                                 Ok(mut outcomes) => {
                                     let outcome = outcomes.pop().unwrap();
                                     let tessari_session::Outcome::Records { records, .. } = outcome

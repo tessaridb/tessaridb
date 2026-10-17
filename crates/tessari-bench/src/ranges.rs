@@ -38,6 +38,7 @@
 //! samples is the slowest of them. The `ops` column says so on every row.
 
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessaridb::{Db, Outcome};
 
@@ -101,7 +102,7 @@ pub fn range(db: &Db) -> Failable<Vec<Report>> {
 /// input like any other, and two copies of one drift silently.
 pub(crate) fn spans(db: &Db, records: u64) -> Failable<Samples> {
     let mut session = db.session();
-    session.run(
+    session.run_now(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench;\n\
          DEFINE DATABASE bench; USE DATABASE bench;\n\
          DEFINE COLLECTION spans;\n\
@@ -111,7 +112,7 @@ pub(crate) fn spans(db: &Db, records: u64) -> Failable<Samples> {
     let mut written = Samples::with_capacity(usize::try_from(records).unwrap_or(0));
     for n in 0..records {
         let started = Instant::now();
-        session.run(&format!(
+        session.run_now(&format!(
             "CREATE spans:{n} = {{ n: {n}, \
              note: '{NOTE}' }};"
         ))?;
@@ -130,7 +131,7 @@ pub(crate) const NOTE: &str =
 /// One width: the reads, what they answered, and what the process was holding.
 fn at_width(db: &Db, width: u64, settled: Option<u64>) -> Failable<Vec<Report>> {
     let mut session = db.session();
-    session.run("USE NAMESPACE bench; USE DATABASE bench;")?;
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench;")?;
 
     let reads = TOUCHED
         .checked_div(width)
@@ -150,7 +151,7 @@ fn at_width(db: &Db, width: u64, settled: Option<u64>) -> Failable<Vec<Report>> 
         let from = n.saturating_mul(step);
         let until = from.saturating_add(width);
         let started = Instant::now();
-        let outcome = session.run(&format!(
+        let outcome = session.run_now(&format!(
             "SELECT * FROM spans WHERE n >= {from} AND n < {until};"
         ))?;
         taken.push(started.elapsed());

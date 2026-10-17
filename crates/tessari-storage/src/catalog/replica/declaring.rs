@@ -6,7 +6,7 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns [`Error::NameTaken`] when the name is already declared.
-    pub fn create_replica(
+    pub async fn create_replica(
         &mut self,
         name: &str,
         endpoint: &str,
@@ -30,6 +30,7 @@ impl Catalog<'_, '_> {
             preferred: false,
             region: None,
         })
+        .await
     }
 
     /// Declare a peer from a whole definition — the form a declaration with
@@ -38,18 +39,18 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns [`Error::NameTaken`] when the name is already declared.
-    pub fn create_replica_with(
+    pub async fn create_replica_with(
         &mut self,
         definition: ReplicaDefinition,
     ) -> Result<ReplicaDefinition> {
-        if self.replica_row(&definition.name)?.is_some() {
+        if self.replica_row(&definition.name).await?.is_some() {
             return Err(Error::NameTaken {
                 holder: crate::catalog::with_article(Level::Replica.noun()),
                 name: definition.name.clone(),
             });
         }
         if let Some(node) = definition.node
-            && self.is_tombstoned(&node)?
+            && self.is_tombstoned(&node).await?
         {
             return Err(Error::NodeTombstoned {
                 node: RecordId::Uuid(node).to_string(),
@@ -64,10 +65,11 @@ impl Catalog<'_, '_> {
     /// A point read rather than a scan, which is what makes the name an identity
     /// rather than a field somebody searches on: the row either exists at its own
     /// key or it does not, and the answer costs one lookup.
-    fn replica_row(&self, name: &str) -> Result<Option<ReplicaDefinition>> {
+    async fn replica_row(&self, name: &str) -> Result<Option<ReplicaDefinition>> {
         let Some(bytes) = self
             .transaction
-            .get(&system::address(system::REPLICAS, RecordId::from(name)))?
+            .get(&system::address(system::REPLICAS, RecordId::from(name)))
+            .await?
         else {
             return Ok(None);
         };
@@ -106,8 +108,8 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored definitions cannot be read.
-    pub fn bind_replica_node(&mut self, name: &str, node: [u8; NODE_ID_LEN]) -> Result<bool> {
-        let Some(mut definition) = self.replica_row(name)? else {
+    pub async fn bind_replica_node(&mut self, name: &str, node: [u8; NODE_ID_LEN]) -> Result<bool> {
+        let Some(mut definition) = self.replica_row(name).await? else {
             return Ok(false);
         };
         definition.node = Some(node);
@@ -125,8 +127,8 @@ impl Catalog<'_, '_> {
     ///
     /// Returns [`Error::RowAlreadyBound`] when the row already names its node,
     /// and an error when the stored definitions cannot be read.
-    pub fn wait_for_join(&mut self, name: &str, ticket: JoinTicket) -> Result<bool> {
-        let Some(mut definition) = self.replica_row(name)? else {
+    pub async fn wait_for_join(&mut self, name: &str, ticket: JoinTicket) -> Result<bool> {
+        let Some(mut definition) = self.replica_row(name).await? else {
             return Ok(false);
         };
         if definition.node.is_some() {
@@ -158,11 +160,11 @@ impl Catalog<'_, '_> {
     ///
     /// Returns [`Error::PlacementCannotBeDropped`] for the last row placing its
     /// range, and an error when the stored definitions cannot be read.
-    pub fn drop_replica(&mut self, name: &str) -> Result<bool> {
-        let Some(found) = self.replica_row(name)? else {
+    pub async fn drop_replica(&mut self, name: &str) -> Result<bool> {
+        let Some(found) = self.replica_row(name).await? else {
             return Ok(false);
         };
-        self.keeps_a_candidate(&found)?;
+        self.keeps_a_candidate(&found).await?;
         self.transaction
             .delete(system::address(system::REPLICAS, RecordId::from(name)));
         // A row that named a node removes the node, not only the row: its
@@ -185,13 +187,13 @@ impl Catalog<'_, '_> {
     /// [`Error::PlacementCannotBeDropped`] when the last row placing a range
     /// is moved to another one, and an error when the stored definitions
     /// cannot be read.
-    pub fn alter_replica_leads(
+    pub async fn alter_replica_leads(
         &mut self,
         name: &str,
         leads: Option<Reach>,
         preferred: bool,
     ) -> Result<bool> {
-        let Some(mut definition) = self.replica_row(name)? else {
+        let Some(mut definition) = self.replica_row(name).await? else {
             return Ok(false);
         };
         let preferred = preferred && leads.is_some();
@@ -208,14 +210,14 @@ impl Catalog<'_, '_> {
         // store's leader is elected on its line, and is folded away then.
         if leads.is_none()
             && definition.leads.is_some()
-            && !self.has_another_candidate(&definition)?
+            && !self.has_another_candidate(&definition).await?
         {
             definition.releasing = true;
             definition.preferred = false;
             self.write_replica(&definition);
             return Ok(true);
         }
-        self.keeps_a_candidate(&definition)?;
+        self.keeps_a_candidate(&definition).await?;
         definition.leads = leads;
         definition.releasing = false;
         definition.preferred = preferred;
@@ -233,8 +235,8 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// The store's, reading or decoding the row.
-    pub fn finish_release(&mut self, name: &str) -> Result<bool> {
-        let Some(mut definition) = self.replica_row(name)? else {
+    pub async fn finish_release(&mut self, name: &str) -> Result<bool> {
+        let Some(mut definition) = self.replica_row(name).await? else {
             return Ok(false);
         };
         if !definition.releasing {
@@ -259,12 +261,12 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// The store's, reading or decoding the row.
-    pub fn amend_replica(
+    pub async fn amend_replica(
         &mut self,
         name: &str,
         amend: impl FnOnce(&mut ReplicaDefinition),
     ) -> Result<bool> {
-        let Some(mut definition) = self.replica_row(name)? else {
+        let Some(mut definition) = self.replica_row(name).await? else {
             return Ok(false);
         };
         amend(&mut definition);
@@ -280,8 +282,8 @@ impl Catalog<'_, '_> {
     /// while the range's own leader goes on writing under its lease until the
     /// change reaches it — two writers on one range for up to a lease
     /// (ADR-0082, ADR-0098).
-    fn keeps_a_candidate(&self, row: &ReplicaDefinition) -> Result<()> {
-        if row.leads.is_none() || self.has_another_candidate(row)? {
+    async fn keeps_a_candidate(&self, row: &ReplicaDefinition) -> Result<()> {
+        if row.leads.is_none() || self.has_another_candidate(row).await? {
             return Ok(());
         }
         Err(Error::PlacementCannotBeDropped {
@@ -290,9 +292,10 @@ impl Catalog<'_, '_> {
     }
 
     /// Whether a row other than `row` places `row`'s range.
-    fn has_another_candidate(&self, row: &ReplicaDefinition) -> Result<bool> {
+    async fn has_another_candidate(&self, row: &ReplicaDefinition) -> Result<bool> {
         Ok(self
-            .replicas()?
+            .replicas()
+            .await?
             .iter()
             .any(|peer| peer.name != row.name && peer.leads.is_some() && peer.leads == row.leads))
     }
@@ -308,13 +311,17 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn replicas(&self) -> Result<Vec<ReplicaDefinition>> {
+    pub async fn replicas(&self) -> Result<Vec<ReplicaDefinition>> {
         let mut found = Vec::new();
-        for (_, payload) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::REPLICAS,
-        )? {
+        for (_, payload) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::REPLICAS,
+            )
+            .await?
+        {
             found.push(ReplicaDefinition::from_value(&decode_payload(&payload)?)?);
         }
         found.sort_by(|left, right| left.name.cmp(&right.name));
@@ -351,9 +358,10 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when a stored definition cannot be read.
-    pub fn desired_roles(&self, node: &[u8; NODE_ID_LEN]) -> Result<Option<Roles>> {
+    pub async fn desired_roles(&self, node: &[u8; NODE_ID_LEN]) -> Result<Option<Roles>> {
         Ok(self
-            .replicas()?
+            .replicas()
+            .await?
             .into_iter()
             .find(|found| found.node.as_ref() == Some(node))
             .map(|found| found.roles))

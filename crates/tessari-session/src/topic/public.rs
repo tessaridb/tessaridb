@@ -30,7 +30,7 @@ impl<'a> Session<'a> {
     ///
     /// [`Error::NotSignedIn`] for anything but the door above, and
     /// [`Error::TopicRateExceeded`] for an append past the topic's rate.
-    pub(crate) fn public_append(
+    pub(crate) async fn public_append(
         &self,
         store: &'a Store,
         kind: &StatementKind,
@@ -54,7 +54,7 @@ impl<'a> Session<'a> {
         if crate::reach::tables_named(kind).len() != 1 {
             return Err(Error::NotSignedIn { span });
         }
-        let Some((topic, rule)) = self.public_topic(store, table)? else {
+        let Some((topic, rule)) = self.public_topic(store, table).await? else {
             return Err(Error::NotSignedIn { span });
         };
         if store.admit_public_append(topic, rule, count) {
@@ -70,19 +70,19 @@ impl<'a> Session<'a> {
     }
 
     /// The topic `table` names and its public rule, when it is one that opens.
-    fn public_topic(
+    async fn public_topic(
         &self,
         store: &'a Store,
         table: &TableRef,
     ) -> Result<Option<(tessari_types::TableId, tessari_storage::PublicAppend)>> {
-        let mut transaction = store.begin()?;
+        let mut transaction = store.begin().await?;
         // A table that does not resolve is not a door, and saying which is not
         // this caller's to learn: the answer is the same refusal either way.
-        let Ok((_, id)) = self.resolve_table(&mut transaction, table) else {
+        let Ok((_, id)) = self.resolve_table(&mut transaction, table).await else {
             transaction.rollback();
             return Ok(None);
         };
-        let definition = Catalog::new(&mut transaction).table(id)?;
+        let definition = Catalog::new(&mut transaction).table(id).await?;
         transaction.rollback();
         Ok(match definition.map(|definition| definition.kind) {
             Some(TableKind::Topic(TopicDeclaration {

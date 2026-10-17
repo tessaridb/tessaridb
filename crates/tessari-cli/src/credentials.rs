@@ -205,16 +205,23 @@ impl Revoking {
     /// # Errors
     ///
     /// The store's, when the list cannot be read; the keys are left as they were.
-    pub(crate) fn refresh(&self) -> Result<(), String> {
-        let (listed, removed) = self
+    pub(crate) async fn refresh(&self) -> Result<(), String> {
+        let mut transaction = self
             .db
             .store()
             .begin()
-            .and_then(|mut transaction| {
-                let catalog = tessari_storage::Catalog::new(&mut transaction);
-                Ok((catalog.revoked_certificates()?, catalog.tombstoned_nodes()?))
-            })
+            .await
             .map_err(|why| why.to_string())?;
+        let catalog = tessari_storage::Catalog::new(&mut transaction);
+        let read = match catalog.revoked_certificates().await {
+            Ok(listed) => catalog
+                .tombstoned_nodes()
+                .await
+                .map(|removed| (listed, removed)),
+            Err(why) => Err(why),
+        };
+        transaction.rollback();
+        let (listed, removed) = read.map_err(|why| why.to_string())?;
         let listed: tessari_wire::Revoked = listed.into_iter().collect();
         if listed != self.keys.refusing() {
             tracing::info!(
@@ -239,8 +246,8 @@ impl Revoking {
 /// Look at every watched pair, and the revocation list when there is one,
 /// every [`LOOK_SECONDS`] until `stop`.
 ///
-/// The reads run on the blocking pool, which is where [`tessari_wire::every`]
-/// runs each pass.
+/// Each look is one pass of [`tessari_wire::every`], run in the cadence's own
+/// task.
 pub(crate) async fn watch(
     mut watched: Vec<Watched>,
     revoking: Option<Revoking>,
@@ -250,11 +257,18 @@ pub(crate) async fn watch(
         "credentials",
         std::time::Duration::from_secs(LOOK_SECONDS),
         &stop,
-        move |_| {
-            for pair in &mut watched {
-                pair.look_and_say();
-            }
-            if let Some(Err(why)) = revoking.as_ref().map(Revoking::refresh) {
+        async move |_| {
+            // File reads: the worker's other tasks are handed on while they run.
+            tessari_vault::off_the_worker(|| {
+                for pair in &mut watched {
+                    pair.look_and_say();
+                }
+            });
+            let refreshed = match &revoking {
+                Some(revoking) => Some(revoking.refresh().await),
+                None => None,
+            };
+            if let Some(Err(why)) = refreshed {
                 tracing::warn!(error = %why, "the revocation list could not be read; the last one stands");
             }
             Ok(())
@@ -266,6 +280,7 @@ pub(crate) async fn watch(
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+    use tessari_session::{Now, RunNow};
 
     use super::{Looked, Watched};
 
@@ -322,19 +337,19 @@ mod tests {
 
     #[test]
     fn the_peer_link_refuses_what_the_catalog_revoked_and_nothing_else() {
-        let db = Arc::new(tessaridb::Db::in_memory().expect("a store"));
+        let db = Arc::new(tessaridb::Db::in_memory().now().expect("a store"));
         let revoking = super::Revoking {
             db: Arc::clone(&db),
             keys: keys(),
         };
-        revoking.refresh().expect("an empty list");
+        revoking.refresh().now().expect("an empty list");
         assert!(revoking.keys.refusing().is_empty());
 
         let fingerprint = "ab".repeat(32);
         db.session()
-            .run(&format!("REVOKE CERTIFICATE '{fingerprint}';"))
+            .run_now(&format!("REVOKE CERTIFICATE '{fingerprint}';"))
             .expect("a revocation");
-        revoking.refresh().expect("the list");
+        revoking.refresh().now().expect("the list");
         assert_eq!(
             revoking.keys.refusing(),
             tessari_wire::Revoked::from([fingerprint])
@@ -343,18 +358,18 @@ mod tests {
 
     #[test]
     fn the_peer_link_refuses_the_nodes_the_catalog_removed() {
-        let db = Arc::new(tessaridb::Db::in_memory().expect("a store"));
+        let db = Arc::new(tessaridb::Db::in_memory().now().expect("a store"));
         let revoking = super::Revoking {
             db: Arc::clone(&db),
             keys: keys(),
         };
         db.session()
-            .run(
+            .run_now(
                 "BEGIN; DEFINE REPLICA gone AT 'h:1' NODE '3f9a1c04-b7e2-489d-b561-0af3d82c7e46' \
                  ROLES serving; DROP REPLICA gone; COMMIT;",
             )
             .expect("a removal");
-        revoking.refresh().expect("the lists");
+        revoking.refresh().now().expect("the lists");
         assert_eq!(
             revoking.keys.refusing_nodes(),
             tessari_wire::Removed::from([[

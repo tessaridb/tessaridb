@@ -13,6 +13,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{AccessPath, Error, Session};
@@ -21,14 +23,14 @@ use tessari_types::{RecordId, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// Notes with tags, and a few shapes that are deliberately not arrays.
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE work; USE DATABASE work;\n\
              DEFINE COLLECTION notes;\n\
@@ -46,7 +48,7 @@ fn ready(store: &Store) -> Session<'_> {
 }
 
 fn ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let mut found: Vec<RecordId> = outcomes[0]
         .records()
         .unwrap()
@@ -189,11 +191,11 @@ fn no_index_serves_a_condition_over_several() {
     let store = store();
     let mut session = ready(&store);
     session
-        .run("DEFINE INDEX by_tags ON notes FIELDS tags;")
+        .run_now("DEFINE INDEX by_tags ON notes FIELDS tags;")
         .unwrap();
 
     let outcomes = session
-        .run("SELECT * FROM notes WHERE tags[*] = 'urgent';")
+        .run_now("SELECT * FROM notes WHERE tags[*] = 'urgent';")
         .unwrap();
     assert_eq!(outcomes[0].path().unwrap(), AccessPath::Scan);
     // And the answer is the one the scan gives, index or no index.
@@ -226,7 +228,7 @@ fn every_position_without_a_rule_is_refused_by_name() {
         // A `FETCH` route.
         "SELECT * FROM notes FETCH tags[*];",
     ] {
-        let refused = session.run(script);
+        let refused = session.run_now(script);
         assert!(
             matches!(refused, Err(Error::Script(_))),
             "{script} was accepted: {refused:?}"
@@ -236,7 +238,7 @@ fn every_position_without_a_rule_is_refused_by_name() {
 
 /// One projected field of the one answer a read gives, as text.
 fn projected(session: &mut Session<'_>, script: &str, field: &str) -> String {
-    let outcomes = session.run(script).unwrap();
+    let outcomes = session.run_now(script).unwrap();
     let records = outcomes[0].records().unwrap();
     assert_eq!(records.len(), 1, "expected one record: {records:?}");
     let Value::Object(fields) = &records[0].1 else {
@@ -340,7 +342,7 @@ fn a_multi_valued_projection_still_has_to_be_named() {
     // `tags`, `_0` — is a convention the author would learn from a surprise.
     let store = store();
     let mut session = ready(&store);
-    let refused = session.run("SELECT tags[*] FROM notes;");
+    let refused = session.run_now("SELECT tags[*] FROM notes;");
     assert!(
         matches!(refused, Err(Error::Script(_))),
         "an unnamed multi-valued projection was accepted: {refused:?}"
@@ -361,7 +363,7 @@ fn a_projection_admits_it_whole_and_not_inside_something_larger() {
         "SELECT tags[*] + 'x' AS odd FROM notes;",
         "SELECT [tags[*]] AS wrapped FROM notes;",
     ] {
-        let refused = session.run(script);
+        let refused = session.run_now(script);
         assert!(
             matches!(refused, Err(Error::Script(_))),
             "{script} was accepted: {refused:?}"
@@ -377,7 +379,7 @@ fn a_grouped_read_still_refuses_it() {
     let store = store();
     let mut session = ready(&store);
     let refused =
-        session.run("SELECT title, tags[*] AS t, count(*) AS n FROM notes GROUP BY title;");
+        session.run_now("SELECT title, tags[*] AS t, count(*) AS n FROM notes GROUP BY title;");
     assert!(
         matches!(refused, Err(Error::Script(_))),
         "a multi-valued projection in a grouped read was accepted: {refused:?}"
@@ -392,7 +394,7 @@ fn an_ordering_may_name_what_the_projection_produced() {
     let store = store();
     let mut session = ready(&store);
     let outcomes = session
-        .run("SELECT title, tags[*] AS t FROM notes ORDER BY t, title;")
+        .run_now("SELECT title, tags[*] AS t FROM notes ORDER BY t, title;")
         .unwrap();
     let records = outcomes[0].records().unwrap();
     let first = &records[0].1;

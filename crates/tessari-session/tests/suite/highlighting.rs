@@ -30,6 +30,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -55,7 +57,7 @@ fn notes(indexed: bool) -> Store {
     let held = store();
     let mut session = Session::new(&held);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
              DEFINE COLLECTION notes;\n\
@@ -68,14 +70,16 @@ fn notes(indexed: bool) -> Store {
         .unwrap();
     if indexed {
         session
-            .run("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+            .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
             .unwrap();
     }
     held
 }
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// The one record a read answered with: its body, and the substrings its
@@ -86,7 +90,7 @@ fn store() -> Store {
 /// asserted as `7..14` is a number that happens to be correct today, and
 /// `"Running"` is the claim the criterion actually makes.
 fn marked(session: &mut Session<'_>, read: &str) -> (String, Vec<String>) {
-    let outcomes = session.run(read).unwrap();
+    let outcomes = session.run_now(read).unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());
     };
@@ -135,7 +139,7 @@ fn both_paths(read: &str) -> ((String, Vec<String>), (String, Vec<String>)) {
     for indexed in [false, true] {
         let held = notes(indexed);
         let mut session = Session::new(&held);
-        session.run(USE).unwrap();
+        session.run_now(USE).unwrap();
         answers.push(marked(&mut session, read));
     }
     (answers[0].clone(), answers[1].clone())
@@ -267,7 +271,7 @@ fn a_term_the_query_excludes_is_not_marked_on_the_records_that_survived() {
 fn a_field_nobody_asked_about_is_marked_nowhere() {
     let held = notes(true);
     let mut session = Session::new(&held);
-    session.run(USE).unwrap();
+    session.run_now(USE).unwrap();
     // The analyzer is resolved — the highlight's own argument is what registers
     // the field as searched — so the empty answer is "nothing was asked" and not
     // "nothing could be read".
@@ -300,7 +304,7 @@ fn a_record_with_no_text_in_the_field_answers_no_marks_rather_than_none() {
     let held = store();
     let mut session = Session::new(&held);
     session
-        .run(&format!(
+        .run_now(&format!(
             "{PLACE}\
              DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
              DEFINE COLLECTION notes;\n\
@@ -309,7 +313,7 @@ fn a_record_with_no_text_in_the_field_answers_no_marks_rather_than_none() {
         ))
         .unwrap();
     let outcomes = session
-        .run("SELECT search::highlight(body) AS marks FROM notes;")
+        .run_now("SELECT search::highlight(body) AS marks FROM notes;")
         .unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a read answered with {:?}", outcomes.last());

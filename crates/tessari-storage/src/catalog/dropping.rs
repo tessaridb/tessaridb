@@ -23,8 +23,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn drop_table(&mut self, id: TableId) -> Result<bool> {
-        let Some(definition) = self.table(id)? else {
+    pub async fn drop_table(&mut self, id: TableId) -> Result<bool> {
+        let Some(definition) = self.table(id).await? else {
             return Ok(false);
         };
         self.transaction.store().series().forget(id);
@@ -42,13 +42,16 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         // A deduplicating queue's or topic's markers go with it, as they were
         // made with it (`Self::create_table`).
         if definition.deduplication_window().is_some()
-            && let Some(seen) = self.table_id(
-                definition.namespace,
-                definition.database,
-                &Self::seen_named(&definition.name),
-            )?
+            && let Some(seen) = self
+                .table_id(
+                    definition.namespace,
+                    definition.database,
+                    &Self::seen_named(&definition.name),
+                )
+                .await?
         {
-            self.drop_table(seen)?;
+            // Boxed: a table's companion table is dropped with it, through here.
+            Box::pin(self.drop_table(seen)).await?;
         }
         Ok(true)
     }
@@ -65,8 +68,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn drop_database(&mut self, id: DatabaseId) -> Result<bool> {
-        let Some(definition) = self.database(id)? else {
+    pub async fn drop_database(&mut self, id: DatabaseId) -> Result<bool> {
+        let Some(definition) = self.database(id).await? else {
             return Ok(false);
         };
         let qualified = qualify(
@@ -91,8 +94,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn drop_namespace(&mut self, id: NamespaceId) -> Result<bool> {
-        let Some(definition) = self.namespace(id)? else {
+    pub async fn drop_namespace(&mut self, id: NamespaceId) -> Result<bool> {
+        let Some(definition) = self.namespace(id).await? else {
             return Ok(false);
         };
         let qualified = qualify(Level::Namespace, &[], &definition.name);

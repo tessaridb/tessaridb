@@ -19,15 +19,18 @@ use crate::session::Session;
 impl Session<'_> {
     /// The messages `consumer` parked, payloads shown or withheld for this
     /// caller.
-    pub(super) fn parked(
+    pub(super) async fn parked(
         &self,
         transaction: &mut Transaction<'_>,
         consumer: &ConsumerDefinition,
         destination: &str,
         span: Span,
     ) -> Result<Value> {
-        let parked = transaction.quarantined(consumer.id)?;
-        if self.reads_whole(transaction, consumer, destination, span)? {
+        let parked = transaction.quarantined(consumer.id).await?;
+        if self
+            .reads_whole(transaction, consumer, destination, span)
+            .await?
+        {
             return Ok(Value::Array(parked));
         }
         let withheld = Value::from(
@@ -50,7 +53,7 @@ impl Session<'_> {
     /// Whether this caller may read the consumer's destination whole: the read
     /// a `SELECT` of it would demand passes every check, from the database the
     /// consumer writes into, and no field grant narrows it.
-    fn reads_whole(
+    async fn reads_whole(
         &self,
         transaction: &mut Transaction<'_>,
         consumer: &ConsumerDefinition,
@@ -64,7 +67,7 @@ impl Session<'_> {
         // The probe names the table by name, which resolves in the caller's
         // own database — so a caller asking from another one is not taken to
         // read a table of the same name there.
-        let here = self.context(transaction, None, span)?;
+        let here = self.context(transaction, None, span).await?;
         if here.namespace != consumer.namespace || here.database != consumer.database {
             return Ok(false);
         }
@@ -83,12 +86,16 @@ impl Session<'_> {
             },
         };
         let reads = self.identity.allows(&probe, false, span).is_ok()
-            && self.within_tenancy(&probe, span).is_ok()
-            && self.within_authority(self.store, &probe, span).is_ok()
-            && self.within_grants(self.store, &probe, span).is_ok();
+            && self.within_tenancy(&probe, span).await.is_ok()
+            && self
+                .within_authority(self.store, &probe, span)
+                .await
+                .is_ok()
+            && self.within_grants(self.store, &probe, span).await.is_ok();
         Ok(reads
             && self
-                .visible_in(transaction, consumer.destination)?
+                .visible_in(transaction, consumer.destination)
+                .await?
                 .is_none())
     }
 }

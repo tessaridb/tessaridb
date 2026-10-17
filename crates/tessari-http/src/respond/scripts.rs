@@ -57,14 +57,14 @@ pub(crate) fn listing(outcomes: &[Outcome]) -> Answer {
 /// users; --` is a string that says something alarming rather than a statement.
 /// A value that would not stand alone in a script is refused here, before
 /// anything runs.
-pub(crate) fn script(
+pub(crate) async fn script(
     db: &Db,
     source: &str,
     written: &BTreeMap<String, String>,
     tokens: &Tokens,
     presented: &Presented,
 ) -> Answer {
-    let mut session = match session_for(db, tokens, presented) {
+    let mut session = match session_for(db, tokens, presented).await {
         Ok(session) => session,
         Err(answer) => return answer,
     };
@@ -85,7 +85,7 @@ pub(crate) fn script(
         session.namespace().map(str::to_owned),
         session.database().map(str::to_owned),
     );
-    let ran = session.run_with(source, &given);
+    let ran = session.run_with(source, &given).await;
     // Coordinated (ADR-0108 D1): carried over the peer link to the node that
     // can answer it, as the caller this request proved, rather than answered
     // with a redirect an HTTP client may not follow.
@@ -93,17 +93,20 @@ pub(crate) fn script(
         && !session.landed()
         && tessaridb::travels(source)
         && let Some(coordinator) = db.coordinator()
-        && let Some(to) = db.answers_instead(refused)
+        && let Some(to) = db.answers_instead(refused).await
     {
-        return match coordinator.coordinate(&tessaridb::Coordination {
-            to,
-            user: session.signed_in(),
-            namespace: selected.0.as_deref(),
-            database: selected.1.as_deref(),
-            script: source,
-            parameters: &given,
-            surface: tessaridb::Surface::Http,
-        }) {
+        return match coordinator
+            .coordinate(&tessaridb::Coordination {
+                to,
+                user: session.signed_in(),
+                namespace: selected.0.as_deref(),
+                database: selected.1.as_deref(),
+                script: source,
+                parameters: &given,
+                surface: tessaridb::Surface::Http,
+            })
+            .await
+        {
             Ok(answer) => Answer {
                 status: answer.kind,
                 body: answer.body,
@@ -118,8 +121,8 @@ pub(crate) fn script(
         };
     }
     match ran {
-        Ok(outcomes) => results(db, &outcomes),
-        Err(error) => script_failure(db, &error, session.landed(), "/script"),
+        Ok(outcomes) => results(db, &outcomes).await,
+        Err(error) => script_failure(db, &error, session.landed(), "/script").await,
     }
 }
 
@@ -130,13 +133,13 @@ pub(crate) fn script(
 /// redirected: the request has made its one hop, and a `Location` would not
 /// survive the way back.
 #[must_use]
-pub fn render_coordinated(
+pub async fn render_coordinated(
     db: &Db,
     ran: &tessaridb::Result<Vec<Outcome>>,
 ) -> tessaridb::Coordinated {
     let answer = match ran {
-        Ok(outcomes) => results(db, outcomes),
-        Err(refused) if db.answers_instead(refused).is_some() => {
+        Ok(outcomes) => results(db, outcomes).await,
+        Err(refused) if db.answers_instead(refused).await.is_some() => {
             let mut body = String::from(r#"{"error":"#);
             json::string(&mut body, &refused.to_string());
             body.push('}');
@@ -151,7 +154,7 @@ pub fn render_coordinated(
 }
 
 /// Every outcome of a run, as the body `POST /script` answers with.
-fn results(db: &Db, outcomes: &[Outcome]) -> Answer {
+async fn results(db: &Db, outcomes: &[Outcome]) -> Answer {
     // Resolved once for the whole answer rather than per outcome, and only
     // when something in it holds a reference: a record reference carries a
     // table id, and a client receiving `"1:2"` cannot follow it. See
@@ -166,7 +169,7 @@ fn results(db: &Db, outcomes: &[Outcome]) -> Answer {
             _ => Vec::new(),
         })
         .collect();
-    let names = db.names_in(&referenced).unwrap_or_default();
+    let names = db.names_in(&referenced).await.unwrap_or_default();
 
     let mut body = String::from(r#"{"results":["#);
     for (position, outcome) in outcomes.iter().enumerate() {

@@ -5,7 +5,7 @@
 //! round as the other prepares. Once every one of them answered *prepared* the
 //! transaction is committed implicitly and the caller is told so at once
 //! (D14b); the explicit `COMMITTED` record and the resolutions are written
-//! behind the answer, by a thread that waits for nobody to hold them — the
+//! behind the answer, by a task that waits for nobody to hold them; the
 //! outcome is already final, and recovery re-derives it from the parts if they
 //! are lost (D14c).
 //!
@@ -19,9 +19,7 @@ use tessari_encoding::{Decision, NODE_ID_LEN, TransactionId, TransactionRecord};
 use tessari_ql::Span;
 use tessari_storage::{AcrossPart, Store};
 
-use super::super::{
-    AcrossAnswer, AcrossAsk, AcrossRefusal, Participants, Recovery, recover_staging,
-};
+use super::super::{AcrossAnswer, AcrossAsk, AcrossRefusal, Participants, Recovery, Staged};
 use super::records_of;
 use crate::error::{Error, Result};
 use crate::session::Session;
@@ -33,7 +31,7 @@ impl Session<'_> {
     /// Finish a parallel commit whose prepare round has answered: `record`
     /// stages and names where each part it heard land landed; `refused` is the
     /// first part that did not answer *prepared*.
-    pub(super) fn finish_parallel(
+    pub(super) async fn finish_parallel(
         &mut self,
         store: &Store,
         carrying: std::sync::Arc<dyn Participants>,
@@ -76,7 +74,7 @@ impl Session<'_> {
                     coordinator: first.home,
                 }
             };
-            match self.ask_one(carrier, first.leader, user, &asked) {
+            match self.ask_one(carrier, first.leader, user, &asked).await {
                 Ok(AcrossAnswer::Outcome(standing)) => match standing.decision {
                     Decision::Staging => {}
                     Decision::Aborted => {
@@ -108,15 +106,22 @@ impl Session<'_> {
                 }
             }
         }
-        let recovered = recover_staging(id, &record, true, |range, asked| {
-            let leader = parts
-                .iter()
-                .find(|part| part.home == range)
-                .map(|part| part.leader)
-                .ok_or_else(|| format!("{range:?} is not a part of this transaction"))?;
-            self.ask_one(carrier, leader, user, asked)
-                .map_err(|why| why.to_string())
-        });
+        let mut staged = Staged::new(id, &record, true);
+        let recovered = loop {
+            let Some((range, asked)) = staged.next_ask() else {
+                break staged.finish();
+            };
+            let answer = match parts.iter().find(|part| part.home == range) {
+                Some(part) => self
+                    .ask_one(carrier, part.leader, user, &asked)
+                    .await
+                    .map_err(|why| why.to_string()),
+                None => Err(format!("{range:?} is not a part of this transaction")),
+            };
+            if let Some(recovered) = staged.heard(answer) {
+                break recovered;
+            }
+        };
         match recovered {
             Recovery::Committed(committed) => {
                 behind(store, carrying, user, concluding(parts, id, &committed));
@@ -133,7 +138,7 @@ impl Session<'_> {
                 // A part is barred, so the transaction can never commit: the
                 // abort is the outcome whether or not this decision is
                 // confirmed, and its intents can go.
-                if let Err(why) = self.ask_one(carrier, first.leader, user, &aborted) {
+                if let Err(why) = self.ask_one(carrier, first.leader, user, &aborted).await {
                     tracing::info!(
                         error = %why,
                         "a barred cross-leader transaction's abort was not confirmed"
@@ -197,68 +202,70 @@ fn aborting(parts: &[AcrossPart], id: TransactionId) -> Vec<Behind> {
         .collect()
 }
 
-/// Write `records` on a thread of their own, the caller not waiting: one this
+/// Write `records` in a task of their own, the caller not waiting: one this
 /// node leads straight into the store, the others asked of their leaders. A
 /// record that does not land is the transaction's record to finish — status
-/// recovery re-derives the outcome from the parts (D14c).
+/// recovery re-derives the outcome from the parts (D14c), which is why the
+/// task is not joined.
+///
+/// Called from inside a runtime; outside one, [`tokio::spawn`] panics.
 fn behind(
     store: &Store,
     carrying: std::sync::Arc<dyn Participants>,
     user: Option<&tessari_storage::UserDefinition>,
     records: Vec<Behind>,
 ) {
-    let (store, carrier, user) = (store.clone(), carrying, user.cloned());
-    let spawned = std::thread::Builder::new()
-        .name("across-behind".to_owned())
-        .spawn(move || {
-            std::thread::scope(|scope| {
-                for (leader, asked) in &records {
-                    let (store, carrier, user) = (&store, &carrier, user.as_ref());
-                    scope.spawn(move || {
-                        let landed = match leader {
-                            None => here(store, asked),
-                            Some(node) => carrier
-                                .ask(*node, user, asked)
-                                .map(drop)
-                                .map_err(|why| why.reason),
-                        };
-                        if let Err(why) = landed {
-                            tracing::warn!(
-                                error = %why,
-                                "a cross-leader record behind the answer did not land and is left to its record"
-                            );
-                        }
-                    });
+    let (store, user) = (store.clone(), user.cloned());
+    drop(tokio::spawn(async move {
+        let writes = records.iter().map(|(leader, asked)| {
+            let (store, carrier, user) = (&store, &carrying, user.as_ref());
+            async move {
+                let landed = match leader {
+                    None => here(store, asked).await,
+                    Some(node) => carrier
+                        .ask(*node, user, asked)
+                        .await
+                        .map(drop)
+                        .map_err(|why| why.reason),
+                };
+                if let Err(why) = landed {
+                    tracing::warn!(
+                        error = %why,
+                        "a cross-leader record behind the answer did not land and is left to its record"
+                    );
                 }
-            });
+            }
         });
-    if let Err(why) = spawned {
-        tracing::warn!(error = %why, "cross-leader records behind the answer left to their record");
-    }
+        futures_util::future::join_all(writes).await;
+    }));
 }
 
 /// Write one record behind the answer on this node, which leads its range.
-fn here(store: &Store, asked: &AcrossAsk) -> std::result::Result<(), String> {
+async fn here(store: &Store, asked: &AcrossAsk) -> std::result::Result<(), String> {
     let written = match asked {
         AcrossAsk::Conclude {
             transaction,
             record,
             records,
-        } => store
-            .begin()
-            .and_then(|writing| writing.conclude_across(*transaction, record.clone(), records))
-            .map(drop),
+        } => match store.begin().await {
+            Ok(writing) => writing
+                .conclude_across(*transaction, record.clone(), records)
+                .await
+                .map(drop),
+            Err(failure) => Err(failure),
+        },
         AcrossAsk::Resolve {
             transaction,
             committed,
             records,
             participants,
-        } => store
-            .begin()
-            .and_then(|writing| {
-                writing.resolve_across(*transaction, *committed, records, participants)
-            })
-            .map(drop),
+        } => match store.begin().await {
+            Ok(writing) => writing
+                .resolve_across(*transaction, *committed, records, participants)
+                .await
+                .map(drop),
+            Err(failure) => Err(failure),
+        },
         other => return Err(format!("{other:?} is not written behind an answer")),
     };
     written.map_err(|why| why.to_string())

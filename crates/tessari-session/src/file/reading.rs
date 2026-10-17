@@ -22,7 +22,7 @@ impl Session<'_> {
     ///
     /// Only the chunks the range touches are read, so asking for a kilobyte of a
     /// large file costs a kilobyte's worth of chunks rather than the file.
-    pub(crate) fn read_file(
+    pub(crate) async fn read_file(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
@@ -30,7 +30,7 @@ impl Session<'_> {
         limit: Option<u64>,
     ) -> Result<Outcome> {
         // A read has no ceiling to answer to: the bytes are already inside one.
-        let (context, table, _) = self.bucket(transaction, target)?;
+        let (context, table, _) = self.bucket(transaction, target).await?;
         let path = text_identity(target.id.fixed(target.span)?, target.span)?;
         let address = RecordAddress::new(
             context.namespace,
@@ -38,11 +38,13 @@ impl Session<'_> {
             table,
             target.id.fixed(target.span)?.clone(),
         );
-        let Some(payload) = transaction.get(&address)? else {
+        let Some(payload) = transaction.get(&address).await? else {
             return Ok(Outcome::Value(Value::None));
         };
         let held = decode_payload(&payload)?;
-        let chunks = self.chunk_table(transaction, &context, table, target.span)?;
+        let chunks = self
+            .chunk_table(transaction, &context, table, target.span)
+            .await?;
         let total = chunk_count(&held);
 
         // The half-open byte range the caller asked for, and the chunks it
@@ -69,7 +71,7 @@ impl Session<'_> {
                 chunks,
                 chunk_id(path, ordinal),
             );
-            let Some(part) = transaction.get(&at)? else {
+            let Some(part) = transaction.get(&at).await? else {
                 // A chunk the metadata promises and the store does not hold. It
                 // cannot happen through this module — both are written in one
                 // commit — so saying so is better than answering a short file.
@@ -106,7 +108,7 @@ impl Session<'_> {
     }
 
     /// Every byte of a file, for a ranged write to splice into.
-    pub(crate) fn whole_file(
+    pub(crate) async fn whole_file(
         &self,
         transaction: &mut Transaction<'_>,
         context: &Context,
@@ -124,7 +126,7 @@ impl Session<'_> {
                 chunks,
                 chunk_id(path, ordinal),
             );
-            let Some(part) = transaction.get(&at)? else {
+            let Some(part) = transaction.get(&at).await? else {
                 return Err(Error::FileIsIncomplete {
                     path: path.to_owned(),
                     ordinal,

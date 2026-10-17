@@ -27,7 +27,7 @@ impl Transaction<'_> {
     /// Returns an error when the backend fails or a node cannot be decoded.
     /// `effort` is the walk's budget: `None` for the engine's own, `Some` for a
     /// budget the read named with `APPROXIMATE EFFORT n`.
-    pub fn records_by_vector(
+    pub async fn records_by_vector(
         &self,
         index: &IndexDefinition,
         query: &[f64],
@@ -39,7 +39,7 @@ impl Transaction<'_> {
         };
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let graph = crate::graph::Graph::read(self.store, &address, distance, index.quantized)?;
-        graph.nearest(query, wanted, effort)
+        graph.nearest(query, wanted, effort).await
     }
 
     /// The graph a vector index is, read whole, for a walk the caller drives.
@@ -75,7 +75,10 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails.
-    pub fn vector_node_bytes(&self, index: &IndexDefinition) -> Result<Option<(u64, u64, u64)>> {
+    pub async fn vector_node_bytes(
+        &self,
+        index: &IndexDefinition,
+    ) -> Result<Option<(u64, u64, u64)>> {
         if index.vector.is_none() {
             return Ok(None);
         }
@@ -88,7 +91,7 @@ impl Transaction<'_> {
             limit: None,
         };
         let (mut nodes, mut bytes, mut vector) = (0_u64, 0_u64, 0_u64);
-        for (_, value) in self.store.backend().scan(&request)? {
+        for (_, value) in self.store.backend().scan(&request).await? {
             let node = tessari_encoding::VectorNode::decode(value.as_slice())?;
             nodes = nodes.saturating_add(1);
             bytes = bytes.saturating_add(u64::try_from(value.as_slice().len()).unwrap_or(u64::MAX));
@@ -114,13 +117,14 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or the stored value cannot be
     /// decoded.
-    pub fn vector_recall(&self, index: &IndexDefinition) -> Result<Option<VectorRecall>> {
+    pub async fn vector_recall(&self, index: &IndexDefinition) -> Result<Option<VectorRecall>> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let key = VectorRecallKey::new(address).encode();
         match self
             .store
             .backend()
-            .get(VectorRecallKey::keyspace(), &key)?
+            .get(VectorRecallKey::keyspace(), &key)
+            .await?
         {
             Some(bytes) => Ok(Some(VectorRecall::decode(bytes.as_slice())?)),
             None => Ok(None),
@@ -140,13 +144,17 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or the stored value cannot be
     /// decoded.
-    pub fn spatial_refinement(&self, index: &IndexDefinition) -> Result<Option<SpatialRefinement>> {
+    pub async fn spatial_refinement(
+        &self,
+        index: &IndexDefinition,
+    ) -> Result<Option<SpatialRefinement>> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let key = SpatialRefinementKey::new(address).encode();
         match self
             .store
             .backend()
-            .get(SpatialRefinementKey::keyspace(), &key)?
+            .get(SpatialRefinementKey::keyspace(), &key)
+            .await?
         {
             Some(bytes) => Ok(Some(SpatialRefinement::decode(bytes.as_slice())?)),
             None => Ok(None),
@@ -178,7 +186,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or stored bytes cannot be
     /// decoded.
-    pub fn records_by_index(
+    pub async fn records_by_index(
         &self,
         index: &IndexDefinition,
         values: &[Value],
@@ -197,9 +205,12 @@ impl Transaction<'_> {
         let complete = values.len() == index.fields.len();
 
         let mut found: BTreeMap<RecordId, Vec<u8>> = BTreeMap::new();
-        for id in self.candidates(index, &address, values, &wanted, complete)? {
+        for id in self
+            .candidates(index, &address, values, &wanted, complete)
+            .await?
+        {
             let record = RecordAddress::new(index.namespace, index.database, index.table, id);
-            if let Some(payload) = self.confirm(index, &record, &wanted)? {
+            if let Some(payload) = self.confirm(index, &record, &wanted).await? {
                 found.insert(record.id, payload);
             }
         }
@@ -214,7 +225,7 @@ impl Transaction<'_> {
             {
                 continue;
             }
-            match self.confirm(index, pending, &wanted)? {
+            match self.confirm(index, pending, &wanted).await? {
                 Some(payload) => {
                     found.insert(pending.id.clone(), payload);
                 }

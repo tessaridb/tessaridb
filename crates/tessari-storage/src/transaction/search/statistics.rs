@@ -12,13 +12,14 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or the stored value cannot be
     /// decoded.
-    pub fn search_statistics(&self, index: &IndexDefinition) -> Result<SearchStatistics> {
+    pub async fn search_statistics(&self, index: &IndexDefinition) -> Result<SearchStatistics> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let key = SearchStatisticsKey::new(address).encode();
         match self
             .store
             .backend()
-            .get(SearchStatisticsKey::keyspace(), &key)?
+            .get(SearchStatisticsKey::keyspace(), &key)
+            .await?
         {
             Some(bytes) => Ok(SearchStatistics::decode(bytes.as_slice())?),
             None => Ok(SearchStatistics::default()),
@@ -32,7 +33,7 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or the stored value cannot be
     /// decoded.
-    pub fn member_statistics(
+    pub async fn member_statistics(
         &self,
         index: &IndexDefinition,
     ) -> Result<(SearchStatistics, Vec<u64>)> {
@@ -41,7 +42,8 @@ impl Transaction<'_> {
         match self
             .store
             .backend()
-            .get(SearchStatisticsKey::keyspace(), &key)?
+            .get(SearchStatisticsKey::keyspace(), &key)
+            .await?
         {
             Some(bytes) => Ok(SearchStatistics::fielded(bytes.as_slice())?),
             None => Ok((SearchStatistics::default(), Vec::new())),
@@ -60,7 +62,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or a key cannot be decoded.
-    pub fn member_candidates(
+    pub async fn member_candidates(
         &self,
         index: &IndexDefinition,
         groups: &[Vec<String>],
@@ -68,7 +70,7 @@ impl Transaction<'_> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let mut holding: Option<BTreeSet<RecordId>> = None;
         for group in groups {
-            let found = self.union(&address, group)?;
+            let found = self.union(&address, group).await?;
             let narrowed = match holding {
                 None => found,
                 Some(mut held) => {
@@ -123,8 +125,8 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or a stored entry cannot be
     /// decoded.
-    pub fn document_frequency(&self, index: &IndexDefinition, term: &str) -> Result<u64> {
-        Ok(self.term_statistics(index, term)?.documents)
+    pub async fn document_frequency(&self, index: &IndexDefinition, term: &str) -> Result<u64> {
+        Ok(self.term_statistics(index, term).await?.documents)
     }
 
     /// The term's whole dictionary entry — its frequency and, when the entry
@@ -145,18 +147,28 @@ impl Transaction<'_> {
     ///
     /// Returns an error when the backend fails or a stored entry cannot be
     /// decoded.
-    pub fn term_statistics(&self, index: &IndexDefinition, term: &str) -> Result<TermStatistics> {
+    pub async fn term_statistics(
+        &self,
+        index: &IndexDefinition,
+        term: &str,
+    ) -> Result<TermStatistics> {
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let encoded = IndexValues::of(&[Value::from(term)]);
         let key = SearchTermKey::new(address, encoded.clone()).encode();
-        if let Some(bytes) = self.store.backend().get(SearchTermKey::keyspace(), &key)? {
+        if let Some(bytes) = self
+            .store
+            .backend()
+            .get(SearchTermKey::keyspace(), &key)
+            .await?
+        {
             return Ok(TermStatistics::decode(bytes.as_slice())?);
         }
         let prefix = PostingKey::term_prefix(&address, &encoded);
         let counted = self
             .store
             .backend()
-            .count(PostingKey::keyspace(), &KeyRange::prefix(&prefix))?;
+            .count(PostingKey::keyspace(), &KeyRange::prefix(&prefix))
+            .await?;
         Ok(TermStatistics::new(counted))
     }
 }

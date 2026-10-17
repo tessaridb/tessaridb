@@ -27,8 +27,8 @@ pub(super) struct Marker {
 impl Marker {
     /// Whether the key was written less than the window ago — this
     /// transaction's own earlier write included.
-    pub(super) fn seen(&self, transaction: &mut Transaction<'_>) -> Result<bool> {
-        Ok(transaction.get(&self.address)?.is_some())
+    pub(super) async fn seen(&self, transaction: &mut Transaction<'_>) -> Result<bool> {
+        Ok(transaction.get(&self.address).await?.is_some())
     }
 
     /// Remember the key until the window closes.
@@ -51,7 +51,7 @@ impl Session<'_> {
     ///
     /// [`Error::DeduplicationKey`] when a topic's key holds a value no identity
     /// can be made of, and a store failure otherwise.
-    pub(super) fn dedup_marker(
+    pub(super) async fn dedup_marker(
         &self,
         transaction: &mut Transaction<'_>,
         definition: Option<&TableDefinition>,
@@ -100,7 +100,8 @@ impl Session<'_> {
                 definition.namespace,
                 definition.database,
                 &Catalog::seen_named(&definition.name),
-            )?
+            )
+            .await?
             .ok_or(tessari_storage::Error::CatalogMalformed {
                 entity: "table",
                 field: "deduplicate",

@@ -53,7 +53,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// A backend failure, or a payload that cannot be decoded.
-    pub fn topic_after(
+    pub async fn topic_after(
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
@@ -63,8 +63,8 @@ impl Transaction<'_> {
     ) -> Result<Messages> {
         let topic = (namespace, database, table);
         let mut found = Messages {
-            first: super::edge(self.store(), topic, ScanDirection::Forward)?,
-            last: Some(super::head(self.store(), topic)?).filter(|head| *head > 0),
+            first: super::edge(self.store(), topic, ScanDirection::Forward).await?,
+            last: Some(super::head(self.store(), topic).await?).filter(|head| *head > 0),
             ..Messages::default()
         };
         let Some(mut from) = after.checked_add(1) else {
@@ -81,7 +81,7 @@ impl Transaction<'_> {
                 direction: ScanDirection::Forward,
                 limit: Some(PAGE),
             };
-            let page = self.store().backend().scan(&request)?;
+            let page = self.store().backend().scan(&request).await?;
             if page.is_empty() {
                 break;
             }
@@ -89,10 +89,10 @@ impl Transaction<'_> {
                 let entry = TopicOffsetKey::decode(key.as_slice())?;
                 from = entry.offset.saturating_add(1);
                 let address = RecordAddress::new(namespace, database, table, entry.id.clone());
-                if self.get_held(&address)?.is_none() {
+                if self.get_held(&address).await?.is_none() {
                     break 'pages;
                 }
-                match self.get(&address)? {
+                match self.get(&address).await? {
                     Some(payload) => found.messages.push(Message {
                         position: entry.offset,
                         id: entry.id,

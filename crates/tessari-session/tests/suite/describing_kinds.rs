@@ -23,6 +23,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -86,23 +88,33 @@ const DECLARATIONS: [&str; 12] = [
 
 /// The kind the catalog now holds for `prod.shop.t`.
 fn stored_kind(store: &Store) -> TableKind {
-    let mut transaction = store.begin().unwrap();
+    let mut transaction = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
-    let id = catalog.table_id(namespace, database, "t").unwrap().unwrap();
-    let kind = catalog.table(id).unwrap().unwrap().kind;
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "shop")
+        .now()
+        .unwrap()
+        .unwrap();
+    let id = catalog
+        .table_id(namespace, database, "t")
+        .now()
+        .unwrap()
+        .unwrap();
+    let kind = catalog.table(id).now().unwrap().unwrap().kind;
     transaction.rollback();
     kind
 }
 
 fn store() -> Store {
-    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
+    Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap()
 }
 
 /// The `definition` field of `INFO FOR TABLE t`, or the reason there is none.
 fn described(session: &mut Session<'_>) -> Result<String, String> {
-    let outcome = session.run("INFO FOR TABLE t;").unwrap().pop().unwrap();
+    let outcome = session.run_now("INFO FOR TABLE t;").unwrap().pop().unwrap();
     let Outcome::Value(Value::Object(report)) = outcome else {
         panic!("expected a report");
     };
@@ -120,14 +132,14 @@ fn every_table_kind_describes_itself_as_the_word_that_made_it() {
         let store = store();
         let mut session = Session::new(&store);
         session
-            .run(
+            .run_now(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
                  DEFINE DATABASE shop; USE DATABASE shop;\n\
                  UNSEAL VAULT WITH 'an operator passphrase';\n\
                  DEFINE TABLE base SCHEMALESS;",
             )
             .unwrap();
-        session.run(declaration).unwrap();
+        session.run_now(declaration).unwrap();
 
         // Read back from the catalog rather than assumed from the statement, so
         // the exhaustive match is reached with the kind the store actually
@@ -172,7 +184,7 @@ fn a_queue_description_re_executes_into_a_queue_and_not_into_a_table() {
     let first = store();
     let mut session = Session::new(&first);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE QUEUE t TIMEOUT 30s ATTEMPTS 5;",
@@ -183,17 +195,17 @@ fn a_queue_description_re_executes_into_a_queue_and_not_into_a_table() {
     let second = store();
     let mut restored = Session::new(&second);
     restored
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;",
         )
         .unwrap();
-    restored.run(&script).unwrap();
-    restored.run("CREATE t:1 = { url: 'a' };").unwrap();
+    restored.run_now(&script).unwrap();
+    restored.run_now("CREATE t:1 = { url: 'a' };").unwrap();
 
     // Before the arm existed this restored a plain table, and `CLAIM` against a
     // plain table is refused — so this statement is the whole test.
-    let claimed = restored.run("CLAIM FROM t;").unwrap().pop().unwrap();
+    let claimed = restored.run_now("CLAIM FROM t;").unwrap().pop().unwrap();
     match claimed {
         Outcome::Records { records, .. } => {
             assert_eq!(records.len(), 1, "the restored queue handed out nothing");
@@ -215,7 +227,7 @@ fn a_strict_queue_is_described_with_the_word_and_restores_a_strict_queue() {
     let first = store();
     let mut session = Session::new(&first);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE QUEUE t TIMEOUT 30s SCHEMAFULL;\n\
@@ -227,7 +239,7 @@ fn a_strict_queue_is_described_with_the_word_and_restores_a_strict_queue() {
     let second = store();
     let mut restored = Session::new(&second);
     restored
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;",
         )
@@ -236,11 +248,11 @@ fn a_strict_queue_is_described_with_the_word_and_restores_a_strict_queue() {
     // is re-declared here — and that is part of what is being asserted: a
     // strict table restored without its fields would refuse every write rather
     // than accept the wrong ones.
-    restored.run(&script).unwrap();
-    restored.run("CREATE t:1 = { url: 'a' };").unwrap();
+    restored.run_now(&script).unwrap();
+    restored.run_now("CREATE t:1 = { url: 'a' };").unwrap();
 
     // Two properties, each of which a dropped clause would take away.
-    let claimed = restored.run("CLAIM FROM t;").unwrap().pop().unwrap();
+    let claimed = restored.run_now("CLAIM FROM t;").unwrap().pop().unwrap();
     match claimed {
         Outcome::Records { records, .. } => {
             assert_eq!(records.len(), 1, "the restored queue handed out nothing");
@@ -249,7 +261,7 @@ fn a_strict_queue_is_described_with_the_word_and_restores_a_strict_queue() {
     }
     assert!(
         restored
-            .run("CREATE t:2 = { url: 'b', sneaky: 1 };")
+            .run_now("CREATE t:2 = { url: 'b', sneaky: 1 };")
             .is_err(),
         "the restored queue is lenient, so `SCHEMAFULL` was lost"
     );
@@ -270,7 +282,7 @@ fn a_queue_in_a_graph_says_so_rather_than_describing_itself_without_the_graph() 
     let queued = store();
     let mut session = Session::new(&queued);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE GRAPH work;\n\
@@ -285,7 +297,7 @@ fn a_queue_in_a_graph_says_so_rather_than_describing_itself_without_the_graph() 
     let ordinary = store();
     let mut plain = Session::new(&ordinary);
     plain
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE GRAPH work;\n\

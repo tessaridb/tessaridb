@@ -52,7 +52,7 @@ impl Store {
     /// Returns [`Error::LogDivergence`] when the predecessor this store holds
     /// was written under a different leadership, and whatever
     /// [`Self::apply_record`] returns otherwise.
-    pub fn apply_from_stream(
+    pub async fn apply_from_stream(
         &self,
         log: LogId,
         at: Sequence,
@@ -60,12 +60,13 @@ impl Store {
         record: &LogRecord,
     ) -> Result<()> {
         self.land_from_stream(log, at, previous, record, Landing::Synced)
+            .await
     }
 
     /// [`Self::apply_from_stream`], landed as `landing` says — `Deferred` only
     /// for a caller that syncs before anything acknowledges the record
     /// (`apply_in_writer_order`).
-    pub(crate) fn land_from_stream(
+    pub(crate) async fn land_from_stream(
         &self,
         log: LogId,
         at: Sequence,
@@ -73,8 +74,8 @@ impl Store {
         record: &LogRecord,
         landing: Landing,
     ) -> Result<()> {
-        self.refuse_a_parted_history(log, at, previous)?;
-        self.apply_at(log, at, record, landing)
+        self.refuse_a_parted_history(log, at, previous).await?;
+        self.apply_at(log, at, record, landing).await
     }
 
     /// Apply one log record into a log the caller names.
@@ -94,8 +95,13 @@ impl Store {
     /// # Errors
     ///
     /// The same as [`Self::apply_record`].
-    pub fn apply_record_in(&self, log: LogId, at: Sequence, record: &LogRecord) -> Result<()> {
-        self.apply_at(log, at, record, Landing::Synced)
+    pub async fn apply_record_in(
+        &self,
+        log: LogId,
+        at: Sequence,
+        record: &LogRecord,
+    ) -> Result<()> {
+        self.apply_at(log, at, record, Landing::Synced).await
     }
 
     /// [`Self::apply_record_in`] for a restore, landed without its own device
@@ -111,8 +117,13 @@ impl Store {
     /// # Errors
     ///
     /// The same as [`Self::apply_record_in`].
-    pub fn restore_record_in(&self, log: LogId, at: Sequence, record: &LogRecord) -> Result<()> {
-        self.apply_at(log, at, record, Landing::Deferred)
+    pub async fn restore_record_in(
+        &self,
+        log: LogId,
+        at: Sequence,
+        record: &LogRecord,
+    ) -> Result<()> {
+        self.apply_at(log, at, record, Landing::Deferred).await
     }
 
     /// Make every write landed so far durable, those landed unsynced included.
@@ -121,8 +132,8 @@ impl Store {
     ///
     /// The backend's failure to sync; what it could not make durable is then
     /// not to be reported as restored.
-    pub fn sync_landed(&self) -> Result<()> {
-        self.backend().sync_applied()?;
+    pub async fn sync_landed(&self) -> Result<()> {
+        self.backend().sync_applied().await?;
         Ok(())
     }
 
@@ -153,7 +164,12 @@ impl Store {
     /// Returns [`Error::LogDivergence`] when another leadership wrote this position,
     /// [`Error::LogGap`] when the record is not the next one, and the mapped
     /// backend or decoding failure otherwise.
-    pub fn apply_record(&self, writer: Writer, at: Sequence, record: &LogRecord) -> Result<()> {
+    pub async fn apply_record(
+        &self,
+        writer: Writer,
+        at: Sequence,
+        record: &LogRecord,
+    ) -> Result<()> {
         // Derived from the record rather than taken as a parameter, because it
         // is a property of the record and deriving it here is what makes a
         // replica file it where the leader filed it. A home the sender chose and
@@ -180,10 +196,11 @@ impl Store {
             record,
             Landing::Synced,
         )
+        .await
     }
 
     /// Apply one record into `home`, whatever named it.
-    pub(super) fn apply_at(
+    pub(super) async fn apply_at(
         &self,
         log: LogId,
         at: Sequence,
@@ -192,14 +209,14 @@ impl Store {
     ) -> Result<()> {
         // From the tail read to the apply, because the version this allocates is
         // the one a local commit allocates too (`crate::gate`).
-        let _turn = self.writing.hold();
+        let _turn = self.writing.hold().await;
         // And with nothing staged behind a local commit's turn still to land:
         // this apply allocates the next version too, and writes its batch
         // itself rather than staging it.
-        self.writing.land_all(self.backend.as_ref());
-        let applied = self.committed_tail(log)?;
+        self.writing.land_all(self.backend.as_ref()).await;
+        let applied = self.committed_tail(log).await?;
         if at.get() <= applied.get() {
-            self.refuse_a_divergence(log, at, record)?;
+            self.refuse_a_divergence(log, at, record).await?;
             return Ok(());
         }
         let expected = Sequence::new(applied.get().saturating_add(1));
@@ -213,12 +230,12 @@ impl Store {
         // relative to the apply, and a violation reaching this point is a
         // divergence between two nodes' catalogs rather than a caller's mistake
         // — which is worth stopping at rather than writing through.
-        crate::schema::validate(self, record)?;
+        crate::schema::validate(self, record).await?;
         // Allocated here, locally, and deliberately not taken from `at`. A
         // replica numbers its own records: the log position it is replaying was
         // decided elsewhere, the version it writes them at is its own history
         // (Q-614). The two agree today because one flat log admits one writer.
-        let version = Sequence::new(self.committed_version()?.get().saturating_add(1));
+        let version = Sequence::new(self.committed_version().await?.get().saturating_add(1));
         self.derive_and_land(
             record,
             crate::log::apply_batch(log, at, version, record),
@@ -226,6 +243,7 @@ impl Store {
             Some((log, at)),
             landing,
         )
+        .await
     }
 
     /// Add everything a record derives to `batch`, and land it at `version`.
@@ -233,7 +251,7 @@ impl Store {
     /// The half of an apply that a state restore shares (ADR-0091): the log and
     /// its position are the caller's, and every derived entry is written by the
     /// same functions, in the same order, whichever of the two asked.
-    pub(super) fn derive_and_land(
+    pub(super) async fn derive_and_land(
         &self,
         record: &LogRecord,
         batch: tessari_kv::WriteBatch,
@@ -243,12 +261,15 @@ impl Store {
     ) -> Result<()> {
         // A record of a transaction across leaders is checked and settled here,
         // and an intent derives nothing until its resolution does (ADR-0112).
-        let batch = crate::intents::settle(self, record, batch, version, written)?;
+        let batch = crate::intents::settle(self, record, batch, version, written).await?;
         if crate::intents::derives_nothing(record) {
-            self.writing.apply(batch, self.backend.as_ref(), landing)?;
+            self.writing
+                .apply(batch, self.backend.as_ref(), landing)
+                .await?;
+            self.landed_at(version);
             return Ok(());
         }
-        let batch = crate::index::maintain(self, record, batch, version)?;
+        let batch = crate::index::maintain(self, record, batch, version).await?;
         // Derived here as well as in the commit, because that is the whole
         // reason it is derived from the record: a follower that skipped this
         // would carry the edges and no way to walk them, and its walks would
@@ -261,19 +282,19 @@ impl Store {
         // The order matches the commit path deliberately: two paths that build
         // one batch in two orders are a difference waiting to become a
         // divergence nobody can explain.
-        let batch = crate::adjacency::maintain(self, record, batch)?;
+        let batch = crate::adjacency::maintain(self, record, batch).await?;
         // Derived here as well as in the commit, because that is the whole
         // reason it is derived from the record: a follower that skipped this
         // would carry the records and none of the counts, and its planner would
         // then choose a different access path for the same query.
-        let batch = crate::cardinality::maintain(self, record, batch, version)?;
+        let batch = crate::cardinality::maintain(self, record, batch, version).await?;
         // And the expiry index, so a follower promoted to leader can remove what
         // has expired without having written any of it (G035).
-        let batch = crate::lapse::maintain(self, record, batch)?;
-        let batch = crate::bounded::maintain(self, record, batch, version)?;
-        let batch = crate::topic::maintain(self, record, batch)?;
+        let batch = crate::lapse::maintain(self, record, batch).await?;
+        let batch = crate::bounded::maintain(self, record, batch, version).await?;
+        let batch = crate::topic::maintain(self, record, batch).await?;
         // A finalize raises this node's own stamp as it lands (ADR-0118).
-        let batch = crate::format_stamp::maintain(self, record, batch, version)?;
+        let batch = crate::format_stamp::maintain(self, record, batch, version).await?;
         // The map a split carries, taught under the turn this apply holds and
         // before it lands, exactly as the leader's commit teaches it (ADR-0095
         // D8): a follower that wrote under the old map after applying the split
@@ -283,10 +304,15 @@ impl Store {
             self.catalog_rows.changed(version);
             taught = self.shards.teach(&self.decoded_tables, record)?;
         }
-        if let Err(failed) = self.writing.apply(batch, self.backend.as_ref(), landing) {
+        if let Err(failed) = self
+            .writing
+            .apply(batch, self.backend.as_ref(), landing)
+            .await
+        {
             self.shards.forget(&taught);
             return Err(failed.into());
         }
+        self.landed_at(version);
         Ok(())
     }
 
@@ -311,7 +337,7 @@ impl Store {
     ///
     /// Costs the same as its sibling: one point read and a fixed eight-byte
     /// inspection, no decode of the mutations.
-    pub(crate) fn refuse_a_parted_history(
+    pub(crate) async fn refuse_a_parted_history(
         &self,
         log: LogId,
         at: Sequence,
@@ -337,7 +363,8 @@ impl Store {
         }
         let stored = self
             .backend
-            .get(LogKey::keyspace(), &LogKey::new(log, before).encode())?;
+            .get(LogKey::keyspace(), &LogKey::new(log, before).encode())
+            .await?;
         // Nothing to compare against — this store is behind the sender by more
         // than one record, and `apply_record` refuses that with `LogGap`, which
         // is the more accurate answer. The truncation case is Q-529's, the same
@@ -358,7 +385,7 @@ impl Store {
         })
     }
 
-    pub(super) fn refuse_a_divergence(
+    pub(super) async fn refuse_a_divergence(
         &self,
         log: LogId,
         at: Sequence,
@@ -367,7 +394,8 @@ impl Store {
         let offered = record.epoch();
         let stored = self
             .backend
-            .get(LogKey::keyspace(), &LogKey::new(log, at).encode())?;
+            .get(LogKey::keyspace(), &LogKey::new(log, at).encode())
+            .await?;
         // Nothing to compare against. Unreachable today because the log keyspace
         // is never truncated, and it becomes reachable the day retention reaches
         // it — at which point a node that was away long enough is exactly the
@@ -394,7 +422,7 @@ impl Store {
         // is behind the epoch comparison rather than in front of it: the branch
         // above is the ordinary retry, it is the common case by a wide margin,
         // and it pays nothing for this.
-        if self.admits_two_writers(log.home)? {
+        if self.admits_two_writers(log.home).await? {
             return Ok(());
         }
         self.divergences.fetch_add(1, Ordering::Relaxed);

@@ -1,7 +1,7 @@
 use super::*;
 
 impl Transaction<'_> {
-    pub(super) fn settle(mut self, settle: Settle) -> Result<Committed> {
+    pub(super) async fn settle(mut self, settle: Settle) -> Result<Committed> {
         // A decision across leaders writes no records and is still a commit.
         if self.writes.is_empty() && !self.is_across() {
             // The log position, not this transaction's snapshot. Nothing was
@@ -10,10 +10,11 @@ impl Transaction<'_> {
             // being one when the version was separated from it (Q-614).
             let log = self
                 .store
-                .own_log(crate::store::UNPARTITIONED_REPORT_HOME)?;
+                .own_log(crate::store::UNPARTITIONED_REPORT_HOME)
+                .await?;
             return Ok(Committed {
                 log,
-                sequence: self.store.committed_tail(log)?,
+                sequence: self.store.committed_tail(log).await?,
             });
         }
         // First, and after the empty check rather than before it. First because
@@ -41,7 +42,7 @@ impl Transaction<'_> {
         // what this catches (G025 S6.1). *May this node write* and *may this
         // node write HERE* stopped being one question the moment two nodes could
         // lead two namespaces.
-        let identity = self.store.node_identity()?;
+        let identity = self.store.node_identity().await?;
         // Counted across both loops: a restart for a moved map spends the same
         // budget a lost race does, so a map that keeps moving cannot hold a
         // commit for ever.
@@ -51,18 +52,23 @@ impl Transaction<'_> {
             // ranges this transaction writes, and deriving them separately is how
             // two questions about one thing come to disagree about what that thing
             // was.
-            let placement = self.placement()?;
+            let placement = self.placement().await?;
             #[cfg(test)]
             if let Some(hook) = AFTER_PLACEMENT.with(|held| held.borrow_mut().take()) {
                 hook(self.store);
             }
             let ranges = self.ranges_written(&placement)?;
-            let placed = self.store.refuse_if_led_elsewhere(&ranges, &identity.id)?;
+            let placed = self
+                .store
+                .refuse_if_led_elsewhere(&ranges, &identity.id)
+                .await?;
             // ADR-0082: each written range is judged on the line that governs it. A
             // placed range is admitted only under a live lease on its own line, and
             // what is left is the store line's, judged exactly as it always was. A
             // store with no placement puts every range on the store line.
-            let on_the_store = self.admitted_on_their_lines(&ranges, &placed, &identity.id)?;
+            let on_the_store = self
+                .admitted_on_their_lines(&ranges, &placed, &identity.id)
+                .await?;
             // And the other half of *the effective role is the lease* (ADR-0064):
             // a node that takes part in deciding writes under a leadership and at
             // no other time. Asked here rather than only at the statement layer for
@@ -79,14 +85,14 @@ impl Transaction<'_> {
                 if let Some(for_the_last) = self.store.lease_spent() {
                     return Err(Error::LeaseSpent { for_the_last });
                 }
-                if self.store.awaiting(&identity.id)?
-                    && !self.every_range_admits_two_writers(&on_the_store)?
+                if self.store.awaiting(&identity.id).await?
+                    && !self.every_range_admits_two_writers(&on_the_store).await?
                 {
                     return Err(Error::NoLeadershipYet);
                 }
             }
             let store_line = !held_lines || !on_the_store.is_empty();
-            let mut record = self.log_record(identity.id, &placement)?;
+            let mut record = self.log_record(identity.id, &placement).await?;
             // The log this commit belongs to, derived from the record before the
             // loop because it cannot change between attempts: it is a property of
             // what is being written, not of the state being written onto. The
@@ -101,10 +107,10 @@ impl Transaction<'_> {
             // log and the epoch the record names cannot disagree.
             let home = crate::catalog::home_of(&record)?;
             let epoch = self.store.epoch_under(&placed, home);
-            let log = if epoch > Epoch::ZERO && !self.admits_two_writers_here(home)? {
+            let log = if epoch > Epoch::ZERO && !self.admits_two_writers_here(home).await? {
                 tessari_encoding::LogId::line(home)
             } else {
-                self.store.own_log(home)?
+                self.store.own_log(home).await?
             };
 
             loop {
@@ -120,7 +126,7 @@ impl Transaction<'_> {
                 // writer in this process can move what this attempt builds on
                 // (`crate::gate`). Dropped at the end of the attempt, the wait
                 // before a retry included.
-                let turn = self.store.write_gate().hold();
+                let turn = self.store.write_gate().hold().await;
                 // ADR-0095 D8: the map this attempt was admitted and stamped
                 // under is asked for again under the gate, because the statement
                 // that moves a map teaches the registry under this same gate. A
@@ -128,7 +134,7 @@ impl Transaction<'_> {
                 // nothing writes again, so the whole admission is redone with
                 // the new one — compared by value, since a re-learn of the same
                 // map is a new `Arc` and no reason to start again.
-                if self.placement()? != placement {
+                if self.placement().await? != placement {
                     drop(turn);
                     tracing::debug!(
                         attempt,
@@ -137,11 +143,11 @@ impl Transaction<'_> {
                     continue 'placed;
                 }
                 self.refuse_if_fenced_since(store_line, &placed, &ranges)?;
-                let tail = self.store.committed_tail(log)?;
+                let tail = self.store.committed_tail(log).await?;
                 // A prepare's half of the conflict check that its own node
                 // could not make (ADR-0112 D3a), under the same turn.
-                self.written_since_seen(log)?;
-                self.check_for_conflicts()?;
+                self.written_since_seen(log).await?;
+                self.check_for_conflicts().await?;
                 // Beside the conflict check, inside the loop, and for the same
                 // reason: both ask whether the committed state this attempt builds
                 // on will take the write, and a state that moved between attempts
@@ -152,17 +158,17 @@ impl Transaction<'_> {
                 // a caller that retries meets the concurrency on the next attempt —
                 // which is the right order to learn them in, because a stale write
                 // has nothing useful to say about a conflict it never saw.
-                let discarded = self.refuse_a_contested_record()?;
+                let discarded = self.refuse_a_contested_record().await?;
                 // Inside the loop with the conflict check, and for the same reason:
                 // both are read against the committed state this attempt builds on,
                 // and a schema that moved between attempts must be re-read rather
                 // than assumed.
-                crate::schema::validate(self.store, &record)?;
+                crate::schema::validate(self.store, &record).await?;
                 // A limited space's bound, against the same committed state and for
                 // the same reason: two commits adding different keys do not conflict,
                 // so only a count read here, per attempt, is exact (G036). The
                 // attempt writes the record with its evictions when there are any.
-                let mut evicted = crate::bounded::enforce(self.store, &record, identity.id)?;
+                let mut evicted = crate::bounded::enforce(self.store, &record, identity.id).await?;
                 // A topic admits its messages against the same committed state and at
                 // this transaction's clock: never a rewrite, never a deletion before
                 // its retention passed — judged as a reader would judge it — never a
@@ -172,7 +178,9 @@ impl Transaction<'_> {
                     evicted.as_ref().unwrap_or(&record),
                     self.clock(),
                     identity.id,
-                )? {
+                )
+                .await?
+                {
                     evicted = Some(admitted);
                 }
                 // And a table that declares expiry settles each write's instant
@@ -183,7 +191,9 @@ impl Transaction<'_> {
                     evicted.as_ref().unwrap_or(&record),
                     self.clock(),
                     &self.lifetimes,
-                )? {
+                )
+                .await?
+                {
                     evicted = Some(admitted);
                 }
                 // A unique value an expired record still holds is released by
@@ -194,7 +204,9 @@ impl Transaction<'_> {
                     self.clock(),
                     identity.id,
                     |address| placement.shard_of(address),
-                )? {
+                )
+                .await?
+                {
                     evicted = Some(admitted);
                 }
                 let carried = match evicted.as_mut() {
@@ -211,8 +223,13 @@ impl Transaction<'_> {
                 // is where this store's own history puts these records. Read inside
                 // the loop for the same reason the tail is — a lost attempt built on
                 // a state that has since moved (Q-614).
-                let commit_version =
-                    Sequence::new(self.store.committed_version()?.get().saturating_add(1));
+                let commit_version = Sequence::new(
+                    self.store
+                        .committed_version()
+                        .await?
+                        .get()
+                        .saturating_add(1),
+                );
                 // And the version is the writer's ORDER, written into the record:
                 // this node files its commits in one log per home, and a follower
                 // applying those logs needs to know where each commit stood among
@@ -233,7 +250,8 @@ impl Transaction<'_> {
                     written,
                     commit_version,
                     Some((log, commit_at)),
-                )?;
+                )
+                .await?;
                 let batch = if crate::intents::derives_nothing(carried) {
                     written
                 } else {
@@ -241,32 +259,36 @@ impl Transaction<'_> {
                     // and they are derived inside the loop because they depend on the
                     // committed state this attempt is building on (see `crate::index`).
                     let batch =
-                        crate::index::maintain(self.store, carried, written, commit_version)?;
+                        crate::index::maintain(self.store, carried, written, commit_version)
+                            .await?;
                     // Adjacency is derived in the same place and for the same reason: a
                     // replica reaches its state by replaying this record, so entries the
                     // leader merely added to its own batch would never exist on a
                     // follower — a walk that finds nothing there while the leader is
                     // correct, with nothing in an error state.
-                    let batch = crate::adjacency::maintain(self.store, carried, batch)?;
+                    let batch = crate::adjacency::maintain(self.store, carried, batch).await?;
                     // And the record counts, in the same batch and for the third time
                     // for the same reason: the planner on a follower must read the same
                     // number as the planner on the leader, or one query takes two access
                     // paths depending on which node answered it.
                     let batch =
-                        crate::cardinality::maintain(self.store, carried, batch, commit_version)?;
+                        crate::cardinality::maintain(self.store, carried, batch, commit_version)
+                            .await?;
                     // The expiry index, last and in the same batch as the records it
                     // describes: an entry written anywhere else is an entry that can be
                     // left behind (G035).
-                    let batch = crate::lapse::maintain(self.store, carried, batch)?;
+                    let batch = crate::lapse::maintain(self.store, carried, batch).await?;
                     // And a limited space's modified-order index, which the evictions
                     // above read on the next commit (G036).
                     let batch =
-                        crate::bounded::maintain(self.store, carried, batch, commit_version)?;
+                        crate::bounded::maintain(self.store, carried, batch, commit_version)
+                            .await?;
                     // And a topic's positions, dense in commit order (G037).
-                    let batch = crate::topic::maintain(self.store, carried, batch)?;
+                    let batch = crate::topic::maintain(self.store, carried, batch).await?;
                     // And this node's format stamp, when the record finalizes it
                     // (ADR-0118) — on the leader as on every follower.
-                    crate::format_stamp::maintain(self.store, carried, batch, commit_version)?
+                    crate::format_stamp::maintain(self.store, carried, batch, commit_version)
+                        .await?
                 };
                 // Everything above this ran. This is the whole difference between a
                 // rehearsal and a write, and it is one line so that it can only ever
@@ -298,21 +320,23 @@ impl Transaction<'_> {
                 // device, and whoever finds no landing running lands every staged
                 // batch in one write (`crate::gate`). A backend with no sync to
                 // share is applied under the turn, as grouping would only cost it.
-                let backend = self.store.backend().as_ref();
+                let backend = self.store.engine().as_ref();
                 let landed = if backend.groups_writes() {
-                    let ticket = self.store.write_gate().stage(batch);
+                    let ticket = self.store.write_gate().stage(batch, commit_version);
                     drop(turn);
-                    self.store.write_gate().land(ticket, backend)
+                    self.store.write_gate().land(ticket, backend).await
                 } else {
-                    let applied =
-                        self.store
-                            .write_gate()
-                            .apply(batch, backend, crate::gate::Landing::Synced);
+                    let applied = self
+                        .store
+                        .write_gate()
+                        .apply(batch, backend, crate::gate::Landing::Synced)
+                        .await;
                     drop(turn);
                     applied
                 };
                 match landed {
                     Ok(()) => {
+                        self.store.landed_at(commit_version);
                         // Counted HERE and not where it was decided. The decision is
                         // re-taken on every attempt, so an attempt that loses its
                         // batch would otherwise count a loss it never caused — and
@@ -338,7 +362,7 @@ impl Transaction<'_> {
                         // per loser per attempt, and a retry that then succeeds is
                         // the design working rather than an event.
                         tracing::debug!(attempt, "commit lost an attempt; retrying");
-                        back_off(attempt);
+                        back_off(attempt).await;
                         continue;
                     }
                     Err(other) => {

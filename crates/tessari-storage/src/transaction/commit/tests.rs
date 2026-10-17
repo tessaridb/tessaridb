@@ -1,6 +1,6 @@
 use super::{
-    COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS, jitter, waiting_for,
-    window_for,
+    COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS, back_off, jitter,
+    waiting_for, window_for,
 };
 
 #[test]
@@ -94,4 +94,33 @@ fn one_thread_does_not_draw_one_number_forever() {
         !drawn.contains(&0),
         "the jitter state reached zero and stuck"
     );
+}
+
+#[test]
+fn a_losing_commit_waits_without_holding_its_worker() {
+    // A commit retries on a runtime worker, and the commits it lost to, the
+    // follower asks it may wait for and every other task on that worker run
+    // there too. One worker makes the starvation certain: a wait that held the
+    // thread lets the other task run only after every retry has slept. Many
+    // retries, because a single wait drawn as zero would yield nothing.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .expect("a runtime");
+    let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = std::sync::Arc::clone(&ran);
+    let during = runtime.block_on(async move {
+        let other = tokio::spawn(async move {
+            // Relaxed: read below by this same runtime's one thread.
+            seen.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        for _ in 0..32 {
+            back_off(MAX_COMMIT_ATTEMPTS).await;
+        }
+        let during = ran.load(std::sync::atomic::Ordering::Relaxed);
+        other.await.expect("the other task");
+        during
+    });
+    assert!(during, "the retries held the worker the other task needed");
 }

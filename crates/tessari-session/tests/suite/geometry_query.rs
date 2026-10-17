@@ -13,6 +13,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Parameters, Session};
@@ -21,13 +23,13 @@ use tessari_types::{Geometry, Number, Polygon, Position, Ring, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn schemaless(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE maps; USE NAMESPACE maps;\n\
              DEFINE DATABASE world; USE DATABASE world;\n\
              DEFINE COLLECTION places;",
@@ -65,7 +67,7 @@ fn bound(name: &str, value: Value) -> Parameters {
 /// Put a named place on the map.
 fn place(session: &mut Session<'_>, id: u32, name: &str, shape: Geometry) {
     session
-        .run_with(
+        .run_with_now(
             &format!("CREATE places:{id} = {{ name: '{name}', shape: $shape }};"),
             &bound("shape", Value::Geometry(shape)),
         )
@@ -74,7 +76,7 @@ fn place(session: &mut Session<'_>, id: u32, name: &str, shape: Geometry) {
 
 /// The `name` of every record a statement answered with, sorted.
 fn names(session: &mut Session<'_>, script: &str, parameters: &Parameters) -> Vec<String> {
-    let outcomes = session.run_with(script, parameters).unwrap();
+    let outcomes = session.run_with_now(script, parameters).unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a select answers with records")
     };
@@ -114,7 +116,7 @@ fn a_map(session: &mut Session<'_>) {
     place(session, 5, "overlapping", square(6.0, 12.0));
     place(session, 6, "elsewhere", square(30.0, 40.0));
     session
-        .run("CREATE places:7 = { name: 'nameless' };")
+        .run_now("CREATE places:7 = { name: 'nameless' };")
         .unwrap();
 }
 
@@ -238,7 +240,7 @@ fn a_place_with_no_shape_narrows_the_answer_rather_than_failing_the_read() {
     let store = store();
     let mut session = schemaless(&store);
     session
-        .run("CREATE places:1 = { name: 'nameless' };")
+        .run_now("CREATE places:1 = { name: 'nameless' };")
         .unwrap();
 
     assert!(
@@ -256,11 +258,11 @@ fn a_value_that_is_present_and_is_not_a_shape_is_a_mistake_and_says_so() {
     let store = store();
     let mut session = schemaless(&store);
     session
-        .run("CREATE places:1 = { name: 'a place', shape: 'over there' };")
+        .run_now("CREATE places:1 = { name: 'a place', shape: 'over there' };")
         .unwrap();
 
     let refusal = session
-        .run_with(
+        .run_with_now(
             "SELECT * FROM places WHERE geo::intersects(shape, $area);",
             &query_square(),
         )
@@ -278,7 +280,7 @@ fn a_query_shape_off_the_sphere_is_refused_rather_than_wrapped_round_the_world()
     place(&mut session, 1, "middle", Geometry::Point(at(5.0, 5.0)));
 
     let refusal = session
-        .run_with(
+        .run_with_now(
             "SELECT * FROM places WHERE geo::intersects(shape, $area);",
             &bound("area", Value::Geometry(Geometry::Point(at(181.0, 0.0)))),
         )
@@ -296,7 +298,7 @@ fn a_geo_predicate_can_be_selected_as_a_field_and_not_only_filtered_on() {
     place(&mut session, 1, "middle", Geometry::Point(at(5.0, 5.0)));
 
     let outcomes = session
-        .run_with(
+        .run_with_now(
             "SELECT geo::intersects(shape, $area) AS meets FROM places;",
             &query_square(),
         )
@@ -325,12 +327,12 @@ fn distance_answers_in_metres_and_orders_a_bounded_read() {
     place(&mut session, 3, "middle", Geometry::Point(at(0.0, 1.0)));
     // A record with no shape at all, which is what the ordering has to survive.
     session
-        .run("CREATE places:4 = { name: 'nowhere' };")
+        .run_now("CREATE places:4 = { name: 'nowhere' };")
         .unwrap();
 
     let origin = bound("here", Value::Geometry(Geometry::Point(at(0.0, 0.0))));
     let outcomes = session
-        .run_with(
+        .run_with_now(
             "SELECT name FROM places ORDER BY geo::distance(shape, $here) LIMIT 3;",
             &origin,
         )
@@ -375,7 +377,7 @@ fn a_distance_to_an_area_is_to_its_nearest_point_from_either_side() {
         "SELECT geo::distance($here, shape) AS far FROM places;",
     ] {
         let outcomes = session
-            .run_with(statement, &bound("here", here.clone()))
+            .run_with_now(statement, &bound("here", here.clone()))
             .unwrap();
         let Some(Outcome::Records { records, .. }) = outcomes.last() else {
             panic!("a select answers with records")
@@ -394,7 +396,7 @@ fn a_distance_to_an_area_is_to_its_nearest_point_from_either_side() {
 
     // Inside the area it is no distance at all.
     let inside = session
-        .run_with(
+        .run_with_now(
             "SELECT geo::distance(shape, $here) AS far FROM places;",
             &bound("here", Value::Geometry(Geometry::Point(at(0.5, 0.5)))),
         )
@@ -418,7 +420,7 @@ fn a_distance_between_two_areas_is_between_their_nearest_points() {
     place(&mut session, 2, "near", square(2.0, 2.5));
     let read = |session: &mut Session<'_>, statement: &str| -> Vec<(String, f64)> {
         session
-            .run_with(
+            .run_with_now(
                 statement,
                 &bound("there", Value::Geometry(square(3.0, 4.0))),
             )
@@ -465,7 +467,7 @@ fn area_answers_in_square_metres_and_is_zero_without_an_interior() {
     place(&mut session, 2, "a position", Geometry::Point(at(3.0, 3.0)));
 
     let outcomes = session
-        .run("SELECT name, geo::area(shape) AS ground FROM places;")
+        .run_now("SELECT name, geo::area(shape) AS ground FROM places;")
         .unwrap();
     let Some(Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("a select answers with records")

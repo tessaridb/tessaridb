@@ -20,6 +20,9 @@ tessaridb.workspace = true
 tessari-backup.workspace = true
 tessari-storage.workspace = true
 tessari-types.workspace = true
+# The bench is a synchronous harness: workloads are plain functions timed on
+# their own threads, and `RunNow` drives the store's asynchronous entry points.
+tessari-session = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true
@@ -29,4 +32,3 @@ tessari-lsm.workspace = true
 tessari-kv.workspace = true
 tessari-geo.workspace = true
 tessari-encoding.workspace = true
-tessari-session.workspace = true

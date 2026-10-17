@@ -1,7 +1,7 @@
 //! A session with its store taken away, so it can cross a thread.
 //!
-//! A [`Session`] borrows its store, and an async connection cannot hold a borrow
-//! across the hop that runs each statement on the blocking pool. Everything else
+//! A [`Session`] borrows its store, and an async connection does not hold that
+//! borrow between statements. Everything else
 //! a session holds is owned, so the owned half is carried between statements as
 //! a [`Detached`] and given its store back for the length of one call.
 //!

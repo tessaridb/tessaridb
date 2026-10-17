@@ -86,7 +86,7 @@ use super::candidate::{Candidate, Rows, Served};
 /// # Errors
 ///
 /// Returns an error when the catalog or the index cannot be read.
-pub(crate) fn worth_serving(
+pub(crate) async fn worth_serving(
     transaction: &mut Transaction<'_>,
     table: TableId,
     chosen: &Candidate,
@@ -99,7 +99,7 @@ pub(crate) fn worth_serving(
     if lifted {
         return Ok(Some(chosen.rows));
     }
-    let Some(records) = Catalog::new(transaction).record_count(table)? else {
+    let Some(records) = Catalog::new(transaction).record_count(table).await? else {
         return Ok(Some(chosen.rows));
     };
     if records < PLANNER_SCAN_FLOOR_RECORDS {
@@ -118,7 +118,9 @@ pub(crate) fn worth_serving(
         }
         (Rows::About(held), _) if held >= cap.saturating_add(cap / 2) => return Ok(None),
         (Rows::About(_) | Rows::Unknown, Served::Equality(values)) => {
-            transaction.count_in_range(&chosen.index, values, None, None, cap)?
+            transaction
+                .count_in_range(&chosen.index, values, None, None, cap)
+                .await?
         }
         (
             Rows::About(_) | Rows::Unknown,
@@ -128,7 +130,9 @@ pub(crate) fn worth_serving(
                 upper,
             },
         ) => {
-            transaction.count_in_range(&chosen.index, fixed, lower.as_ref(), upper.as_ref(), cap)?
+            transaction
+                .count_in_range(&chosen.index, fixed, lower.as_ref(), upper.as_ref(), cap)
+                .await?
         }
         // A string prefix, a search expansion and a region are each read
         // through a path of their own, so none of them is a range this probe

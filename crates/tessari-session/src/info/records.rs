@@ -40,14 +40,14 @@ impl Session<'_> {
     /// With one version and `concurrent: false`. A report that refused outside
     /// multi-master would make *is this contested?* unanswerable exactly where
     /// an operator who has just changed a namespace's class most wants to ask.
-    pub(super) fn info_versions(
+    pub(super) async fn info_versions(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
-        let (_, address) = self.address(transaction, target)?;
-        let (surviving, concurrent) = transaction.surviving_writers(&address)?;
+        let (_, address) = self.address(transaction, target).await?;
+        let (surviving, concurrent) = transaction.surviving_writers(&address).await?;
         let Some((newest, writer)) = surviving.first() else {
             return Err(Error::NoSuchRecord {
                 id: address.id.to_string(),
@@ -106,15 +106,16 @@ impl Session<'_> {
     /// unrelated counts as one story — the defect `tessari_storage::log`
     /// documents. A cross-writer history needs an order that does not exist yet,
     /// and inventing one here would be a console-ahead-of-the-engine answer.
-    pub(super) fn info_history(
+    pub(super) async fn info_history(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
-        let (_, address) = self.address(transaction, target)?;
+        let (_, address) = self.address(transaction, target).await?;
         let split = Catalog::new(transaction)
-            .table(address.table)?
+            .table(address.table)
+            .await?
             .and_then(|table| table.shards);
         let home = Reach::Database(address.namespace, address.database);
         let subject = Subject::new(
@@ -128,7 +129,7 @@ impl Session<'_> {
         // value owes. `seen` is the store's one answer to "what may this session
         // read of this record", and it is public precisely so a second caller
         // cannot grow a second answer that disagrees with it.
-        let visible = self.visible_in(transaction, address.table)?;
+        let visible = self.visible_in(transaction, address.table).await?;
         let _ = span;
         let described = |change: &tessari_storage::Change| {
             let mut described =
@@ -152,15 +153,20 @@ impl Session<'_> {
         if let Some(shards) = split {
             let shard = shards.shard_of(&address.id);
             let logs = [
-                self.store.own_log(Reach::Shard(
-                    address.namespace,
-                    address.database,
-                    address.table,
-                    shard,
-                ))?,
-                self.store.own_log(home)?,
+                self.store
+                    .own_log(Reach::Shard(
+                        address.namespace,
+                        address.database,
+                        address.table,
+                        shard,
+                    ))
+                    .await?,
+                self.store.own_log(home).await?,
             ];
-            let history = self.store.history_across(&logs, &subject, HISTORY_EVENTS)?;
+            let history = self
+                .store
+                .history_across(&logs, &subject, HISTORY_EVENTS)
+                .await?;
             let events: Vec<Value> = history
                 .events
                 .iter()
@@ -180,8 +186,8 @@ impl Session<'_> {
                 ("walked".to_owned(), Value::from(history.walked.to_string())),
             ]));
         }
-        let log = self.store.own_log(home)?;
-        let history = self.store.history_of(log, &subject, HISTORY_EVENTS)?;
+        let log = self.store.own_log(home).await?;
+        let history = self.store.history_of(log, &subject, HISTORY_EVENTS).await?;
         let events: Vec<Value> = history
             .events
             .iter()
@@ -216,10 +222,10 @@ impl Session<'_> {
     /// and it is `govern` over the store itself. A second check written here
     /// would be a second evaluator of one rule — the thing `INFO FOR ACCESS`
     /// exists as a counter-example to.
-    pub(super) fn info_audit(&self, actor: Option<&Name>) -> Result<BTreeMap<String, Value>> {
+    pub(super) async fn info_audit(&self, actor: Option<&Name>) -> Result<BTreeMap<String, Value>> {
         let entries = match actor {
-            Some(name) => tessari_storage::reads_by(self.store, &name.text)?,
-            None => tessari_storage::audit_entries(self.store)?,
+            Some(name) => tessari_storage::reads_by(self.store, &name.text).await?,
+            None => tessari_storage::audit_entries(self.store).await?,
         };
         Ok(BTreeMap::from([(
             "audit".to_owned(),
@@ -241,22 +247,26 @@ impl Session<'_> {
     /// A distinct "wrong kind" answer would let a caller who may read nothing
     /// learn which names exist, and this subject is asked precisely where a
     /// caller has not been trusted with the answer yet.
-    pub(super) fn info_bucket(
+    pub(super) async fn info_bucket(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
-        let context = self.context(transaction, None, span)?;
+        let context = self.context(transaction, None, span).await?;
         let missing = || Error::Unknown {
             entity: "bucket",
             name: name.text.clone(),
             span,
         };
         let id = Catalog::new(transaction)
-            .table_id(context.namespace, context.database, &name.text)?
+            .table_id(context.namespace, context.database, &name.text)
+            .await?
             .ok_or_else(missing)?;
-        let definition = Catalog::new(transaction).table(id)?.ok_or_else(missing)?;
+        let definition = Catalog::new(transaction)
+            .table(id)
+            .await?
+            .ok_or_else(missing)?;
         if !definition.is_bucket() {
             return Err(missing());
         }

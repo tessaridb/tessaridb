@@ -3,6 +3,8 @@
 //! verified, and what this node refuses to write for them.
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_encoding::{
     Decision, Mutation, Participant, RecordValue, StampedValue, TRANSACTION_ID_LEN, TransactionId,
@@ -20,16 +22,16 @@ const PASSWORD: &str = "correct horse battery";
 /// `cache`, an owner, and an editor scoped to `prod.shop` granted only `READ`
 /// on `notes`.
 fn store() -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
     let mut root = Session::new(&store);
-    root.run(&format!(
+    root.run_now(&format!(
         "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
          DEFINE COLLECTION notes; DEFINE SPACE cache; CREATE notes:1 = 'old'; \
          DEFINE USER root ROLE owner PASSWORD '{PASSWORD}';"
     ))
     .unwrap();
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run(&format!(
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now(&format!(
         "USE NAMESPACE prod; USE DATABASE shop; \
          DEFINE USER reader ON prod.shop ROLE editor PASSWORD '{PASSWORD}'; \
          GRANT read ON notes TO reader;"
@@ -39,12 +41,17 @@ fn store() -> Store {
 }
 
 fn ids(store: &Store, table: &str) -> (NamespaceId, DatabaseId, TableId) {
-    let mut reading = store.begin().unwrap();
+    let mut reading = store.begin().now().unwrap();
     let catalog = Catalog::new(&mut reading);
-    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
-    let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
+    let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+    let database = catalog
+        .database_id(namespace, "shop")
+        .now()
+        .unwrap()
+        .unwrap();
     let table = catalog
         .table_id(namespace, database, table)
+        .now()
         .unwrap()
         .unwrap();
     (namespace, database, table)
@@ -71,8 +78,12 @@ fn prepare(store: &Store, table: &str) -> AcrossAsk {
         coordinator: Reach::Database(namespace, database),
         seen: tessari_storage::Store::committed_tail(
             store,
-            store.own_log(Reach::Database(namespace, database)).unwrap(),
+            store
+                .own_log(Reach::Database(namespace, database))
+                .now()
+                .unwrap(),
         )
+        .now()
         .unwrap(),
         writes: vec![write(store, table, "new")],
     }
@@ -80,7 +91,7 @@ fn prepare(store: &Store, table: &str) -> AcrossAsk {
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
 }
 
@@ -88,6 +99,7 @@ fn note(store: &Store) -> Value {
     let (namespace, database, table) = ids(store, "notes");
     let held = store
         .begin()
+        .now()
         .unwrap()
         .get(&RecordAddress::new(
             namespace,
@@ -95,6 +107,7 @@ fn note(store: &Store) -> Value {
             table,
             RecordId::Int(1),
         ))
+        .now()
         .unwrap()
         .unwrap();
     tessari_encoding::decode_payload(&held).unwrap()
@@ -116,7 +129,10 @@ fn record(store: &Store, decision: Decision) -> TransactionRecord {
 fn the_three_records_commit_a_write_only_once_decided() {
     let store = store();
     let mut owner = signed_in(&store, "root");
-    let prepared = owner.answer_across(&prepare(&store, "notes")).unwrap();
+    let prepared = owner
+        .answer_across(&prepare(&store, "notes"))
+        .now()
+        .unwrap();
     assert!(matches!(prepared, AcrossAnswer::Prepared(_)));
     assert_eq!(note(&store), Value::from("old"), "an intent is not a value");
     for decision in [Decision::Pending, Decision::Committed] {
@@ -125,6 +141,7 @@ fn the_three_records_commit_a_write_only_once_decided() {
                 transaction: TRANSACTION,
                 record: record(&store, decision),
             })
+            .now()
             .unwrap();
         assert!(matches!(decided, AcrossAnswer::Decided(_)));
     }
@@ -141,12 +158,12 @@ fn the_three_records_commit_a_write_only_once_decided() {
         )],
     };
     assert!(matches!(
-        owner.answer_across(&resolving).unwrap(),
+        owner.answer_across(&resolving).now().unwrap(),
         AcrossAnswer::Resolved(Some(_))
     ));
     assert_eq!(note(&store), Value::from("new"));
     assert_eq!(
-        owner.answer_across(&resolving).unwrap(),
+        owner.answer_across(&resolving).now().unwrap(),
         AcrossAnswer::Resolved(None),
         "a second resolution finds nothing left"
     );
@@ -155,7 +172,9 @@ fn the_three_records_commit_a_write_only_once_decided() {
 #[test]
 fn a_user_without_the_write_grant_cannot_prepare() {
     let store = store();
-    let refused = signed_in(&store, "reader").answer_across(&prepare(&store, "notes"));
+    let refused = signed_in(&store, "reader")
+        .answer_across(&prepare(&store, "notes"))
+        .now();
     assert!(
         matches!(refused, Err(Error::NotGranted { .. })),
         "{refused:?}"
@@ -166,7 +185,9 @@ fn a_user_without_the_write_grant_cannot_prepare() {
 #[test]
 fn nobody_signed_in_cannot_prepare_on_a_closed_store() {
     let store = store();
-    let refused = Session::new(&store).answer_across(&prepare(&store, "notes"));
+    let refused = Session::new(&store)
+        .answer_across(&prepare(&store, "notes"))
+        .now();
     assert!(
         matches!(refused, Err(Error::NotSignedIn { .. })),
         "{refused:?}"
@@ -176,7 +197,9 @@ fn nobody_signed_in_cannot_prepare_on_a_closed_store() {
 #[test]
 fn a_space_is_not_written_across_leaders() {
     let store = store();
-    let refused = signed_in(&store, "root").answer_across(&prepare(&store, "cache"));
+    let refused = signed_in(&store, "root")
+        .answer_across(&prepare(&store, "cache"))
+        .now();
     assert!(
         matches!(refused, Err(Error::AcrossKind { .. })),
         "{refused:?}"
@@ -191,6 +214,7 @@ fn settle(session: &mut Session<'_>, store: &Store) -> Decision {
             transaction: TRANSACTION,
             coordinator: Reach::Database(namespace, database),
         })
+        .now()
         .unwrap()
     {
         AcrossAnswer::Outcome(record) => record.decision,
@@ -203,14 +227,20 @@ fn settling_a_record_nobody_wrote_aborts_it_for_good() {
     let store = store();
     let mut owner = signed_in(&store, "root");
     assert_eq!(settle(&mut owner, &store), Decision::Aborted);
-    let held = store.transaction_record(TRANSACTION).unwrap().unwrap();
+    let held = store
+        .transaction_record(TRANSACTION)
+        .now()
+        .unwrap()
+        .unwrap();
     assert_eq!(held.decision, Decision::Aborted);
     // A coordinator arriving late with its PENDING record is refused: the
     // abort stands.
-    let late = owner.answer_across(&AcrossAsk::Decide {
-        transaction: TRANSACTION,
-        record: record(&store, Decision::Pending),
-    });
+    let late = owner
+        .answer_across(&AcrossAsk::Decide {
+            transaction: TRANSACTION,
+            record: record(&store, Decision::Pending),
+        })
+        .now();
     assert!(late.is_err(), "{late:?}");
 }
 
@@ -223,11 +253,13 @@ fn settling_an_overdue_pending_record_aborts_it() {
             transaction: TRANSACTION,
             record: record(&store, Decision::Pending),
         })
+        .now()
         .unwrap();
     assert_eq!(settle(&mut owner, &store), Decision::Aborted);
     assert_eq!(
         store
             .transaction_record(TRANSACTION)
+            .now()
             .unwrap()
             .unwrap()
             .decision,
@@ -246,11 +278,13 @@ fn settling_a_live_pending_record_leaves_it_pending() {
             transaction: TRANSACTION,
             record: live,
         })
+        .now()
         .unwrap();
     assert_eq!(settle(&mut owner, &store), Decision::Pending);
     assert_eq!(
         store
             .transaction_record(TRANSACTION)
+            .now()
             .unwrap()
             .unwrap()
             .decision,
@@ -268,6 +302,7 @@ fn settling_a_decided_record_answers_its_decision() {
                 transaction: TRANSACTION,
                 record: record(&store, decision),
             })
+            .now()
             .unwrap();
     }
     assert_eq!(
@@ -292,14 +327,18 @@ fn settling_a_decided_record_writes_it_again_so_a_majority_holds_it() {
                 transaction: TRANSACTION,
                 record: record(&store, decision),
             })
+            .now()
             .unwrap();
     }
     let (namespace, database, _) = ids(&store, "notes");
-    let log = store.own_log(Reach::Database(namespace, database)).unwrap();
-    let before = store.committed_tail(log).unwrap();
+    let log = store
+        .own_log(Reach::Database(namespace, database))
+        .now()
+        .unwrap();
+    let before = store.committed_tail(log).now().unwrap();
     assert_eq!(settle(&mut owner, &store), Decision::Aborted);
     assert!(
-        store.committed_tail(log).unwrap() > before,
+        store.committed_tail(log).now().unwrap() > before,
         "the decision was answered without being written again"
     );
 }
@@ -312,6 +351,7 @@ fn look_up(session: &mut Session<'_>, store: &Store) -> Decision {
             transaction: TRANSACTION,
             coordinator: Reach::Database(namespace, database),
         })
+        .now()
         .unwrap()
     {
         AcrossAnswer::Outcome(record) => record.decision,
@@ -328,7 +368,11 @@ fn a_readers_lookup_never_aborts_and_answers_a_decision() {
     let mut owner = signed_in(&store, "root");
     assert_eq!(look_up(&mut owner, &store), Decision::Pending);
     assert!(
-        store.transaction_record(TRANSACTION).unwrap().is_none(),
+        store
+            .transaction_record(TRANSACTION)
+            .now()
+            .unwrap()
+            .is_none(),
         "a lookup wrote a record"
     );
     owner
@@ -336,11 +380,13 @@ fn a_readers_lookup_never_aborts_and_answers_a_decision() {
             transaction: TRANSACTION,
             record: record(&store, Decision::Pending),
         })
+        .now()
         .unwrap();
     assert_eq!(look_up(&mut owner, &store), Decision::Pending);
     assert_eq!(
         store
             .transaction_record(TRANSACTION)
+            .now()
             .unwrap()
             .unwrap()
             .decision,
@@ -352,6 +398,7 @@ fn a_readers_lookup_never_aborts_and_answers_a_decision() {
             transaction: TRANSACTION,
             record: record(&store, Decision::Committed),
         })
+        .now()
         .unwrap();
     assert_eq!(look_up(&mut owner, &store), Decision::Committed);
 }

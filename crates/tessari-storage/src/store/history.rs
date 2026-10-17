@@ -23,13 +23,13 @@ impl Store {
     /// [`Error::VersionReclaimed`] when `at` is below the reclaim floor, so the
     /// version that answered is gone and the answer would be a guess; a backend
     /// or decoding failure otherwise.
-    pub fn held_at(
+    pub async fn held_at(
         &self,
         at: Sequence,
         address: &crate::RecordAddress,
     ) -> Result<Option<tessari_types::Value>> {
-        let transaction = self.begin_at(at)?;
-        let held = transaction.get_held(address)?;
+        let transaction = self.begin_at(at).await?;
+        let held = transaction.get_held(address).await?;
         transaction.rollback();
         Ok(match held {
             Some(payload) => Some(tessari_encoding::decode_payload(&payload)?),
@@ -68,8 +68,8 @@ impl Store {
     /// Returns an error when the backend fails, or when a record or a payload
     /// cannot be decoded. A payload that cannot be decoded is corruption rather
     /// than a change to skip.
-    pub fn changes_since(&self, log: LogId, from: Sequence, limit: usize) -> Result<Changes> {
-        let records = self.log_records(log, from, limit)?;
+    pub async fn changes_since(&self, log: LogId, from: Sequence, limit: usize) -> Result<Changes> {
+        let records = self.log_records(log, from, limit).await?;
         let next = records.last().map_or(from, |(sequence, _)| {
             Sequence::new(sequence.get().saturating_add(1))
         });
@@ -105,8 +105,10 @@ impl Store {
     /// Returns an error when the backend fails or a stored record cannot be
     /// decoded. A record that cannot be decoded is corruption rather than an
     /// event to skip, for the reason [`crate::feed::changes_in`] gives.
-    pub fn history_of(&self, log: LogId, subject: &Subject, limit: usize) -> Result<History> {
-        let records = self.log_records_newest_first(log, HISTORY_SCAN_RECORDS)?;
+    pub async fn history_of(&self, log: LogId, subject: &Subject, limit: usize) -> Result<History> {
+        let records = self
+            .log_records_newest_first(log, HISTORY_SCAN_RECORDS)
+            .await?;
         let walked = records.len();
         let mut events = Vec::new();
         for (sequence, record) in records {
@@ -128,7 +130,7 @@ impl Store {
             // early on a pruned log has reached the horizon rather than the
             // beginning, and reporting that as complete would present a
             // truncated history as the whole of one. Both conditions, therefore.
-            complete: walked < HISTORY_SCAN_RECORDS && self.log_start(log)?.get() <= 1,
+            complete: walked < HISTORY_SCAN_RECORDS && self.log_start(log).await?.get() <= 1,
             walked,
         })
     }
@@ -144,7 +146,7 @@ impl Store {
     ///
     /// Returns an error when the backend fails or a stored record cannot be
     /// decoded.
-    pub fn log_records_newest_first(
+    pub async fn log_records_newest_first(
         &self,
         log: LogId,
         limit: usize,
@@ -157,7 +159,8 @@ impl Store {
             limit: Some(limit),
         };
         self.backend
-            .scan(&request)?
+            .scan(&request)
+            .await?
             .into_iter()
             .map(|(key, value)| {
                 let sequence = LogKey::decode(key.as_slice())?.sequence;
@@ -183,7 +186,7 @@ impl Store {
     ///
     /// Returns an error when the backend fails or a stored record cannot be
     /// decoded.
-    pub fn log_records(
+    pub async fn log_records(
         &self,
         log: LogId,
         from: Sequence,
@@ -195,7 +198,7 @@ impl Store {
         // level. A pruned span answered as a short read would tell a follower it
         // had caught up while the records it is missing no longer exist, and
         // nothing anywhere would be in an error state (`Error::BelowLogStart`).
-        let start = self.log_start(log)?;
+        let start = self.log_start(log).await?;
         if start > from {
             return Err(Error::BelowLogStart {
                 asked: from.get(),
@@ -214,7 +217,8 @@ impl Store {
             limit: Some(limit),
         };
         self.backend
-            .scan(&request)?
+            .scan(&request)
+            .await?
             .into_iter()
             .map(|(key, value)| {
                 let sequence = LogKey::decode(key.as_slice())?.sequence;
@@ -254,7 +258,7 @@ impl Store {
     /// Returns whatever [`Self::log_records`] returns, and
     /// [`Error::CatalogMalformed`] when a catalog record in the log is present
     /// and cannot be decoded.
-    pub fn log_records_within(
+    pub async fn log_records_within(
         &self,
         subscription: Reach,
         log: LogId,
@@ -267,10 +271,10 @@ impl Store {
             // record to arrive at the same bytes would cost a clone per mutation
             // on the path every follower that exists today takes, to prove
             // something the type already says.
-            return self.log_records(log, from, limit);
+            return self.log_records(log, from, limit).await;
         }
         let mut carried = Vec::new();
-        for (sequence, record) in self.log_records(log, from, limit)? {
+        for (sequence, record) in self.log_records(log, from, limit).await? {
             let mut kept = Vec::new();
             for mutation in record.mutations() {
                 if crate::catalog::carried_to(mutation)?.reaches(subscription) {

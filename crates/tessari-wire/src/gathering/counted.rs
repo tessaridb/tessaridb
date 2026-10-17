@@ -74,7 +74,7 @@ fn put_count(into: &mut Vec<u8>, count: usize) {
 
 /// The figures one page of `asked`'s window holds for the search index named
 /// by `counting`, resuming past the last record read when more follow.
-pub(super) fn counted_page(
+pub(super) async fn counted_page(
     transaction: &mut Transaction<'_>,
     asked: &Gather,
     counting: &tessari_session::Counting,
@@ -87,6 +87,7 @@ pub(super) fn counted_page(
     };
     let index = Catalog::new(transaction)
         .indexes_on(asked.namespace, asked.database, asked.table)
+        .await
         .map_err(refused)?
         .into_iter()
         .find(|index| index.id == counting.index && index.search)
@@ -103,11 +104,13 @@ pub(super) fn counted_page(
             asked.after.as_ref(),
             page_records,
         )
+        .await
         .map_err(refused)?;
     let more = found.len() == page_records;
     let read_to: Option<RecordId> = found.last().map(|(id, _)| id.clone());
     let counted = transaction
         .search_counts(&index, &found, &counting.terms)
+        .await
         .map_err(refused)?;
     Ok(Page {
         records: Vec::new(),

@@ -23,6 +23,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_http::Node;
 use tessaridb::Db;
@@ -32,7 +33,7 @@ const ROOT: &str = "Basic cm9vdDphIGxvbmcgb25l";
 const NINA: &str = "Basic bmluYTphIGxvbmcgb25l";
 
 fn node() -> (Arc<Node>, String) {
-    let db = Arc::new(Db::in_memory().unwrap());
+    let db = Arc::new(Db::in_memory().now().unwrap());
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);

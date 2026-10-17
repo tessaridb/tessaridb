@@ -128,8 +128,8 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns [`Error::NameTaken`] when a set of that kind already has the name.
-    pub fn create_word_set(&mut self, set: &WordSet) -> Result<()> {
-        if self.word_set(set.kind, &set.name)?.is_some() {
+    pub async fn create_word_set(&mut self, set: &WordSet) -> Result<()> {
+        if self.word_set(set.kind, &set.name).await?.is_some() {
             return Err(Error::NameTaken {
                 holder: format!("a set of {}", set.kind.word()),
                 name: set.name.clone(),
@@ -147,9 +147,9 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// A backend failure, or a stored row that is not a set.
-    pub fn word_set(&self, kind: WordSetKind, name: &str) -> Result<Option<WordSet>> {
+    pub async fn word_set(&self, kind: WordSetKind, name: &str) -> Result<Option<WordSet>> {
         let address = system::address(system::WORD_SETS, key(kind, name));
-        match self.transaction.get(&address)? {
+        match self.transaction.get(&address).await? {
             Some(payload) => Ok(Some(WordSet::from_value(&decode_payload(&payload)?)?)),
             None => Ok(None),
         }
@@ -160,8 +160,8 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// A backend failure, or a stored row that is not a set.
-    pub fn drop_word_set(&mut self, kind: WordSetKind, name: &str) -> Result<bool> {
-        if self.word_set(kind, name)?.is_none() {
+    pub async fn drop_word_set(&mut self, kind: WordSetKind, name: &str) -> Result<bool> {
+        if self.word_set(kind, name).await?.is_none() {
             return Ok(false);
         }
         self.transaction
@@ -174,13 +174,17 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// A backend failure, or a stored row that is not a set.
-    pub fn word_sets(&self) -> Result<Vec<WordSet>> {
+    pub async fn word_sets(&self) -> Result<Vec<WordSet>> {
         let mut found = Vec::new();
-        for (_, payload) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::WORD_SETS,
-        )? {
+        for (_, payload) in self
+            .transaction
+            .scan_table(
+                system::SYSTEM_NAMESPACE,
+                system::SYSTEM_DATABASE,
+                system::WORD_SETS,
+            )
+            .await?
+        {
             found.push(WordSet::from_value(&decode_payload(&payload)?)?);
         }
         Ok(found)

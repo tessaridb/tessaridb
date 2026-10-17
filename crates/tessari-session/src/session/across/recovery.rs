@@ -37,43 +37,97 @@ pub enum Recovery {
 }
 
 /// Recover `record`, which stages, asking each participant range's leader
-/// through `ask` — every part but those the record already knows landed.
+/// through `ask`: every part but those the record already knows landed.
 /// `prevent` bars a part that has not landed rather than only reporting it.
-pub fn recover_staging(
+pub async fn recover_staging(
     transaction: TransactionId,
     record: &TransactionRecord,
     prevent: bool,
-    mut ask: impl FnMut(Reach, &AcrossAsk) -> Result<AcrossAnswer, String>,
+    mut ask: impl AsyncFnMut(Reach, &AcrossAsk) -> Result<AcrossAnswer, String>,
 ) -> Recovery {
-    let mut committed = TransactionRecord {
-        decision: Decision::Committed,
-        ..record.clone()
-    };
-    for participant in &mut committed.participants {
-        if participant.prepared_at.is_some() {
-            continue;
-        }
-        let asked = AcrossAsk::Bar {
-            transaction,
-            range: participant.range,
-            prevent,
-        };
-        match ask(participant.range, &asked) {
-            Ok(AcrossAnswer::Landed(Some(at))) => participant.prepared_at = Some(at),
-            Ok(AcrossAnswer::Landed(None)) if prevent => {
-                return Recovery::Barred(participant.range);
-            }
-            Ok(AcrossAnswer::Landed(None)) => return Recovery::Missing(participant.range),
-            Ok(other) => {
-                return Recovery::Unknown(format!(
-                    "{:?} answered {other:?} when asked where a part landed",
-                    participant.range
-                ));
-            }
-            Err(why) => return Recovery::Unknown(why),
+    let mut staged = Staged::new(transaction, record, prevent);
+    while let Some((range, asked)) = staged.next_ask() {
+        if let Some(recovered) = staged.heard(ask(range, &asked).await) {
+            return recovered;
         }
     }
-    Recovery::Committed(committed)
+    staged.finish()
+}
+
+/// The recovery of one staging record, asked a part at a time.
+///
+/// [`recover_staging`] with the asking written by the caller:
+/// `while let Some((range, asked)) = staged.next_ask()`, each answer handed to
+/// [`Staged::heard`], and [`Staged::finish`] once nothing is left to ask.
+pub struct Staged {
+    transaction: TransactionId,
+    prevent: bool,
+    committed: TransactionRecord,
+    /// The next participant to ask about.
+    at: usize,
+}
+
+impl Staged {
+    /// The recovery of `record`, which stages.
+    #[must_use]
+    pub fn new(transaction: TransactionId, record: &TransactionRecord, prevent: bool) -> Self {
+        Self {
+            transaction,
+            prevent,
+            committed: TransactionRecord {
+                decision: Decision::Committed,
+                ..record.clone()
+            },
+            at: 0,
+        }
+    }
+
+    /// The next range to ask and what to ask it, or `None` once every part
+    /// not already known to have landed has been asked.
+    pub fn next_ask(&mut self) -> Option<(Reach, AcrossAsk)> {
+        while let Some(participant) = self.committed.participants.get(self.at) {
+            if participant.prepared_at.is_none() {
+                return Some((
+                    participant.range,
+                    AcrossAsk::Bar {
+                        transaction: self.transaction,
+                        range: participant.range,
+                        prevent: self.prevent,
+                    },
+                ));
+            }
+            self.at = self.at.saturating_add(1);
+        }
+        None
+    }
+
+    /// The answer to the last ask: `Some` when it settles the recovery, `None`
+    /// when the next part is to be asked.
+    pub fn heard(&mut self, answer: Result<AcrossAnswer, String>) -> Option<Recovery> {
+        let participant = self.committed.participants.get_mut(self.at)?;
+        self.at = self.at.saturating_add(1);
+        match answer {
+            Ok(AcrossAnswer::Landed(Some(at))) => {
+                participant.prepared_at = Some(at);
+                None
+            }
+            Ok(AcrossAnswer::Landed(None)) if self.prevent => {
+                Some(Recovery::Barred(participant.range))
+            }
+            Ok(AcrossAnswer::Landed(None)) => Some(Recovery::Missing(participant.range)),
+            Ok(other) => Some(Recovery::Unknown(format!(
+                "{:?} answered {other:?} when asked where a part landed",
+                participant.range
+            ))),
+            Err(why) => Some(Recovery::Unknown(why)),
+        }
+    }
+
+    /// The record with every part landed, once nothing is left to ask.
+    #[must_use]
+    pub fn finish(self) -> Recovery {
+        Recovery::Committed(self.committed)
+    }
 }
 
 #[cfg(test)]

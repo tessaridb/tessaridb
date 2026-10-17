@@ -21,6 +21,8 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
@@ -37,10 +39,12 @@ const ANOTHER_FOLLOWER: [u8; 16] = [9; 16];
 
 /// A leader with a tenant, an owner and an account that may replicate.
 fn leader() -> Store {
-    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     let mut opening = Session::new(&store);
     opening
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE TABLE orders SCHEMALESS;\n\
@@ -48,7 +52,7 @@ fn leader() -> Store {
         )
         .unwrap();
     let mut root = signed_in(&store, "root");
-    root.run(&format!(
+    root.run_now(&format!(
         "DEFINE USER node AUTHORITIES replicate PASSWORD '{PASSWORD}';"
     ))
     .unwrap();
@@ -59,7 +63,7 @@ fn leader() -> Store {
 fn signed_in<'store>(store: &'store Store, name: &str) -> Session<'store> {
     let mut session = Session::new(store);
     for _ in 0..1_000 {
-        match session.sign_in(name, PASSWORD) {
+        match session.sign_in(name, PASSWORD).now() {
             Ok(()) => return session,
             Err(Error::SignInThrottled) => std::thread::sleep(Duration::from_millis(2)),
             Err(refused) => panic!("sign-in failed for a reason other than load: {refused}"),
@@ -71,9 +75,10 @@ fn signed_in<'store>(store: &'store Store, name: &str) -> Session<'store> {
 /// Commit `count` records, so the leader's tail moves.
 fn writes(store: &Store, count: usize, from: usize) {
     let mut root = signed_in(store, "root");
-    root.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+    root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
     for offset in 0..count {
-        root.run(&format!(
+        root.run_now(&format!(
             "CREATE orders:{} = {{ total: 1 }};",
             from.saturating_add(offset)
         ))
@@ -94,10 +99,11 @@ fn collects(store: &Store, node: [u8; 16], from: Sequence, limit: usize) -> usiz
             store,
             node,
             Reach::Store,
-            store.own_log(DATA_LOG).unwrap(),
+            store.own_log(DATA_LOG).now().unwrap(),
             from,
             limit,
         )
+        .now()
         .unwrap()
         .len()
 }
@@ -122,7 +128,7 @@ struct Reported {
 
 /// The follower rows `INFO FOR NODE` publishes, by node id.
 fn followers(store: &Store) -> Vec<([u8; 16], Reported)> {
-    let outcomes = signed_in(store, "root").run("INFO FOR NODE;").unwrap();
+    let outcomes = signed_in(store, "root").run_now("INFO FOR NODE;").unwrap();
     let Some(Outcome::Value(Value::Object(fields))) = outcomes.first() else {
         panic!("not a report: {outcomes:?}");
     };
@@ -365,7 +371,7 @@ fn a_leader_that_has_dated_nothing_states_no_copy_age_at_all() {
 fn a_follower_level_with_a_dated_tail_holds_a_copy_with_no_age_to_speak_of() {
     let store = leader();
     writes(&store, 3, 1);
-    store.mark_tail(DATA_LOG).unwrap();
+    store.mark_tail(DATA_LOG).now().unwrap();
     collects(&store, ONE_FOLLOWER, Sequence::new(1), 256);
 
     let row = only(&store);
@@ -387,12 +393,12 @@ fn the_age_of_a_copy_does_not_grow_while_the_leader_writes_nothing() {
     // since it last asked goes on growing, because there is nothing to ask for.
     let store = leader();
     writes(&store, 2, 1);
-    store.mark_tail(DATA_LOG).unwrap();
+    store.mark_tail(DATA_LOG).now().unwrap();
     collects(&store, ONE_FOLLOWER, Sequence::new(1), 256);
 
     std::thread::sleep(Duration::from_millis(40));
     // The cadence keeps running on an idle leader; this is one of its rounds.
-    store.mark_tail(DATA_LOG).unwrap();
+    store.mark_tail(DATA_LOG).now().unwrap();
 
     let row = only(&store);
     let age = row.copy_age.expect("the tail is dated");
@@ -416,7 +422,7 @@ fn a_copy_older_than_every_position_the_leader_dated_has_no_age_it_can_state() {
 
     // Everything this leader has dated is beyond what that follower holds.
     writes(&store, 4, 10);
-    store.mark_tail(DATA_LOG).unwrap();
+    store.mark_tail(DATA_LOG).now().unwrap();
 
     let row = only(&store);
     assert!(row.behind > 0, "it is short of the tail");
@@ -432,12 +438,12 @@ fn two_followers_at_different_positions_are_given_different_ages() {
     // test above and fail only this one.
     let store = leader();
     writes(&store, 2, 1);
-    store.mark_tail(DATA_LOG).unwrap();
+    store.mark_tail(DATA_LOG).now().unwrap();
     collects(&store, ONE_FOLLOWER, Sequence::new(1), 256);
 
     std::thread::sleep(Duration::from_millis(40));
     writes(&store, 2, 10);
-    store.mark_tail(DATA_LOG).unwrap();
+    store.mark_tail(DATA_LOG).now().unwrap();
     collects(&store, ANOTHER_FOLLOWER, Sequence::new(1), 256);
 
     let rows = followers(&store);

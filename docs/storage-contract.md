@@ -67,16 +67,14 @@ discharged by the test suite passing:
   durability, and no software test can tell the difference — confirming it is
   part of taking a store into production on particular hardware.
 - On macOS a plain `fsync` does not flush the drive's own write cache; only
-  `fcntl(F_FULLFSYNC)` does. The engine uses it only when compiled with
-  `HAVE_FULLFSYNC`, so this workspace builds it that way for every Apple target
-  and the persistent backend refuses to build for macOS without it. A synced
-  commit on a Mac therefore costs a full flush, which is milliseconds rather than
-  the microseconds a cache-acknowledged sync takes. Linux needs no such flag:
-  `fdatasync` there reaches the device.
-- The engine setting that keeps a cross-keyspace batch whole across a *flush* is
-  in effect and is asserted against the option set the engine itself writes.
-  That it holds under a *divergent* flush — one keyspace flushed, another not —
-  needs a crash placed inside the flush, and is not yet proven.
+  `fcntl(F_FULLFSYNC)` does, and TessariKV, the storage engine, syncs with it on
+  every Apple target. A synced commit on a Mac therefore costs a full flush,
+  which is milliseconds rather than the microseconds a cache-acknowledged sync
+  takes. Linux needs nothing extra: `fdatasync` there reaches the device.
+- A batch spanning keyspaces stays whole across a *flush*: TessariKV flushes the
+  newest tables of every keyspace together, under one manifest edit, so there is
+  no flush that writes one keyspace and not another; the engine's own tests crash
+  it at every step of that install.
 
 ### A write that could not be made durable stops the store
 

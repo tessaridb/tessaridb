@@ -1,4 +1,5 @@
 use std::thread::JoinHandle;
+use tessari_session::Now;
 
 use tessari_encoding::NODE_ID_LEN;
 
@@ -18,18 +19,22 @@ fn serving(held: &PeerKeys) -> (std::net::SocketAddr, JoinHandle<Result<Met>>) {
     let peers = Peers::bind("127.0.0.1:0", held).expect("a peer door on loopback");
     let address = peers.address().expect("the door's address");
     let greeting = std::thread::spawn(move || {
-        peers.greet(
-            || Ok(hello(DOOR)),
-            &DOOR,
-            &Deciding::holding(settled()),
-            &NoLog,
-        )
+        peers
+            .greet(
+                || Ok(hello(DOOR)),
+                &DOOR,
+                &Deciding::holding(settled()),
+                &NoLog,
+            )
+            .now()
     });
     (address, greeting)
 }
 
 fn dial(address: std::net::SocketAddr, caller: &PeerKeys) -> Result<()> {
-    call(address, caller, DOOR, &hello(CALLER), Ask::Nothing).map(|_| ())
+    call(address, caller, DOOR, &hello(CALLER), Ask::Nothing)
+        .now()
+        .map(|_| ())
 }
 
 fn only(fingerprint: String) -> Revoked {
@@ -132,7 +137,9 @@ fn a_door_refuses_a_removed_node_whatever_certificate_it_holds() {
     const OTHER: [u8; NODE_ID_LEN] = [6_u8; NODE_ID_LEN];
     let other = authority.keys(OTHER, Purpose::Peer);
     let (address, greeting) = serving(&door);
-    call(address, &other, DOOR, &hello(OTHER), Ask::Nothing).expect("another node");
+    call(address, &other, DOOR, &hello(OTHER), Ask::Nothing)
+        .now()
+        .expect("another node");
     greeting
         .join()
         .expect("the door's thread")
@@ -175,8 +182,12 @@ fn a_door_presents_its_replaced_credential_from_the_next_handshake() {
     let address = peers.address().expect("the door's address");
     let answering = std::thread::spawn(move || {
         let deciding = Deciding::holding(settled());
-        let first = peers.greet(|| Ok(hello(DOOR)), &DOOR, &deciding, &NoLog);
-        let second = peers.greet(|| Ok(hello(DOOR)), &DOOR, &deciding, &NoLog);
+        let first = peers
+            .greet(|| Ok(hello(DOOR)), &DOOR, &deciding, &NoLog)
+            .now();
+        let second = peers
+            .greet(|| Ok(hello(DOOR)), &DOOR, &deciding, &NoLog)
+            .now();
         (first, second)
     });
 

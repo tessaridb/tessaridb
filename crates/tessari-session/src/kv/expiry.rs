@@ -45,7 +45,7 @@ impl Session<'_> {
     ///
     /// Answers whether it wrote when it carries a condition, and nothing
     /// otherwise — the plain form's answer is unchanged.
-    pub(crate) fn set_key(
+    pub(crate) async fn set_key(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
@@ -56,7 +56,7 @@ impl Session<'_> {
     ) -> Result<Outcome> {
         // Resolved before the write, so a refused expiry writes nothing.
         let at = match expire {
-            Some(expire) => match self.instant(transaction, expire)? {
+            Some(expire) => match self.instant(transaction, expire).await? {
                 Instant::Future(at) => Some(at),
                 Instant::Passed => {
                     return Err(Error::InvalidExpiry {
@@ -67,14 +67,17 @@ impl Session<'_> {
             },
             None => None,
         };
-        let (_, address) = self.writable(transaction, target)?;
+        let (_, address) = self.writable(transaction, target).await?;
         if let Some(condition) = condition
-            && !self.set_condition_holds(transaction, target, condition)?
+            && !self
+                .set_condition_holds(transaction, target, condition)
+                .await?
         {
             return Ok(Outcome::Value(Value::Bool(false)));
         }
-        let payload = self.evaluate(transaction, value)?;
-        self.put_record(transaction, address.clone(), payload, span)?;
+        let payload = self.evaluate(transaction, value).await?;
+        self.put_record(transaction, address.clone(), payload, span)
+            .await?;
         if let Some(at) = at {
             transaction.expire_pending(&address, at);
         }
@@ -85,15 +88,15 @@ impl Session<'_> {
     }
 
     /// `EXPIRE key when` — answers whether the key was there to expire.
-    pub(crate) fn expire_key(
+    pub(crate) async fn expire_key(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
         when: &Expr,
     ) -> Result<Outcome> {
-        let instant = self.instant(transaction, when)?;
-        let (_, address) = self.writable(transaction, target)?;
-        let Some(held) = transaction.get(&address)? else {
+        let instant = self.instant(transaction, when).await?;
+        let (_, address) = self.writable(transaction, target).await?;
+        let Some(held) = transaction.get(&address).await? else {
             return Ok(Outcome::Value(Value::Bool(false)));
         };
         match instant {
@@ -110,16 +113,16 @@ impl Session<'_> {
     }
 
     /// `PERSIST key` — answers whether an expiry was cleared.
-    pub(crate) fn persist_key(
+    pub(crate) async fn persist_key(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
     ) -> Result<Outcome> {
-        let (_, address) = self.writable(transaction, target)?;
-        if transaction.expires(&address)?.is_none() {
+        let (_, address) = self.writable(transaction, target).await?;
+        if transaction.expires(&address).await?.is_none() {
             return Ok(Outcome::Value(Value::Bool(false)));
         }
-        let Some(held) = transaction.get(&address)? else {
+        let Some(held) = transaction.get(&address).await? else {
             return Ok(Outcome::Value(Value::Bool(false)));
         };
         transaction.put(address.clone(), held);
@@ -130,16 +133,16 @@ impl Session<'_> {
     }
 
     /// `TTL key` — the time left, `NULL` for never, `NONE` for no key.
-    pub(crate) fn ttl_of(
+    pub(crate) async fn ttl_of(
         &self,
         transaction: &mut Transaction<'_>,
         target: &RecordTarget,
     ) -> Result<Value> {
-        let (_, address) = self.address(transaction, target)?;
-        if transaction.get(&address)?.is_none() {
+        let (_, address) = self.address(transaction, target).await?;
+        if transaction.get(&address).await?.is_none() {
             return Ok(Value::None);
         }
-        let Some(at) = transaction.expires(&address)? else {
+        let Some(at) = transaction.expires(&address).await? else {
             return Ok(Value::Null);
         };
         let left = at.saturating_sub(transaction.clock());
@@ -151,7 +154,7 @@ impl Session<'_> {
     }
 
     /// Resolve an `EXPIRE` operand against the transaction's clock.
-    pub(crate) fn instant(
+    pub(crate) async fn instant(
         &self,
         transaction: &mut Transaction<'_>,
         when: &Expr,
@@ -162,7 +165,7 @@ impl Session<'_> {
         };
         let too_far = || refused("the expiry is past what a millisecond clock can hold");
         let now = i64::try_from(transaction.clock()).map_err(|_| too_far())?;
-        let at = match self.evaluate(transaction, when)? {
+        let at = match self.evaluate(transaction, when).await? {
             Value::Duration(span) => {
                 millis(span.seconds(), span.nanos()).and_then(|span| now.checked_add(span))
             }

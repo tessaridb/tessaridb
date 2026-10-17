@@ -11,13 +11,14 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use crate::gathered_reads::{Pair, answer, pair};
+use tessari_session::RunNow;
 
 /// Records tying with ones already there, in the two shards the follower
 /// lacks (below 'g' and from 'p'), so the follower's own copy is unchanged.
 fn with_ties() -> Pair {
     let pair = pair();
     pair.on_the_leader("root")
-        .run(
+        .run_now(
             "CREATE ledger:'d' = { total: 5, note: 'd' }; CREATE ledger:'e' = { total: 5, note: 'e' };\n\
              CREATE ledger:'r' = { total: 5, note: 'r' }; CREATE ledger:'s' = { total: 7, note: 's' };\n\
              CREATE ledger:'t' = { total: 2, note: 't' };",
@@ -108,11 +109,11 @@ fn an_exact_nearest_neighbour_read_ranks_on_the_leaders() {
         ),
     ] {
         pair.sent();
-        let gathered = records(follower.run_with(read, &parameters).unwrap(), read);
+        let gathered = records(follower.run_with_now(read, &parameters).unwrap(), read);
         let sent = pair.sent();
         assert_eq!(
             gathered,
-            records(whole.run_with(read, &parameters).unwrap(), read),
+            records(whole.run_with_now(read, &parameters).unwrap(), read),
             "{read}"
         );
         assert!(sent <= 2 * 3, "{read}: {sent} records travelled for 2");
@@ -158,7 +159,7 @@ fn an_ordered_limit_over_a_shard_past_the_ceiling_answers() {
         insert.push_str(&format!("({}, 'many')", n % 1000));
     }
     insert.push(';');
-    pair.on_the_leader("root").run(&insert).unwrap();
+    pair.on_the_leader("root").run_now(&insert).unwrap();
     let mut follower = pair.on_the_follower("reader");
     let mut whole = pair.on_the_leader("reader");
     let read = "SELECT * FROM ledger ORDER BY total DESC LIMIT 10;";

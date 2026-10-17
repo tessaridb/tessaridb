@@ -18,6 +18,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Session};
@@ -49,14 +51,14 @@ const CLASSES: [(&str, &[&str]); 9] = [
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 /// A closed store with `prod.shop.orders`, and one store-wide user per kind,
 /// each holding the other four.
 fn without_one_kind_each(store: &Store) {
     let mut root = Session::new(store);
-    root.run(
+    root.run_now(
         "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
          DEFINE DATABASE shop; USE DATABASE shop;\n\
          DEFINE TABLE orders SCHEMALESS;\n\
@@ -66,7 +68,7 @@ fn without_one_kind_each(store: &Store) {
     let mut root = working(store, "root");
     for lacking in KINDS {
         let held: Vec<&str> = KINDS.into_iter().filter(|kind| *kind != lacking).collect();
-        root.run(&format!(
+        root.run_now(&format!(
             "DEFINE USER no_{lacking} AUTHORITIES {} PASSWORD '{PASSWORD}';",
             held.join(", ")
         ))
@@ -77,9 +79,9 @@ fn without_one_kind_each(store: &Store) {
 /// A session signed in and selected onto `prod.shop`.
 fn working<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -93,7 +95,7 @@ fn each_demand_class_is_refused_by_name_when_any_one_of_its_kinds_is_missing() {
     for (statement, demanded) in CLASSES {
         for lacking in demanded {
             let mut session = working(&store, &format!("no_{lacking}"));
-            match session.run(statement) {
+            match session.run_now(statement) {
                 Err(Error::RoleForbids { needs, .. }) => assert_eq!(
                     needs, *lacking,
                     "{statement} refused no_{lacking} for the wrong kind"
@@ -124,7 +126,7 @@ fn a_kind_a_class_does_not_demand_is_never_the_reason_it_is_refused() {
     for (statement, demanded) in CLASSES {
         for lacking in KINDS.into_iter().filter(|kind| !demanded.contains(kind)) {
             let mut session = working(&store, &format!("no_{lacking}"));
-            if let Err(Error::RoleForbids { needs, .. }) = session.run(statement) {
+            if let Err(Error::RoleForbids { needs, .. }) = session.run_now(statement) {
                 panic!("{statement} refused no_{lacking} for {needs}, which it does not demand");
             }
         }
@@ -138,7 +140,7 @@ fn a_store_wide_class_is_refused_to_a_user_holding_one_database_whatever_they_ho
     let store = store();
     without_one_kind_each(&store);
     working(&store, "root")
-        .run(&format!(
+        .run_now(&format!(
             "DEFINE USER shop_owner ON prod.shop ROLE owner PASSWORD '{PASSWORD}';"
         ))
         .unwrap();
@@ -150,7 +152,7 @@ fn a_store_wide_class_is_refused_to_a_user_holding_one_database_whatever_they_ho
         "RESTORE SCRIPT FROM 'nothing.tessariql';",
     ] {
         let mut session = working(&store, "shop_owner");
-        match session.run(statement) {
+        match session.run_now(statement) {
             Err(Error::NotTheWholeStore { .. }) => {}
             other => panic!(
                 "{statement} by a one-database owner: expected NotTheWholeStore, got {other:?}"

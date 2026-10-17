@@ -29,7 +29,7 @@ impl Transaction<'_> {
     /// # Errors
     ///
     /// Returns an error when the backend fails or an entry cannot be decoded.
-    pub fn records_containing(
+    pub async fn records_containing(
         &self,
         index: &IndexDefinition,
         pairs: &[IndexValues],
@@ -55,7 +55,7 @@ impl Transaction<'_> {
                     direction: ScanDirection::Forward,
                     limit: Some(RANGE_SCAN_BATCH_ENTRIES),
                 };
-                let batch = self.store.backend().scan(&request)?;
+                let batch = self.store.backend().scan(&request).await?;
                 for (key, _) in &batch {
                     let id = ContainmentKey::decode(key.as_slice())?.id;
                     // Narrowing: only a record every earlier pair offered is kept.
@@ -84,7 +84,7 @@ impl Transaction<'_> {
             .map(|id| RecordAddress::new(index.namespace, index.database, index.table, id))
             .collect();
         let mut found: BTreeMap<RecordId, Vec<u8>> = BTreeMap::new();
-        for (address, payload) in addresses.iter().zip(self.get_each(&addresses)?) {
+        for (address, payload) in addresses.iter().zip(self.get_each(&addresses).await?) {
             if let Some(payload) = payload {
                 found.insert(address.id.clone(), payload);
             }

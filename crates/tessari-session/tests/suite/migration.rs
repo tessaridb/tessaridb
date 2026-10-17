@@ -24,6 +24,8 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
@@ -86,11 +88,11 @@ const NOT_BELOW_THE_STORE: &[&str] = &["replicate@R"];
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 fn held(session: &mut Session<'_>, user: &str) -> Vec<String> {
-    let outcomes = session.run(&format!("INFO FOR USER {user};")).unwrap();
+    let outcomes = session.run_now(&format!("INFO FOR USER {user};")).unwrap();
     let Some(Outcome::Value(Value::Object(report))) = outcomes.last() else {
         panic!("expected a report, got {outcomes:?}");
     };
@@ -119,7 +121,7 @@ fn held(session: &mut Session<'_>, user: &str) -> Vec<String> {
 fn peopled(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION orders; CREATE orders:1 = { total: 5 };\n\
@@ -127,8 +129,9 @@ fn peopled(store: &Store) -> Session<'_> {
         )
         .unwrap();
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
     root
 }
 
@@ -147,7 +150,7 @@ fn every_ladder_role_keeps_exactly_the_authorities_it_stood_for() {
             ("d", "ON prod.shop ".to_owned(), "prod.shop"),
         ] {
             let name = format!("{role}_{suffix}");
-            root.run(&format!(
+            root.run_now(&format!(
                 "DEFINE USER {name} {clause}ROLE {role} PASSWORD '{PASSWORD}';"
             ))
             .unwrap();
@@ -174,7 +177,7 @@ fn an_editor_still_defines_structure_and_a_viewer_still_cannot() {
     let store = store();
     let mut root = peopled(&store);
     for role in ["viewer", "editor", "owner"] {
-        root.run(&format!(
+        root.run_now(&format!(
             "DEFINE USER {role}_d ON prod.shop ROLE {role} PASSWORD '{PASSWORD}';"
         ))
         .unwrap();
@@ -207,8 +210,11 @@ fn an_editor_still_defines_structure_and_a_viewer_still_cannot() {
     for (statement, allowed) in promised {
         for (index, role) in ["viewer", "editor", "owner"].into_iter().enumerate() {
             let mut session = Session::new(&store);
-            session.sign_in(&format!("{role}_d"), PASSWORD).unwrap();
-            let answered = session.run(&format!(
+            session
+                .sign_in(&format!("{role}_d"), PASSWORD)
+                .now()
+                .unwrap();
+            let answered = session.run_now(&format!(
                 "USE NAMESPACE prod; USE DATABASE shop; {}",
                 statement.replace("%R%", role)
             ));

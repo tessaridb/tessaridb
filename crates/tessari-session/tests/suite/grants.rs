@@ -10,6 +10,8 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use tessari_session::Now;
+use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
@@ -18,7 +20,7 @@ use tessari_types::Value;
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    Store::open(backend).unwrap()
+    Store::open(backend).now().unwrap()
 }
 
 const PASSWORD: &str = "correct horse battery";
@@ -30,7 +32,7 @@ const PASSWORD: &str = "correct horse battery";
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION users; DEFINE COLLECTION orders;\n\
@@ -42,8 +44,8 @@ fn ready(store: &Store) -> Session<'_> {
     // The first user closed the store, so the second is declared by the owner —
     // which is the shape every store past its first day is in.
     let mut root = Session::new(store);
-    root.sign_in("root", PASSWORD).unwrap();
-    root.run("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
         .unwrap();
     session
 }
@@ -51,9 +53,9 @@ fn ready(store: &Store) -> Session<'_> {
 /// A signed-in session with the tenancy selected.
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
-    session.sign_in(name, PASSWORD).unwrap();
+    session.sign_in(name, PASSWORD).now().unwrap();
     session
-        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     session
 }
@@ -65,9 +67,9 @@ fn a_user_with_no_grants_keeps_their_roles_access() {
     let store = store();
     ready(&store);
     let mut ada = signed_in(&store, "ada");
-    ada.run("SELECT * FROM users;").unwrap();
-    ada.run("SELECT * FROM orders;").unwrap();
-    ada.run("CREATE orders:2 = { total: 9 };").unwrap();
+    ada.run_now("SELECT * FROM users;").unwrap();
+    ada.run_now("SELECT * FROM orders;").unwrap();
+    ada.run_now("CREATE orders:2 = { total: 9 };").unwrap();
 }
 
 #[test]
@@ -78,13 +80,13 @@ fn the_first_grant_is_also_a_restriction() {
     let store = store();
     ready(&store);
     signed_in(&store, "root")
-        .run("GRANT read ON users TO ada;")
+        .run_now("GRANT read ON users TO ada;")
         .unwrap();
 
     let mut ada = signed_in(&store, "ada");
-    ada.run("SELECT * FROM users;").unwrap();
+    ada.run_now("SELECT * FROM users;").unwrap();
     let refused = ada
-        .run("SELECT * FROM orders;")
+        .run_now("SELECT * FROM orders;")
         .expect_err("orders was never granted");
     let said = refused.to_string();
     assert!(said.contains("ada"), "{said}");
@@ -96,13 +98,13 @@ fn a_read_grant_does_not_carry_a_write() {
     let store = store();
     ready(&store);
     signed_in(&store, "root")
-        .run("GRANT read ON users TO ada;")
+        .run_now("GRANT read ON users TO ada;")
         .unwrap();
 
     let mut ada = signed_in(&store, "ada");
-    ada.run("SELECT * FROM users;").unwrap();
+    ada.run_now("SELECT * FROM users;").unwrap();
     let refused = ada
-        .run("CREATE users:2 = { name: 'grace' };")
+        .run_now("CREATE users:2 = { name: 'grace' };")
         .expect_err("only read was granted");
     assert!(refused.to_string().contains("write"), "{refused}");
 }
@@ -115,18 +117,18 @@ fn granting_twice_is_one_grant_and_granting_replaces_what_was_there() {
     let store = store();
     ready(&store);
     let mut root = signed_in(&store, "root");
-    root.run("GRANT read, write ON users TO ada;").unwrap();
-    root.run("GRANT read, write ON users TO ada;").unwrap();
+    root.run_now("GRANT read, write ON users TO ada;").unwrap();
+    root.run_now("GRANT read, write ON users TO ada;").unwrap();
     // Narrowing by re-granting, which is the widening story in reverse.
-    root.run("GRANT read ON users TO ada;").unwrap();
+    root.run_now("GRANT read ON users TO ada;").unwrap();
 
     let mut ada = signed_in(&store, "ada");
-    ada.run("SELECT * FROM users;").unwrap();
-    assert!(ada.run("CREATE users:3 = { name: 'x' };").is_err());
+    ada.run_now("SELECT * FROM users;").unwrap();
+    assert!(ada.run_now("CREATE users:3 = { name: 'x' };").is_err());
 
     // One grant, so it is still the last one and cannot be revoked.
     assert!(
-        root.run("REVOKE read ON users FROM ada;").is_err(),
+        root.run_now("REVOKE read ON users FROM ada;").is_err(),
         "two grants accumulated where there should be one"
     );
 }
@@ -136,13 +138,13 @@ fn revoking_a_verb_leaves_the_rest_of_the_grant() {
     let store = store();
     ready(&store);
     let mut root = signed_in(&store, "root");
-    root.run("GRANT read, write ON users TO ada;").unwrap();
-    root.run("GRANT read ON orders TO ada;").unwrap();
-    root.run("REVOKE write ON users FROM ada;").unwrap();
+    root.run_now("GRANT read, write ON users TO ada;").unwrap();
+    root.run_now("GRANT read ON orders TO ada;").unwrap();
+    root.run_now("REVOKE write ON users FROM ada;").unwrap();
 
     let mut ada = signed_in(&store, "ada");
-    ada.run("SELECT * FROM users;").unwrap();
-    assert!(ada.run("CREATE users:4 = { name: 'x' };").is_err());
+    ada.run_now("SELECT * FROM users;").unwrap();
+    assert!(ada.run_now("CREATE users:4 = { name: 'x' };").is_err());
 }
 
 #[test]
@@ -152,17 +154,17 @@ fn revoking_the_last_grant_is_refused_because_it_would_widen() {
     let store = store();
     ready(&store);
     let mut root = signed_in(&store, "root");
-    root.run("GRANT read ON users TO ada;").unwrap();
+    root.run_now("GRANT read ON users TO ada;").unwrap();
     let refused = root
-        .run("REVOKE read ON users FROM ada;")
+        .run_now("REVOKE read ON users FROM ada;")
         .expect_err("the last grant");
     let said = refused.to_string();
     assert!(said.contains("widen"), "{said}");
 
     // And ada is still exactly as scoped as she was.
     let mut ada = signed_in(&store, "ada");
-    ada.run("SELECT * FROM users;").unwrap();
-    assert!(ada.run("SELECT * FROM orders;").is_err());
+    ada.run_now("SELECT * FROM users;").unwrap();
+    assert!(ada.run_now("SELECT * FROM orders;").is_err());
 }
 
 #[test]
@@ -171,8 +173,8 @@ fn only_an_owner_may_grant_or_revoke() {
     let store = store();
     ready(&store);
     let mut ada = signed_in(&store, "ada");
-    assert!(ada.run("GRANT read ON users TO ada;").is_err());
-    assert!(ada.run("REVOKE read ON users FROM ada;").is_err());
+    assert!(ada.run_now("GRANT read ON users TO ada;").is_err());
+    assert!(ada.run_now("REVOKE read ON users FROM ada;").is_err());
 }
 
 #[test]
@@ -182,12 +184,12 @@ fn a_grant_governed_user_cannot_declare_a_table_and_is_told_why() {
     let store = store();
     ready(&store);
     signed_in(&store, "root")
-        .run("GRANT read, write ON users TO ada;")
+        .run_now("GRANT read, write ON users TO ada;")
         .unwrap();
 
     let mut ada = signed_in(&store, "ada");
     let refused = ada
-        .run("DEFINE COLLECTION invoices;")
+        .run_now("DEFINE COLLECTION invoices;")
         .expect_err("a refusal");
     let said = refused.to_string();
     assert!(said.contains("governed by grants"), "{said}");
@@ -201,12 +203,13 @@ fn a_grant_reaches_every_table_a_statement_names_and_not_only_the_first() {
     let store = store();
     ready(&store);
     let mut root = signed_in(&store, "root");
-    root.run("DEFINE TABLE follows EDGE;").unwrap();
-    root.run("GRANT read, write ON follows TO ada;").unwrap();
+    root.run_now("DEFINE TABLE follows EDGE;").unwrap();
+    root.run_now("GRANT read, write ON follows TO ada;")
+        .unwrap();
 
     let mut ada = signed_in(&store, "ada");
     let refused = ada
-        .run("RELATE users:1->follows->users:1;")
+        .run_now("RELATE users:1->follows->users:1;")
         .expect_err("users was not granted");
     assert!(refused.to_string().contains("users"), "{refused}");
 }
@@ -218,12 +221,12 @@ fn a_join_needs_a_grant_on_both_sides() {
     let store = store();
     ready(&store);
     signed_in(&store, "root")
-        .run("GRANT read ON users TO ada;")
+        .run_now("GRANT read ON users TO ada;")
         .unwrap();
 
     let mut ada = signed_in(&store, "ada");
     let refused = ada
-        .run("SELECT * FROM users JOIN orders ON users.name = orders.total;")
+        .run_now("SELECT * FROM users JOIN orders ON users.name = orders.total;")
         .expect_err("orders was not granted");
     assert!(refused.to_string().contains("orders"), "{refused}");
 }
@@ -236,14 +239,16 @@ fn grants_survive_a_reopen_because_they_are_catalog_and_not_memory() {
     let store = store();
     ready(&store);
     signed_in(&store, "root")
-        .run("GRANT read ON users TO ada;")
+        .run_now("GRANT read ON users TO ada;")
         .unwrap();
 
     let mut later = Session::new(&store);
-    later.sign_in("ada", PASSWORD).unwrap();
-    later.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
-    later.run("SELECT * FROM users;").unwrap();
-    assert!(later.run("SELECT * FROM orders;").is_err());
+    later.sign_in("ada", PASSWORD).now().unwrap();
+    later
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    later.run_now("SELECT * FROM users;").unwrap();
+    assert!(later.run_now("SELECT * FROM orders;").is_err());
 }
 
 #[test]
@@ -254,28 +259,28 @@ fn dropping_a_user_takes_their_grants_with_them() {
     let store = store();
     ready(&store);
     let mut root = signed_in(&store, "root");
-    root.run("GRANT read ON users TO ada;").unwrap();
-    root.run("DROP USER ada;").unwrap();
-    root.run("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
+    root.run_now("GRANT read ON users TO ada;").unwrap();
+    root.run_now("DROP USER ada;").unwrap();
+    root.run_now("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
         .unwrap();
 
     // A fresh ada has no grants, so her role governs and both tables are hers.
     let mut ada = signed_in(&store, "ada");
-    ada.run("SELECT * FROM users;").unwrap();
-    ada.run("SELECT * FROM orders;").unwrap();
+    ada.run_now("SELECT * FROM users;").unwrap();
+    ada.run_now("SELECT * FROM orders;").unwrap();
 }
 
 /// A staff table with a field worth hiding, and ada granted only two of three.
 fn field_scoped(store: &Store) {
     ready(store);
     let mut root = signed_in(store, "root");
-    root.run(
+    root.run_now(
         "DEFINE COLLECTION staff;\n\
          CREATE staff:1 = { name: 'ada', title: 'engineer', salary: 120000 };\n\
          CREATE staff:2 = { name: 'grace', title: 'admiral', salary: 200000 };",
     )
     .unwrap();
-    root.run("GRANT read ON staff FIELDS name, title TO ada;")
+    root.run_now("GRANT read ON staff FIELDS name, title TO ada;")
         .unwrap();
 }
 
@@ -289,18 +294,18 @@ fn a_multi_valued_projection_reaches_only_into_the_record_the_session_may_see() 
     let store = store();
     ready(&store);
     let mut root = signed_in(&store, "root");
-    root.run(
+    root.run_now(
         "DEFINE COLLECTION people;\n\
          CREATE people:1 = { name: 'ada', aliases: ['a.l.', 'countess'], \
                              secrets: ['a key', 'another'] };",
     )
     .unwrap();
-    root.run("GRANT read ON people FIELDS name, aliases TO ada;")
+    root.run_now("GRANT read ON people FIELDS name, aliases TO ada;")
         .unwrap();
 
     let mut ada = signed_in(&store, "ada");
     let outcomes = ada
-        .run("SELECT aliases[*] AS shown, secrets[*] AS hidden FROM people:1;")
+        .run_now("SELECT aliases[*] AS shown, secrets[*] AS hidden FROM people:1;")
         .unwrap();
     let records = outcomes.last().unwrap().records().unwrap();
     let Value::Object(fields) = &records[0].1 else {
@@ -319,7 +324,7 @@ fn a_multi_valued_projection_reaches_only_into_the_record_the_session_may_see() 
     // …and the owner, who may read it, gets the values — so the empty answer
     // above is the permission and not the projection failing to find anything.
     let outcomes = root
-        .run("SELECT secrets[*] AS hidden FROM people:1;")
+        .run_now("SELECT secrets[*] AS hidden FROM people:1;")
         .unwrap();
     let records = outcomes.last().unwrap().records().unwrap();
     let Value::Object(fields) = &records[0].1 else {
@@ -336,7 +341,7 @@ fn a_field_grant_hides_the_field_from_a_read() {
     let store = store();
     field_scoped(&store);
     let mut ada = signed_in(&store, "ada");
-    let outcomes = ada.run("SELECT * FROM staff;").unwrap();
+    let outcomes = ada.run_now("SELECT * FROM staff;").unwrap();
     let records = outcomes.last().unwrap().records().unwrap();
     assert_eq!(records.len(), 2);
     for (_, held) in records {
@@ -357,7 +362,7 @@ fn a_condition_on_a_hidden_field_answers_nothing_rather_than_a_redacted_row() {
     field_scoped(&store);
     let mut ada = signed_in(&store, "ada");
     let outcomes = ada
-        .run("SELECT * FROM staff WHERE salary > 100000;")
+        .run_now("SELECT * FROM staff WHERE salary > 100000;")
         .unwrap();
     assert!(outcomes.last().unwrap().records().unwrap().is_empty());
 }
@@ -375,7 +380,7 @@ fn the_bisection_attack_returns_zero() {
         "SELECT count(*) AS n FROM staff WHERE salary > 150000;",
         "SELECT count(*) AS n FROM staff WHERE salary = 200000;",
     ] {
-        let outcomes = ada.run(probe).unwrap();
+        let outcomes = ada.run_now(probe).unwrap();
         let records = outcomes.last().unwrap().records().unwrap();
         // Every probe answers the same thing, which is what makes it useless:
         // no records matched, so the fold has nothing to fold and there is no
@@ -387,7 +392,7 @@ fn the_bisection_attack_returns_zero() {
     // assertions above pass for a store that simply does not work.
     let mut root = signed_in(&store, "root");
     let outcomes = root
-        .run("SELECT count(*) AS n FROM staff WHERE salary > 100000;")
+        .run_now("SELECT count(*) AS n FROM staff WHERE salary > 100000;")
         .unwrap();
     let records = outcomes.last().unwrap().records().unwrap();
     let Value::Object(row) = &records[0].1 else {
@@ -404,12 +409,12 @@ fn an_index_on_a_hidden_field_changes_neither_answer() {
     let store = store();
     field_scoped(&store);
     signed_in(&store, "root")
-        .run("DEFINE INDEX by_salary ON staff FIELDS salary;")
+        .run_now("DEFINE INDEX by_salary ON staff FIELDS salary;")
         .unwrap();
 
     let mut ada = signed_in(&store, "ada");
     let outcomes = ada
-        .run("SELECT * FROM staff WHERE salary = 120000;")
+        .run_now("SELECT * FROM staff WHERE salary = 120000;")
         .unwrap();
     assert!(outcomes.last().unwrap().records().unwrap().is_empty());
 }
@@ -420,7 +425,7 @@ fn ordering_by_a_hidden_field_leaks_no_ordering() {
     field_scoped(&store);
     let mut ada = signed_in(&store, "ada");
     let outcomes = ada
-        .run("SELECT * FROM staff ORDER BY salary DESC;")
+        .run_now("SELECT * FROM staff ORDER BY salary DESC;")
         .unwrap();
     let records = outcomes.last().unwrap().records().unwrap();
     // Every key is `NONE`, so the sort is a no-op and the answer is the read's
@@ -439,12 +444,12 @@ fn a_join_hides_the_field_on_the_side_that_declared_it() {
     let store = store();
     field_scoped(&store);
     let mut root = signed_in(&store, "root");
-    root.run("CREATE users:2 = { name: 'grace' };").unwrap();
-    root.run("GRANT read ON users TO ada;").unwrap();
+    root.run_now("CREATE users:2 = { name: 'grace' };").unwrap();
+    root.run_now("GRANT read ON users TO ada;").unwrap();
 
     let mut ada = signed_in(&store, "ada");
     let outcomes = ada
-        .run("SELECT * FROM users JOIN staff ON users.name = staff.name;")
+        .run_now("SELECT * FROM users JOIN staff ON users.name = staff.name;")
         .unwrap();
     let records = outcomes.last().unwrap().records().unwrap();
     assert!(!records.is_empty());
@@ -466,12 +471,12 @@ fn fetch_into_a_field_scoped_table_hides_it_there_too() {
     let store = store();
     field_scoped(&store);
     let mut root = signed_in(&store, "root");
-    root.run("DEFINE COLLECTION notes; CREATE notes:1 = { about: staff:1 };")
+    root.run_now("DEFINE COLLECTION notes; CREATE notes:1 = { about: staff:1 };")
         .unwrap();
-    root.run("GRANT read ON notes TO ada;").unwrap();
+    root.run_now("GRANT read ON notes TO ada;").unwrap();
 
     let mut ada = signed_in(&store, "ada");
-    let outcomes = ada.run("SELECT * FROM notes FETCH about;").unwrap();
+    let outcomes = ada.run_now("SELECT * FROM notes FETCH about;").unwrap();
     let records = outcomes.last().unwrap().records().unwrap();
     let Value::Object(row) = &records[0].1 else {
         panic!("not an object");
@@ -488,11 +493,11 @@ fn a_grant_naming_no_fields_still_covers_the_whole_record() {
     let store = store();
     field_scoped(&store);
     signed_in(&store, "root")
-        .run("GRANT read ON staff TO ada;")
+        .run_now("GRANT read ON staff TO ada;")
         .unwrap();
 
     let mut ada = signed_in(&store, "ada");
-    let outcomes = ada.run("SELECT * FROM staff:1;").unwrap();
+    let outcomes = ada.run_now("SELECT * FROM staff:1;").unwrap();
     let records = outcomes.last().unwrap().records().unwrap();
     let Value::Object(fields) = &records[0].1 else {
         panic!("not an object");
@@ -507,7 +512,7 @@ fn fields_with_a_write_is_refused_with_its_reason() {
     let store = store();
     ready(&store);
     let refused = signed_in(&store, "root")
-        .run("GRANT read, write ON users FIELDS name TO ada;")
+        .run_now("GRANT read, write ON users FIELDS name TO ada;")
         .expect_err("a refusal");
     assert!(refused.to_string().contains("destroy"), "{refused}");
 }
@@ -524,7 +529,7 @@ fn a_grant_governed_user_cannot_declare_any_of_the_four_table_words() {
     let store = store();
     ready(&store);
     signed_in(&store, "root")
-        .run("GRANT read, write ON users TO ada;")
+        .run_now("GRANT read, write ON users TO ada;")
         .unwrap();
 
     for statement in [
@@ -535,7 +540,7 @@ fn a_grant_governed_user_cannot_declare_any_of_the_four_table_words() {
     ] {
         let mut ada = signed_in(&store, "ada");
         let refused = ada
-            .run(statement)
+            .run_now(statement)
             .err()
             .unwrap_or_else(|| panic!("a grant-governed user declared structure: {statement}"));
         let said = refused.to_string();
@@ -552,16 +557,16 @@ fn a_write_only_grant_does_not_answer_or_select_records_through_a_write() {
     let store = store();
     ready(&store);
     let mut root = signed_in(&store, "root");
-    root.run("DEFINE COLLECTION staff; CREATE staff:1 = { name: 'ada', salary: 120000 };")
+    root.run_now("DEFINE COLLECTION staff; CREATE staff:1 = { name: 'ada', salary: 120000 };")
         .unwrap();
-    root.run("GRANT write ON staff TO ada;").unwrap();
+    root.run_now("GRANT write ON staff TO ada;").unwrap();
     let mut ada = signed_in(&store, "ada");
     for statement in [
         "DELETE staff:1 RETURN BEFORE;",
         "UPDATE staff:1 SET salary = 1 RETURN BEFORE;",
         "DELETE FROM staff WHERE salary > 100000 LIMIT ALL;",
     ] {
-        let refused = ada.run(statement);
+        let refused = ada.run_now(statement);
         assert!(
             matches!(
                 refused,
@@ -571,8 +576,8 @@ fn a_write_only_grant_does_not_answer_or_select_records_through_a_write() {
         );
     }
     // A write silent about what was there before still runs on the write alone.
-    ada.run("UPSERT staff:2 = { name: 'grace' };").unwrap();
+    ada.run_now("UPSERT staff:2 = { name: 'grace' };").unwrap();
     // And the record nobody was allowed to read is still there, untouched.
-    let held = root.run("SELECT * FROM staff:1;").unwrap();
+    let held = root.run_now("SELECT * FROM staff:1;").unwrap();
     assert_eq!(held.last().unwrap().records().unwrap().len(), 1);
 }

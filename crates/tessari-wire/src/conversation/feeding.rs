@@ -35,7 +35,7 @@ where
     let db = Arc::clone(&talk.db);
     let opened = talk
         .bridge
-        .call(session, move |held: Detached| {
+        .call_async(session, move |held: Detached| async move {
             let mut attached = held.attach(db.store());
             let following = Following {
                 from: Sequence::new(asked.from),
@@ -46,7 +46,7 @@ where
                     parameters: &narrow.parameters,
                 }),
             };
-            let opened = Feed::open(&db, &mut attached, &following);
+            let opened = Feed::open(&db, &mut attached, &following).await;
             (attached.detach(), opened)
         })
         .await;
@@ -94,13 +94,13 @@ where
             let db = Arc::clone(&talk.db);
             let ran = talk
                 .rounds
-                .call(
+                .call_async(
                     (session, following),
-                    move |(held, mut open): (Detached, Feed)| {
+                    move |(held, mut open): (Detached, Feed)| async move {
                         let mut attached = held.attach(db.store());
                         let mut frames = Vec::new();
-                        let round =
-                            open.round(&db, &mut attached, &mut |change, name, allowed, cursor| {
+                        let round = open
+                            .round(&db, &mut attached, &mut |change, name, allowed, cursor| {
                                 // A change whose table has been dropped has no name to give.
                                 if let Some(named) =
                                     push::named(change, name.map(str::to_owned), cursor)
@@ -108,7 +108,8 @@ where
                                     frames.push(named.hiding(allowed).encode());
                                 }
                                 true
-                            });
+                            })
+                            .await;
                         // How far a narrowed feed read past what it sent, when
                         // it has said nothing for a while.
                         let reached = (theirs >= frame::NARROWED)

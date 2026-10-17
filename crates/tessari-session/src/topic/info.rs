@@ -21,15 +21,16 @@ impl Session<'_> {
     /// still holds, so `last - first + 1` is what is kept. Each reader's `lag`
     /// is how many positions it has not yet been given — the number that says a
     /// reader is falling behind before retention says it has lost something.
-    pub(crate) fn info_topic(
+    pub(crate) async fn info_topic(
         &self,
         transaction: &mut Transaction<'_>,
         topic: &TableRef,
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
-        let (context, table) = self.resolve_table(transaction, topic)?;
+        let (context, table) = self.resolve_table(transaction, topic).await?;
         let declared = match Catalog::new(transaction)
-            .table(table)?
+            .table(table)
+            .await?
             .map(|found| found.kind)
         {
             Some(TableKind::Topic(declared)) => declared,
@@ -40,11 +41,13 @@ impl Session<'_> {
                 });
             }
         };
-        let held =
-            transaction.topic_after(context.namespace, context.database, table, u64::MAX, 0)?;
+        let held = transaction
+            .topic_after(context.namespace, context.database, table, u64::MAX, 0)
+            .await?;
         let last = held.last.unwrap_or(0);
         let readers = Catalog::new(transaction)
-            .topic_positions(context.namespace, context.database, table)?
+            .topic_positions(context.namespace, context.database, table)
+            .await?
             .into_iter()
             .map(|(name, position)| {
                 (
@@ -60,7 +63,8 @@ impl Session<'_> {
         // below which everything is acknowledged — because that is how far it
         // would have to go back to if every member stopped now (G042).
         let groups = Catalog::new(transaction)
-            .topic_groups(context.namespace, context.database, table)?
+            .topic_groups(context.namespace, context.database, table)
+            .await?
             .into_iter()
             .map(|(name, state)| {
                 let committed = state.committed();
@@ -87,10 +91,13 @@ impl Session<'_> {
         // The topic consumers reading this topic (ADR-0087). A destination the
         // caller may not read is named `hidden` rather than left out: the
         // consumer is still there, and its absence would read as none.
-        let readable = self.readable_in(transaction)?;
-        let tables = Catalog::new(transaction).tables_in(context.namespace, context.database)?;
+        let readable = self.readable_in(transaction).await?;
+        let tables = Catalog::new(transaction)
+            .tables_in(context.namespace, context.database)
+            .await?;
         let ingested_by = Catalog::new(transaction)
-            .consumers()?
+            .consumers()
+            .await?
             .into_iter()
             .filter(
                 |consumer| matches!(consumer.feed, Feed::Topic { table: read } if read == table),
@@ -143,7 +150,9 @@ impl Session<'_> {
         // What a size retention is judged against, beside the limit (G055 C8).
         if let Some(kept) = declared.retain_bytes {
             report.insert("retain_bytes".to_owned(), whole(kept));
-            let bytes = transaction.topic_bytes(context.namespace, context.database, table)?;
+            let bytes = transaction
+                .topic_bytes(context.namespace, context.database, table)
+                .await?;
             report.insert("bytes".to_owned(), whole(bytes));
         }
         Ok(report)

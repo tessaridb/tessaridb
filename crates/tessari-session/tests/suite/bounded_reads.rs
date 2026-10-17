@@ -33,10 +33,12 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tessari_session::Now;
+use tessari_session::RunNow;
 
+use tessari_kv::KvFuture;
 use tessari_kv::{
-    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
-    WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value as KvValue, WriteBatch,
 };
 use tessari_session::{Outcome, Session};
 use tessari_storage::Store;
@@ -85,33 +87,39 @@ impl KvBackend for Counting {
         "counting"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<KvValue>> {
-        let found = self.inner.get(keyspace, key)?;
-        if found.is_some() {
-            self.entries.fetch_add(1, Ordering::Relaxed);
-        }
-        Ok(found)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<KvValue>> {
+        Box::pin(async move {
+            let found = self.inner.get(keyspace, key).await?;
+            if found.is_some() {
+                self.entries.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(found)
+        })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, KvValue)>> {
-        let found = self.inner.scan(request)?;
-        self.entries.fetch_add(found.len(), Ordering::Relaxed);
-        Ok(found)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, KvValue)>> {
+        Box::pin(async move {
+            let found = self.inner.scan(request).await?;
+            self.entries.fetch_add(found.len(), Ordering::Relaxed);
+            Ok(found)
+        })
     }
 
-    fn first_of_each(
-        &self,
+    fn first_of_each<'a>(
+        &'a self,
         keyspace: Keyspace,
-        ranges: &[KeyRange],
-    ) -> Result<Vec<Option<(Key, KvValue)>>> {
-        let found = self.inner.first_of_each(keyspace, ranges)?;
-        self.entries
-            .fetch_add(found.iter().flatten().count(), Ordering::Relaxed);
-        Ok(found)
+        ranges: &'a [KeyRange],
+    ) -> KvFuture<'a, Vec<Option<(Key, KvValue)>>> {
+        Box::pin(async move {
+            let found = self.inner.first_of_each(keyspace, ranges).await?;
+            self.entries
+                .fetch_add(found.iter().flatten().count(), Ordering::Relaxed);
+            Ok(found)
+        })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.inner.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move { self.inner.apply(batch).await })
     }
 }
 
@@ -119,7 +127,9 @@ impl KvBackend for Counting {
 fn counted() -> (Store, Arc<Counting>) {
     let inner = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let counting = Arc::new(Counting::new(inner));
-    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
     (store, counting)
 }
 
@@ -132,7 +142,7 @@ fn counted() -> (Store, Arc<Counting>) {
 fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION spans;",
@@ -140,7 +150,7 @@ fn ready(store: &Store) -> Session<'_> {
         .unwrap();
     for n in 1..=RECORDS {
         session
-            .run(&format!(
+            .run_now(&format!(
                 "CREATE spans:{n} = {{ n: {n}, rank: {}, city: 'city {}' }};",
                 RECORDS.saturating_sub(n),
                 n % 4
@@ -153,7 +163,7 @@ fn ready(store: &Store) -> Session<'_> {
 /// The identities a read answers with, in the order it answered.
 fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
     session
-        .run(read)
+        .run_now(read)
         .unwrap()
         .last()
         .unwrap()
@@ -168,7 +178,7 @@ fn ids(session: &mut Session<'_>, read: &str) -> Vec<RecordId> {
 /// identity.
 fn answer(session: &mut Session<'_>, read: &str) -> Vec<(RecordId, Value)> {
     session
-        .run(read)
+        .run_now(read)
         .unwrap()
         .last()
         .unwrap()
@@ -180,7 +190,7 @@ fn answer(session: &mut Session<'_>, read: &str) -> Vec<(RecordId, Value)> {
 /// How many entries one read costs, with the counter zeroed first.
 fn cost(session: &mut Session<'_>, counting: &Counting, read: &str) -> usize {
     counting.reset();
-    session.run(read).unwrap();
+    session.run_now(read).unwrap();
     counting.entries()
 }
 
@@ -352,7 +362,7 @@ fn a_bound_survives_uncommitted_deletes_that_remove_what_it_stopped_at() {
     // call. Both reads therefore run at the same uncommitted state, which is
     // what the comparison needs anyway.
     let outcomes = session
-        .run(&format!(
+        .run_now(&format!(
             "BEGIN;\n\
              DELETE spans:3;\n\
              DELETE spans:5;\n\
@@ -400,7 +410,7 @@ fn a_fetch_preserves_the_count_and_the_bound_still_applies() {
     let (store, _) = counted();
     let mut session = ready(&store);
     session
-        .run(
+        .run_now(
             "DEFINE COLLECTION notes;\n\
              CREATE notes:1 = { about: spans:1, body: 'a note' };\n\
              CREATE notes:2 = { about: spans:2, body: 'another' };\n\
@@ -422,7 +432,7 @@ fn a_bounded_read_still_answers_a_materialised_value() {
     let (store, _) = counted();
     let mut session = ready(&store);
     let outcome = session
-        .run(&format!("SELECT * FROM spans LIMIT {LIMIT};"))
+        .run_now(&format!("SELECT * FROM spans LIMIT {LIMIT};"))
         .unwrap();
     assert!(matches!(
         outcome.last(),
@@ -444,7 +454,7 @@ const WALKED: u64 = 4_000;
 fn walked(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
-        .run(
+        .run_now(
             "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
              DEFINE DATABASE shop; USE DATABASE shop;\n\
              DEFINE COLLECTION spans;",
@@ -458,7 +468,7 @@ fn walked(store: &Store) -> Session<'_> {
             n % 4
         ));
     }
-    session.run(&script).unwrap();
+    session.run_now(&script).unwrap();
     session
 }
 

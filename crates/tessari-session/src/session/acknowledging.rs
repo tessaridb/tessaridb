@@ -53,7 +53,7 @@ impl Session<'_> {
     /// Judged against the range the commit LANDS in, not the namespace the
     /// session has selected: a membership row is a store-wide write whatever
     /// `USE` came before it, and a write lands where its records live.
-    pub(super) fn acknowledgement_for(
+    pub(super) async fn acknowledgement_for(
         &self,
         transaction: &mut Transaction<'_>,
         asked: Option<Acknowledge>,
@@ -64,6 +64,7 @@ impl Session<'_> {
             return Ok(None);
         }
         self.acknowledgement_in(transaction, None, asked, span)
+            .await
     }
 
     /// [`Self::acknowledgement_for`], for a commit landing in `home` — or, when
@@ -72,16 +73,17 @@ impl Session<'_> {
     /// A record of a transaction across leaders names its range itself: a
     /// decision writes no records, so nothing else could say where it lands
     /// (ADR-0112).
-    pub(super) fn acknowledgement_in(
+    pub(super) async fn acknowledgement_in(
         &self,
         transaction: &mut Transaction<'_>,
         home: Option<Reach>,
         asked: Option<Acknowledge>,
         span: Span,
     ) -> Result<Option<Waiting>> {
-        let me = self.store.node_identity()?.id;
+        let me = self.store.node_identity().await?.id;
         let voting: Vec<_> = Catalog::new(transaction)
-            .replicas()?
+            .replicas()
+            .await?
             .into_iter()
             .filter(|peer| peer.roles.has(Roles::COORDINATING))
             .filter_map(|peer| peer.node.map(|node| (node, peer)))
@@ -95,14 +97,14 @@ impl Session<'_> {
         }
         let home = match home {
             Some(home) => home,
-            None => transaction.home()?,
+            None => transaction.home().await?,
         };
         let catalog = Catalog::new(transaction);
         let definition = match home {
             Reach::Store => None,
             Reach::Namespace(namespace)
             | Reach::Database(namespace, _)
-            | Reach::Shard(namespace, ..) => catalog.namespace(namespace)?,
+            | Reach::Shard(namespace, ..) => catalog.namespace(namespace).await?,
         };
         // Unstated, the level follows the replication: a namespace kept on more
         // than one node waits for a majority of them, one kept on one node is
@@ -143,7 +145,8 @@ impl Session<'_> {
         // no region named (G075 C2b).
         let voting = if level == Acknowledge::LocalMajority && !voting.is_empty() {
             let mine = Catalog::new(transaction)
-                .replicas()?
+                .replicas()
+                .await?
                 .into_iter()
                 .find(|row| row.node == Some(me))
                 .and_then(|row| row.region)
@@ -174,7 +177,8 @@ impl Session<'_> {
             });
         }
         let within = catalog
-            .failover()?
+            .failover()
+            .await?
             .map_or(Failover::DEFAULT, |definition| definition.policy)
             .round();
         Ok(Some(Waiting {
@@ -185,18 +189,18 @@ impl Session<'_> {
     }
 
     /// Commit, then wait for the copies `waiting` names.
-    pub(super) fn commit_acknowledged(
+    pub(super) async fn commit_acknowledged(
         store: &Store,
         transaction: Transaction<'_>,
         waiting: Option<Waiting>,
         span: Span,
     ) -> Result<()> {
-        let committed = transaction.commit_placed().map_err(advised)?;
-        Self::await_acknowledged(store, committed, waiting, span)
+        let committed = transaction.commit_placed().await.map_err(advised)?;
+        Self::await_acknowledged(store, committed, waiting, span).await
     }
 
     /// Wait for the copies `waiting` names to hold a commit that has landed.
-    pub(super) fn await_acknowledged(
+    pub(super) async fn await_acknowledged(
         store: &Store,
         committed: tessari_storage::Committed,
         waiting: Option<Waiting>,
@@ -207,13 +211,15 @@ impl Session<'_> {
         };
         let nodes: Vec<[u8; NODE_ID_LEN]> = waiting.holders.iter().map(|(node, _)| *node).collect();
         let began = std::time::Instant::now();
-        let held = store.await_held(
-            committed.log,
-            committed.sequence,
-            &nodes,
-            waiting.needed,
-            waiting.within,
-        );
+        let held = store
+            .await_held(
+                committed.log,
+                committed.sequence,
+                &nodes,
+                waiting.needed,
+                waiting.within,
+            )
+            .await;
         let confirmed = held.len() >= waiting.needed;
         store.acknowledgement_waited(began.elapsed(), !confirmed);
         let waited_us = u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX);

@@ -28,7 +28,7 @@ axum.workspace = true
 futures-util = { workspace = true, features = ["sink"] }
 # Requests are tasks on the process's runtime, which the binary builds; this
 # crate creates none (ADR-0085).
-tokio = { workspace = true, features = ["net", "rt", "sync", "time", "macros", "io-util"] }
+tokio = { workspace = true, features = ["net", "rt", "sync", "time", "macros", "io-util", "fs"] }
 tokio-util.workspace = true
 tungstenite.workspace = true
 # TLS on the listener (ADR-0108 D4): the rustls the peer link already uses.
@@ -47,7 +47,7 @@ tessari-kv.workspace = true
 # span every diagnostic carries and the dependency kind `StillDepended` names.
 # Neither is re-exported through `tessaridb`, which carries the error type only.
 tessari-ql.workspace = true
-tessari-session.workspace = true
+tessari-session = { workspace = true, features = ["test-support"] }
 tessari-storage.workspace = true
 # The redirect's epoch and the width of the node id it names, for the same
 # reason: `ReadIsElsewhere` carries both and `tessaridb` re-exports the error

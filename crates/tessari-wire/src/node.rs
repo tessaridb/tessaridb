@@ -15,7 +15,6 @@ use tessari_constants::{GREETING_SECONDS, MAX_CONNECTIONS, MAX_STORE_CALLS};
 use tessari_serve::{ACCEPT_PAUSE, Admitting, Bridge, Stopping, passes};
 use tessaridb::Db;
 use tessaridb::feed::Commits;
-use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -83,10 +82,6 @@ pub struct Node {
     /// the next signal rather than being refused, since its subscriber was
     /// already admitted.
     rounds: Arc<Bridge>,
-    /// How many busy connections may be served on a store thread at once
-    /// (`hot.rs`). Beyond it a busy connection is answered from its task, as an
-    /// idle one always is, so this bounds threads and never refuses anybody.
-    hot: Arc<Semaphore>,
     /// What this node knows about the copies it does not hold, if anything.
     ///
     /// Held as the trait and not as the directory behind it: a node serving
@@ -125,7 +120,6 @@ impl Node {
             rounds: Arc::new(Bridge::new(
                 std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
             )),
-            hot: Arc::new(Semaphore::new(MAX_STORE_CALLS)),
             elsewhere: None,
             secured: None,
         })
@@ -199,7 +193,6 @@ impl Node {
             door: Arc::clone(&self.door),
             bridge: Arc::clone(&self.bridge),
             rounds: Arc::clone(&self.rounds),
-            hot: Arc::clone(&self.hot),
             elsewhere: self.elsewhere.clone(),
         }
     }

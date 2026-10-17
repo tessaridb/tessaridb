@@ -55,6 +55,7 @@
 //! what the disk ramp is made of.
 
 use std::time::Instant;
+use tessari_session::RunNow;
 
 use tessaridb::Db;
 
@@ -90,7 +91,7 @@ pub fn spread(db: &Db) -> Failable<Vec<Report>> {
     for table in 0..TABLES {
         definitions.push_str(&format!(" DEFINE COLLECTION many{table};"));
     }
-    session.run(&definitions)?;
+    session.run_now(&definitions)?;
 
     let capacity = usize::try_from(PAIRS).unwrap_or(0);
     let mut reports = Vec::new();
@@ -103,11 +104,11 @@ pub fn spread(db: &Db) -> Failable<Vec<Report>> {
             let table = n.checked_rem(TABLES).unwrap_or(0);
 
             let started = Instant::now();
-            session.run(&format!("CREATE one:{n} = {};", payload(n)))?;
+            session.run_now(&format!("CREATE one:{n} = {};", payload(n)))?;
             single.push(started.elapsed());
 
             let started = Instant::now();
-            session.run(&format!("CREATE many{table}:{n} = {};", payload(n)))?;
+            session.run_now(&format!("CREATE many{table}:{n} = {};", payload(n)))?;
             across.push(started.elapsed());
 
             written = written.saturating_add(1);

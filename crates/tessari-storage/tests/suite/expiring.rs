@@ -9,6 +9,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
+use tessari_storage::Now;
 
 use tessari_encoding::{ExpiryKey, KeyKind, StoreKey};
 use tessari_kv::{KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
@@ -17,7 +18,12 @@ use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
 /// An instant an hour from now, on the transaction's own clock.
 fn later(store: &Store) -> u64 {
-    store.begin().unwrap().clock().saturating_add(3_600_000)
+    store
+        .begin()
+        .now()
+        .unwrap()
+        .clock()
+        .saturating_add(3_600_000)
 }
 
 fn at(id: &str) -> RecordAddress {
@@ -37,6 +43,7 @@ fn entries(backend: &Arc<dyn KvBackend>) -> Vec<ExpiryKey> {
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .now()
         .unwrap()
         .into_iter()
         .map(|(key, _)| ExpiryKey::decode(key.as_slice()).unwrap())
@@ -46,21 +53,21 @@ fn entries(backend: &Arc<dyn KvBackend>) -> Vec<ExpiryKey> {
 #[test]
 fn a_replica_holds_the_same_expiry_entries_as_the_node_that_wrote_them() {
     let source_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let source = Store::open(Arc::clone(&source_backend)).unwrap();
+    let source = Store::open(Arc::clone(&source_backend)).now().unwrap();
     let first = later(&source);
     for (id, instant) in [("a", first), ("b", first.saturating_add(1)), ("c", 0)] {
-        let mut transaction = source.begin().unwrap();
+        let mut transaction = source.begin().now().unwrap();
         transaction.put(at(id), b"v".to_vec());
         if instant > 0 {
             transaction.expire_pending(&at(id), instant);
         }
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
     // Moved, so the source holds one entry for `a` and not two.
-    let mut transaction = source.begin().unwrap();
+    let mut transaction = source.begin().now().unwrap();
     transaction.put(at("a"), b"v".to_vec());
     transaction.expire_pending(&at("a"), first.saturating_add(7));
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
 
     let written = entries(&source_backend);
     assert_eq!(
@@ -76,7 +83,7 @@ fn a_replica_holds_the_same_expiry_entries_as_the_node_that_wrote_them() {
     );
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    let replica = Store::open(Arc::clone(&replica_backend)).now().unwrap();
     crate::replay(&source, &replica);
     assert_eq!(entries(&replica_backend), written);
 }
@@ -90,11 +97,11 @@ fn a_replica_of_a_limited_space_holds_what_the_writer_kept() {
     use tessari_storage::{Catalog, Eviction, SpaceDeclaration, SpaceLimit, TableKind, TableShape};
 
     let source_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let source = Store::open(Arc::clone(&source_backend)).unwrap();
-    let mut transaction = source.begin().unwrap();
+    let source = Store::open(Arc::clone(&source_backend)).now().unwrap();
+    let mut transaction = source.begin().now().unwrap();
     let mut catalog = Catalog::new(&mut transaction);
-    let namespace = catalog.create_namespace("prod").unwrap();
-    let database = catalog.create_database(namespace.id, "app").unwrap();
+    let namespace = catalog.create_namespace("prod").now().unwrap();
+    let database = catalog.create_database(namespace.id, "app").now().unwrap();
     let space = catalog
         .create_table(
             namespace.id,
@@ -110,24 +117,27 @@ fn a_replica_of_a_limited_space_holds_what_the_writer_kept() {
                 ..TableShape::default()
             },
         )
+        .now()
         .unwrap();
-    transaction.commit().unwrap();
+    transaction.commit().now().unwrap();
     let at = |id: &str| RecordAddress::new(namespace.id, database.id, space.id, RecordId::from(id));
     for id in ["a", "b", "c", "d", "e", "b"] {
-        let mut transaction = source.begin().unwrap();
+        let mut transaction = source.begin().now().unwrap();
         transaction.put(at(id), b"v".to_vec());
-        transaction.commit().unwrap();
+        transaction.commit().now().unwrap();
     }
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
-    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    let replica = Store::open(Arc::clone(&replica_backend)).now().unwrap();
     crate::replay(&source, &replica);
 
     let held = |store: &Store| {
         store
             .begin()
+            .now()
             .unwrap()
             .scan_table(namespace.id, database.id, space.id)
+            .now()
             .unwrap()
             .into_iter()
             .map(|(id, _)| id)
@@ -141,6 +151,7 @@ fn a_replica_of_a_limited_space_holds_what_the_writer_kept() {
                 direction: ScanDirection::Forward,
                 limit: None,
             })
+            .now()
             .unwrap()
             .into_iter()
             .map(|(key, _)| ModifiedKey::decode(key.as_slice()).unwrap().id)
