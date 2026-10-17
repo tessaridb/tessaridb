@@ -8341,8 +8341,8 @@ openssl rand 32 > store.key && chmod 600 store.key
 tessaridb ./data --encryption-key-file store.key --serve 0.0.0.0:9080
 ```
 
-Given a key, a node encrypts **every file its storage engine writes** — the
-tables, the write-ahead log, the manifest, the engine's own options and log —
+Given a key, a node encrypts **every file its storage engine, TessariKV,
+writes** — the tables, the write-ahead log, the manifest and the options record —
 and **seals every backup it produces**: a snapshot, a log or a script, answered
 by `BACKUP`, written by `BACKUP … TO`, streamed by `GET /backup`, or written by
 `--backup`, `--snapshot` and `--dump`. `TESSARIDB_ENCRYPTION_KEY_FILE` stands for
@@ -10232,7 +10232,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.35.3", "build": "0.35.3", "endpoints": ["db-1.internal:9000"],
+ "version": "0.36.0", "build": "0.36.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

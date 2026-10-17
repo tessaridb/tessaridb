@@ -23,6 +23,45 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.36.0 — 2026-10-17
+
+TessariDB now runs on its own storage engine,
+[TessariKV](https://github.com/tessaridb/tessarikv) `0.1.0`, the heart of the
+database: a log-structured merge-tree engine in pure Rust, lock-free first, with
+an on-disk file format that is stable from its `0.1.0`
+([crates.io](https://crates.io/crates/tessarikv)). Building TessariDB no longer
+compiles any C++.
+
+### Changed
+
+- **The storage engine is TessariKV.** A store written by `0.35.3` or earlier is
+  refused by name and left untouched; move it with a backup, as the note above
+  says.
+- **The embedded API is async.** `Db::open`, `Db::in_memory`, `Db::close` and the
+  session's `run` calls return futures, called from a Tokio runtime.
+- **No statement holds a runtime worker while it waits.** Statements run as
+  tasks; a commit waiting for its follower copies, a commit retry, an idle feed
+  and a backup's file writes wait as suspended tasks instead of blocking a thread,
+  so concurrent writes on a cluster no longer starve the follower answers a
+  majority commit waits for.
+- Statements cost less to run: catalog rows and table definitions are shared
+  instead of copied, a transaction begins at the newest landed version without
+  reading the engine, and an evaluation boxes only the calls that need it.
+
+### Fixed
+
+- A search index built, or a row written, in the transaction that declares the
+  field's analyzer posted no terms, so a read served by the index answered
+  without those rows while a scan found them.
+- Two `time::now()` calls in one statement could answer two instants; they now
+  read one.
+- A commit abandoned by its caller could hide its write from the next
+  transaction; the write is visible as soon as it lands.
+- A failed close of a store is reported rather than discarded, and the copy of
+  the encryption key handed to the engine is wiped when the engine drops it.
+- TLS moves to `rustls` `0.23.46`, which carries the fixes for its published
+  advisories.
+
 ## 0.35.3 — 2026-10-16
 
 ### Changed

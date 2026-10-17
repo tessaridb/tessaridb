@@ -1,7 +1,8 @@
 //! The persistent backend for TessariDB.
 //!
 //! This crate implements the same [`KvBackend`](tessari_kv::KvBackend) contract
-//! the in-memory backend implements, on a log-structured merge-tree engine. The
+//! the in-memory backend implements, on TessariKV, TessariDB's own log-structured
+//! merge-tree engine. The
 //! layers above — the key grammar, the record store, transactions — run on
 //! either one without knowing which.
 //!

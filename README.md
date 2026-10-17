@@ -10,7 +10,7 @@ Eleven engines. One transaction. One binary. A real-time multi-model database,
 written in Rust, for AI applications and the products built around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.35.3-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.36.0-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.98%2B-6B5FD1?style=flat-square)](Cargo.toml)
 [![conformance](https://img.shields.io/badge/conformance-1611%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
@@ -22,13 +22,14 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is pre-1.0 — `0.35.3`.** It is released and tested, published as
-> a container image (`tessaridb/tessaridb:0.35.3`; the image tracks the
+> **TessariDB is pre-1.0 — `0.36.0`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.36.0`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
 > What a pre-1.0 release does not promise yet is permanence of the language and the wire:
 > before 1.0 the query language and the wire format may still change, and several
-> engines are still partial. **From `0.36.0` the storage engine changes**: a store
+> engines are still partial. **From `0.36.0` TessariDB runs on its own storage
+> engine, [TessariKV](https://github.com/tessaridb/tessarikv), the heart of the database**: a store
 > written by `0.35.3` or earlier is refused, and the upgrade is a backup taken by
 > the old build and restored by the new one (`--backup`, then `--restore`; see the
 > [changelog](CHANGELOG.md)). So pin a released version, and keep a backup you have
@@ -163,7 +164,9 @@ store rather than three stores, and queues and topics share one row. The
 | **Geospatial** | a geometry type on an exact integer grid, eight predicates over whole shapes, geodesic distance and area, shapes written as literals, a spatial index seven of the eight predicates and a radius read go through, a nearest-first read over positions and areas and under a `WHERE`, distance between any two shapes to their nearest points, counting by cell, a geo store declared as one so the field, the index and the requirement cannot come apart, a measured query covering, and a measured refinement ratio saying what that index's candidates cost | 74 | ✅ runs |
 
 Underneath all of them, one substrate with two backends: **in memory**, and
-**on disk** on a log-structured merge-tree engine. Everything above the
+**on disk** on [TessariKV](https://github.com/tessaridb/tessarikv), the heart of TessariDB: our own log-structured
+merge-tree engine in pure Rust, lock-free first, with a stable file format
+([crates.io](https://crates.io/crates/tessarikv)). Everything above the
 key–value layer is written against a single trait, which is what makes the pair
 possible rather than aspirational.
 
@@ -204,7 +207,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.35.3` · not published to crates.io.** What
+**Stage: active development · `0.36.0` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -293,8 +296,8 @@ follows is what runs today, not a roadmap.
   counter folds as a summary, asked again for the samples when two shards'
   samples interleave in time. A join side or a `FETCH` into a shard it lacks is
   gathered the same way, narrowed to the keys the near side holds.
-- ✅ **A store from before `0.36.0` is moved, not opened:** this build runs a new
-  storage engine, so a store written by `0.22.0-beta` … `0.35.3` is refused by name
+- ✅ **A store from before `0.36.0` is moved, not opened:** this build runs on
+  its own storage engine, [TessariKV](https://github.com/tessaridb/tessarikv), so a store written by `0.22.0-beta` … `0.35.3` is refused by name
   and left untouched, with the way across in the refusal: a snapshot taken by the
   build that wrote it and restored by this one. Tested against a store each of
   those releases wrote, and rehearsed from the `0.35.3` image with the restored
@@ -477,7 +480,7 @@ demanding first user.
 |---|---|
 | **Multi-model** | Documents, graph edges, relational tables, keys, files, vectors, full-text, time windows, geometry, queues, topics and a vault — over one record store, not bolted together |
 | **One query language** | **TessariQL** — a single surface for every model, including graph traversal and vector search ([the language reference](docs/tessariql.md)) |
-| **Pluggable storage** | Everything above the key–value layer is written against one trait, and two backends prove it: in memory, and durable on a log-structured merge-tree engine |
+| **Pluggable storage** | Everything above the key–value layer is written against one trait, and two backends prove it: in memory, and durable on [TessariKV](https://github.com/tessaridb/tessarikv), TessariDB's own log-structured merge-tree engine |
 | **Transactional** | Real transactions with a declared isolation level, not best-effort batching |
 | **Real-time** | Change subscriptions as a first-class feature, not polling |
 | **Honest about cost** | An index changes what a read costs and never what it answers — and where that cannot hold, as with an approximate vector search, the read says so in its own result |
@@ -504,7 +507,7 @@ crates/
   tessari-constants    leaf   tunables, each with unit and rationale
   tessari-geo          leaf   geometry on a fixed integer grid: exact predicates, boxes
   tessari-kv                  key-value contract, atomic conditional batches, in-memory backend
-  tessari-lsm                 persistent backend, durability levels, engine options
+  tessari-lsm                 persistent backend on TessariKV, durability levels, engine options
   tessari-encoding            key grammar and value codec over the KV layer
   tessari-storage             records, transactions, indexes (snapshot isolation on the log)
   tessari-ql                  TessariQL: lexer, parser, AST
@@ -530,7 +533,7 @@ above is what exists, not a plan.
 ## Building
 
 **What you need beyond Rust.** A C compiler, for the TLS provider. The storage
-engine is pure Rust. The optional Kafka ingestion (`--features kafka`) also
+engine, [TessariKV](https://github.com/tessaridb/tessarikv), is pure Rust. The optional Kafka ingestion (`--features kafka`) also
 compiles a C library.
 
 | | |
