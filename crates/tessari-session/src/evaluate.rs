@@ -194,6 +194,15 @@ impl Session<'_> {
                 arguments,
                 span,
             } => {
+                // A distance is answered through its own future, which lends
+                // its operands and is a fraction of the call's: a nearest-first
+                // scan asks one per record.
+                if let Some(distance) =
+                    Box::pin(self.distance_between(transaction, *function, arguments, scope))
+                        .await?
+                {
+                    return Ok(distance);
+                }
                 Box::pin(self.evaluate_call(transaction, *function, arguments, *span, scope)).await
             }
             ExprKind::Arithmetic { op, left, right } => {
