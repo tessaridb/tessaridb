@@ -89,9 +89,9 @@ pub fn listen(runtime: &Runtime) -> std::io::Result<CancellationToken> {
 
 /// End the process at once, as the second signal asks.
 ///
-/// `_exit` rather than `std::process::exit`, because `exit` runs the C++ static
-/// destructors the storage engine registered while its own background threads
-/// are still using what they destroy — which turns *leave now* into a crash.
+/// `_exit` rather than `std::process::exit`, because `exit` runs the exit-time
+/// handlers native code registered while background threads are still using
+/// what they tear down, which turns *leave now* into a crash.
 fn leave_now() -> ! {
     // SAFETY: `_exit` takes no pointers, touches no Rust state and cannot return;
     // skipping every destructor is the purpose.

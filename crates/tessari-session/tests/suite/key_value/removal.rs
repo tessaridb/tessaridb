@@ -24,6 +24,7 @@ fn indexed(backend: &Backend) -> Vec<RecordId> {
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .now()
         .unwrap()
         .into_iter()
         .map(|(key, _)| ExpiryKey::decode(key.as_slice()).unwrap().id)

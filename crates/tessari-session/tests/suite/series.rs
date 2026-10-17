@@ -441,15 +441,18 @@ fn a_compacted_series_reads_back_every_value_and_instant_bit_for_bit() {
     let directory = tempfile::tempdir().unwrap();
     let open = || {
         Arc::new(
-            tessari_lsm::LsmBackend::open(
+            tessari_lsm::TessariKvBackend::open(
                 directory.path(),
                 tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
             )
+            .now()
             .unwrap(),
         )
     };
     {
-        let store = Store::open(open() as Arc<dyn KvBackend>).now().unwrap();
+        let store = Store::open_async(open() as Arc<dyn tessari_kv::AsyncKvBackend>)
+            .now()
+            .unwrap();
         let mut session = opened(&store);
         run(
             &mut session,
@@ -477,9 +480,11 @@ fn a_compacted_series_reads_back_every_value_and_instant_bit_for_bit() {
     }
     // Every region flushed and compacted to the bottom, where the codec and
     // the trained dictionary do their work.
-    open().compact().unwrap();
+    open().compact().now().unwrap();
 
-    let store = Store::open(open() as Arc<dyn KvBackend>).now().unwrap();
+    let store = Store::open_async(open() as Arc<dyn tessari_kv::AsyncKvBackend>)
+        .now()
+        .unwrap();
     let mut session = Session::new(&store);
     session
         .run_now("USE NAMESPACE prod; USE DATABASE metrics;")

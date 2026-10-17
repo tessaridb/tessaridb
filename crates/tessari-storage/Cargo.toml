@@ -28,7 +28,7 @@ futures-util.workspace = true
 [features]
 # What tests and the synchronous harnesses use to drive the store's asynchronous entry points
 # without a runtime of their own (`now`, `Now`).
-test-support = []
+test-support = ["tokio/rt-multi-thread"]
 
 [dev-dependencies]
 tessari-storage = { path = ".", features = ["test-support"] }

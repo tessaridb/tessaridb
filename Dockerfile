@@ -1,13 +1,11 @@
 # TessariDB, as a container.
 #
 # Two stages, because the toolchain that builds this is two orders of magnitude
-# larger than the binary it produces: the builder carries a Rust toolchain, a C++
-# compiler and libclang, and the image somebody pulls carries one statically
-# linked executable and the C++ runtime it needs.
+# larger than the binary it produces: the builder carries a Rust toolchain and
+# the C compiler the TLS provider builds with, and the image somebody pulls
+# carries one executable.
 #
-# The build is slow, and it is slow for one reason worth stating up front: the
-# storage engine compiles a vendored RocksDB — and lz4 and zstd with it — from
-# source, which dominates everything else here. There is no dependency-caching
+# There is no dependency-caching
 # stage below because a nineteen-crate workspace of path dependencies cannot be
 # pre-warmed without stubbing out nineteen crates' sources, and that scaffolding
 # breaks silently the first time a crate is added. The cost is paid on a rebuild
@@ -15,14 +13,6 @@
 
 # ── build ───────────────────────────────────────────────────────────────────
 FROM rust:1.98-slim-bookworm AS build
-
-# `clang` and `libclang-dev` because the storage engine's bindings are generated
-# by bindgen, which loads libclang at build time and panics without it. The C++
-# toolchain because the same crate compiles RocksDB itself.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      clang libclang-dev build-essential \
- && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
 COPY . .
@@ -37,14 +27,12 @@ RUN cargo build --release --locked -p tessari-cli --bin tessaridb \
 # ── run ─────────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
-# `libstdc++6` because RocksDB is C++ and the binary links it dynamically; it is
-# usually already present in this base, and naming it is what stops that from
-# being an assumption. `bash` for the health check, which speaks HTTP over
+# `bash` for the health check, which speaks HTTP over
 # `/dev/tcp` rather than adding an HTTP client to a database image. The upgrade
 # takes the base's security fixes published after the base image was built.
 RUN apt-get update \
  && apt-get upgrade -y --no-install-recommends \
- && apt-get install -y --no-install-recommends libstdc++6 bash \
+ && apt-get install -y --no-install-recommends bash \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home-dir /var/lib/tessaridb --shell /usr/sbin/nologin tessaridb \
  && mkdir -p /var/lib/tessaridb/backups \

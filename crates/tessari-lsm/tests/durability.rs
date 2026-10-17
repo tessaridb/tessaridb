@@ -54,8 +54,8 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tessari_storage::Now;
 
-use tessari_kv::KvBackend;
-use tessari_lsm::{Durability, LsmBackend, StoreConfig};
+use tessari_kv::AsyncKvBackend;
+use tessari_lsm::{Durability, StoreConfig, TessariKvBackend};
 use tessari_storage::{RecordAddress, Store};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
@@ -92,10 +92,30 @@ fn payload(n: u64) -> Vec<u8> {
 }
 
 fn open_store(path: &std::path::Path) -> Store {
-    let backend = LsmBackend::open(path, StoreConfig::new(Durability::PowerLossSafe)).unwrap();
-    Store::open(Arc::new(backend) as Arc<dyn KvBackend>)
+    open_closable(path).0
+}
+
+/// A store and the engine under it, which the caller closes once the store is dropped: the next
+/// process opens the directory only after this one has let go of it.
+fn open_closable(path: &std::path::Path) -> (Store, Arc<TessariKvBackend>) {
+    let backend = Arc::new(
+        TessariKvBackend::open(path, StoreConfig::new(Durability::PowerLossSafe))
+            .now()
+            .unwrap(),
+    );
+    let store = Store::open_async(Arc::clone(&backend) as Arc<dyn AsyncKvBackend>)
         .now()
-        .unwrap()
+        .unwrap();
+    (store, backend)
+}
+
+/// Closes an engine whose store was dropped.
+fn close(backend: Arc<TessariKvBackend>) {
+    Arc::into_inner(backend)
+        .expect("the dropped store held the only other handle")
+        .close()
+        .now()
+        .unwrap();
 }
 
 /// The child. Commits forever, announcing each sequence it was handed.
@@ -231,8 +251,10 @@ fn open_small_store(path: &std::path::Path, encrypted: bool) -> Store {
         ..StoreConfig::new(Durability::PowerLossSafe)
     };
     let key = encrypted.then(at_rest);
-    let backend = LsmBackend::open_with_key(path, config, key.as_ref()).unwrap();
-    Store::open(Arc::new(backend) as Arc<dyn KvBackend>)
+    let backend = TessariKvBackend::open_with_key(path, config, key.as_ref())
+        .now()
+        .unwrap();
+    Store::open_async(Arc::new(backend) as Arc<dyn AsyncKvBackend>)
         .now()
         .unwrap()
 }
@@ -626,7 +648,7 @@ fn a_hundred_kills_lose_nothing_acknowledged_and_tear_no_transaction() {
             let _ = recovering.wait();
         }
 
-        let reopened = open_store(&path);
+        let (reopened, engine) = open_closable(&path);
         let transaction = reopened.begin().now().unwrap();
         for n in &acknowledged {
             for of in 0..PARTS {
@@ -651,6 +673,9 @@ fn a_hundred_kills_lose_nothing_acknowledged_and_tear_no_transaction() {
                 );
             }
         }
+        drop(transaction);
+        drop(reopened);
+        close(engine);
     }
     println!(
         "[BGV_CRASH] seed={seed} kills={KILLS} recovery-kills={} acknowledged={}",

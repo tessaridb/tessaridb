@@ -74,8 +74,8 @@ use tessari_session::RunNow;
 use tessari_encoding::{
     CODEC_VERSION, Posting, PostingKey, SearchTermKey, StoreKey, StoreValue, TermStatistics,
 };
-use tessari_kv::{KeyRange, Keyspace, KvBackend, ScanDirection, ScanRequest, WriteBatch};
-use tessari_lsm::{Durability, LsmBackend, StoreConfig};
+use tessari_kv::{AsyncKvBackend, KeyRange, Keyspace, ScanDirection, ScanRequest, WriteBatch};
+use tessari_lsm::{Durability, StoreConfig, TessariKvBackend};
 use tessari_session::Session;
 use tessari_storage::Store;
 
@@ -110,10 +110,12 @@ const RANKED: &str = "SELECT * FROM notes ORDER BY search::score(body, 'alpha be
 /// that proves it rather than a reason to widen the type. Downgrading an index
 /// is not something a caller does; it is something an older release did, and
 /// this is the only way to be that release.
-fn open(path: &std::path::Path) -> (Arc<dyn KvBackend>, Store) {
-    let backend = LsmBackend::open(path, StoreConfig::new(Durability::PowerLossSafe)).unwrap();
-    let backend = Arc::new(backend) as Arc<dyn KvBackend>;
-    let store = Store::open(Arc::clone(&backend)).now().unwrap();
+fn open(path: &std::path::Path) -> (Arc<dyn AsyncKvBackend>, Store) {
+    let backend = TessariKvBackend::open(path, StoreConfig::new(Durability::PowerLossSafe))
+        .now()
+        .unwrap();
+    let backend = Arc::new(backend) as Arc<dyn AsyncKvBackend>;
+    let store = Store::open_async(Arc::clone(&backend)).now().unwrap();
     (backend, store)
 }
 
@@ -189,7 +191,9 @@ fn ids(session: &mut Session<'_>, read: &str) -> Vec<String> {
 /// Decoding is the filter, exactly as `scoring_source.rs` does it: the index
 /// keyspace also holds the dictionary, the statistics and every other index's
 /// entries, and only the key of the wanted kind decodes as one.
-fn entries_of<K: StoreKey>(backend: &dyn KvBackend) -> Vec<(tessari_kv::Key, tessari_kv::Value)> {
+fn entries_of<K: StoreKey>(
+    backend: &dyn AsyncKvBackend,
+) -> Vec<(tessari_kv::Key, tessari_kv::Value)> {
     let request = ScanRequest {
         keyspace: Keyspace::INDEX,
         range: KeyRange::all(),
@@ -198,6 +202,7 @@ fn entries_of<K: StoreKey>(backend: &dyn KvBackend) -> Vec<(tessari_kv::Key, tes
     };
     backend
         .scan(&request)
+        .now()
         .unwrap()
         .into_iter()
         .filter(|(key, _)| K::decode(key.as_slice()).is_ok())
@@ -209,13 +214,13 @@ fn entries_of<K: StoreKey>(backend: &dyn KvBackend) -> Vec<(tessari_kv::Key, tes
 /// The keys are untouched, so the index still says exactly which records hold
 /// which terms; only the two numbers are taken away, which is the state an index
 /// written by an older release is in.
-fn forget_the_numbers(backend: &dyn KvBackend) -> usize {
+fn forget_the_numbers(backend: &dyn AsyncKvBackend) -> usize {
     let found = entries_of::<PostingKey>(backend);
     let mut batch = WriteBatch::default();
     for (key, _) in &found {
         batch = batch.put(Keyspace::INDEX, key.clone(), Posting::Membership.encode());
     }
-    backend.apply(batch).unwrap();
+    backend.apply(batch).now().unwrap();
     found.len()
 }
 
@@ -225,7 +230,7 @@ fn forget_the_numbers(backend: &dyn KvBackend) -> usize {
 /// The truncation is taken from the current encoding rather than written by
 /// hand — the header is however many bytes an empty payload occupies, and the
 /// count is a `u64` — so this cannot drift away from what the codec writes.
-fn forget_the_bound(backend: &dyn KvBackend) -> usize {
+fn forget_the_bound(backend: &dyn AsyncKvBackend) -> usize {
     let header = Posting::Membership.encode().as_slice().len();
     let found = entries_of::<SearchTermKey>(backend);
     let mut batch = WriteBatch::default();
@@ -234,7 +239,7 @@ fn forget_the_bound(backend: &dyn KvBackend) -> usize {
         older.truncate(header.saturating_add(8));
         batch = batch.put(Keyspace::INDEX, key.clone(), tessari_kv::Value::from(older));
     }
-    backend.apply(batch).unwrap();
+    backend.apply(batch).now().unwrap();
     found.len()
 }
 
@@ -413,7 +418,7 @@ fn on_this_fixture_a_wrong_bound_moves_the_ranked_answer() {
         let wrong = TermStatistics::bounded(read.documents, 1, 1_000_000);
         batch = batch.put(Keyspace::INDEX, key.clone(), wrong.encode());
     }
-    backend.apply(batch).unwrap();
+    backend.apply(batch).now().unwrap();
 
     assert_ne!(
         ids(&mut session, RANKED),
@@ -448,7 +453,7 @@ fn a_value_from_an_unknown_codec_version_is_refused_and_names_it() {
             ahead[0] = CODEC_VERSION.saturating_add(1);
             batch = batch.put(Keyspace::INDEX, key.clone(), tessari_kv::Value::from(ahead));
         }
-        backend.apply(batch).unwrap();
+        backend.apply(batch).now().unwrap();
         found.len()
     };
     assert!(rewritten > 0, "no postings were re-versioned");

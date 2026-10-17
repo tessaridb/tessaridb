@@ -203,44 +203,25 @@ fn released(name: &str) -> std::path::PathBuf {
         .join(name)
 }
 
-/// Run one script against `store` with this build and keep what it printed, on
-/// either stream.
-fn answer(store: &std::path::Path, script: &str) -> String {
-    let ran = std::process::Command::new(TESSARIDB)
-        .arg(store)
-        .arg("-f")
-        .arg(released(script))
-        .output()
-        .unwrap();
-    assert!(
-        ran.status.success(),
-        "{script} failed: {}{}",
-        String::from_utf8_lossy(&ran.stdout),
-        String::from_utf8_lossy(&ran.stderr)
-    );
-    // Notes go to standard error; the records are what decides the comparison,
-    // and a note is read only for whether it is there.
-    let mut printed = String::from_utf8(ran.stdout).unwrap();
-    printed.push_str(&String::from_utf8(ran.stderr).unwrap());
-    printed
-}
-
-/// What an answer says about the data: every record and every count, without
-/// the access path that served it or the notes about how — those are what a
-/// newer build is allowed to change.
-fn records_and_counts(printed: &str) -> Vec<String> {
-    printed
-        .lines()
-        .filter(|line| !line.starts_with("note:"))
-        .map(|line| match line.split_once(", via ") {
-            Some((count, _)) if line.starts_with('(') => format!("{count})"),
-            _ => line.to_owned(),
+/// Every file of `store`, by name, with its bytes.
+fn files_of(store: &std::path::Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
+    let mut files: Vec<_> = std::fs::read_dir(store)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (entry.file_name(), std::fs::read(entry.path()).unwrap())
         })
-        .collect()
+        .collect();
+    files.sort();
+    files
 }
 
+/// A store written by a released build sits on the storage engine before this one, which this
+/// build does not carry. It is refused, by name and with the way across (a snapshot taken by
+/// the build that wrote it, restored by this one), and not one of its bytes is changed: an
+/// operator who upgrades in place loses nothing and is told what to do.
 #[test]
-fn a_store_written_by_each_released_build_reads_back_what_that_build_answered() {
+fn a_store_written_by_each_released_build_is_refused_untouched_with_the_way_across() {
     for version in RELEASED {
         let copy = tempfile::tempdir().unwrap();
         let store = copy.path().join("store");
@@ -249,36 +230,26 @@ fn a_store_written_by_each_released_build_reads_back_what_that_build_answered() 
             let file = file.unwrap();
             std::fs::copy(file.path(), store.join(file.file_name())).unwrap();
         }
-        let expected = records_and_counts(
-            &std::fs::read_to_string(released(&format!("{version}.answers"))).unwrap(),
-        );
-        assert!(expected.len() > 40, "{version}: the oracle is empty");
+        let before = files_of(&store);
 
-        let before = answer(&store, "read.tessariql");
-        assert_eq!(
-            records_and_counts(&before),
-            expected,
-            "{version}: this build reads the store differently from the build that wrote it"
-        );
-        // A search index from before 0.26 recorded no tokenizer, so it was set
-        // aside — the records above came from the scan — and the read says so.
-        assert_eq!(
-            before.contains("recorded no tokenizer generation"),
-            minor(version) < 26,
-            "{version}: whether the old search index was set aside:\n{before}"
-        );
-        // Rebuilt by this build, its indexes answer the same records again —
-        // through the index this time, where the store's own was set aside.
-        answer(&store, "rebuild.tessariql");
-        let after = answer(&store, "read.tessariql");
-        assert_eq!(
-            records_and_counts(&after),
-            expected,
-            "{version}: the rebuilt indexes answer differently"
-        );
+        let ran = std::process::Command::new(TESSARIDB)
+            .arg(&store)
+            .arg("-f")
+            .arg(released("read.tessariql"))
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert!(!ran.status.success(), "{version}: this build opened it");
         assert!(
-            !after.contains("tokenizer generation"),
-            "{version}: an index still waits for a rebuild:\n{after}"
+            said.contains("written by an earlier storage engine")
+                && said.contains("--backup")
+                && said.contains("--restore"),
+            "{version}: the refusal does not say what it is or the way across:\n{said}"
+        );
+        assert_eq!(
+            files_of(&store),
+            before,
+            "{version}: the refused store was changed"
         );
     }
 }

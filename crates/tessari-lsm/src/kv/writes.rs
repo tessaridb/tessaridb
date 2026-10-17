@@ -48,7 +48,7 @@ impl TessariKvBackend {
         let options = write_options(synced);
         if batch.preconditions().is_empty() {
             let engine = self.engine_batch(&batch)?;
-            self.db
+            self.db()?
                 .write(&engine, &options)
                 .await
                 .map_err(|error| from_engine(&error))?;
@@ -112,7 +112,7 @@ impl TessariKvBackend {
             engine
                 .delete_range(id, &span.start, end)
                 .map_err(|error| from_batch(&error))?;
-            self.db
+            self.db()?
                 .write(&engine, &options)
                 .await
                 .map_err(|error| from_engine(&error))?;
@@ -133,7 +133,7 @@ impl TessariKvBackend {
                     .delete(id, key.as_slice())
                     .map_err(|error| from_batch(&error))?;
             }
-            self.db
+            self.db()?
                 .write(&engine, &options)
                 .await
                 .map_err(|error| from_engine(&error))?;
@@ -144,7 +144,7 @@ impl TessariKvBackend {
     }
 
     fn begin(&self) -> Result<Transaction<'_>> {
-        self.db
+        self.db()?
             .begin_with(&serializable())
             .map_err(|error| from_engine(&error))
     }

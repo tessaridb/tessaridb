@@ -7,6 +7,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use tessari_session::Now as _;
+
 use tessari_conformance::{
     FORMS, examples, forms_in, function_spellings, read, run, run_on, specification_path,
     uncalled_functions, uncovered,
@@ -43,10 +45,11 @@ fn the_key_value_corpus_holds_on_the_disk_backend() {
     let text = fs::read_to_string(corpus_dir().join("key-value.tessariql")).unwrap();
     let corpus = read("key-value.tessariql", &text).unwrap();
     let directory = tempfile::tempdir().unwrap();
-    let backend = tessari_lsm::LsmBackend::open(
+    let backend = tessari_lsm::TessariKvBackend::open(
         directory.path(),
         tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
     )
+    .now()
     .unwrap();
     let results = run_on(&corpus, std::sync::Arc::new(backend));
     let failures: Vec<String> = results

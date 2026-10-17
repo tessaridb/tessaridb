@@ -23,13 +23,19 @@ use tessari_kv::{
     WriteBatch,
 };
 use tessari_vault::AtRestKey;
-use tessarikv::{Db, DbOptions, KeyProvider, KeyspaceId, KeyspaceOptions, RootKey};
+use tessarikv::{Db, DbOptions, KeyProvider, KeyspaceId, RootKey};
 
 use crate::error::BACKEND_NAME;
+use crate::options::keyspace_options;
 use crate::{Durability, StoreConfig, encryption};
 
+#[cfg(test)]
+mod cache_tests;
+mod closing;
 mod errors;
 mod reads;
+#[cfg(test)]
+mod sync_tests;
 #[cfg(test)]
 mod tests;
 mod writes;
@@ -41,7 +47,11 @@ const KEY_ID: u32 = 1;
 
 /// A durable [`AsyncKvBackend`] on the TessariKV engine.
 pub struct TessariKvBackend {
-    db: Db,
+    /// The engine; taken when the store closes, or handed to a background close when it is
+    /// dropped open.
+    db: Option<Db>,
+    /// The runtime the store was opened on, which the engine's background work runs on.
+    runtime: tokio::runtime::Handle,
     /// The engine keyspace of each of [`Keyspace::ALL`], in that order.
     keyspaces: Vec<KeyspaceId>,
     durability: Durability,
@@ -54,6 +64,16 @@ impl std::fmt::Debug for TessariKvBackend {
             .field("path", &self.path)
             .field("durability", &self.durability.name())
             .finish_non_exhaustive()
+    }
+}
+
+impl Drop for TessariKvBackend {
+    /// A store dropped open is closed on the runtime it was opened on, so its background work
+    /// finishes, synced, before an open in this process takes the directory.
+    fn drop(&mut self) {
+        if let Some(db) = self.db.take() {
+            closing::close_in_background(&self.runtime, &self.path, db);
+        }
     }
 }
 
@@ -90,9 +110,13 @@ impl TessariKvBackend {
         key: Option<&AtRestKey>,
     ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        // A store this process dropped at this directory is still closing: wait for it.
+        closing::settled(&path).await;
+        refuse_an_earlier_engine(&path)?;
         // The engine's manifest pointer is there exactly when a store is.
-        encryption::admit(&path, key, path.join("CURRENT").exists())?;
-        let db = Db::open(&path, database_options(&config, key)?)
+        let exists = path.join("CURRENT").exists();
+        encryption::admit(&path, key, exists)?;
+        let db = Db::open(&path, database_options(&config, key, exists)?)
             .await
             .map_err(|error| from_engine(&error))?;
         let keyspaces = Keyspace::ALL
@@ -104,8 +128,13 @@ impl TessariKvBackend {
                     })
             })
             .collect::<Result<Vec<_>>>()?;
+        let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::Unavailable {
+            backend: BACKEND_NAME,
+            reason: "a store opens inside a tokio runtime".to_owned(),
+        })?;
         Ok(Self {
-            db,
+            db: Some(db),
+            runtime,
             keyspaces,
             durability: config.durability,
             path,
@@ -125,7 +154,7 @@ impl TessariKvBackend {
     /// The engine's failure, after its background work stopped.
     pub async fn compact(&self) -> Result<()> {
         for id in &self.keyspaces {
-            self.db
+            self.db()?
                 .compact_range(*id, &[], None)
                 .await
                 .map_err(|error| from_engine(&error))?;
@@ -138,8 +167,19 @@ impl TessariKvBackend {
     /// # Errors
     ///
     /// The engine's failure to finish its log or a flush.
-    pub async fn close(self) -> Result<()> {
-        self.db.close().await.map_err(|error| from_engine(&error))
+    pub async fn close(mut self) -> Result<()> {
+        match self.db.take() {
+            Some(db) => db.close().await.map_err(|error| from_engine(&error)),
+            None => Ok(()),
+        }
+    }
+
+    /// The engine, while the store is open.
+    fn db(&self) -> Result<&Db> {
+        self.db.as_ref().ok_or_else(|| Error::Lifecycle {
+            backend: BACKEND_NAME,
+            reason: "the store is closed".to_owned(),
+        })
     }
 
     /// The engine keyspace `keyspace` names.
@@ -154,19 +194,49 @@ impl TessariKvBackend {
     }
 }
 
+/// How many digits this engine's manifest names carry; the engine before it wrote six.
+const MANIFEST_DIGITS: usize = 20;
+
+/// Refuses a store written by the storage engine before this one, touching nothing in it.
+///
+/// Its files are not this engine's, and opening them in place would answer as a damaged store.
+/// What carries such a store over is a snapshot: taken by the build that wrote it, restored by
+/// this one into a new store.
+fn refuse_an_earlier_engine(path: &Path) -> Result<()> {
+    let Ok(current) = std::fs::read_to_string(path.join("CURRENT")) else {
+        return Ok(());
+    };
+    let named = current.trim();
+    let digits = named.strip_prefix("MANIFEST-").map_or(0, str::len);
+    if digits == 0 || digits == MANIFEST_DIGITS {
+        return Ok(());
+    }
+    Err(Error::validation(format!(
+        "the store at {} was written by an earlier storage engine and this build cannot open it \
+         in place; take a snapshot with the build that wrote it (`tessaridb <store> --backup \
+         <file>`) and restore it into a new store with this one (`tessaridb <new store> \
+         --restore <file>`)",
+        path.display()
+    )))
+}
+
 /// The engine's options for `config`, encrypted under `key` when one is given.
-fn database_options(config: &StoreConfig, key: Option<&AtRestKey>) -> Result<DbOptions> {
+///
+/// A new store is created with every keyspace. An existing store missing one is refused rather
+/// than extended in place: it was written by something with another idea of what a store holds,
+/// and a keyspace added now would answer empty reads that look like a store with no data.
+fn database_options(
+    config: &StoreConfig,
+    key: Option<&AtRestKey>,
+    exists: bool,
+) -> Result<DbOptions> {
     let keyspaces = u64::try_from(Keyspace::ALL.len()).unwrap_or(u64::MAX);
-    let keyspace_options = KeyspaceOptions::builder()
-        .memtable_bytes(widen(config.memtable_bytes))
-        .build()
-        .map_err(|error| from_engine(&error))?;
     let mut builder = DbOptions::builder()
         .create_if_missing(true)
-        // Every keyspace is named, so a store from this build reopens, and one missing a
-        // keyspace gains it.
-        .create_missing_keyspaces(true)
+        // Every keyspace is named, so a store from this build reopens.
+        .create_missing_keyspaces(!exists)
         .serializable_transactions(true)
+        .statistics(true)
         .block_cache_bytes(widen(config.block_cache_bytes))
         // Every keyspace's table, and the engine's own default one, fit at once.
         .total_memtable_bytes(
@@ -174,7 +244,9 @@ fn database_options(config: &StoreConfig, key: Option<&AtRestKey>) -> Result<DbO
         )
         .max_open_files(u32::try_from(config.max_open_files).unwrap_or(u32::MAX));
     for keyspace in Keyspace::ALL {
-        builder = builder.keyspace(keyspace.name(), keyspace_options.clone());
+        let options = keyspace_options(*keyspace, widen(config.memtable_bytes))
+            .map_err(|error| from_engine(&error))?;
+        builder = builder.keyspace(keyspace.name(), options);
     }
     if let Some(key) = key {
         builder = builder.encryption(Arc::new(StoreKey(*key.engine().expose())), KEY_ID);
@@ -226,7 +298,7 @@ impl AsyncKvBackend for TessariKvBackend {
 
     fn sync_applied(&self) -> KvFuture<'_, ()> {
         Box::pin(async move {
-            self.db
+            self.db()?
                 .sync_wal()
                 .await
                 .map_err(|error| from_engine(&error))
@@ -246,7 +318,7 @@ impl AsyncKvBackend for TessariKvBackend {
 
     fn background_errors(&self) -> KvFuture<'_, u64> {
         // The engine stops at its first background failure, so the count is that one or none.
-        Box::pin(async move { Ok(u64::from(self.db.background_error().is_some())) })
+        Box::pin(async move { Ok(u64::from(self.db()?.background_error().is_some())) })
     }
 
     fn contains<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, bool> {

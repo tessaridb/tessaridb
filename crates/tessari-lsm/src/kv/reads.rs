@@ -52,7 +52,7 @@ impl TessariKvBackend {
     pub(super) async fn read_one(&self, keyspace: Keyspace, key: &Key) -> Result<Option<Value>> {
         let id = self.keyspace(keyspace)?;
         let value = self
-            .db
+            .db()?
             .get(id, key.as_slice(), &ReadOptions::default())
             .await
             .map_err(|error| from_engine(&error))?;
@@ -90,7 +90,7 @@ impl TessariKvBackend {
         while collected.len() < limit {
             let room = limit.saturating_sub(collected.len()).min(PAGE_ENTRIES);
             let page = self
-                .db
+                .db()?
                 .scan(id, &start, span.end.as_deref(), room, &options)
                 .await
                 .map_err(|error| from_engine(&error))?;
@@ -119,7 +119,7 @@ impl TessariKvBackend {
         options.lower_bound = Some(span.start);
         options.upper_bound = span.end;
         let mut iterator = self
-            .db
+            .db()?
             .iter(id, &options)
             .map_err(|error| from_engine(&error))?;
         iterator
@@ -164,7 +164,7 @@ impl TessariKvBackend {
         let mut start = span.start;
         loop {
             let page = self
-                .db
+                .db()?
                 .scan(id, &start, span.end.as_deref(), PAGE_ENTRIES, &options)
                 .await
                 .map_err(|error| from_engine(&error))?;
@@ -174,5 +174,24 @@ impl TessariKvBackend {
                 None => return Ok(total),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod successor_tests {
+    use super::*;
+
+    #[test]
+    fn the_successor_is_greater_than_the_key_and_below_anything_after_it() {
+        let key = Key::from_slice(b"ab");
+        let next = successor(&key);
+        assert!(next.as_slice() > key.as_slice());
+        assert!(next.as_slice() < b"ab\x01".as_slice());
+        assert!(next.as_slice() < b"ac".as_slice());
+    }
+
+    #[test]
+    fn the_successor_of_the_empty_key_is_the_first_key_after_it() {
+        assert_eq!(successor(&Key::from_slice(b"")), vec![0x00]);
     }
 }

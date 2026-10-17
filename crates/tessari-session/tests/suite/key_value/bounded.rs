@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 use std::thread;
+use tessari_session::Now as _;
 use tessari_session::RunNow;
 
 use tessari_encoding::{KeyKind, ModifiedKey, StoreKey};
@@ -38,6 +39,7 @@ fn indexed(backend: &Backend) -> Vec<RecordId> {
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .now()
         .unwrap()
         .into_iter()
         .map(|(key, _)| ModifiedKey::decode(key.as_slice()).unwrap().id)

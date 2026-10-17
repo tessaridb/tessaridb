@@ -371,14 +371,13 @@ fn under_concurrent_writes_every_read_equals_the_view_at_its_version() {
 fn a_store_reopened_mid_maintenance_holds_its_view_at_its_version_and_catches_up() {
     let directory = tempfile::tempdir().unwrap();
     let open = || {
-        let backend = tessari_lsm::LsmBackend::open(
+        let backend = tessari_lsm::TessariKvBackend::open(
             directory.path(),
             tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
         )
+        .now()
         .unwrap();
-        Store::open(Arc::new(backend) as Arc<dyn KvBackend>)
-            .now()
-            .unwrap()
+        Store::open_async(Arc::new(backend)).now().unwrap()
     };
     {
         let disk = open();

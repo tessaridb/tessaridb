@@ -522,18 +522,16 @@ above is what exists, not a plan.
 
 ## Building
 
-**What you need beyond Rust.** The on-disk backend links a log-structured
-merge-tree engine that is **compiled from C++ source**, and its bindings are
-generated at build time by loading `libclang`. So a first build needs a C++
-toolchain and libclang present, and it takes several minutes — after which they
-are cached and rebuilds are ordinary.
+**What you need beyond Rust.** A C compiler, for the TLS provider. The storage
+engine is pure Rust. The optional Kafka ingestion (`--features kafka`) also
+compiles a C library.
 
 | | |
 |---|---|
 | Rust | 1.98 or newer (`rust-version` in `Cargo.toml`); the toolchain file asks for `stable` |
-| macOS | `xcode-select --install` — the Command Line Tools carry both |
-| Debian · Ubuntu | `apt install build-essential clang libclang-dev` |
-| Fedora · RHEL | `dnf install gcc-c++ clang clang-devel` |
+| macOS | `xcode-select --install` |
+| Debian · Ubuntu | `apt install gcc` |
+| Fedora · RHEL | `dnf install gcc` |
 
 ```sh
 cargo build --workspace
@@ -542,7 +540,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-`cargo test --workspace --tests` builds 60 test targets (`cargo metadata
+`cargo test --workspace --tests` builds 59 test targets (`cargo metadata
 --no-deps` counts them without compiling). Two of them bind fixed ports and must
 not run beside a second copy of themselves.
 

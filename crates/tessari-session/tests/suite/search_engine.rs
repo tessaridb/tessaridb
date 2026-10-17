@@ -445,14 +445,13 @@ fn the_definition_is_said_back_and_survives_a_script_and_a_reopen() {
     // On disk, closed and opened again.
     let directory = tempfile::tempdir().unwrap();
     let open = || {
-        let backend = tessari_lsm::LsmBackend::open(
+        let backend = tessari_lsm::TessariKvBackend::open(
             directory.path(),
             tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
         )
+        .now()
         .unwrap();
-        Store::open(Arc::new(backend) as Arc<dyn KvBackend>)
-            .now()
-            .unwrap()
+        Store::open_async(Arc::new(backend)).now().unwrap()
     };
     {
         let disk = open();

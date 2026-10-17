@@ -15,8 +15,8 @@ mod walk;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_lsm::{Durability, LsmBackend, StoreConfig};
+use tessari_kv::{AsyncKvBackend, MemoryBackend};
+use tessari_lsm::{Durability, StoreConfig, TessariKvBackend};
 use tessari_session::{Outcome, Session};
 use tessari_storage::Store;
 use tessari_types::Value;
@@ -30,31 +30,32 @@ pub(super) const PAST_SHORT: Duration = Duration::from_millis(450);
 /// One store on one backend, with the directory it lives in when on disk.
 pub(super) struct Backend {
     pub(super) name: &'static str,
-    pub(super) raw: Arc<dyn KvBackend>,
+    pub(super) raw: Arc<dyn AsyncKvBackend>,
     pub(super) store: Store,
     _directory: Option<tempfile::TempDir>,
 }
 
 /// Run `case` against a fresh store on each backend in turn.
 pub(super) fn on_each_backend(case: impl Fn(&Backend)) {
-    let raw = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let raw = Arc::new(MemoryBackend::new()) as Arc<dyn AsyncKvBackend>;
     case(&Backend {
         name: "memory",
-        store: Store::open(Arc::clone(&raw)).now().unwrap(),
+        store: Store::open_async(Arc::clone(&raw)).now().unwrap(),
         raw,
         _directory: None,
     });
     let directory = tempfile::tempdir().unwrap();
     let raw = Arc::new(
-        LsmBackend::open(
+        TessariKvBackend::open(
             directory.path(),
             StoreConfig::new(Durability::ProcessCrashSafe),
         )
+        .now()
         .unwrap(),
-    ) as Arc<dyn KvBackend>;
+    ) as Arc<dyn AsyncKvBackend>;
     case(&Backend {
         name: "disk",
-        store: Store::open(Arc::clone(&raw)).now().unwrap(),
+        store: Store::open_async(Arc::clone(&raw)).now().unwrap(),
         raw,
         _directory: Some(directory),
     });

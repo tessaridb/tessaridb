@@ -14,7 +14,7 @@ publish.workspace = true
 # `--no-default-features` gives the half a client needs.
 #
 # The split is not tidiness: `tessaridb` reaches the storage engine, so a client
-# built with the server half would compile RocksDB — and a password hasher, and
+# built with the server half would compile the storage engine, a password hasher and
 # the serving crate — in order to send a SELECT down a socket. Both halves stay
 # in one crate on purpose, so that a change to a frame breaks the other end at
 # compile time rather than in somebody's deployment.

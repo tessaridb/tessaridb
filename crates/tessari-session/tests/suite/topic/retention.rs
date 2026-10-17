@@ -213,6 +213,7 @@ fn a_size_retention_recounts_what_it_holds_when_the_count_is_gone() {
                 direction: tessari_kv::ScanDirection::Forward,
                 limit: None,
             })
+            .now()
             .unwrap()
             .into_iter()
             .map(|(key, _)| key)
@@ -222,7 +223,7 @@ fn a_size_retention_recounts_what_it_holds_when_the_count_is_gone() {
         for key in keys {
             batch = batch.delete(kind.keyspace(), key);
         }
-        backend.raw.apply(batch).unwrap();
+        backend.raw.apply(batch).now().unwrap();
         for n in 4..=12 {
             run(
                 &mut session,

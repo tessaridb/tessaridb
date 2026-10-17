@@ -23,7 +23,7 @@ use tessari_storage::Now;
 
 use tessari_encoding::LogId;
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_lsm::{Durability, LsmBackend, StoreConfig};
+use tessari_lsm::{Durability, StoreConfig, TessariKvBackend};
 use tessari_session::Session;
 use tessari_storage::Store;
 use tessari_types::Sequence;
@@ -61,10 +61,10 @@ const INTERROGATION: &[&str] = &[
 /// point of the helper, and holding a spare handle here would quietly turn every
 /// test in this file back into `bootstrap.rs`.
 fn durable(path: &Path) -> Store {
-    let backend = LsmBackend::open(path, StoreConfig::new(Durability::ProcessCrashSafe)).unwrap();
-    Store::open(Arc::new(backend) as Arc<dyn KvBackend>)
+    let backend = TessariKvBackend::open(path, StoreConfig::new(Durability::ProcessCrashSafe))
         .now()
-        .unwrap()
+        .unwrap();
+    Store::open_async(Arc::new(backend)).now().unwrap()
 }
 
 /// The leader is not the subject here, so it stays in memory.

@@ -176,14 +176,11 @@ fn run(asked: Asked) -> Result<Ended, String> {
         return statements(&mut remote, &mut out, &asked.source, Where::Node(address));
     }
 
-    // bgv-allow(current-thread): opening the store and a one-shot store
-    // operation are one call at a time on this thread; serving builds its own
-    // multi-threaded runtime.
-    let oneshot = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|why| format!("the runtime would not start: {why}"))?;
-    let db = oneshot.block_on(async {
+    // The one runtime this process owns, built before the store opens: the
+    // engine starts its background work on the runtime that opens it, so that
+    // runtime drives the store for as long as it is open, serving included.
+    let process = runtime::build().map_err(|why| format!("the runtime would not start: {why}"))?;
+    let db = process.block_on(async {
         match &asked.store {
             Some(path) => Db::open_encrypted(path, tessaridb::StoreConfig::default(), at_rest)
                 .await
@@ -200,24 +197,23 @@ fn run(asked: Asked) -> Result<Ended, String> {
         // has a `--from`, and `--from 1` is the whole of it.
         Source::Backup(path) => {
             return match sequence {
-                None => oneshot.block_on(snapshot(&db, path)),
-                Some(_) => oneshot.block_on(backup(&db, path, sequence)),
+                None => process.block_on(snapshot(&db, path)),
+                Some(_) => process.block_on(backup(&db, path, sequence)),
             }
             .map(|()| Ended::Fine);
         }
         Source::Snapshot(path) => {
-            return oneshot.block_on(snapshot(&db, path)).map(|()| Ended::Fine);
+            return process.block_on(snapshot(&db, path)).map(|()| Ended::Fine);
         }
-        Source::Dump(path) => return oneshot.block_on(dump(&db, path)).map(|()| Ended::Fine),
+        Source::Dump(path) => return process.block_on(dump(&db, path)).map(|()| Ended::Fine),
         Source::Restore(path) => {
-            return oneshot
+            return process
                 .block_on(restore(&db, path, sequence, backup_key.as_ref()))
                 .map(|()| Ended::Fine);
         }
-        Source::Health => return oneshot.block_on(health(&db)),
+        Source::Health => return process.block_on(health(&db)),
         Source::Serve => {
-            drop(oneshot);
-            return serve(db, &asked.serving, asked.cluster.as_ref(), started);
+            return serve(db, &asked.serving, asked.cluster.as_ref(), started, process);
         }
         Source::Verify(_)
         | Source::Version

@@ -16,7 +16,7 @@ tessari-types = { path = "crates/tessari-types", version = "0.35.3" }
 tessari-constants = { path = "crates/tessari-constants", version = "0.35.3" }
 tessari-kv = { path = "crates/tessari-kv", version = "0.35.3" }
 # The storage engine, by git tag until it is on crates.io (G077 D6).
-tessarikv = { git = "ssh://git@github.com/TessariDB/tessarikv.git", tag = "v0.0.1" }
+tessarikv = { git = "ssh://git@github.com/TessariDB/tessarikv.git", rev = "99271078050c19a5f8e5ef234e93bcda2f912eec" }
 tessari-encoding = { path = "crates/tessari-encoding", version = "0.35.3" }
 tessari-geo = { path = "crates/tessari-geo", version = "0.35.3" }
 tessari-storage = { path = "crates/tessari-storage", version = "0.35.3" }
@@ -83,17 +83,9 @@ getrandom = "0.4"
 # compiler is entitled to delete a wipe that nothing afterwards observes, and a
 # hand-written `for b in buf { *b = 0 }` is exactly that wipe.
 zeroize = { version = "1.9", features = ["zeroize_derive"] }
-# The engine files of an encrypted store (ADR-0108 D7): XChaCha20 keystream at a
-# file offset, so the engine can read any block of a file without the rest. The
-# crate is already in the tree under `chacha20poly1305`; this names the extended
-# nonce so every file can take a random one.
-chacha20 = { version = "0.10", default-features = false, features = ["cipher", "xchacha", "zeroize"] }
 # HKDF for the at-rest subkeys. `ring` is already in the tree as the TLS
 # provider below; this uses its HKDF and nothing else of it.
 ring = { version = "0.17", default-features = false }
-# Compiles the engine's encryption provider against the engine's own headers.
-# Already in the tree: every C/C++ dependency here builds with it.
-cc = "1"
 # TLS for the inter-node link, and nothing else in this workspace speaks it.
 # `rustls` with the `ring` provider rather than `aws-lc-rs`: the provider is the
 # whole build-system question, and `ring` asks only for the `cc` that
@@ -128,8 +120,6 @@ tracing = { version = "0.1", default-features = false, features = ["std", "attri
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "json", "tracing-log", "smallvec"] }
 tracing-appender = "0.2"
 libc = "0.2"
-rocksdb = { version = "0.25", default-features = false }
-librocksdb-sys = { version = "0.19", default-features = false }
 rdkafka = { version = "0.39", default-features = false }
 
 proptest = "1"

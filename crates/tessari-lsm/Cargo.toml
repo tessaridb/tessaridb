@@ -13,16 +13,10 @@ publish.workspace = true
 tessari-kv.workspace = true
 tessarikv.workspace = true
 thiserror.workspace = true
-rocksdb = { workspace = true, features = ["lz4", "zstd", "bindgen-runtime"] }
-# Named directly so its build tells this one where the engine's headers are,
-# for the encryption provider; the same version the binding above links.
-librocksdb-sys.workspace = true
 tessari-vault.workspace = true
-chacha20.workspace = true
-getrandom.workspace = true
-
-[build-dependencies]
-cc.workspace = true
+dashmap.workspace = true
+# A dropped store closes on the runtime it was opened on (`kv::closing`).
+tokio = { workspace = true, features = ["rt", "sync"] }
 
 [dev-dependencies]
 # The index-format tests read an old index back through the language, so they

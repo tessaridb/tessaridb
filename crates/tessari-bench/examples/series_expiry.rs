@@ -16,8 +16,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tessari_session::Now;
 use tessari_session::RunNow;
 
-use tessari_kv::{KeyRange, Keyspace, KvBackend, ScanRequest};
-use tessari_lsm::{LsmBackend, StoreConfig};
+use tessari_kv::{AsyncKvBackend as _, KeyRange, Keyspace, ScanRequest};
+use tessari_lsm::{StoreConfig, TessariKvBackend};
 use tessari_storage::Catalog;
 use tessaridb::Db;
 
@@ -128,11 +128,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     drop(session);
     drop(db);
 
-    let backend = LsmBackend::open(dir, StoreConfig::default())?;
-    backend.compact()?;
+    let backend = TessariKvBackend::open(dir, StoreConfig::default()).now()?;
+    backend.compact().now()?;
     let count = |keyspace| -> Result<usize, Box<dyn Error>> {
         Ok(backend
-            .scan(&ScanRequest::new(keyspace, KeyRange::all()))?
+            .scan(&ScanRequest::new(keyspace, KeyRange::all()))
+            .now()?
             .len())
     };
     // The writes are a known number of commits, so what the pass added to the

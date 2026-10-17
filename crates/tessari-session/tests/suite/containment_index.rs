@@ -327,14 +327,13 @@ fn a_record_this_transaction_wrote_is_offered_before_it_commits() {
 fn the_index_reads_back_after_the_store_is_closed_and_opened() {
     let directory = tempfile::tempdir().unwrap();
     let open = || {
-        let backend = tessari_lsm::LsmBackend::open(
+        let backend = tessari_lsm::TessariKvBackend::open(
             directory.path(),
             tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
         )
+        .now()
         .unwrap();
-        Store::open(Arc::new(backend) as Arc<dyn KvBackend>)
-            .now()
-            .unwrap()
+        Store::open_async(Arc::new(backend)).now().unwrap()
     };
     let asked = "SELECT * FROM indexed WHERE doc CONTAINS { items: [{ sku: 'b' }] };";
     {

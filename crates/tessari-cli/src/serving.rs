@@ -30,6 +30,7 @@ pub(crate) fn serve(
     serving: &Serving,
     cluster: Option<&tessari_wire::Told>,
     started: std::time::Instant,
+    runtime: tokio::runtime::Runtime,
 ) -> Result<Ended, String> {
     // Read before anything is bound, and before the store is touched, for the
     // reason the line below gives: an unreadable key file is a node that would
@@ -69,9 +70,6 @@ pub(crate) fn serve(
     // serving whatever it last collected — silently, because nothing is in an
     // error state while it happens. So it fails to start, here, beside the
     // credential read and for the same reason.
-    // The one runtime this process owns, built before the first store call: the
-    // store's entry points are asynchronous and are driven on it.
-    let runtime = runtime::build().map_err(|why| format!("the runtime would not start: {why}"))?;
     if let Some(joining) = &cluster
         && joining.seeds.is_empty()
     {

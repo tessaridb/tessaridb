@@ -67,11 +67,12 @@ impl Db {
         config: StoreConfig,
         key: Option<AtRestKey>,
     ) -> Result<Self> {
-        let backend = LsmBackend::open_with_key(path, config, key.as_ref())
+        let backend = TessariKvBackend::open_with_key(path, config, key.as_ref())
+            .await
             .map_err(tessari_storage::Error::from)?;
-        let backend: Arc<dyn KvBackend> = Arc::new(backend);
+        let backend: Arc<dyn AsyncKvBackend> = Arc::new(backend);
         Ok(Self {
-            store: Store::open(backend).await?,
+            store: Store::open_async(backend).await?,
             gather: std::sync::OnceLock::new(),
             participants: std::sync::OnceLock::new(),
             standing_since: std::sync::Mutex::new(std::collections::BTreeMap::new()),

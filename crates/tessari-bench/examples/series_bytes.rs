@@ -16,8 +16,8 @@ use std::path::Path;
 use tessari_session::Now;
 use tessari_session::RunNow;
 
-use tessari_kv::{KeyRange, Keyspace, KvBackend, ScanRequest};
-use tessari_lsm::{LsmBackend, StoreConfig};
+use tessari_kv::{AsyncKvBackend as _, KeyRange, Keyspace, ScanRequest};
+use tessari_lsm::{StoreConfig, TessariKvBackend};
 use tessaridb::Db;
 
 const BATCH: u64 = 10_000;
@@ -67,12 +67,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     drop(session);
     drop(db);
 
-    let backend = LsmBackend::open(dir, StoreConfig::default())?;
-    backend.compact()?;
+    let backend = TessariKvBackend::open(dir, StoreConfig::default()).now()?;
+    backend.compact().now()?;
     // What each region holds before the engine's own compression: the part a
     // codec can change, split so the largest share is named.
     for keyspace in Keyspace::ALL {
-        let pairs = backend.scan(&ScanRequest::new(*keyspace, KeyRange::all()))?;
+        let pairs = backend
+            .scan(&ScanRequest::new(*keyspace, KeyRange::all()))
+            .now()?;
         let keys: usize = pairs.iter().map(|(key, _)| key.as_slice().len()).sum();
         let values: usize = pairs.iter().map(|(_, value)| value.as_slice().len()).sum();
         println!(

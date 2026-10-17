@@ -243,6 +243,7 @@ fn index_entries(backend: &Backend) -> usize {
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .now()
         .unwrap()
         .len()
 }
@@ -284,13 +285,14 @@ fn an_expiry_survives_the_store_being_closed_and_opened_again() {
     let directory = tempfile::tempdir().unwrap();
     let open = || {
         let raw = std::sync::Arc::new(
-            tessari_lsm::LsmBackend::open(
+            tessari_lsm::TessariKvBackend::open(
                 directory.path(),
                 tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
             )
+            .now()
             .unwrap(),
-        ) as std::sync::Arc<dyn tessari_kv::KvBackend>;
-        tessari_storage::Store::open(raw).now().unwrap()
+        ) as std::sync::Arc<dyn tessari_kv::AsyncKvBackend>;
+        tessari_storage::Store::open_async(raw).now().unwrap()
     };
     {
         let store = open();

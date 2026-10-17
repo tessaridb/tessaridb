@@ -47,9 +47,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use tessari_kv::{
-    Key, KeyRange, Keyspace, KvBackend, ScanDirection, ScanRequest, Value, WriteBatch,
+    AsyncKvBackend, Key, KeyRange, Keyspace, ScanDirection, ScanRequest, Value, WriteBatch,
 };
-use tessari_lsm::{Durability, LsmBackend, StoreConfig};
+use tessari_lsm::{Durability, StoreConfig, TessariKvBackend};
+use tessari_storage::Now as _;
 
 fn config() -> StoreConfig {
     StoreConfig::new(Durability::PowerLossSafe)
@@ -69,10 +70,11 @@ fn payload(n: usize) -> Value {
 /// state a machine is in when it loses power, and the only state in which these
 /// tests mean anything.
 fn written_and_abandoned(path: &Path, count: usize) {
-    let store = LsmBackend::open(path, config()).unwrap();
+    let store = TessariKvBackend::open(path, config()).now().unwrap();
     for n in 0..count {
         store
             .apply(WriteBatch::new().put(Keyspace::DATA, key(n), payload(n)))
+            .now()
             .unwrap();
     }
     drop(store);
@@ -92,9 +94,9 @@ fn logs(path: &Path) -> Vec<PathBuf> {
 
 /// How many records of `count` a reopened store still holds.
 fn present(path: &Path, count: usize) -> usize {
-    let store = LsmBackend::open(path, config()).unwrap();
+    let store = TessariKvBackend::open(path, config()).now().unwrap();
     let held = (0..count)
-        .filter(|n| store.get(Keyspace::DATA, &key(*n)).unwrap().is_some())
+        .filter(|n| store.get(Keyspace::DATA, &key(*n)).now().unwrap().is_some())
         .count();
     drop(store);
     held
@@ -135,9 +137,9 @@ fn a_torn_trailing_record_is_tolerated_and_everything_before_it_survives() {
     // prefix, not a scatter. A recovery that kept record 100 and dropped record
     // 50 would mean the log is not being replayed in order.
     for n in 0..survived {
-        let store = LsmBackend::open(&path, config()).unwrap();
+        let store = TessariKvBackend::open(&path, config()).now().unwrap();
         assert!(
-            store.get(Keyspace::DATA, &key(n)).unwrap().is_some(),
+            store.get(Keyspace::DATA, &key(n)).now().unwrap().is_some(),
             "record {n} is missing while {survived} survived — recovery is not a prefix"
         );
         drop(store);
@@ -173,9 +175,9 @@ fn losing_the_live_write_ahead_file_loses_its_writes_and_opens_a_consistent_olde
     assert_eq!(held.len(), 1, "this test needs exactly the live file");
     fs::remove_file(&held[0]).unwrap();
 
-    let store = LsmBackend::open(&path, config()).unwrap();
+    let store = TessariKvBackend::open(&path, config()).now().unwrap();
     let survived = (0..RECORDS)
-        .filter(|n| store.get(Keyspace::DATA, &key(*n)).unwrap().is_some())
+        .filter(|n| store.get(Keyspace::DATA, &key(*n)).now().unwrap().is_some())
         .count();
     assert_eq!(
         survived, 0,
@@ -183,7 +185,7 @@ fn losing_the_live_write_ahead_file_loses_its_writes_and_opens_a_consistent_olde
     );
     // Consistent rather than damaged: it opens, it answers, and it records no
     // background failure. It is simply an earlier store.
-    assert_eq!(store.background_errors().unwrap(), 0);
+    assert_eq!(store.background_errors().now().unwrap(), 0);
     drop(store);
 }
 
@@ -200,10 +202,11 @@ fn a_forced_compaction_changes_how_records_are_stored_and_not_what_they_are() {
     let path = root.path().join("store");
     const RECORDS: usize = 2_000;
 
-    let store = LsmBackend::open(&path, config()).unwrap();
+    let store = TessariKvBackend::open(&path, config()).now().unwrap();
     for n in 0..RECORDS {
         store
             .apply(WriteBatch::new().put(Keyspace::DATA, key(n), payload(n)))
+            .now()
             .unwrap();
     }
     // Delete every third, so the compaction has tombstones to apply rather than
@@ -211,11 +214,12 @@ fn a_forced_compaction_changes_how_records_are_stored_and_not_what_they_are() {
     for n in (0..RECORDS).step_by(3) {
         store
             .apply(WriteBatch::new().delete(Keyspace::DATA, key(n)))
+            .now()
             .unwrap();
     }
 
     let before = scan(&store);
-    store.compact().unwrap();
+    store.compact().now().unwrap();
     let after = scan(&store);
 
     assert_eq!(before, after, "a compaction changed what the store answers");
@@ -224,7 +228,7 @@ fn a_forced_compaction_changes_how_records_are_stored_and_not_what_they_are() {
     let live = RECORDS - RECORDS.div_ceil(3);
     assert_eq!(after.len(), live, "the wrong number of records survived");
     for n in 0..RECORDS {
-        let held = store.get(Keyspace::DATA, &key(n)).unwrap();
+        let held = store.get(Keyspace::DATA, &key(n)).now().unwrap();
         if n % 3 == 0 {
             assert!(held.is_none(), "record {n} was deleted and came back");
         } else {
@@ -247,25 +251,27 @@ fn a_compaction_survives_a_reopen_with_the_same_answers() {
     let path = root.path().join("store");
     const RECORDS: usize = 500;
 
-    let store = LsmBackend::open(&path, config()).unwrap();
+    let store = TessariKvBackend::open(&path, config()).now().unwrap();
     for n in 0..RECORDS {
         store
             .apply(WriteBatch::new().put(Keyspace::DATA, key(n), payload(n)))
+            .now()
             .unwrap();
     }
     for n in (0..RECORDS).step_by(5) {
         store
             .apply(WriteBatch::new().delete(Keyspace::DATA, key(n)))
+            .now()
             .unwrap();
     }
-    store.compact().unwrap();
+    store.compact().now().unwrap();
     let compacted = scan(&store);
-    store.close().unwrap();
+    store.close().now().unwrap();
 
-    let reopened = LsmBackend::open(&path, config()).unwrap();
+    let reopened = TessariKvBackend::open(&path, config()).now().unwrap();
     assert_eq!(compacted, scan(&reopened));
     assert_eq!(
-        reopened.background_errors().unwrap(),
+        reopened.background_errors().now().unwrap(),
         0,
         "the compaction recorded a background failure"
     );
@@ -273,7 +279,7 @@ fn a_compaction_survives_a_reopen_with_the_same_answers() {
 }
 
 /// Every key and value of the data region.
-fn scan(store: &LsmBackend) -> Vec<(Vec<u8>, Vec<u8>)> {
+fn scan(store: &TessariKvBackend) -> Vec<(Vec<u8>, Vec<u8>)> {
     let request = ScanRequest {
         keyspace: Keyspace::DATA,
         range: KeyRange::all(),
@@ -282,6 +288,7 @@ fn scan(store: &LsmBackend) -> Vec<(Vec<u8>, Vec<u8>)> {
     };
     store
         .scan(&request)
+        .now()
         .unwrap()
         .into_iter()
         .map(|(key, value)| (key.as_slice().to_vec(), value.as_slice().to_vec()))
@@ -312,12 +319,12 @@ fn a_flipped_byte_in_a_sorted_file_is_refused_as_corruption_and_never_answered()
     const RECORDS: usize = 4_000;
     let large = |n: usize| Value::from_slice(format!("{n:0>200}").as_bytes());
 
-    let store = LsmBackend::open(&path, config()).unwrap();
+    let store = TessariKvBackend::open(&path, config()).now().unwrap();
     let batch = (0..RECORDS).fold(WriteBatch::new(), |batch, n| {
         batch.put(Keyspace::DATA, key(n), large(n))
     });
-    store.apply(batch).unwrap();
-    store.compact().unwrap();
+    store.apply(batch).now().unwrap();
+    store.compact().now().unwrap();
     drop(store);
 
     let target = sorted_files(&path)
@@ -329,7 +336,7 @@ fn a_flipped_byte_in_a_sorted_file_is_refused_as_corruption_and_never_answered()
     bytes[middle] ^= 0xff;
     fs::write(&target, &bytes).unwrap();
 
-    let reopened = match LsmBackend::open(&path, config()) {
+    let reopened = match TessariKvBackend::open(&path, config()).now() {
         Ok(reopened) => reopened,
         Err(refused) => {
             assert_eq!(
@@ -342,7 +349,7 @@ fn a_flipped_byte_in_a_sorted_file_is_refused_as_corruption_and_never_answered()
     };
     let mut refused = 0usize;
     for n in 0..RECORDS {
-        match reopened.get(Keyspace::DATA, &key(n)) {
+        match reopened.get(Keyspace::DATA, &key(n)).now() {
             Ok(held) => assert_eq!(
                 held.map(|found| found.as_slice().to_vec()),
                 Some(large(n).as_slice().to_vec()),
