@@ -251,8 +251,8 @@ struct Consuming {
     table: Destination,
     stopping: Arc<AtomicBool>,
     /// Drives the batch writes on this thread, which is outside the runtime's
-    /// workers (transitional, while the store's entry points are asynchronous
-    /// over a synchronous body).
+    /// workers: the Kafka client's poll blocks, so the consumer keeps a thread
+    /// of its own and awaits the store from it through the handle.
     runtime: tokio::runtime::Handle,
 }
 

@@ -1,11 +1,10 @@
 //! One batch of a topic consumer: read, shape, write, acknowledge — in one
 //! transaction (ADR-0087 §2).
 //!
-//! This is the synchronous half, run through `spawn_blocking`. A batch is
-//! bounded by its `LIMIT` and by the group's width, so it always ends, which is
-//! what makes an uncancellable blocking call acceptable here.
+//! A batch is bounded by its `LIMIT` and by the group's width, so it always
+//! ends, which is what lets a member wait for the one it is in before it stops.
 
-use tessari_session::{Error, Outcome, Parameters, Session};
+use tessari_session::{Atomic, Error, Outcome, Parameters, Session};
 use tessari_storage::{ConsumerDefinition, OnFailure, Store};
 use tessari_types::{Number, Value};
 
@@ -69,66 +68,78 @@ pub(crate) async fn run_batch(
             .await
             .map_err(|refused| format!("it cannot act as the user that declared it: {refused}"))?;
     }
-    let answered = session
-        .atomically(async |work| {
-            let read = work
-                .run_with(
-                    &format!(
-                        "{}READ FROM {} FOR CONSUMER '{}' LIMIT {limit};",
-                        names.tenancy, names.topic, names.group
-                    ),
-                    &Parameters::new(),
-                )
-                .await?;
-            let handed = handed_out(&read)?;
-            if handed.is_empty() {
-                return Ok(Batch::Empty);
-            }
-            let mut script = names.tenancy.clone();
-            let mut parameters = Parameters::new();
-            let mut acknowledged = Vec::with_capacity(handed.len());
-            let mut returned = Vec::new();
-            for message in &handed {
-                match shape_value(&message.payload, definition) {
-                    Ok(shaped) => {
-                        let at = acknowledged.len();
-                        script.push_str(&format!(" SET {}:$id{at} = $rec{at};", names.table));
-                        parameters.insert(format!("id{at}"), identity_value(&shaped.id));
-                        parameters.insert(format!("rec{at}"), shaped.record);
-                        acknowledged.push(message.position);
-                    }
-                    Err(why) => match definition.on_failure {
-                        OnFailure::Stop => {
-                            return Err(Stopped::Halt(format!(
-                                "message at position {} could not be applied: {why}",
-                                message.position
-                            )));
-                        }
-                        OnFailure::Quarantine => returned.push(message.position),
-                    },
-                }
-            }
-            settle_list(
-                &mut script,
-                &mut parameters,
-                "ACK",
-                "a",
-                &acknowledged,
-                names,
-            );
-            settle_list(&mut script, &mut parameters, "NACK", "q", &returned, names);
-            work.run_with(&script, &parameters).await?;
-            Ok(Batch::Applied {
-                applied: u64::try_from(acknowledged.len()).unwrap_or(u64::MAX),
-                quarantined: u64::try_from(returned.len()).unwrap_or(u64::MAX),
-            })
-        })
-        .await;
+    let answered = match session.atomic().await {
+        Ok(mut held) => {
+            let worked = read_and_apply(&mut held, definition, names, limit).await;
+            held.conclude(worked).await
+        }
+        Err(failure) => Err(Stopped::from(failure)),
+    };
     match answered {
         Ok(batch) => Ok(batch),
         Err(Stopped::Halt(reason)) => Err(reason),
         Err(Stopped::Store(failure)) => classify(failure),
     }
+}
+
+/// The work of [`run_batch`], inside the transaction `work` holds.
+async fn read_and_apply(
+    work: &mut Atomic<'_, '_>,
+    definition: &ConsumerDefinition,
+    names: &Names,
+    limit: u64,
+) -> Result<Batch, Stopped> {
+    let read = work
+        .run_with(
+            &format!(
+                "{}READ FROM {} FOR CONSUMER '{}' LIMIT {limit};",
+                names.tenancy, names.topic, names.group
+            ),
+            &Parameters::new(),
+        )
+        .await?;
+    let handed = handed_out(&read)?;
+    if handed.is_empty() {
+        return Ok(Batch::Empty);
+    }
+    let mut script = names.tenancy.clone();
+    let mut parameters = Parameters::new();
+    let mut acknowledged = Vec::with_capacity(handed.len());
+    let mut returned = Vec::new();
+    for message in &handed {
+        match shape_value(&message.payload, definition) {
+            Ok(shaped) => {
+                let at = acknowledged.len();
+                script.push_str(&format!(" SET {}:$id{at} = $rec{at};", names.table));
+                parameters.insert(format!("id{at}"), identity_value(&shaped.id));
+                parameters.insert(format!("rec{at}"), shaped.record);
+                acknowledged.push(message.position);
+            }
+            Err(why) => match definition.on_failure {
+                OnFailure::Stop => {
+                    return Err(Stopped::Halt(format!(
+                        "message at position {} could not be applied: {why}",
+                        message.position
+                    )));
+                }
+                OnFailure::Quarantine => returned.push(message.position),
+            },
+        }
+    }
+    settle_list(
+        &mut script,
+        &mut parameters,
+        "ACK",
+        "a",
+        &acknowledged,
+        names,
+    );
+    settle_list(&mut script, &mut parameters, "NACK", "q", &returned, names);
+    work.run_with(&script, &parameters).await?;
+    Ok(Batch::Applied {
+        applied: u64::try_from(acknowledged.len()).unwrap_or(u64::MAX),
+        quarantined: u64::try_from(returned.len()).unwrap_or(u64::MAX),
+    })
 }
 
 /// Hand back the one message a group would hand out next, as a `quarantine`
@@ -149,37 +160,44 @@ pub(crate) async fn hand_back_one(
             .await
             .map_err(|refused| format!("it cannot act as the user that declared it: {refused}"))?;
     }
-    let answered = session
-        .atomically(async |work| {
-            let read = work
-                .run_with(
-                    &format!(
-                        "{}READ FROM {} FOR CONSUMER '{}' LIMIT 1;",
-                        names.tenancy, names.topic, names.group
-                    ),
-                    &Parameters::new(),
-                )
-                .await?;
-            let handed = handed_out(&read)?;
-            let positions: Vec<i64> = handed.iter().map(|message| message.position).collect();
-            if positions.is_empty() {
-                return Ok(Batch::Empty);
-            }
-            let mut script = names.tenancy.clone();
-            let mut parameters = Parameters::new();
-            settle_list(&mut script, &mut parameters, "NACK", "q", &positions, names);
-            work.run_with(&script, &parameters).await?;
-            Ok(Batch::Applied {
-                applied: 0,
-                quarantined: 1,
-            })
-        })
-        .await;
+    let answered = match session.atomic().await {
+        Ok(mut held) => {
+            let worked = read_and_hand_back(&mut held, names).await;
+            held.conclude(worked).await
+        }
+        Err(failure) => Err(Stopped::from(failure)),
+    };
     match answered {
         Ok(batch) => Ok(batch),
         Err(Stopped::Halt(reason)) => Err(reason),
         Err(Stopped::Store(failure)) => classify(failure),
     }
+}
+
+/// The work of [`hand_back_one`], inside the transaction `work` holds.
+async fn read_and_hand_back(work: &mut Atomic<'_, '_>, names: &Names) -> Result<Batch, Stopped> {
+    let read = work
+        .run_with(
+            &format!(
+                "{}READ FROM {} FOR CONSUMER '{}' LIMIT 1;",
+                names.tenancy, names.topic, names.group
+            ),
+            &Parameters::new(),
+        )
+        .await?;
+    let handed = handed_out(&read)?;
+    let positions: Vec<i64> = handed.iter().map(|message| message.position).collect();
+    if positions.is_empty() {
+        return Ok(Batch::Empty);
+    }
+    let mut script = names.tenancy.clone();
+    let mut parameters = Parameters::new();
+    settle_list(&mut script, &mut parameters, "NACK", "q", &positions, names);
+    work.run_with(&script, &parameters).await?;
+    Ok(Batch::Applied {
+        applied: 0,
+        quarantined: 1,
+    })
 }
 
 /// `ACK`/`NACK <topic> FOR CONSUMER '<group>' AT $x0, …` for these positions,

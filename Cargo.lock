@@ -1894,6 +1894,7 @@ dependencies = [
 name = "tessari-serve"
 version = "0.35.3"
 dependencies = [
+ "futures-util",
  "rcgen",
  "rustls",
  "socket2",

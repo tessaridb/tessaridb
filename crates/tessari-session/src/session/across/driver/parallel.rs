@@ -5,7 +5,7 @@
 //! round as the other prepares. Once every one of them answered *prepared* the
 //! transaction is committed implicitly and the caller is told so at once
 //! (D14b); the explicit `COMMITTED` record and the resolutions are written
-//! behind the answer, by a thread that waits for nobody to hold them — the
+//! behind the answer, by a task that waits for nobody to hold them; the
 //! outcome is already final, and recovery re-derives it from the parts if they
 //! are lost (D14c).
 //!
@@ -202,51 +202,42 @@ fn aborting(parts: &[AcrossPart], id: TransactionId) -> Vec<Behind> {
         .collect()
 }
 
-/// Write `records` on a thread of their own, the caller not waiting: one this
+/// Write `records` in a task of their own, the caller not waiting: one this
 /// node leads straight into the store, the others asked of their leaders. A
 /// record that does not land is the transaction's record to finish — status
-/// recovery re-derives the outcome from the parts (D14c).
+/// recovery re-derives the outcome from the parts (D14c), which is why the
+/// task is not joined.
 ///
-/// Called from inside a runtime, whose handle drives this node's own writes on
-/// that thread; outside one, [`tokio::runtime::Handle::current`] panics.
+/// Called from inside a runtime; outside one, [`tokio::spawn`] panics.
 fn behind(
     store: &Store,
     carrying: std::sync::Arc<dyn Participants>,
     user: Option<&tessari_storage::UserDefinition>,
     records: Vec<Behind>,
 ) {
-    let (store, carrier, user) = (store.clone(), carrying, user.cloned());
-    // The thread is not the runtime's, so a write here is driven through the
-    // caller's runtime handle; a caller always runs inside one.
-    let runtime = tokio::runtime::Handle::current();
-    let spawned = std::thread::Builder::new()
-        .name("across-behind".to_owned())
-        .spawn(move || {
-            std::thread::scope(|scope| {
-                for (leader, asked) in &records {
-                    let (store, carrier, user) = (&store, &carrier, user.as_ref());
-                    let runtime = &runtime;
-                    scope.spawn(move || {
-                        let landed = match leader {
-                            None => runtime.block_on(here(store, asked)),
-                            Some(node) => runtime
-                                .block_on(carrier.ask(*node, user, asked))
-                                .map(drop)
-                                .map_err(|why| why.reason),
-                        };
-                        if let Err(why) = landed {
-                            tracing::warn!(
-                                error = %why,
-                                "a cross-leader record behind the answer did not land and is left to its record"
-                            );
-                        }
-                    });
+    let (store, user) = (store.clone(), user.cloned());
+    drop(tokio::spawn(async move {
+        let writes = records.iter().map(|(leader, asked)| {
+            let (store, carrier, user) = (&store, &carrying, user.as_ref());
+            async move {
+                let landed = match leader {
+                    None => here(store, asked).await,
+                    Some(node) => carrier
+                        .ask(*node, user, asked)
+                        .await
+                        .map(drop)
+                        .map_err(|why| why.reason),
+                };
+                if let Err(why) = landed {
+                    tracing::warn!(
+                        error = %why,
+                        "a cross-leader record behind the answer did not land and is left to its record"
+                    );
                 }
-            });
+            }
         });
-    if let Err(why) = spawned {
-        tracing::warn!(error = %why, "cross-leader records behind the answer left to their record");
-    }
+        futures_util::future::join_all(writes).await;
+    }));
 }
 
 /// Write one record behind the answer on this node, which leads its range.

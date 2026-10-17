@@ -359,7 +359,7 @@ impl Session<'_> {
     /// changes nothing the caller is told.
     ///
     /// This node's own parts are resolved before the caller is answered — a
-    /// local write, no majority wait. The other leaders' are asked on a thread
+    /// local write, no majority wait. The other leaders' are asked in a task
     /// of their own and not waited for (D13c): their readers ask the record's
     /// leader until the resolution lands (D13d).
     async fn resolve_parts(
@@ -387,32 +387,24 @@ impl Session<'_> {
         if remote.is_empty() {
             return;
         }
-        let carrier = carrying;
         let user = user.cloned();
-        let runtime = tokio::runtime::Handle::current();
-        let behind = std::thread::Builder::new()
-            .name("across-resolve".to_owned())
-            .spawn(move || {
-                std::thread::scope(|scope| {
-                    for (node, home, asked) in &remote {
-                        let (carrier, user, runtime) = (&carrier, user.as_ref(), &runtime);
-                        scope.spawn(move || {
-                            if let Err(why) = runtime.block_on(carrier.ask(*node, user, asked)) {
-                                tracing::warn!(
-                                    range = ?home,
-                                    error = %why.reason,
-                                    "a cross-leader resolution did not land and is left to its record"
-                                );
-                            }
-                        });
+        // Not joined: a resolution that does not land is the record's to
+        // finish, which the housekeeping of every participant does (D7).
+        drop(tokio::spawn(async move {
+            let asks = remote.iter().map(|(node, home, asked)| {
+                let (carrier, user) = (&carrying, user.as_ref());
+                async move {
+                    if let Err(why) = carrier.ask(*node, user, asked).await {
+                        tracing::warn!(
+                            range = ?home,
+                            error = %why.reason,
+                            "a cross-leader resolution did not land and is left to its record"
+                        );
                     }
-                });
+                }
             });
-        // No thread to be had: the resolutions are the record's to finish,
-        // which the housekeeping of every participant does (D7).
-        if let Err(why) = behind {
-            tracing::warn!(error = %why, "cross-leader resolutions left to their records");
-        }
+            futures_util::future::join_all(asks).await;
+        }));
     }
 }
 

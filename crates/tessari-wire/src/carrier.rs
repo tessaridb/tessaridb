@@ -14,7 +14,6 @@ use tessari_session::Detached;
 use tessaridb::Db;
 use tessaridb::feed::Commits;
 use tokio::io::DuplexStream;
-use tokio::sync::Semaphore;
 
 use crate::conversation::{self, Conversation};
 use tracing::Instrument;
@@ -28,7 +27,6 @@ pub struct Carrier {
     pub(crate) door: Arc<Admitting>,
     pub(crate) bridge: Arc<Bridge>,
     pub(crate) rounds: Arc<Bridge>,
-    pub(crate) hot: Arc<Semaphore>,
     pub(crate) elsewhere: Option<Arc<dyn tessari_session::Elsewhere>>,
 }
 
@@ -70,7 +68,6 @@ impl Carrier {
             stopping: Arc::clone(&self.stopping),
             bridge: Arc::clone(&self.bridge),
             rounds: Arc::clone(&self.rounds),
-            hot: Arc::clone(&self.hot),
         };
         (talk, session)
     }

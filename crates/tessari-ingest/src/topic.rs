@@ -4,9 +4,9 @@
 //!
 //! A Kafka consumer is an OS thread because its client is a blocking C library.
 //! A topic consumer has no such client: each member is a task on the node's
-//! runtime, and each batch — which is a store transaction and therefore
-//! synchronous — crosses through `spawn_blocking`, as every other store call on
-//! the serving edge does (ADR-0085). A batch is bounded, so the crossing ends.
+//! runtime, and each batch (one store transaction) runs in a task of its own,
+//! so a batch that panics is reported rather than taking its member down. A
+//! batch is bounded, so the wait for it ends.
 //!
 //! # Reconciled, not only started
 //!
@@ -178,21 +178,13 @@ pub async fn run_topic_consumers(store: Store, mut stop: watch::Receiver<bool>) 
 
 /// Bring what runs here into line with what is declared.
 async fn reconcile(store: &Store, running: &mut HashMap<String, Members>) {
-    let reading = store.clone();
-    // Read on the blocking pool, as a batch is: the handle drives it there.
-    let runtime = tokio::runtime::Handle::current();
-    let declared =
-        match tokio::task::spawn_blocking(move || runtime.block_on(declared(&reading))).await {
-            Ok(Ok(declared)) => declared,
-            Ok(Err(failure)) => {
-                tracing::warn!(error = %failure, "the topic consumers could not be read");
-                return;
-            }
-            Err(failure) => {
-                tracing::warn!(error = %failure, "reading the topic consumers ended abnormally");
-                return;
-            }
-        };
+    let declared = match declared(store).await {
+        Ok(declared) => declared,
+        Err(failure) => {
+            tracing::warn!(error = %failure, "the topic consumers could not be read");
+            return;
+        }
+    };
     let gone: Vec<String> = running
         .iter()
         .filter(|(name, members)| {
@@ -280,18 +272,12 @@ async fn member(
     while !*stop.borrow() {
         let (held, declared, named) = (store.clone(), Arc::clone(&definition), Arc::clone(&names));
         let narrowed = refused.clone();
-        // The batch blocks the thread that polls it, so it is driven on the
-        // blocking pool (transitional, while the store's entry points are
-        // asynchronous over a synchronous body).
-        let runtime = tokio::runtime::Handle::current();
-        let outcome = tokio::task::spawn_blocking(move || {
-            runtime.block_on(async {
-                match narrowed {
-                    // One message's write was refused on its own: the policy decides it.
-                    Some(why) => hand_back_one(&held, &declared, &named, &why).await,
-                    None => run_batch(&held, &declared, &named, limit).await,
-                }
-            })
+        let outcome = tokio::spawn(async move {
+            match narrowed {
+                // One message's write was refused on its own: the policy decides it.
+                Some(why) => hand_back_one(&held, &declared, &named, &why).await,
+                None => run_batch(&held, &declared, &named, limit).await,
+            }
         })
         .await
         .unwrap_or_else(|failure| Err(format!("a batch ended abnormally: {failure}")));
