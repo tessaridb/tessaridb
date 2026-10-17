@@ -1,5 +1,9 @@
 //! The backend trait every storage engine implements.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
 use crate::batch::WriteBatch;
 use crate::error::Result;
 use crate::key::{Key, KeyRange, Value};
@@ -79,7 +83,18 @@ impl ScanRequest {
     }
 }
 
-/// An ordered key-value store.
+/// The future every [`KvBackend`] method returns: a boxed, `Send` future of a result.
+pub type KvFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+
+/// The future [`KvBackend::apply_group`] returns: how many batches landed, and the
+/// failure of the one that did not.
+pub type GroupFuture<'a> = Pin<Box<dyn Future<Output = (usize, Result<()>)> + Send + 'a>>;
+
+/// An ordered key-value store, answering through futures.
+///
+/// Each method returns a boxed future because the trait is used as a trait object
+/// and an `async fn` in a trait cannot be called through `dyn`. A method's future
+/// must not block the thread that polls it.
 ///
 /// # Contract
 ///
@@ -145,10 +160,10 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
     ///
     /// Returns `Ok(None)` when the key is absent — that is a value, not a
     /// failure.
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<Value>>;
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<Value>>;
 
     /// Read a range of keys.
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>>;
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>>;
 
     /// Read a range of keys **once**, without keeping what it reads.
     ///
@@ -168,7 +183,7 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
     /// recording: the request is built by struct literal at 47 sites, 43 of
     /// which have nothing to do with sweeps, and a new field would have made
     /// every one of them state a value it does not care about.
-    fn sweep(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
+    fn sweep<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
         self.scan(request)
     }
 
@@ -199,22 +214,24 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
     ///
     /// Returns the backend's own failure. A range that is empty is an answer,
     /// not a failure.
-    fn first_of_each(
-        &self,
+    fn first_of_each<'a>(
+        &'a self,
         keyspace: Keyspace,
-        ranges: &[KeyRange],
-    ) -> Result<Vec<Option<(Key, Value)>>> {
-        let mut found = Vec::with_capacity(ranges.len());
-        for range in ranges {
-            let request = ScanRequest {
-                keyspace,
-                range: range.clone(),
-                direction: ScanDirection::Forward,
-                limit: Some(1),
-            };
-            found.push(self.scan(&request)?.into_iter().next());
-        }
-        Ok(found)
+        ranges: &'a [KeyRange],
+    ) -> KvFuture<'a, Vec<Option<(Key, Value)>>> {
+        Box::pin(async move {
+            let mut found = Vec::with_capacity(ranges.len());
+            for range in ranges {
+                let request = ScanRequest {
+                    keyspace,
+                    range: range.clone(),
+                    direction: ScanDirection::Forward,
+                    limit: Some(1),
+                };
+                found.push(self.scan(&request).await?.into_iter().next());
+            }
+            Ok(found)
+        })
     }
 
     /// How many pairs a range holds.
@@ -241,33 +258,36 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
     /// # Errors
     ///
     /// Returns the backend's own failure. An empty range is `0`, not a failure.
-    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
-        let mut total: u64 = 0;
-        let mut remaining = range.clone();
-        loop {
-            let batch = self.scan(&ScanRequest {
-                keyspace,
-                range: remaining.clone(),
-                direction: ScanDirection::Forward,
-                limit: Some(COUNT_BATCH_ENTRIES),
-            })?;
-            total = total.saturating_add(u64::try_from(batch.len()).unwrap_or(u64::MAX));
-            // A short batch is the end of the range.
-            if batch.len() < COUNT_BATCH_ENTRIES {
-                return Ok(total);
+    fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
+        Box::pin(async move {
+            let mut total: u64 = 0;
+            let mut remaining = range.clone();
+            loop {
+                let request = ScanRequest {
+                    keyspace,
+                    range: remaining.clone(),
+                    direction: ScanDirection::Forward,
+                    limit: Some(COUNT_BATCH_ENTRIES),
+                };
+                let batch = self.scan(&request).await?;
+                total = total.saturating_add(u64::try_from(batch.len()).unwrap_or(u64::MAX));
+                // A short batch is the end of the range.
+                if batch.len() < COUNT_BATCH_ENTRIES {
+                    return Ok(total);
+                }
+                let Some((last, _)) = batch.last() else {
+                    return Ok(total);
+                };
+                remaining = remaining.resuming_after(last);
             }
-            let Some((last, _)) = batch.last() else {
-                return Ok(total);
-            };
-            remaining = remaining.resuming_after(last);
-        }
+        })
     }
 
     /// Apply a batch atomically, subject to its preconditions.
     ///
     /// Returns [`crate::Error::Conflict`] and writes nothing when a precondition
     /// does not hold.
-    fn apply(&self, batch: WriteBatch) -> Result<()>;
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()>;
 
     /// [`Self::apply`], without making the write durable against power loss
     /// yet: it survives the process being killed, and [`Self::sync_applied`]
@@ -285,7 +305,7 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
     /// # Errors
     ///
     /// The same as [`Self::apply`].
-    fn apply_unsynced(&self, batch: WriteBatch) -> Result<()> {
+    fn apply_unsynced(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
         self.apply(batch)
     }
 
@@ -299,8 +319,8 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
     ///
     /// The backend's own failure; a write it could not make durable is then
     /// not to be acknowledged as durable by anyone.
-    fn sync_applied(&self) -> Result<()> {
-        Ok(())
+    fn sync_applied(&self) -> KvFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 
     /// Apply several batches in order, each judged against the state the ones
@@ -316,15 +336,17 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
     /// The default applies them one at a time, which keeps that ordering and pays
     /// one write each. A backend whose write is made durable overrides it to land
     /// every accepted batch in one write and one sync.
-    fn apply_group(&self, batches: Vec<WriteBatch>) -> (usize, Result<()>) {
-        let mut landed = 0;
-        for batch in batches {
-            if let Err(failure) = self.apply(batch) {
-                return (landed, Err(failure));
+    fn apply_group(&self, batches: Vec<WriteBatch>) -> GroupFuture<'_> {
+        Box::pin(async move {
+            let mut landed: usize = 0;
+            for batch in batches {
+                if let Err(failure) = self.apply(batch).await {
+                    return (landed, Err(failure));
+                }
+                landed = landed.saturating_add(1);
             }
-            landed = landed.saturating_add(1);
-        }
-        (landed, Ok(()))
+            (landed, Ok(()))
+        })
     }
 
     /// Whether [`Self::apply_group`] lands several batches for less than landing
@@ -358,16 +380,16 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
     /// # Errors
     ///
     /// Returns the backend's own failure when the count cannot be read.
-    fn background_errors(&self) -> Result<u64> {
-        Ok(0)
+    fn background_errors(&self) -> KvFuture<'_, u64> {
+        Box::pin(async { Ok(0) })
     }
 
     /// Whether a key exists.
     ///
     /// Defaulted in terms of [`Self::get`]; a backend that can answer without
     /// materialising the value should override it.
-    fn contains(&self, keyspace: Keyspace, key: &Key) -> Result<bool> {
-        Ok(self.get(keyspace, key)?.is_some())
+    fn contains<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, bool> {
+        Box::pin(async move { Ok(self.get(keyspace, key).await?.is_some()) })
     }
 
     /// Delete every key in a range.
@@ -403,8 +425,22 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
     /// # Errors
     ///
     /// Returns the backend's own failure.
-    fn delete_range(&self, keyspace: Keyspace, range: &KeyRange) -> Result<()> {
-        delete_range_by_scanning(self, keyspace, range)
+    fn delete_range<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, ()> {
+        Box::pin(delete_range_by_scanning(self, keyspace, range))
+    }
+
+    /// Close the backend once this is its last handle, finishing its background
+    /// work and releasing what it holds before the future answers.
+    ///
+    /// A backend with nothing to release answers `Ok` at once, which is the
+    /// default.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCategory::Lifecycle`](crate::ErrorCategory::Lifecycle) when another
+    /// handle to the backend is still alive: it is left open for that handle.
+    fn close(self: Arc<Self>) -> KvFuture<'static, ()> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -424,18 +460,19 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
 /// # Errors
 ///
 /// Returns the backend's own failure.
-pub fn delete_range_by_scanning<B: KvBackend + ?Sized>(
+pub async fn delete_range_by_scanning<B: KvBackend + ?Sized>(
     backend: &B,
     keyspace: Keyspace,
     range: &KeyRange,
 ) -> Result<()> {
     loop {
-        let doomed = backend.sweep(&ScanRequest {
+        let request = ScanRequest {
             keyspace,
             range: range.clone(),
             direction: ScanDirection::Forward,
             limit: Some(DELETE_BATCH_ENTRIES),
-        })?;
+        };
+        let doomed = backend.sweep(&request).await?;
         // A stride short of the limit is the end of the range, so the scan that
         // would prove it empty is not made. The range is re-read from its own
         // start each time rather than resumed after the last key, because the
@@ -449,7 +486,7 @@ pub fn delete_range_by_scanning<B: KvBackend + ?Sized>(
         for (key, _) in doomed {
             batch = batch.delete(keyspace, key);
         }
-        backend.apply(batch)?;
+        backend.apply(batch).await?;
         if reached < DELETE_BATCH_ENTRIES {
             return Ok(());
         }

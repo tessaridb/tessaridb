@@ -26,6 +26,7 @@ fn unique_holders(backend: &Arc<dyn KvBackend>) -> Vec<RecordId> {
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .now()
         .unwrap()
         .iter()
         .map(|(_, value)| IndexTarget::decode(value.as_slice()).unwrap().id)

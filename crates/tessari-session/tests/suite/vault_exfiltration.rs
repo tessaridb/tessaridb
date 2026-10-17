@@ -87,7 +87,7 @@ fn everything(backend: &Arc<dyn KvBackend>) -> Vec<u8> {
             direction: ScanDirection::Forward,
             limit: None,
         };
-        for (key, value) in backend.scan(&request).unwrap() {
+        for (key, value) in backend.scan(&request).now().unwrap() {
             held.extend_from_slice(key.as_slice());
             held.extend_from_slice(value.as_slice());
         }

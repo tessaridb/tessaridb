@@ -409,13 +409,13 @@ fn an_index_without_surfaces_leaves_the_word_to_the_scan() {
         limit: None,
     };
     let mut batch = WriteBatch::new();
-    for (key, _) in backend.scan(&surfaces).unwrap() {
+    for (key, _) in backend.scan(&surfaces).now().unwrap() {
         batch = batch.delete(
             KeyKind::SearchSurface.keyspace(),
             Key::from(key.as_slice().to_vec()),
         );
     }
-    backend.apply(batch).unwrap();
+    backend.apply(batch).now().unwrap();
     assert_eq!(
         answered(&mut session, read),
         (vec!["6".to_owned()], AccessPath::Scan)

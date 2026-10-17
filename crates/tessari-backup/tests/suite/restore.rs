@@ -202,6 +202,7 @@ pub(crate) fn dump(backend: &Arc<dyn KvBackend>, keyspace: Keyspace) -> Vec<(Vec
     };
     backend
         .scan(&request)
+        .now()
         .unwrap()
         .into_iter()
         .map(|(key, value)| (key.as_slice().to_vec(), value.as_slice().to_vec()))

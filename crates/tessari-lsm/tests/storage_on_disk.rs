@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use tessari_storage::Now;
 
-use tessari_kv::AsyncKvBackend;
+use tessari_kv::KvBackend;
 use tessari_lsm::{Durability, StoreConfig, TessariKvBackend};
 use tessari_storage::{Error, RecordAddress, Store};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
@@ -26,7 +26,7 @@ fn open(path: &std::path::Path) -> Store {
     let backend = TessariKvBackend::open(path, StoreConfig::new(Durability::ProcessCrashSafe))
         .now()
         .unwrap();
-    Store::open_async(Arc::new(backend) as Arc<dyn AsyncKvBackend>)
+    Store::open(Arc::new(backend) as Arc<dyn KvBackend>)
         .now()
         .unwrap()
 }
@@ -154,10 +154,8 @@ fn a_log_replayed_between_two_stores_on_disk_reproduces_them_byte_for_byte() {
     )
     .now()
     .unwrap();
-    let source_backend = Arc::new(source_backend) as Arc<dyn AsyncKvBackend>;
-    let source = Store::open_async(Arc::clone(&source_backend))
-        .now()
-        .unwrap();
+    let source_backend = Arc::new(source_backend) as Arc<dyn KvBackend>;
+    let source = Store::open(Arc::clone(&source_backend)).now().unwrap();
 
     write(&source, "alpha", b"one");
     write(&source, "beta", b"two");
@@ -172,10 +170,8 @@ fn a_log_replayed_between_two_stores_on_disk_reproduces_them_byte_for_byte() {
     )
     .now()
     .unwrap();
-    let replica_backend = Arc::new(replica_backend) as Arc<dyn AsyncKvBackend>;
-    let replica = Store::open_async(Arc::clone(&replica_backend))
-        .now()
-        .unwrap();
+    let replica_backend = Arc::new(replica_backend) as Arc<dyn KvBackend>;
+    let replica = Store::open(Arc::clone(&replica_backend)).now().unwrap();
 
     // Every log, not the store's alone: a replay that read one would reproduce
     // part of a store and compare it against the whole (S6.2).
@@ -197,7 +193,7 @@ fn a_log_replayed_between_two_stores_on_disk_reproduces_them_byte_for_byte() {
     let node_identity = Key::from(vec![0x38]);
     for keyspace in Keyspace::ALL {
         let request = ScanRequest::new(*keyspace, KeyRange::all());
-        let derived = |backend: &Arc<dyn AsyncKvBackend>| {
+        let derived = |backend: &Arc<dyn KvBackend>| {
             backend
                 .scan(&request)
                 .now()

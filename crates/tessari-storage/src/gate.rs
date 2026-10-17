@@ -69,7 +69,7 @@ mod pending;
 
 use std::sync::{Mutex, OnceLock, PoisonError, RwLock};
 
-use tessari_kv::{AsyncKvBackend, ErrorCategory, WriteBatch};
+use tessari_kv::{ErrorCategory, KvBackend, WriteBatch};
 
 pub(crate) use overlay::Overlaid;
 pub(crate) use pending::Ticket;
@@ -171,7 +171,7 @@ impl WriteGate {
     pub(crate) async fn land(
         &self,
         ticket: Ticket,
-        backend: &dyn AsyncKvBackend,
+        backend: &dyn KvBackend,
     ) -> tessari_kv::Result<()> {
         self.refuse_if_stopped()?;
         let landed = self.pending.land(ticket, backend).await;
@@ -192,7 +192,7 @@ impl WriteGate {
     pub(crate) async fn apply(
         &self,
         batch: WriteBatch,
-        backend: &dyn AsyncKvBackend,
+        backend: &dyn KvBackend,
         landing: Landing,
     ) -> tessari_kv::Result<()> {
         self.refuse_if_stopped()?;
@@ -263,7 +263,7 @@ impl WriteGate {
     /// Land everything pending. For a writer holding the turn that applies its
     /// own batch — a replica's apply — so that it allocates from a store with
     /// nothing in flight.
-    pub(crate) async fn land_all(&self, backend: &dyn AsyncKvBackend) {
+    pub(crate) async fn land_all(&self, backend: &dyn KvBackend) {
         self.pending.land_all(backend).await;
     }
 

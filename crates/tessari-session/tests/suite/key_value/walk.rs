@@ -6,7 +6,7 @@ use std::thread;
 use tessari_session::Now;
 
 use tessari_kv::{
-    AsyncKvBackend, Key, KeyRange, Keyspace, KvFuture, Result as KvResult, ScanRequest,
+    Key, KeyRange, Keyspace, KvBackend, KvFuture, Result as KvResult, ScanRequest,
     Value as KvValue, WriteBatch,
 };
 use tessari_session::{Outcome, Session};
@@ -133,11 +133,11 @@ fn an_expired_key_is_not_listed() {
 /// reads hand back.
 #[derive(Debug)]
 struct Counting {
-    inner: Arc<dyn AsyncKvBackend>,
+    inner: Arc<dyn KvBackend>,
     entries: AtomicUsize,
 }
 
-impl AsyncKvBackend for Counting {
+impl KvBackend for Counting {
     fn name(&self) -> &'static str {
         "counting"
     }
@@ -187,7 +187,7 @@ impl AsyncKvBackend for Counting {
         batches: Vec<WriteBatch>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = (usize, KvResult<()>)> + Send + '_>>
     {
-        self.inner.apply_group(batches)
+        Box::pin(async move { self.inner.apply_group(batches).await })
     }
     fn groups_writes(&self) -> bool {
         self.inner.groups_writes()
@@ -212,7 +212,7 @@ fn a_prefix_walk_reads_its_stretch_and_not_the_space() {
             inner: Arc::clone(&backend.raw),
             entries: AtomicUsize::new(0),
         });
-        let store = Store::open_async(Arc::clone(&counting) as Arc<dyn AsyncKvBackend>)
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>)
             .now()
             .unwrap();
         let mut session = opened(&store);

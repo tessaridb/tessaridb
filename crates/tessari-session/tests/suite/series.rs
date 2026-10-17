@@ -350,6 +350,7 @@ fn an_aged_records_index_entries_go_with_it() {
                 tessari_kv::Keyspace::INDEX,
                 tessari_kv::KeyRange::all(),
             ))
+            .now()
             .unwrap()
             .len()
     };
@@ -450,7 +451,7 @@ fn a_compacted_series_reads_back_every_value_and_instant_bit_for_bit() {
         )
     };
     {
-        let store = Store::open_async(open() as Arc<dyn tessari_kv::AsyncKvBackend>)
+        let store = Store::open(open() as Arc<dyn tessari_kv::KvBackend>)
             .now()
             .unwrap();
         let mut session = opened(&store);
@@ -482,7 +483,7 @@ fn a_compacted_series_reads_back_every_value_and_instant_bit_for_bit() {
     // the trained dictionary do their work.
     open().compact().now().unwrap();
 
-    let store = Store::open_async(open() as Arc<dyn tessari_kv::AsyncKvBackend>)
+    let store = Store::open(open() as Arc<dyn tessari_kv::KvBackend>)
         .now()
         .unwrap();
     let mut session = Session::new(&store);

@@ -130,6 +130,7 @@ impl Fixture {
         };
         self.backend
             .scan(&request)
+            .now()
             .unwrap()
             .into_iter()
             .map(|(key, value)| (key.as_slice().to_vec(), value.as_slice().to_vec()))

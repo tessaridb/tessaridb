@@ -428,11 +428,19 @@ pub(crate) fn serve(
     // not wait; this is the wait. Joining after `drop(db)` would flush the store
     // and release its lock while threads were still writing through it.
     consumers::stop(running);
-    // Stage 4. Dropping the store is what flushes it and releases the file
+    // Stage 4. Closing the store is what flushes it and releases the file
     // lock, and it happens here rather than in the stages because this is what
-    // owns it — the stages know about surfaces, not about a store.
-    drop(db);
+    // owns it: the stages know about surfaces, not about a store. It is closed
+    // and awaited before the runtime stops: a store only dropped would close on
+    // a task the shutdown below cancels.
+    let closed = match std::sync::Arc::try_unwrap(db) {
+        Ok(db) => runtime
+            .block_on(db.close())
+            .map_err(|failure| format!("the store did not close: {failure}")),
+        Err(_) => Err("the store did not close: it is still held".to_owned()),
+    };
     runtime.shutdown_timeout(runtime::LEAVING);
+    closed?;
     tracing::info!("stopped");
     Ok(Ended::Fine)
 }

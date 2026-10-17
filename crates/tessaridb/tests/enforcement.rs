@@ -523,7 +523,12 @@ const TABLES: &[Table] = &[
         // as the node on the node's own store — moving a leadership, settling a
         // transaction this node coordinated, or choosing where a read goes. None
         // returns a record to anybody.
-        expected: 40,
+        //
+        // 41 since the close (G077 W6b): `Db::close` closes the store and waits
+        // for its directory to be released. **Exempt under E3**: it takes the
+        // database by value, so no session can be open on it, takes no reach and
+        // returns no record; the binary calls it when it stops.
+        expected: 41,
         count: |text| public_functions(&every_block(text, "impl Db")),
     },
     Table {
@@ -1084,6 +1089,12 @@ const TABLES: &[Table] = &[
         // returns, so nothing it reads or writes was asked for by a caller.
         // Re-classification trigger: any caller reachable from a session or a
         // route.
+        //
+        // Still 80 at one async backend trait (G077 W6b): `Store::open_async`
+        // became `Store::open` (the synchronous one is gone with its trait), and
+        // `Store::close` arrived. **Exempt, as the end of a lifetime**: it takes
+        // the store by value, so no session or transaction can be open on it,
+        // reads and writes no record, and refuses while another handle lives.
         expected: 80,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
@@ -1335,7 +1346,9 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 166 since `Store::newest_leadership_in` (DB-15), classified above.
     //
     // 167 since `Store::open_async` (G077 W5a), classified above.
-    assert_eq!(total, 167, "the counted tables no longer sum to 167");
+    //
+    // 168 since `Db::close` (G077 W6b), classified above.
+    assert_eq!(total, 168, "the counted tables no longer sum to 168");
 }
 
 /// Every `.rs` file under a directory.

@@ -1,6 +1,6 @@
 //! The persistent backend on the TessariKV engine.
 //!
-//! A native implementation of [`AsyncKvBackend`]: every call is the engine's own future, so
+//! A native implementation of [`KvBackend`]: every call is the engine's own future, so
 //! nothing here blocks the thread that polls it and nothing here creates a runtime. Keyspaces
 //! become named engine keyspaces, resolved once at open; batches become one engine write.
 //!
@@ -19,8 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tessari_kv::{
-    AsyncKvBackend, Error, Key, KeyRange, Keyspace, KvFuture, Result, ScanRequest, Value,
-    WriteBatch,
+    Error, Key, KeyRange, Keyspace, KvBackend, KvFuture, Result, ScanRequest, Value, WriteBatch,
 };
 use tessari_vault::AtRestKey;
 use tessarikv::{Db, DbOptions, KeyProvider, KeyspaceId, RootKey};
@@ -45,7 +44,7 @@ use errors::from_engine;
 /// The key id every encrypted store is opened under; the store holds one key.
 const KEY_ID: u32 = 1;
 
-/// A durable [`AsyncKvBackend`] on the TessariKV engine.
+/// A durable [`KvBackend`] on the TessariKV engine.
 pub struct TessariKvBackend {
     /// The engine; taken when the store closes, or handed to a background close when it is
     /// dropped open.
@@ -259,7 +258,7 @@ fn widen(bytes: usize) -> u64 {
     u64::try_from(bytes).unwrap_or(u64::MAX)
 }
 
-impl AsyncKvBackend for TessariKvBackend {
+impl KvBackend for TessariKvBackend {
     fn name(&self) -> &'static str {
         BACKEND_NAME
     }
@@ -327,5 +326,17 @@ impl AsyncKvBackend for TessariKvBackend {
 
     fn delete_range<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, ()> {
         Box::pin(self.remove_range(keyspace, range))
+    }
+
+    fn close(self: Arc<Self>) -> KvFuture<'static, ()> {
+        Box::pin(async move {
+            match Arc::try_unwrap(self) {
+                Ok(backend) => Self::close(backend).await,
+                Err(_) => Err(Error::Lifecycle {
+                    backend: BACKEND_NAME,
+                    reason: "the store is still in use".to_owned(),
+                }),
+            }
+        })
     }
 }

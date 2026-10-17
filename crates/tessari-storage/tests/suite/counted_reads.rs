@@ -46,9 +46,9 @@ use tessari_storage::Now;
 use tessari_constants::{ORDERED_SCAN_BATCH_ENTRIES, RANGE_SCAN_BATCH_ENTRIES};
 use tessari_encoding::Direction;
 use tessari_encoding::encode_payload;
+use tessari_kv::KvFuture;
 use tessari_kv::{
-    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
-    WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value as KvValue, WriteBatch,
 };
 use tessari_storage::{
     Catalog, EDGE_IN, EDGE_OUT, EdgeKindDefinition, FieldShape, IndexDefinition, IndexShape, Reach,
@@ -125,20 +125,24 @@ impl KvBackend for Counting {
         "counting"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<KvValue>> {
-        self.point_reads.fetch_add(1, Ordering::Relaxed);
-        self.inner.get(keyspace, key)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<KvValue>> {
+        Box::pin(async move {
+            self.point_reads.fetch_add(1, Ordering::Relaxed);
+            self.inner.get(keyspace, key).await
+        })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, KvValue)>> {
-        self.scans.fetch_add(1, Ordering::Relaxed);
-        if reads_definitions(request) {
-            self.definition_reads.fetch_add(1, Ordering::Relaxed);
-        }
-        let found = self.inner.scan(request)?;
-        self.entries.fetch_add(found.len(), Ordering::Relaxed);
-        self.largest.fetch_max(found.len(), Ordering::Relaxed);
-        Ok(found)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, KvValue)>> {
+        Box::pin(async move {
+            self.scans.fetch_add(1, Ordering::Relaxed);
+            if reads_definitions(request) {
+                self.definition_reads.fetch_add(1, Ordering::Relaxed);
+            }
+            let found = self.inner.scan(request).await?;
+            self.entries.fetch_add(found.len(), Ordering::Relaxed);
+            self.largest.fetch_max(found.len(), Ordering::Relaxed);
+            Ok(found)
+        })
     }
 
     /// Delegated, for the same reason [`Self::first_of_each`] is.
@@ -149,9 +153,11 @@ impl KvBackend for Counting {
     /// be asserting it about the wrapper's own default rather than about the
     /// backend beneath it. It would then fail while the code under test was
     /// right, which is the more expensive direction of wrong.
-    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
-        self.scans.fetch_add(1, Ordering::Relaxed);
-        self.inner.count(keyspace, range)
+    fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
+        Box::pin(async move {
+            self.scans.fetch_add(1, Ordering::Relaxed);
+            self.inner.count(keyspace, range).await
+        })
     }
 
     /// Counted as **one** round trip however many ranges it carries.
@@ -161,20 +167,22 @@ impl KvBackend for Counting {
     /// un-batched ones, and taken here it would count one round trip per range
     /// and report the batching as having changed nothing — a wrapper that does
     /// not do what the backends below it do measures the wrapper.
-    fn first_of_each(
-        &self,
+    fn first_of_each<'a>(
+        &'a self,
         keyspace: Keyspace,
-        ranges: &[KeyRange],
-    ) -> Result<Vec<Option<(Key, KvValue)>>> {
-        self.scans.fetch_add(1, Ordering::Relaxed);
-        let found = self.inner.first_of_each(keyspace, ranges)?;
-        let returned = found.iter().filter(|pair| pair.is_some()).count();
-        self.entries.fetch_add(returned, Ordering::Relaxed);
-        Ok(found)
+        ranges: &'a [KeyRange],
+    ) -> KvFuture<'a, Vec<Option<(Key, KvValue)>>> {
+        Box::pin(async move {
+            self.scans.fetch_add(1, Ordering::Relaxed);
+            let found = self.inner.first_of_each(keyspace, ranges).await?;
+            let returned = found.iter().filter(|pair| pair.is_some()).count();
+            self.entries.fetch_add(returned, Ordering::Relaxed);
+            Ok(found)
+        })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.inner.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move { self.inner.apply(batch).await })
     }
 }
 

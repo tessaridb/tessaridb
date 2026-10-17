@@ -54,7 +54,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use tessari_storage::Now;
 
-use tessari_kv::AsyncKvBackend;
+use tessari_kv::KvBackend;
 use tessari_lsm::{Durability, StoreConfig, TessariKvBackend};
 use tessari_storage::{RecordAddress, Store};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
@@ -103,7 +103,7 @@ fn open_closable(path: &std::path::Path) -> (Store, Arc<TessariKvBackend>) {
             .now()
             .unwrap(),
     );
-    let store = Store::open_async(Arc::clone(&backend) as Arc<dyn AsyncKvBackend>)
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>)
         .now()
         .unwrap();
     (store, backend)
@@ -254,7 +254,7 @@ fn open_small_store(path: &std::path::Path, encrypted: bool) -> Store {
     let backend = TessariKvBackend::open_with_key(path, config, key.as_ref())
         .now()
         .unwrap();
-    Store::open_async(Arc::new(backend) as Arc<dyn AsyncKvBackend>)
+    Store::open(Arc::new(backend) as Arc<dyn KvBackend>)
         .now()
         .unwrap()
 }

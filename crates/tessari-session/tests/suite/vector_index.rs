@@ -373,6 +373,7 @@ fn graph(backend: &Arc<dyn KvBackend>) -> Vec<(Vec<u8>, Vec<u8>)> {
     );
     backend
         .scan(&request)
+        .now()
         .unwrap()
         .into_iter()
         .map(|(key, value)| (key.as_slice().to_vec(), value.as_slice().to_vec()))

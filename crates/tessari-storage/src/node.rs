@@ -22,7 +22,7 @@
 use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
-use tessari_kv::AsyncKvBackend;
+use tessari_kv::KvBackend;
 
 use tessari_encoding::{
     NODE_ID_LEN, NodeIdentity, NodeIdentityKey, NodeVersion, Roles, StoreKey, StoreValue,
@@ -45,7 +45,7 @@ const ENTROPY_SOURCE: &str = "/dev/urandom";
 /// Returns [`Error::NoEntropy`] when the randomness source cannot be read, the
 /// substrate's failure when the write is refused, and a decoding failure when
 /// the stored identity was written by a build this one cannot read.
-pub(crate) async fn ensure(backend: Arc<dyn AsyncKvBackend>) -> Result<NodeIdentity> {
+pub(crate) async fn ensure(backend: Arc<dyn KvBackend>) -> Result<NodeIdentity> {
     if let Some(mut found) = read(Arc::clone(&backend)).await? {
         let running = NodeVersion::current();
         if found.version != running {
@@ -96,7 +96,7 @@ pub(crate) async fn ensure(backend: Arc<dyn AsyncKvBackend>) -> Result<NodeIdent
 /// Returns [`Error::NoIdentity`] when the store has none, and the substrate's
 /// failure when the read or the write is refused.
 pub(crate) async fn configure(
-    backend: Arc<dyn AsyncKvBackend>,
+    backend: Arc<dyn KvBackend>,
     roles: Option<Roles>,
     endpoints: Option<Vec<String>>,
 ) -> Result<NodeIdentity> {
@@ -121,7 +121,7 @@ pub(crate) async fn configure(
 ///
 /// No `Absent` precondition here, because this one is an overwrite by
 /// definition: the identity exists and one of its fields has moved.
-async fn write(backend: Arc<dyn AsyncKvBackend>, identity: &NodeIdentity) -> Result<()> {
+async fn write(backend: Arc<dyn KvBackend>, identity: &NodeIdentity) -> Result<()> {
     let batch = WriteBatch::new().put(
         NodeIdentityKey::keyspace(),
         NodeIdentityKey.encode(),
@@ -137,7 +137,7 @@ async fn write(backend: Arc<dyn AsyncKvBackend>, identity: &NodeIdentity) -> Res
 ///
 /// Returns the substrate's failure, or a decoding failure when the stored bytes
 /// carry a revision, role or membership this build does not know.
-pub(crate) async fn read(backend: Arc<dyn AsyncKvBackend>) -> Result<Option<NodeIdentity>> {
+pub(crate) async fn read(backend: Arc<dyn KvBackend>) -> Result<Option<NodeIdentity>> {
     let key = NodeIdentityKey.encode();
     match backend.get(NodeIdentityKey::keyspace(), &key).await? {
         Some(value) => Ok(Some(NodeIdentity::decode(value.as_slice())?)),
@@ -173,7 +173,7 @@ mod tests {
 
     use super::*;
 
-    fn backend() -> Arc<dyn AsyncKvBackend> {
+    fn backend() -> Arc<dyn KvBackend> {
         Arc::new(MemoryBackend::new())
     }
 

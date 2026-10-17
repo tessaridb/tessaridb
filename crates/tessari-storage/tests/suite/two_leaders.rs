@@ -651,6 +651,7 @@ fn the_expiry_pass_removes_what_this_node_leads_beside_a_range_led_elsewhere() {
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .now()
         .unwrap()
         .iter()
         .map(|(key, _)| ExpiryKey::decode(key.as_slice()).unwrap().namespace.get())

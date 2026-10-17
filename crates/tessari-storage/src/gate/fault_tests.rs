@@ -19,9 +19,9 @@
 use crate::now::Now;
 use std::sync::{Arc, Mutex};
 
+use tessari_kv::KvFuture;
 use tessari_kv::{
-    Error, Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value,
-    WriteBatch,
+    Error, Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value, WriteBatch,
 };
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
@@ -54,23 +54,25 @@ impl KvBackend for Faulty {
         "faulty"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<Value>> {
-        self.engine.get(keyspace, key)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<Value>> {
+        Box::pin(async move { self.engine.get(keyspace, key).await })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
-        self.engine.scan(request)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
+        Box::pin(async move { self.engine.scan(request).await })
     }
 
-    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
-        self.engine.count(keyspace, range)
+    fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
+        Box::pin(async move { self.engine.count(keyspace, range).await })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        if let Some(failure) = self.next_failure.lock().unwrap().take() {
-            return Err(failure);
-        }
-        self.engine.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move {
+            if let Some(failure) = self.next_failure.lock().unwrap().take() {
+                return Err(failure);
+            }
+            self.engine.apply(batch).await
+        })
     }
 
     fn groups_writes(&self) -> bool {

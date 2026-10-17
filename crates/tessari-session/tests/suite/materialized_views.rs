@@ -377,7 +377,7 @@ fn a_store_reopened_mid_maintenance_holds_its_view_at_its_version_and_catches_up
         )
         .now()
         .unwrap();
-        Store::open_async(Arc::new(backend)).now().unwrap()
+        Store::open(Arc::new(backend)).now().unwrap()
     };
     {
         let disk = open();

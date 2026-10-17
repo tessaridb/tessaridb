@@ -26,7 +26,7 @@
 //! round trip per `SELECT` is the cost `series` exists to avoid.
 
 use std::sync::RwLock;
-use tessari_kv::AsyncKvBackend;
+use tessari_kv::KvBackend;
 
 use tessari_encoding::{ServedReach, ServedReachKey, StoreKey, StoreValue};
 use tessari_kv::WriteBatch;
@@ -45,7 +45,7 @@ pub(crate) struct Served {
 
 impl Served {
     /// Load what the store holds.
-    pub(crate) async fn load(backend: &dyn AsyncKvBackend) -> Result<Self> {
+    pub(crate) async fn load(backend: &dyn KvBackend) -> Result<Self> {
         let held = match backend
             .get(ServedReachKey::keyspace(), &ServedReachKey.encode())
             .await?

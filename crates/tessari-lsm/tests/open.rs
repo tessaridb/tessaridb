@@ -9,7 +9,7 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
-use tessari_kv::{AsyncKvBackend as _, ErrorCategory, Key, Keyspace, Value, WriteBatch};
+use tessari_kv::{ErrorCategory, Key, Keyspace, KvBackend as _, Value, WriteBatch};
 use tessari_lsm::{Durability, StoreConfig, TessariKvBackend, effective_options_files};
 
 fn config() -> StoreConfig {
@@ -73,6 +73,62 @@ async fn a_directory_already_open_elsewhere_is_refused_by_name_and_not_by_panic(
         "the owner may hand the directory back; the caller decides whether to wait"
     );
     drop(held);
+}
+
+// One thread: once `close` answers, nothing else runs until this test awaits
+// again, so a close left running in the background cannot finish in between.
+#[tokio::test(flavor = "current_thread")]
+async fn a_closed_store_hands_its_directory_back_before_close_returns() {
+    // Another process cannot wait for this one's background close, so the
+    // directory must be free the moment `close` answers. The probe takes the
+    // engine's lock file the way another process would, without yielding.
+    // A durability that syncs puts the write gate's view in front of the
+    // engine, so both shapes of the store are closed.
+    for durability in [Durability::ProcessCrashSafe, Durability::PowerLossSafe] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let backend = TessariKvBackend::open(&path, StoreConfig::new(durability))
+            .await
+            .unwrap();
+        let store = tessari_storage::Store::open(std::sync::Arc::new(backend))
+            .await
+            .unwrap();
+        store.close().await.unwrap();
+
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.join("LOCK"))
+            .unwrap();
+        assert!(
+            lock.try_lock().is_ok(),
+            "{durability:?}: the directory was still held after close returned"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_store_with_another_handle_alive_is_not_closed_under_it() {
+    for durability in [Durability::ProcessCrashSafe, Durability::PowerLossSafe] {
+        let root = tempfile::tempdir().unwrap();
+        let backend =
+            TessariKvBackend::open(root.path().join("store"), StoreConfig::new(durability))
+                .await
+                .unwrap();
+        let store = tessari_storage::Store::open(std::sync::Arc::new(backend))
+            .await
+            .unwrap();
+        let other = store.clone();
+
+        let refused = store.close().await.unwrap_err().to_string();
+        assert!(
+            refused.contains("the store is still in use"),
+            "{durability:?}: {refused}"
+        );
+        // The handle still held keeps working, and closes once it is the last.
+        other.begin().await.unwrap();
+        other.close().await.unwrap();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

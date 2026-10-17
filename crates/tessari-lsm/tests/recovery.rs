@@ -47,7 +47,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use tessari_kv::{
-    AsyncKvBackend, Key, KeyRange, Keyspace, ScanDirection, ScanRequest, Value, WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, ScanDirection, ScanRequest, Value, WriteBatch,
 };
 use tessari_lsm::{Durability, StoreConfig, TessariKvBackend};
 use tessari_storage::Now as _;

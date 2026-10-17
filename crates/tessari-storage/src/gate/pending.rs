@@ -38,7 +38,7 @@ use futures_util::FutureExt as _;
 use tokio::sync::Notify;
 
 use tessari_constants::{MAX_GROUP_BYTES, MAX_GROUP_COMMITS};
-use tessari_kv::{AsyncKvBackend, Error, Key, Keyspace, Result, Value, WriteBatch, WriteOp};
+use tessari_kv::{Error, Key, Keyspace, KvBackend, Result, Value, WriteBatch, WriteOp};
 
 /// What pending writes do to each key they touch: a value, or `None` for a
 /// delete.
@@ -131,7 +131,7 @@ impl Pending {
     }
 
     /// Wait for a staged commit's answer, landing a group when nobody else is.
-    pub(super) async fn land(&self, ticket: Ticket, backend: &dyn AsyncKvBackend) -> Result<()> {
+    pub(super) async fn land(&self, ticket: Ticket, backend: &dyn KvBackend) -> Result<()> {
         loop {
             let notified = self.settled.notified();
             let mut notified = std::pin::pin!(notified);
@@ -157,7 +157,7 @@ impl Pending {
     /// Land everything pending before a writer that does not stage — a
     /// replica's apply — allocates from the store. Called holding the turn, so
     /// nothing is staged behind it.
-    pub(super) async fn land_all(&self, backend: &dyn AsyncKvBackend) {
+    pub(super) async fn land_all(&self, backend: &dyn KvBackend) {
         loop {
             let notified = self.settled.notified();
             let mut notified = std::pin::pin!(notified);
@@ -179,7 +179,7 @@ impl Pending {
         }
     }
 
-    async fn flush(&self, group: Vec<Member>, backend: &dyn AsyncKvBackend) {
+    async fn flush(&self, group: Vec<Member>, backend: &dyn KvBackend) {
         let mut tickets = Vec::with_capacity(group.len());
         let mut named = Vec::with_capacity(group.len());
         let mut batches = Vec::with_capacity(group.len());

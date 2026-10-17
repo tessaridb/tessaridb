@@ -19,6 +19,7 @@ const PEER_HEX: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 fn stamp(backend: &Arc<dyn KvBackend>) -> u32 {
     let held = backend
         .get(FormatVersionKey::keyspace(), &FormatVersionKey.encode())
+        .now()
         .unwrap()
         .unwrap();
     FormatVersion::decode(held.as_slice()).unwrap().get()
@@ -31,6 +32,7 @@ fn stamped(backend: &Arc<dyn KvBackend>, version: u32) {
             FormatVersionKey.encode(),
             FormatVersion::new(version).encode(),
         ))
+        .now()
         .unwrap();
 }
 

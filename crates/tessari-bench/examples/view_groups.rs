@@ -14,7 +14,7 @@ use std::time::Instant;
 use tessari_session::Now;
 use tessari_session::RunNow;
 
-use tessari_kv::AsyncKvBackend;
+use tessari_kv::KvBackend;
 use tessari_lsm::{StoreConfig, TessariKvBackend};
 use tessari_session::{Session, maintain_views};
 use tessari_storage::Store;
@@ -40,9 +40,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let dir = std::env::args()
         .nth(1)
         .ok_or("usage: view_groups <empty directory>")?;
-    let backend: Arc<dyn AsyncKvBackend> =
+    let backend: Arc<dyn KvBackend> =
         Arc::new(TessariKvBackend::open(&dir, StoreConfig::default()).now()?);
-    let store = Store::open_async(backend).now()?;
+    let store = Store::open(backend).now()?;
     let mut session = Session::new(&store);
     session.run_now(
         "DEFINE NAMESPACE bench; USE NAMESPACE bench; DEFINE DATABASE v; USE DATABASE v; \

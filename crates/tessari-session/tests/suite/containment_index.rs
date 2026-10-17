@@ -215,6 +215,7 @@ fn swept(backend: &Arc<dyn KvBackend>, session: &mut Session<'_>) {
     };
     let held: BTreeSet<(Vec<u8>, RecordId)> = backend
         .scan(&request)
+        .now()
         .unwrap()
         .into_iter()
         .map(|(key, _)| {
@@ -333,7 +334,7 @@ fn the_index_reads_back_after_the_store_is_closed_and_opened() {
         )
         .now()
         .unwrap();
-        Store::open_async(Arc::new(backend)).now().unwrap()
+        Store::open(Arc::new(backend)).now().unwrap()
     };
     let asked = "SELECT * FROM indexed WHERE doc CONTAINS { items: [{ sku: 'b' }] };";
     {
@@ -369,6 +370,7 @@ fn a_store_holding_format_five_refuses_a_containment_index_and_keeps_its_format(
     let stamp = |backend: &Arc<dyn KvBackend>| {
         backend
             .get(FormatVersionKey::keyspace(), &FormatVersionKey.encode())
+            .now()
             .unwrap()
             .map(|held| FormatVersion::decode(held.as_slice()).unwrap().get())
     };
@@ -381,6 +383,7 @@ fn a_store_holding_format_five_refuses_a_containment_index_and_keeps_its_format(
             FormatVersionKey.encode(),
             FormatVersion::new(5).encode(),
         ))
+        .now()
         .unwrap();
     let store = Store::open(Arc::clone(&backend)).now().unwrap();
     let mut session = Session::new(&store);
@@ -422,6 +425,7 @@ fn a_store_holding_format_five_refuses_a_containment_index_and_keeps_its_format(
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .now()
         .unwrap();
     assert!(
         entries.is_empty(),

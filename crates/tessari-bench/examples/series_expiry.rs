@@ -16,7 +16,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tessari_session::Now;
 use tessari_session::RunNow;
 
-use tessari_kv::{AsyncKvBackend as _, KeyRange, Keyspace, ScanRequest};
+use tessari_kv::{KeyRange, Keyspace, KvBackend as _, ScanRequest};
 use tessari_lsm::{StoreConfig, TessariKvBackend};
 use tessari_storage::Catalog;
 use tessaridb::Db;

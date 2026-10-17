@@ -3,7 +3,7 @@
 // bgv-allow(unwrap): test code, where a panic is the failure report.
 #![allow(clippy::unwrap_used)]
 
-use tessari_kv::{AsyncKvBackend as _, Key, Keyspace, Value, WriteBatch};
+use tessari_kv::{Key, Keyspace, KvBackend as _, Value, WriteBatch};
 use tessarikv::Ticker;
 
 use super::TessariKvBackend;

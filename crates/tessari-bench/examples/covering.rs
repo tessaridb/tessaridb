@@ -21,7 +21,7 @@ use std::time::Instant;
 use tessari_storage::Now;
 
 use tessari_geo::{Bounds, Cell, Relation, Shape, Snapped, covering, intersects};
-use tessari_kv::AsyncKvBackend;
+use tessari_kv::KvBackend;
 use tessari_lsm::{StoreConfig, TessariKvBackend};
 use tessari_storage::{Catalog, IndexDefinition, IndexShape, RecordAddress, Store, TableShape};
 use tessari_types::{Geometry, Path, Polygon, Position, RecordId, Ring, Value};
@@ -115,9 +115,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if FsPath::new(&dir).exists() && std::fs::read_dir(&dir)?.next().is_some() {
         return Err("the directory must be empty".into());
     }
-    let backend: Arc<dyn AsyncKvBackend> =
+    let backend: Arc<dyn KvBackend> =
         Arc::new(TessariKvBackend::open(&dir, StoreConfig::default()).now()?);
-    let store = Store::open_async(backend).now()?;
+    let store = Store::open(backend).now()?;
     let (index, home) = defined(&store)?;
     let shapes = corpus();
     let loading = Instant::now();

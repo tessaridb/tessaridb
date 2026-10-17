@@ -42,9 +42,9 @@ use tessari_storage::Now;
 
 use tessari_constants::SEARCH_FUZZY_EXAMINATION_CAP;
 use tessari_encoding::encode_payload;
+use tessari_kv::KvFuture;
 use tessari_kv::{
-    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
-    WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value as KvValue, WriteBatch,
 };
 use tessari_storage::{
     Catalog, FieldShape, IndexDefinition, IndexShape, RecordAddress, Store, TableShape,
@@ -98,23 +98,25 @@ impl KvBackend for Counting {
         "counting"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<KvValue>> {
-        self.inner.get(keyspace, key)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<KvValue>> {
+        Box::pin(async move { self.inner.get(keyspace, key).await })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, KvValue)>> {
-        self.scans.fetch_add(1, Ordering::Relaxed);
-        let found = self.inner.scan(request)?;
-        self.entries.fetch_add(found.len(), Ordering::Relaxed);
-        Ok(found)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, KvValue)>> {
+        Box::pin(async move {
+            self.scans.fetch_add(1, Ordering::Relaxed);
+            let found = self.inner.scan(request).await?;
+            self.entries.fetch_add(found.len(), Ordering::Relaxed);
+            Ok(found)
+        })
     }
 
-    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
-        self.inner.count(keyspace, range)
+    fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
+        Box::pin(async move { self.inner.count(keyspace, range).await })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.inner.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move { self.inner.apply(batch).await })
     }
 }
 

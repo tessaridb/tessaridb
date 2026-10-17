@@ -64,7 +64,7 @@ fn everything(backend: &Arc<dyn KvBackend>) -> Vec<u8> {
             direction: ScanDirection::Forward,
             limit: None,
         };
-        for (key, value) in backend.scan(&request).unwrap() {
+        for (key, value) in backend.scan(&request).now().unwrap() {
             held.extend_from_slice(key.as_slice());
             held.extend_from_slice(value.as_slice());
         }
@@ -80,7 +80,7 @@ fn entries_in(backend: &Arc<dyn KvBackend>, keyspace: Keyspace) -> usize {
         direction: ScanDirection::Forward,
         limit: None,
     };
-    backend.scan(&request).unwrap().len()
+    backend.scan(&request).now().unwrap().len()
 }
 
 fn store() -> (Arc<dyn KvBackend>, Store) {

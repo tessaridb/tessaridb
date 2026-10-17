@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use tessari_kv::AsyncKvBackend;
+use tessari_kv::KvBackend;
 
 use tessari_encoding::Roles;
 
@@ -16,6 +16,22 @@ use super::{
 };
 
 impl Store {
+    /// Close the store: its backend finishes its background work and releases
+    /// what it holds, the directory included, before this answers.
+    ///
+    /// A store that is only dropped is closed in the background, and a process
+    /// that exits first leaves the files a kill would have left.
+    ///
+    /// # Errors
+    ///
+    /// A lifecycle refusal when another handle to this store is still alive (a
+    /// clone, or a reader holding the backend); the store stays open for it.
+    pub async fn close(self) -> Result<()> {
+        let backend = Arc::clone(&self.backend);
+        drop(self);
+        Ok(backend.close().await?)
+    }
+
     /// Open a store on `backend`, creating its metadata if it is new.
     ///
     /// A store whose on-disk format is newer than this build understands is
@@ -26,16 +42,7 @@ impl Store {
     ///
     /// Returns an error when the backend fails, when the stored metadata cannot
     /// be decoded, or when the on-disk format is newer than this build.
-    pub async fn open(backend: Arc<dyn tessari_kv::KvBackend>) -> Result<Self> {
-        Self::open_async(Arc::new(tessari_kv::Synchronous(backend))).await
-    }
-
-    /// [`Self::open`] on a backend that answers through futures.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::open`].
-    pub async fn open_async(backend: Arc<dyn AsyncKvBackend>) -> Result<Self> {
+    pub async fn open(backend: Arc<dyn KvBackend>) -> Result<Self> {
         // The format is settled before anything else is written, the node
         // identity included: a store this build is about to refuse must not be
         // modified on the way to refusing it.

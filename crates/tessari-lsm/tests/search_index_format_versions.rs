@@ -74,7 +74,7 @@ use tessari_session::RunNow;
 use tessari_encoding::{
     CODEC_VERSION, Posting, PostingKey, SearchTermKey, StoreKey, StoreValue, TermStatistics,
 };
-use tessari_kv::{AsyncKvBackend, KeyRange, Keyspace, ScanDirection, ScanRequest, WriteBatch};
+use tessari_kv::{KeyRange, Keyspace, KvBackend, ScanDirection, ScanRequest, WriteBatch};
 use tessari_lsm::{Durability, StoreConfig, TessariKvBackend};
 use tessari_session::Session;
 use tessari_storage::Store;
@@ -110,12 +110,12 @@ const RANKED: &str = "SELECT * FROM notes ORDER BY search::score(body, 'alpha be
 /// that proves it rather than a reason to widen the type. Downgrading an index
 /// is not something a caller does; it is something an older release did, and
 /// this is the only way to be that release.
-fn open(path: &std::path::Path) -> (Arc<dyn AsyncKvBackend>, Store) {
+fn open(path: &std::path::Path) -> (Arc<dyn KvBackend>, Store) {
     let backend = TessariKvBackend::open(path, StoreConfig::new(Durability::PowerLossSafe))
         .now()
         .unwrap();
-    let backend = Arc::new(backend) as Arc<dyn AsyncKvBackend>;
-    let store = Store::open_async(Arc::clone(&backend)).now().unwrap();
+    let backend = Arc::new(backend) as Arc<dyn KvBackend>;
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
     (backend, store)
 }
 
@@ -191,9 +191,7 @@ fn ids(session: &mut Session<'_>, read: &str) -> Vec<String> {
 /// Decoding is the filter, exactly as `scoring_source.rs` does it: the index
 /// keyspace also holds the dictionary, the statistics and every other index's
 /// entries, and only the key of the wanted kind decodes as one.
-fn entries_of<K: StoreKey>(
-    backend: &dyn AsyncKvBackend,
-) -> Vec<(tessari_kv::Key, tessari_kv::Value)> {
+fn entries_of<K: StoreKey>(backend: &dyn KvBackend) -> Vec<(tessari_kv::Key, tessari_kv::Value)> {
     let request = ScanRequest {
         keyspace: Keyspace::INDEX,
         range: KeyRange::all(),
@@ -214,7 +212,7 @@ fn entries_of<K: StoreKey>(
 /// The keys are untouched, so the index still says exactly which records hold
 /// which terms; only the two numbers are taken away, which is the state an index
 /// written by an older release is in.
-fn forget_the_numbers(backend: &dyn AsyncKvBackend) -> usize {
+fn forget_the_numbers(backend: &dyn KvBackend) -> usize {
     let found = entries_of::<PostingKey>(backend);
     let mut batch = WriteBatch::default();
     for (key, _) in &found {
@@ -230,7 +228,7 @@ fn forget_the_numbers(backend: &dyn AsyncKvBackend) -> usize {
 /// The truncation is taken from the current encoding rather than written by
 /// hand — the header is however many bytes an empty payload occupies, and the
 /// count is a `u64` — so this cannot drift away from what the codec writes.
-fn forget_the_bound(backend: &dyn AsyncKvBackend) -> usize {
+fn forget_the_bound(backend: &dyn KvBackend) -> usize {
     let header = Posting::Membership.encode().as_slice().len();
     let found = entries_of::<SearchTermKey>(backend);
     let mut batch = WriteBatch::default();

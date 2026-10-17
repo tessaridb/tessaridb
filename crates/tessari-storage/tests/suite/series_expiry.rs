@@ -37,6 +37,7 @@ fn entries(fixture: &Fixture, keyspace: Keyspace) -> usize {
     fixture
         .backend
         .scan(&ScanRequest::new(keyspace, KeyRange::all()))
+        .now()
         .unwrap()
         .len()
 }
@@ -125,6 +126,7 @@ fn a_reader_begun_earlier_keeps_what_it_could_see() {
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .now()
         .unwrap();
     assert_eq!(held.len(), 1, "the edge's bytes are still there");
     assert!(

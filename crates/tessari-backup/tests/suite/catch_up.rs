@@ -64,7 +64,7 @@ fn durable(path: &Path) -> Store {
     let backend = TessariKvBackend::open(path, StoreConfig::new(Durability::ProcessCrashSafe))
         .now()
         .unwrap();
-    Store::open_async(Arc::new(backend)).now().unwrap()
+    Store::open(Arc::new(backend)).now().unwrap()
 }
 
 /// The leader is not the subject here, so it stays in memory.

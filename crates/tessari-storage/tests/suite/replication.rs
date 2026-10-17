@@ -73,6 +73,7 @@ fn mutation(id: &str, value: &[u8]) -> Mutation {
 fn dump(backend: &Arc<dyn KvBackend>, keyspace: Keyspace) -> Vec<(Key, Value)> {
     backend
         .scan(&ScanRequest::new(keyspace, KeyRange::all()))
+        .now()
         .unwrap()
 }
 

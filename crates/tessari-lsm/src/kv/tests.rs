@@ -7,79 +7,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tessari_kv::{
-    AsyncKvBackend, Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value,
-    WriteBatch, conformance,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value, WriteBatch, conformance,
 };
 use tokio::runtime::Runtime;
 
 use super::TessariKvBackend;
 use crate::{Durability, StoreConfig};
-
-/// The backend driven to completion call by call, so the synchronous suite can run against it.
-/// Test code only: the library never blocks on its own futures.
-struct Driven {
-    backend: TessariKvBackend,
-    runtime: Arc<Runtime>,
-}
-
-impl std::fmt::Debug for Driven {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.backend.fmt(f)
-    }
-}
-
-impl KvBackend for Driven {
-    fn name(&self) -> &'static str {
-        AsyncKvBackend::name(&self.backend)
-    }
-
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<Value>> {
-        self.runtime
-            .block_on(AsyncKvBackend::get(&self.backend, keyspace, key))
-    }
-
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
-        self.runtime
-            .block_on(AsyncKvBackend::scan(&self.backend, request))
-    }
-
-    fn sweep(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
-        self.runtime
-            .block_on(AsyncKvBackend::sweep(&self.backend, request))
-    }
-
-    fn first_of_each(
-        &self,
-        keyspace: Keyspace,
-        ranges: &[KeyRange],
-    ) -> Result<Vec<Option<(Key, Value)>>> {
-        self.runtime.block_on(AsyncKvBackend::first_of_each(
-            &self.backend,
-            keyspace,
-            ranges,
-        ))
-    }
-
-    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
-        self.runtime
-            .block_on(AsyncKvBackend::count(&self.backend, keyspace, range))
-    }
-
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.runtime
-            .block_on(AsyncKvBackend::apply(&self.backend, batch))
-    }
-
-    fn contains(&self, keyspace: Keyspace, key: &Key) -> Result<bool> {
-        self.runtime
-            .block_on(AsyncKvBackend::contains(&self.backend, keyspace, key))
-    }
-
-    fn delete_range(&self, keyspace: Keyspace, range: &KeyRange) -> Result<()> {
-        self.runtime
-            .block_on(AsyncKvBackend::delete_range(&self.backend, keyspace, range))
-    }
-}
 
 fn runtime() -> Arc<Runtime> {
     Arc::new(
@@ -105,19 +38,16 @@ fn value(bytes: &[u8]) -> Value {
     Value::from_slice(bytes)
 }
 
-#[test]
-fn the_tessarikv_backend_satisfies_the_whole_contract() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_tessarikv_backend_satisfies_the_whole_contract() {
     let root = tempfile::tempdir().unwrap();
-    let runtime = runtime();
     let mut index = 0;
     let results = conformance::run_all(|| {
         index += 1;
         let path = root.path().join(format!("store-{index}"));
-        Driven {
-            backend: runtime.block_on(open(&path)),
-            runtime: Arc::clone(&runtime),
-        }
-    });
+        async move { open(&path).await }
+    })
+    .await;
     assert_eq!(results.len(), conformance::check_count());
     let failures: Vec<String> = results
         .iter()
@@ -164,7 +94,7 @@ impl Stream {
 
 /// Every pair of every keyspace, read forward and reversed, with each range's count and first
 /// pair: what two backends must agree on after the same writes.
-async fn picture(backend: &dyn AsyncKvBackend, ranges: &[KeyRange]) -> Vec<String> {
+async fn picture(backend: &dyn KvBackend, ranges: &[KeyRange]) -> Vec<String> {
     let mut seen = Vec::new();
     for keyspace in [Keyspace::DATA, Keyspace::INDEX] {
         for range in ranges {
@@ -232,7 +162,7 @@ fn a_random_write_stream_leaves_it_where_it_leaves_the_memory_backend() {
                 } else {
                     None
                 };
-                let landed_memory = AsyncKvBackend::apply(&memory, batch.clone()).await;
+                let landed_memory = KvBackend::apply(&memory, batch.clone()).await;
                 let landed_engine = engine.apply(batch).await;
                 assert_eq!(
                     landed_memory.is_ok(),
@@ -241,7 +171,7 @@ fn a_random_write_stream_leaves_it_where_it_leaves_the_memory_backend() {
                      memory {landed_memory:?}, engine {landed_engine:?}"
                 );
                 if let Some((keyspace, range)) = range {
-                    AsyncKvBackend::delete_range(&memory, keyspace, &range)
+                    KvBackend::delete_range(&memory, keyspace, &range)
                         .await
                         .unwrap();
                     engine.delete_range(keyspace, &range).await.unwrap();

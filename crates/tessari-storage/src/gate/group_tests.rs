@@ -13,8 +13,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use tessari_kv::{GroupFuture, KvFuture};
 use tessari_kv::{
-    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value, WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value, WriteBatch,
 };
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
@@ -65,35 +66,39 @@ impl KvBackend for HeldOpen {
         "held-open"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<Value>> {
-        self.engine.get(keyspace, key)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<Value>> {
+        Box::pin(async move { self.engine.get(keyspace, key).await })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
-        self.engine.scan(request)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
+        Box::pin(async move { self.engine.scan(request).await })
     }
 
-    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
-        self.engine.count(keyspace, range)
+    fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
+        Box::pin(async move { self.engine.count(keyspace, range).await })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.writes.fetch_add(1, Ordering::SeqCst);
-        self.engine.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            self.engine.apply(batch).await
+        })
     }
 
     fn groups_writes(&self) -> bool {
         true
     }
 
-    fn apply_group(&self, batches: Vec<WriteBatch>) -> (usize, Result<()>) {
-        if self.writes.fetch_add(1, Ordering::SeqCst) == 0 {
-            let mut released = self.released.lock().unwrap();
-            while !*released {
-                released = self.let_go.wait(released).unwrap();
+    fn apply_group(&self, batches: Vec<WriteBatch>) -> GroupFuture<'_> {
+        Box::pin(async move {
+            if self.writes.fetch_add(1, Ordering::SeqCst) == 0 {
+                let mut released = self.released.lock().unwrap();
+                while !*released {
+                    released = self.let_go.wait(released).unwrap();
+                }
             }
-        }
-        self.engine.apply_group(batches)
+            self.engine.apply_group(batches).await
+        })
     }
 }
 
@@ -188,27 +193,29 @@ impl KvBackend for PanicsOnce {
         "panics-once"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<Value>> {
-        self.engine.get(keyspace, key)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<Value>> {
+        Box::pin(async move { self.engine.get(keyspace, key).await })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
-        self.engine.scan(request)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
+        Box::pin(async move { self.engine.scan(request).await })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.engine.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move { self.engine.apply(batch).await })
     }
 
     fn groups_writes(&self) -> bool {
         true
     }
 
-    fn apply_group(&self, batches: Vec<WriteBatch>) -> (usize, Result<()>) {
-        if self.groups.fetch_add(1, Ordering::SeqCst) == 0 {
-            panic!("the engine panicked while landing a group");
-        }
-        self.engine.apply_group(batches)
+    fn apply_group(&self, batches: Vec<WriteBatch>) -> GroupFuture<'_> {
+        Box::pin(async move {
+            if self.groups.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("the engine panicked while landing a group");
+            }
+            self.engine.apply_group(batches).await
+        })
     }
 }
 

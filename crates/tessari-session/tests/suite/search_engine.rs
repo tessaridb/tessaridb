@@ -451,7 +451,7 @@ fn the_definition_is_said_back_and_survives_a_script_and_a_reopen() {
         )
         .now()
         .unwrap();
-        Store::open_async(Arc::new(backend)).now().unwrap()
+        Store::open(Arc::new(backend)).now().unwrap()
     };
     {
         let disk = open();
@@ -1007,6 +1007,7 @@ fn the_suffixes_are_exactly_those_of_the_dictionary() {
                 direction: ScanDirection::Forward,
                 limit: None,
             })
+            .now()
             .unwrap()
             .into_iter()
             .map(|(key, _)| key)

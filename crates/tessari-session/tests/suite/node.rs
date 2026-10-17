@@ -302,6 +302,7 @@ fn replication_turned_on_later_brings_the_whole_history_with_it() {
                 tessari_kv::Keyspace::DATA,
                 tessari_kv::KeyRange::all(),
             ))
+            .now()
             .unwrap()
     };
     // Apart from the version each record is keyed by: the replay walks one log

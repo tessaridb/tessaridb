@@ -59,6 +59,7 @@ fn records(backend: &Arc<dyn KvBackend>) -> Vec<(Vec<u8>, Vec<u8>)> {
     };
     backend
         .scan(&request)
+        .now()
         .unwrap()
         .into_iter()
         .map(|(key, value)| (key.as_slice().to_vec(), value.as_slice().to_vec()))
@@ -82,7 +83,7 @@ fn restore(backend: &Arc<dyn KvBackend>, taken: &[(Vec<u8>, Vec<u8>)]) {
     for (key, value) in taken {
         batch = batch.put(Keyspace::DATA, key.clone().into(), value.clone().into());
     }
-    backend.apply(batch).unwrap();
+    backend.apply(batch).now().unwrap();
 }
 
 fn opened(session: &mut Session<'_>) -> String {

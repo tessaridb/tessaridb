@@ -462,5 +462,5 @@ fn versions(
         direction: tessari_kv::ScanDirection::Forward,
         limit: None,
     };
-    backend.scan(&request).unwrap().len()
+    backend.scan(&request).now().unwrap().len()
 }

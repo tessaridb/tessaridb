@@ -13,8 +13,7 @@ use std::ops::Bound;
 use std::sync::Arc;
 
 use tessari_kv::{
-    AsyncKvBackend as _, Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value,
-    WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value, WriteBatch,
 };
 
 use crate::now::Now;
@@ -33,7 +32,7 @@ fn stored() -> MemoryBackend {
     for n in (0..20).step_by(2) {
         batch = batch.put(SPACE, key(n), Value::new(format!("old{n}").into_bytes()));
     }
-    KvBackend::apply(&backend, batch).unwrap();
+    KvBackend::apply(&backend, batch).now().unwrap();
     backend
 }
 
@@ -80,43 +79,47 @@ fn the_holder_reads_the_engine_with_the_pending_writes_applied() {
     let gate = Arc::new(WriteGate::default());
     let overlay = Overlaid::new(Arc::new(stored()), Arc::clone(&gate));
     let reference = stored();
-    KvBackend::apply(&reference, pending()).unwrap();
+    KvBackend::apply(&reference, pending()).now().unwrap();
 
     let turn = gate.hold().now();
     let _ticket = gate.stage(pending());
     for request in requests() {
         assert_eq!(
             overlay.scan(&request).now().unwrap(),
-            KvBackend::scan(&reference, &request).unwrap(),
+            KvBackend::scan(&reference, &request).now().unwrap(),
             "{request:?}"
         );
         assert_eq!(
             overlay.sweep(&request).now().unwrap(),
-            KvBackend::sweep(&reference, &request).unwrap(),
+            KvBackend::sweep(&reference, &request).now().unwrap(),
             "{request:?}"
         );
     }
     for range in ranges() {
         assert_eq!(
             overlay.count(SPACE, &range).now().unwrap(),
-            KvBackend::count(&reference, SPACE, &range).unwrap(),
+            KvBackend::count(&reference, SPACE, &range).now().unwrap(),
             "{range:?}"
         );
     }
     let firsts = ranges();
     assert_eq!(
         overlay.first_of_each(SPACE, &firsts).now().unwrap(),
-        KvBackend::first_of_each(&reference, SPACE, &firsts).unwrap()
+        KvBackend::first_of_each(&reference, SPACE, &firsts)
+            .now()
+            .unwrap()
     );
     for n in 0..24 {
         assert_eq!(
             overlay.get(SPACE, &key(n)).now().unwrap(),
-            KvBackend::get(&reference, SPACE, &key(n)).unwrap(),
+            KvBackend::get(&reference, SPACE, &key(n)).now().unwrap(),
             "k{n}"
         );
         assert_eq!(
             overlay.contains(SPACE, &key(n)).now().unwrap(),
-            KvBackend::contains(&reference, SPACE, &key(n)).unwrap(),
+            KvBackend::contains(&reference, SPACE, &key(n))
+                .now()
+                .unwrap(),
             "k{n}"
         );
     }
@@ -139,13 +142,13 @@ fn a_thread_without_the_turn_reads_the_engine_alone() {
                 for request in requests() {
                     assert_eq!(
                         overlay.scan(&request).now().unwrap(),
-                        KvBackend::scan(&engine, &request).unwrap(),
+                        KvBackend::scan(&engine, &request).now().unwrap(),
                         "{request:?}"
                     );
                 }
                 assert_eq!(
                     overlay.get(SPACE, &key(4)).now().unwrap(),
-                    KvBackend::get(&engine, SPACE, &key(4)).unwrap()
+                    KvBackend::get(&engine, SPACE, &key(4)).now().unwrap()
                 );
             })
             .join()
@@ -155,7 +158,7 @@ fn a_thread_without_the_turn_reads_the_engine_alone() {
     // And the holder, once it has let go, is anybody else.
     assert_eq!(
         overlay.get(SPACE, &key(4)).now().unwrap(),
-        KvBackend::get(&engine, SPACE, &key(4)).unwrap()
+        KvBackend::get(&engine, SPACE, &key(4)).now().unwrap()
     );
 }
 

@@ -34,7 +34,7 @@ fn store() -> Store {
 
 /// How many retired entries the store holds, read off the backend directly so
 /// the count does not depend on any reader of them.
-fn retired(backend: &Arc<MemoryBackend>) -> usize {
+async fn retired(backend: &Arc<MemoryBackend>) -> usize {
     let tag = [KeyKind::RetiredIndex.tag()];
     backend
         .scan(&ScanRequest {
@@ -43,6 +43,7 @@ fn retired(backend: &Arc<MemoryBackend>) -> usize {
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .await
         .unwrap()
         .len()
 }
@@ -196,7 +197,7 @@ fn retired_entries_are_kept_while_a_reader_needs_them_and_reclaimed_after() {
         .now()
         .unwrap();
     Session::new(&store).run_now(SCHEMA).unwrap();
-    assert_eq!(retired(&backend), 0, "nothing has been removed yet");
+    assert_eq!(retired(&backend).now(), 0, "nothing has been removed yet");
 
     let mut held = session(&store);
     let mut writer = session(&store);
@@ -204,9 +205,9 @@ fn retired_entries_are_kept_while_a_reader_needs_them_and_reclaimed_after() {
         writer.run(MOVES).await?;
         // `t:1` lost `a` and `t:4` lost `c`: two retired entries, and a reader
         // older than both is still open, so neither may go.
-        assert_eq!(retired(&backend), 2);
+        assert_eq!(retired(&backend).await, 2);
         assert_eq!(store.reclaim_retired_entries().await.unwrap(), 0);
-        assert_eq!(retired(&backend), 2);
+        assert_eq!(retired(&backend).await, 2);
         Ok(())
     })
     .now()
@@ -214,7 +215,7 @@ fn retired_entries_are_kept_while_a_reader_needs_them_and_reclaimed_after() {
 
     // The reader is gone; no snapshot predates the removals any more.
     assert_eq!(store.reclaim_retired_entries().now().unwrap(), 2);
-    assert_eq!(retired(&backend), 0);
+    assert_eq!(retired(&backend).now(), 0);
 }
 
 #[test]
@@ -227,7 +228,7 @@ fn an_update_that_keeps_its_value_retires_nothing() {
     session(&store)
         .run_now("UPDATE t:1 MERGE { note: 'k is unchanged' };")
         .unwrap();
-    assert_eq!(retired(&backend), 0);
+    assert_eq!(retired(&backend).now(), 0);
 }
 
 #[test]

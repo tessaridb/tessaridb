@@ -58,6 +58,7 @@ fn a_store_opened_without_a_version_counter_resumes_it_from_the_applied_position
                 )
                 .delete(VersionPositionKey::keyspace(), VersionPositionKey.encode()),
         )
+        .now()
         .unwrap();
     drop(store);
 
@@ -98,6 +99,7 @@ fn a_store_written_before_the_epoch_opens_and_reads_as_the_first_leadership() {
             FormatVersionKey.encode(),
             FormatVersion::new(1).encode(),
         ))
+        .now()
         .unwrap();
 
     let store = Store::open(Arc::clone(&shared)).now().unwrap();
@@ -168,7 +170,7 @@ fn a_log_written_before_it_had_writers_is_rewritten_and_attributed_to_nobody() {
         Key::from(position),
         Sequence::new(3).encode(),
     );
-    shared.apply(batch).unwrap();
+    shared.apply(batch).now().unwrap();
 
     let store = Store::open(Arc::clone(&shared)).now().unwrap();
     let migrated = LogId::unattributed(home);
@@ -263,7 +265,7 @@ fn a_store_whose_history_predates_writers_does_not_report_itself_empty() {
         Key::from(position),
         Sequence::new(3).encode(),
     );
-    shared.apply(batch).unwrap();
+    shared.apply(batch).now().unwrap();
 
     // Since ADR-0107 a log written before writers were named is the line's
     // log (`Writer::UNATTRIBUTED` is `Writer::LINE`), and health reports the
@@ -336,7 +338,7 @@ fn a_log_written_before_it_had_homes_is_rewritten_into_the_store_home() {
         Key::from(vec![KeyKind::AppliedPosition.tag()]),
         Sequence::new(3).encode(),
     );
-    shared.apply(batch).unwrap();
+    shared.apply(batch).now().unwrap();
 
     let store = Store::open(Arc::clone(&shared)).now().unwrap();
     assert_eq!(
@@ -389,6 +391,7 @@ fn a_newer_on_disk_format_is_refused_rather_than_opened() {
             FormatVersionKey.encode(),
             future.encode(),
         ))
+        .now()
         .unwrap();
 
     let error = Store::open(shared).now().unwrap_err();
@@ -412,6 +415,7 @@ fn a_store_holding_data_without_a_format_stamp_is_refused_and_left_alone() {
             record.clone(),
             tessari_kv::Value::from(vec![1]),
         ))
+        .now()
         .unwrap();
 
     let error = Store::open(Arc::clone(&shared)).now().unwrap_err();
@@ -423,15 +427,14 @@ fn a_store_holding_data_without_a_format_stamp_is_refused_and_left_alone() {
         other => panic!("unexpected error: {other}"),
     }
     assert_eq!(
-        read_format_version(Arc::new(tessari_kv::Synchronous(Arc::clone(&shared))))
-            .now()
-            .unwrap(),
+        read_format_version(Arc::clone(&shared)).now().unwrap(),
         None,
         "not stamped on the way to refusing"
     );
     assert!(
         shared
             .get(tessari_kv::Keyspace::DATA, &record)
+            .now()
             .unwrap()
             .is_some()
     );
@@ -442,9 +445,7 @@ fn an_empty_store_is_a_new_one_and_is_stamped() {
     let shared = backend();
     Store::open(Arc::clone(&shared)).now().unwrap();
     assert_eq!(
-        read_format_version(Arc::new(tessari_kv::Synchronous(shared)))
-            .now()
-            .unwrap(),
+        read_format_version(shared).now().unwrap(),
         Some(FormatVersion::CURRENT)
     );
 }

@@ -156,7 +156,7 @@ impl Fixture {
                 direction: tessari_kv::ScanDirection::Forward,
                 limit: None,
             };
-            for entry in self.backend.scan(&scan).unwrap() {
+            for entry in self.backend.scan(&scan).now().unwrap() {
                 everything.extend_from_slice(entry.0.as_slice());
                 everything.extend_from_slice(entry.1.as_slice());
             }

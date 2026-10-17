@@ -291,8 +291,8 @@ fn an_expiry_survives_the_store_being_closed_and_opened_again() {
             )
             .now()
             .unwrap(),
-        ) as std::sync::Arc<dyn tessari_kv::AsyncKvBackend>;
-        tessari_storage::Store::open_async(raw).now().unwrap()
+        ) as std::sync::Arc<dyn tessari_kv::KvBackend>;
+        tessari_storage::Store::open(raw).now().unwrap()
     };
     {
         let store = open();

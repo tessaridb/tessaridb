@@ -205,6 +205,7 @@ fn a_store_holding_an_older_format_refuses_a_sketch_rollup_until_finalized() {
             FormatVersionKey.encode(),
             FormatVersion::new(older).encode(),
         ))
+        .now()
         .unwrap();
     let store = Store::open(Arc::clone(&backend)).now().unwrap();
     let mut session = Session::new(&store);

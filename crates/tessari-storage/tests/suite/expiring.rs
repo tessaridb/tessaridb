@@ -43,6 +43,7 @@ fn entries(backend: &Arc<dyn KvBackend>) -> Vec<ExpiryKey> {
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .now()
         .unwrap()
         .into_iter()
         .map(|(key, _)| ExpiryKey::decode(key.as_slice()).unwrap())
@@ -150,6 +151,7 @@ fn a_replica_of_a_limited_space_holds_what_the_writer_kept() {
                 direction: ScanDirection::Forward,
                 limit: None,
             })
+            .now()
             .unwrap()
             .into_iter()
             .map(|(key, _)| ModifiedKey::decode(key.as_slice()).unwrap().id)

@@ -131,6 +131,7 @@ fn the_index_is_built_over_rows_that_are_already_there() {
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .now()
         .unwrap();
     assert!(
         found.len() >= 2,
@@ -217,6 +218,7 @@ fn a_rebuild_removes_an_entry_the_rows_do_not_imply() {
             .encode(),
         ),
     )
+    .now()
     .unwrap();
     assert!(entries(&held, address).contains(&orphan.encode().as_slice().to_vec()));
 
@@ -267,6 +269,7 @@ fn entries(held: &Arc<dyn KvBackend>, address: IndexAddress) -> Vec<Vec<u8>> {
         direction: ScanDirection::Forward,
         limit: None,
     })
+    .now()
     .unwrap()
     .into_iter()
     .map(|(key, _)| key.as_slice().to_vec())

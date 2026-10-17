@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use tessari_kv::AsyncKvBackend;
+use tessari_kv::KvBackend;
 
 use tessari_encoding::{
     AppliedPositionKey, FormatVersion, FormatVersionKey, KeyKind, LogId, LogKey, NODE_ID_LEN,
@@ -193,7 +193,7 @@ impl Health {
 /// readers would reclaim versions the other half is still reading.
 #[derive(Debug, Clone)]
 pub struct Store {
-    backend: Arc<dyn AsyncKvBackend>,
+    backend: Arc<dyn KvBackend>,
     snapshots: Arc<Registry>,
     /// What this process is doing with the declared consumers.
     ///

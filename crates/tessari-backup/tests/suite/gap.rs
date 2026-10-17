@@ -175,7 +175,7 @@ fn cut(backend: &Arc<dyn KvBackend>, home: LogId, sequence: u64) {
         LogKey::keyspace(),
         LogKey::new(home, Sequence::new(sequence)).encode(),
     );
-    backend.apply(batch).unwrap();
+    backend.apply(batch).now().unwrap();
 }
 
 fn answers(store: &Store, script: &str) -> String {
@@ -319,6 +319,7 @@ fn file_the_data_in_the_store_log(backend: &Arc<dyn KvBackend>, store: &Store) {
     for (at, _) in store.log_records(data, Sequence::new(1), 64).now().unwrap() {
         let body = backend
             .get(LogKey::keyspace(), &LogKey::new(data, at).encode())
+            .now()
             .unwrap()
             .unwrap();
         let moved = Sequence::new(STORE_RECORDS.saturating_add(at.get()));
@@ -337,7 +338,7 @@ fn file_the_data_in_the_store_log(backend: &Arc<dyn KvBackend>, store: &Store) {
             AppliedPositionKey::keyspace(),
             AppliedPositionKey::new(data).encode(),
         );
-    backend.apply(batch).unwrap();
+    backend.apply(batch).now().unwrap();
 }
 
 #[test]

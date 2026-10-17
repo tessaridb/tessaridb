@@ -14,7 +14,7 @@ use tessari_storage::Now;
 
 use tessari_constants::HTTP_MAX_BODY_BYTES;
 use tessari_http::Node;
-use tessari_kv::{KvBackend, MemoryBackend};
+use tessari_kv::{KvBackend, KvFuture, MemoryBackend};
 use tessari_storage::Store;
 use tessaridb::Db;
 
@@ -482,26 +482,26 @@ impl KvBackend for Ailing {
         "ailing"
     }
 
-    fn background_errors(&self) -> tessari_kv::Result<u64> {
-        Ok(3)
+    fn background_errors(&self) -> KvFuture<'_, u64> {
+        Box::pin(async move { Ok(3) })
     }
 
-    fn get(
-        &self,
+    fn get<'a>(
+        &'a self,
         keyspace: tessari_kv::Keyspace,
-        key: &tessari_kv::Key,
-    ) -> tessari_kv::Result<Option<tessari_kv::Value>> {
+        key: &'a tessari_kv::Key,
+    ) -> KvFuture<'a, Option<tessari_kv::Value>> {
         self.held.get(keyspace, key)
     }
 
-    fn scan(
-        &self,
-        request: &tessari_kv::ScanRequest,
-    ) -> tessari_kv::Result<Vec<(tessari_kv::Key, tessari_kv::Value)>> {
+    fn scan<'a>(
+        &'a self,
+        request: &'a tessari_kv::ScanRequest,
+    ) -> KvFuture<'a, Vec<(tessari_kv::Key, tessari_kv::Value)>> {
         self.held.scan(request)
     }
 
-    fn apply(&self, batch: tessari_kv::WriteBatch) -> tessari_kv::Result<()> {
+    fn apply(&self, batch: tessari_kv::WriteBatch) -> KvFuture<'_, ()> {
         self.held.apply(batch)
     }
 }
@@ -518,33 +518,35 @@ impl KvBackend for PanicsOnce {
         "panics-once"
     }
 
-    fn background_errors(&self) -> tessari_kv::Result<u64> {
-        if !self
-            .panicked
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            // `resume_unwind` unwinds exactly as a panic does, without the hook's noise.
-            std::panic::resume_unwind(Box::new("a request that fails inside the node"));
-        }
-        Ok(0)
+    fn background_errors(&self) -> KvFuture<'_, u64> {
+        Box::pin(async move {
+            if !self
+                .panicked
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                // `resume_unwind` unwinds exactly as a panic does, without the hook's noise.
+                std::panic::resume_unwind(Box::new("a request that fails inside the node"));
+            }
+            Ok(0)
+        })
     }
 
-    fn get(
-        &self,
+    fn get<'a>(
+        &'a self,
         keyspace: tessari_kv::Keyspace,
-        key: &tessari_kv::Key,
-    ) -> tessari_kv::Result<Option<tessari_kv::Value>> {
+        key: &'a tessari_kv::Key,
+    ) -> KvFuture<'a, Option<tessari_kv::Value>> {
         self.held.get(keyspace, key)
     }
 
-    fn scan(
-        &self,
-        request: &tessari_kv::ScanRequest,
-    ) -> tessari_kv::Result<Vec<(tessari_kv::Key, tessari_kv::Value)>> {
+    fn scan<'a>(
+        &'a self,
+        request: &'a tessari_kv::ScanRequest,
+    ) -> KvFuture<'a, Vec<(tessari_kv::Key, tessari_kv::Value)>> {
         self.held.scan(request)
     }
 
-    fn apply(&self, batch: tessari_kv::WriteBatch) -> tessari_kv::Result<()> {
+    fn apply(&self, batch: tessari_kv::WriteBatch) -> KvFuture<'_, ()> {
         self.held.apply(batch)
     }
 }

@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tessari_storage::Now;
 
 use tessari_encoding::{LogRecord, Mutation, RecordValue, StampedValue};
+use tessari_kv::KvFuture;
 use tessari_kv::{Key, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value, WriteBatch};
 use tessari_storage::{Error, Horizon, Page, Store};
 use tessari_types::{DatabaseId, Epoch, NamespaceId, RecordId, Sequence, TableId};
@@ -31,29 +32,35 @@ impl KvBackend for Counted {
         "counted"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> tessari_kv::Result<Option<Value>> {
-        self.inner.get(keyspace, key)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<Value>> {
+        Box::pin(async move { self.inner.get(keyspace, key).await })
     }
 
-    fn scan(&self, request: &ScanRequest) -> tessari_kv::Result<Vec<(Key, Value)>> {
-        self.inner.scan(request)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
+        Box::pin(async move { self.inner.scan(request).await })
     }
 
-    fn apply(&self, batch: WriteBatch) -> tessari_kv::Result<()> {
-        self.synced.fetch_add(1, Ordering::Relaxed);
-        self.inner.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move {
+            self.synced.fetch_add(1, Ordering::Relaxed);
+            self.inner.apply(batch).await
+        })
     }
 
-    fn apply_unsynced(&self, batch: WriteBatch) -> tessari_kv::Result<()> {
-        self.unsynced.fetch_add(1, Ordering::Relaxed);
-        self.exposed.fetch_add(1, Ordering::Relaxed);
-        self.inner.apply(batch)
+    fn apply_unsynced(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move {
+            self.unsynced.fetch_add(1, Ordering::Relaxed);
+            self.exposed.fetch_add(1, Ordering::Relaxed);
+            self.inner.apply(batch).await
+        })
     }
 
-    fn sync_applied(&self) -> tessari_kv::Result<()> {
-        self.syncs.fetch_add(1, Ordering::Relaxed);
-        self.exposed.store(0, Ordering::Relaxed);
-        Ok(())
+    fn sync_applied(&self) -> KvFuture<'_, ()> {
+        Box::pin(async move {
+            self.syncs.fetch_add(1, Ordering::Relaxed);
+            self.exposed.store(0, Ordering::Relaxed);
+            Ok(())
+        })
     }
 
     // As a power-loss-safe engine does, so the store reaches it through the

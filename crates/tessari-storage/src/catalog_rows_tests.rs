@@ -11,8 +11,9 @@ use crate::now::Now;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use tessari_kv::KvFuture;
 use tessari_kv::{
-    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value, WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value, WriteBatch,
 };
 use tessari_types::{DatabaseId, NamespaceId, TableId};
 
@@ -41,32 +42,40 @@ impl KvBackend for Counting {
         "counting"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<Value>> {
-        self.read();
-        self.engine.get(keyspace, key)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<Value>> {
+        Box::pin(async move {
+            self.read();
+            self.engine.get(keyspace, key).await
+        })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
-        self.read();
-        self.engine.scan(request)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
+        Box::pin(async move {
+            self.read();
+            self.engine.scan(request).await
+        })
     }
 
-    fn first_of_each(
-        &self,
+    fn first_of_each<'a>(
+        &'a self,
         keyspace: Keyspace,
-        ranges: &[KeyRange],
-    ) -> Result<Vec<Option<(Key, Value)>>> {
-        self.read();
-        self.engine.first_of_each(keyspace, ranges)
+        ranges: &'a [KeyRange],
+    ) -> KvFuture<'a, Vec<Option<(Key, Value)>>> {
+        Box::pin(async move {
+            self.read();
+            self.engine.first_of_each(keyspace, ranges).await
+        })
     }
 
-    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
-        self.read();
-        self.engine.count(keyspace, range)
+    fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
+        Box::pin(async move {
+            self.read();
+            self.engine.count(keyspace, range).await
+        })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.engine.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move { self.engine.apply(batch).await })
     }
 }
 

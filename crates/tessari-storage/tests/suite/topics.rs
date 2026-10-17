@@ -26,6 +26,7 @@ fn entries(backend: &Arc<dyn KvBackend>, kind: KeyKind) -> Entries {
             direction: ScanDirection::Forward,
             limit: None,
         })
+        .now()
         .unwrap()
         .into_iter()
         .map(|(key, value)| (key.as_slice().to_vec(), value.as_slice().to_vec()))

@@ -1,5 +1,5 @@
 use super::*;
-use tessari_kv::AsyncKvBackend;
+use tessari_kv::KvBackend;
 
 /// The format this store was written in, if it has been written at all.
 ///
@@ -7,7 +7,7 @@ use tessari_kv::AsyncKvBackend;
 /// exists: `open` settles the format before it resolves the node identity, and
 /// the identity is one of the store's own fields.
 pub(super) async fn read_format_version(
-    backend: Arc<dyn AsyncKvBackend>,
+    backend: Arc<dyn KvBackend>,
 ) -> Result<Option<FormatVersion>> {
     let key = FormatVersionKey.encode();
     let stored = backend.get(FormatVersionKey::keyspace(), &key).await?;
@@ -27,7 +27,7 @@ pub(super) async fn read_format_version(
 /// to it, so data without a stamp is data whose format nobody knows; stamping
 /// it as new would write this build's format over it. One key per keyspace is
 /// read, which is what an empty store costs to tell apart from one that is not.
-pub(super) async fn refuse_data_without_a_stamp(backend: &dyn AsyncKvBackend) -> Result<()> {
+pub(super) async fn refuse_data_without_a_stamp(backend: &dyn KvBackend) -> Result<()> {
     for &keyspace in Keyspace::ALL {
         let first = backend
             .scan(&ScanRequest::new(keyspace, KeyRange::all()).with_limit(1))
@@ -42,7 +42,7 @@ pub(super) async fn refuse_data_without_a_stamp(backend: &dyn AsyncKvBackend) ->
     Ok(())
 }
 
-pub(super) async fn write_initial_metadata(backend: Arc<dyn AsyncKvBackend>) -> Result<()> {
+pub(super) async fn write_initial_metadata(backend: Arc<dyn KvBackend>) -> Result<()> {
     let format_key = FormatVersionKey.encode();
     let batch = WriteBatch::new()
         .expect_absent(FormatVersionKey::keyspace(), format_key.clone())
@@ -73,7 +73,7 @@ pub(super) async fn write_initial_metadata(backend: Arc<dyn AsyncKvBackend>) -> 
 /// Returns the substrate's failure, and a decoding failure when a log key of
 /// the expected old shape does not hold a sequence.
 pub(super) async fn give_an_older_log_its_home(
-    backend: Arc<dyn AsyncKvBackend>,
+    backend: Arc<dyn KvBackend>,
     found: FormatVersion,
 ) -> Result<()> {
     if found >= FormatVersion::HOMED_LOG {
@@ -153,7 +153,7 @@ pub(super) async fn give_an_older_log_its_home(
 /// Returns the substrate's failure, and a decoding failure when a log key of
 /// the expected old shape does not hold a sequence.
 pub(super) async fn give_an_older_log_its_writer(
-    backend: Arc<dyn AsyncKvBackend>,
+    backend: Arc<dyn KvBackend>,
     found: FormatVersion,
 ) -> Result<()> {
     if found >= FormatVersion::WRITER_QUALIFIED_LOG {
@@ -295,7 +295,7 @@ pub(super) fn sequence_in_a_homeless_log_key(key: &[u8]) -> Option<Sequence> {
 /// The `Absent` precondition makes a race between two openers harmless: one
 /// writes, the other is refused and finds the value already there. A refusal is
 /// therefore success, not an error to report.
-pub(super) async fn seed_version_position(backend: Arc<dyn AsyncKvBackend>) -> Result<()> {
+pub(super) async fn seed_version_position(backend: Arc<dyn KvBackend>) -> Result<()> {
     let version_key = VersionPositionKey.encode();
     if backend
         .get(VersionPositionKey::keyspace(), &version_key)

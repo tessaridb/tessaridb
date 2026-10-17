@@ -205,6 +205,7 @@ impl Fixture {
         };
         self.backend
             .scan(&request)
+            .now()
             .unwrap()
             .into_iter()
             .map(|(key, _)| key.as_slice().to_vec())
@@ -234,6 +235,7 @@ impl Fixture {
         };
         self.backend
             .scan(&request)
+            .now()
             .unwrap()
             .into_iter()
             .map(|(key, value)| {
@@ -257,7 +259,7 @@ impl Fixture {
             limit: None,
         };
         let mut found: BTreeMap<IndexValues, (u32, u32)> = BTreeMap::new();
-        for (key, value) in self.backend.scan(&request).unwrap() {
+        for (key, value) in self.backend.scan(&request).now().unwrap() {
             let term = PostingKey::decode(key.as_slice()).unwrap().term;
             let Posting::Counted { frequency, length } = Posting::decode(value.as_slice()).unwrap()
             else {
@@ -284,6 +286,7 @@ impl Fixture {
         };
         self.backend
             .scan(&request)
+            .now()
             .unwrap()
             .into_iter()
             .map(|(key, value)| {
@@ -498,7 +501,7 @@ fn an_index_with_no_dictionary_still_answers_the_frequency_it_always_did() {
     for key in fixture.keys(KeyKind::SearchTerm) {
         batch = batch.delete(KeyKind::SearchTerm.keyspace(), Key::from(key));
     }
-    fixture.backend.apply(batch).unwrap();
+    fixture.backend.apply(batch).now().unwrap();
     assert!(fixture.dictionary().is_empty());
 
     let transaction = fixture.store.begin().now().unwrap();
@@ -722,7 +725,7 @@ fn the_surface_dictionary_equals_a_recount_through_writes_and_deletes() {
         fixture
             .backend
             .scan(&request)
-            .unwrap()
+            .now().unwrap()
             .into_iter()
             .map(|(key, value)| {
                 let pair = SearchSurfaceKey::decode(key.as_slice()).unwrap();

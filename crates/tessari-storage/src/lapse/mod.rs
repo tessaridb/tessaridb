@@ -24,7 +24,7 @@
 mod pass;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use tessari_kv::AsyncKvBackend;
+use tessari_kv::KvBackend;
 
 use tessari_encoding::{ExpiryKey, ExpiryMark, KeyKind, LogRecord, StoreKey, StoreValue};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
@@ -45,7 +45,7 @@ pub(crate) struct Expiring(AtomicBool);
 
 impl Expiring {
     /// Read the flag off the store: set when the expiry index holds any entry.
-    pub(crate) async fn load(backend: &dyn AsyncKvBackend) -> Result<Self> {
+    pub(crate) async fn load(backend: &dyn KvBackend) -> Result<Self> {
         let first = backend
             .scan(&ScanRequest {
                 keyspace: KeyKind::ExpiryIndex.keyspace(),

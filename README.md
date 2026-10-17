@@ -332,7 +332,7 @@ runtime.
 ```rust
 use tessaridb::Db;
 
-let db = Db::open("./data")?;          // or Db::in_memory()
+let db = Db::open("./data").await?;    // or Db::in_memory().await
 let mut session = db.session();
 
 session.run(
@@ -353,9 +353,14 @@ let found = session.run(
        FROM users
       WHERE email LIKE 'ada%' AND city = 'Paris';",
 ).await?;
+
+drop(session);
+db.close().await?;
 ```
 
 The two ways of opening differ in where the bytes live and in nothing else.
+`close` returns once the files are flushed and the directory is free for
+another process; a database that is only dropped closes in the background.
 
 A caller who has a value does not write it into the script. `$name` stands
 wherever a literal stands, and the value travels beside the script:

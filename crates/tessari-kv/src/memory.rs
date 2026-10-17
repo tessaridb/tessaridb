@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::sync::RwLock;
 
-use crate::backend::{KvBackend, ScanDirection, ScanRequest};
+use crate::backend::{KvBackend, KvFuture, ScanDirection, ScanRequest};
 use crate::batch::{WriteBatch, WriteOp};
 use crate::error::{Error, Result};
 use crate::key::{Key, KeyRange, Value};
@@ -98,37 +98,41 @@ impl KvBackend for MemoryBackend {
         BACKEND_NAME
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<Value>> {
-        let guard = self.read_guard()?;
-        Ok(tree_of(&guard, keyspace)?.get(key).cloned())
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<Value>> {
+        Box::pin(async move {
+            let guard = self.read_guard()?;
+            Ok(tree_of(&guard, keyspace)?.get(key).cloned())
+        })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
-        if request.range.is_provably_empty() {
-            return Ok(Vec::new());
-        }
-        let guard = self.read_guard()?;
-        let tree = tree_of(&guard, request.keyspace)?;
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
+        Box::pin(async move {
+            if request.range.is_provably_empty() {
+                return Ok(Vec::new());
+            }
+            let guard = self.read_guard()?;
+            let tree = tree_of(&guard, request.keyspace)?;
 
-        let bounds = (
-            clone_bound(request.range.start()),
-            clone_bound(request.range.end()),
-        );
-        let limit = request.limit.unwrap_or(usize::MAX);
-        let collected: Vec<(Key, Value)> = match request.direction {
-            ScanDirection::Forward => tree
-                .range(bounds)
-                .take(limit)
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-            ScanDirection::Reverse => tree
-                .range(bounds)
-                .rev()
-                .take(limit)
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        };
-        Ok(collected)
+            let bounds = (
+                clone_bound(request.range.start()),
+                clone_bound(request.range.end()),
+            );
+            let limit = request.limit.unwrap_or(usize::MAX);
+            let collected: Vec<(Key, Value)> = match request.direction {
+                ScanDirection::Forward => tree
+                    .range(bounds)
+                    .take(limit)
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+                ScanDirection::Reverse => tree
+                    .range(bounds)
+                    .rev()
+                    .take(limit)
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            };
+            Ok(collected)
+        })
     }
 
     /// Count the range without cloning a key or a value out of it.
@@ -140,14 +144,16 @@ impl KvBackend for MemoryBackend {
     /// Overridden for the same reason [`Self::first_of_each`] is: this is the
     /// backend every test runs against, so a saving that this backend does not
     /// take is a saving the tests cannot see.
-    fn count(&self, keyspace: Keyspace, range: &KeyRange) -> Result<u64> {
-        if range.is_provably_empty() {
-            return Ok(0);
-        }
-        let guard = self.read_guard()?;
-        let tree = tree_of(&guard, keyspace)?;
-        let bounds = (clone_bound(range.start()), clone_bound(range.end()));
-        Ok(u64::try_from(tree.range(bounds).count()).unwrap_or(u64::MAX))
+    fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
+        Box::pin(async move {
+            if range.is_provably_empty() {
+                return Ok(0);
+            }
+            let guard = self.read_guard()?;
+            let tree = tree_of(&guard, keyspace)?;
+            let bounds = (clone_bound(range.start()), clone_bound(range.end()));
+            Ok(u64::try_from(tree.range(bounds).count()).unwrap_or(u64::MAX))
+        })
     }
 
     /// One lock acquisition for every range, rather than one each.
@@ -157,72 +163,76 @@ impl KvBackend for MemoryBackend {
     /// measures round trips at this boundary, and a backend that answered the
     /// batched call by making the un-batched calls would report the batching
     /// as having no effect on the backend that every test uses.
-    fn first_of_each(
-        &self,
+    fn first_of_each<'a>(
+        &'a self,
         keyspace: Keyspace,
-        ranges: &[KeyRange],
-    ) -> Result<Vec<Option<(Key, Value)>>> {
-        if ranges.is_empty() {
-            return Ok(Vec::new());
-        }
-        let guard = self.read_guard()?;
-        let tree = tree_of(&guard, keyspace)?;
-        Ok(ranges
-            .iter()
-            .map(|range| {
-                if range.is_provably_empty() {
-                    return None;
-                }
-                let bounds = (clone_bound(range.start()), clone_bound(range.end()));
-                tree.range(bounds)
-                    .next()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-            })
-            .collect())
+        ranges: &'a [KeyRange],
+    ) -> KvFuture<'a, Vec<Option<(Key, Value)>>> {
+        Box::pin(async move {
+            if ranges.is_empty() {
+                return Ok(Vec::new());
+            }
+            let guard = self.read_guard()?;
+            let tree = tree_of(&guard, keyspace)?;
+            Ok(ranges
+                .iter()
+                .map(|range| {
+                    if range.is_provably_empty() {
+                        return None;
+                    }
+                    let bounds = (clone_bound(range.start()), clone_bound(range.end()));
+                    tree.range(bounds)
+                        .next()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                })
+                .collect())
+        })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        let mut guard = self.write_guard()?;
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move {
+            let mut guard = self.write_guard()?;
 
-        // Every precondition is checked against the pre-batch state before any
-        // operation runs, so a failure leaves the store untouched.
-        for precondition in batch.preconditions() {
-            let tree = tree_of(&guard, precondition.keyspace())?;
-            let observed = tree.get(precondition.key());
-            if !precondition.is_satisfied_by(observed) {
-                return Err(Error::Conflict {
-                    keyspace: precondition.keyspace().name().to_owned(),
-                    key: precondition.key().clone(),
-                });
-            }
-        }
-
-        // An unknown keyspace in any operation must also fail before mutating,
-        // otherwise the batch would be partially applied.
-        for op in batch.ops() {
-            if !guard.contains_key(&op.keyspace()) {
-                return Err(Error::UnknownKeyspace {
-                    keyspace: op.keyspace().name().to_owned(),
-                });
-            }
-        }
-
-        for op in batch.ops() {
-            let Some(tree) = guard.get_mut(&op.keyspace()) else {
-                // Unreachable: the loop above proved every keyspace exists, and
-                // the lock has been held throughout.
-                continue;
-            };
-            match op {
-                WriteOp::Put { key, value, .. } => {
-                    tree.insert(key.clone(), value.clone());
-                }
-                WriteOp::Delete { key, .. } => {
-                    tree.remove(key);
+            // Every precondition is checked against the pre-batch state before any
+            // operation runs, so a failure leaves the store untouched.
+            for precondition in batch.preconditions() {
+                let tree = tree_of(&guard, precondition.keyspace())?;
+                let observed = tree.get(precondition.key());
+                if !precondition.is_satisfied_by(observed) {
+                    return Err(Error::Conflict {
+                        keyspace: precondition.keyspace().name().to_owned(),
+                        key: precondition.key().clone(),
+                    });
                 }
             }
-        }
-        Ok(())
+
+            // An unknown keyspace in any operation must also fail before mutating,
+            // otherwise the batch would be partially applied.
+            for op in batch.ops() {
+                if !guard.contains_key(&op.keyspace()) {
+                    return Err(Error::UnknownKeyspace {
+                        keyspace: op.keyspace().name().to_owned(),
+                    });
+                }
+            }
+
+            for op in batch.ops() {
+                let Some(tree) = guard.get_mut(&op.keyspace()) else {
+                    // Unreachable: the loop above proved every keyspace exists, and
+                    // the lock has been held throughout.
+                    continue;
+                };
+                match op {
+                    WriteOp::Put { key, value, .. } => {
+                        tree.insert(key.clone(), value.clone());
+                    }
+                    WriteOp::Delete { key, .. } => {
+                        tree.remove(key);
+                    }
+                }
+            }
+            Ok(())
+        })
     }
 }
 
@@ -236,11 +246,21 @@ fn clone_bound(bound: &Bound<Key>) -> Bound<Key> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
     use crate::backend::ScanDirection;
     use crate::key::KeyRange;
+
+    /// The answer of a future that must complete on its first poll: the in-memory
+    /// backend never waits.
+    fn ready<T>(future: impl std::future::Future<Output = T>) -> T {
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        match std::pin::pin!(future).poll(&mut context) {
+            std::task::Poll::Ready(answer) => answer,
+            std::task::Poll::Pending => panic!("the in-memory backend's future waited"),
+        }
+    }
 
     #[test]
     fn a_new_store_has_every_keyspace_and_all_are_empty() {
@@ -253,8 +273,8 @@ mod tests {
     #[test]
     fn len_tracks_writes_and_deletes() {
         let backend = MemoryBackend::new();
-        backend
-            .apply(
+        ready(
+            backend.apply(
                 WriteBatch::new()
                     .put(
                         Keyspace::DATA,
@@ -266,12 +286,12 @@ mod tests {
                         Key::from_slice(b"b"),
                         Value::from_slice(b"2"),
                     ),
-            )
-            .unwrap();
+            ),
+        )
+        .unwrap();
         assert_eq!(backend.len(Keyspace::DATA).unwrap(), 2);
 
-        backend
-            .apply(WriteBatch::new().delete(Keyspace::DATA, Key::from_slice(b"a")))
+        ready(backend.apply(WriteBatch::new().delete(Keyspace::DATA, Key::from_slice(b"a"))))
             .unwrap();
         assert_eq!(backend.len(Keyspace::DATA).unwrap(), 1);
     }
@@ -281,19 +301,22 @@ mod tests {
         let backend = MemoryBackend::new();
         let present = Key::from_slice(b"here");
         let absent = Key::from_slice(b"gone");
-        backend
-            .apply(WriteBatch::new().put(Keyspace::DATA, present.clone(), Value::from_slice(b"v")))
-            .unwrap();
+        ready(backend.apply(WriteBatch::new().put(
+            Keyspace::DATA,
+            present.clone(),
+            Value::from_slice(b"v"),
+        )))
+        .unwrap();
 
-        assert!(backend.contains(Keyspace::DATA, &present).unwrap());
-        assert!(!backend.contains(Keyspace::DATA, &absent).unwrap());
+        assert!(ready(backend.contains(Keyspace::DATA, &present)).unwrap());
+        assert!(!ready(backend.contains(Keyspace::DATA, &absent)).unwrap());
     }
 
     #[test]
     fn a_reverse_scan_with_a_limit_returns_the_largest_keys() {
         let backend = MemoryBackend::new();
-        backend
-            .apply(
+        ready(
+            backend.apply(
                 WriteBatch::new()
                     .put(
                         Keyspace::DATA,
@@ -310,8 +333,9 @@ mod tests {
                         Key::from_slice(b"k3"),
                         Value::from_slice(b"3"),
                     ),
-            )
-            .unwrap();
+            ),
+        )
+        .unwrap();
 
         let request = ScanRequest {
             keyspace: Keyspace::DATA,
@@ -319,7 +343,7 @@ mod tests {
             direction: ScanDirection::Reverse,
             limit: Some(2),
         };
-        let pairs = backend.scan(&request).unwrap();
+        let pairs = ready(backend.scan(&request)).unwrap();
         let keys: Vec<Key> = pairs.into_iter().map(|(k, _)| k).collect();
         assert_eq!(keys, vec![Key::from_slice(b"k3"), Key::from_slice(b"k2")]);
     }

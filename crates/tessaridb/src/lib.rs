@@ -52,7 +52,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use tessari_kv::{AsyncKvBackend, KvBackend, MemoryBackend};
+use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_lsm::TessariKvBackend;
 use tessari_storage::{Catalog, ReplicaDefinition, Roles, Store};
 use tessari_types::ShardId;

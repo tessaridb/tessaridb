@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_util::FutureExt as _;
 use tessari_kv::{
-    AsyncKvBackend, Key, KeyRange, Keyspace, KvFuture, MemoryBackend, Result, ScanRequest, Value,
+    Key, KeyRange, Keyspace, KvBackend, KvFuture, MemoryBackend, Result, ScanRequest, Value,
     WriteBatch,
 };
 
@@ -27,21 +27,21 @@ struct StallsOnce {
     stalled: AtomicBool,
 }
 
-impl AsyncKvBackend for StallsOnce {
+impl KvBackend for StallsOnce {
     fn name(&self) -> &'static str {
         "stalls-once"
     }
 
     fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<Value>> {
-        AsyncKvBackend::get(&self.inner, keyspace, key)
+        KvBackend::get(&self.inner, keyspace, key)
     }
 
     fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
-        AsyncKvBackend::scan(&self.inner, request)
+        KvBackend::scan(&self.inner, request)
     }
 
     fn sweep<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
-        AsyncKvBackend::sweep(&self.inner, request)
+        KvBackend::sweep(&self.inner, request)
     }
 
     fn first_of_each<'a>(
@@ -49,34 +49,36 @@ impl AsyncKvBackend for StallsOnce {
         keyspace: Keyspace,
         ranges: &'a [KeyRange],
     ) -> KvFuture<'a, Vec<Option<(Key, Value)>>> {
-        AsyncKvBackend::first_of_each(&self.inner, keyspace, ranges)
+        KvBackend::first_of_each(&self.inner, keyspace, ranges)
     }
 
     fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
-        AsyncKvBackend::count(&self.inner, keyspace, range)
+        KvBackend::count(&self.inner, keyspace, range)
     }
 
     fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
-        AsyncKvBackend::apply(&self.inner, batch)
+        KvBackend::apply(&self.inner, batch)
     }
 
     fn apply_unsynced(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
-        AsyncKvBackend::apply_unsynced(&self.inner, batch)
+        KvBackend::apply_unsynced(&self.inner, batch)
     }
 
     fn sync_applied(&self) -> KvFuture<'_, ()> {
-        AsyncKvBackend::sync_applied(&self.inner)
+        KvBackend::sync_applied(&self.inner)
     }
 
     fn apply_group(
         &self,
         batches: Vec<WriteBatch>,
     ) -> Pin<Box<dyn Future<Output = (usize, Result<()>)> + Send + '_>> {
-        if self.stalled.swap(true, Ordering::Relaxed) {
-            AsyncKvBackend::apply_group(&self.inner, batches)
-        } else {
-            Box::pin(std::future::pending())
-        }
+        Box::pin(async move {
+            if self.stalled.swap(true, Ordering::Relaxed) {
+                KvBackend::apply_group(&self.inner, batches).await
+            } else {
+                std::future::pending().await
+            }
+        })
     }
 
     fn groups_writes(&self) -> bool {
@@ -84,15 +86,15 @@ impl AsyncKvBackend for StallsOnce {
     }
 
     fn background_errors(&self) -> KvFuture<'_, u64> {
-        AsyncKvBackend::background_errors(&self.inner)
+        KvBackend::background_errors(&self.inner)
     }
 
     fn contains<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, bool> {
-        AsyncKvBackend::contains(&self.inner, keyspace, key)
+        KvBackend::contains(&self.inner, keyspace, key)
     }
 
     fn delete_range<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, ()> {
-        AsyncKvBackend::delete_range(&self.inner, keyspace, range)
+        KvBackend::delete_range(&self.inner, keyspace, range)
     }
 }
 

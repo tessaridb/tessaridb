@@ -177,6 +177,7 @@ impl Fixture {
                 direction: ScanDirection::Forward,
                 limit: None,
             })
+            .now()
             .unwrap()
             .len()
     }

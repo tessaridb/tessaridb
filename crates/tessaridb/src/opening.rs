@@ -70,9 +70,9 @@ impl Db {
         let backend = TessariKvBackend::open_with_key(path, config, key.as_ref())
             .await
             .map_err(tessari_storage::Error::from)?;
-        let backend: Arc<dyn AsyncKvBackend> = Arc::new(backend);
+        let backend: Arc<dyn KvBackend> = Arc::new(backend);
         Ok(Self {
-            store: Store::open_async(backend).await?,
+            store: Store::open(backend).await?,
             gather: std::sync::OnceLock::new(),
             participants: std::sync::OnceLock::new(),
             standing_since: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -84,6 +84,22 @@ impl Db {
             backups: std::sync::OnceLock::new(),
             at_rest: key.map(Arc::new),
         })
+    }
+
+    /// Close the database: its files are flushed and its directory released
+    /// before this answers, so another process may open it at once.
+    ///
+    /// A database that is only dropped is closed in the background, and a
+    /// process that exits first leaves the files a kill would have left.
+    ///
+    /// # Errors
+    ///
+    /// A lifecycle refusal when something else still holds the store, such as
+    /// a task given a clone of it; the store stays open for that holder.
+    pub async fn close(self) -> Result<()> {
+        let store = self.store.clone();
+        drop(self);
+        Ok(store.close().await?)
     }
 
     /// A session on this database, with nothing selected.

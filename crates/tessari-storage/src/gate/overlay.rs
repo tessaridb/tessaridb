@@ -15,7 +15,7 @@ use std::ops::Bound;
 use std::sync::Arc;
 
 use tessari_kv::{
-    AsyncKvBackend, Key, KeyRange, Keyspace, KvFuture, Result, ScanDirection, ScanRequest, Value,
+    Error, Key, KeyRange, Keyspace, KvBackend, KvFuture, Result, ScanDirection, ScanRequest, Value,
 };
 
 use super::WriteGate;
@@ -27,12 +27,12 @@ type Within = BTreeMap<Vec<u8>, Option<Value>>;
 /// A backend that shows the turn's holder the writes still pending.
 #[derive(Debug)]
 pub(crate) struct Overlaid {
-    engine: Arc<dyn AsyncKvBackend>,
+    engine: Arc<dyn KvBackend>,
     gate: Arc<WriteGate>,
 }
 
 impl Overlaid {
-    pub(crate) fn new(engine: Arc<dyn AsyncKvBackend>, gate: Arc<WriteGate>) -> Self {
+    pub(crate) fn new(engine: Arc<dyn KvBackend>, gate: Arc<WriteGate>) -> Self {
         Self { engine, gate }
     }
 
@@ -134,7 +134,7 @@ fn merge(request: &ScanRequest, engine: Vec<(Key, Value)>, pending: Within) -> V
     merged
 }
 
-impl AsyncKvBackend for Overlaid {
+impl KvBackend for Overlaid {
     fn name(&self) -> &'static str {
         self.engine.name()
     }
@@ -235,6 +235,23 @@ impl AsyncKvBackend for Overlaid {
 
     fn delete_range<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, ()> {
         self.engine.delete_range(keyspace, range)
+    }
+
+    fn close(self: Arc<Self>) -> KvFuture<'static, ()> {
+        // Nothing is staged once the view is the last handle: every staged
+        // write belongs to a commit still holding the store.
+        match Arc::try_unwrap(self) {
+            Ok(overlaid) => overlaid.engine.close(),
+            Err(shared) => {
+                let backend = shared.engine.name();
+                Box::pin(async move {
+                    Err(Error::Lifecycle {
+                        backend,
+                        reason: "the store is still in use".to_owned(),
+                    })
+                })
+            }
+        }
     }
 }
 

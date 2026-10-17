@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tessari_kv::AsyncKvBackend;
+use tessari_kv::KvBackend;
 
 use tessari_encoding::{NodeIdentity, Roles};
 use tessari_types::{ConflictPolicy, Sequence, TableId};
@@ -336,12 +336,12 @@ impl Store {
 
     /// The backend, for the transaction's read and commit paths: its reads and
     /// writes are futures, so no store call blocks the thread that drives it.
-    pub(crate) fn backend(&self) -> &dyn tessari_kv::AsyncKvBackend {
+    pub(crate) fn backend(&self) -> &dyn tessari_kv::KvBackend {
         &*self.backend
     }
 
     /// The backend as shared, for what holds it beyond one call.
-    pub(crate) fn engine(&self) -> &Arc<dyn AsyncKvBackend> {
+    pub(crate) fn engine(&self) -> &Arc<dyn KvBackend> {
         &self.backend
     }
 

@@ -36,9 +36,9 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use tessari_session::Now;
 use tessari_session::RunNow;
 
+use tessari_kv::KvFuture;
 use tessari_kv::{
-    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, Result, ScanRequest, Value as KvValue,
-    WriteBatch,
+    Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value as KvValue, WriteBatch,
 };
 use tessari_session::{AccessPath, Outcome, Session};
 use tessari_storage::Store;
@@ -83,33 +83,39 @@ impl KvBackend for Counting {
         "counting"
     }
 
-    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<KvValue>> {
-        let found = self.inner.get(keyspace, key)?;
-        if found.is_some() {
-            self.rows.fetch_add(1, AtomicOrdering::Relaxed);
-        }
-        Ok(found)
+    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<KvValue>> {
+        Box::pin(async move {
+            let found = self.inner.get(keyspace, key).await?;
+            if found.is_some() {
+                self.rows.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            Ok(found)
+        })
     }
 
-    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, KvValue)>> {
-        let found = self.inner.scan(request)?;
-        self.rows.fetch_add(found.len(), AtomicOrdering::Relaxed);
-        Ok(found)
+    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, KvValue)>> {
+        Box::pin(async move {
+            let found = self.inner.scan(request).await?;
+            self.rows.fetch_add(found.len(), AtomicOrdering::Relaxed);
+            Ok(found)
+        })
     }
 
-    fn first_of_each(
-        &self,
+    fn first_of_each<'a>(
+        &'a self,
         keyspace: Keyspace,
-        ranges: &[KeyRange],
-    ) -> Result<Vec<Option<(Key, KvValue)>>> {
-        let found = self.inner.first_of_each(keyspace, ranges)?;
-        self.rows
-            .fetch_add(found.iter().flatten().count(), AtomicOrdering::Relaxed);
-        Ok(found)
+        ranges: &'a [KeyRange],
+    ) -> KvFuture<'a, Vec<Option<(Key, KvValue)>>> {
+        Box::pin(async move {
+            let found = self.inner.first_of_each(keyspace, ranges).await?;
+            self.rows
+                .fetch_add(found.iter().flatten().count(), AtomicOrdering::Relaxed);
+            Ok(found)
+        })
     }
 
-    fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.inner.apply(batch)
+    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
+        Box::pin(async move { self.inner.apply(batch).await })
     }
 }
 

@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use tessari_kv::{AsyncKvBackend as _, Key, Keyspace, Value, WriteBatch};
+use tessari_kv::{Key, Keyspace, KvBackend as _, Value, WriteBatch};
 use tessari_vault::{AtRestKey, SecretBytes};
 
 use crate::kv::TessariKvBackend;

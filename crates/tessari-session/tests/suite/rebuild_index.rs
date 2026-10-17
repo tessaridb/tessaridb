@@ -61,7 +61,7 @@ fn keys_of(backend: &Arc<dyn KvBackend>, kind: KeyKind) -> usize {
         direction: ScanDirection::Forward,
         limit: None,
     };
-    backend.scan(&request).unwrap().len()
+    backend.scan(&request).now().unwrap().len()
 }
 
 #[test]
@@ -304,7 +304,7 @@ fn dangling_edges(backend: &Arc<dyn KvBackend>) -> usize {
         direction: ScanDirection::Forward,
         limit: None,
     };
-    let found = backend.scan(&request).unwrap();
+    let found = backend.scan(&request).now().unwrap();
     let present: Vec<_> = found
         .iter()
         .map(|(key, _)| VectorNodeKey::decode(key.as_slice()).unwrap().id)

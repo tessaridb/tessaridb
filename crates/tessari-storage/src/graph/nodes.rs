@@ -30,7 +30,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use tessari_kv::AsyncKvBackend;
+use tessari_kv::KvBackend;
 
 use tessari_encoding::{IndexAddress, StoreKey, StoreValue, VectorNode, VectorNodeKey};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
@@ -41,7 +41,7 @@ use crate::error::Result;
 
 /// Where the nodes this operation has not read yet are.
 struct Stored {
-    backend: Arc<dyn AsyncKvBackend>,
+    backend: Arc<dyn KvBackend>,
     address: IndexAddress,
 }
 
@@ -79,7 +79,7 @@ impl Nodes {
     }
 
     /// The nodes of an index, read as they are asked for.
-    pub(super) fn stored(backend: Arc<dyn AsyncKvBackend>, address: IndexAddress) -> Self {
+    pub(super) fn stored(backend: Arc<dyn KvBackend>, address: IndexAddress) -> Self {
         Self {
             held: RefCell::new(BTreeMap::new()),
             written: RefCell::new(BTreeSet::new()),
