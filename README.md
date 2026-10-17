@@ -28,10 +28,11 @@ written in Rust, for AI applications and the products built around them.
 > a commercial company.
 > What a pre-1.0 release does not promise yet is permanence of the language and the wire:
 > before 1.0 the query language and the wire format may still change, and several
-> engines are still partial. The **on-disk format is held**: a store written by
-> `0.22.0-beta` or any release after it opens under a newer one and reads back the
-> same, and a store from a newer format is refused rather than opened. So pin a
-> released version, and keep a backup you have restored.
+> engines are still partial. **From `0.36.0` the storage engine changes**: a store
+> written by `0.35.3` or earlier is refused, and the upgrade is a backup taken by
+> the old build and restored by the new one (`--backup`, then `--restore`; see the
+> [changelog](CHANGELOG.md)). So pin a released version, and keep a backup you have
+> restored.
 > [**Status**](#status) says what runs today, engine by engine — it is a report,
 > not a roadmap. The [**changelog**](CHANGELOG.md) says what each version is and
 > what it is missing.
@@ -292,12 +293,13 @@ follows is what runs today, not a roadmap.
   counter folds as a summary, asked again for the samples when two shards'
   samples interleave in time. A join side or a `FETCH` into a shard it lacks is
   gathered the same way, narrowed to the keys the near side holds.
-- ✅ **The on-disk format holds across versions:** a store written by
-  `0.22.0-beta` or any release since opens under this build and reads back what the
-  build that wrote it answered — tested against a store each of those releases
-  wrote, its indexes included — and an older layout is rewritten at open where it
-  has to be. A store from a newer format, or one holding data with no format
-  stamp, is refused by name and left untouched. The format is written down
+- ✅ **A store from before `0.36.0` is moved, not opened:** this build runs a new
+  storage engine, so a store written by `0.22.0-beta` … `0.35.3` is refused by name
+  and left untouched, with the way across in the refusal: a snapshot taken by the
+  build that wrote it and restored by this one. Tested against a store each of
+  those releases wrote, and rehearsed from the `0.35.3` image with the restored
+  store answering exactly as the old one did. A store from a newer format, or one
+  holding data with no format stamp, is refused by name and left untouched. The format is written down
   ([`docs/key-grammar.md`](docs/key-grammar.md),
   [`docs/value-system.md`](docs/value-system.md)) and a test fails when the code
   and the documents disagree, or when the format changes without its version

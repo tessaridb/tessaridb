@@ -1,11 +1,20 @@
 # Changelog
 
 Versions before 1.0 do not promise compatibility with each other in the query
-language or the wire format; either may change in any release. The **on-disk
-format is held** from `0.27.0-beta`: a store written by `0.22.0-beta` or any
-release since opens under a newer one and reads back the same, a store from a
-newer format is refused, and going back to an older build is not promised.
-Before `0.22.0-beta`, treat every upgrade as a fresh store.
+language or the wire format; either may change in any release. **From `0.36.0`
+the storage engine is a new one**: a store written by `0.35.3` or any earlier
+release is refused, and the only way across is a backup taken by the build that
+wrote it and restored by `0.36.0`. Within `0.22.0-beta` … `0.35.3` the on-disk
+format was held: a store written by any of them opened under a newer one and read
+back the same. Before `0.22.0-beta`, treat every upgrade as a fresh store.
+
+**Upgrading to `0.36.0`.** Run `tessaridb <store> --backup <file>` on the build that
+wrote the store, then `tessaridb <new store> --restore <file>` on `0.36.0`; every
+node of a cluster is moved the same way. The snapshot carries the records and the
+catalog, not the history: `VERSION` reads and change-feed positions from before the
+move do not carry over. Going back is the same path in reverse, a snapshot taken by
+`0.36.0` restored by `0.35.3`. The embedded API is async from `0.36.0`: `Db::open`,
+`Db::in_memory` and `Db::close` return futures, called from a Tokio runtime.
 
 The three numbers a pre-release carries are never reused by the release that
 follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
