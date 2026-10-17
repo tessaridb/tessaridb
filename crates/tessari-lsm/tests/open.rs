@@ -189,6 +189,33 @@ async fn the_store_records_the_options_it_is_actually_running_with() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_sizes_a_store_is_configured_with_are_the_ones_it_runs_with() {
+    // Values no default shares, so an option the open drops reads as the
+    // engine's default and not as the configured one.
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let mut sized = config();
+    sized.block_cache_bytes = 3 << 20;
+    sized.memtable_bytes = 2 << 20;
+    sized.max_open_files = 77;
+
+    let store = TessariKvBackend::open(&path, sized).await.unwrap();
+    assert_eq!(store.name(), "lsm", "the backend's stable name moved");
+    let text = std::fs::read_to_string(&effective_options_files(&path).unwrap()[0]).unwrap();
+    for (option, value) in [
+        ("block_cache_bytes", 3_u64 << 20),
+        ("memtable_bytes", 2 << 20),
+        ("max_open_files", 77),
+    ] {
+        assert!(
+            text.contains(&format!("{option}: {value},")),
+            "{option} is not {value} in the options the store runs with: {text}"
+        );
+    }
+    drop(store);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_healthy_store_reports_no_failed_background_work() {
     let root = tempfile::tempdir().unwrap();
     let store = TessariKvBackend::open(root.path().join("store"), config())
