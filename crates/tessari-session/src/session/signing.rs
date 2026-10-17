@@ -192,6 +192,7 @@ impl<'a> Session<'a> {
             acknowledge_open: None,
             across_open: false,
             event_depth: 0,
+            now: self.now,
         };
         probe.acting_as(id)?;
         Ok(probe)

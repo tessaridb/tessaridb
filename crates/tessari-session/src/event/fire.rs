@@ -127,6 +127,9 @@ impl<'a> Session<'a> {
             acknowledge_open: None,
             across_open: false,
             event_depth: self.event_depth.saturating_add(1),
+            // The writer's statement is still running: its condition and its
+            // body read the writer's instant.
+            now: self.now,
         };
         // The record as the writer may read it: a read of it, authorized as the
         // writer's own would be, and then their field grant. A writer who may

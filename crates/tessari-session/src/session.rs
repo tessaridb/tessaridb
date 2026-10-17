@@ -131,6 +131,10 @@ pub struct Session<'a> {
     /// How many events deep this session runs: zero for a caller's session,
     /// one more for each event body a write ran (ADR-0110 D5).
     pub(crate) event_depth: u8,
+    /// The clock as the running statement began, which every `time::now()` in
+    /// it answers (DB-21): read once per statement, so two calls in one
+    /// statement are one instant rather than two readings a walk apart.
+    pub(crate) now: std::time::SystemTime,
 }
 
 /// Who a session is, to a queue.
@@ -154,7 +158,7 @@ pub struct Consumer {
 impl<'a> Session<'a> {
     /// Open a session on a store, with nothing selected.
     #[must_use]
-    pub const fn new(store: &'a Store) -> Self {
+    pub fn new(store: &'a Store) -> Self {
         Self {
             store,
             identity: Identity::Anonymous,
@@ -173,6 +177,7 @@ impl<'a> Session<'a> {
             acknowledge_open: None,
             across_open: false,
             event_depth: 0,
+            now: std::time::SystemTime::now(),
         }
     }
 

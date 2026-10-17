@@ -117,12 +117,9 @@ fn one_statement_observes_one_instant_however_many_records_it_touches() {
     );
 }
 
-/// The fold is per **expression**, and this says where the guarantee stops.
-///
-/// Two calls written side by side are two expressions and may answer with two
-/// instants. Pinned because it is the boundary of the claim above: what the
-/// language promises is that *one* `time::now()` answers alike for every record
-/// it is applied to — not that a statement has a single clock reading.
+/// The fold is per **expression**: each of two calls answers alike for every
+/// record. That two calls also answer each other's instant is the statement's
+/// one clock reading, pinned by `two_calls_in_one_statement_answer_one_instant`.
 #[test]
 fn the_guarantee_is_per_expression_and_this_says_so() {
     let store = store();
@@ -236,4 +233,34 @@ fn a_default_may_still_be_the_instant() {
         matches!(seen.as_slice(), [Value::Datetime(_)]),
         "a default of time::now() did not write an instant: {seen:?}"
     );
+}
+
+/// Two calls in one statement read one clock (DB-21).
+///
+/// The read between them walks every record, so a clock read at each call
+/// answers two instants apart by the time that walk takes, measured on
+/// `0.35.3` at 200–450 µs, every run. An event condition written
+/// `($before.until ?? time::now()) > time::now()` was true for a record with no
+/// `until` for exactly that reason.
+#[test]
+fn two_calls_in_one_statement_answer_one_instant() {
+    let store = store();
+    let mut session = ready(&store);
+    let Outcome::Value(Value::Array(held)) = run(
+        &mut session,
+        "RETURN [time::now(), array::len((SELECT n FROM ticks)), time::now()];",
+    ) else {
+        panic!("not an array")
+    };
+    assert_eq!(
+        held.get(1),
+        Some(&Value::from(i64::try_from(MANY).unwrap())),
+        "the read between the two calls did not walk the records"
+    );
+    assert!(matches!(held.first(), Some(Value::Datetime(_))));
+    assert_eq!(held.first(), held.get(2), "the statement read two clocks");
+    let Outcome::Value(same) = run(&mut session, "RETURN time::now() = time::now();") else {
+        panic!("not a value")
+    };
+    assert_eq!(same, Value::Bool(true));
 }

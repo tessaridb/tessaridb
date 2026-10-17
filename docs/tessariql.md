@@ -6608,7 +6608,9 @@ something that is not there is unbounded rather than unknown.
 
 `time::now()` is read once, in the session, so the instant that reaches the log
 is a value like any other — a replica applies what was written rather than
-asking its own clock and reaching a different answer.
+asking its own clock and reaching a different answer. It is read once per
+**statement**: every `time::now()` in one statement, and in the events its writes
+fire, answers the same instant, so `time::now() = time::now()` is `true`.
 
 **A condition must be a boolean.** Every operator above answers with one, so this
 only bites when a bare path or literal stands where a question was meant:
