@@ -16,6 +16,7 @@ impl<'a> Session<'a> {
         statement: &Statement,
     ) -> Result<Outcome> {
         let span = statement.span;
+        self.now = std::time::SystemTime::now();
         // **Views are expanded before the statement is authorized, and the
         // order is the security property.** The grant check reads the tables a
         // statement names off the parsed tree, so a view replaced any later

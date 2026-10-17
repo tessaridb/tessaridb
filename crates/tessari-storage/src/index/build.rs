@@ -150,13 +150,14 @@ pub(crate) async fn build(
     if definition.search || definition.engine.is_some() {
         let declared = analyzers_on(
             view,
+            record.mutations(),
             definition.namespace,
             definition.database,
             definition.table,
         )
         .await?;
         let named = if definition.engine.is_some() {
-            analyzers_named(view).await?
+            analyzers_named(view, record.mutations()).await?
         } else {
             BTreeMap::new()
         };

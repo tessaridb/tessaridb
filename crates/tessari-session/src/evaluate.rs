@@ -386,6 +386,11 @@ impl Session<'_> {
         if *function == Function::SessionContext {
             return self.session_context().await;
         }
+        // One clock per statement (DB-21): the reading `step` took as
+        // the statement began, not a fresh one per call.
+        if *function == Function::TimeNow {
+            return Ok(Value::Datetime(crate::call::instant_of(self.now, *span)?));
+        }
         // A record reference is written by its table's name, and the
         // name is the catalog's, not a value the call is given.
         if *function == Function::JsonEncode {

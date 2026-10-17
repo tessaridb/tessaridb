@@ -82,6 +82,7 @@ impl Detached {
             acknowledge_open: None,
             across_open: false,
             event_depth: 0,
+            now: std::time::SystemTime::now(),
         }
     }
 }

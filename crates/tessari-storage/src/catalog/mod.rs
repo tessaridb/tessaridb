@@ -64,7 +64,7 @@ use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
 pub use analyzer::AnalyzerDefinition;
 pub use authority::{Authority, Held, Kind, Reach};
 pub(crate) use carried::{carried_to, home_of};
-pub(crate) use change::{CatalogChange, catalog_change, defined_index};
+pub(crate) use change::{CatalogChange, catalog_change, defined_analyzer, defined_index};
 pub use consumer::{ConsumerDefinition, Feed, Mapped, OnFailure};
 pub(crate) use decoded::DecodedTables;
 pub use definition::{

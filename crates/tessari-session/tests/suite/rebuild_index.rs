@@ -22,7 +22,7 @@ use tessari_session::RunNow;
 
 use tessari_encoding::{KeyKind, StoreKey, StoreValue, VectorNode, VectorNodeKey};
 use tessari_kv::{KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
-use tessari_session::{Error, Session};
+use tessari_session::{AccessPath, Error, Outcome, Session};
 use tessari_storage::Store;
 
 /// A store, and the backend handle underneath it.
@@ -362,4 +362,93 @@ fn rebuilding_a_vector_index_takes_back_the_edges_churn_left() {
         .unwrap()
         .len();
     assert_eq!(found, 3);
+}
+
+/// The ids a full-text read answers, and the path it took.
+fn matched(session: &mut Session<'_>, read: &str) -> (Vec<String>, AccessPath) {
+    let outcomes = session.run_now(read).unwrap();
+    let Some(Outcome::Records { records, plan, .. }) = outcomes.last() else {
+        panic!("{read}: {:?}", outcomes.last());
+    };
+    let ids = records.iter().map(|(id, _)| id.to_string()).collect();
+    (ids, plan.access)
+}
+
+const ANALYSED: &str = "\
+DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
+DEFINE FIELD body ON notes TYPE string ANALYZER english;\n";
+
+const SHELLS: &str = "\
+CREATE notes:1 = { body: 'the shell' };\n\
+CREATE notes:2 = { body: 'a Shell' };\n";
+
+/// The postings the same two rows leave when nothing shares a transaction: the
+/// analyzer and the field committed, then the index, then the rows.
+fn postings_one_at_a_time() -> usize {
+    let (store, backend) = store();
+    let mut session = ready(&store);
+    session.run_now(ANALYSED).unwrap();
+    session
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .unwrap();
+    session.run_now(SHELLS).unwrap();
+    keys_of(&backend, KeyKind::Posting)
+}
+
+#[test]
+fn an_index_built_beside_its_fields_analyzer_indexes_the_rows() {
+    // DB-23: the analyzer, the field naming it, the index and the rows in one
+    // transaction. The build reads the field's analyzer; one that only looks at
+    // the committed catalog finds none, posts no terms, and the read answers
+    // nothing through the index while a scan finds both rows.
+    let (store, backend) = store();
+    let mut session = ready(&store);
+    session
+        .run_now(&format!(
+            "BEGIN;\n{ANALYSED}DEFINE INDEX by_body ON notes FIELDS body SEARCH;\n{SHELLS}COMMIT;"
+        ))
+        .unwrap();
+
+    let (ids, path) = matched(
+        &mut session,
+        "SELECT id FROM notes WHERE body MATCHES 'shells';",
+    );
+    assert_ne!(path, AccessPath::Scan, "the index served nothing");
+    assert_eq!(ids, ["1", "2"], "served by {path:?}");
+    let expected = postings_one_at_a_time();
+    assert!(
+        expected > 0,
+        "the control indexed nothing, so nothing is proved"
+    );
+    assert_eq!(keys_of(&backend, KeyKind::Posting), expected);
+}
+
+#[test]
+fn rows_written_beside_their_fields_analyzer_are_indexed() {
+    // The same lookup on the other path: the index is committed first, and the
+    // field's analyzer is declared in the transaction that writes the rows.
+    let (store, backend) = store();
+    let mut session = ready(&store);
+    session
+        .run_now("DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;")
+        .unwrap();
+    session
+        .run_now("DEFINE INDEX by_body ON notes FIELDS body SEARCH;")
+        .unwrap();
+    session
+        .run_now(&format!(
+            "BEGIN;\nDEFINE FIELD body ON notes TYPE string ANALYZER english;\n{SHELLS}COMMIT;"
+        ))
+        .unwrap();
+
+    let (ids, path) = matched(
+        &mut session,
+        "SELECT id FROM notes WHERE body MATCHES 'shells';",
+    );
+    assert_ne!(path, AccessPath::Scan, "the index served nothing");
+    assert_eq!(ids, ["1", "2"], "served by {path:?}");
+    assert_eq!(
+        keys_of(&backend, KeyKind::Posting),
+        postings_one_at_a_time()
+    );
 }
