@@ -41,26 +41,27 @@
 
 mod dial;
 
-use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
+use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-use rustls::{ClientConnection, ServerConfig, ServerConnection};
+use tokio_rustls::TlsAcceptor;
 
 use tessari_constants::GREETING_SECONDS;
 use tessari_encoding::NODE_ID_LEN;
 
-use crate::collection::{Collect, Collected, Origin};
+use crate::collection::{Answering, Collect, Collected, Origin};
 use crate::credential;
 use crate::error::{Error, Result};
-use crate::frame;
 use crate::gathering::{Gather, Page, Ungathered};
 use crate::grant::{Ballot, Deciding, Refused, Vote};
 use crate::keys::PeerKeys;
 use crate::peer::{Hello, PeerFrame, Purpose, admit};
+use crate::{frame, frame_async};
+pub(crate) use dial::{Link, framed, greeting, hear, open, open_within, say, within};
 pub use dial::{call, call_within};
-pub(crate) use dial::{greeting, hear, open, open_within, say};
 
 /// What this node shows a peer, and the key that proves it is ours.
 #[derive(Debug)]
@@ -153,20 +154,25 @@ impl Peers {
         voter: &Deciding,
         log: &dyn Origin,
     ) -> Result<Met> {
-        let (mut socket, _) = self.listener.accept()?;
+        let listener = self.listener.try_clone()?;
+        listener.set_nonblocking(true)?;
+        let listener = tokio::net::TcpListener::from_std(listener)?;
+        let (socket, _) = listener.accept().await?;
         socket.set_nodelay(true)?;
-        let bound = Some(Duration::from_secs(GREETING_SECONDS));
-        socket.set_read_timeout(bound)?;
-        socket.set_write_timeout(bound)?;
-        let mut session = ServerConnection::new(Arc::clone(&self.settings))
-            .map_err(|why| Error::Transport(why.to_string()))?;
-        session
-            .complete_io(&mut socket)
+        let bound = Duration::from_secs(GREETING_SECONDS);
+        let accepting = TlsAcceptor::from(Arc::clone(&self.settings)).accept(socket);
+        let mut link = tokio::time::timeout(bound, accepting)
+            .await
+            .map_err(|_| Error::Io(std::io::ErrorKind::TimedOut.into()))?
             .map_err(|why| Error::Transport(why.to_string()))?;
 
-        let shown = session.peer_certificates().and_then(<[_]>::first).cloned();
-        let mut link = rustls::Stream::new(&mut session, &mut socket);
-        let said = hear(&mut link)?;
+        let shown = link
+            .get_ref()
+            .1
+            .peer_certificates()
+            .and_then(<[_]>::first)
+            .cloned();
+        let said = within_greeting(hear(&mut link)).await?;
         let presented = credential::presented(shown.as_ref(), said.node)?;
         admit(Some(&presented), &said, me)?;
         // Read here and not before the accept above: see the note on this
@@ -174,7 +180,7 @@ impl Peers {
         // node is about to state are the ones it holds at the moment it states
         // them.
         let mine = mine()?;
-        say(&mut link, &mine)?;
+        within_greeting(say(&mut link, &mine)).await?;
 
         // Whatever the peer asks next rides the connection the greeting opened.
         // Nothing at all is a peer that only wanted to know who we are — and a
@@ -182,7 +188,7 @@ impl Peers {
         // purpose: the exchange this connection was opened for completed, and
         // there is no half-read frame to be wrong about. A truncated frame is
         // still `Truncated`, because that failure happens after a header.
-        let asked = match frame::read_tagged(&mut link) {
+        let asked = match within_greeting(frame_async::read_tagged(&mut link)).await {
             Ok(asked) => asked,
             Err(Error::Io(why)) if why.kind() == std::io::ErrorKind::UnexpectedEof => None,
             Err(why) => return Err(why),
@@ -190,21 +196,41 @@ impl Peers {
         let voted = match asked {
             None => None,
             // A copy is the one follow-up answered by more than one frame
-            // (ADR-0094 D3), so it is written here rather than by `answering`.
+            // (ADR-0094 D3): the log is read on one side of a bounded channel
+            // and written to the link on the other, as the door does.
             Some((tag, _)) if tag == PeerFrame::State.tag() => {
-                let copied = log
-                    .copied(said.node, &mut |tag, body| {
-                        Box::pin(std::future::ready(frame::write_tagged(
-                            &mut link, tag, &body,
-                        )))
-                    })
-                    .await;
-                copied.or_else(|why| refusal_frame(&mut link, why))?;
+                let (sender, mut receiver) = tokio::sync::mpsc::channel::<(u8, Vec<u8>)>(4);
+                let follower = said.node;
+                // The writer is the copy's own, so the channel closes, and the
+                // forwarding ends, when the copy does.
+                let copying = async move {
+                    let mut write = move |tag, body| -> Answering<'static, Result<()>> {
+                        let sender = sender.clone();
+                        Box::pin(async move {
+                            sender.send((tag, body)).await.map_err(|_| {
+                                Error::Transport("the follower stopped reading the copy".to_owned())
+                            })
+                        })
+                    };
+                    log.copied(follower, &mut write).await
+                };
+                let forwarding = async {
+                    while let Some((tag, body)) = receiver.recv().await {
+                        within_greeting(frame_async::write_tagged(&mut link, tag, &body)).await?;
+                    }
+                    Ok::<(), Error>(())
+                };
+                let (copied, forwarded) = tokio::join!(copying, forwarding);
+                forwarded?;
+                match copied {
+                    Ok(()) => {}
+                    Err(why) => refusal_frame(&mut link, why).await?,
+                }
                 None
             }
             Some((tag, body)) => {
                 let (tag, reply, voted) = answering(tag, &body, &said, &mine, voter, log).await?;
-                frame::write_tagged(&mut link, tag, &reply)?;
+                within_greeting(frame_async::write_tagged(&mut link, tag, &reply)).await?;
                 voted
             }
         };
@@ -218,11 +244,28 @@ impl Peers {
 
 /// A copy's refusal, written as the frame it crosses the wire as: the
 /// subscription's, for a node nobody subscribed, or the failure itself.
-pub(crate) fn refusal_frame(link: &mut impl std::io::Write, why: Error) -> Result<()> {
+pub(crate) async fn refusal_frame(
+    link: &mut (impl tokio::io::AsyncWrite + Unpin),
+    why: Error,
+) -> Result<()> {
     match why {
-        Error::Unsubscribed => frame::write_tagged(link, PeerFrame::Unsubscribed.tag(), &[]),
+        Error::Unsubscribed => {
+            within_greeting(frame_async::write_tagged(
+                link,
+                PeerFrame::Unsubscribed.tag(),
+                &[],
+            ))
+            .await
+        }
         other => Err(other),
     }
+}
+
+/// A step of the greeting's exchange, bounded by the greeting's deadline.
+async fn within_greeting<T>(step: impl Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(Duration::from_secs(GREETING_SECONDS), step)
+        .await
+        .map_err(|_| Error::Io(std::io::ErrorKind::TimedOut.into()))?
 }
 
 /// The one frame that answers a peer's follow-up, and the vote it cast if it was a ballot.

@@ -58,19 +58,12 @@ pub(crate) async fn stand_for_leadership(
             .checked_sub(tessari_storage::LEASE_TTL)
             .unwrap_or(started),
     });
-    // The runtime this cadence runs on, for the canvass. A pass runs on the
-    // blocking pool, because reading the catalog is store work; the canvass is
-    // network I/O the wire crate runs as tasks on this runtime, so the pass
-    // waits for it with `Handle::block_on` — which is the bridge for a thread
-    // that is not one of the runtime's workers, and a blocking-pool thread is
-    // not (G053 SG2b).
-    let runtime = tokio::runtime::Handle::current();
     // The campaign cadence the installed failover policy states, re-read every
     // pass (G053 SG2c): a pass that returns before it reaches the catalog keeps
     // the last one it read.
     let mut cadence = tessari_storage::Failover::DEFAULT.campaign();
     let mut pass = async move |now: std::time::Instant, cadence: &mut std::time::Duration| {
-        let (db, keys, voter, published, runtime) = (&*db, &keys, &*voter, &*published, &runtime);
+        let (db, keys, voter, published) = (&*db, &keys, &*voter, &*published);
         let store = db.store();
         // Identity first, and the catalog only once this node is known to
         // stand. Reading the roles costs a record; reading every replica the
@@ -109,7 +102,7 @@ pub(crate) async fn stand_for_leadership(
         let Some(voting) = tessari_wire::voters(me.roles, &declared, &me.id) else {
             return;
         };
-        // ADR-0082. The placed range on its own line, and on its own thread:
+        // ADR-0082. The placed range on its own line, beside the store's:
         // the store line's own guards return early — a follower that hears
         // the store leader does not stand for the STORE — and a range
         // this node is placed on must still be stood for while somebody else
@@ -127,7 +120,6 @@ pub(crate) async fn stand_for_leadership(
             keys,
             voter,
             published,
-            runtime,
             periods,
             leads_the_store: store
                 .leads(tessari_types::Reach::Store)
@@ -136,13 +128,10 @@ pub(crate) async fn stand_for_leadership(
             roles: me.roles,
         };
         let (on_a_line, yielded) = (&mut on_a_line, &mut yielded);
-        // Both on scoped threads of their own: each drives its store work and
-        // its canvass through the runtime's handle, which a thread already
-        // inside the runtime (this pass's) may not do.
-        std::thread::scope(|scope| {
-            scope.spawn(|| stand_for_a_placed_range(db, &candidate, (on_a_line, yielded), now));
-            scope.spawn(|| stand_for_the_store(db, &candidate, (&mut renewing, policy), now));
-        });
+        tokio::join!(
+            stand_for_a_placed_range(db, &candidate, (on_a_line, yielded), now),
+            stand_for_the_store(db, &candidate, (&mut renewing, policy), now),
+        );
     };
     // Nothing wakes the campaign early: it runs on the policy's cadence alone.
     let unwoken = tokio::sync::Notify::new();
@@ -154,7 +143,7 @@ pub(crate) async fn stand_for_leadership(
 }
 
 /// Stand for the store line, if this node is the one that should (ADR-0066).
-fn stand_for_the_store(
+async fn stand_for_the_store(
     db: &Db,
     candidate: &Candidate<'_>,
     (renewing, policy): (
@@ -170,7 +159,6 @@ fn stand_for_the_store(
         keys,
         voter,
         published,
-        runtime,
         periods,
         ..
     } = *candidate;
@@ -253,7 +241,7 @@ fn stand_for_the_store(
     if peers.is_empty() {
         return;
     }
-    let said = match runtime.block_on(greeting(db)) {
+    let said = match greeting(db).await {
         Ok(said) => said,
         Err(why) => {
             tracing::warn!(error = %why, "this node cannot say what it holds");
@@ -276,15 +264,19 @@ fn stand_for_the_store(
         lease: periods.lease(),
     };
     let before = renewing.standing();
-    let held = renewing.once(me, now, |lease, next| {
-        runtime.block_on(standing.renew(voter, lease, next, now))
-    });
+    let held = match renewing.due(now) {
+        Some((lease, next)) => {
+            let stood = standing.renew(voter, lease, next, now).await;
+            renewing.answered(me, now, next, stood)
+        }
+        None => renewing.standing(),
+    };
     if held != before {
         // Installed as it was granted, whole. The lease is dated from the
         // instant the round opened, so handing the store a span instead
         // would restart that clock here and spend the canvass out of the
         // voters' window rather than this node's.
-        runtime.block_on(db.hold(held.epoch, held.lease()));
+        db.hold(held.epoch, held.lease()).await;
     }
     if held.epoch != before.epoch {
         tracing::info!(epoch = held.epoch.get(), "leading the store line");
@@ -301,8 +293,9 @@ fn stand_for_the_store(
         // leads. A store that refuses the write has not un-elected this
         // node, and treating it as fatal would let a disk hiccup
         // overturn a decision a majority took.
-        if let Err(refused) =
-            runtime.block_on(db.record_leadership(tessaridb::Reach::Store, held.epoch))
+        if let Err(refused) = db
+            .record_leadership(tessaridb::Reach::Store, held.epoch)
+            .await
         {
             tracing::warn!(
                 epoch = held.epoch.get(),
@@ -325,8 +318,6 @@ pub(crate) struct Candidate<'a> {
     keys: &'a tessari_wire::PeerKeys,
     voter: &'a tessari_wire::Deciding,
     published: &'a tessari_wire::Published,
-    /// The runtime the canvass runs its ballots on.
-    runtime: &'a tokio::runtime::Handle,
     /// The periods the installed failover policy states (G053 SG2c).
     periods: tessari_storage::Failover,
     /// Whether this node leads the store line, which makes it the candidate
@@ -354,7 +345,7 @@ type Yielded = (tessari_types::Reach, std::time::Instant);
 /// leadership row, which homes at the range and so commits under the lease just
 /// won. Logged rather than propagated, for the store line's reason: a round a
 /// majority granted is not overturned by a store that refused the record of it.
-pub(crate) fn stand_for_a_placed_range(
+pub(crate) async fn stand_for_a_placed_range(
     db: &Db,
     candidate: &Candidate<'_>,
     (on_a_line, yielded): (&mut Option<OnALine>, &mut Option<Yielded>),
@@ -388,7 +379,7 @@ pub(crate) fn stand_for_a_placed_range(
     ) {
         return;
     }
-    if hands_to_the_preferred(db, candidate, range, yielded, now) {
+    if hands_to_the_preferred(db, candidate, range, yielded, now).await {
         return;
     }
     let peers: Vec<_> = candidate
@@ -402,11 +393,13 @@ pub(crate) fn stand_for_a_placed_range(
     // The ballot names where this node stands on THIS range's line: a store
     // leader taking a range back is placed nowhere, so its greeting names no
     // line, and a voter would read it as holding none of the range.
-    let said = match candidate.runtime.block_on(async {
+    let said = match (async {
         let mut said = greeting(db).await?;
         said.line = Some(crate::greeting_round::line_of(db.store(), range).await?);
         Ok::<_, tessari_storage::Error>(said)
-    }) {
+    })
+    .await
+    {
         Ok(said) => said,
         Err(why) => {
             tracing::warn!(error = %why, "this node cannot say what it holds");
@@ -417,10 +410,7 @@ pub(crate) fn stand_for_a_placed_range(
         // Above every leadership the range's logs already hold (DB-15): a
         // range placed after the store line wrote to it keeps those records,
         // and a follower reads a line numbered below them as deposed.
-        let written = match candidate
-            .runtime
-            .block_on(db.store().newest_leadership_in(range))
-        {
+        let written = match db.store().newest_leadership_in(range).await {
             Ok(written) => written,
             Err(why) => {
                 tracing::warn!(range = ?range, error = %why, "this node cannot say which leadership the range's logs reach");
@@ -450,22 +440,19 @@ pub(crate) fn stand_for_a_placed_range(
         lease: candidate.periods.lease(),
     };
     let before = renewing.standing();
-    let held = renewing.once(candidate.me, now, |lease, next| {
-        candidate
-            .runtime
-            .block_on(standing.renew(candidate.voter, lease, next, now))
-    });
+    let held = match renewing.due(now) {
+        Some((lease, next)) => {
+            let stood = standing.renew(candidate.voter, lease, next, now).await;
+            renewing.answered(candidate.me, now, next, stood)
+        }
+        None => renewing.standing(),
+    };
     if held != before {
-        candidate
-            .runtime
-            .block_on(db.store().hold_range(range, held.epoch, held.lease()));
+        db.store().hold_range(range, held.epoch, held.lease()).await;
     }
     if held.epoch != before.epoch {
         tracing::info!(range = ?range, epoch = held.epoch.get(), "leading a range");
-        if let Err(refused) = candidate
-            .runtime
-            .block_on(db.record_leadership(range, held.epoch))
-        {
+        if let Err(refused) = db.record_leadership(range, held.epoch).await {
             tracing::warn!(
                 range = ?range,
                 epoch = held.epoch.get(),
@@ -485,7 +472,7 @@ pub(crate) fn stand_for_a_placed_range(
 /// elected, the hand-over a moved placement already takes (ADR-0098 D2). It
 /// then stays off the line for four leases, so it does not win the range back
 /// in the gap, and yields at most once per `PREFERENCE_YIELD_SECONDS`.
-fn hands_to_the_preferred(
+async fn hands_to_the_preferred(
     db: &Db,
     candidate: &Candidate<'_>,
     range: tessari_types::Reach,
@@ -503,10 +490,7 @@ fn hands_to_the_preferred(
     if since.is_some_and(|since| since < patient) || db.store().leading_of(range).is_none() {
         return false;
     }
-    let Ok(line) = candidate
-        .runtime
-        .block_on(crate::greeting_round::line_of(db.store(), range))
-    else {
+    let Ok(line) = crate::greeting_round::line_of(db.store(), range).await else {
         return false;
     };
     let Some(to) = tessari_wire::preferred_to_yield_to(

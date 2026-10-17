@@ -57,8 +57,8 @@ pub(crate) async fn collect_from_upstream(
     > = std::collections::BTreeMap::new();
     // The held streams this round starts once it has succeeded against a leader
     // (ADR-0106 D5). One pass at a time holds it, across the pass's awaits, so
-    // an async mutex; it outlives the loop only so the threads can be joined
-    // off the runtime at stop.
+    // an async mutex; it outlives the loop only so the streams can be joined
+    // at stop.
     let streams =
         std::sync::Arc::new(tokio::sync::Mutex::new(crate::streaming::Streams::default()));
     let joined = std::sync::Arc::clone(&streams);
@@ -304,13 +304,8 @@ pub(crate) async fn collect_from_upstream(
         Ok(collection)
     })
     .await;
-    // Off the runtime: each stream notices the stop within a heartbeat.
-    let joining = tokio::task::spawn_blocking(move || {
-        std::mem::take(&mut *joined.blocking_lock()).join();
-    });
-    if joining.await.is_err() {
-        tracing::warn!("joining the collection streams panicked");
-    }
+    // Each stream notices the stop within a heartbeat.
+    std::mem::take(&mut *joined.lock().await).join().await;
 }
 
 /// The logs the store line carries: every log this node holds except those a

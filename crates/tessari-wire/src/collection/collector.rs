@@ -267,7 +267,8 @@ impl Collector<'_> {
                 from,
                 limit: self.limit,
             }),
-        )?;
+        )
+        .await?;
         let Answered::Collected(collected) = answered else {
             return Err(Error::OutOfTurn {
                 tag: crate::peer::PeerFrame::Collected.tag(),

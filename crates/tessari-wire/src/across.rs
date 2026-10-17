@@ -106,7 +106,7 @@ impl Participants for Coordinator {
             // handshake (D13j); one the record could not be written onto is
             // replaced, and one whose answer was lost is a part not reached.
             if let Some(mut link) = self.kept().take(to) {
-                match kept::across_on(&mut link, &carried) {
+                match kept::across_on(&mut link, &carried).await {
                     Ok(reply) => {
                         self.kept().keep(to, link);
                         carried_after(what, "kept", began);
@@ -127,7 +127,9 @@ impl Participants for Coordinator {
                 to,
                 &said,
                 (&carried, Duration::from_secs(COORDINATED_SECONDS)),
-            ) {
+            )
+            .await
+            {
                 Ok((reply, link)) => {
                     if let Some(link) = link {
                         self.kept().keep(to, link);

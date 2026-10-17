@@ -144,7 +144,9 @@ impl SharedBudget {
             &said,
             Ask::Attempt(&asked),
             Duration::from_millis(SIGN_IN_ASK_MILLIS),
-        ) {
+        )
+        .await
+        {
             Ok((_, Answered::Attempted(answer))) => Some(answer),
             Ok(_) => None,
             Err(why) => {

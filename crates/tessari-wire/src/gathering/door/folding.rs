@@ -30,6 +30,7 @@ async fn a_shard_is_folded_page_by_page_and_no_record_travels() {
             ..asking(table, 1)
         },
     )
+    .await
     .unwrap();
     let id = |text: &str| RecordId::Text(text.to_owned());
     let states = |page: &Page| match &page.reduced {
@@ -54,6 +55,7 @@ async fn a_shard_is_folded_page_by_page_and_no_record_travels() {
             ..asking(table, 1)
         },
     )
+    .await
     .unwrap();
     handle.join().unwrap();
     assert!(second.records.is_empty() && !second.more, "{second:?}");
@@ -109,9 +111,9 @@ async fn a_shards_search_figures_are_counted_page_by_page_and_no_record_travels(
         }),
         ..asking(table, 1)
     };
-    let first = ask(&authority, address, &gather).unwrap();
+    let first = ask(&authority, address, &gather).await.unwrap();
     gather.after = first.resume.clone();
-    let second = ask(&authority, address, &gather).unwrap();
+    let second = ask(&authority, address, &gather).await.unwrap();
     handle.join().unwrap();
     assert!(first.records.is_empty() && first.more, "{first:?}");
     assert_eq!(first.resume, Some(RecordId::from("b")));
@@ -157,6 +159,7 @@ async fn a_page_of_groups_past_the_budget_declines() {
             ..asking(table, 1)
         },
     )
+    .await
     .unwrap();
     handle.join().unwrap();
     assert_eq!(page.reduced, Some(tessari_session::Reduced::Declined));
@@ -187,11 +190,11 @@ async fn a_bounded_or_narrowed_gather_moves_fewer_bytes() {
     };
     let db = Arc::new(db);
     let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 6);
-    let moved = |first: Gather| -> (usize, usize) {
+    let moved = async |first: Gather| -> (usize, usize) {
         let mut gather = first;
         let (mut bytes, mut records) = (0, 0);
         loop {
-            let page = ask(&authority, address, &gather).unwrap();
+            let page = ask(&authority, address, &gather).await.unwrap();
             bytes += page.encode().len();
             records += page.records.len();
             if !page.more {
@@ -203,15 +206,17 @@ async fn a_bounded_or_narrowed_gather_moves_fewer_bytes() {
                 .or_else(|| page.records.last().map(|(id, _)| id.clone()));
         }
     };
-    let whole = moved(asking(table, 1));
+    let whole = moved(asking(table, 1)).await;
     let bounded = moved(Gather {
         enough: Some(3),
         ..asking(table, 1)
-    });
+    })
+    .await;
     let narrowed = moved(Gather {
         pushed: Some(narrowed("(n >= $p0)", 1095, None)),
         ..asking(table, 1)
-    });
+    })
+    .await;
     // ADR-0097 D2: `count(*)` and `sum(n)` over the same shard, folded.
     let folded = moved(Gather {
         reduce: Some(tessari_session::Reduce {
@@ -230,7 +235,8 @@ async fn a_bounded_or_narrowed_gather_moves_fewer_bytes() {
             samples: false,
         }),
         ..asking(table, 1)
-    });
+    })
+    .await;
     handle.join().unwrap();
     eprintln!(
         "GATHER-BYTES whole={whole:?} bounded={bounded:?} narrowed={narrowed:?} \
@@ -270,7 +276,7 @@ async fn the_folds_that_hold_their_group_travel_as_states_and_no_record_travels(
         .collect(),
         samples,
     };
-    let states = |samples| {
+    let states = async |samples| {
         let page = ask(
             &authority,
             address,
@@ -279,6 +285,7 @@ async fn the_folds_that_hold_their_group_travel_as_states_and_no_record_travels(
                 ..asking(table, 1)
             },
         )
+        .await
         .unwrap();
         assert!(page.records.is_empty() && !page.more, "{page:?}");
         match page.reduced {
@@ -288,8 +295,8 @@ async fn the_folds_that_hold_their_group_travel_as_states_and_no_record_travels(
             other => panic!("{other:?}"),
         }
     };
-    let summary = states(false);
-    let samples = states(true);
+    let summary = states(false).await;
+    let samples = states(true).await;
     handle.join().unwrap();
     assert_eq!(summary.len(), 3, "{summary:?}");
     let run = |value: &str, many: i64| {

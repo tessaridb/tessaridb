@@ -279,7 +279,7 @@ fn a_peer_that_never_answers_the_connect_costs_the_deadline_and_no_more() {
     // only after the kernel's connect limit (`keepinit`, 75 s here).
     let bound = Duration::from_secs(1);
     let began = std::time::Instant::now();
-    let failed = super::super::dial::connect(address, bound);
+    let failed = super::super::dial::connect(address, bound).now();
     let waited = began.elapsed();
     assert!(failed.is_err(), "nobody answered, so nothing connected");
     assert!(
@@ -308,9 +308,14 @@ fn the_ask_goes_out_with_the_greeting_and_not_a_round_trip_after_it() {
             .complete_io(&mut socket)
             .map_err(|why| Error::Transport(why.to_string()))?;
         let mut link = rustls::Stream::new(&mut session, &mut socket);
-        crate::link::hear(&mut link)?;
+        let (tag, body) = crate::frame::read_tagged(&mut link)?.ok_or(Error::Truncated)?;
+        crate::link::greeting(tag, &body)?;
         let (asked, _) = crate::frame::read_tagged(&mut link)?.ok_or(Error::Truncated)?;
-        crate::link::say(&mut link, &mine)?;
+        crate::frame::write_tagged(
+            &mut link,
+            crate::peer::PeerFrame::Hello.tag(),
+            &mine.encode(),
+        )?;
         crate::frame::write_tagged(&mut link, crate::peer::PeerFrame::Joined.tag(), &[1])?;
         Ok(asked)
     });
@@ -324,7 +329,8 @@ fn the_ask_goes_out_with_the_greeting_and_not_a_round_trip_after_it() {
         &hello(THERE),
         Ask::Join(&token),
         Duration::from_secs(1),
-    );
+    )
+    .now();
     let asked = answering.join().expect("the door's thread");
     assert!(
         matches!(answered, Ok((_, Answered::Joined(true)))),

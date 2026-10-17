@@ -198,6 +198,7 @@ impl Gathers for Gathering {
                     &said,
                     Ask::Gather(&page),
                 )
+                .await
                 .map_err(|why| match why {
                     // The leader's map differs from the one this ask was built
                     // from: said as itself, so the asker reads its map again

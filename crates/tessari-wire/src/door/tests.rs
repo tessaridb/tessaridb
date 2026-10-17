@@ -1,5 +1,6 @@
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
+use tessari_session::Now;
 
 use super::*;
 use crate::collection::{Collect, Collected, NoLog};
@@ -302,6 +303,7 @@ fn ask_keeping(
         },
         (&record(mine, nonce), Duration::from_secs(GREETING_SECONDS)),
     )
+    .now()
     .expect("a link")
 }
 
@@ -319,7 +321,7 @@ fn a_kept_link_carries_the_next_cross_leader_record_without_greeting_again() {
     );
     let mut kept = kept.expect("both ends greeted at the build that keeps links");
     for nonce in [2, 3] {
-        let next = crate::across::kept::across_on(&mut kept, &record(&mine, nonce));
+        let next = crate::across::kept::across_on(&mut kept, &record(&mine, nonce)).now();
         assert!(
             matches!(&next, Ok(Err(refused)) if refused.kind == RefusalKind::Invalid),
             "{next:?}"
@@ -333,7 +335,7 @@ fn a_kept_link_carries_the_next_cross_leader_record_without_greeting_again() {
         "three records, one greeting"
     );
     // A record replayed on the kept link is disbelieved as on any other.
-    let replayed = crate::across::kept::across_on(&mut kept, &record(&mine, 3));
+    let replayed = crate::across::kept::across_on(&mut kept, &record(&mine, 3)).now();
     assert!(
         matches!(&replayed, Ok(Err(refused)) if refused.kind == RefusalKind::Forbidden),
         "{replayed:?}"

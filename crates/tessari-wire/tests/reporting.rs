@@ -318,12 +318,10 @@ fn paused() -> tokio::runtime::Runtime {
 
 #[test]
 fn a_pass_that_outlasts_its_period_is_reported_and_the_next_one_waits_for_it() {
-    // The budget cannot cancel a pass — it runs on the blocking pool — so what
-    // the runner owes is to SAY it overran, under the cadence's name, and to
-    // keep the passes one after another anyway. On the real clock: a paused one
-    // does not move while a blocking task is out, so no budget would ever run
-    // out. The pass sleeps fifteen times its budget, which a loaded machine
-    // does not close.
+    // The budget does not cut a pass off half way, so what the runner owes is
+    // to SAY it overran, under the cadence's name, and to keep the passes one
+    // after another anyway. On the real clock, as the cadences run. The pass
+    // waits fifteen times its budget, which a loaded machine does not close.
     let _floor = listening();
     real().block_on(async {
         let stop = CancellationToken::new();
@@ -344,7 +342,7 @@ fn a_pass_that_outlasts_its_period_is_reported_and_the_next_one_waits_for_it() {
                 if entering.fetch_add(1, Ordering::SeqCst) > 0 {
                     crossed.store(true, Ordering::SeqCst);
                 }
-                std::thread::sleep(Duration::from_millis(300));
+                tokio::time::sleep(Duration::from_millis(300)).await;
                 entering.fetch_sub(1, Ordering::SeqCst);
                 if counted.fetch_add(1, Ordering::SeqCst) >= 1 {
                     stopping.cancel();

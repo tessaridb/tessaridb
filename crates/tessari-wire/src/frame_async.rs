@@ -1,7 +1,7 @@
 //! The same frames as `frame.rs`, read and written without holding a thread.
 //!
-//! Only the node reads asynchronously; a client and the peer link keep the
-//! blocking half. The header's encoding and the ceiling are not repeated here —
+//! The node and the peer link read and write through these; the blocking client
+//! keeps `frame.rs`. The header's encoding and the ceiling are not repeated here:
 //! [`frame::header`] and [`frame::announced`] are the one copy of each, so the
 //! two halves cannot come to disagree about what a frame is.
 

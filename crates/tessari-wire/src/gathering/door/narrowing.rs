@@ -17,6 +17,7 @@ async fn a_pushed_condition_narrows_the_page_before_it_travels() {
             ..asking(table, 1)
         },
     )
+    .await
     .unwrap();
     handle.join().unwrap();
     assert_eq!(ids(&page), ["b", "c"].map(RecordId::from).to_vec());
@@ -40,6 +41,7 @@ async fn a_field_the_asker_cannot_see_is_not_searchable_through_the_leader() {
             ..asking(table, 1)
         },
     )
+    .await
     .unwrap();
     handle.join().unwrap();
     assert_eq!(ids(&page), Vec::<RecordId>::new());
@@ -54,13 +56,13 @@ async fn narrowed_pages_still_end_where_the_budget_cuts_them() {
         pushed: Some(narrowed("(n >= $p0)", 2, None)),
         ..asking(table, 1)
     };
-    let first = ask(&authority, address, &gather).unwrap();
+    let first = ask(&authority, address, &gather).await.unwrap();
     assert_eq!(
         (ids(&first), first.more, first.resume.clone()),
         (vec![RecordId::from("b")], true, None)
     );
     gather.after = Some(RecordId::from("b"));
-    let second = ask(&authority, address, &gather).unwrap();
+    let second = ask(&authority, address, &gather).await.unwrap();
     handle.join().unwrap();
     assert_eq!(
         (ids(&second), second.more),
@@ -94,7 +96,7 @@ async fn a_page_that_keeps_nothing_it_read_says_where_it_got_to() {
         pushed: Some(narrowed("(n >= $p0)", 1095, None)),
         ..asking(table, 1)
     };
-    let first = ask(&authority, address, &gather).unwrap();
+    let first = ask(&authority, address, &gather).await.unwrap();
     assert!(first.records.is_empty() && first.more, "{:?}", ids(&first));
     assert_eq!(
         first.resume,
@@ -102,7 +104,7 @@ async fn a_page_that_keeps_nothing_it_read_says_where_it_got_to() {
         "resumes after the last record read"
     );
     gather.after = first.resume;
-    let second = ask(&authority, address, &gather).unwrap();
+    let second = ask(&authority, address, &gather).await.unwrap();
     handle.join().unwrap();
     assert_eq!(ids(&second).len(), 5);
     assert!(!second.more);

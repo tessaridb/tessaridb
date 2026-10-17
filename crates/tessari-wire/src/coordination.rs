@@ -358,7 +358,9 @@ impl Coordinates for Coordinator {
                 &said,
                 Ask::Coordinate(&request),
                 Duration::from_secs(COORDINATED_SECONDS),
-            ) {
+            )
+            .await
+            {
                 Ok((_, Answered::Coordinated(answer))) => Ok(answer),
                 Ok(_) => Err(format!(
                     "{endpoint} answered something other than the request"

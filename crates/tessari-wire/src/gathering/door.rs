@@ -121,15 +121,16 @@ fn folding_door(
     (address, handle)
 }
 
-fn ask(authority: &Authority, address: SocketAddr, gather: &Gather) -> Result<Page> {
-    match crate::link::tests::call_with(
+async fn ask(authority: &Authority, address: SocketAddr, gather: &Gather) -> Result<Page> {
+    match crate::link::tests::dial_with(
         address,
         authority.issue(THERE, Purpose::Peer),
         &authority.der(),
         LEADER,
         &hello(THERE),
         Ask::Gather(gather),
-    )?
+    )
+    .await?
     .1
     {
         Answered::Gathered(page) => Ok(page),

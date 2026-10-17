@@ -20,8 +20,9 @@ use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, TableId};
 use crate::collection::Answering;
 use crate::error::{Error, Result};
 use crate::frame;
+use crate::frame_async;
 use crate::keys::PeerKeys;
-use crate::link::{hear, open, say};
+use crate::link::{Link, framed, hear, open, say, within};
 use crate::peer::{Hello, PeerFrame};
 
 /// How many records one chunk frame carries — few enough that a chunk of large
@@ -116,26 +117,29 @@ pub async fn copy(
     said: &Hello,
     into: &Store,
 ) -> Result<Copied> {
-    let (mut session, mut socket) = open(address, keys, at)?;
-    let copied = {
-        let mut link = rustls::Stream::new(&mut session, &mut socket);
-        say(&mut link, said)?;
-        hear(&mut link)?;
-        frame::write_tagged(&mut link, PeerFrame::State.tag(), &[])?;
+    let mut link = open(address, keys, at).await?;
+    let copied = async {
+        framed(STEP, say(&mut link, said)).await?;
+        framed(STEP, hear(&mut link)).await?;
+        framed(
+            STEP,
+            frame_async::write_tagged(&mut link, PeerFrame::State.tag(), &[]),
+        )
+        .await?;
         receive(&mut link, into).await
-    };
-    session.send_close_notify();
-    drop(session.write_tls(&mut socket));
+    }
+    .await;
+    drop(within(STEP, tokio::io::AsyncWriteExt::shutdown(&mut link)).await);
     copied
 }
 
 /// Read a copy off `link` and install it.
-async fn receive(link: &mut impl std::io::Read, into: &Store) -> Result<Copied> {
+async fn receive(link: &mut Link, into: &Store) -> Result<Copied> {
     let refused = |why: tessari_storage::Error| Error::Refused {
         message: why.to_string(),
         class: None,
     };
-    let (over, version, positions) = match next(link)? {
+    let (over, version, positions) = match next(link).await? {
         (tag, body) if tag == PeerFrame::StateHead.tag() => head(&body)?,
         (tag, _) if tag == PeerFrame::Unsubscribed.tag() => return Err(Error::Unsubscribed),
         (tag, _) => return Err(Error::OutOfTurn { tag }),
@@ -143,7 +147,7 @@ async fn receive(link: &mut impl std::io::Read, into: &Store) -> Result<Copied> 
     let before = into.committed_version().await.map_err(refused)?;
     let mut records = 0_u64;
     loop {
-        let (tag, body) = next(link)?;
+        let (tag, body) = next(link).await?;
         if tag == PeerFrame::StateChunk.tag() {
             let chunk = LogRecord::decode(&body).map_err(|_| Error::Malformed)?;
             records = records.saturating_add(u64::try_from(chunk.mutations().len()).unwrap_or(0));
@@ -173,9 +177,16 @@ async fn receive(link: &mut impl std::io::Read, into: &Store) -> Result<Copied> 
     }
 }
 
-fn next(link: &mut impl std::io::Read) -> Result<(u8, Vec<u8>)> {
-    frame::read_tagged(link)?.ok_or(Error::Truncated)
+/// The next frame of the copy, which must come within [`STEP`].
+async fn next(link: &mut Link) -> Result<(u8, Vec<u8>)> {
+    framed(STEP, frame_async::read_tagged(link))
+        .await?
+        .ok_or(Error::Truncated)
 }
+
+/// How long any one step of a copy may take: the greeting's deadline, which
+/// bounded every read and write of the copy when the link was a blocking socket.
+const STEP: Duration = Duration::from_secs(tessari_constants::GREETING_SECONDS);
 
 type Head = (Reach, Sequence, Vec<(LogId, Sequence)>);
 

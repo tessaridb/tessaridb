@@ -94,16 +94,28 @@ pub(crate) fn bind_with(
     Peers::bind(address, &keys(mine, authority)?)
 }
 
-/// One dial presenting `mine`.
+/// One dial presenting `mine`, for a synchronous test.
 pub(crate) fn call_with(
-    address: impl std::net::ToSocketAddrs,
+    address: impl tokio::net::ToSocketAddrs,
     mine: Credential,
     authority: &CertificateDer<'_>,
     at: [u8; NODE_ID_LEN],
     said: &Hello,
     asking: Ask<'_>,
 ) -> Result<(Hello, Answered)> {
-    call(address, &keys(mine, authority)?, at, said, asking)
+    dial_with(address, mine, authority, at, said, asking).now()
+}
+
+/// [`call_with`], for a test that is itself asynchronous.
+pub(crate) async fn dial_with(
+    address: impl tokio::net::ToSocketAddrs,
+    mine: Credential,
+    authority: &CertificateDer<'_>,
+    at: [u8; NODE_ID_LEN],
+    said: &Hello,
+    asking: Ask<'_>,
+) -> Result<(Hello, Answered)> {
+    call(address, &keys(mine, authority)?, at, said, asking).await
 }
 
 /// The vote inside an answer, or `None` when the peer answered otherwise.

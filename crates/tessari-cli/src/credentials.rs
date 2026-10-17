@@ -246,8 +246,8 @@ impl Revoking {
 /// Look at every watched pair, and the revocation list when there is one,
 /// every [`LOOK_SECONDS`] until `stop`.
 ///
-/// The reads run on the blocking pool, which is where [`tessari_wire::every`]
-/// runs each pass.
+/// Each look is one pass of [`tessari_wire::every`], run in the cadence's own
+/// task.
 pub(crate) async fn watch(
     mut watched: Vec<Watched>,
     revoking: Option<Revoking>,
@@ -258,9 +258,12 @@ pub(crate) async fn watch(
         std::time::Duration::from_secs(LOOK_SECONDS),
         &stop,
         async move |_| {
-            for pair in &mut watched {
-                pair.look_and_say();
-            }
+            // File reads: the worker's other tasks are handed on while they run.
+            tessari_vault::off_the_worker(|| {
+                for pair in &mut watched {
+                    pair.look_and_say();
+                }
+            });
             let refreshed = match &revoking {
                 Some(revoking) => Some(revoking.refresh().await),
                 None => None,

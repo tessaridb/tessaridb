@@ -822,6 +822,7 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
         },
         tessari_wire::Ask::Nothing,
     )
+    .now()
     .expect("a peer holding a credential this cluster issued is answered");
 
     assert_eq!(heard.node, node, "the node greets under its own identity");
@@ -1034,7 +1035,8 @@ fn a_cluster_node_told_nothing_about_its_clients_serves_them_in_the_clear_and_it
             line: None,
         },
         tessari_wire::Ask::Nothing,
-    );
+    )
+    .now();
     assert!(
         refused.is_err(),
         "a peer whose certificate this cluster never issued was answered"

@@ -227,6 +227,7 @@ fn a_held_stream_is_sent_a_commit_the_moment_it_lands() {
         &hello(THERE),
         Duration::from_secs(5),
     )
+    .now()
     .expect("a held stream");
     // Every log the leader holds, as a follower of the whole store asks.
     let homes = super::super::logs_to_collect(leader.store())
@@ -246,9 +247,9 @@ fn a_held_stream_is_sent_a_commit_the_moment_it_lands() {
     // Everything the leader holds, first: one round with records, or, if
     // every log is empty, heartbeats only.
     let start = vec![Sequence::new(1); homes.len()];
-    following.ask(&ask(&start)).expect("the first ask");
+    following.ask(&ask(&start)).now().expect("the first ask");
     let first = loop {
-        let round = following.heard().expect("the first round");
+        let round = following.heard().now().expect("the first round");
         if !round.is_heartbeat() {
             break round;
         }
@@ -269,6 +270,7 @@ fn a_held_stream_is_sent_a_commit_the_moment_it_lands() {
     let next: Vec<Sequence> = held.iter().map(|at| Sequence::new(at.get() + 1)).collect();
     following
         .ask(&ask(&next))
+        .now()
         .expect("the ask from where the follower stands");
     let committing = Arc::clone(&leader);
     let committer = std::thread::spawn(move || {
@@ -283,7 +285,7 @@ fn a_held_stream_is_sent_a_commit_the_moment_it_lands() {
     let mut heartbeats = 0_u32;
     let waiting = std::time::Instant::now();
     let round = loop {
-        let round = following.heard().expect("a frame from the leader");
+        let round = following.heard().now().expect("a frame from the leader");
         if round.is_heartbeat() {
             heartbeats += 1;
             assert!(
@@ -380,7 +382,11 @@ fn asked_from(leader: &Db, from: &[Sequence]) -> super::super::StreamAsk {
 fn next_round(following: &mut super::super::Following) -> Option<super::super::Streamed> {
     let waiting = std::time::Instant::now();
     loop {
-        match following.next_pushed().expect("a frame from the leader") {
+        match following
+            .next_pushed()
+            .now()
+            .expect("a frame from the leader")
+        {
             super::super::Pushed::Round(round) => return Some(round),
             super::super::Pushed::Restarted => return None,
             super::super::Pushed::Heartbeat => assert!(
@@ -419,6 +425,7 @@ fn a_pushed_round_is_held_only_once_the_follower_says_so() {
         &hello(THERE),
         Duration::from_secs(5),
     )
+    .now()
     .expect("a held stream");
     let logs = super::super::logs_to_collect(leader.store())
         .now()
@@ -427,6 +434,7 @@ fn a_pushed_round_is_held_only_once_the_follower_says_so() {
     let start = vec![Sequence::new(1); logs];
     following
         .stream_from(&asked_from(&leader, &start))
+        .now()
         .expect("the opening");
     let first = next_round(&mut following).expect("the first round");
     let sent: Vec<(tessari_encoding::LogId, Sequence)> = first
@@ -454,6 +462,7 @@ fn a_pushed_round_is_held_only_once_the_follower_says_so() {
     let after_first = past(&first, &start);
     following
         .held(&asked_from(&leader, &after_first))
+        .now()
         .expect("the held report");
     for (log, at) in &sent {
         assert_eq!(
@@ -478,6 +487,7 @@ fn a_restart_is_marked_and_sends_from_where_it_names() {
         &hello(THERE),
         Duration::from_secs(5),
     )
+    .now()
     .expect("a held stream");
     let logs = super::super::logs_to_collect(leader.store())
         .now()
@@ -486,11 +496,13 @@ fn a_restart_is_marked_and_sends_from_where_it_names() {
     let start = vec![Sequence::new(1); logs];
     following
         .stream_from(&asked_from(&leader, &start))
+        .now()
         .expect("the opening");
     let first = next_round(&mut following).expect("the first round");
     // As if the first round had not applied at all: start again from 1.
     following
         .stream_from(&asked_from(&leader, &start))
+        .now()
         .expect("the restart");
     // Rounds before the mark are the ones to throw away; there may be none.
     while next_round(&mut following).is_some() {}

@@ -87,45 +87,81 @@ pub(crate) async fn dial_peers(
                     ));
                 }
             };
-            // Read once per pass rather than per peer: the round dials from a
-            // synchronous callback, and the pass is the moment it greets as.
+            // Read once per pass rather than per peer: the pass is the moment
+            // the round greets as.
             let said = greeting(db).await.map_err(|why| why.to_string());
+            // The seeds INSTEAD of the catalog, and only while the catalog
+            // names no peer BUT THIS NODE. A node that has just been told
+            // to join holds no replica rows, so `greet_round` would dial
+            // nobody and this node would never learn anything; once
+            // collection brings a row naming somebody else in, the catalog
+            // is the answer and a seed still being dialled would be a
+            // second source of truth about who the members are; see
+            // `Directory::greet_seeds`. The *but this node* is load-bearing
+            // and was `is_empty` until W260: the row a cluster writes to
+            // admit a newcomer describes the NEWCOMER, so the joiner's
+            // first collection left it holding one row, its own, which
+            // answers nothing and stopped the seed all the same.
+            let catalogued = tessari_wire::names_a_peer(&declared, &me);
+            // Every peer the round will record is dialled at once, rather than
+            // one after another, and the directory's own rules then read the
+            // answers: a peer that cannot be reached costs the round its own
+            // deadline and no more.
+            let targets: Vec<(String, [u8; tessari_storage::NODE_ID_LEN])> = if catalogued {
+                declared
+                    .iter()
+                    .filter_map(|row| row.node.map(|node| (row.endpoint.clone(), node)))
+                    .filter(|(_, node)| *node != me)
+                    .collect()
+            } else {
+                seeds
+                    .iter()
+                    .filter(|seed| seed.node != me)
+                    .map(|seed| (seed.endpoint.clone(), seed.node))
+                    .collect()
+            };
+            let said = &said;
+            let heard: std::collections::HashMap<_, Result<tessari_wire::Hello, String>> =
+                futures_util::future::join_all(targets.into_iter().map(
+                    |(endpoint, node)| async move {
+                        let answer = match said {
+                            Ok(said) => tessari_wire::call(
+                                endpoint.as_str(),
+                                keys,
+                                node,
+                                said,
+                                tessari_wire::Ask::Nothing,
+                            )
+                            .await
+                            .map(|(said, _)| said)
+                            .map_err(|why| {
+                                // Said here rather than swallowed. The rounds keep only
+                                // a count, so without this the one line an operator
+                                // gets for a directory that has stopped refreshing is
+                                // *nobody answered*, and a directory that stops
+                                // refreshing is a follower that stops knowing who to
+                                // follow, whose symptom is a copy that silently never
+                                // changes.
+                                tracing::warn!(endpoint = %endpoint, error = %why, "a greeting did not land");
+                                why.to_string()
+                            }),
+                            Err(why) => Err(why.clone()),
+                        };
+                        ((endpoint, node), answer)
+                    },
+                ))
+                .await
+                .into_iter()
+                .collect();
             let mut reached = 0_usize;
             published.round(|directory| {
-                // The seeds INSTEAD of the catalog, and only while the catalog
-                // names no peer BUT THIS NODE. A node that has just been told
-                // to join holds no replica rows, so `greet_round` would dial
-                // nobody and this node would never learn anything; once
-                // collection brings a row naming somebody else in, the catalog
-                // is the answer and a seed still being dialled would be a
-                // second source of truth about who the members are — see
-                // `Directory::greet_seeds`. The *but this node* is load-bearing
-                // and was `is_empty` until W260: the row a cluster writes to
-                // admit a newcomer describes the NEWCOMER, so the joiner's
-                // first collection left it holding one row, its own, which
-                // answers nothing and stopped the seed all the same.
                 let greet = |endpoint: &str, node| {
-                    tessari_wire::call(
-                    endpoint,
-                    keys,
-                    node,
-                    said.as_ref().map_err(Clone::clone)?,
-                    tessari_wire::Ask::Nothing,
-                )
-                .map(|(said, _)| said)
-                .map_err(|why| {
-                    // Said here rather than swallowed. The rounds keep only
-                    // a count, so without this the one line an operator
-                    // gets for a directory that has stopped refreshing is
-                    // *nobody answered* — and a directory that stops
-                    // refreshing is a follower that stops knowing who to
-                    // follow, whose symptom is a copy that silently never
-                    // changes.
-                    tracing::warn!(endpoint = %endpoint, error = %why, "a greeting did not land");
-                    why.to_string()
-                })
+                    heard
+                        .get(&(endpoint.to_owned(), node))
+                        .cloned()
+                        .unwrap_or_else(|| Err("not dialled this round".to_owned()))
                 };
-                reached = if tessari_wire::names_a_peer(&declared, &me) {
+                reached = if catalogued {
                     directory.greet_round(&declared, &me, now, greet)
                 } else {
                     directory.greet_seeds(seeds, &me, now, greet)
@@ -201,7 +237,9 @@ async fn offer_the_token(
             seed.node,
             &said,
             tessari_wire::Ask::Join(token),
-        ) {
+        )
+        .await
+        {
             Ok((_, tessari_wire::Answered::Joined(true))) => {
                 tracing::info!(seed = %seed.endpoint, "a seed bound this node to its row");
             }

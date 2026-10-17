@@ -1624,11 +1624,11 @@ const DECODERS: [&str; 3] = ["decode", "from_value", "split_epoch"];
 
 /// The one function allowed to CREATE an epoch, and the file it lives in.
 ///
-/// `Renewing::once` computes `max(standing, stood, heard) + 1`. Both halves of
+/// `Renewing::due` computes `max(standing, stood, heard) + 1`. Both halves of
 /// this pair are asserted: that nothing else creates one, and that this still
 /// does — a ratchet whose subject has been renamed away passes by finding
 /// nothing, which is the failure mode of every allow-list nobody re-reads.
-const PRODUCER: (&str, &str) = ("tessari-wire/src/driver/leadership/renewing.rs", "once");
+const PRODUCER: (&str, &str) = ("tessari-wire/src/driver/leadership/renewing.rs", "due");
 
 #[test]
 fn the_campaign_is_the_only_place_an_epoch_is_created() {
@@ -1682,7 +1682,7 @@ fn the_campaign_is_the_only_place_an_epoch_is_created() {
         created.is_empty(),
         "an epoch is created outside the campaign:\n  {}\n\n\
          An epoch is the cluster's count of leaderships and the campaign is the \
-         only thing entitled to advance it: `Renewing::once` takes the highest \
+         only thing entitled to advance it: `Renewing::due` takes the highest \
          number this node holds, has stood for, or has heard granted, and adds \
          one. A second producer allocates a number somebody else may already \
          hold, which is two leaders with one epoch — the exact ambiguity the \

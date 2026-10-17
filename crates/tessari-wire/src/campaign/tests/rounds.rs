@@ -76,7 +76,7 @@ async fn a_leader_with_margin_left_asks_nobody() {
 
     // The proof that nobody was asked is the voter's own memory: the epoch
     // a canvass would have burnt is still there to be granted.
-    let (_, vote) = crate::link::tests::call_with(
+    let (_, vote) = crate::link::tests::dial_with(
         address,
         authority.issue(THERE, Purpose::Peer),
         &authority.der(),
@@ -88,6 +88,7 @@ async fn a_leader_with_margin_left_asks_nobody() {
             range: tessari_types::Reach::Store,
         }),
     )
+    .await
     .expect("the door is still up, having been asked nothing");
     assert_eq!(
         vote,

@@ -3,8 +3,8 @@ use tessari_types::RefusalClass;
 
 /// Answer one request: sign in if it carries credentials, then run it.
 ///
-/// Runs on the blocking pool — a password hash, a statement and a forwarded
-/// write all block.
+/// Runs in the connection's task; a password hash hands its worker's other
+/// tasks on while it runs (`tessari_vault::off_the_worker`).
 pub(crate) async fn respond(
     db: &Db,
     session: &mut tessaridb::Session<'_>,

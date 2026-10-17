@@ -11,13 +11,11 @@
 //! line's upstream, or on stop — and the next round takes over from the
 //! positions the store actually holds.
 //!
-//! # Why a thread and not a task — the recorded reason
+//! # A task per stream
 //!
-//! A stream blocks on the leader's next frame for as long as nothing is
-//! committed, and the peer link is synchronous by design (`link.rs`). A runtime
-//! worker must never be the thing that blocks, and the blocking pool is for work
-//! that ends, so each stream owns one named thread for its lifetime. There is
-//! one per leader followed — on a store line, one.
+//! A stream waits on the leader's next frame for as long as nothing is
+//! committed; the wait is the link's, on the runtime, and holds no thread.
+//! There is one per leader followed (on a store line, one).
 //!
 //! # The positions come from the store, not from a cursor
 //!
@@ -28,9 +26,9 @@
 //! to be told (ADR-0106 D1).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use futures_util::FutureExt as _;
 use tessari_constants::{COLLECTION_RECORDS, STREAM_HEARTBEAT_MILLIS};
 use tessari_storage::{Currency, NODE_ID_LEN, Reach, Writer};
 use tessari_types::Sequence;
@@ -43,56 +41,57 @@ use crate::greeting_round::{greeting, hex};
 /// heartbeats.
 const SILENCE: Duration = Duration::from_millis(STREAM_HEARTBEAT_MILLIS * 10);
 
-/// A read of the store a stream's thread drives, borrowing the database.
-pub(crate) type Reading<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
+/// A read of the store a stream drives, borrowing the database.
+pub(crate) type Reading<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 /// Which logs a stream carries, asked again before every ask, because a
 /// namespace arrives through the stream itself.
-pub(crate) type HomesFor = dyn for<'a> Fn(&'a Db) -> Reading<'a, Option<Vec<Reach>>> + Send;
+pub(crate) type HomesFor = dyn for<'a> Fn(&'a Db) -> Reading<'a, Option<Vec<Reach>>> + Send + Sync;
 
-/// [`HomesFor`], owned by the stream's thread.
+/// [`HomesFor`], owned by the stream's task.
 pub(crate) type Homes = Box<HomesFor>;
 
 /// Whether the leader is still the one this line follows, asked before every
 /// ask; `false` ends the stream and the round decides again.
-pub(crate) type StillFor = dyn for<'a> Fn(&'a Db) -> Reading<'a, bool> + Send;
+pub(crate) type StillFor = dyn for<'a> Fn(&'a Db) -> Reading<'a, bool> + Send + Sync;
 
-/// [`StillFor`], owned by the stream's thread.
+/// [`StillFor`], owned by the stream's task.
 pub(crate) type Still = Box<StillFor>;
 
 /// A stream's key: the leader, and the line it leads for this node — `None` for
 /// the store line, the range for a placed one. One leader can lead both.
 pub(crate) type Line = ([u8; NODE_ID_LEN], Option<Reach>);
 
-/// One running stream: its liveness, published by the thread as it ends.
+/// One running stream, as its task.
 #[derive(Debug)]
 struct Running {
-    alive: Arc<AtomicBool>,
-    thread: std::thread::JoinHandle<()>,
+    task: tokio::task::JoinHandle<()>,
 }
 
 /// The streams this node holds, one per leader it follows.
 ///
 /// Owned by the one collection loop that starts them, so a plain map: nothing
-/// else reaches it, and the threads publish only their own liveness flag.
+/// else reaches it.
 #[derive(Debug, Default)]
 pub(crate) struct Streams {
     running: std::collections::BTreeMap<Line, Running>,
 }
 
 impl Streams {
-    /// Whether a stream for `line` is running right now. Ended streams are
-    /// joined here, which costs nothing: their flag is published last.
+    /// Whether a stream for `line` is running right now. Ended streams, a
+    /// panicked one included, are forgotten here so the round can start again.
     pub(crate) fn following(&mut self, line: Line) -> bool {
         let ended: Vec<Line> = self
             .running
             .iter()
-            .filter(|(_, running)| !running.alive.load(Ordering::Acquire))
+            .filter(|(_, running)| running.task.is_finished())
             .map(|(line, _)| *line)
             .collect();
         for ended in ended {
             if let Some(running) = self.running.remove(&ended)
-                && running.thread.join().is_err()
+                && let Some(Err(why)) = running.task.now_or_never()
+                && why.is_panic()
             {
                 tracing::warn!(leader = %hex(&ended.0), "a held stream ended in a panic");
             }
@@ -113,54 +112,34 @@ impl Streams {
             return;
         }
         let leader = line.0;
-        let alive = Arc::new(AtomicBool::new(true));
-        let published = Arc::clone(&alive);
-        // Started from a pass, which runs inside the runtime: the stream's own
-        // thread is outside its workers, where the handle may drive the stream.
-        let runtime = tokio::runtime::Handle::current();
-        let started = std::thread::Builder::new()
-            .name(format!("stream-{}", hex(&leader)))
-            .spawn(move || {
-                let ended = runtime.block_on(follow(
-                    &db,
-                    &keys,
-                    (leader, &address),
-                    (&*homes, &*still),
-                    &stop,
-                ));
-                match ended {
-                    Ok(()) => tracing::info!(
-                        leader = %hex(&leader),
-                        "a held stream ended; the collection round takes over"
-                    ),
-                    Err(why) => tracing::warn!(
-                        leader = %hex(&leader),
-                        error = %why,
-                        "a held stream ended; the collection round takes over"
-                    ),
-                }
-                // Last, and Release: whoever reads `false` may join at once.
-                published.store(false, Ordering::Release);
-                // A stream that ended is the first sign its leader may be gone,
-                // so the greeting round learns where the line went now rather
-                // than at its next interval (G053 SG2b).
-                wakes.greeting.notify_one();
-            });
-        match started {
-            Ok(thread) => {
-                tracing::info!(leader = %hex(&leader), "following the leader on a held stream");
-                self.running.insert(line, Running { alive, thread });
+        let task = tokio::spawn(async move {
+            let ended = follow(&db, &keys, (leader, &address), (&*homes, &*still), &stop).await;
+            match ended {
+                Ok(()) => tracing::info!(
+                    leader = %hex(&leader),
+                    "a held stream ended; the collection round takes over"
+                ),
+                Err(why) => tracing::warn!(
+                    leader = %hex(&leader),
+                    error = %why,
+                    "a held stream ended; the collection round takes over"
+                ),
             }
-            Err(why) => tracing::warn!(error = %why, "a stream thread could not be started"),
-        }
+            // A stream that ended is the first sign its leader may be gone,
+            // so the greeting round learns where the line went now rather
+            // than at its next interval (G053 SG2b).
+            wakes.greeting.notify_one();
+        });
+        tracing::info!(leader = %hex(&leader), "following the leader on a held stream");
+        self.running.insert(line, Running { task });
     }
 
-    /// Wait for every stream to end. Called off the runtime once `stop` is
-    /// cancelled; each stream notices within one heartbeat, or within
-    /// [`SILENCE`] when its leader has gone quiet.
-    pub(crate) fn join(self) {
+    /// Wait for every stream to end, once `stop` is cancelled; each stream
+    /// notices within one heartbeat, or within [`SILENCE`] when its leader has
+    /// gone quiet.
+    pub(crate) async fn join(self) {
         for ((leader, _), running) in self.running {
-            if running.thread.join().is_err() {
+            if running.task.await.is_err() {
                 tracing::warn!(leader = %hex(&leader), "a held stream ended in a panic");
             }
         }
@@ -178,6 +157,7 @@ async fn follow(
     let store = db.store();
     let said = greeting(db).await.map_err(|why| why.to_string())?;
     let mut following = tessari_wire::Following::open((leader, address), keys, &said, SILENCE)
+        .await
         .map_err(|why| why.to_string())?;
     let collector = tessari_wire::Collector {
         keys,
@@ -220,9 +200,9 @@ async fn follow(
                 })
                 .collect(),
         };
-        following.ask(&asked).map_err(|why| why.to_string())?;
+        following.ask(&asked).await.map_err(|why| why.to_string())?;
         let round = loop {
-            let frame = following.heard().map_err(|why| why.to_string())?;
+            let frame = following.heard().await.map_err(|why| why.to_string())?;
             if !frame.is_heartbeat() {
                 break frame;
             }
@@ -316,13 +296,18 @@ async fn follow_pushed(
     let mut holds = holding(db, leader, homes).await?;
     following
         .stream_from(&naming(&holds))
+        .await
         .map_err(|why| why.to_string())?;
     let mut restarting = false;
     loop {
         if stop.is_cancelled() || !still(db).await {
             return Ok(());
         }
-        let round = match following.next_pushed().map_err(|why| why.to_string())? {
+        let round = match following
+            .next_pushed()
+            .await
+            .map_err(|why| why.to_string())?
+        {
             tessari_wire::Pushed::Restarted => {
                 restarting = false;
                 continue;
@@ -375,10 +360,12 @@ async fn follow_pushed(
         if in_step {
             following
                 .held(&naming(&holds))
+                .await
                 .map_err(|why| why.to_string())?;
         } else {
             following
                 .stream_from(&naming(&holds))
+                .await
                 .map_err(|why| why.to_string())?;
             restarting = true;
         }
