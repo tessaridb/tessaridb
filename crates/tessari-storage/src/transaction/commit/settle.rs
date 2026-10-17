@@ -322,7 +322,7 @@ impl Transaction<'_> {
                 // share is applied under the turn, as grouping would only cost it.
                 let backend = self.store.engine().as_ref();
                 let landed = if backend.groups_writes() {
-                    let ticket = self.store.write_gate().stage(batch);
+                    let ticket = self.store.write_gate().stage(batch, commit_version);
                     drop(turn);
                     self.store.write_gate().land(ticket, backend).await
                 } else {

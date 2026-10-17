@@ -28,7 +28,7 @@
 //! group and still staged — answers the retryable conflict, because each asserted
 //! a state that is now not going to exist. They derive again from what did land.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Bound;
 use std::panic::{AssertUnwindSafe, resume_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,6 +39,9 @@ use tokio::sync::Notify;
 
 use tessari_constants::{MAX_GROUP_BYTES, MAX_GROUP_COMMITS};
 use tessari_kv::{Error, Key, Keyspace, KvBackend, Result, Value, WriteBatch, WriteOp};
+use tessari_types::Sequence;
+
+use crate::landed::Landed;
 
 /// What pending writes do to each key they touch: a value, or `None` for a
 /// delete.
@@ -47,10 +50,28 @@ type Ops = BTreeMap<Keyspace, BTreeMap<Vec<u8>, Option<Value>>>;
 /// A key range as the two bounds a map walks.
 pub(super) type Bounds<'a> = (Bound<&'a [u8]>, Bound<&'a [u8]>);
 
-/// A staged commit's claim on its answer.
+/// A staged commit's claim on its answer. Dropped before it collects the answer
+/// (its waiter gone), it takes the answer with it, or tells the landing not to
+/// keep one.
 #[derive(Debug)]
 #[must_use = "a staged commit has landed only once its ticket is answered"]
-pub(crate) struct Ticket(u64);
+pub(crate) struct Ticket<'a> {
+    pending: &'a Pending,
+    id: u64,
+    collected: bool,
+}
+
+impl Drop for Ticket<'_> {
+    fn drop(&mut self) {
+        if self.collected {
+            return;
+        }
+        let mut state = self.pending.lock();
+        if state.answers.remove(&self.id).is_none() {
+            state.gone.insert(self.id);
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub(super) struct Pending {
@@ -63,6 +84,8 @@ pub(super) struct Pending {
     /// the turn's holder asks on every read, and almost always the answer is
     /// no. Written under the lock whenever the state changes.
     any: AtomicBool,
+    /// The newest version landed, which a transaction begins at.
+    landed: Landed,
 }
 
 #[derive(Debug, Default)]
@@ -76,11 +99,16 @@ pub(super) struct State {
     flushing: bool,
     next: u64,
     answers: HashMap<u64, Result<()>>,
+    /// Tickets dropped before their answer was recorded, whose answer is
+    /// therefore not kept.
+    gone: HashSet<u64>,
 }
 
 #[derive(Debug)]
 struct Member {
     ticket: u64,
+    /// The version this commit's batch moves the store to.
+    version: Sequence,
     batch: WriteBatch,
     bytes: usize,
     /// Where a refusal on this commit's behalf says it was refused.
@@ -92,7 +120,17 @@ impl Pending {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub(super) fn stage(&self, batch: WriteBatch) -> Ticket {
+    /// Record that the batch at `version` has landed.
+    pub(super) fn landed_at(&self, version: Sequence) {
+        self.landed.publish(version);
+    }
+
+    /// The newest version landed.
+    pub(super) fn landed_version(&self) -> Sequence {
+        self.landed.version()
+    }
+
+    pub(super) fn stage(&self, batch: WriteBatch, version: Sequence) -> Ticket<'_> {
         let mut state = self.lock();
         let ticket = state.next;
         state.next = ticket.saturating_add(1);
@@ -118,11 +156,16 @@ impl Pending {
         self.any.store(true, Ordering::Release);
         state.staged.push_back(Member {
             ticket,
+            version,
             batch,
             bytes,
             named,
         });
-        Ticket(ticket)
+        Ticket {
+            pending: self,
+            id: ticket,
+            collected: false,
+        }
     }
 
     #[cfg(test)]
@@ -130,14 +173,21 @@ impl Pending {
         self.lock().staged.len()
     }
 
+    /// How many answers are held for commits that have not collected them.
+    #[cfg(test)]
+    pub(super) fn held_answers(&self) -> usize {
+        self.lock().answers.len()
+    }
+
     /// Wait for a staged commit's answer, landing a group when nobody else is.
-    pub(super) async fn land(&self, ticket: Ticket, backend: &dyn KvBackend) -> Result<()> {
+    pub(super) async fn land(&self, mut ticket: Ticket<'_>, backend: &dyn KvBackend) -> Result<()> {
         loop {
             let notified = self.settled.notified();
             let mut notified = std::pin::pin!(notified);
             let next = {
                 let mut state = self.lock();
-                if let Some(answer) = state.answers.remove(&ticket.0) {
+                if let Some(answer) = state.answers.remove(&ticket.id) {
+                    ticket.collected = true;
                     return answer;
                 }
                 if !state.flushing && !state.staged.is_empty() {
@@ -181,16 +231,18 @@ impl Pending {
 
     async fn flush(&self, group: Vec<Member>, backend: &dyn KvBackend) {
         let mut tickets = Vec::with_capacity(group.len());
+        let mut versions = Vec::with_capacity(group.len());
         let mut named = Vec::with_capacity(group.len());
         let mut batches = Vec::with_capacity(group.len());
         for member in group {
             tickets.push(member.ticket);
+            versions.push(member.version);
             named.push(member.named);
             batches.push(member.batch);
         }
         let landing = Landing {
             pending: self,
-            members: Some((tickets, named)),
+            members: Some((tickets, versions, named)),
             backend: backend.name(),
         };
         // A panic while landing is contained here: left to unwind, it would
@@ -210,6 +262,7 @@ impl Pending {
     fn record(
         &self,
         tickets: Vec<u64>,
+        versions: &[Sequence],
         named: Vec<(Keyspace, Key)>,
         backend: &'static str,
         outcome: Option<std::thread::Result<(usize, Result<()>)>>,
@@ -223,6 +276,13 @@ impl Pending {
             Some(Err(payload)) => (0, Ok(()), Some(payload), Some(PANICKED)),
             None => (0, Ok(()), None, Some(ABANDONED)),
         };
+        // Before any waiter is answered, and whether or not its waiter is still
+        // there to be: what landed is counted as landed here, by the landing,
+        // because a waiter that is gone publishes nothing (`crate::landed`). A
+        // group whose outcome is unknown publishes nothing either.
+        if let Some(newest) = versions.iter().take(landed).max() {
+            self.landed.publish(*newest);
+        }
         let mut failure = outcome.err();
         for (index, (ticket, (keyspace, key))) in tickets.into_iter().zip(named).enumerate() {
             let answer = if let Some(reason) = unknown_reason {
@@ -234,7 +294,7 @@ impl Pending {
             } else {
                 Err(refused(keyspace, key))
             };
-            state.answers.insert(ticket, answer);
+            state.answer(ticket, answer);
         }
         if unknown_reason.is_some() || landed < count {
             state.refuse_staged();
@@ -318,11 +378,17 @@ impl State {
         group
     }
 
+    /// Keep `answer` for `ticket`, unless its ticket is already gone.
+    fn answer(&mut self, ticket: u64, answer: Result<()>) {
+        if !self.gone.remove(&ticket) {
+            self.answers.insert(ticket, answer);
+        }
+    }
+
     fn refuse_staged(&mut self) {
         while let Some(member) = self.staged.pop_front() {
             let (keyspace, key) = member.named;
-            self.answers
-                .insert(member.ticket, Err(refused(keyspace, key)));
+            self.answer(member.ticket, Err(refused(keyspace, key)));
         }
         self.staged_ops.clear();
     }
@@ -362,8 +428,9 @@ enum Next {
     Wait,
 }
 
-/// A landing group's tickets and the keys its writes name.
-type Members = (Vec<u64>, Vec<(Keyspace, Key)>);
+/// A landing group's tickets, the versions its batches move the store to, and
+/// the keys its writes name.
+type Members = (Vec<u64>, Vec<Sequence>, Vec<(Keyspace, Key)>);
 
 /// A group on its way to the engine. Answering its outcome settles it; dropped
 /// unsettled (the landing's future abandoned part way), it answers every
@@ -376,17 +443,18 @@ struct Landing<'a> {
 
 impl Landing<'_> {
     fn settle(mut self, outcome: std::thread::Result<(usize, Result<()>)>) {
-        if let Some((tickets, named)) = self.members.take() {
+        if let Some((tickets, versions, named)) = self.members.take() {
             self.pending
-                .record(tickets, named, self.backend, Some(outcome));
+                .record(tickets, &versions, named, self.backend, Some(outcome));
         }
     }
 }
 
 impl Drop for Landing<'_> {
     fn drop(&mut self) {
-        if let Some((tickets, named)) = self.members.take() {
-            self.pending.record(tickets, named, self.backend, None);
+        if let Some((tickets, versions, named)) = self.members.take() {
+            self.pending
+                .record(tickets, &versions, named, self.backend, None);
         }
     }
 }

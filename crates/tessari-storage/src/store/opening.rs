@@ -73,7 +73,6 @@ impl Store {
                 backend
             },
             snapshots: Arc::new(Registry::default()),
-            landed: Arc::default(),
             running: Arc::new(crate::running::Running::default()),
             // Sealed. A store that opened unsealed would be one that opens
             // secrets for whoever restarted it.
@@ -107,7 +106,7 @@ impl Store {
         };
         // Before the first transaction begins: everything written so far landed
         // before this open, and every landing from here publishes its own.
-        store.landed.publish(store.committed_version().await?);
+        store.landed_at(store.committed_version().await?);
         // Last, because it reads the catalog: the format is settled and the
         // identity exists by the time this asks which node it is.
         store.reconcile_roles().await?;

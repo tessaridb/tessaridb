@@ -16,6 +16,8 @@ use tessari_kv::{
     Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value, WriteBatch,
 };
 
+use tessari_types::Sequence;
+
 use crate::now::Now;
 
 use super::{Overlaid, WriteGate};
@@ -82,7 +84,7 @@ fn the_holder_reads_the_engine_with_the_pending_writes_applied() {
     KvBackend::apply(&reference, pending()).now().unwrap();
 
     let turn = gate.hold().now();
-    let _ticket = gate.stage(pending());
+    let _ticket = gate.stage(pending(), Sequence::new(1));
     for request in requests() {
         assert_eq!(
             overlay.scan(&request).now().unwrap(),
@@ -135,7 +137,7 @@ fn a_thread_without_the_turn_reads_the_engine_alone() {
     let engine = stored();
 
     let turn = gate.hold().now();
-    let _ticket = gate.stage(pending());
+    let _ticket = gate.stage(pending(), Sequence::new(1));
     std::thread::scope(|scope| {
         scope
             .spawn(|| {
@@ -181,7 +183,7 @@ fn a_task_that_shares_the_holders_thread_does_not_read_its_pending_writes() {
             let gate = Arc::clone(&gate);
             tasks.spawn_local(async move {
                 let turn = gate.hold().await;
-                let _ticket = gate.stage(pending());
+                let _ticket = gate.stage(pending(), Sequence::new(1));
                 tokio::task::yield_now().await;
                 drop(turn);
             })

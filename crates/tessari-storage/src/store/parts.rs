@@ -188,7 +188,7 @@ impl Store {
                 }
             }
         } else {
-            self.landed.version()
+            self.writing.landed_version()
         };
         Ok(Transaction::new(self, at))
     }
@@ -196,7 +196,7 @@ impl Store {
     /// Record that the batch at `version` has landed, before whoever wrote it
     /// is answered (`crate::landed`).
     pub(crate) fn landed_at(&self, version: Sequence) {
-        self.landed.publish(version);
+        self.writing.landed_at(version);
     }
 
     /// [`Self::begin`], deciding every intent from this node's own copy —
@@ -262,7 +262,7 @@ impl Store {
             // What a transaction beginning next would begin at, which may be
             // below the engine's tail for a moment after a landing: a floor
             // above it would reclaim what that transaction reads.
-            None => Ok(self.landed.version()),
+            None => Ok(self.writing.landed_version()),
         }
     }
 

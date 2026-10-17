@@ -71,6 +71,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError, RwLock};
 
 use tessari_kv::{ErrorCategory, KvBackend, WriteBatch};
+use tessari_types::Sequence;
 
 pub(crate) use overlay::Overlaid;
 pub(crate) use pending::Ticket;
@@ -181,9 +182,19 @@ impl WriteGate {
 
     /// Hand a derived batch over to be landed with whatever else is staged.
     /// Called holding the turn; the answer comes from [`Self::land`].
-    pub(crate) fn stage(&self, batch: WriteBatch) -> Ticket {
+    pub(crate) fn stage(&self, batch: WriteBatch, version: Sequence) -> Ticket<'_> {
         self.forget_version();
-        self.pending.stage(batch)
+        self.pending.stage(batch, version)
+    }
+
+    /// Record that the batch at `version` has landed (`crate::landed`).
+    pub(crate) fn landed_at(&self, version: Sequence) {
+        self.pending.landed_at(version);
+    }
+
+    /// The newest version landed, which a transaction begins at.
+    pub(crate) fn landed_version(&self) -> Sequence {
+        self.pending.landed_version()
     }
 
     /// Wait for a staged batch to land, landing a group when nobody else is.
@@ -195,7 +206,7 @@ impl WriteGate {
     /// on a batch that did not land.
     pub(crate) async fn land(
         &self,
-        ticket: Ticket,
+        ticket: Ticket<'_>,
         backend: &dyn KvBackend,
     ) -> tessari_kv::Result<()> {
         self.refuse_if_stopped()?;

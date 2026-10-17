@@ -18,6 +18,8 @@ use tessari_kv::{
     WriteBatch,
 };
 
+use tessari_types::Sequence;
+
 use super::pending::Pending;
 
 /// A memory backend whose first group write never finishes.
@@ -110,17 +112,64 @@ fn a_landing_dropped_part_way_leaves_the_next_one_free_to_land() {
         stalled: AtomicBool::new(false),
     });
 
-    let first = pending.stage(batch(1));
+    let first = pending.stage(batch(1), Sequence::new(1));
     let mut abandoned = Box::pin(pending.land(first, backend.as_ref()));
     // Polled once: it takes the group and waits on the engine for good.
     assert!((&mut abandoned).now_or_never().is_none());
     drop(abandoned);
 
-    let second = pending.stage(batch(2));
+    let second = pending.stage(batch(2), Sequence::new(2));
     let landed = pending
         .land(second, backend.as_ref())
         .now_or_never()
         .expect("a later landing waited for one that was dropped");
     assert!(landed.is_ok(), "{landed:?}");
     assert!(pending.quiet(), "the dropped group was left pending");
+}
+
+/// A commit whose waiter is gone by the time another commit lands its batch has
+/// still landed: the newest version landed counts it, so a transaction that
+/// begins next reads it.
+#[test]
+fn a_batch_landed_for_a_waiter_that_is_gone_is_counted_as_landed() {
+    let pending = Pending::default();
+    let backend = MemoryBackend::new();
+
+    let lower = pending.stage(batch(1), Sequence::new(1));
+    // Its waiter is dropped before it asks for its answer.
+    let _gone = pending.stage(batch(2), Sequence::new(2));
+    let landed = pending
+        .land(lower, &backend)
+        .now_or_never()
+        .expect("a memory backend lands at once");
+    assert!(landed.is_ok(), "{landed:?}");
+
+    assert_eq!(
+        pending.landed_version(),
+        Sequence::new(2),
+        "the batch landed for a waiter that was gone is not counted as landed"
+    );
+}
+
+/// An answer nobody will collect is not kept: a commit whose waiter is gone
+/// leaves nothing behind once its group has landed.
+#[test]
+fn an_answer_for_a_waiter_that_is_gone_is_not_kept() {
+    let pending = Pending::default();
+    let backend = MemoryBackend::new();
+
+    let lower = pending.stage(batch(1), Sequence::new(1));
+    let gone = pending.stage(batch(2), Sequence::new(2));
+    drop(gone);
+    let landed = pending
+        .land(lower, &backend)
+        .now_or_never()
+        .expect("a memory backend lands at once");
+    assert!(landed.is_ok(), "{landed:?}");
+
+    assert_eq!(
+        pending.held_answers(),
+        0,
+        "the answer of a commit whose waiter is gone is kept for ever"
+    );
 }
