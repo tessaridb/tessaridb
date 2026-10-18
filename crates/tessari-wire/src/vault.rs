@@ -294,7 +294,7 @@ mod tests {
         };
         let bytes = asked.encode();
         assert_eq!(
-            VaultAsk::decode(&bytes).unwrap().call,
+            VaultAsk::decode(&bytes).expect("decodes").call,
             asked.call,
             "a declaration reads back with its vault"
         );
@@ -302,12 +302,20 @@ mod tests {
         // credentials, before the act.
         let mut expected = vec![1];
         for text in ["ada", "pw"] {
-            expected.extend_from_slice(&u32::try_from(text.len()).unwrap().to_be_bytes());
+            expected.extend_from_slice(
+                &u32::try_from(text.len())
+                    .expect("a short text")
+                    .to_be_bytes(),
+            );
             expected.extend_from_slice(text.as_bytes());
         }
         expected.push(1);
         for text in ["shop", "live", "team"] {
-            expected.extend_from_slice(&u32::try_from(text.len()).unwrap().to_be_bytes());
+            expected.extend_from_slice(
+                &u32::try_from(text.len())
+                    .expect("a short text")
+                    .to_be_bytes(),
+            );
             expected.extend_from_slice(text.as_bytes());
         }
         expected.push(5);
