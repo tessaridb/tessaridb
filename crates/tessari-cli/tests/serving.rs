@@ -4699,6 +4699,114 @@ fn a_shard_placed_on_two_nodes_survives_losing_its_leader() {
     }
 }
 
+/// The unheard-leader cluster's addresses, a band of its own.
+const UNHEARD: Band = [
+    ("127.0.0.1:48062", "127.0.0.1:48063"),
+    ("127.0.0.1:48064", "127.0.0.1:48065"),
+    ("127.0.0.1:48066", "127.0.0.1:48067"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes, a SIGSTOP and a kill -9: a shard \
+            candidate that never heard its range's last leader lead. R4's own \
+            validation, run explicitly: cargo test -p tessari-cli --test serving \
+            a_candidate_that_never_heard -- --ignored"]
+fn a_candidate_that_never_heard_its_ranges_last_leader_still_catches_up_and_leads() {
+    // Shard 2's first leader is paused, so the only times it heard the other
+    // candidate were while it led the range itself. The other candidate leads
+    // and writes, node 0 collects that write, and the other candidate dies. The
+    // paused one resumes behind node 0 on shard 2's line, with nobody it ever
+    // heard leading the range: it has to catch up from node 0 to be elected.
+    let mut cluster = a_cluster_declared(
+        &UNHEARD,
+        PLACED,
+        [
+            " LEADS SHARD prod.shop.orders 1",
+            " LEADS SHARD prod.shop.orders 2",
+            " LEADS SHARD prod.shop.orders 2",
+        ],
+    );
+    let logs = cluster.logs.clone();
+    if let Err(last) = until_taken(UNHEARD[0].0, "a", Duration::from_secs(120)) {
+        panic!(
+            "node 0 never took shard 1; last: {last}{}",
+            what_the_nodes_said(&UNHEARD, &logs)
+        );
+    }
+    let began = Instant::now();
+    let mut first = None;
+    while began.elapsed() < Duration::from_secs(120) && first.is_none() {
+        first = [1, 2]
+            .into_iter()
+            .find(|index| until_taken(UNHEARD[*index].0, "h", Duration::from_millis(1)).is_ok());
+        std::thread::sleep(POLL);
+    }
+    let Some(first) = first else {
+        panic!(
+            "neither candidate took shard 2{}",
+            what_the_nodes_said(&UNHEARD, &logs)
+        );
+    };
+    let second = if first == 1 { 2 } else { 1 };
+    // Paused only once node 0 holds the first leader's write, so the paused
+    // node holds nothing the line does not: it comes back behind, not forked.
+    // Identities filtered here, because a range over `id` against a string
+    // would compare two kinds.
+    let wrote = |surface: &str, prefix: char| {
+        read_at(surface, "SELECT id FROM orders;")
+            .map(|ids| ids.into_iter().filter(|id| id.starts_with(prefix)).count())
+    };
+    let held = until(Duration::from_secs(60), || {
+        wrote(UNHEARD[0].0, 'h').is_ok_and(|count| count > 0)
+    });
+    assert!(
+        held,
+        "node 0 never collected the first leader's write{}",
+        what_the_nodes_said(&UNHEARD, &logs)
+    );
+    let paused = cluster.running[first]
+        .as_ref()
+        .expect("the first leader runs")
+        .0
+        .id();
+    let stopped = Command::new("kill")
+        .args(["-STOP", &paused.to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(stopped.success());
+    if let Err(last) = until_taken(UNHEARD[second].0, "i", Duration::from_secs(120)) {
+        panic!(
+            "the second candidate never took shard 2; last: {last}{}",
+            what_the_nodes_said(&UNHEARD, &logs)
+        );
+    }
+    let collected = until(Duration::from_secs(60), || {
+        wrote(UNHEARD[0].0, 'i').is_ok_and(|count| count > 0)
+    });
+    assert!(
+        collected,
+        "node 0 never collected the second leader's write{}",
+        what_the_nodes_said(&UNHEARD, &logs)
+    );
+    cluster.running[second] = None;
+    let resumed = Command::new("kill")
+        .args(["-CONT", &paused.to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(resumed.success());
+    if let Err(last) = until_taken(UNHEARD[first].0, "j", Duration::from_secs(120)) {
+        panic!(
+            "the resumed candidate never led shard 2 again; last: {last}{}",
+            what_the_nodes_said_beyond_greetings(&logs)
+        );
+    }
+    let held = wrote(UNHEARD[first].0, 'i');
+    assert!(
+        held.as_ref().is_ok_and(|count| *count > 0),
+        "the resumed leader does not hold the write it was behind on: {held:?}"
+    );
+}
+
 /// The participant-failover cluster's addresses, a band of its own.
 const ACROSS_PARTICIPANT: Band = [
     ("127.0.0.1:48004", "127.0.0.1:48005"),
@@ -4787,7 +4895,8 @@ fn a_transaction_whose_participant_leader_dies_is_kept_whole_by_its_successor() 
         if let Ok(ids) = &at_zero {
             assert!(
                 ids.is_empty() || ids == &["ap", "hp"],
-                "node 0 showed half a transaction: {ids:?}"
+                "node 0 showed half a transaction: {ids:?}{}",
+                what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
             );
         }
         at_zero.is_ok_and(|ids| ids == ["ap", "hp"])

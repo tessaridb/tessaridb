@@ -284,6 +284,14 @@ impl Serving<'_> {
         // nothing here, and says so by stating no leadership.
         let epoch = self.log.writing_epoch(asked.home).await.map_err(refused)?;
         let epoch = (epoch > Epoch::ZERO).then_some(epoch);
+        // The order is this node's own counter, so it bounds only a log this
+        // node writes: its own, or a line it leads. Serving a line somebody
+        // else wrote (a candidate catching up from a holder, Q-897, or a store
+        // leader asked for a placed range), it would hold back every record
+        // that writer numbered above this node's count, for good.
+        let me = self.log.node_identity().await.map_err(refused)?.id;
+        let order =
+            (epoch.is_some() || served.writer == tessari_storage::Writer::new(me)).then_some(order);
         let (records, stopped_early) = self.fill(over, served, asked.from, limit).await?;
         // What the follower now holds: the last position it was handed, or —
         // when it was handed nothing — the one it told us it was at. The same
@@ -308,7 +316,7 @@ impl Serving<'_> {
             records,
             stopped_early,
             over: Some(over),
-            order: Some(order),
+            order,
             epoch,
         })
     }

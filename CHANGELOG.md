@@ -23,6 +23,16 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.36.2 — 2026-10-19
+
+### Fixed
+
+- **A shard whose leader was lost is led again when a candidate never saw that leader lead.** A candidate placed
+  with `LEADS` did not catch up from the other nodes holding the range, the node ahead of it refused it its vote,
+  and the range stayed without a leader.
+- **A node catching up on a range from a peer that does not lead it applies what it is sent.** The peer stated its
+  own commit position as a limit, and the node held back every record above it.
+
 ## 0.36.1 — 2026-10-18
 
 ### Added
