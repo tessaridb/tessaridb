@@ -4895,7 +4895,8 @@ fn a_transaction_whose_participant_leader_dies_is_kept_whole_by_its_successor() 
         if let Ok(ids) = &at_zero {
             assert!(
                 ids.is_empty() || ids == &["ap", "hp"],
-                "node 0 showed half a transaction: {ids:?}"
+                "node 0 showed half a transaction: {ids:?}{}",
+                what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
             );
         }
         at_zero.is_ok_and(|ids| ids == ["ap", "hp"])
