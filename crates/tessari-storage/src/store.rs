@@ -234,6 +234,8 @@ pub struct Store {
     /// feature only a series has.
     series: Arc<crate::series::SeriesRegistry>,
     shards: Arc<crate::shards::ShardRegistry>,
+    /// The next catalog id this process offers at each level.
+    allocated: Arc<crate::catalog::Allocated>,
     /// Table definitions already decoded, keyed by their stored bytes.
     decoded_tables: Arc<crate::catalog::DecodedTables>,
     /// Name and table rows valid for readers at or above the last change to them.

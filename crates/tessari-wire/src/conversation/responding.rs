@@ -264,6 +264,12 @@ pub(crate) async fn respond_vault(
         crate::VaultCall::Unseal(passphrase) => tessaridb::VaultAct::Unseal { passphrase },
         crate::VaultCall::Seal => tessaridb::VaultAct::Seal,
         crate::VaultCall::Change { current, new } => tessaridb::VaultAct::Change { current, new },
+        crate::VaultCall::Declare { place, passphrase } => {
+            let declared = session
+                .declare_vault(&place.namespace, &place.database, &place.vault, passphrase)
+                .await;
+            return status_answer(declared, theirs);
+        }
     };
     let target = asked
         .place
@@ -275,7 +281,12 @@ pub(crate) async fn respond_vault(
                 vault: &place.vault,
             }
         });
-    match session.vault(target, act).await {
+    status_answer(session.vault(target, act).await, theirs)
+}
+
+/// One vault act's answer: the seal status as one outcome, or the refusal.
+fn status_answer(answered: tessaridb::Result<tessaridb::Value>, theirs: u8) -> Answer {
+    match answered {
         Ok(status) => {
             let mut body = Vec::new();
             frame::put_u32(&mut body, 1);

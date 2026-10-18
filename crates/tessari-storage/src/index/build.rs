@@ -10,7 +10,7 @@ use crate::error::Result;
 use crate::graph;
 use crate::store::Store;
 use crate::transaction::Transaction;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use tessari_encoding::{
     FormatVersion, FormatVersionKey, IndexAddress, IndexValues, KeyKind, LogRecord, PostingKey,
     RecordValue, SearchSuffixKey, SearchSurfaceKey, StoreKey, StoreValue, decode_payload,
@@ -214,7 +214,7 @@ pub(crate) async fn build(
     // above has just removed, so honouring them would refuse a rebuild for
     // colliding with itself. Nothing is lost: every row is seen here, so a
     // genuine duplicate still collides.
-    let mut claimed = BTreeSet::new();
+    let mut claimed = super::entries::Claims::default();
     for (id, payload) in &rows {
         for values in project(definition, &decode_payload(payload)?) {
             batch = insert(

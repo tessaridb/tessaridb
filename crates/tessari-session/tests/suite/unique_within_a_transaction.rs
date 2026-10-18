@@ -116,3 +116,100 @@ fn a_delete_of_a_different_record_does_not_free_the_value() {
         "releasing another value frees nothing here, got {refusal}"
     );
 }
+
+// A log record's mutations are stored in address order, not in the order the
+// statements ran. So a record whose id sorts BEFORE the holder's is maintained
+// first, while the holder's release is still ahead of it — and its entry would
+// then be deleted by that release, leaving the value claimable by anyone.
+
+#[test]
+fn a_lower_id_takes_the_value_a_higher_ids_delete_freed_in_the_same_transaction() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run_now(
+            "CREATE holds:16 = { object: 'tasks:9', by: 'first' };\n\
+             BEGIN;\n\
+             DELETE holds:16;\n\
+             CREATE holds:15 = { object: 'tasks:9', by: 'second' };\n\
+             COMMIT;",
+        )
+        .expect("the value the same transaction released is the transaction's to take");
+
+    let found = session
+        .run_now("SELECT by FROM holds WHERE object = 'tasks:9' USING INDEX one_per_object;")
+        .unwrap();
+    let last = format!("{:?}", found.last().unwrap());
+    assert!(
+        last.contains("second"),
+        "the index answers the new holder, got {last}"
+    );
+
+    // The entry survived the holder's release: a third record is still refused.
+    let refusal = session
+        .run_now("CREATE holds:3 = { object: 'tasks:9', by: 'third' };")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("one_per_object"),
+        "the value is held, so a third record is refused, got {refusal}"
+    );
+}
+
+#[test]
+fn two_records_exchange_their_unique_values_in_one_transaction() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run_now(
+            "CREATE holds:2 = { object: 'tasks:8', by: 'second' };\n\
+             BEGIN;\n\
+             UPDATE holds:1 SET object = 'tasks:8';\n\
+             UPDATE holds:2 SET object = 'tasks:7';\n\
+             COMMIT;",
+        )
+        .expect("each value is released by the record that held it");
+
+    for (object, by) in [("tasks:7", "second"), ("tasks:8", "first")] {
+        let found = session
+            .run_now(&format!(
+                "SELECT by FROM holds WHERE object = '{object}' USING INDEX one_per_object;"
+            ))
+            .unwrap();
+        let last = format!("{:?}", found.last().unwrap());
+        assert!(last.contains(by), "{object} is held by {by}, got {last}");
+    }
+    let refusal = session
+        .run_now("CREATE holds:3 = { object: 'tasks:8', by: 'third' };")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("one_per_object"),
+        "both entries survived the exchange, got {refusal}"
+    );
+}
+
+#[test]
+fn a_record_keeping_its_value_still_refuses_a_lower_id_in_the_same_transaction() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run_now("CREATE holds:16 = { object: 'tasks:9', by: 'first' };")
+        .unwrap();
+
+    // The holder is rewritten in the same transaction but keeps the value, so
+    // nothing was released and the lower id must still be refused.
+    let refusal = session
+        .run_now(
+            "BEGIN;\n\
+             UPDATE holds:16 SET by = 'still first';\n\
+             CREATE holds:15 = { object: 'tasks:9', by: 'second' };\n\
+             COMMIT;",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("one_per_object"),
+        "a value its holder kept is not released, got {refusal}"
+    );
+}

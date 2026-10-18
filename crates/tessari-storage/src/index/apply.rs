@@ -187,7 +187,15 @@ pub(super) async fn apply_one(
             .retiring
             .filter(|_| definition.keeps_retired_entries());
         for values in project(definition, &decode_payload(bytes)?) {
-            batch = remove(batch, definition, &address, &values, &mutation.id);
+            batch = remove(
+                batch,
+                definition,
+                &address,
+                &values,
+                &mutation.id,
+                &pending.claims,
+            )
+            .await;
             if let Some(at) = retiring
                 && !arriving.contains(&values)
             {
@@ -204,7 +212,7 @@ pub(super) async fn apply_one(
             &address,
             &values,
             &mutation.id,
-            &mut pending.claimed,
+            &mut pending.claims,
         )
         .await?;
     }

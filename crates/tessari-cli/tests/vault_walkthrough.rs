@@ -392,6 +392,31 @@ fn the_passphrase_reaches_no_log_line_and_the_period_is_the_one_asked_for() {
         None,
     ));
 
+    // A vault declared in its own custody, over both surfaces, with a
+    // passphrase that must reach no log line either.
+    let team = "the team passphrase 7e31";
+    post(
+        SURFACE_HTTP,
+        "/script",
+        "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE work;",
+    );
+    let declared = post(SURFACE_HTTP, "/vault/prod/work/team/declare", team);
+    assert!(declared.contains(r#""custody":"own""#), "{declared}");
+    client
+        .vault(
+            &tessari_wire::VaultCall::Declare {
+                place: tessari_wire::VaultPlace {
+                    namespace: "prod".to_owned(),
+                    database: "work".to_owned(),
+                    vault: "crew".to_owned(),
+                },
+                passphrase: team.to_owned(),
+            },
+            None,
+            None,
+        )
+        .unwrap();
+
     drop(node);
     let written = std::fs::read_to_string(&log).unwrap();
     // The control: the log was captured at a level that records these acts, so
@@ -407,6 +432,10 @@ fn the_passphrase_reaches_no_log_line_and_the_period_is_the_one_asked_for() {
     assert!(
         !written.contains(guess),
         "a guessed passphrase is in the node's log"
+    );
+    assert!(
+        !written.contains(team),
+        "a declared vault's passphrase is in the node's log"
     );
     drop(std::fs::remove_dir_all(&path));
     drop(std::fs::remove_file(&log));

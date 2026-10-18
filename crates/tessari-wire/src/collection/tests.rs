@@ -281,5 +281,6 @@ fn collector<'a>(
         said,
         peer: (LEADER, address),
         limit,
+        bound: Duration::from_secs(tessari_constants::GREETING_SECONDS),
     }
 }

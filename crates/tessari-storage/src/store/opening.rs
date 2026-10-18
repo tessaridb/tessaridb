@@ -81,6 +81,7 @@ impl Store {
             audit: Arc::new(crate::audit::AuditTrail::default()),
             series: Arc::new(crate::series::SeriesRegistry::default()),
             shards: Arc::new(crate::shards::ShardRegistry::default()),
+            allocated: Arc::new(crate::catalog::Allocated::default()),
             decoded_tables: Arc::new(crate::catalog::DecodedTables::default()),
             catalog_rows: Arc::new(crate::catalog::CatalogRows::default()),
             served,

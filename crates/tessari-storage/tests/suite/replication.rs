@@ -193,6 +193,43 @@ fn replay_into_an_empty_store_reproduces_it_byte_for_byte() {
     );
 }
 
+/// A replica keeps the catalog's id counters it would need if it led.
+///
+/// A definition's transaction writes only its id's marker and the counter is
+/// derived when the record lands (engine Q-959), so a replica that skipped the
+/// derivation would, once promoted, hand out an id the source already gave.
+#[test]
+fn a_replica_resumes_catalog_ids_after_the_ones_the_source_handed_out() {
+    let source = store_on(&backend());
+    let mut given = Vec::new();
+    for name in ["a", "b", "c"] {
+        let mut transaction = source.begin().now().unwrap();
+        given.push(
+            tessari_storage::Catalog::new(&mut transaction)
+                .create_namespace(name)
+                .now()
+                .unwrap()
+                .id
+                .get(),
+        );
+        transaction.commit().now().unwrap();
+    }
+
+    let replica = store_on(&backend());
+    crate::replay(&source, &replica);
+    let mut transaction = replica.begin().now().unwrap();
+    let next = tessari_storage::Catalog::new(&mut transaction)
+        .create_namespace("d")
+        .now()
+        .unwrap()
+        .id
+        .get();
+    assert!(
+        given.iter().all(|id| next > *id),
+        "the replica offered {next} after the source gave {given:?}"
+    );
+}
+
 #[test]
 fn a_replica_reads_what_the_source_reads_including_the_history_behind_it() {
     let source_backend = backend();

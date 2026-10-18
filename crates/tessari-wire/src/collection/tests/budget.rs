@@ -198,3 +198,54 @@ fn a_node_holding_a_tenancy_of_its_own_is_refused_until_it_removes_it() {
              cluster gave them"
     );
 }
+
+#[test]
+fn a_leader_that_never_answers_costs_a_collection_round_one_bounded_dial() {
+    // A host gone without a reset accepts no connection and refuses none; a
+    // listener that never accepts is the same to a dialler, whose kernel
+    // completes the connect while nothing ever answers after it. Each ask used
+    // to dial it again with the greeting's ten seconds, so a follower with three
+    // logs spent half a minute on a leader that had already been replaced.
+    let authority = Authority::new();
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+    let address = silent.local_addr().expect("its address").to_string();
+    let follower = Db::in_memory().now().expect("an in-memory store");
+    let mine = authority.keys(THERE, Purpose::Peer);
+    let said = hello(THERE);
+    let mut collector = collector(&mine, &said, &address, 64);
+    collector.bound = Duration::from_millis(200);
+    let asks = [
+        (Reach::Store, Sequence::new(1)),
+        (Reach::Namespace(NamespaceId::new(1)), Sequence::new(1)),
+        (
+            Reach::Database(NamespaceId::new(1), DatabaseId::new(1)),
+            Sequence::new(1),
+        ),
+    ];
+
+    let began = std::time::Instant::now();
+    let answers = collector.round(follower.store(), &asks).now();
+    let took = began.elapsed();
+
+    assert_eq!(answers.len(), asks.len(), "one answer per ask");
+    assert!(
+        answers
+            .iter()
+            .all(|answer| matches!(answer, Err(Error::Io(why)) if why.kind() == std::io::ErrorKind::TimedOut)),
+        "every ask answers the leader's silence: {answers:?}"
+    );
+    assert!(
+        took < Duration::from_secs(5),
+        "the round took {took:?}, the greeting's deadline rather than its own"
+    );
+    // The connects the kernel completed are waiting in the backlog: one dial,
+    // not one per log.
+    silent
+        .set_nonblocking(true)
+        .expect("a non-blocking listener");
+    let dialled = std::iter::from_fn(|| silent.accept().ok()).count();
+    assert_eq!(
+        dialled, 1,
+        "a leader that did not answer one ask was dialled again"
+    );
+}

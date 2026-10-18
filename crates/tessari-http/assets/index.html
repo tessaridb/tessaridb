@@ -763,6 +763,7 @@
                 <button id="open-vault-one-unseal" type="button" class="primary" disabled>Unseal…</button>
                 <button id="vault-one-seal" type="button" disabled>Seal</button>
                 <button id="open-vault-one-change" type="button" class="quiet" disabled>Change passphrase…</button>
+                <button id="open-vault-one-declare" type="button" class="quiet" disabled>Declare…</button>
               </div>
             </div>
             <dialog id="vault-one-unseal-dialog" class="dialog" aria-labelledby="vault-one-unseal-dialog-title">
@@ -789,6 +790,18 @@
                 </div>
                 <div class="row">
                   <button id="vault-one-change" type="button" class="primary" disabled>Change passphrase</button>
+                </div>
+              </div>
+            </dialog>
+            <dialog id="vault-one-declare-dialog" class="dialog" aria-labelledby="vault-one-declare-dialog-title">
+              <div class="dialog-head">
+                <h2 id="vault-one-declare-dialog-title">Declare a vault with its own passphrase</h2>
+                <button type="button" class="quiet" data-close aria-label="Close">Close</button>
+              </div>
+              <div class="dialog-body">
+                <label>Passphrase <input id="vault-one-declared" type="password" autocomplete="new-password" /></label>
+                <div class="row">
+                  <button id="vault-one-declare" type="button" class="primary" disabled>Declare</button>
                 </div>
               </div>
             </dialog>

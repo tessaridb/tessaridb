@@ -350,3 +350,39 @@ fn a_vault_with_its_own_passphrase_has_its_own_routes() {
     );
     assert_eq!(call(&address, "GET", "/vault/pr-od/work/team", "").0, 400);
 }
+
+#[test]
+fn a_vault_is_declared_with_its_own_passphrase_by_its_route() {
+    let (_node, address) = node();
+    let (status, said) = call(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE work;",
+    );
+    assert_eq!(status, 200, "{said}");
+
+    let (status, said) = call(
+        &address,
+        "POST",
+        "/vault/prod/work/team/declare",
+        TEAM_PASSPHRASE,
+    );
+    assert_eq!(status, 200, "{said}");
+    assert!(said.contains(r#""custody":"own""#), "{said}");
+    assert!(said.contains(r#""state":"unsealed""#), "{said}");
+    assert!(!said.contains(TEAM_PASSPHRASE), "{said}");
+
+    let (status, said) = call(
+        &address,
+        "POST",
+        "/vault/prod/work/team/declare",
+        TEAM_PASSPHRASE,
+    );
+    assert_ne!(status, 200, "a second declaration of one name: {said}");
+    assert!(!said.contains(TEAM_PASSPHRASE), "{said}");
+    assert_eq!(
+        call(&address, "GET", "/vault/prod/work/team/declare", "").0,
+        405
+    );
+}

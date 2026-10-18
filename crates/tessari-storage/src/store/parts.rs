@@ -101,6 +101,10 @@ impl Store {
     }
 
     /// Name and table rows held between statements (`crate::catalog::rows`).
+    pub(crate) fn allocated(&self) -> &crate::catalog::Allocated {
+        &self.allocated
+    }
+
     pub(crate) fn catalog_rows(&self) -> &crate::catalog::CatalogRows {
         &self.catalog_rows
     }

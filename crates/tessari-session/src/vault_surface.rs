@@ -1,5 +1,5 @@
-//! The vault's dedicated surface: unseal, seal and ask, with no statement text
-//! (ADR-0092 D2).
+//! The vault's dedicated surface: unseal, seal, ask and declare, with no
+//! statement text (ADR-0092 D2).
 //!
 //! # Why the acts are statements built rather than read
 //!
@@ -88,6 +88,47 @@ impl Session<'_> {
                 answered
             }
         }
+    }
+
+    /// Declare `vault` in `namespace`.`database` keyed by its own `passphrase`
+    /// (ADR-0093), and answer as `INFO FOR SEAL OF` does.
+    ///
+    /// The statement `DEFINE VAULT … PASSPHRASE '…'` parses to, built here from
+    /// a field so the passphrase is never statement text (DB-22), and run as the
+    /// caller in the vault's tenancy with the session's `USE` left as it was.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `DEFINE VAULT` is refused with — the authority it needs, a name
+    /// already taken, a tenancy that does not exist.
+    pub async fn declare_vault(
+        &mut self,
+        namespace: &str,
+        database: &str,
+        vault: &str,
+        passphrase: &str,
+    ) -> Result<Value> {
+        let held = (
+            self.namespace.replace(namespace.to_owned()),
+            self.database.replace(database.to_owned()),
+        );
+        let span = Span::new(0, 0);
+        let declared = match self
+            .built(StatementKind::DefineVault {
+                name: Name {
+                    text: vault.to_owned(),
+                    span,
+                },
+                if_not_exists: false,
+                passphrase: Some(passphrase.to_owned()),
+            })
+            .await
+        {
+            Ok(_) => self.vault_act(Some(vault), VaultAct::Status).await,
+            Err(refused) => Err(refused),
+        };
+        (self.namespace, self.database) = held;
+        declared
     }
 
     async fn vault_act(&mut self, vault: Option<&str>, act: VaultAct<'_>) -> Result<Value> {

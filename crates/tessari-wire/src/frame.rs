@@ -82,7 +82,7 @@ pub(crate) const MAJOR: u8 = 1;
 /// sends is worse than the gap**: a peer that believed this build could redirect
 /// would have been believing something false. This build sends one, so the minor
 /// moves with the sender and not with the frame.
-pub(crate) const MINOR: u8 = 5;
+pub(crate) const MINOR: u8 = 6;
 
 /// The minor at which a peer can be sent a [`Kind::Elsewhere`] frame.
 ///
@@ -113,6 +113,15 @@ pub(crate) const VAULT: u8 = 2;
 
 /// This build's node answers the frame this build's client may send.
 const _: () = assert!(MINOR >= VAULT);
+
+/// The minor at which a node answers a vault frame's declare act (act 5).
+///
+/// Asked by the client before it sends one, for [`VAULT`]'s reason: a node
+/// below it refuses the act as malformed and closes the connection.
+pub(crate) const DECLARE: u8 = 6;
+
+/// This build's node declares the vaults this build's client asks for.
+const _: () = assert!(MINOR >= DECLARE);
 
 /// The minor at which a client is sent a refusal's class (ADR-0117 D3).
 ///

@@ -673,9 +673,10 @@ fn a_qualified_table_is_still_a_table_and_not_a_route() {
 
 #[test]
 fn a_position_in_a_route_is_a_whole_number_or_the_statement_is_refused() {
+    // A quoted string between brackets is a key since 0.36.1, not a position:
+    // `tessari-session` suite `key_routes` holds what it means.
     for source in [
         "SELECT * FROM users WHERE tags[-1] = 'a';",
-        "SELECT * FROM users WHERE tags['x'] = 'a';",
         "SELECT * FROM users WHERE tags[] = 'a';",
         "SELECT * FROM users WHERE tags[0 = 'a';",
         "DEFINE INDEX by_tag ON users FIELDS tags[a];",

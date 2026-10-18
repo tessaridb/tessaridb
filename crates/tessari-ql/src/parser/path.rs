@@ -33,6 +33,8 @@ impl Parser<'_> {
                 if self.eat_punct(Punct::Star) {
                     steps.push(Step::Every);
                     self.expect_punct(Punct::BracketClose, "`]` after `*`")?;
+                } else if let Some(key) = self.bracketed_key()? {
+                    steps.push(Step::Field(key));
                 } else {
                     steps.push(Step::Index(self.array_position()?));
                     self.expect_punct(Punct::BracketClose, "`]` after a position")?;
@@ -45,6 +47,24 @@ impl Parser<'_> {
             path: Path::new(root.text, steps),
             span: start.to(self.span_behind()),
         })
+    }
+
+    /// `'content-type']` after an opening bracket: a step to an object key a name
+    /// cannot spell, or `None` when the bracket holds something else.
+    ///
+    /// A key holding `.`, `[` or `]` is refused, because a route is stored as
+    /// text and those three are what separate its steps there.
+    pub(super) fn bracketed_key(&mut self) -> Result<Option<String>> {
+        let Some(Token::Str(key)) = self.peek() else {
+            return Ok(None);
+        };
+        if key.is_empty() || key.contains(['.', '[', ']']) {
+            return Err(self.error_here("a key without `.`, `[` or `]`"));
+        }
+        let key = key.clone();
+        self.advance();
+        self.expect_punct(Punct::BracketClose, "`]` after a key")?;
+        Ok(Some(key))
     }
 
     /// A position inside an array: a whole number, never negative.

@@ -274,6 +274,15 @@ impl Transaction<'_> {
                     let batch =
                         crate::cardinality::maintain(self.store, carried, batch, commit_version)
                             .await?;
+                    // And the catalog's id counters, past the ids this record hands
+                    // out, so a follower promoted to leader resumes after them.
+                    let batch = crate::catalog::maintain_allocators(
+                        self.store,
+                        carried,
+                        batch,
+                        commit_version,
+                    )
+                    .await?;
                     // The expiry index, last and in the same batch as the records it
                     // describes: an entry written anywhere else is an entry that can be
                     // left behind (G035).

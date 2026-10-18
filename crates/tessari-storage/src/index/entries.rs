@@ -1,13 +1,13 @@
 //! Writing and removing one record's index entries, cells included.
 
-use super::covering_of;
+use super::{covering_of, project};
 use crate::catalog::IndexDefinition;
 use crate::error::{Error, Result};
 use crate::store::Store;
-use std::collections::BTreeSet;
 use tessari_encoding::{
-    ContainmentKey, IndexAddress, IndexTarget, IndexValues, NoPayload, SecondaryIndexKey,
-    SpatialExtent, SpatialIndexKey, StoreKey, StoreValue, UniqueIndexKey,
+    ContainmentKey, IndexAddress, IndexTarget, IndexValues, Mutation, NoPayload, RecordValue,
+    SecondaryIndexKey, SpatialExtent, SpatialIndexKey, StoreKey, StoreValue, UniqueIndexKey,
+    decode_payload,
 };
 use tessari_geo::{Bounds, Cell};
 use tessari_kv::{Key, Keyspace, WriteBatch, WriteOp};
@@ -20,7 +20,7 @@ pub(crate) async fn insert(
     address: &IndexAddress,
     values: &IndexValues,
     id: &RecordId,
-    claimed: &mut BTreeSet<Vec<u8>>,
+    claims: &mut Claims,
 ) -> Result<WriteBatch> {
     if !definition.unique {
         let key = SecondaryIndexKey::new(*address, values.clone(), id.clone());
@@ -37,7 +37,12 @@ pub(crate) async fn insert(
         index: definition.name.clone(),
         id: id.clone(),
     };
-    if !claimed.insert(key.as_slice().to_vec()) {
+    if claims
+        .claimed
+        .insert_async(key.as_slice().to_vec())
+        .await
+        .is_err()
+    {
         return Err(violation());
     }
 
@@ -53,12 +58,19 @@ pub(crate) async fn insert(
     // first and this put is queued last, so the entry the batch leaves behind is
     // this one.
     //
+    // The batch only knows the removals queued so far, and a log record's
+    // mutations are applied in address order rather than statement order: a
+    // holder whose id sorts after this record is released later in the same
+    // batch. [`Claims::released`] holds every value the record gives up,
+    // computed before any mutation is applied, so the order does not decide.
+    //
     // The concurrency guarantee is untouched, because the precondition below is
     // still the committed entry: a second transaction that claims the value
     // first still wins and this batch still fails.
     let batch = match store.backend().get(keyspace, &key).await? {
         Some(existing) => {
-            if !releases(&batch, keyspace, &key)
+            if !(releases(&batch, keyspace, &key)
+                || claims.released.contains_async(key.as_slice()).await)
                 && IndexTarget::decode(existing.as_slice())?.id != *id
             {
                 return Err(violation());
@@ -68,6 +80,67 @@ pub(crate) async fn insert(
         None => batch.expect_absent(keyspace, key.clone()),
     };
     Ok(batch.put(keyspace, key, IndexTarget::new(id.clone()).encode()))
+}
+
+/// The unique values one log record claims and gives up, across all its mutations.
+///
+/// Membership is all either set is asked, so neither keeps an order.
+#[derive(Debug, Default)]
+pub(crate) struct Claims {
+    /// Unique index keys this batch has already written.
+    ///
+    /// Two records in ONE batch claiming one unique value would each find the
+    /// key absent and each write it, and the second would silently overwrite the
+    /// first. A precondition cannot catch that — both are satisfied.
+    claimed: scc::HashSet<Vec<u8>>,
+    /// Unique index keys some mutation of this batch gives up: held by the
+    /// record before and not by what the mutation leaves.
+    released: scc::HashSet<Vec<u8>>,
+}
+
+impl Claims {
+    /// Note the unique values `mutation` releases, given the record it replaces.
+    ///
+    /// A value the record keeps is not released, so a record rewritten in the
+    /// same batch still refuses another record that wants its value.
+    pub(crate) async fn release(
+        &self,
+        definitions: &[IndexDefinition],
+        mutation: &Mutation,
+        previous: Option<&[u8]>,
+    ) -> Result<()> {
+        let Some(bytes) = previous else {
+            return Ok(());
+        };
+        if !definitions.iter().any(|definition| definition.unique) {
+            return Ok(());
+        }
+        let before = decode_payload(bytes)?;
+        let after = match mutation.value.value() {
+            RecordValue::Present(payload) => Some(decode_payload(payload)?),
+            RecordValue::Tombstone => None,
+        };
+        for definition in definitions.iter().filter(|definition| definition.unique) {
+            let address = IndexAddress::new(
+                definition.namespace,
+                definition.database,
+                definition.table,
+                definition.id,
+            );
+            let kept = after
+                .as_ref()
+                .map(|value| project(definition, value))
+                .unwrap_or_default();
+            for values in project(definition, &before) {
+                if !kept.contains(&values) {
+                    let key = UniqueIndexKey::new(address, values).encode();
+                    // A key already noted is the same release twice, not a conflict.
+                    let _ = self.released.insert_async(key.as_slice().to_vec()).await;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Whether this batch already deletes an index entry.
@@ -84,16 +157,23 @@ pub(crate) fn releases(batch: &WriteBatch, keyspace: Keyspace, key: &Key) -> boo
     })
 }
 
-pub(crate) fn remove(
+pub(crate) async fn remove(
     batch: WriteBatch,
     definition: &IndexDefinition,
     address: &IndexAddress,
     values: &IndexValues,
     id: &RecordId,
+    claims: &Claims,
 ) -> WriteBatch {
     if definition.unique {
-        let key = UniqueIndexKey::new(*address, values.clone());
-        batch.delete(UniqueIndexKey::keyspace(), key.encode())
+        let key = UniqueIndexKey::new(*address, values.clone()).encode();
+        // Another record of this batch took the value already, earlier in
+        // address order; deleting the key now would delete ITS entry and leave
+        // the value held by nobody the index knows of.
+        if claims.claimed.contains_async(key.as_slice()).await {
+            return batch;
+        }
+        batch.delete(UniqueIndexKey::keyspace(), key)
     } else {
         let key = SecondaryIndexKey::new(*address, values.clone(), id.clone());
         batch.delete(SecondaryIndexKey::keyspace(), key.encode())

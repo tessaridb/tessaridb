@@ -112,6 +112,7 @@ fn every_action_on_an_account_is_its_own_dialog() {
         "vault-store-change",
         "vault-one-unseal",
         "vault-one-change",
+        "vault-one-declare",
         "vault-rec-write",
         "follow",
     ] {

@@ -23,6 +23,27 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.36.1 — 2026-10-18
+
+### Added
+
+- **A route reaches a key a name cannot spell**: `headers['content-type']` reads and writes the field
+  `content-type`, as `headers.name` does for a key that is a name.
+- **A vault with its own passphrase is declared with the passphrase as a field**: the vault frame's `declare` act
+  (protocol minor 6), `POST /vault/{ns}/{db}/{vault}/declare` and the console's Vault screen, answering the vault's
+  status. `DEFINE VAULT … PASSPHRASE '…'` still works and keeps the passphrase in the script.
+
+### Fixed
+
+- **A unique value freed in a transaction can be taken in the same transaction by any record.** A record whose id
+  sorted before the one releasing the value was refused, and an exchange of two values between two records was
+  refused too.
+- **Definitions committed at once in different namespaces no longer conflict.** They took their ids from one shared
+  counter, so concurrent schema transactions failed with `write conflict` (about half of them at 24 in parallel).
+- **A follower moves to a new leader within seconds when the old one stops answering without a reset** (a killed
+  container, a lost host). It kept dialling the old address for about 30 s, and `MAJORITY` writes on the new leader
+  went unacknowledged meanwhile.
+
 ## 0.36.0 — 2026-10-17
 
 TessariDB now runs on its own storage engine,

@@ -359,3 +359,159 @@ fn a_held_definition_is_the_one_each_snapshot_holds() {
         "an index row rewritten without its name is answered as it was"
     );
 }
+
+/// Two definitions in unrelated places must not share a written record.
+///
+/// Each id used to come from one counter record per level that every
+/// definition read and wrote, so two transactions defining different namespaces
+/// were handed the same id and one was refused as a write conflict — retriable,
+/// and paid by every concurrent schema apply in the store (engine Q-959).
+mod allocation {
+    use super::*;
+    use crate::{Store, TableShape};
+    use std::sync::Arc;
+    use tessari_encoding::{decode_payload, encode_payload};
+    use tessari_kv::{KvBackend, MemoryBackend};
+    use tessari_types::RecordId;
+
+    fn store_on(backend: &Arc<MemoryBackend>) -> Store {
+        Store::open(Arc::clone(backend) as Arc<dyn KvBackend>)
+            .now()
+            .unwrap()
+    }
+
+    /// The counter an older build reads, as it stands after the last commit.
+    fn counter(store: &Store, level: Level) -> u32 {
+        let transaction = store.begin().now().unwrap();
+        let address = system::address(system::ALLOCATORS, RecordId::from(level.counter()));
+        let bytes = transaction.get(&address).now().unwrap().unwrap();
+        definition::id_of(&decode_payload(&bytes).unwrap(), "allocator", "next").unwrap()
+    }
+
+    #[test]
+    fn two_transactions_define_two_namespaces_at_once() {
+        let store = store_on(&Arc::new(MemoryBackend::new()));
+        let mut first = store.begin().now().unwrap();
+        let mut second = store.begin().now().unwrap();
+        let a = Catalog::new(&mut first)
+            .create_namespace("a")
+            .now()
+            .unwrap();
+        let b = Catalog::new(&mut second)
+            .create_namespace("b")
+            .now()
+            .unwrap();
+        first.commit().now().unwrap();
+        second
+            .commit()
+            .now()
+            .expect("an unrelated namespace shares nothing with the first");
+        assert_ne!(a.id, b.id, "each namespace has its own id");
+    }
+
+    #[test]
+    fn two_transactions_define_tables_in_two_namespaces_at_once() {
+        let store = store_on(&Arc::new(MemoryBackend::new()));
+        let mut setup = store.begin().now().unwrap();
+        let mut catalog = Catalog::new(&mut setup);
+        let mut places = Vec::new();
+        for name in ["a", "b"] {
+            let namespace = catalog.create_namespace(name).now().unwrap();
+            let database = catalog.create_database(namespace.id, "d").now().unwrap();
+            places.push((namespace.id, database.id));
+        }
+        setup.commit().now().unwrap();
+
+        let mut first = store.begin().now().unwrap();
+        let mut second = store.begin().now().unwrap();
+        let ((na, da), (nb, db)) = (places[0], places[1]);
+        let x = Catalog::new(&mut first)
+            .create_table(na, da, "t", TableShape::default())
+            .now()
+            .unwrap();
+        let y = Catalog::new(&mut second)
+            .create_table(nb, db, "t", TableShape::default())
+            .now()
+            .unwrap();
+        first.commit().now().unwrap();
+        second
+            .commit()
+            .now()
+            .expect("tables in two namespaces conflict on nothing");
+        assert_ne!(x.id, y.id, "each table has its own id");
+    }
+
+    #[test]
+    fn the_counter_an_older_build_reads_stays_ahead_of_every_id_handed_out() {
+        let store = store_on(&Arc::new(MemoryBackend::new()));
+        let mut ids = Vec::new();
+        for name in ["a", "b", "c"] {
+            let mut transaction = store.begin().now().unwrap();
+            ids.push(
+                Catalog::new(&mut transaction)
+                    .create_namespace(name)
+                    .now()
+                    .unwrap()
+                    .id,
+            );
+            transaction.commit().now().unwrap();
+        }
+        let highest = ids.iter().map(|id| id.get()).max().unwrap();
+        assert!(
+            counter(&store, Level::Namespace) > highest,
+            "a build that reads only the counter must not hand out {highest} again"
+        );
+    }
+
+    #[test]
+    fn a_counter_an_older_build_left_is_where_allocation_resumes() {
+        let store = store_on(&Arc::new(MemoryBackend::new()));
+        let mut transaction = store.begin().now().unwrap();
+        transaction.put(
+            system::address(
+                system::ALLOCATORS,
+                RecordId::from(Level::Namespace.counter()),
+            ),
+            encode_payload(&definition::number(100)).into_bytes(),
+        );
+        transaction.commit().now().unwrap();
+
+        let mut transaction = store.begin().now().unwrap();
+        let namespace = Catalog::new(&mut transaction)
+            .create_namespace("a")
+            .now()
+            .unwrap();
+        transaction.commit().now().unwrap();
+        assert!(namespace.id.get() >= 100, "got {}", namespace.id.get());
+    }
+
+    #[test]
+    fn a_reopened_store_hands_out_no_id_it_handed_out_before() {
+        let backend = Arc::new(MemoryBackend::new());
+        let before = {
+            let store = store_on(&backend);
+            let mut transaction = store.begin().now().unwrap();
+            let id = Catalog::new(&mut transaction)
+                .create_namespace("a")
+                .now()
+                .unwrap()
+                .id;
+            transaction.commit().now().unwrap();
+            id
+        };
+        let store = store_on(&backend);
+        let mut transaction = store.begin().now().unwrap();
+        let after = Catalog::new(&mut transaction)
+            .create_namespace("b")
+            .now()
+            .unwrap()
+            .id;
+        transaction.commit().now().unwrap();
+        assert!(
+            after.get() > before.get(),
+            "{} after {}",
+            after.get(),
+            before.get()
+        );
+    }
+}

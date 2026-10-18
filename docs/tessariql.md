@@ -362,8 +362,12 @@ and the access path says which it took.
 and for the same reason: a mistake in a query should show as no match rather than
 as a right-looking answer.
 
-A field whose real name contains `.`, `[` or `]` cannot be addressed by a path.
-Those three characters are what separates one step from the next.
+A key a name cannot spell is reached by a bracketed string:
+`headers['content-type']`, `$after.headers['content-type']`, and an index may be
+declared on that route. A field whose real name contains `.`, `[` or `]` cannot be
+addressed by a path, and `['a.b']` is refused where it is written: those three
+characters are what separates one step from the next. The first step of a route
+is still a name.
 
 `SET` serves both the key-value verb and the set literal. Which one is meant is
 decided by whether a `[` follows, and nothing else in the grammar makes that
@@ -1351,7 +1355,11 @@ the wire protocol has a frame of its own for the same four acts, so the
 passphrase is never part of a script a console keeps or a client logs. For a vault
 with its own passphrase the routes are `GET /vault/{namespace}/{database}/{vault}`
 and `POST /vault/{namespace}/{database}/{vault}/unseal`, `…/seal` and
-`…/passphrase`, and the frame names the vault as its target.
+`…/passphrase`, and the frame names the vault as its target. Such a vault is also
+**declared** there: `POST /vault/{namespace}/{database}/{vault}/declare` (the body
+is the passphrase) and the frame's declare act (protocol minor 6) do what
+`DEFINE VAULT team PASSPHRASE '…'` does, with the same authority, and answer with
+the new vault's seal status.
 The console's **Vault** tab (⌘7) does all of this over those routes, for the
 store's key and for any one vault. Its **Records** pane lists a database's vaults,
 a vault's record ids a page at a time, reveals one record on click, writes one
@@ -10232,7 +10240,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.36.0", "build": "0.36.0", "endpoints": ["db-1.internal:9000"],
+ "version": "0.36.1", "build": "0.36.1", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],
