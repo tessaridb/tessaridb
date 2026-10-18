@@ -362,8 +362,12 @@ and the access path says which it took.
 and for the same reason: a mistake in a query should show as no match rather than
 as a right-looking answer.
 
-A field whose real name contains `.`, `[` or `]` cannot be addressed by a path.
-Those three characters are what separates one step from the next.
+A key a name cannot spell is reached by a bracketed string:
+`headers['content-type']`, `$after.headers['content-type']`, and an index may be
+declared on that route. A field whose real name contains `.`, `[` or `]` cannot be
+addressed by a path, and `['a.b']` is refused where it is written: those three
+characters are what separates one step from the next. The first step of a route
+is still a name.
 
 `SET` serves both the key-value verb and the set literal. Which one is meant is
 decided by whether a `[` follows, and nothing else in the grammar makes that

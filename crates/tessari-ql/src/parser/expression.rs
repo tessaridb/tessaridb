@@ -223,10 +223,14 @@ impl Parser<'_> {
                     self.tokens
                         .get(self.position.saturating_add(1))
                         .map(|spanned| &spanned.token),
-                    Some(Token::Number(_))
+                    Some(Token::Number(_) | Token::Str(_))
                 )
             {
                 self.advance();
+                if let Some(key) = self.bracketed_key()? {
+                    steps.push(tessari_types::Step::Field(key));
+                    continue;
+                }
                 steps.push(tessari_types::Step::Index(self.array_position()?));
                 self.expect_punct(Punct::BracketClose, "`]` after a position")?;
             } else {
