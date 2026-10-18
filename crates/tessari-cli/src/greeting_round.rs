@@ -121,16 +121,22 @@ pub(crate) async fn dial_peers(
                     .collect()
             };
             let said = &said;
+            // Each greeting is bounded by this round's own period, as a ballot is
+            // by its round: a peer that accepts and never answers held the round
+            // for the greeting's ten seconds, and with it every other peer's
+            // reading, the new leader's among them (DB-28).
+            let bound = periods.awareness();
             let heard: std::collections::HashMap<_, Result<tessari_wire::Hello, String>> =
                 futures_util::future::join_all(targets.into_iter().map(
                     |(endpoint, node)| async move {
                         let answer = match said {
-                            Ok(said) => tessari_wire::call(
+                            Ok(said) => tessari_wire::call_within(
                                 endpoint.as_str(),
-                                keys,
+                                (keys, keys.duplicate()),
                                 node,
                                 said,
                                 tessari_wire::Ask::Nothing,
+                                bound,
                             )
                             .await
                             .map(|(said, _)| said)

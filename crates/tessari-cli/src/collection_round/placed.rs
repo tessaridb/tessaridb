@@ -12,7 +12,7 @@ use super::*;
 /// line; answers whether one landed, so the caller restarts its cursors too.
 pub(crate) async fn collect_placed_ranges(
     (db, handle): (&Db, std::sync::Arc<Db>),
-    keys: &tessari_wire::PeerKeys,
+    (keys, bound): (&tessari_wire::PeerKeys, std::time::Duration),
     (declared, me, heard, published): (
         &[tessari_storage::ReplicaDefinition],
         [u8; tessari_storage::NODE_ID_LEN],
@@ -67,6 +67,7 @@ pub(crate) async fn collect_placed_ranges(
             said: &said,
             peer: (node, endpoint.as_str()),
             limit: tessari_constants::COLLECTION_RECORDS,
+            bound,
         };
         let collecting = by_leader.entry(node).or_default();
         // One round per range, applied in its leader's commit order (ADR-0084).
@@ -110,7 +111,14 @@ pub(crate) async fn collect_placed_ranges(
         // gone nothing else will ever bring it level.
         if !clean && !below && tessari_wire::stands_for(declared, &me) == Some(range) {
             for (holder, at) in holders_of(range, declared, (me, node)) {
-                catch_up_from(store, (keys, &said), (holder, at.as_str()), range, &logs).await;
+                catch_up_from(
+                    store,
+                    (keys, &said, bound),
+                    (holder, at.as_str()),
+                    range,
+                    &logs,
+                )
+                .await;
             }
         }
         if below {

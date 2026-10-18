@@ -6677,6 +6677,86 @@ fn a_paused_leader_writes_nothing_once_its_successor_leads() {
     }
 }
 
+/// The cluster whose leader stops answering: 48040-48045, a band of its own.
+const SILENT: Band = [
+    ("127.0.0.1:48040", "127.0.0.1:48041"),
+    ("127.0.0.1:48042", "127.0.0.1:48043"),
+    ("127.0.0.1:48044", "127.0.0.1:48045"),
+];
+
+#[test]
+#[ignore = "three processes and a SIGSTOP, DB-28's measurement, run explicitly: \
+            cargo test -p tessari-cli --test serving a_leader_that_stops_answering \
+            -- --ignored --nocapture (TESSARIDB_TEST_CPU_LOAD=<threads> under CPU pressure)"]
+fn a_leader_that_stops_answering_costs_its_successor_no_more_than_an_election() {
+    // A host that is gone without a reset (a killed container, a pulled cable)
+    // accepts no connection and refuses none, and a paused process is the same
+    // to a peer: its kernel completes the connect and nothing answers after it.
+    // The successor is elected in about a second; what this measures is how long
+    // after that a write on it is acknowledged by a majority, which needs the
+    // other follower to have moved its collection to the new leader.
+    let cluster = a_cluster_declared(&SILENT, "", ["", "", ""]);
+    let leader = the_node_a_majority_granted(&SILENT);
+    let _load = Load::from_env();
+    for index in 0..SILENT.len() {
+        caught_up(&SILENT, index, "1", &cluster);
+    }
+    let paused = cluster.running[leader]
+        .as_ref()
+        .expect("the leader runs")
+        .0
+        .id();
+    let stopped = Command::new("kill")
+        .args(["-STOP", &paused.to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(stopped.success());
+    let began = Instant::now();
+    let survivors: Vec<usize> = (0..SILENT.len()).filter(|index| *index != leader).collect();
+    let successor = the_node_that_takes(&SILENT, &survivors, "elected", &cluster);
+    let elected = began.elapsed();
+    // Committed AND acknowledged: `the_node_that_takes` also accepts a write the
+    // successor committed and no majority confirmed, which is DB-28's symptom.
+    let mut answered = String::new();
+    let acknowledged = loop {
+        let outcome = Client::connect(SILENT[successor].0)
+            .map_err(|why| why.to_string())
+            .and_then(|mut client| {
+                client
+                    .run(
+                        &into_item(&format!("k{}", began.elapsed().as_millis()), ""),
+                        None,
+                    )
+                    .map(drop)
+                    .map_err(|why| why.to_string())
+            });
+        match outcome {
+            Ok(()) => break began.elapsed(),
+            Err(why) => answered = why,
+        }
+        if began.elapsed() > Duration::from_secs(60) {
+            break began.elapsed();
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let resumed = Command::new("kill")
+        .args(["-CONT", &paused.to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(resumed.success());
+    eprintln!(
+        "SILENT elected_ms={} acknowledged_ms={}",
+        elected.as_millis(),
+        acknowledged.as_millis()
+    );
+    assert!(
+        acknowledged <= elected + Duration::from_secs(3),
+        "the successor was elected after {elected:?} and a majority acknowledged its writes \
+         only after {acknowledged:?}; the last refusal: {answered}{}",
+        what_the_nodes_said(&SILENT, &cluster.logs)
+    );
+}
+
 /// The coordinator's cluster — 47960-47968, a band of its own. Not 4793x:
 /// another program on this machine holds 47931, and a band that collides with
 /// it fails as a node that never listened.

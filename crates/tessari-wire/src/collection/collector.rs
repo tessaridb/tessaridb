@@ -3,8 +3,9 @@
 use super::{Collect, Collected};
 use crate::error::{Error, Result};
 use crate::keys::PeerKeys;
-use crate::link::{Answered, Ask, call};
+use crate::link::{Answered, Ask, call_within};
 use crate::peer::Hello;
+use std::time::Duration;
 use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::{Catalog, Currency, Horizon, Reach, Store};
 use tessari_types::Sequence;
@@ -28,6 +29,13 @@ pub struct Collector<'a> {
     /// `min(limit, available)`, so an answer shorter than this is the peer
     /// saying it had no more. See [`Currency`].
     pub limit: u64,
+    /// The longest any one step of a dial may take: the round's own period.
+    ///
+    /// A peer that accepts the connection and never answers costs the round
+    /// this and no more, so a follower whose leader vanished without a reset
+    /// asks the directory again a period later rather than the greeting's ten
+    /// seconds per log later (DB-28).
+    pub bound: Duration,
 }
 
 impl Collector<'_> {
@@ -105,8 +113,18 @@ impl Collector<'_> {
     /// round re-offers records this node may already hold.
     pub async fn round(&self, into: &Store, asks: &[(Reach, Sequence)]) -> Vec<Result<Sequence>> {
         let mut fetched: Vec<Result<Collected>> = Vec::with_capacity(asks.len());
+        // A peer that did not answer one ask at the transport will not answer
+        // the next within this round, so the rest carry the same silence rather
+        // than dialling it again for a bound each (DB-28).
+        let mut silent: Option<Error> = None;
         for (home, from) in asks {
-            fetched.push(self.fetch(into, *home, *from).await);
+            if let Some(why) = silent.as_ref().and_then(again) {
+                fetched.push(Err(why));
+                continue;
+            }
+            let answer = self.fetch(into, *home, *from).await;
+            silent = answer.as_ref().err().and_then(again);
+            fetched.push(answer);
         }
         self.apply(into, asks, fetched).await
     }
@@ -257,9 +275,9 @@ impl Collector<'_> {
         if matches!(home, Reach::Store) && held == Sequence::ZERO {
             refuse_to_reinterpret(into).await?;
         }
-        let (_, answered) = call(
+        let (_, answered) = call_within(
             self.peer.1,
-            self.keys,
+            (self.keys, self.keys.duplicate()),
             self.peer.0,
             self.said,
             Ask::Records(Collect {
@@ -267,6 +285,7 @@ impl Collector<'_> {
                 from,
                 limit: self.limit,
             }),
+            self.bound,
         )
         .await?;
         let Answered::Collected(collected) = answered else {
@@ -280,6 +299,19 @@ impl Collector<'_> {
         // store log, so the sequences counted in a counter they never came from
         // and nothing was in an error state to say so.
         Ok(collected)
+    }
+}
+
+/// The same transport failure again, for an ask a silent peer was not dialled
+/// for; `None` for every other refusal, which belongs to the one log it names.
+fn again(why: &Error) -> Option<Error> {
+    match why {
+        Error::Io(failed) => Some(Error::Io(std::io::Error::new(
+            failed.kind(),
+            failed.to_string(),
+        ))),
+        Error::Transport(said) => Some(Error::Transport(said.clone())),
+        _ => None,
     }
 }
 

@@ -128,7 +128,7 @@ pub(crate) async fn collect_from_upstream(
         // every placed range it does not lead from that range's leader.
         if collect_placed_ranges(
             (db, std::sync::Arc::clone(&handle)),
-            keys,
+            (keys, collection),
             (&declared, me, &heard, std::sync::Arc::clone(&published_handle)),
             &mut by_leader,
             (&mut streams, &stopped, std::sync::Arc::clone(&wakes)),
@@ -177,6 +177,7 @@ pub(crate) async fn collect_from_upstream(
             said: &said,
             peer: (node, endpoint.as_str()),
             limit: tessari_constants::COLLECTION_RECORDS,
+            bound: collection,
         };
         // Every log this node should hold, store's own first, derived from
         // the catalog it has itself replayed — so the set is inside the
@@ -350,7 +351,11 @@ fn holders_of(
 /// elected, is what a range is followed from.
 async fn catch_up_from(
     store: &tessari_storage::Store,
-    (keys, said): (&tessari_wire::PeerKeys, &tessari_wire::Hello),
+    (keys, said, bound): (
+        &tessari_wire::PeerKeys,
+        &tessari_wire::Hello,
+        std::time::Duration,
+    ),
     (holder, at): ([u8; tessari_storage::NODE_ID_LEN], &str),
     range: tessari_types::Reach,
     logs: &[tessari_types::Reach],
@@ -360,6 +365,7 @@ async fn catch_up_from(
         said,
         peer: (holder, at),
         limit: tessari_constants::COLLECTION_RECORDS,
+        bound,
     };
     let mut asks = Vec::new();
     for home in logs.iter().copied().filter(|home| range.contains(*home)) {

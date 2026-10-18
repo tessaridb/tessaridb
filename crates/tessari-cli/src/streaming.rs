@@ -164,6 +164,7 @@ async fn follow(
         said: &said,
         peer: (leader, address),
         limit: COLLECTION_RECORDS,
+        bound: SILENCE,
     };
     // ADR-0120: a leader that pushes is told where this node stands once,
     // and sends what lands as it lands.
