@@ -56,6 +56,24 @@ fn a_bracketed_key_reads_a_field_a_name_cannot_spell() {
 }
 
 #[test]
+fn a_bracketed_key_sets_a_field_and_keeps_its_neighbours() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run_now("UPDATE objects:1 SET headers['content-type'] = 'application/json';")
+        .unwrap();
+    let answer = last(&mut session, "SELECT headers FROM objects:1;");
+    assert!(
+        answer.contains("application/json") && !answer.contains("text/plain"),
+        "the key holds the new value, got {answer}"
+    );
+    assert!(
+        answer.contains("x-amz-meta"),
+        "a set changes one key and keeps the rest, got {answer}"
+    );
+}
+
+#[test]
 fn a_bracketed_key_filters_a_read() {
     let store = store();
     let mut session = ready(&store);

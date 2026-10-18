@@ -1286,7 +1286,9 @@ fn a_position_in_a_route_is_a_whole_number() {
     let mut session = ready(&store);
     people_with_addresses(&mut session);
 
-    for filter in ["tags[-1] = 'old'", "tags['a'] = 'old'", "tags[] = 'old'"] {
+    // A quoted string between brackets is a key since 0.36.1, not a position
+    // (`key_routes`).
+    for filter in ["tags[-1] = 'old'", "tags[] = 'old'"] {
         let refused = session.run_now(&format!("SELECT * FROM people WHERE {filter};"));
         assert!(refused.is_err(), "{filter} was accepted");
     }
