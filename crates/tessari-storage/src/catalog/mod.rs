@@ -61,6 +61,7 @@ mod words;
 use tessari_encoding::{decode_payload, encode_payload};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
 
+pub(crate) use allocation::{Allocated, maintain as maintain_allocators};
 pub use analyzer::AnalyzerDefinition;
 pub use authority::{Authority, Held, Kind, Reach};
 pub(crate) use carried::{carried_to, home_of};

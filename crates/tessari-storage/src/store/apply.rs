@@ -288,6 +288,8 @@ impl Store {
         // would carry the records and none of the counts, and its planner would
         // then choose a different access path for the same query.
         let batch = crate::cardinality::maintain(self, record, batch, version).await?;
+        // The catalog's id counters, in the commit path's order (engine Q-959).
+        let batch = crate::catalog::maintain_allocators(self, record, batch, version).await?;
         // And the expiry index, so a follower promoted to leader can remove what
         // has expired without having written any of it (G035).
         let batch = crate::lapse::maintain(self, record, batch).await?;
