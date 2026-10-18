@@ -112,12 +112,8 @@ pub(crate) struct Pending {
     /// The version this batch retires removed plain entries at, when the store
     /// keeps them (Q-S3-34, `crate::retired`); `None` keeps none.
     pub(crate) retiring: Option<Sequence>,
-    /// Unique index keys this batch has already written.
-    ///
-    /// Two records in ONE batch claiming one unique value would each find the
-    /// key absent and each write it, and the second would silently overwrite the
-    /// first. A precondition cannot catch that — both are satisfied.
-    claimed: BTreeSet<Vec<u8>>,
+    /// The unique values this batch has claimed and gives up.
+    claims: entries::Claims,
     /// How each search index's statistics move, written once at the end.
     moved: BTreeMap<IndexAddress, Delta>,
     /// How each search member's per-field token totals move (ADR-0105).
@@ -283,6 +279,10 @@ pub(crate) async fn maintain_from(
     // counter — what tells a planner statistic it has gone stale.
     let mut changed: BTreeMap<IndexAddress, u64> = BTreeMap::new();
 
+    // Every mutation's indexes and prior value are read before any is applied,
+    // because a unique value one mutation gives up may be taken by a mutation
+    // that sorts before it, and the claim has to know that it is free.
+    let mut held = Vec::with_capacity(record.mutations().len());
     for mutation in record.mutations() {
         let at = (mutation.namespace, mutation.database, mutation.table);
         let definitions = match by_table.get(&at) {
@@ -295,6 +295,26 @@ pub(crate) async fn maintain_from(
                 found
             }
         };
+        let previous = if definitions.is_empty() {
+            None
+        } else {
+            let address = RecordAddress::new(
+                mutation.namespace,
+                mutation.database,
+                mutation.table,
+                mutation.id.clone(),
+            );
+            view.get_held(&address).await?
+        };
+        pending
+            .claims
+            .release(&definitions, mutation, previous.as_deref())
+            .await?;
+        held.push((definitions, previous));
+    }
+
+    for (mutation, (definitions, previous)) in record.mutations().iter().zip(held) {
+        let at = (mutation.namespace, mutation.database, mutation.table);
         if definitions.is_empty() {
             continue;
         }
@@ -318,13 +338,6 @@ pub(crate) async fn maintain_from(
         }
         let named_now = named.as_ref().unwrap_or(&unnamed);
 
-        let address = RecordAddress::new(
-            mutation.namespace,
-            mutation.database,
-            mutation.table,
-            mutation.id.clone(),
-        );
-        let previous = view.get_held(&address).await?;
         let unchanged = Unchanged::of(previous.as_deref(), mutation)?;
 
         for definition in &definitions {
