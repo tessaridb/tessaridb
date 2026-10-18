@@ -51,6 +51,21 @@ pub(crate) async fn collect_placed_ranges(
     };
     for range in placed {
         let Some((node, endpoint)) = tessari_wire::leader_of_range(range, declared, heard) else {
+            // Q-897's catch-up for a candidate that never heard the range led at
+            // all: a leader elected and lost between two of its greetings left a
+            // voter ahead of it, and that voter refuses it until it is level.
+            if tessari_wire::stands_for(declared, &me) == Some(range) {
+                for (holder, at) in holders_of(range, declared, (me, me)) {
+                    catch_up_from(
+                        store,
+                        (keys, &said, bound),
+                        (holder, at.as_str()),
+                        range,
+                        &logs,
+                    )
+                    .await;
+                }
+            }
             continue;
         };
         if node == me {
