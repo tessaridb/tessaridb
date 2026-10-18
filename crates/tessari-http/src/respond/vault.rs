@@ -45,7 +45,7 @@ pub(crate) async fn answer(
     }
 }
 
-/// `/vault/{namespace}/{database}/{vault}[/unseal|/seal|/passphrase]`.
+/// `/vault/{namespace}/{database}/{vault}[/unseal|/seal|/passphrase|/declare]`.
 pub(crate) async fn one_vault(
     db: &Db,
     method: Method,
@@ -112,7 +112,27 @@ pub(crate) async fn one_vault(
             },
             Err(refused) => refused,
         },
-        (_, None | Some("seal" | "unseal" | "passphrase")) => Answer::new(
+        (Method::POST, Some("declare")) => match body::text(request) {
+            Ok(body) => {
+                let mut session = match session_for(db, tokens, presented).await {
+                    Ok(session) => session,
+                    Err(refused) => return refused,
+                };
+                let declared = session
+                    .declare_vault(namespace, database, vault, body.trim_end_matches('\n'))
+                    .await;
+                match declared {
+                    Ok(status) => {
+                        let mut body = String::new();
+                        json::write(&mut body, &status, &json::Names::new());
+                        Answer::new(200, body)
+                    }
+                    Err(error) => failure(&error),
+                }
+            }
+            Err(refused) => refused,
+        },
+        (_, None | Some("seal" | "unseal" | "passphrase" | "declare")) => Answer::new(
             405,
             r#"{"error":"that route takes another method"}"#.to_owned(),
         ),

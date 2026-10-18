@@ -5,9 +5,11 @@
 //!         if 1: text user name, text password
 //! u8      target: 0 = the store, 1 = one vault (ADR-0093 D6)
 //!         if 1: text namespace, text database, text vault
-//! u8      act: 1 status, 2 unseal, 3 seal, 4 change passphrase
+//! u8      act: 1 status, 2 unseal, 3 seal, 4 change passphrase,
+//!         5 declare a vault in its own custody (minor 6; target 1 only)
 //!         if 2: text passphrase
 //!         if 4: text current passphrase, text new passphrase
+//!         if 5: text passphrase
 //! ```
 //!
 //! The passphrase is a field of the frame and never a script: text in a script
@@ -34,6 +36,17 @@ pub enum VaultCall {
         /// The passphrase that will open it afterwards.
         new: String,
     },
+    /// Declare a vault keyed by its own passphrase (ADR-0093), with the
+    /// passphrase as a field rather than in `DEFINE VAULT … PASSPHRASE` text.
+    ///
+    /// The vault travels in the act because a declaration has no store-wide
+    /// form: a decoded frame cannot ask to declare the store.
+    Declare {
+        /// The vault to declare.
+        place: VaultPlace,
+        /// The passphrase its key will be wrapped under.
+        passphrase: String,
+    },
 }
 
 /// A node wipes a passphrase when the call is dropped (G061, R-06).
@@ -41,7 +54,9 @@ pub enum VaultCall {
 impl Drop for VaultCall {
     fn drop(&mut self) {
         match self {
-            Self::Unseal(passphrase) => zeroize::Zeroize::zeroize(passphrase),
+            Self::Unseal(passphrase) | Self::Declare { passphrase, .. } => {
+                zeroize::Zeroize::zeroize(passphrase);
+            }
             Self::Change { current, new } => {
                 zeroize::Zeroize::zeroize(current);
                 zeroize::Zeroize::zeroize(new);
@@ -59,6 +74,7 @@ impl std::fmt::Debug for VaultCall {
             Self::Unseal(_) => "Unseal(..)",
             Self::Seal => "Seal",
             Self::Change { .. } => "Change(..)",
+            Self::Declare { .. } => "Declare(..)",
         })
     }
 }
@@ -127,7 +143,11 @@ impl VaultAsk {
             }
             None => body.push(0),
         }
-        match &self.place {
+        let place = match &self.call {
+            VaultCall::Declare { place, .. } => Some(place),
+            _ => self.place.as_ref(),
+        };
+        match place {
             Some(place) => {
                 body.push(1);
                 put_text(&mut body, &place.namespace);
@@ -147,6 +167,10 @@ impl VaultAsk {
                 body.push(4);
                 put_text(&mut body, current);
                 put_text(&mut body, new);
+            }
+            VaultCall::Declare { passphrase, .. } => {
+                body.push(5);
+                put_text(&mut body, passphrase);
             }
         }
         body
@@ -171,7 +195,7 @@ impl VaultAsk {
         };
         let target = body.get(at).copied().ok_or(Error::Malformed)?;
         let at = at.saturating_add(1);
-        let (place, at) = match target {
+        let (mut place, at) = match target {
             0 => (None, at),
             1 => {
                 let (namespace, at) = take_text(body, at)?;
@@ -201,6 +225,11 @@ impl VaultAsk {
                 let (current, at) = take_text(body, at)?;
                 let (new, at) = take_text(body, at)?;
                 (VaultCall::Change { current, new }, at)
+            }
+            5 => {
+                let place = place.take().ok_or(Error::Malformed)?;
+                let (passphrase, at) = take_text(body, at)?;
+                (VaultCall::Declare { place, passphrase }, at)
             }
             _ => return Err(Error::Malformed),
         };
@@ -245,6 +274,49 @@ mod tests {
         assert!(
             VaultAsk::decode(&[0, 2, 3]).is_err(),
             "an unknown target was read"
+        );
+    }
+
+    #[test]
+    fn a_declaration_carries_its_vault_and_is_refused_without_one() {
+        let place = VaultPlace {
+            namespace: "shop".to_owned(),
+            database: "live".to_owned(),
+            vault: "team".to_owned(),
+        };
+        let asked = VaultAsk {
+            call: VaultCall::Declare {
+                place: place.clone(),
+                passphrase: "the team passphrase".to_owned(),
+            },
+            credentials: Some(("ada".to_owned(), "pw".to_owned())),
+            place: None,
+        };
+        let bytes = asked.encode();
+        assert_eq!(
+            VaultAsk::decode(&bytes).unwrap().call,
+            asked.call,
+            "a declaration reads back with its vault"
+        );
+        // The vault sits where every one-vault act puts it: after the
+        // credentials, before the act.
+        let mut expected = vec![1];
+        for text in ["ada", "pw"] {
+            expected.extend_from_slice(&u32::try_from(text.len()).unwrap().to_be_bytes());
+            expected.extend_from_slice(text.as_bytes());
+        }
+        expected.push(1);
+        for text in ["shop", "live", "team"] {
+            expected.extend_from_slice(&u32::try_from(text.len()).unwrap().to_be_bytes());
+            expected.extend_from_slice(text.as_bytes());
+        }
+        expected.push(5);
+        expected.extend_from_slice(&19_u32.to_be_bytes());
+        expected.extend_from_slice(b"the team passphrase");
+        assert_eq!(bytes, expected);
+        assert!(
+            VaultAsk::decode(&[0, 0, 5, 0, 0, 0, 1, b'x']).is_err(),
+            "a declaration of the store itself was read"
         );
     }
 

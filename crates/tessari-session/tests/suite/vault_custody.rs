@@ -320,3 +320,49 @@ fn info_for_vault_names_its_custody() {
         );
     }
 }
+
+/// The surface declares an own-custody vault with the passphrase as a field,
+/// so it never has to be statement text (DB-22).
+#[test]
+fn a_vault_declared_by_the_surface_holds_its_own_passphrase() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE work; USE DATABASE work;",
+        )
+        .unwrap();
+    let status = session
+        .declare_vault("prod", "work", "team", TEAM_PASSPHRASE)
+        .now()
+        .unwrap();
+    let Value::Object(status) = status else {
+        panic!("expected the seal status, got {status:?}");
+    };
+    assert_eq!(status.get("custody"), Some(&Value::from("own")));
+    assert_eq!(status.get("state"), Some(&Value::from("unsealed")));
+
+    session
+        .run_now(&format!(
+            "DEFINE FIELD token ON team TYPE string SECRET;
+             CREATE team:'github' = {{ token: '{PLANTED}' }};"
+        ))
+        .unwrap();
+    assert_eq!(reveal(&mut session, "team").unwrap(), Value::from(PLANTED));
+    session.run_now("SEAL VAULT team;").unwrap();
+    let refused = reveal(&mut session, "team").expect_err("a sealed vault opened");
+    assert!(is_sealed(&refused), "refused, but not as sealed: {refused}");
+    session
+        .run_now(&format!("UNSEAL VAULT team WITH '{TEAM_PASSPHRASE}';"))
+        .unwrap();
+    assert_eq!(reveal(&mut session, "team").unwrap(), Value::from(PLANTED));
+
+    // The session's tenancy is the caller's, and the surface left it alone.
+    let again = session
+        .declare_vault("prod", "work", "team", TEAM_PASSPHRASE)
+        .now();
+    assert!(
+        again.is_err(),
+        "a second declaration of one name was accepted"
+    );
+}

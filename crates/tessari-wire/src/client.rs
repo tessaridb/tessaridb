@@ -172,6 +172,12 @@ impl Client {
                 needed: frame::VAULT,
             });
         }
+        if matches!(call, crate::VaultCall::Declare { .. }) && self.minor < frame::DECLARE {
+            return Err(Error::NodeTooOld {
+                found: self.minor,
+                needed: frame::DECLARE,
+            });
+        }
         let asked = crate::VaultAsk {
             call: call.clone(),
             credentials: credentials.map(|(name, password)| (name.to_owned(), password.to_owned())),

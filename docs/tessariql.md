@@ -1355,7 +1355,11 @@ the wire protocol has a frame of its own for the same four acts, so the
 passphrase is never part of a script a console keeps or a client logs. For a vault
 with its own passphrase the routes are `GET /vault/{namespace}/{database}/{vault}`
 and `POST /vault/{namespace}/{database}/{vault}/unseal`, `…/seal` and
-`…/passphrase`, and the frame names the vault as its target.
+`…/passphrase`, and the frame names the vault as its target. Such a vault is also
+**declared** there: `POST /vault/{namespace}/{database}/{vault}/declare` (the body
+is the passphrase) and the frame's declare act (protocol minor 6) do what
+`DEFINE VAULT team PASSPHRASE '…'` does, with the same authority, and answer with
+the new vault's seal status.
 The console's **Vault** tab (⌘7) does all of this over those routes, for the
 store's key and for any one vault. Its **Records** pane lists a database's vaults,
 a vault's record ids a page at a time, reveals one record on click, writes one
