@@ -30,8 +30,8 @@ compares carries no pre-release suffix.
 - **A route reaches a key a name cannot spell**: `headers['content-type']` reads and writes the field
   `content-type`, as `headers.name` does for a key that is a name.
 - **A vault with its own passphrase is declared with the passphrase as a field**: the vault frame's `declare` act
-  (protocol minor 6) and `POST /vault/{ns}/{db}/{vault}/declare`, answering the vault's status. `DEFINE VAULT …
-  PASSPHRASE '…'` still works and keeps the passphrase in the script.
+  (protocol minor 6), `POST /vault/{ns}/{db}/{vault}/declare` and the console's Vault screen, answering the vault's
+  status. `DEFINE VAULT … PASSPHRASE '…'` still works and keeps the passphrase in the script.
 
 ### Fixed
 
