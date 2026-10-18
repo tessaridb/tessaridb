@@ -23,6 +23,7 @@ mod budget;
 mod door;
 mod frames;
 mod reach;
+mod vouching;
 
 /// The node every door in this module belongs to.
 const LEADER: [u8; NODE_ID_LEN] = [70_u8; NODE_ID_LEN];
