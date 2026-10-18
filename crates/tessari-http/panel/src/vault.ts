@@ -101,9 +101,11 @@ function shape(): void {
   disable("vault-one-show", named);
   disable("open-vault-one-unseal", named);
   disable("open-vault-one-change", named);
+  disable("open-vault-one-declare", named);
   disable("vault-one-seal", named);
   disable("vault-one-unseal", named || value("vault-one-passphrase") === "");
   disable("vault-one-change", named || value("vault-one-current") === "" || value("vault-one-new") === "");
+  disable("vault-one-declare", named || value("vault-one-declared") === "");
 }
 
 async function onOne(act_: (path: string) => Promise<void>): Promise<void> {
@@ -127,6 +129,7 @@ export function wire(): void {
     ["open-vault-store-change", "vault-store-change-dialog"],
     ["open-vault-one-unseal", "vault-one-unseal-dialog"],
     ["open-vault-one-change", "vault-one-change-dialog"],
+    ["open-vault-one-declare", "vault-one-declare-dialog"],
     ["open-vault-rec-write", "vault-rec-write-dialog"],
   ];
   for (const [opener, shown] of opens) {
@@ -148,6 +151,10 @@ export function wire(): void {
     closeDialog("vault-one-unseal-dialog");
     void onOne((path) => one("POST", `${path}/unseal`, spent("vault-one-passphrase")));
   });
+  at("vault-one-declare").addEventListener("click", () => {
+    closeDialog("vault-one-declare-dialog");
+    void onOne((path) => one("POST", `${path}/declare`, spent("vault-one-declared")));
+  });
   at("vault-one-change").addEventListener("click", () => {
     closeDialog("vault-one-change-dialog");
     void onOne((path) =>
@@ -164,6 +171,7 @@ export function wire(): void {
     "vault-one-passphrase",
     "vault-one-current",
     "vault-one-new",
+    "vault-one-declared",
   ]) {
     at(id).addEventListener("input", shape);
   }

@@ -65,6 +65,7 @@ export const vault = (): Node =>
         button("open-vault-one-unseal", "Unseal…", "primary", { disabled: true }),
         button("vault-one-seal", "Seal", "default", { disabled: true }),
         button("open-vault-one-change", "Change passphrase…", "quiet", { disabled: true }),
+        button("open-vault-one-declare", "Declare…", "quiet", { disabled: true }),
       ),
     ),
     dialog(
@@ -82,6 +83,12 @@ export const vault = (): Node =>
         field("New passphrase", secret("vault-one-new", "new-password")),
       ),
       row("default", button("vault-one-change", "Change passphrase", "primary", { disabled: true })),
+    ),
+    dialog(
+      "vault-one-declare-dialog",
+      "Declare a vault with its own passphrase",
+      field("Passphrase", secret("vault-one-declared", "new-password")),
+      row("default", button("vault-one-declare", "Declare", "primary", { disabled: true })),
     ),
     pane(
       paneHead("Records in a vault", status("vault-rec-status")),
