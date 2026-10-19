@@ -49,6 +49,14 @@ impl Renewing {
         self
     }
 
+    /// When the stagger after a lost round ends, if one is running — the
+    /// instant the campaign cadence wakes on, rather than its next tick
+    /// (Q-970).
+    #[must_use]
+    pub fn not_before(&self) -> Option<Instant> {
+        self.not_before
+    }
+
     /// The leadership this node is currently standing on.
     #[must_use]
     pub fn standing(&self) -> Leadership {

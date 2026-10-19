@@ -367,3 +367,57 @@ fn a_node_that_may_not_write_stands_for_no_placed_range() {
     assert!(stands_for_a_placed_line(deciding.and(Roles::WRITABLE)));
     assert!(!stands_for_a_placed_line(Roles::ALONE));
 }
+
+/// Q-970. The instant a node stops hearing a leader is a number the cadence can
+/// wake on, and it is exactly the instant [`heard_a_leader`] turns false: one
+/// millisecond before it the leader is still heard, one after it is not. A
+/// node that stood only on its 100 ms cadence ticks lost its own election
+/// spread to the tick, so two survivors started together stood on one tick,
+/// granted each other the epoch and lost it for a whole lease, again and again.
+#[test]
+fn a_node_stops_hearing_a_leader_at_the_instant_it_is_told_it_will() {
+    let declared = [named("leader", "10.0.0.1:9000", [9; NODE_ID_LEN])];
+    let within = tessari_storage::LEASE_TTL;
+    let greeted_at = Instant::now();
+    let mut heard = Directory::new();
+    heard.heard("10.0.0.1:9000", writing(Epoch::new(7)), greeted_at);
+    // The grant is the newer of the two, so it is the one that decides.
+    let granted = greeted_at + Duration::from_millis(30);
+    let until = heard_a_leader_until(&declared, &heard, Some(granted), within)
+        .expect("a node that heard a leader is told when it stops hearing it");
+    assert_eq!(until, granted + within);
+    let at = |now| heard_a_leader(&declared, &heard, Some(granted), now, within);
+    assert!(at(until - Duration::from_millis(1)), "heard just before");
+    assert!(at(until), "heard at the instant itself");
+    assert!(
+        !at(until + Duration::from_millis(1)),
+        "not heard just after"
+    );
+    // The control: with no evidence at all there is no instant to wake on, and
+    // the node is not hearing anybody.
+    assert_eq!(
+        heard_a_leader_until(&declared, &Directory::new(), None, within),
+        None
+    );
+}
+
+/// Q-970. A lost round's stagger is an instant the cadence can wake on: the
+/// wait [`Renewing::stagger`] derives, from the moment the round was lost, and
+/// nothing at all once a round is won.
+#[test]
+fn a_lost_round_says_when_its_stagger_ends() {
+    let mut renewing = Renewing::holding(Leadership {
+        length: tessari_storage::LEASE_TTL,
+        epoch: Epoch::ZERO,
+        from: Instant::now(),
+    });
+    assert_eq!(renewing.not_before(), None, "nothing lost, nothing to wait");
+    let opened = Instant::now();
+    renewing.once(NODE, opened, |_, _| Stood::Lost {
+        granted: Epoch::ZERO,
+    });
+    assert_eq!(
+        renewing.not_before(),
+        Some(opened + Renewing::stagger(NODE, Epoch::new(1)))
+    );
+}
