@@ -27,6 +27,7 @@ fn row(n: u8, leads: Option<Reach>) -> ReplicaDefinition {
         leads,
         clients: None,
         http: None,
+        kafka: None,
         fingerprint: None,
         join: None,
         releasing: false,

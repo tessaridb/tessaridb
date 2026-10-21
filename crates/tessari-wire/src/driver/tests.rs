@@ -109,6 +109,7 @@ fn peer(roles: Roles, node: Option<[u8; NODE_ID_LEN]>) -> ReplicaDefinition {
         leads: None,
         clients: None,
         http: None,
+        kafka: None,
         fingerprint: None,
         join: None,
         releasing: false,

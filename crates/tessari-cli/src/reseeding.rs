@@ -102,6 +102,7 @@ mod tests {
             leads,
             clients: None,
             http: None,
+            kafka: None,
             fingerprint: None,
             join: None,
             releasing: false,

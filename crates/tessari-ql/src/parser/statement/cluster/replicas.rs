@@ -100,6 +100,16 @@ impl Parser<'_> {
         } else {
             None
         };
+        // G079 W5d: where a Kafka client reaches the peer, so Metadata can name
+        // it as the broker leading what it leads.
+        let kafka = if self.eat_word("kafka") {
+            if !self.eat_word("at") {
+                return Err(self.error_here("`AT` and where a Kafka client reaches the peer"));
+            }
+            Some(self.text("the Kafka address, as text")?.0)
+        } else {
+            None
+        };
         let node = if self.eat_word("node") {
             let (written, at) = self.text("the node's id, as text")?;
             // The same refusal a `uuid` literal gets, from the same reader, so
@@ -172,6 +182,7 @@ impl Parser<'_> {
             endpoint,
             clients,
             http,
+            kafka,
             roles,
             node,
             replicates,
@@ -219,6 +230,12 @@ impl Parser<'_> {
             return Ok(ReplicaChange::HttpAt(self.address_or_none(
                 "`AT` and the peer's HTTP base, or `NONE`",
                 "the HTTP base, as text",
+            )?));
+        }
+        if self.eat_word("kafka") {
+            return Ok(ReplicaChange::KafkaAt(self.address_or_none(
+                "`AT` and where a Kafka client reaches the peer, or `NONE`",
+                "the Kafka address, as text",
             )?));
         }
         if self.eat_word("region") {

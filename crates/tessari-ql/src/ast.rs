@@ -279,6 +279,8 @@ pub enum ReplicaChange {
     ClientsAt(Option<String>),
     /// `HTTP AT 'http://b2:8000'`, or `HTTP NONE`.
     HttpAt(Option<String>),
+    /// `KAFKA AT 'b2:9092'`, or `KAFKA NONE` (G079 W5d).
+    KafkaAt(Option<String>),
     /// `REGION 'eu'`, or `REGION NONE` (G057 C3).
     Region(Option<String>),
 }

@@ -9194,6 +9194,9 @@ front of the request's path. Both are optional and replicate with the row, so a
 node can say where to go from what it has applied, with the peer link down. A row
 that names neither keeps redirects naming `AT`, as they did before the clauses
 existed. `INFO FOR NODE` reports both for each peer (`null` when unsaid).
+`KAFKA AT 'host:port'` says where a Kafka client reaches the peer, and is
+changed with `ALTER REPLICA … KAFKA AT …` or removed with `KAFKA NONE`; it is
+reported beside them as `kafka`.
 A write a node may not take is carried over the peer link to the writable peer
 (from `0.21.0-beta`), and a node with no peer link refuses it naming where that
 peer takes writes.

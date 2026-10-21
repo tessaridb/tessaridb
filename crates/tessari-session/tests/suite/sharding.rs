@@ -437,6 +437,37 @@ fn a_peer_placed_to_lead_a_range_reports_it_in_the_clauses_spelling() {
 }
 
 #[test]
+fn a_peer_row_reports_where_kafka_clients_reach_it() {
+    // G079 W5d: Metadata names each topic's leader as a broker, so the row
+    // says where a Kafka client reaches the peer — and reads it back.
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run_now(
+            "DEFINE REPLICA b AT 'b:9180' KAFKA AT 'b.example:9092'; \
+             DEFINE REPLICA d AT 'd:9180';",
+        )
+        .unwrap();
+    assert_eq!(
+        peer_field(&mut session, "kafka"),
+        vec![
+            ("b".to_owned(), Some("b.example:9092".to_owned())),
+            ("d".to_owned(), None),
+        ]
+    );
+    session
+        .run_now("ALTER REPLICA d KAFKA AT 'd.example:9092'; ALTER REPLICA b KAFKA NONE;")
+        .unwrap();
+    assert_eq!(
+        peer_field(&mut session, "kafka"),
+        vec![
+            ("b".to_owned(), None),
+            ("d".to_owned(), Some("d.example:9092".to_owned())),
+        ]
+    );
+}
+
+#[test]
 fn a_peer_row_reports_where_clients_reach_it() {
     // ADR-0101: a redirect names these, so an operator must be able to read
     // back what a redirect will say — and a row that said nothing reads `null`,

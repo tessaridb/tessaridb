@@ -324,6 +324,7 @@ fn erase_statement(statement: &mut Statement) {
                 | crate::ReplicaChange::At(_)
                 | crate::ReplicaChange::ClientsAt(_)
                 | crate::ReplicaChange::HttpAt(_)
+                | crate::ReplicaChange::KafkaAt(_)
                 | crate::ReplicaChange::Region(_) => {}
             }
         }

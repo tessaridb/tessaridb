@@ -745,6 +745,9 @@ pub enum StatementKind {
         clients: Option<String>,
         /// Its HTTP base (`HTTP AT`), when said — the `Location` a `307` names.
         http: Option<String>,
+        /// Where a Kafka client reaches it (`KAFKA AT`), when said — the broker
+        /// Metadata names for what it leads (G079 W5d).
+        kafka: Option<String>,
         /// What that peer is for, as the words a statement wrote.
         ///
         /// `None` when the declaration did not say, which reads as no roles: a
