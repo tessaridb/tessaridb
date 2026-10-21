@@ -63,16 +63,44 @@ impl Transaction<'_> {
     }
 
     /// Commit (or rehearse) a transaction whose writes are all held records.
-    pub(super) async fn settle_held(self, settle: Settle, held: Held) -> Result<Committed> {
+    pub(super) async fn settle_held(mut self, settle: Settle, held: Held) -> Result<Committed> {
         let identity = self.store.node_identity().await?;
+        let placement = self.placement().await?;
+        // On a cluster a held space belongs to the leader of its range, as every
+        // write does, so it is admitted as a durable commit is: a range another
+        // node leads is a redirect to it, and a node holding no leadership waits
+        // for one (W5d). One coherent copy, on that leader alone.
+        let ranges = self.ranges_written(&placement)?;
+        let placed = self
+            .store
+            .refuse_if_led_elsewhere(&ranges, &identity.id)
+            .await?;
+        let on_the_store = self
+            .admitted_on_their_lines(&ranges, &placed, &identity.id)
+            .await?;
+        if !on_the_store.is_empty() {
+            if let Some(for_the_last) = self.store.lease_spent() {
+                return Err(Error::LeaseSpent { for_the_last });
+            }
+            if self.store.awaiting(&identity.id).await? {
+                return Err(Error::NoLeadershipYet);
+            }
+        }
+        // A namespace more than one node may write has no one owner to hold it.
         if self.store.in_a_cluster(&identity.id).await? {
-            return Err(Error::InMemoryOnACluster { space: held.space });
+            for (namespace, _, _) in &held.places {
+                if self
+                    .admits_two_writers_here(Reach::Namespace(*namespace))
+                    .await?
+                {
+                    return Err(Error::InMemoryOnACluster { space: held.space });
+                }
+            }
         }
         let log = self
             .store
             .own_log(crate::store::UNPARTITIONED_REPORT_HOME)
             .await?;
-        let placement = self.placement().await?;
         let mut record = self.log_record(identity.id, &placement).await?;
         let mut attempt = 0_u32;
         loop {

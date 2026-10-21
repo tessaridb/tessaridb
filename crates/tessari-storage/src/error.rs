@@ -559,15 +559,16 @@ pub enum Error {
         space: String,
     },
 
-    /// A node beside another node that may write was asked to write a space
-    /// held in memory (ADR-0130).
+    /// A space held in memory was written in a namespace more than one node may
+    /// write (ADR-0130, G079 W5d).
     ///
-    /// Such a node applies the other writer's records, and would order them
-    /// below the versions its own memory commits took; a node writes a held
-    /// space only while no other node in its cluster may write.
+    /// On a cluster a held space is held by the leader of its range, as every
+    /// write is admitted there; a `MULTI MASTER` namespace has no one leader, so
+    /// there is no node whose memory the space could be.
     #[error(
-        "space {space} is held in memory and this node is in a cluster where another node \
-         may write; a held space is written only by a node that is the cluster's one writer"
+        "space {space} is held in memory and its namespace may be written by more than one \
+         node; a held space lives on the one node that leads it, and a namespace written \
+         MULTI MASTER has none"
     )]
     InMemoryOnACluster {
         /// The held space the write named.

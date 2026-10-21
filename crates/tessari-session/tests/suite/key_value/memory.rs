@@ -203,24 +203,26 @@ fn a_restart_empties_an_in_memory_space_and_keeps_its_definition() {
 }
 
 #[test]
-fn a_node_beside_another_writer_refuses_to_write_an_in_memory_space() {
+fn a_node_with_no_leadership_refuses_a_held_write_as_it_refuses_a_durable_one() {
     on_each_backend(|backend| {
         let mut session = opened(&backend.store);
         run(&mut session, "DEFINE SPACE hot IN MEMORY MAX 10;");
-        // A peer bound to another node that may write: this node would apply
-        // that node's records, which is what a held space cannot sit beside.
+        // A peer bound to another node that may write: this node is clustered
+        // and holds no leadership, so it writes nothing until it is granted one.
         session
             .run_now(&format!(
                 "DEFINE REPLICA second AT 'there:9001' NODE '{}' ROLES serving, writable;",
                 "ab".repeat(16)
             ))
             .unwrap();
-        let why = refused(&mut session, "SET hot:'a' = 1;");
+        let held = refused(&mut session, "SET hot:'a' = 1;");
+        let durable = refused(&mut session, "SET cache:'a' = 1;");
         assert!(
-            why.contains("held in memory") && why.contains("cluster"),
-            "{}: {why}",
+            held.contains("holds no leadership"),
+            "{}: {held}",
             backend.name
         );
+        assert_eq!(held, durable, "{}", backend.name);
     });
 }
 
@@ -294,4 +296,92 @@ fn a_cancelled_drop_of_an_in_memory_space_frees_nothing() {
         run(&mut session, "SET hot:'b' = 2;");
         assert_eq!(keys(&mut session, "KEYS FROM hot;"), 2);
     });
+}
+
+/// A store holding a space in memory in each of two namespaces, then put in a
+/// cluster where it leads `prod` and a peer leads `other` (G079 W5d).
+fn leading_one_of_two() -> Store {
+    use tessari_encoding::Roles;
+    use tessari_storage::{Catalog, LEASE_TTL, Lease, Reach};
+    use tessari_types::{Epoch, NamespaceId};
+    let store = Store::open(Arc::new(tessari_kv::MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
+    let mut session = opened(&store);
+    run(
+        &mut session,
+        "DEFINE SPACE hot IN MEMORY MAX 10; SET hot:'a' = 1;\n\
+         DEFINE NAMESPACE other; USE NAMESPACE other; DEFINE DATABASE app; USE DATABASE app;\n\
+         DEFINE SPACE hot IN MEMORY MAX 10; SET hot:'a' = 1;\n\
+         DEFINE NAMESPACE many MULTI MASTER; USE NAMESPACE many; DEFINE DATABASE app;\n\
+         USE DATABASE app; DEFINE SPACE hot IN MEMORY MAX 10; SET hot:'a' = 1;",
+    );
+    let me = store.node_identity().now().unwrap().id;
+    let mut transaction = store.begin().now().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    catalog
+        .create_replica(
+            "second",
+            "10.0.0.2:9081",
+            Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING),
+            Some([9; 16]),
+            None,
+            None,
+        )
+        .now()
+        .unwrap();
+    catalog
+        .record_leadership(Reach::Namespace(NamespaceId::new(1)), me, Epoch::new(4))
+        .unwrap();
+    catalog
+        .record_leadership(
+            Reach::Namespace(NamespaceId::new(2)),
+            [9; 16],
+            Epoch::new(7),
+        )
+        .unwrap();
+    catalog
+        .record_leadership(Reach::Namespace(NamespaceId::new(3)), me, Epoch::new(4))
+        .unwrap();
+    transaction.commit().now().unwrap();
+    store
+        .hold(
+            Epoch::new(4),
+            Lease::taken_at(std::time::Instant::now(), LEASE_TTL),
+        )
+        .now();
+    store
+}
+
+#[test]
+fn on_a_cluster_the_leader_of_its_range_writes_an_in_memory_space() {
+    let store = leading_one_of_two();
+    let mut session = Session::new(&store);
+    run(&mut session, "USE NAMESPACE prod; USE DATABASE app;");
+    run(&mut session, "SET hot:'b' = 2;");
+    assert_eq!(value(&mut session, "GET hot:'b';"), Value::from(2));
+}
+
+#[test]
+fn on_a_cluster_a_node_that_does_not_lead_the_range_redirects_the_write() {
+    let store = leading_one_of_two();
+    let mut session = Session::new(&store);
+    run(&mut session, "USE NAMESPACE other; USE DATABASE app;");
+    let why = refused(&mut session, "SET hot:'b' = 2;");
+    assert!(
+        why.contains("led by another node") && why.contains("10.0.0.2:9081"),
+        "{why}"
+    );
+}
+
+#[test]
+fn on_a_cluster_a_namespace_two_nodes_may_write_refuses_an_in_memory_space() {
+    let store = leading_one_of_two();
+    let mut session = Session::new(&store);
+    run(&mut session, "USE NAMESPACE many; USE DATABASE app;");
+    let why = refused(&mut session, "SET hot:'b' = 2;");
+    assert!(
+        why.contains("held in memory") && why.contains("MULTI MASTER"),
+        "{why}"
+    );
 }

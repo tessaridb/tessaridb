@@ -6916,8 +6916,15 @@ DEFINE SPACE hot IN MEMORY MAX 100000;
   runs out of memory.
 - A transaction that writes a held space and anything durable is refused with
   **`InMemoryBesideDurable`**: the two would not survive a restart together.
-- A node writes a held space only while no other node in its cluster may write;
-  otherwise the write is refused with **`InMemoryOnACluster`**.
+- On a cluster a held space belongs to the **leader of its range**, as every
+  write does: one copy, in that node's memory. A write sent to another node is
+  redirected to the leader (**`WriteIsElsewhere`**), a node holding no
+  leadership refuses it as it refuses any write, and a failover starts the
+  space empty on the new leader, as a restart does. Read it on the leader —
+  no other node holds any of it.
+- A namespace more than one node may write (`MULTI MASTER`) has no one owner
+  for a held space, and a write to one is refused with
+  **`InMemoryOnACluster`**.
 - Each held space keeps its keys in a map of its own. `DROP SPACE` frees that
   map as soon as the drop commits — or, when a transaction that began before
   the drop is still open, as soon as the last such transaction ends.
