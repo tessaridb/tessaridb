@@ -6820,6 +6820,9 @@ RETURN TTL sessions:'abc';
 - A `SET` replaces the whole version, so a `SET` without `EXPIRE` **clears** an
   expiry the key had. A `SET` whose `EXPIRE` is not in the future is refused and
   writes nothing.
+- `EXPIRE NULL` writes a key that never expires — `NULL` is what `TTL` answers
+  for one — so `SET b = GET a EXPIRE TTL a` copies a key with its expiry, whether
+  it has one or not. `TTL` of a missing key is `NONE`, which stays refused.
 - `EXPIRE key when` sets or moves the expiry of a key that exists and answers
   `true`, or answers `false` when there is no key. A duration that is zero or
   negative, or a datetime already past, **removes** the key.

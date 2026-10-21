@@ -56,14 +56,20 @@ impl Session<'_> {
     ) -> Result<Outcome> {
         // Resolved before the write, so a refused expiry writes nothing.
         let at = match expire {
-            Some(expire) => match self.instant(transaction, expire).await? {
-                Instant::Future(at) => Some(at),
-                Instant::Passed => {
-                    return Err(Error::InvalidExpiry {
-                        reason: "a SET's EXPIRE must be in the future",
-                        span: expire.span,
-                    });
-                }
+            Some(expire) => match self.evaluate(transaction, expire).await? {
+                // `NULL` is what `TTL` answers for a key that never expires, so
+                // writing it back writes one that never expires: a value and its
+                // expiry move together in one statement, `EXPIRE TTL k`.
+                Value::Null => None,
+                when => match instant_of(transaction.clock(), when, expire.span)? {
+                    Instant::Future(at) => Some(at),
+                    Instant::Passed => {
+                        return Err(Error::InvalidExpiry {
+                            reason: "a SET's EXPIRE must be in the future",
+                            span: expire.span,
+                        });
+                    }
+                },
             },
             None => None,
         };
@@ -159,25 +165,28 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         when: &Expr,
     ) -> Result<Instant> {
-        let refused = |reason| Error::InvalidExpiry {
-            reason,
-            span: when.span,
-        };
-        let too_far = || refused("the expiry is past what a millisecond clock can hold");
-        let now = i64::try_from(transaction.clock()).map_err(|_| too_far())?;
-        let at = match self.evaluate(transaction, when).await? {
-            Value::Duration(span) => {
-                millis(span.seconds(), span.nanos()).and_then(|span| now.checked_add(span))
-            }
-            Value::Datetime(instant) => millis(instant.seconds(), instant.nanos()),
-            _ => return Err(refused("an expiry is a duration or a datetime")),
-        }
-        .ok_or_else(too_far)?;
-        if at <= now {
-            return Ok(Instant::Passed);
-        }
-        Ok(Instant::Future(u64::try_from(at).map_err(|_| too_far())?))
+        let value = self.evaluate(transaction, when).await?;
+        instant_of(transaction.clock(), value, when.span)
     }
+}
+
+/// Resolve an evaluated `EXPIRE` operand against the clock `now`.
+fn instant_of(now: u64, when: Value, span: Span) -> Result<Instant> {
+    let refused = |reason| Error::InvalidExpiry { reason, span };
+    let too_far = || refused("the expiry is past what a millisecond clock can hold");
+    let now = i64::try_from(now).map_err(|_| too_far())?;
+    let at = match when {
+        Value::Duration(span) => {
+            millis(span.seconds(), span.nanos()).and_then(|span| now.checked_add(span))
+        }
+        Value::Datetime(instant) => millis(instant.seconds(), instant.nanos()),
+        _ => return Err(refused("an expiry is a duration or a datetime")),
+    }
+    .ok_or_else(too_far)?;
+    if at <= now {
+        return Ok(Instant::Passed);
+    }
+    Ok(Instant::Future(u64::try_from(at).map_err(|_| too_far())?))
 }
 
 /// Whole milliseconds in a seconds-and-nanoseconds pair, rounded toward zero.
