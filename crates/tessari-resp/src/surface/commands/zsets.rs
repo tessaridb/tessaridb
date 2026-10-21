@@ -89,16 +89,22 @@ fn read(
     )
 }
 
-/// Members, and their scores when asked, flat.
+/// Members, or each member paired with its score when asked.
 fn listed(pairs: &[(String, f64)], with_scores: bool) -> Reply {
-    let mut reply = Vec::new();
-    for (member, at) in pairs {
-        reply.push(Reply::text(member.clone()));
-        if with_scores {
-            reply.push(score(*at));
-        }
+    if with_scores {
+        return Reply::Pairs(
+            pairs
+                .iter()
+                .map(|(member, at)| (Reply::text(member.clone()), score(*at)))
+                .collect(),
+        );
     }
-    Reply::Array(reply)
+    Reply::Array(
+        pairs
+            .iter()
+            .map(|(member, _)| Reply::text(member.clone()))
+            .collect(),
+    )
 }
 
 /// A score a client sent.
@@ -167,22 +173,31 @@ pub(super) fn plan(
                 }
                 _ => return Err(replies::syntax()),
             };
+            let counted = !limit.is_empty();
             Planned::one(
                 format!("SCORES POP {target} {side}{limit}"),
-                Box::new(|outcomes| {
+                Box::new(move |outcomes| {
                     let Value::Array(pairs) = first(outcomes) else {
                         return Reply::Array(Vec::new());
                     };
-                    let mut reply = Vec::new();
+                    let mut popped = Vec::new();
                     for pair in pairs {
                         if let Value::Array(pair) = pair
                             && let [member, Value::Number(at)] = pair.as_slice()
                         {
-                            reply.push(containers::bulk(member));
-                            reply.push(at.as_float().map_or(Reply::Nil, score));
+                            popped.push((
+                                containers::bulk(member),
+                                at.as_float().map_or(Reply::Nil, score),
+                            ));
                         }
                     }
-                    Reply::Array(reply)
+                    // With no count the one pair is answered flat, as RESP3 has it.
+                    match popped.as_slice() {
+                        [(member, at)] if !counted => {
+                            Reply::Array(vec![member.clone(), at.clone()])
+                        }
+                        _ => Reply::Pairs(popped),
+                    }
                 }),
             )
         }

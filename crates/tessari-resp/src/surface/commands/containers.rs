@@ -96,9 +96,10 @@ pub(super) fn bulk(value: &Value) -> Reply {
     values::rendered(value).map_or(Reply::Nil, Reply::Bulk)
 }
 
-/// A score's reply, as the shortest digits that read back as it.
+/// A score's reply, as the shortest digits that read back as it — a double
+/// to a RESP3 client.
 pub(super) fn score(score: f64) -> Reply {
-    Reply::Bulk(values::float_text(score))
+    Reply::Double(values::float_text(score))
 }
 
 /// A field or member name, which the store holds as text.

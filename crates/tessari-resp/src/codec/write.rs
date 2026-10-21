@@ -34,6 +34,12 @@ pub enum Reply {
     Array(Vec<Reply>),
     /// Pairs, written as a map in RESP3 and a flat array in RESP2.
     Map(Vec<(Reply, Reply)>),
+    /// A floating-point number as its digits: a double in RESP3, bytes in
+    /// RESP2.
+    Double(Vec<u8>),
+    /// Ordered pairs that may repeat a key — a member and its score — each
+    /// an array of two in RESP3, and one flat array in RESP2.
+    Pairs(Vec<(Reply, Reply)>),
 }
 
 impl Reply {
@@ -95,6 +101,28 @@ pub fn encode(reply: &Reply, protocol: Protocol, out: &mut Vec<u8>) {
             for (key, value) in pairs {
                 encode(key, protocol, out);
                 encode(value, protocol, out);
+            }
+        }
+        Reply::Double(digits) => match protocol {
+            Protocol::Two => encode(&Reply::Bulk(digits.clone()), protocol, out),
+            Protocol::Three => line(out, b',', digits),
+        },
+        Reply::Pairs(pairs) => {
+            let (count, width) = match protocol {
+                Protocol::Two => (pairs.len().saturating_mul(2), None),
+                Protocol::Three => (pairs.len(), Some(2)),
+            };
+            out.push(b'*');
+            decimal(out, length(count));
+            out.extend_from_slice(b"\r\n");
+            for (first, second) in pairs {
+                if let Some(width) = width {
+                    out.push(b'*');
+                    decimal(out, width);
+                    out.extend_from_slice(b"\r\n");
+                }
+                encode(first, protocol, out);
+                encode(second, protocol, out);
             }
         }
     }
@@ -163,6 +191,21 @@ mod tests {
         let map = Reply::Map(vec![(Reply::text("k"), Reply::Integer(1))]);
         assert_eq!(written(&map, Protocol::Two), "*2\r\n$1\r\nk\r\n:1\r\n");
         assert_eq!(written(&map, Protocol::Three), "%1\r\n$1\r\nk\r\n:1\r\n");
+        let double = Reply::Double(b"2.5".to_vec());
+        assert_eq!(written(&double, Protocol::Two), "$3\r\n2.5\r\n");
+        assert_eq!(written(&double, Protocol::Three), ",2.5\r\n");
+        let pairs = Reply::Pairs(vec![
+            (Reply::text("a"), double.clone()),
+            (Reply::text("a"), Reply::Integer(1)),
+        ]);
+        assert_eq!(
+            written(&pairs, Protocol::Two),
+            "*4\r\n$1\r\na\r\n$3\r\n2.5\r\n$1\r\na\r\n:1\r\n"
+        );
+        assert_eq!(
+            written(&pairs, Protocol::Three),
+            "*2\r\n*2\r\n$1\r\na\r\n,2.5\r\n*2\r\n$1\r\na\r\n:1\r\n"
+        );
         assert_eq!(
             written(&Reply::Array(vec![Reply::Nil, Reply::OK]), Protocol::Two),
             "*2\r\n$-1\r\n+OK\r\n"

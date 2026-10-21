@@ -100,6 +100,7 @@ fn parse(bytes: &[u8]) -> Option<(Reply, usize)> {
         b'-' => (Reply::Error(line.to_owned().into()), after),
         b':' => (Reply::Integer(count()), after),
         b'_' => (Reply::Nil, after),
+        b',' => (Reply::Double(line.as_bytes().to_vec()), after),
         b'$' if count() < 0 => (Reply::Nil, after),
         b'$' => {
             let length = usize::try_from(count()).unwrap();

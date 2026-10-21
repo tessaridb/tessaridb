@@ -249,12 +249,18 @@ fn random_fields(
             .filter_map(|_| held.get(containers::random(held.len())).copied())
             .collect()
     };
-    let mut reply = Vec::new();
-    for (field, value) in chosen {
-        reply.push(Reply::text(field.clone()));
-        if with_values {
-            reply.push(bulk(value));
-        }
+    if with_values {
+        return Reply::Pairs(
+            chosen
+                .into_iter()
+                .map(|(field, value)| (Reply::text(field.clone()), bulk(value)))
+                .collect(),
+        );
     }
-    Reply::Array(reply)
+    Reply::Array(
+        chosen
+            .into_iter()
+            .map(|(field, _)| Reply::text(field.clone()))
+            .collect(),
+    )
 }

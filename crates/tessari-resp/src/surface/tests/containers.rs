@@ -357,3 +357,46 @@ async fn concurrent_writers_to_one_hash_and_one_list_lose_nothing() {
     assert_eq!(client.ask(&["SCARD", "s"]).await, Reply::Integer(8));
     stop.cancel();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn in_resp3_a_score_is_a_double_and_scored_members_are_pairs() {
+    let (address, stop, _) = serving_with("").await;
+    let mut client = Client::to(&address).await;
+    client.ask(&["HELLO", "3"]).await;
+    client
+        .ask(&["ZADD", "z", "1", "a", "2.5", "b", "3", "c"])
+        .await;
+    let pair =
+        |member: &str, score: &str| Reply::Array(vec![bulk(member), Reply::Double(score.into())]);
+    assert_eq!(
+        client.ask(&["ZSCORE", "z", "b"]).await,
+        Reply::Double("2.5".into())
+    );
+    assert_eq!(
+        client.ask(&["ZRANGE", "z", "0", "1", "WITHSCORES"]).await,
+        Reply::Array(vec![pair("a", "1"), pair("b", "2.5")])
+    );
+    assert_eq!(
+        client.ask(&["ZRANK", "z", "b", "WITHSCORE"]).await,
+        Reply::Array(vec![Reply::Integer(1), Reply::Double("2.5".into())])
+    );
+    // A pop with no count answers one pair, flat; with a count, pairs.
+    assert_eq!(
+        client.ask(&["ZPOPMIN", "z"]).await,
+        Reply::Array(vec![bulk("a"), Reply::Double("1".into())])
+    );
+    assert_eq!(
+        client.ask(&["ZPOPMAX", "z", "1"]).await,
+        Reply::Array(vec![pair("c", "3")])
+    );
+    assert_eq!(
+        client.ask(&["ZRANDMEMBER", "z", "1", "WITHSCORES"]).await,
+        Reply::Array(vec![pair("b", "2.5")])
+    );
+    client.ask(&["HSET", "h", "f", "v"]).await;
+    assert_eq!(
+        client.ask(&["HRANDFIELD", "h", "1", "WITHVALUES"]).await,
+        Reply::Array(vec![Reply::Array(vec![bulk("f"), bulk("v")])])
+    );
+    stop.cancel();
+}
