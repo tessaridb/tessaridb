@@ -172,7 +172,9 @@ async fn metadata_names_a_broker_per_member_and_the_leader_of_each_topic() {
     expected.sort_unstable();
     // The quiet peer says nowhere a Kafka client reaches it, so it is no broker.
     assert_eq!(brokers, expected);
-    assert_eq!(answered.controller, id(me));
+    // One controller for the whole cluster, whichever node is asked: the one
+    // coordinating its groups.
+    assert_eq!(answered.controller, id(LEADER));
     assert_eq!(
         answered.leaders,
         vec![

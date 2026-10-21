@@ -207,12 +207,15 @@ async fn handle(
                 let brokers = describing::brokers(shared, held, reached).await;
                 let topics =
                     describing::topics(shared, held, &brokers, request.topics.as_deref()).await;
+                // The controller is one broker for the whole cluster, whichever
+                // node is asked: the one coordinating its groups.
+                let controller = brokers.coordinator(shared).await.node_id;
                 metadata::write_response(
                     &mut writer,
                     version,
                     flexible,
                     &brokers.listed,
-                    brokers.this().node_id,
+                    controller,
                     CLUSTER_ID,
                     &topics,
                 )

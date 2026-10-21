@@ -406,3 +406,55 @@ fn on_a_cluster_a_node_that_does_not_lead_the_range_redirects_a_read() {
     run(&mut session, "USE NAMESPACE prod; USE DATABASE app;");
     assert_eq!(value(&mut session, "GET hot:'a';"), Value::from(1));
 }
+
+#[test]
+fn a_held_write_waits_for_no_copies_where_a_durable_one_does() {
+    // A namespace kept on two nodes acknowledges at a majority, and a held
+    // space puts nothing in the log for the second node to hold: its write is
+    // answered on the leader, while a durable write beside it still waits for
+    // a copy the peer never takes.
+    use tessari_encoding::Roles;
+    use tessari_storage::{Catalog, LEASE_TTL, Lease, Reach};
+    use tessari_types::Epoch;
+    let store = Store::open(Arc::new(tessari_kv::MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
+    let mut session = Session::new(&store);
+    run(
+        &mut session,
+        "DEFINE NAMESPACE kept REPLICATION FACTOR 2; USE NAMESPACE kept; DEFINE DATABASE app;\n\
+         USE DATABASE app; DEFINE SPACE hot IN MEMORY MAX 10; DEFINE SPACE cold;",
+    );
+    let me = store.node_identity().now().unwrap().id;
+    let mut transaction = store.begin().now().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let kept = catalog.namespace_id("kept").now().unwrap().unwrap();
+    catalog
+        .create_replica(
+            "second",
+            "10.0.0.2:9081",
+            Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING),
+            Some([9; 16]),
+            Some(Reach::Store),
+            None,
+        )
+        .now()
+        .unwrap();
+    catalog
+        .record_leadership(Reach::Namespace(kept), me, Epoch::new(4))
+        .unwrap();
+    transaction.commit().now().unwrap();
+    store
+        .hold(
+            Epoch::new(4),
+            Lease::taken_at(std::time::Instant::now(), LEASE_TTL),
+        )
+        .now();
+    let mut session = Session::new(&store);
+    run(&mut session, "USE NAMESPACE kept; USE DATABASE app;");
+    run(&mut session, "SET hot:'b' = 2;");
+    assert_eq!(value(&mut session, "GET hot:'b';"), Value::from(2));
+    // Control: the durable space waits for the peer and is told it did not hold it.
+    let said = refused(&mut session, "SET cold:'b' = 2;");
+    assert!(said.contains("acknowledged holding it in time"), "{said}");
+}

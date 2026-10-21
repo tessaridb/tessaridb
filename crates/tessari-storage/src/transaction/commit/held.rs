@@ -21,6 +21,18 @@ pub(super) struct Held {
 }
 
 impl Transaction<'_> {
+    /// Whether this transaction's commit puts a record in the log — what a
+    /// follower collects and a majority can be asked to hold (ADR-0106). One
+    /// writing only spaces held in memory lands nothing there (ADR-0130).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InMemoryBesideDurable`], as its commit would refuse, and a
+    /// substrate failure reading the catalog.
+    pub async fn lands_in_the_log(&mut self) -> Result<bool> {
+        Ok(self.writes_anything() && self.held_only().await?.is_none())
+    }
+
     /// The held space this transaction writes, when every record it writes is
     /// one — or `None` when it writes none.
     ///

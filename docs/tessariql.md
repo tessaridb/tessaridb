@@ -6923,6 +6923,8 @@ DEFINE SPACE hot IN MEMORY MAX 100000;
   space empty on the new leader, as a restart does. A read of it on another
   node is redirected to the leader too (**`ReadIsElsewhere`**), because no
   other node holds any of it and an answer there would pass for an empty space.
+  A held write puts nothing in the log, so it is answered on the leader without
+  waiting for the copies its namespace's `ACKNOWLEDGE` asks of durable writes.
 - A namespace more than one node may write (`MULTI MASTER`) has no one owner
   for a held space, and a write to one is refused with
   **`InMemoryOnACluster`**.
@@ -9199,7 +9201,7 @@ changed with `ALTER REPLICA … KAFKA AT …` or removed with `KAFKA NONE`; it i
 reported beside them as `kafka`. Every peer that says it is a broker in Kafka
 `Metadata`, numbered alike on every node (a node's place among the members' node
 ids, plus one), and a topic's partition is led by the broker of the node leading
-its database. `FindCoordinator` names the node leading the database bare topic
+its database. `FindCoordinator`, and the controller `Metadata` gives, name the node leading the database bare topic
 names are read in (the store's leader when none is named), and a group request
 sent to any other node answers `NOT_COORDINATOR`, so a group's members meet on
 one node. A node whose leader names no Kafka address answers as before, itself.
