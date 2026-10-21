@@ -1102,7 +1102,15 @@ const TABLES: &[Table] = &[
         // answers how many keys node memory holds — a count, never a key or a
         // value. Re-classification trigger: the feature reaching a shipped build,
         // or the method answering anything but a count.
-        expected: 81,
+        //
+        // 82 since a read of a held space is sent to its leader (G079 W5d):
+        // `Store::led_elsewhere`. **Exempt, on `tail_leadership`'s ground**: it
+        // answers who leads a database's range — the endpoint, node and epoch
+        // every `WriteIsElsewhere` already carries — and reads no record, catalog
+        // entry beyond the membership and leadership rows, or grant. Its caller
+        // is the session's read routing, after the statement is authorized.
+        // Re-classification trigger: it answering anything about a record.
+        expected: 82,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1357,7 +1365,9 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 168 since `Db::close` (G077 W6b), classified above.
     //
     // 169 since `Store::held_keys` (G079 W5c), test support, classified above.
-    assert_eq!(total, 169, "the counted tables no longer sum to 169");
+    //
+    // 170 since `Store::led_elsewhere` (G079 W5d), classified above.
+    assert_eq!(total, 170, "the counted tables no longer sum to 170");
 }
 
 /// Every `.rs` file under a directory.

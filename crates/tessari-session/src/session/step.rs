@@ -26,6 +26,11 @@ impl<'a> Session<'a> {
         let expanded = self.expand_views(store, &statement.kind).await?;
         let kind = expanded.as_ref().unwrap_or(&statement.kind);
         self.authorize(store, kind, span).await?;
+        // A write is sent to the leader by its commit; a read of a held space
+        // is sent there here, before it can answer from this node (W5d).
+        if matches!(crate::Effect::of(kind), crate::Effect::Read) {
+            self.held_read_here(store, kind, span).await?;
+        }
         match kind {
             StatementKind::Use {
                 namespace,

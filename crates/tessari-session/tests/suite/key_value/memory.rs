@@ -312,7 +312,7 @@ fn leading_one_of_two() -> Store {
         &mut session,
         "DEFINE SPACE hot IN MEMORY MAX 10; SET hot:'a' = 1;\n\
          DEFINE NAMESPACE other; USE NAMESPACE other; DEFINE DATABASE app; USE DATABASE app;\n\
-         DEFINE SPACE hot IN MEMORY MAX 10; SET hot:'a' = 1;\n\
+         DEFINE SPACE hot IN MEMORY MAX 10; SET hot:'a' = 1; DEFINE SPACE cold; SET cold:'a' = 1;\n\
          DEFINE NAMESPACE many MULTI MASTER; USE NAMESPACE many; DEFINE DATABASE app;\n\
          USE DATABASE app; DEFINE SPACE hot IN MEMORY MAX 10; SET hot:'a' = 1;",
     );
@@ -384,4 +384,25 @@ fn on_a_cluster_a_namespace_two_nodes_may_write_refuses_an_in_memory_space() {
         why.contains("held in memory") && why.contains("MULTI MASTER"),
         "{why}"
     );
+}
+
+#[test]
+fn on_a_cluster_a_node_that_does_not_lead_the_range_redirects_a_read() {
+    let store = leading_one_of_two();
+    let mut session = Session::new(&store);
+    run(&mut session, "USE NAMESPACE other; USE DATABASE app;");
+    // This node holds none of the space: an empty answer here would pass for an
+    // empty space.
+    for read in ["GET hot:'a';", "KEYS FROM hot;", "RETURN TTL hot:'a';"] {
+        let why = refused(&mut session, read);
+        assert!(
+            why.contains("held in memory") && why.contains("10.0.0.2:9081"),
+            "{read}: {why}"
+        );
+    }
+    // Controls: a durable space here is read here, as a follower reads, and
+    // the leader answers its own held space.
+    assert_eq!(value(&mut session, "GET cold:'a';"), Value::from(1));
+    run(&mut session, "USE NAMESPACE prod; USE DATABASE app;");
+    assert_eq!(value(&mut session, "GET hot:'a';"), Value::from(1));
 }

@@ -6920,8 +6920,9 @@ DEFINE SPACE hot IN MEMORY MAX 100000;
   write does: one copy, in that node's memory. A write sent to another node is
   redirected to the leader (**`WriteIsElsewhere`**), a node holding no
   leadership refuses it as it refuses any write, and a failover starts the
-  space empty on the new leader, as a restart does. Read it on the leader —
-  no other node holds any of it.
+  space empty on the new leader, as a restart does. A read of it on another
+  node is redirected to the leader too (**`ReadIsElsewhere`**), because no
+  other node holds any of it and an answer there would pass for an empty space.
 - A namespace more than one node may write (`MULTI MASTER`) has no one owner
   for a held space, and a write to one is refused with
   **`InMemoryOnACluster`**.

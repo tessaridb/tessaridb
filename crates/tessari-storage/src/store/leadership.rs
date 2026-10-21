@@ -113,6 +113,32 @@ impl Store {
         Ok(crate::catalog::another_node_may_write(&declared, me))
     }
 
+    /// Who leads a database's range when it is not this node: the endpoint,
+    /// node and epoch a read of a space held in memory there is sent to
+    /// (G079 W5d). `None` when this node may answer — it leads the range, or
+    /// nobody does.
+    ///
+    /// # Errors
+    ///
+    /// The substrate's failure, or a stored definition that cannot be read.
+    pub async fn led_elsewhere(
+        &self,
+        namespace: tessari_types::NamespaceId,
+        database: tessari_types::DatabaseId,
+    ) -> Result<Option<(String, [u8; NODE_ID_LEN], tessari_types::Epoch)>> {
+        let me = self.node_identity().await?.id;
+        let range = BTreeSet::from([Reach::Database(namespace, database)]);
+        match self.refuse_if_led_elsewhere(&range, &me).await {
+            Ok(_) => Ok(None),
+            Err(Error::WriteIsElsewhere {
+                endpoint,
+                node,
+                epoch,
+            }) => Ok(Some((endpoint, node, epoch))),
+            Err(other) => Err(other),
+        }
+    }
+
     /// Refuse when the committed log names another node as the leader of a
     /// range this transaction writes.
     ///
