@@ -1186,6 +1186,9 @@ impl Session<'_> {
             StatementKind::Incr { target, by } => {
                 self.increment(transaction, target, by.as_ref(), span).await
             }
+            StatementKind::Structure { target, op } => {
+                self.structure(transaction, target, op, span).await
+            }
             StatementKind::Expire { target, at } => self.expire_key(transaction, target, at).await,
             StatementKind::Persist { target } => self.persist_key(transaction, target).await,
             StatementKind::Delete { target, answer } => {

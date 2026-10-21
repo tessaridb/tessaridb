@@ -11,6 +11,8 @@ mod bounded;
 mod expiry;
 mod memory;
 mod removal;
+mod sets;
+mod structure;
 mod walk;
 
 use std::sync::Arc;

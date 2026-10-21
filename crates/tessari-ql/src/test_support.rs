@@ -487,6 +487,13 @@ fn erase_statement(statement: &mut Statement) {
             erase_record(target);
             erase_expr(value);
         }
+        StatementKind::Structure { target, op } => {
+            erase_record(target);
+            if let Some(to) = op.second_key_mut() {
+                erase_record(to);
+            }
+            op.expressions_mut().into_iter().for_each(erase_expr);
+        }
         StatementKind::Incr { target, by } => {
             erase_record(target);
             if let Some(by) = by {

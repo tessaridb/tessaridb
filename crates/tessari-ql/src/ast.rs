@@ -24,6 +24,7 @@ mod expr;
 mod info;
 mod select;
 mod statement;
+mod structure;
 mod tables;
 mod users;
 use tessari_types::{Assertion, FieldKind, Path, RecordId};
@@ -42,6 +43,7 @@ pub use statement::{
     BackupForm, RollupCompute, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator,
     StatementKind,
 };
+pub use structure::{Container, ListEnd, Presence, ScoreCompare, StructureOp};
 
 /// A parsed script: statements in the order they were written.
 #[derive(Debug, Clone, PartialEq, Eq)]

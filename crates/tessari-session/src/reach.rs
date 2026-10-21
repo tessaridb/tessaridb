@@ -311,6 +311,14 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             }
             found
         }
+        StatementKind::Structure { target, op } => {
+            let mut found = vec![&target.table];
+            found.extend(op.second_key().map(|to| &to.table));
+            for expr in op.expressions() {
+                found.extend(in_expr(expr));
+            }
+            found
+        }
         StatementKind::Incr { target, by } => {
             let mut found = vec![&target.table];
             if let Some(by) = by {

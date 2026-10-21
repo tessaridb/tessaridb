@@ -302,6 +302,15 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
                 _ => Ok(()),
             }
         }
+        StatementKind::Structure { target, op } => {
+            bind_target(target, binding)?;
+            if let Some(to) = op.second_key_mut() {
+                bind_target(to, binding)?;
+            }
+            op.expressions_mut()
+                .into_iter()
+                .try_for_each(|expr| bind_expr(expr, binding))
+        }
         StatementKind::Incr { target, by } => {
             bind_target(target, binding)?;
             match by {

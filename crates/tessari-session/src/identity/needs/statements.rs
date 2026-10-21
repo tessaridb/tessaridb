@@ -460,6 +460,7 @@ impl Needs {
             | StatementKind::Expire { .. }
             | StatementKind::Persist { .. }
             | StatementKind::Incr { .. }
+            | StatementKind::Structure { .. }
             | StatementKind::Del { .. }
             | StatementKind::Put { .. } => Self::WRITE,
         }

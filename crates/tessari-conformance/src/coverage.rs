@@ -148,6 +148,7 @@ forms! {
     Expire => "EXPIRE",
     Persist => "PERSIST",
     Incr => "INCR",
+    Structure => "LIST PUSH",
     Put => "PUT",
     Read => "READ",
     Backup => "BACKUP",
@@ -349,6 +350,7 @@ mod tests {
              EXPIRE s:1 1s;\
              PERSIST s:1;\
              INCR s:1;\
+             LIST PUSH s:2 BACK 1;\
              KEYS FROM s;\
              PUT b:'/a.txt' = 0x0a;\
              READ b:'/a.txt';\

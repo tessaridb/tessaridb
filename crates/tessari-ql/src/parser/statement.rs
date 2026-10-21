@@ -268,6 +268,11 @@ impl Parser<'_> {
             _ if self.eat_word("expire") => self.expire_statement()?,
             _ if self.eat_word("persist") => self.persist_statement()?,
             _ if self.eat_word("incr") => self.incr_statement()?,
+            // The container writes (G079 C6), contextual for the same reason.
+            _ if self.eat_word("list") => self.list_statement()?,
+            _ if self.eat_word("hash") => self.hash_statement()?,
+            _ if self.eat_word("members") => self.members_statement()?,
+            _ if self.eat_word("scores") => self.scores_statement()?,
             _ if self.eat_word("release") => self.release_statement(start)?,
             _ if self.eat_word("reveal") => self.reveal_statement(start)?,
             _ if self.eat_word("add") => self.add_recipient_statement(start)?,

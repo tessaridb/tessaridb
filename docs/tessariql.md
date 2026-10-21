@@ -6932,6 +6932,75 @@ DEFINE SPACE hot IN MEMORY MAX 100000;
   map as soon as the drop commits — or, when a transaction that began before
   the drop is still open, as soon as the last such transaction ends.
 
+### Data structures on a space
+
+A key may hold a list, a hash, a set of members, or members ranked by score,
+and each is changed by a statement of its own that reads the key and writes it
+— atomic the way `INCR` is.
+
+```
+LIST PUSH queue:'jobs' BACK 'a', 'b';
+LIST PUSH queue:'jobs' FRONT 'z' IF PRESENT;
+LIST POP queue:'jobs' FRONT;
+LIST POP queue:'jobs' BACK LIMIT 10;
+LIST SET queue:'jobs' AT -1 = 'last';
+LIST TRIM queue:'jobs' FROM 0 TO 99;
+LIST REMOVE queue:'jobs' 'a' LIMIT 2 FROM BACK;
+LIST INSERT queue:'jobs' 'x' BEFORE 'b';
+LIST MOVE queue:'jobs' BACK TO queue:'done' FRONT;
+
+HASH SET carts:'u1' 'apples' = 3, 'pears' = 1;
+HASH SET carts:'u1' 'plums' = 2 IF ABSENT;
+HASH REMOVE carts:'u1' 'pears';
+HASH INCR carts:'u1' 'apples' BY 2;
+
+MEMBERS ADD tags:'post:7' 'rust', 'db';
+MEMBERS REMOVE tags:'post:7' 'db';
+MEMBERS POP tags:'post:7' LIMIT 2;
+MEMBERS MOVE tags:'post:7' 'rust' TO tags:'post:8';
+
+SCORES ADD board:'top' 'ada' = 10, 'bob' = 7;
+SCORES ADD board:'top' 'bob' = 9 IF GREATER CHANGED;
+SCORES ADD board:'top' 'cy' = 1 IF ABSENT;
+SCORES INCR board:'top' 'ada' BY 1.5;
+SCORES REMOVE board:'top' 'cy';
+SCORES POP board:'top' HIGHEST LIMIT 3;
+```
+
+- A list is an array, a hash an object of fields, a set of members a set, and a
+  ranking a set of `[score, member]` pairs — so the set's own order, score and
+  then member, is the ranking, lowest first. They are ordinary values: `GET
+  carts:'u1'` reads the whole hash, `(GET carts:'u1').apples` one field,
+  `array::len(GET queue:'jobs')` a list's length.
+- Each statement answers what it did: `LIST PUSH` the new length, `LIST POP`
+  the element (or an array of them with `LIMIT`), `LIST REMOVE`, `HASH SET`,
+  `HASH REMOVE`, `MEMBERS ADD`, `MEMBERS REMOVE` and `SCORES REMOVE` how many
+  elements they added or removed, `HASH INCR` and `SCORES INCR` the new number,
+  `LIST INSERT` the new length — `-1` when the element it goes beside is not
+  there, `0` when the list is not — `MEMBERS MOVE` whether it moved, and
+  `SCORES POP` `[[member, score], …]`. `SCORES ADD … CHANGED` counts members
+  given another score as well as new ones.
+- `LIST PUSH … FRONT` puts each value at the front in turn, so the last one
+  named ends first. Indexes count from zero at the front and from `-1` at the
+  back; `LIST TRIM` keeps the elements from the first index to the second, both
+  included. `MEMBERS POP` takes members at random.
+- A removal that empties a container **deletes the key**: no key holds an empty
+  list, hash or set. A write keeps the expiry the key had, as `INCR` does.
+- A statement on a key holding another kind is refused with
+  **`KeyHoldsAnotherKind`**, naming both. `LIST SET` on no list is
+  **`NoSuchList`** and past the end **`ListIndexOutOfRange`**; an index or a
+  limit that is not a whole number is **`NotAWholeNumber`**; a field or a ranked
+  member is text (**`NameNotText`**), a member of a set is a single value
+  (**`MemberIsAContainer`**), and a score is a finite number
+  (**`ScoreNotANumber`**).
+- Two writers of one key cannot both win, and run as a statement of its own a
+  lost race is run again on a fresh snapshot, as `INCR`'s is — so eight writers
+  pushing onto one list land every element, none twice. `LIST MOVE` and
+  `MEMBERS MOVE` write both keys in the one statement.
+- The container is one value under its key, so a write re-encodes all of it:
+  these statements fit the containers a cache keeps, not ones of millions of
+  elements.
+
 ### Composition
 
 A key-value read is an **expression**. It may appear anywhere an expression may,

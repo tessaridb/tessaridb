@@ -126,7 +126,7 @@ compiles any C++.
 - **`DELETE FROM … WHERE … LIMIT … RETURN BEFORE`** answers the records it removed; the span form takes it too.
 - **A consumer or group name may be a bound parameter** — `USE CONSUMER $worker`, `DEFINE GROUP $group ON TOPIC
   events …`, `ACK events FOR CONSUMER $group AT …`. A value that is not a non-empty string is `NotAConsumerName`.
-- **1611 conformance cases** define the language and run in the build.
+- **1618 conformance cases** define the language and run in the build.
 
 ## 0.35.1 — 2026-10-16
 

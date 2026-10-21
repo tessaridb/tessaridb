@@ -159,6 +159,7 @@ impl Parser<'_> {
                 | StatementKind::Relate { .. }
                 | StatementKind::Set { .. }
                 | StatementKind::Incr { .. }
+                | StatementKind::Structure { .. }
                 | StatementKind::Expire { .. }
                 | StatementKind::Persist { .. }
                 | StatementKind::Del { .. }

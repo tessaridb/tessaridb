@@ -38,6 +38,8 @@ pub(crate) const fn retried_on_conflict(kind: &StatementKind) -> bool {
     matches!(
         kind,
         StatementKind::Incr { .. }
+            // A container write reads the key it writes, as `INCR` does (G079 C6).
+            | StatementKind::Structure { .. }
             | StatementKind::Set {
                 condition: Some(_),
                 ..

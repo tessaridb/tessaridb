@@ -289,6 +289,7 @@ impl Effect {
             | StatementKind::Expire { .. }
             | StatementKind::Persist { .. }
             | StatementKind::Incr { .. }
+            | StatementKind::Structure { .. }
             | StatementKind::Del { .. }
             | StatementKind::Put { .. } => Self::Write,
         }

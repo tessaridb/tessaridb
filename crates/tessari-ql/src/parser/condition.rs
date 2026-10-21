@@ -103,6 +103,13 @@ impl Parser<'_> {
         Ok(binary(op, left, right))
     }
 
+    /// A value with no comparison at its top, for a position an `=` follows
+    /// that is not a test — a field before its value, an index before its
+    /// element.
+    pub(super) fn operand(&mut self) -> Result<Expr> {
+        self.nested(Self::coalescing)
+    }
+
     /// `a ?? b`, binding tighter than a comparison and looser than arithmetic.
     ///
     /// Tighter than a comparison so that `nickname ?? name = 'ada'` asks what it

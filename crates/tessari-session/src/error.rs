@@ -2862,6 +2862,81 @@ pub enum Error {
         span: Span,
     },
 
+    /// A container write on a key holding another kind (G079 C6).
+    #[error("{key} holds a {holds}, not a {wanted} (at {span})")]
+    KeyHoldsAnotherKind {
+        /// The key.
+        key: String,
+        /// What it holds.
+        holds: &'static str,
+        /// What the statement writes.
+        wanted: &'static str,
+        /// Where the key was written.
+        span: Span,
+    },
+
+    /// `LIST SET` on a key holding no list (G079 C6).
+    #[error("no list {key} to set an element of (at {span})")]
+    NoSuchList {
+        /// The key.
+        key: String,
+        /// Where the key was written.
+        span: Span,
+    },
+
+    /// `LIST SET` at an index the list does not have (G079 C6).
+    #[error("index {index} is outside the list {key}, which holds {length} (at {span})")]
+    ListIndexOutOfRange {
+        /// The key.
+        key: String,
+        /// The index as written.
+        index: i64,
+        /// How many elements the list holds.
+        length: u64,
+        /// Where the index was written.
+        span: Span,
+    },
+
+    /// An index or a limit that is not a whole number of the right sign
+    /// (G079 C6).
+    #[error("a {what} is a whole number, and this is not one (at {span})")]
+    NotAWholeNumber {
+        /// What the number was for.
+        what: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A hash field or a ranked member that is not text (G079 C6): an object's
+    /// names are text.
+    #[error("a {what} is named by text, and this is {found} (at {span})")]
+    NameNotText {
+        /// What the name was for.
+        what: &'static str,
+        /// The kind supplied.
+        found: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A member of a set that is itself a container, or nothing (G079 C6).
+    #[error("a member is a single value, and this is {found} (at {span})")]
+    MemberIsAContainer {
+        /// The kind supplied.
+        found: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A score that is not a finite number (G079 C6).
+    #[error("a score is a finite number, and this is {found} (at {span})")]
+    ScoreNotANumber {
+        /// What was supplied.
+        found: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
     /// A partition a topic does not have (ADR-0131).
     #[error(
         "{topic} has {count} partition(s), numbered from 0 — there is no partition {asked} (at {span})"

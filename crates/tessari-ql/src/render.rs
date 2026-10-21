@@ -178,6 +178,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::Expire { .. } => Err(unrenderable("EXPIRE", span)),
         StatementKind::Persist { .. } => Err(unrenderable("PERSIST", span)),
         StatementKind::Incr { .. } => Err(unrenderable("INCR", span)),
+        StatementKind::Structure { .. } => Err(unrenderable("a container write", span)),
         StatementKind::Del { .. } => Err(unrenderable("DEL", span)),
         StatementKind::Put { .. } => Err(unrenderable("PUT", span)),
         StatementKind::Read { .. } => Err(unrenderable("READ", span)),

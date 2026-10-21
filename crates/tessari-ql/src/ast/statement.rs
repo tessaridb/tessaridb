@@ -1986,6 +1986,15 @@ pub enum StatementKind {
         /// How much to add; absent adds one.
         by: Option<Expr>,
     },
+    /// `LIST PUSH queue:'jobs' BACK 'a'`, `HASH SET …`, `MEMBERS ADD …`,
+    /// `SCORES ADD …` — change the container a key holds in one statement
+    /// (G079 C6).
+    Structure {
+        /// The key.
+        target: RecordTarget,
+        /// What is done to it.
+        op: super::StructureOp,
+    },
     /// `EXPIRE sessions:'abc' 30s` — give an existing key an expiry, or move
     /// the one it has (G035). A duration that is zero or negative, or a datetime
     /// already passed, removes the key.

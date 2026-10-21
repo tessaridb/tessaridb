@@ -199,6 +199,13 @@ impl Error {
             | Self::NotAQueue { .. }
             | Self::NotATopic { .. }
             | Self::PartitionNotNamed { .. }
+            | Self::KeyHoldsAnotherKind { .. }
+            | Self::NoSuchList { .. }
+            | Self::ListIndexOutOfRange { .. }
+            | Self::NotAWholeNumber { .. }
+            | Self::NameNotText { .. }
+            | Self::MemberIsAContainer { .. }
+            | Self::ScoreNotANumber { .. }
             | Self::NoSuchPartition { .. }
             | Self::PartitionKey { .. }
             | Self::PositionNotDecided { .. }
