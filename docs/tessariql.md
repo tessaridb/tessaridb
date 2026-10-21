@@ -7967,7 +7967,10 @@ bytes — are hashed with the murmur2 hash a Kafka client's default partitioner
 uses, so a key lands in the same partition whichever side wrote it, and every
 message of one key is in one order. A message without the field, and every
 message of a topic split with no `BY`, takes the partitions in turn — counted
-per node, in memory. A key of any other kind is refused as `PartitionKey`.
+per node, in memory. A key of any other kind is refused as `PartitionKey`. A writer that chose the
+partition itself names it — `INSERT INTO orders PARTITION 2 (customer) VALUES
+('user-42')` lands every row in partition 2, whatever its key — which is how a
+Kafka producer's records land where its partitioner sent them.
 `RETURN POSITION` answers the partition beside the position. A store-named
 identity is the topic's, so no two messages share one; an identity you name is
 checked only within the partition it lands in.
