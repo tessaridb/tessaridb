@@ -32,6 +32,7 @@ tessari-ingest = { path = "crates/tessari-ingest", version = "0.36.2" }
 tessari-serve = { path = "crates/tessari-serve", version = "0.36.2" }
 tessari-vault = { path = "crates/tessari-vault", version = "0.36.2" }
 tessari-kafka = { path = "crates/tessari-kafka", version = "0.36.2" }
+tessari-resp = { path = "crates/tessari-resp", version = "0.36.2" }
 
 thiserror = "2"
 # The Kafka surface's record batches (ADR-0129): CRC-32C, and the four codecs a

@@ -4,6 +4,7 @@
 mod announcing;
 mod cluster;
 mod kafka;
+mod resp;
 
 use crate::arguments::Serving;
 use crate::greeting_round::greeting;
@@ -196,6 +197,7 @@ pub(crate) fn serve(
         None => None,
     };
     let kafka = kafka::bind(&db, serving, secured.as_ref())?;
+    let resp = resp::bind(&db, serving, secured.as_ref())?;
     // `GET /wire` carries the wire protocol over a WebSocket (ADR-0089), so it is
     // handed the wire node's door; a process serving HTTP alone answers it 404.
     if let (Some(node), Some(http)) = (&wire, &mut http) {
@@ -209,6 +211,7 @@ pub(crate) fn serve(
         wire.as_ref(),
         http.as_ref(),
         kafka.as_ref(),
+        resp.as_ref(),
         &clients,
         peers.as_ref(),
     )?;
@@ -275,6 +278,7 @@ pub(crate) fn serve(
         });
     }
     let kafka_stops = kafka::count(kafka.as_ref(), &mut census, &mut surfaces);
+    let resp_stops = resp::count(resp.as_ref(), &mut census, &mut surfaces);
     // The peer surface's own counts, made here rather than owned by the door,
     // because the cadences beside it live in this binary. Counted alongside
     // the others so a drain waits on it and a scrape reports it, for the reason
@@ -363,8 +367,8 @@ pub(crate) fn serve(
     // address was given — said here rather than assumed, because the two are
     // far enough apart to drift. Checked before anything is started, so a
     // refusal leaves nothing running behind it.
-    if wire.is_none() && http.is_none() && kafka.is_none() {
-        return Err("--serve, --http or --kafka wants an address".to_owned());
+    if wire.is_none() && http.is_none() && kafka.is_none() && resp.is_none() {
+        return Err("--serve, --http, --kafka or --resp wants an address".to_owned());
     }
     let wire = wire.map(std::sync::Arc::new);
     let http = http.map(std::sync::Arc::new);
@@ -424,6 +428,7 @@ pub(crate) fn serve(
             }));
         }
         kafka::listen(&mut listening, kafka, kafka_stops.clone());
+        resp::listen(&mut listening, resp, resp_stops.clone());
         // The watcher is what turns the stop token into the stages, and it runs
         // beside the listeners it stops.
         tokio::join!(shutdown::watch(&asked, &surfaces, quiet.as_ref()), async {

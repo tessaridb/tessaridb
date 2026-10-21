@@ -6,10 +6,11 @@ pub(super) fn announce(
     wire: Option<&tessari_wire::Node>,
     http: Option<&tessari_http::Node>,
     kafka: Option<&tessari_kafka::Node>,
+    resp: Option<&tessari_resp::Node>,
     clients: &crate::tls::Clients,
     peers: Option<&Peering>,
 ) -> Result<(), String> {
-    let mut client_addresses = Vec::with_capacity(3);
+    let mut client_addresses = Vec::with_capacity(4);
     if let Some(node) = &wire {
         let bound = node.address().map_err(|failure| failure.to_string())?;
         tracing::info!(address = %bound, "serving the wire protocol");
@@ -23,6 +24,11 @@ pub(super) fn announce(
     if let Some(node) = &kafka {
         let bound = node.address().map_err(|failure| failure.to_string())?;
         tracing::info!(address = %bound, "serving the kafka protocol");
+        client_addresses.push(bound);
+    }
+    if let Some(node) = &resp {
+        let bound = node.address().map_err(|failure| failure.to_string())?;
+        tracing::info!(address = %bound, "serving the resp protocol");
         client_addresses.push(bound);
     }
     match &clients {

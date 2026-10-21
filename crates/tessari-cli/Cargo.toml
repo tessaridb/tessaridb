@@ -25,6 +25,7 @@ tessari-backup.workspace = true
 tessari-vault.workspace = true
 tessari-http.workspace = true
 tessari-kafka.workspace = true
+tessari-resp.workspace = true
 tessari-ingest.workspace = true
 tessari-serve.workspace = true
 # The client surfaces' TLS settings (ADR-0108 D4), built by `tessari-serve`.

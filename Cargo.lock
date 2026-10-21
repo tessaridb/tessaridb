@@ -1755,6 +1755,7 @@ dependencies = [
  "tessari-kafka",
  "tessari-kv",
  "tessari-ql",
+ "tessari-resp",
  "tessari-serve",
  "tessari-session",
  "tessari-storage",
@@ -1915,6 +1916,23 @@ dependencies = [
  "tessari-ql",
  "tessari-types",
  "thiserror",
+]
+
+[[package]]
+name = "tessari-resp"
+version = "0.36.2"
+dependencies = [
+ "rustls",
+ "tessari-constants",
+ "tessari-serve",
+ "tessari-types",
+ "tessaridb",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tracing",
+ "zeroize",
 ]
 
 [[package]]
