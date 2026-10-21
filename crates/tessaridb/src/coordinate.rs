@@ -20,6 +20,9 @@ pub enum Surface {
     },
     /// HTTP's `POST /script`.
     Http,
+    /// A surface that makes its own replies from the outcomes — RESP and
+    /// Kafka — answered through [`crate::carried`] (G079 W5d).
+    Outcomes,
 }
 
 /// One request to carry to another node.

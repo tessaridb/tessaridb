@@ -92,6 +92,7 @@ impl Coordinate {
         match self.surface {
             Surface::Wire { minor } => body.extend_from_slice(&[0, minor]),
             Surface::Http => body.push(1),
+            Surface::Outcomes => body.push(2),
         }
         body
     }
@@ -121,6 +122,7 @@ impl Coordinate {
         let surface = match body.get(at..) {
             Some([0, minor]) => Surface::Wire { minor: *minor },
             Some([1]) => Surface::Http,
+            Some([2]) => Surface::Outcomes,
             _ => return Err(Error::Malformed),
         };
         Ok(Self {

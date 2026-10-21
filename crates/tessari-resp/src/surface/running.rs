@@ -12,6 +12,9 @@ use crate::surface::{Shared, Space};
 pub(crate) enum Failed {
     /// The store refused it, in the store's words and class.
     Refused(tessaridb::Error),
+    /// The node it was carried to refused it, in that store's words and class
+    /// (G079 W5d).
+    Carried(tessaridb::carried::CarriedRefusal),
     /// Every store slot was taken; the client may try again.
     Busy,
     /// The work panicked and took the session with it; the connection ends.
@@ -63,16 +66,23 @@ impl Held {
             .bridge
             .call_here(session, move |held: Detached| async move {
                 let mut attached = held.attach(db.store());
-                let answer = attached.run_with(&prefixed, &parameters).await;
+                let answer = match attached.run_with(&prefixed, &parameters).await {
+                    // Refused here because another node answers it — the leader
+                    // of what it writes, or of a held space it reads — and
+                    // nothing of it landed here: carried there, as HTTP carries
+                    // a script (ADR-0108 D1).
+                    Err(refused) if !attached.landed() && tessaridb::travels(&prefixed) => {
+                        carry(&db, &attached, refused, &prefixed, &parameters).await
+                    }
+                    answered => answered.map_err(Failed::Refused),
+                };
                 (attached.detach(), answer)
             })
             .await;
         match bridged {
             Bridged::Answered((session, answer)) => {
                 self.session = Some(session);
-                answer
-                    .map(|mut outcomes| outcomes.split_off(USE_OUTCOMES.min(outcomes.len())))
-                    .map_err(Failed::Refused)
+                answer.map(|mut outcomes| outcomes.split_off(USE_OUTCOMES.min(outcomes.len())))
             }
             Bridged::Busy(session) => {
                 self.session = Some(session);
@@ -115,6 +125,38 @@ impl Held {
     /// Go back to an anonymous session, as `RESET` does.
     pub(crate) fn forget(&mut self, shared: &Shared) {
         self.session = Some(shared.db.session().detach());
+    }
+}
+
+/// `refused` carried to the node it names, answered with that node's outcomes,
+/// or the refusal itself when it names none or this node carries nothing.
+async fn carry(
+    db: &tessaridb::Db,
+    session: &tessaridb::Session<'_>,
+    refused: tessaridb::Error,
+    script: &str,
+    parameters: &Parameters,
+) -> Result<Vec<Outcome>, Failed> {
+    let (Some(coordinator), Some(to)) = (db.coordinator(), db.answers_instead(&refused).await)
+    else {
+        return Err(Failed::Refused(refused));
+    };
+    let answered = coordinator
+        .coordinate(&tessaridb::Coordination {
+            to,
+            user: session.signed_in(),
+            namespace: None,
+            database: None,
+            script,
+            parameters,
+            surface: tessaridb::Surface::Outcomes,
+        })
+        .await;
+    match answered {
+        Ok(answer) => tessaridb::carried::decode(&answer).map_err(Failed::Carried),
+        // The link failed: the caller sees the refusal this node gave, which
+        // names where to go.
+        Err(_) => Err(Failed::Refused(refused)),
     }
 }
 

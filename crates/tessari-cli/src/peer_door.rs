@@ -174,6 +174,7 @@ impl tessari_wire::Holding for PeerDoor {
                 tessari_wire::render_coordinated(&self.db, &ran, minor).await
             }
             tessaridb::Surface::Http => tessari_http::render_coordinated(&self.db, &ran).await,
+            tessaridb::Surface::Outcomes => tessaridb::carried::render(&ran),
         })
     }
 

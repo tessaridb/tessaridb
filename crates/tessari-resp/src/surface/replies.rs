@@ -57,18 +57,27 @@ pub(crate) fn no_space() -> Reply {
 pub(crate) fn failed(failed: &Failed) -> Reply {
     match failed {
         Failed::Refused(refused) => {
-            let class = match refused.class() {
-                RefusalClass::Unauthenticated => "NOAUTH",
-                RefusalClass::Forbidden => "NOPERM",
-                RefusalClass::Retry
-                | RefusalClass::Unavailable
-                | RefusalClass::Elsewhere
-                | RefusalClass::Throttled => "TRYAGAIN",
-                RefusalClass::Invalid | RefusalClass::Conflict | RefusalClass::Internal => "ERR",
-            };
-            Reply::Error(Cow::Owned(format!("{class} {refused}")))
+            Reply::Error(Cow::Owned(format!("{} {refused}", word(refused.class()))))
         }
+        Failed::Carried(refused) => Reply::Error(Cow::Owned(format!(
+            "{} {}",
+            word(refused.class),
+            refused.message
+        ))),
         Failed::Busy => Reply::error("TRYAGAIN the node is busy; try again"),
         Failed::Lost => Reply::error("ERR the command was lost; reconnect"),
+    }
+}
+
+/// The first word of a refusal's reply, by its class.
+const fn word(class: RefusalClass) -> &'static str {
+    match class {
+        RefusalClass::Unauthenticated => "NOAUTH",
+        RefusalClass::Forbidden => "NOPERM",
+        RefusalClass::Retry
+        | RefusalClass::Unavailable
+        | RefusalClass::Elsewhere
+        | RefusalClass::Throttled => "TRYAGAIN",
+        RefusalClass::Invalid | RefusalClass::Conflict | RefusalClass::Internal => "ERR",
     }
 }

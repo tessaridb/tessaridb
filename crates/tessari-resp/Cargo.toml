@@ -27,6 +27,9 @@ tokio-rustls.workspace = true
 [dev-dependencies]
 # The surface is served in its tests on a runtime the test owns.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+# A cluster arranged in the test: a membership row and a leadership (G079 W5d).
+tessari-encoding.workspace = true
+tessari-storage = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

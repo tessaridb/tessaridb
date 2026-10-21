@@ -23,6 +23,8 @@ impl Connection {
             }
             Err(Failed::Busy) => Err(Reply::error("TRYAGAIN the node is busy; try again")),
             Err(Failed::Lost) => Err(Reply::error("ERR the sign-in was lost; reconnect")),
+            // A sign-in is never carried; answered in the carrying node's words.
+            Err(failed @ Failed::Carried(_)) => Err(replies::failed(&failed)),
             // The store's throttle says wait, and saying "wrong password"
             // instead would send a client that had it right to retype it.
             Err(failed @ Failed::Refused(_)) if throttled(&failed) => Err(replies::failed(&failed)),

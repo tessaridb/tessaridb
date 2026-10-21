@@ -1924,7 +1924,9 @@ version = "0.36.2"
 dependencies = [
  "rustls",
  "tessari-constants",
+ "tessari-encoding",
  "tessari-serve",
+ "tessari-storage",
  "tessari-types",
  "tessaridb",
  "thiserror",
