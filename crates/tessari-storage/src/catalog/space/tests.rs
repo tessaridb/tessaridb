@@ -11,12 +11,14 @@ fn a_declaration_round_trips_with_and_without_a_limit() {
                 max: 10_000,
                 eviction: Eviction::Modified,
             }),
+            memory: false,
         },
         SpaceDeclaration {
             limit: Some(SpaceLimit {
                 max: 3,
                 eviction: Eviction::Refuse,
             }),
+            memory: true,
         },
     ] {
         assert_eq!(

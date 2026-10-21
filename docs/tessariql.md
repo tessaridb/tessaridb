@@ -6897,8 +6897,28 @@ DEFINE SPACE tickets MAX 500 EVICT NONE;
   writers adding different keys at once cannot both pass it. Evictions are
   ordinary deletes carried in that commit's log record: a follower applies them
   and never evicts on its own, and the change feed shows them.
-- A space is written back by `INFO FOR TABLE` as `DEFINE SPACE name [MAX n
-  [EVICT NONE]]`.
+- A space is written back by `INFO FOR TABLE` as `DEFINE SPACE name [IN MEMORY]
+  [MAX n [EVICT NONE]]`.
+
+### A space held in memory
+
+```
+DEFINE SPACE hot IN MEMORY MAX 100000;
+```
+
+- The definition is ordinary catalog: it is replicated, backed up and kept across
+  a restart. The space's **keys** live in this node's memory only — a write
+  takes no log record and no device sync, no follower receives it, no backup
+  carries it, and a restart empties the space.
+- Everything else is a space's: transactions, `INCR`, conditional `SET`, expiry,
+  `MAX`/`EVICT NONE`, `KEYS` walks.
+- `MAX n` is required, because a space in memory with no limit is a node that
+  runs out of memory.
+- A transaction that writes a held space and anything durable is refused with
+  **`InMemoryBesideDurable`**: the two would not survive a restart together.
+- A node writes a held space only while no other node in its cluster may write;
+  otherwise the write is refused with **`InMemoryOnACluster`**.
+- `DROP SPACE` leaves the keys in memory until the next restart.
 
 ### Composition
 

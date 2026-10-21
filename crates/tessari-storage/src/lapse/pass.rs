@@ -62,6 +62,23 @@ impl Store {
     pub async fn remove_expired(&self) -> Result<Lapsed> {
         let mut lapsed = Lapsed::default();
         let now = self.begin().await?.clock();
+        // The store's backend, then node memory: a range across tables reads
+        // the backend alone, so the entries of a space held in memory are found
+        // only by asking memory for them (ADR-0130).
+        self.remove_expired_from(self.backend(), now, &mut lapsed)
+            .await?;
+        self.remove_expired_from(self.held_memory(), now, &mut lapsed)
+            .await?;
+        Ok(lapsed)
+    }
+
+    /// [`Self::remove_expired`] over the entries one source holds.
+    async fn remove_expired_from(
+        &self,
+        source: &dyn tessari_kv::KvBackend,
+        now: u64,
+        lapsed: &mut Lapsed,
+    ) -> Result<()> {
         let whole = ExpiryKey::passed_by(now);
         let mut from: Option<Vec<u8>> = None;
         loop {
@@ -72,8 +89,7 @@ impl Store {
                     whole.end().clone(),
                 ),
             };
-            let page = self
-                .backend()
+            let page = source
                 .scan(&ScanRequest {
                     keyspace: ExpiryKey::keyspace(),
                     range,
@@ -82,7 +98,7 @@ impl Store {
                 })
                 .await?;
             let Some((last, _)) = page.last() else {
-                return Ok(lapsed);
+                return Ok(());
             };
             from = Some(last.as_slice().to_vec());
             let mut by_table: BTreeMap<(NamespaceId, DatabaseId, TableId), Vec<ExpiryKey>> =
@@ -95,10 +111,10 @@ impl Store {
                     .push(entry);
             }
             for entries in by_table.values() {
-                self.remove_table_entries(entries, &mut lapsed).await?;
+                self.remove_table_entries(entries, lapsed).await?;
             }
             if page.len() < BATCH_ENTRIES {
-                return Ok(lapsed);
+                return Ok(());
             }
         }
     }

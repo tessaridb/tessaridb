@@ -174,3 +174,26 @@ async fn a_connection_names_its_own_space_and_unreadable_bytes_close_it() {
     assert!(rest.is_empty(), "the node closed the connection");
     stop.cancel();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_space_held_in_memory_is_served_as_any_space() {
+    let (address, stop, _) = serving_with("DEFINE SPACE hot IN MEMORY MAX 1000;").await;
+    let mut client = Client::to(&address).await;
+    assert_eq!(
+        client.ask(&["TESSARIDB.USE", "app", "main", "hot"]).await,
+        Reply::OK
+    );
+    assert_eq!(client.ask(&["SET", "n", "1", "EX", "60"]).await, Reply::OK);
+    assert_eq!(client.ask(&["INCR", "n"]).await, Reply::Integer(2));
+    assert!(matches!(client.ask(&["TTL", "n"]).await, Reply::Integer(left) if left > 0));
+    client.ask(&["MULTI"]).await;
+    client.ask(&["INCR", "n"]).await;
+    client.ask(&["SET", "m", "x"]).await;
+    assert_eq!(
+        client.ask(&["EXEC"]).await,
+        Reply::Array(vec![Reply::Integer(3), Reply::OK])
+    );
+    assert_eq!(client.ask(&["GET", "m"]).await, bulk("x"));
+    assert_eq!(client.ask(&["DBSIZE"]).await, Reply::Integer(2));
+    stop.cancel();
+}

@@ -53,7 +53,10 @@ async fn limits_in(
         if definition.namespace != mutation.namespace || definition.database != mutation.database {
             continue;
         }
-        if let TableKind::Space(SpaceDeclaration { limit: Some(limit) }) = definition.kind {
+        if let TableKind::Space(SpaceDeclaration {
+            limit: Some(limit), ..
+        }) = definition.kind
+        {
             found.insert(space, (definition.name.clone(), limit));
         }
     }

@@ -545,6 +545,35 @@ pub enum Error {
         max: u64,
     },
 
+    /// A transaction wrote a space held in memory and something durable
+    /// (ADR-0130).
+    ///
+    /// A memory write is gone after a restart and a durable one is not, so the
+    /// two cannot be one commit; write each in its own transaction.
+    #[error(
+        "space {space} is held in memory and this transaction also writes durable records; \
+         commit the space's writes on their own"
+    )]
+    InMemoryBesideDurable {
+        /// The held space the transaction wrote.
+        space: String,
+    },
+
+    /// A node beside another node that may write was asked to write a space
+    /// held in memory (ADR-0130).
+    ///
+    /// Such a node applies the other writer's records, and would order them
+    /// below the versions its own memory commits took; a node writes a held
+    /// space only while no other node in its cluster may write.
+    #[error(
+        "space {space} is held in memory and this node is in a cluster where another node \
+         may write; a held space is written only by a node that is the cluster's one writer"
+    )]
+    InMemoryOnACluster {
+        /// The held space the write named.
+        space: String,
+    },
+
     /// A commit would rewrite a message of a topic, or delete one whose retention
     /// has not passed (G037).
     ///
@@ -1194,6 +1223,8 @@ impl Error {
             | Self::IndexReadsOneField { .. }
             | Self::UniqueViolation { .. }
             | Self::SpaceFull { .. }
+            | Self::InMemoryBesideDurable { .. }
+            | Self::InMemoryOnACluster { .. }
             | Self::TopicIsAppendOnly { .. }
             | Self::TopicMessageTooLarge { .. }
             | Self::TopicRetainExceeded { .. }

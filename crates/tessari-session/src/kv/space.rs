@@ -6,8 +6,9 @@ use tessari_ql::SpaceBound;
 use tessari_storage::{Eviction, SpaceDeclaration, SpaceLimit};
 
 /// The catalog declaration a `DEFINE SPACE` names.
-pub(crate) fn declared_space(bound: Option<SpaceBound>) -> SpaceDeclaration {
+pub(crate) fn declared_space(memory: bool, bound: Option<SpaceBound>) -> SpaceDeclaration {
     SpaceDeclaration {
+        memory,
         limit: bound.map(|bound| SpaceLimit {
             max: bound.max,
             eviction: if bound.refuse {
@@ -19,8 +20,19 @@ pub(crate) fn declared_space(bound: Option<SpaceBound>) -> SpaceDeclaration {
     }
 }
 
-/// The `MAX … [EVICT NONE]` clause a declaration writes back as, or nothing.
+/// The `IN MEMORY MAX … [EVICT NONE]` clauses a declaration writes back as, or
+/// nothing.
 pub(crate) fn space_clause(declared: &SpaceDeclaration) -> String {
+    let limit = limit_clause(declared);
+    if declared.memory {
+        format!(" IN MEMORY{limit}")
+    } else {
+        limit
+    }
+}
+
+/// The `MAX … [EVICT NONE]` clause alone.
+fn limit_clause(declared: &SpaceDeclaration) -> String {
     match declared.limit {
         None => String::new(),
         Some(SpaceLimit {

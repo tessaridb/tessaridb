@@ -368,6 +368,16 @@ impl Store {
         &*self.backend
     }
 
+    /// The spaces this node holds in memory (ADR-0130).
+    pub(crate) fn held_spaces(&self) -> &crate::memory::HeldSpaces {
+        &self.held
+    }
+
+    /// Node memory alone: where the held spaces' keys live.
+    pub(crate) fn held_memory(&self) -> &dyn tessari_kv::KvBackend {
+        self.held_memory.memory()
+    }
+
     /// The backend as shared, for what holds it beyond one call.
     pub(crate) fn engine(&self) -> &Arc<dyn KvBackend> {
         &self.backend

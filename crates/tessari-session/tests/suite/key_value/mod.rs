@@ -9,6 +9,7 @@ use tessari_session::RunNow;
 mod atomic;
 mod bounded;
 mod expiry;
+mod memory;
 mod removal;
 mod walk;
 

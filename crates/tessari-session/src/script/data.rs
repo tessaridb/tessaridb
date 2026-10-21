@@ -76,6 +76,9 @@ pub(super) fn note(table: &TableDefinition) -> Option<&'static str> {
         ),
         TableKind::Queue(_) => Some("holds and attempt counts are not carried"),
         TableKind::Vault(_) => Some("its secrets are not carried"),
+        TableKind::Space(tessari_storage::SpaceDeclaration { memory: true, .. }) => {
+            Some("held in memory: its keys are not carried")
+        }
         TableKind::Space(_) => Some(
             "an expiry is carried as the instant it falls at, and a key whose instant has \
              passed by the time the script runs is not written back",

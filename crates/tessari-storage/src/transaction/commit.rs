@@ -6,6 +6,7 @@
 //! together.
 
 mod conflicts;
+mod held;
 #[cfg(test)]
 mod moved_map;
 mod ranges;

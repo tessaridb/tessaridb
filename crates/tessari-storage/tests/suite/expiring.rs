@@ -113,6 +113,7 @@ fn a_replica_of_a_limited_space_holds_what_the_writer_kept() {
                         max: 3,
                         eviction: Eviction::Modified,
                     }),
+                    memory: false,
                 }),
                 ..TableShape::default()
             },

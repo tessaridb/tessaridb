@@ -44,11 +44,15 @@ pub struct SpaceLimit {
 pub struct SpaceDeclaration {
     /// The limit, when the space declared one.
     pub limit: Option<SpaceLimit>,
+    /// `IN MEMORY`: the space's keys live in node memory only — no log record,
+    /// no copy on a follower, none in a backup, none after a restart (ADR-0130).
+    pub memory: bool,
 }
 
 const ENTITY: &str = "space";
 const FIELD_MAX: &str = "max";
 const FIELD_EVICT: &str = "evict";
+const FIELD_MEMORY: &str = "memory";
 const EVICT_MODIFIED: &str = "modified";
 const EVICT_NONE: &str = "none";
 
@@ -66,6 +70,9 @@ impl SpaceDeclaration {
             };
             fields.insert(FIELD_EVICT.to_owned(), Value::from(evict));
         }
+        if self.memory {
+            fields.insert(FIELD_MEMORY.to_owned(), Value::Bool(true));
+        }
         Value::Object(fields)
     }
 
@@ -77,8 +84,22 @@ impl SpaceDeclaration {
     /// positive integer, or names a rule this build does not have.
     pub fn from_value(value: &Value) -> Result<Self> {
         let fields = object(value, ENTITY)?;
+        let memory = match fields.get(FIELD_MEMORY) {
+            None => false,
+            Some(Value::Bool(memory)) => *memory,
+            Some(_) => {
+                return Err(Error::CatalogMalformed {
+                    entity: ENTITY,
+                    field: FIELD_MEMORY,
+                    found: "not a boolean",
+                });
+            }
+        };
         let Some(max) = fields.get(FIELD_MAX) else {
-            return Ok(Self::default());
+            return Ok(Self {
+                limit: None,
+                memory,
+            });
         };
         let max = match max {
             Value::Number(Number::Integer(max)) if *max > 0 => u64::try_from(*max).ok(),
@@ -102,6 +123,7 @@ impl SpaceDeclaration {
         };
         Ok(Self {
             limit: Some(SpaceLimit { max, eviction }),
+            memory,
         })
     }
 }

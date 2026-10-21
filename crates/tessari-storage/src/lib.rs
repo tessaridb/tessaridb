@@ -57,6 +57,7 @@ mod lifetime;
 mod lines;
 mod log;
 mod log_holds;
+mod memory;
 mod node;
 #[cfg(feature = "test-support")]
 mod now;

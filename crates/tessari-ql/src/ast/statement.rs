@@ -199,6 +199,8 @@ pub enum StatementKind {
         name: Name,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
+        /// `IN MEMORY` — the space's keys live in node memory only (ADR-0130).
+        memory: bool,
         /// `MAX n [EVICT NONE]` — the most keys the space holds (G036).
         limit: Option<SpaceBound>,
     },
