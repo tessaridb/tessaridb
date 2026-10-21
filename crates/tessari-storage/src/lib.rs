@@ -154,7 +154,7 @@ pub use tessari_encoding::{
 pub use tessari_kv::ErrorCategory;
 pub use transaction::{
     AcrossPart, Committed, Expansion, FieldedPostings, Neighbour, PlacesNearest, RecordAddress,
-    RecordWalk, Region, SearchCounts, StoredRecord, Transaction, Window,
+    RecordWalk, Region, SearchCounts, StoredRecord, Transaction, Window, back_off,
 };
 pub use vault::{OpenVault, SealState};
 pub use views::ViewState;

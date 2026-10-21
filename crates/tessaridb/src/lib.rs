@@ -86,7 +86,7 @@ pub use tessari_session::{
 pub use tessari_storage::Error as StoreError;
 pub use tessari_storage::{
     BUILD_VERSION, Change, ChangeKind, Changes, LeadershipDefinition, Lease, LogId, NODE_ID_LEN,
-    Reach, Subscription, Upstream, Watch, Writer,
+    Reach, Subscription, Upstream, Watch, Writer, back_off,
 };
 pub use tessari_types::{
     DatabaseId, Datetime, Duration, FieldKind, Geometry, NamespaceId, Number, Path as FieldPath,

@@ -80,9 +80,10 @@ pub const RESP_LCS_MAX_CELLS: usize = 4 * 1024 * 1024;
 /// that never sends a newline is a buffer that never stops growing.
 pub const RESP_INLINE_MAX_BYTES: usize = 64 * 1024;
 
-/// How long a command that reads a value, changes it and writes it back
-/// (`APPEND`, `SETRANGE`, `INCRBYFLOAT`) keeps trying when the key changed
-/// between its read and its write.
+/// How long a command keeps trying when another write came first: one that
+/// reads a value, changes it and writes it back (`APPEND`, `SETRANGE`,
+/// `INCRBYFLOAT`, the container moves), and a transaction (`EXEC`) the store
+/// answered with a commit conflict.
 ///
 /// Unit: milliseconds.
 ///

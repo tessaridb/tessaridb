@@ -86,7 +86,7 @@ impl Drop for Transaction<'_> {
 /// back before it sleeps (`crate::gate`), so a waiting writer blocks only itself,
 /// and it waits as a suspended task rather than a sleeping thread, so the worker
 /// it runs on goes on serving every other task meanwhile.
-async fn back_off(attempt: u32) {
+pub async fn back_off(attempt: u32) {
     tokio::time::sleep(waiting_for(attempt, jitter())).await;
 }
 

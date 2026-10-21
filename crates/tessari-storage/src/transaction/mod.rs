@@ -47,7 +47,7 @@ pub use across::AcrossPart;
 pub use address::{RecordAddress, StoredRecord};
 pub(crate) use address::{after, resuming_after};
 pub use adjacency::Neighbour;
-pub use commit::Committed;
+pub use commit::{Committed, back_off};
 pub use nearest_place::PlacesNearest;
 pub use scan::Window;
 pub use search::{Expansion, FieldedPostings, SearchCounts};

@@ -6,12 +6,9 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tessari_constants::{
-    COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS, RESP_CHANGE_PATIENCE_MILLIS,
-    RESP_SCAN_CURSORS, RESP_SCAN_PAGE,
-};
+use tessari_constants::{RESP_CHANGE_PATIENCE_MILLIS, RESP_SCAN_CURSORS, RESP_SCAN_PAGE};
 use tessari_types::RefusalClass;
-use tessaridb::{Outcome, Parameters, RecordId, Value};
+use tessaridb::{Outcome, Parameters, RecordId, Value, back_off};
 
 use crate::codec::Reply;
 use crate::surface::commands::{Change, Expiry, When, changed, expire, string_reply};
@@ -21,6 +18,13 @@ use crate::surface::running::{Failed, Held};
 use crate::surface::statement::{Binder, Planned, value_of, values_of};
 use crate::surface::values;
 use crate::surface::{Shared, Space};
+
+/// The instant a write that keeps losing races gives up.
+pub(crate) fn patience() -> Instant {
+    Instant::now()
+        .checked_add(Duration::from_millis(RESP_CHANGE_PATIENCE_MILLIS))
+        .unwrap_or_else(Instant::now)
+}
 
 /// What a procedure runs against.
 pub(crate) struct Against<'a> {
@@ -56,7 +60,9 @@ impl Cursors {
 
 impl Against<'_> {
     /// Run `statements` as one script — one transaction when there is more
-    /// than one — retrying while the store says to; the outcomes are the
+    /// than one — retrying while the store says to, for as long as the patience
+    /// lasts rather than a count of tries, each wait jittered so that writers
+    /// that lost together do not re-race together; the outcomes are the
     /// statements' own.
     pub(crate) async fn run(
         &mut self,
@@ -75,8 +81,8 @@ impl Against<'_> {
         if together {
             script.push_str("COMMIT;");
         }
-        let mut pause = COMMIT_BACKOFF_STEP;
-        let mut attempt = 1;
+        let patience = patience();
+        let mut attempt = 0_u32;
         loop {
             match self
                 .held
@@ -93,11 +99,10 @@ impl Against<'_> {
                     return Ok(outcomes);
                 }
                 Err(Failed::Refused(refused))
-                    if refused.class() == RefusalClass::Retry && attempt < MAX_COMMIT_ATTEMPTS =>
+                    if refused.class() == RefusalClass::Retry && Instant::now() < patience =>
                 {
                     attempt = attempt.saturating_add(1);
-                    tokio::time::sleep(Duration::from_micros(pause)).await;
-                    pause = pause.saturating_mul(2).min(COMMIT_BACKOFF_CEILING);
+                    back_off(attempt).await;
                 }
                 Err(failed) => return Err(failed),
             }
@@ -271,10 +276,8 @@ impl Against<'_> {
     /// `APPEND`, `SETRANGE`, `INCRBYFLOAT`: read, change, and write only if
     /// the key still holds what was read — keeping the expiry it has then.
     pub(crate) async fn change(&mut self, key: &[u8], change: &Change) -> Reply {
-        let mut pause = COMMIT_BACKOFF_STEP;
-        let patience = Instant::now()
-            .checked_add(Duration::from_millis(RESP_CHANGE_PATIENCE_MILLIS))
-            .unwrap_or_else(Instant::now);
+        let patience = patience();
+        let mut attempt = 0_u32;
         while Instant::now() < patience {
             let mut binder = Binder::default();
             let target = binder.key(self.space, key);
@@ -314,8 +317,8 @@ impl Against<'_> {
                     };
                 }
                 Ok(_) => {
-                    tokio::time::sleep(Duration::from_micros(pause)).await;
-                    pause = pause.saturating_mul(2).min(COMMIT_BACKOFF_CEILING);
+                    attempt = attempt.saturating_add(1);
+                    back_off(attempt).await;
                 }
                 Err(failed) => return replies::failed(&failed),
             }

@@ -8,13 +8,12 @@
 //! a fresh read. The only key written is the one the condition names, so the
 //! command takes effect as if it ran alone at the moment it read.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use tessari_constants::{COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, RESP_CHANGE_PATIENCE_MILLIS};
-use tessaridb::Value;
+use tessaridb::{Value, back_off};
 
 use crate::codec::Reply;
-use crate::surface::procedures::Against;
+use crate::surface::procedures::{Against, patience};
 use crate::surface::replies;
 use crate::surface::statement::Binder;
 
@@ -43,10 +42,8 @@ impl Against<'_> {
     /// Read `keys`, compute, and write one of them while it still holds what
     /// was read — again from a fresh read when another write came first.
     pub(crate) async fn rewrite(&mut self, keys: &[Vec<u8>], compute: &Compute) -> Reply {
-        let mut pause = COMMIT_BACKOFF_STEP;
-        let patience = Instant::now()
-            .checked_add(Duration::from_millis(RESP_CHANGE_PATIENCE_MILLIS))
-            .unwrap_or_else(Instant::now);
+        let patience = patience();
+        let mut attempt = 0_u32;
         while Instant::now() < patience {
             let mut binder = Binder::default();
             let reads: Vec<String> = keys
@@ -91,8 +88,8 @@ impl Against<'_> {
             match self.value(statement, binder).await {
                 Ok(Value::Bool(true)) => return rewritten.reply,
                 Ok(_) => {
-                    tokio::time::sleep(Duration::from_micros(pause)).await;
-                    pause = pause.saturating_mul(2).min(COMMIT_BACKOFF_CEILING);
+                    attempt = attempt.saturating_add(1);
+                    back_off(attempt).await;
                 }
                 Err(failed) => return replies::failed(&failed),
             }

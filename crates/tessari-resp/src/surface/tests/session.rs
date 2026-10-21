@@ -197,3 +197,33 @@ async fn a_space_held_in_memory_is_served_as_any_space() {
     assert_eq!(client.ask(&["DBSIZE"]).await, Reply::Integer(2));
     stop.cancel();
 }
+
+/// A transaction that loses a commit race runs again rather than aborting:
+/// a RESP client never sees `EXEC` fail because another client wrote.
+#[tokio::test(flavor = "multi_thread")]
+async fn contending_transactions_on_one_key_all_run() {
+    let (address, stop, _) = serving_with("").await;
+    let mut workers = Vec::new();
+    for worker in 0..8 {
+        let address = address.clone();
+        workers.push(tokio::spawn(async move {
+            let mut client = Client::to(&address).await;
+            for round in 0..25 {
+                client.ask(&["MULTI"]).await;
+                let member = format!("w{worker}-{round}");
+                client.ask(&["ZADD", "window", "1", &member]).await;
+                client
+                    .ask(&["ZREMRANGEBYSCORE", "window", "-inf", "0"])
+                    .await;
+                let ran = client.ask(&["EXEC"]).await;
+                assert!(matches!(ran, Reply::Array(_)), "{ran:?}");
+            }
+        }));
+    }
+    for worker in workers {
+        worker.await.unwrap();
+    }
+    let mut client = Client::to(&address).await;
+    assert_eq!(client.ask(&["ZCARD", "window"]).await, Reply::Integer(200));
+    stop.cancel();
+}
