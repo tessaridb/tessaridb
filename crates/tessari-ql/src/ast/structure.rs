@@ -34,6 +34,61 @@ pub enum ScoreCompare {
     Less,
 }
 
+/// One end of a score or member range: a value, or `NONE` for no end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RangeEnd {
+    /// Where the range stops; `NONE` leaves this side open.
+    pub value: Expr,
+    /// The end itself is not in the range.
+    pub exclusive: bool,
+}
+
+/// Which members of a ranking a range names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScoreRange {
+    /// `RANK FROM a TO b` — positions from the lowest, both kept, either
+    /// counted from the highest when negative.
+    Rank {
+        /// The first position.
+        start: Expr,
+        /// The last position.
+        stop: Expr,
+    },
+    /// `SCORE FROM lo TO hi` — the members whose score is between.
+    Score {
+        /// The low end.
+        low: RangeEnd,
+        /// The high end.
+        high: RangeEnd,
+    },
+    /// `MEMBER FROM lo TO hi` — the members whose text is between, which
+    /// orders them as a ranking of equal scores does.
+    Member {
+        /// The low end.
+        low: RangeEnd,
+        /// The high end.
+        high: RangeEnd,
+    },
+}
+
+impl ScoreRange {
+    fn expressions(&self) -> Vec<&Expr> {
+        match self {
+            Self::Rank { start, stop } => vec![start, stop],
+            Self::Score { low, high } | Self::Member { low, high } => vec![&low.value, &high.value],
+        }
+    }
+
+    fn expressions_mut(&mut self) -> Vec<&mut Expr> {
+        match self {
+            Self::Rank { start, stop } => vec![start, stop],
+            Self::Score { low, high } | Self::Member { low, high } => {
+                vec![&mut low.value, &mut high.value]
+            }
+        }
+    }
+}
+
 /// The four kinds of container a key may hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Container {
@@ -188,6 +243,11 @@ pub enum StructureOp {
         /// The members.
         members: Vec<Expr>,
     },
+    /// `SCORES REMOVE k RANK|SCORE|MEMBER FROM … TO …` — answers how many went.
+    ScoresRemoveRange {
+        /// The members removed.
+        range: ScoreRange,
+    },
     /// `SCORES POP k LOWEST|HIGHEST [LIMIT n]` — answers `[[member, score], …]`.
     ScoresPop {
         /// From the highest score rather than the lowest.
@@ -218,6 +278,7 @@ impl StructureOp {
             Self::ScoresAdd { .. }
             | Self::ScoresIncr { .. }
             | Self::ScoresRemove { .. }
+            | Self::ScoresRemoveRange { .. }
             | Self::ScoresPop { .. } => Container::Scores,
         }
     }
@@ -246,6 +307,7 @@ impl StructureOp {
             | Self::MembersRemove { values } => values.iter().collect(),
             Self::HashRemove { fields } => fields.iter().collect(),
             Self::ScoresRemove { members } => members.iter().collect(),
+            Self::ScoresRemoveRange { range } => range.expressions(),
             Self::ListPop { limit, .. }
             | Self::MembersPop { limit }
             | Self::ScoresPop { limit, .. } => limit.iter().collect(),
@@ -272,6 +334,7 @@ impl StructureOp {
             | Self::MembersRemove { values } => values.iter_mut().collect(),
             Self::HashRemove { fields } => fields.iter_mut().collect(),
             Self::ScoresRemove { members } => members.iter_mut().collect(),
+            Self::ScoresRemoveRange { range } => range.expressions_mut(),
             Self::ListPop { limit, .. }
             | Self::MembersPop { limit }
             | Self::ScoresPop { limit, .. } => limit.iter_mut().collect(),

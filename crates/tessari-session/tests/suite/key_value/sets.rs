@@ -170,6 +170,60 @@ fn scores_rank_members_and_answer_what_they_changed() {
 }
 
 #[test]
+fn a_ranking_is_cut_by_rank_by_score_and_by_member() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        let cut = |session: &mut Session<'_>, range: &str| {
+            value(session, &format!("SCORES REMOVE cache:'r' {range};"))
+        };
+        run(
+            &mut session,
+            "SCORES ADD cache:'r' 'a' = 1, 'b' = 2, 'c' = 3, 'd' = 4, 'e' = 5, 'f' = 6;",
+        );
+        assert_eq!(
+            cut(&mut session, "RANK FROM 0 TO 1"),
+            integer(2),
+            "{}",
+            backend.name
+        );
+        assert_eq!(cut(&mut session, "RANK FROM -1 TO -1"), integer(1));
+        assert_eq!(cut(&mut session, "RANK FROM 10 TO 20"), integer(0));
+        assert_eq!(cut(&mut session, "SCORE FROM 3 EXCLUSIVE TO 4"), integer(1));
+        assert_eq!(cut(&mut session, "SCORE FROM 6 TO NONE"), integer(0));
+        assert_eq!(
+            value(&mut session, "SCORES POP cache:'r' LOWEST LIMIT 10;"),
+            popped(&[("c", 3.0), ("e", 5.0)]),
+            "{}: only the members named by no cut are left",
+            backend.name
+        );
+        run(
+            &mut session,
+            "SCORES ADD cache:'r' 'a' = 0, 'b' = 0, 'c' = 0, 'd' = 0;",
+        );
+        assert_eq!(cut(&mut session, "MEMBER FROM 'b' TO 'c'"), integer(2));
+        assert_eq!(
+            cut(&mut session, "MEMBER FROM 'a' EXCLUSIVE TO NONE"),
+            integer(1)
+        );
+        assert_eq!(cut(&mut session, "SCORE FROM NONE TO NONE"), integer(1));
+        assert_eq!(
+            value(&mut session, "GET cache:'r';"),
+            Value::None,
+            "{}: the last member cut, the key is gone",
+            backend.name
+        );
+        assert_eq!(cut(&mut session, "RANK FROM 0 TO -1"), integer(0));
+        let why = refused(&mut session, "SCORES REMOVE cache:'r' SCORE FROM 'x' TO 2;");
+        assert!(why.contains("a score is a finite number"), "{why}");
+        let why = refused(
+            &mut session,
+            "SCORES REMOVE cache:'r' MEMBER FROM 1 TO 'z';",
+        );
+        assert!(why.contains("a member is named by text"), "{why}");
+    });
+}
+
+#[test]
 fn a_set_and_a_ranking_are_told_apart() {
     on_each_backend(|backend| {
         let mut session = opened(&backend.store);

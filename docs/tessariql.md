@@ -6972,6 +6972,9 @@ SCORES ADD board:'top' 'bob' = 9 IF GREATER CHANGED;
 SCORES ADD board:'top' 'cy' = 1 IF ABSENT;
 SCORES INCR board:'top' 'ada' BY 1.5;
 SCORES REMOVE board:'top' 'cy';
+SCORES REMOVE board:'top' RANK FROM 0 TO -11;
+SCORES REMOVE board:'top' SCORE FROM NONE TO 2 EXCLUSIVE;
+SCORES REMOVE board:'top' MEMBER FROM 'a' TO 'c';
 SCORES POP board:'top' HIGHEST LIMIT 3;
 ```
 
@@ -6992,6 +6995,11 @@ SCORES POP board:'top' HIGHEST LIMIT 3;
   named ends first. Indexes count from zero at the front and from `-1` at the
   back; `LIST TRIM` keeps the elements from the first index to the second, both
   included. `MEMBERS POP` takes members at random.
+- `SCORES REMOVE … RANK FROM a TO b` removes a ranking's members by position,
+  lowest first and from `-1` at the highest, both ends included; `SCORE FROM lo
+  TO hi` by score and `MEMBER FROM lo TO hi` by member text. Either end of those
+  two may be followed by `EXCLUSIVE` to leave it out, and an end that is `NONE`
+  leaves that side open. Each answers how many went.
 - A removal that empties a container **deletes the key**: no key holds an empty
   list, hash or set. A write keeps the expiry the key had, as `INCR` does.
 - A statement on a key holding another kind is refused with

@@ -1,10 +1,13 @@
 //! Which members of a ranking a range names — by rank, by score or by member
 //! text — shared by `ZRANGE` and the commands that read or store a range.
 
+use tessaridb::{Number, Value};
+
 use crate::codec::Reply;
 use crate::surface::commands::arguments::integer;
 use crate::surface::commands::containers;
 use crate::surface::replies;
+use crate::surface::statement::Binder;
 use crate::surface::values;
 
 /// One end of a score range: `5`, `(5` for excluded, `-inf`, `+inf`.
@@ -43,6 +46,27 @@ impl Bound {
         } else {
             score <= self.at
         }
+    }
+
+    /// This end as a `SCORE` range end — `NONE` for an infinity on its own
+    /// side — or `None` when an infinity on the other side names nothing.
+    pub(super) fn written(self, low: bool, binder: &mut Binder) -> Option<String> {
+        if self.at.is_infinite() {
+            return (low == self.at.is_sign_negative()).then(|| "NONE".to_owned());
+        }
+        Some(ended(
+            binder.bind(Value::Number(Number::float(self.at))),
+            self.excluded,
+        ))
+    }
+}
+
+/// A range end as written, `EXCLUSIVE` when it is left out.
+fn ended(value: String, excluded: bool) -> String {
+    if excluded {
+        format!("{value} EXCLUSIVE")
+    } else {
+        value
     }
 }
 
@@ -98,6 +122,20 @@ impl Lex {
                 } else {
                     member <= at.as_str()
                 }
+            }
+        }
+    }
+}
+
+impl Lex {
+    /// This end as a `MEMBER` range end — `NONE` for `-` low or `+` high —
+    /// or `None` when `+` low or `-` high names nothing.
+    pub(super) fn written(&self, low: bool, binder: &mut Binder) -> Option<String> {
+        match (self, low) {
+            (Self::Lowest, true) | (Self::Highest, false) => Some("NONE".to_owned()),
+            (Self::Lowest | Self::Highest, _) => None,
+            (Self::At { member, excluded }, _) => {
+                Some(ended(binder.bind(Value::String(member.clone())), *excluded))
             }
         }
     }

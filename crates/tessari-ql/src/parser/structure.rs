@@ -15,9 +15,11 @@
 //! [operand]: Parser::operand
 
 use super::Parser;
-use crate::ast::{Expr, ListEnd, Presence, ScoreCompare, StatementKind, StructureOp};
+use crate::ast::{
+    Expr, ListEnd, Presence, RangeEnd, ScoreCompare, ScoreRange, StatementKind, StructureOp,
+};
 use crate::error::Result;
-use crate::token::{Keyword, Punct};
+use crate::token::{Keyword, Punct, Token};
 
 impl Parser<'_> {
     /// `LIST <op> …`, the word `LIST` consumed.
@@ -264,12 +266,13 @@ impl Parser<'_> {
             )
         } else if self.eat_word("remove") {
             let target = self.record_target()?;
-            (
-                target,
-                StructureOp::ScoresRemove {
+            let op = match self.score_range()? {
+                Some(range) => StructureOp::ScoresRemoveRange { range },
+                None => StructureOp::ScoresRemove {
                     members: self.values()?,
                 },
-            )
+            };
+            (target, op)
         } else if self.eat_word("pop") {
             let target = self.record_target()?;
             let highest = if self.eat_word("highest") {
@@ -292,6 +295,46 @@ impl Parser<'_> {
         Ok(StatementKind::Structure {
             target: op.0,
             op: op.1,
+        })
+    }
+
+    /// `RANK|SCORE|MEMBER FROM … TO …`, when one of the three words stands
+    /// before a `FROM` — anywhere else the word is a member like any other.
+    fn score_range(&mut self) -> Result<Option<ScoreRange>> {
+        let by = ["rank", "score", "member"]
+            .into_iter()
+            .find(|word| self.peek_word(word));
+        let Some(by) =
+            by.filter(|_| matches!(self.peek_ahead(1), Some(Token::Keyword(Keyword::From))))
+        else {
+            return Ok(None);
+        };
+        self.eat_word(by);
+        self.expect_keyword(Keyword::From, "`FROM` and where the range starts")?;
+        if by == "rank" {
+            let start = self.expression()?;
+            self.expect_keyword(Keyword::To, "`TO` and the last position")?;
+            return Ok(Some(ScoreRange::Rank {
+                start,
+                stop: self.expression()?,
+            }));
+        }
+        let low = self.range_end()?;
+        self.expect_keyword(Keyword::To, "`TO` and where the range ends")?;
+        let high = self.range_end()?;
+        Ok(Some(if by == "score" {
+            ScoreRange::Score { low, high }
+        } else {
+            ScoreRange::Member { low, high }
+        }))
+    }
+
+    /// One end of a range and whether it is left out.
+    fn range_end(&mut self) -> Result<RangeEnd> {
+        let value = self.expression()?;
+        Ok(RangeEnd {
+            value,
+            exclusive: self.eat_word("exclusive"),
         })
     }
 

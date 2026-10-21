@@ -34,11 +34,11 @@ pub use ast::{
     DeleteBound, Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field,
     FieldMapping, FieldPath, Fill, FillMode, Fusion, GroupClauses, Hop, Identity, InfoSubject,
     JoinSide, ListEnd, Name, NamespaceChange, OnFailure, Ordering, ParameterSlot, Password, PathTo,
-    Presence, Projected, Projection, RangeExpr, ReachRef, RecordTarget, ReplicaChange, Retention,
-    RollupCompute, ScoreCompare, Script, SearchAsk, SearchCosts, SearchField, SearchMember,
-    SearchOperator, Select, SetCondition, Source, SpaceBound, Statement, StatementKind,
-    StructureOp, TableChange, TableExpiry, TableRef, Timeout, TopicClauses, UserChange, UserGrant,
-    Using, Version, WriteExpiry, Written,
+    Presence, Projected, Projection, RangeEnd, RangeExpr, ReachRef, RecordTarget, ReplicaChange,
+    Retention, RollupCompute, ScoreCompare, ScoreRange, Script, SearchAsk, SearchCosts,
+    SearchField, SearchMember, SearchOperator, Select, SetCondition, Source, SpaceBound, Statement,
+    StatementKind, StructureOp, TableChange, TableExpiry, TableRef, Timeout, TopicClauses,
+    UserChange, UserGrant, Using, Version, WriteExpiry, Written,
 };
 pub use bind::{Parameters, bind_expression, bind_read};
 pub use error::{Error, Result};

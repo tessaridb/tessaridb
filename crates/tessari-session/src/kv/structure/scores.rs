@@ -5,7 +5,9 @@
 
 use std::collections::BTreeSet;
 
-use tessari_ql::{Container, Expr, Presence, RecordTarget, ScoreCompare, Span, StructureOp};
+use tessari_ql::{
+    Container, Expr, Presence, RangeEnd, RecordTarget, ScoreCompare, ScoreRange, Span, StructureOp,
+};
 use tessari_storage::Transaction;
 use tessari_types::{Number, Value};
 
@@ -101,6 +103,16 @@ impl Session<'_> {
                 }
                 counted(removed)
             }
+            StructureOp::ScoresRemoveRange { range } => {
+                let named = self.ranged(transaction, &ranked, range).await?;
+                if named.is_empty() {
+                    return Ok(Outcome::Value(counted(0)));
+                }
+                for held in &named {
+                    ranked.remove(held);
+                }
+                counted(named.len())
+            }
             StructureOp::ScoresPop { highest, limit } => {
                 let limit = self.limit(transaction, limit.as_ref()).await?;
                 let mut taken = Vec::new();
@@ -127,25 +139,143 @@ impl Session<'_> {
         Ok(Outcome::Value(answer))
     }
 
+    /// The held pairs `range` names, lowest first.
+    async fn ranged(
+        &self,
+        transaction: &mut Transaction<'_>,
+        ranked: &BTreeSet<Value>,
+        range: &ScoreRange,
+    ) -> Result<Vec<Value>> {
+        let held = ranked.iter().filter_map(|held| match held {
+            Value::Array(pair) => match pair.as_slice() {
+                [Value::Number(Number::Float(score)), Value::String(member)] => {
+                    Some((held, *score, member.as_str()))
+                }
+                _ => None,
+            },
+            _ => None,
+        });
+        Ok(match range {
+            ScoreRange::Rank { start, stop } => {
+                let start = self.whole_number(transaction, start, "position").await?;
+                let stop = self.whole_number(transaction, stop, "position").await?;
+                let Some((from, to)) = span_of(ranked.len(), start, stop) else {
+                    return Ok(Vec::new());
+                };
+                held.skip(from)
+                    .take(to.saturating_sub(from).saturating_add(1))
+                    .map(|(pair, _, _)| pair.clone())
+                    .collect()
+            }
+            ScoreRange::Score { low, high } => {
+                let low = self.score_end(transaction, low).await?;
+                let high = self.score_end(transaction, high).await?;
+                held.filter(|(_, score, _)| {
+                    low.is_none_or(|(at, out)| if out { *score > at } else { *score >= at })
+                        && high.is_none_or(|(at, out)| if out { *score < at } else { *score <= at })
+                })
+                .map(|(pair, _, _)| pair.clone())
+                .collect()
+            }
+            ScoreRange::Member { low, high } => {
+                let low = self.member_end(transaction, low).await?;
+                let high = self.member_end(transaction, high).await?;
+                held.filter(|(_, _, member)| {
+                    low.as_ref().is_none_or(|(at, out)| {
+                        if *out {
+                            *member > at.as_str()
+                        } else {
+                            *member >= at.as_str()
+                        }
+                    }) && high.as_ref().is_none_or(|(at, out)| {
+                        if *out {
+                            *member < at.as_str()
+                        } else {
+                            *member <= at.as_str()
+                        }
+                    })
+                })
+                .map(|(pair, _, _)| pair.clone())
+                .collect()
+            }
+        })
+    }
+
+    /// A score end, an end evaluating to `NONE` being no end.
+    async fn score_end(
+        &self,
+        transaction: &mut Transaction<'_>,
+        end: &RangeEnd,
+    ) -> Result<Option<(f64, bool)>> {
+        Ok(match self.evaluate(transaction, &end.value).await? {
+            Value::None => None,
+            value => Some((finite(&value, end.value.span)?, end.exclusive)),
+        })
+    }
+
+    /// A member end, an end evaluating to `NONE` being no end.
+    async fn member_end(
+        &self,
+        transaction: &mut Transaction<'_>,
+        end: &RangeEnd,
+    ) -> Result<Option<(String, bool)>> {
+        Ok(match self.evaluate(transaction, &end.value).await? {
+            Value::None => None,
+            Value::String(member) => Some((member, end.exclusive)),
+            other => {
+                return Err(Error::NameNotText {
+                    what: "member",
+                    found: other.type_name(),
+                    span: end.value.span,
+                });
+            }
+        })
+    }
+
     /// A finite score `expr` evaluates to.
     async fn score(&self, transaction: &mut Transaction<'_>, expr: &Expr) -> Result<f64> {
         let value = self.evaluate(transaction, expr).await?;
-        match &value {
-            Value::Number(number) => {
-                number
-                    .as_float()
-                    .filter(|score| score.is_finite())
-                    .ok_or(Error::ScoreNotANumber {
-                        found: "a number no float holds",
-                        span: expr.span,
-                    })
-            }
-            other => Err(Error::ScoreNotANumber {
-                found: other.type_name(),
-                span: expr.span,
-            }),
-        }
+        finite(&value, expr.span)
     }
+}
+
+/// The finite score `value` is, refused naming what it is otherwise.
+fn finite(value: &Value, span: Span) -> Result<f64> {
+    match value {
+        Value::Number(number) => {
+            number
+                .as_float()
+                .filter(|score| score.is_finite())
+                .ok_or(Error::ScoreNotANumber {
+                    found: "a number no float holds",
+                    span,
+                })
+        }
+        other => Err(Error::ScoreNotANumber {
+            found: other.type_name(),
+            span,
+        }),
+    }
+}
+
+/// The positions from `start` to `stop` of a ranking `length` long, both
+/// kept, either counted from the highest when negative; `None` when that
+/// names nothing.
+fn span_of(length: usize, start: i64, stop: i64) -> Option<(usize, usize)> {
+    let length = i64::try_from(length).ok()?;
+    let from_top = |index: i64| {
+        if index < 0 {
+            length.saturating_add(index)
+        } else {
+            index
+        }
+    };
+    let start = from_top(start).max(0);
+    let stop = from_top(stop).min(length.saturating_sub(1));
+    if start > stop {
+        return None;
+    }
+    Some((usize::try_from(start).ok()?, usize::try_from(stop).ok()?))
 }
 
 /// The pair a member and its score are held as.

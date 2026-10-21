@@ -33,6 +33,9 @@ const NAMES: &[&str] = &[
     "ZPOPMIN",
     "ZPOPMAX",
     "ZRANDMEMBER",
+    "ZREMRANGEBYRANK",
+    "ZREMRANGEBYSCORE",
+    "ZREMRANGEBYLEX",
 ];
 
 /// Whether `name` is one of these commands.
@@ -166,9 +169,54 @@ pub(super) fn plan(
                 }),
             )
         }
+        "ZREMRANGEBYRANK" | "ZREMRANGEBYSCORE" | "ZREMRANGEBYLEX" => {
+            let [low, high] = rest else {
+                return Err(replies::arity(name));
+            };
+            cut(name, low, high, &target, binder)?
+        }
         _ => reads(name, rest, &target)?,
     };
     Ok(Some(Step::Statements(planned)))
+}
+
+/// `ZREMRANGEBYRANK|SCORE|LEX k low high` as one `SCORES REMOVE` of a range,
+/// so it queues inside `MULTI` like any other statement.
+fn cut(
+    name: &str,
+    low: &[u8],
+    high: &[u8],
+    target: &str,
+    binder: &mut Binder,
+) -> Result<Planned, Reply> {
+    let range = match name {
+        "ZREMRANGEBYRANK" => {
+            let start = binder.bind(Value::Number(Number::Integer(integer(low)?)));
+            let stop = binder.bind(Value::Number(Number::Integer(integer(high)?)));
+            Some(format!("RANK FROM {start} TO {stop}"))
+        }
+        "ZREMRANGEBYSCORE" => {
+            let (low, high) = (Bound::read(low)?, Bound::read(high)?);
+            low.written(true, binder)
+                .zip(high.written(false, binder))
+                .map(|(low, high)| format!("SCORE FROM {low} TO {high}"))
+        }
+        _ => {
+            let (low, high) = (Lex::read(low)?, Lex::read(high)?);
+            low.written(true, binder)
+                .zip(high.written(false, binder))
+                .map(|(low, high)| format!("MEMBER FROM {low} TO {high}"))
+        }
+    };
+    // A range naming nothing still reads the key, so another kind is refused.
+    let range = range.unwrap_or_else(|| "RANK FROM 1 TO 0".to_owned());
+    Ok(Planned::one(
+        format!("SCORES REMOVE {target} {range}"),
+        Box::new(|outcomes| match first(outcomes) {
+            Value::Number(Number::Integer(removed)) => Reply::Integer(removed),
+            _ => Reply::Integer(0),
+        }),
+    ))
 }
 
 /// `ZADD k [NX|XX] [GT|LT] [CH] [INCR] score member …`

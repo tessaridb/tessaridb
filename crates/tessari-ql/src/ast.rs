@@ -43,7 +43,9 @@ pub use statement::{
     BackupForm, RollupCompute, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator,
     StatementKind,
 };
-pub use structure::{Container, ListEnd, Presence, ScoreCompare, StructureOp};
+pub use structure::{
+    Container, ListEnd, Presence, RangeEnd, ScoreCompare, ScoreRange, StructureOp,
+};
 
 /// A parsed script: statements in the order they were written.
 #[derive(Debug, Clone, PartialEq, Eq)]

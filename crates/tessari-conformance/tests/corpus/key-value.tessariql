@@ -208,6 +208,16 @@ SCORES ADD cache:'board' 'ada' = 10, 'bob' = 7;
 SCORES POP cache:'board' HIGHEST;
 --- expect: value [['ada', 10.0]]
 
+--- case: a ranking is cut by position, counted from the highest when negative
+SCORES ADD cache:'rank' 'a' = 1, 'b' = 2, 'c' = 3, 'd' = 4;
+SCORES REMOVE cache:'rank' RANK FROM -2 TO -1;
+--- expect: value 2
+
+--- case: a score range may leave its ends out, and NONE leaves a side open
+SCORES ADD cache:'rank' 'e' = 5, 'f' = 6;
+SCORES REMOVE cache:'rank' SCORE FROM 1 EXCLUSIVE TO NONE;
+--- expect: value 3
+
 --- case: a container write on a key holding another kind is refused
 LIST PUSH cache:'cart' BACK 1;
 --- expect: error KeyHoldsAnotherKind

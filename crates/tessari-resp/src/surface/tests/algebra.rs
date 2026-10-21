@@ -2,7 +2,7 @@
 //! pops from the first of several keys, and `WATCH` (G079 C6).
 
 use super::keys::{array, bytes_of};
-use super::{Client, bulk, serving_with};
+use super::{Client, bulk, serving_with, status};
 use crate::codec::Reply;
 
 fn texts(items: &[&str]) -> Reply {
@@ -281,5 +281,80 @@ async fn exec_does_not_run_when_a_watched_key_changed() {
     watcher.ask(&["MULTI"]).await;
     watcher.ask(&["GET", "k"]).await;
     assert_eq!(watcher.ask(&["EXEC"]).await, Reply::Array(vec![bulk("9")]));
+    stop.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_ranking_is_cut_by_rank_by_score_and_by_member() {
+    let (address, stop, _) = serving_with("").await;
+    let mut client = Client::to(&address).await;
+    let fill = [
+        "ZADD", "z", "1", "a", "2", "b", "3", "c", "4", "d", "5", "e",
+    ];
+    client.ask(&fill).await;
+    assert_eq!(
+        client.ask(&["ZREMRANGEBYRANK", "z", "-2", "-1"]).await,
+        Reply::Integer(2)
+    );
+    assert_eq!(
+        client.ask(&["ZREMRANGEBYSCORE", "z", "(1", "2"]).await,
+        Reply::Integer(1)
+    );
+    assert_eq!(
+        client.ask(&["ZREMRANGEBYSCORE", "z", "+inf", "+inf"]).await,
+        Reply::Integer(0)
+    );
+    assert_eq!(
+        client.ask(&["ZRANGE", "z", "0", "-1"]).await,
+        texts(&["a", "c"])
+    );
+    assert_eq!(
+        client.ask(&["ZREMRANGEBYSCORE", "z", "-inf", "+inf"]).await,
+        Reply::Integer(2)
+    );
+    client
+        .ask(&["ZADD", "z", "0", "a", "0", "b", "0", "c", "0", "d"])
+        .await;
+    assert_eq!(
+        client.ask(&["ZREMRANGEBYLEX", "z", "(a", "[c"]).await,
+        Reply::Integer(2)
+    );
+    assert_eq!(
+        client.ask(&["ZREMRANGEBYLEX", "z", "+", "-"]).await,
+        Reply::Integer(0)
+    );
+    assert_eq!(
+        client.ask(&["ZRANGE", "z", "0", "-1"]).await,
+        texts(&["a", "d"])
+    );
+    assert!(matches!(
+        client.ask(&["ZREMRANGEBYSCORE", "z", "x", "1"]).await,
+        Reply::Error(text) if text.contains("not a float")
+    ));
+    client.ask(&["SET", "s", "v"]).await;
+    assert!(matches!(
+        client.ask(&["ZREMRANGEBYRANK", "s", "0", "-1"]).await,
+        Reply::Error(text) if text.starts_with("WRONGTYPE")
+    ));
+    // The sliding-window rate limiter: queued inside MULTI and run as one.
+    client
+        .ask(&["ZADD", "hits", "100", "h1", "200", "h2"])
+        .await;
+    assert_eq!(client.ask(&["MULTI"]).await, Reply::OK);
+    for queued in [
+        &["ZREMRANGEBYSCORE", "hits", "-inf", "150"][..],
+        &["ZADD", "hits", "300", "h3"],
+        &["ZCARD", "hits"],
+    ] {
+        assert_eq!(client.ask(queued).await, status("QUEUED"));
+    }
+    assert_eq!(
+        client.ask(&["EXEC"]).await,
+        Reply::Array(vec![
+            Reply::Integer(1),
+            Reply::Integer(1),
+            Reply::Integer(2)
+        ])
+    );
     stop.cancel();
 }
