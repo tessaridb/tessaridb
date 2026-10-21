@@ -85,6 +85,13 @@ pub(crate) enum Procedure {
         keys: Vec<Vec<u8>>,
         compute: crate::surface::rewrite::Compute,
     },
+    /// `LMPOP` / `ZMPOP`: pop `count` from the first of `keys` holding any.
+    PopFirst {
+        keys: Vec<Vec<u8>>,
+        ranking: bool,
+        front: bool,
+        count: usize,
+    },
     Rename {
         from: Vec<u8>,
         to: Vec<u8>,

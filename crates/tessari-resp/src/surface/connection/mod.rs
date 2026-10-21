@@ -455,6 +455,12 @@ impl Connection {
                     Procedure::Change { key, change } => against.change(&key, &change).await,
                     Procedure::SetIfNoneExist(pairs) => against.set_if_none_exist(&pairs).await,
                     Procedure::Rewrite { keys, compute } => against.rewrite(&keys, &compute).await,
+                    Procedure::PopFirst {
+                        keys,
+                        ranking,
+                        front,
+                        count,
+                    } => against.pop_first(&keys, (ranking, front), count).await,
                     Procedure::Rename { from, to, only_new } => {
                         against.rename(&from, &to, only_new).await
                     }

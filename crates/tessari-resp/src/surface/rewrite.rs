@@ -30,8 +30,6 @@ pub(crate) struct Rewritten {
 
 /// What the written key is to hold.
 pub(crate) enum Write {
-    /// Nothing changes; the reply stands.
-    Nothing,
     /// This value, keeping the key's expiry or not.
     Hold { value: Value, keep_expiry: bool },
     /// No key at all.
@@ -67,7 +65,6 @@ impl Against<'_> {
             let mut binder = Binder::default();
             let target = binder.key(self.space, key);
             let statement = match rewritten.write {
-                Write::Nothing => return rewritten.reply,
                 Write::Remove if *old == Value::None => return rewritten.reply,
                 Write::Remove => format!("DEL {target} IF = {}", binder.bind(old.clone())),
                 Write::Hold { value, keep_expiry } => {

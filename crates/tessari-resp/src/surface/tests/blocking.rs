@@ -172,3 +172,68 @@ async fn inside_multi_a_move_does_not_block_and_a_pop_is_refused() {
     client.ask(&["DISCARD"]).await;
     stop.cancel();
 }
+
+/// Consumers popping while a producer keeps pushing to the same key: every
+/// element taken once, and no pop ever told to try again.
+#[tokio::test(flavor = "multi_thread")]
+async fn consumers_pop_a_list_another_client_keeps_pushing_to() {
+    let (address, stop, _) = serving_with("").await;
+    let total = 4_000_usize;
+    let mut consumers = Vec::new();
+    for _ in 0..8 {
+        let address = address.clone();
+        consumers.push(tokio::spawn(async move {
+            let mut client = Client::to(&address).await;
+            let mut taken = Vec::new();
+            loop {
+                let reply = ask_within(&mut client, &["BLMPOP", "1", "1", "work", "LEFT"]).await;
+                match reply {
+                    Reply::NilArray => return taken,
+                    Reply::Array(parts) => match parts.as_slice() {
+                        [_, Reply::Array(items)] => taken.extend(items.iter().cloned()),
+                        other => return vec![Reply::Error(format!("{other:?}").into())],
+                    },
+                    other => return vec![other],
+                }
+            }
+        }));
+    }
+    // Four producers, each sending its pushes in one write, so pushes land
+    // while pops are between reading the list and writing it back.
+    let mut producers = Vec::new();
+    for part in 0..4 {
+        let address = address.clone();
+        producers.push(tokio::spawn(async move {
+            let mut client = Client::to(&address).await;
+            let mut burst = Vec::new();
+            for item in (part..total).step_by(4) {
+                let item = item.to_string();
+                burst.extend_from_slice(
+                    format!(
+                        "*3\r\n$5\r\nRPUSH\r\n$4\r\nwork\r\n${}\r\n{item}\r\n",
+                        item.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+            client.stream.write_all(&burst).await.unwrap();
+            for _ in (part..total).step_by(4) {
+                let pushed = within(&mut client).await;
+                assert!(matches!(pushed, Reply::Integer(_)), "{pushed:?}");
+            }
+        }));
+    }
+    for producer in producers {
+        producer.await.unwrap();
+    }
+    let mut every = Vec::new();
+    for consumer in consumers {
+        every.extend(consumer.await.unwrap());
+    }
+    let mut expected: Vec<Reply> = (0..total).map(|item| bulk(&item.to_string())).collect();
+    let key = |reply: &Reply| format!("{reply:?}");
+    every.sort_by_key(key);
+    expected.sort_by_key(key);
+    assert_eq!(every, expected);
+    stop.cancel();
+}

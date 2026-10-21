@@ -4,7 +4,9 @@ use super::{Consumer, Session, advised, conflicting, read_version, settle};
 use crate::error::{Error, Result};
 use crate::outcome::Outcome;
 use tessari_ql::{Answer, CreateTarget, Statement, StatementKind, TableRef};
-use tessari_storage::{Catalog, Store, TableDefinition, TableKind, TopicDeclaration, Transaction};
+use tessari_storage::{
+    Catalog, Store, TableDefinition, TableKind, TopicDeclaration, Transaction, back_off,
+};
 use tessari_types::{Number, Sequence, Value};
 
 impl<'a> Session<'a> {
@@ -161,6 +163,7 @@ impl<'a> Session<'a> {
                     // the caller would do (`crate::kv::atomic`).
                     let retried = crate::kv::retried_on_conflict(other);
                     let started = std::time::Instant::now();
+                    let mut attempt = 0_u32;
                     loop {
                         let mut transaction = store.begin().await?;
                         let outcome = self.execute(&mut transaction, other, span).await?;
@@ -188,8 +191,11 @@ impl<'a> Session<'a> {
                                     && conflicting(&refusal)
                                     && started.elapsed() < crate::kv::CONFLICT_DEADLINE =>
                             {
-                                // Let the winner finish before reading again.
-                                std::thread::yield_now();
+                                // Let the winner finish before reading again,
+                                // at a jittered distance so that the losers do
+                                // not all read again together.
+                                attempt = attempt.saturating_add(1);
+                                back_off(attempt).await;
                             }
                             Err(refusal) => return Err(refusal),
                         }
@@ -208,6 +214,7 @@ impl<'a> Session<'a> {
         name: &tessari_ql::Name,
     ) -> Result<()> {
         let started = std::time::Instant::now();
+        let mut attempt = 0_u32;
         loop {
             let mut transaction = store.begin().await?;
             self.backfill_rollup(&mut transaction, source, name).await?;
@@ -217,7 +224,8 @@ impl<'a> Session<'a> {
                     if conflicting(&refusal)
                         && started.elapsed() < crate::kv::CONFLICT_DEADLINE =>
                 {
-                    std::thread::yield_now();
+                    attempt = attempt.saturating_add(1);
+                    back_off(attempt).await;
                 }
                 Err(refusal) => return Err(refusal),
             }
