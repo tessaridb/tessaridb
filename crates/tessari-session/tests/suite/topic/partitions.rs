@@ -394,3 +394,55 @@ fn a_group_on_a_split_topic_holds_each_partition_on_its_own() {
         );
     });
 }
+
+/// A writer that chose the partition itself — a Kafka producer does — names it,
+/// and the message lands there whatever its key says (ADR-0131).
+#[test]
+fn an_insert_naming_a_partition_lands_in_it() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        run(
+            &mut session,
+            "DEFINE TOPIC orders PARTITIONS 3 BY customer;",
+        );
+        // "user-42" alone would choose partition 1.
+        let Value::Array(placed) = value(
+            &mut session,
+            "INSERT INTO orders PARTITION 2 (customer) VALUES ('user-42'), ('abc') RETURN POSITION;",
+        ) else {
+            panic!("no positions");
+        };
+        let partitions: Vec<_> = placed
+            .iter()
+            .map(|place| match place {
+                Value::Object(place) => place.get("partition").cloned(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            partitions,
+            vec![Some(Value::from(2)), Some(Value::from(2))],
+            "{}",
+            backend.name
+        );
+        assert_eq!(
+            lasts(&mut session, "orders"),
+            vec![Value::from(0), Value::from(0), Value::from(2)],
+            "{}",
+            backend.name
+        );
+        assert!(matches!(
+            session.run_now("INSERT INTO orders PARTITION 3 (customer) VALUES ('x');"),
+            Err(Error::NoSuchPartition { .. })
+        ));
+        // A topic never split is its own partition 0.
+        run(
+            &mut session,
+            "INSERT INTO events PARTITION 0 (n) VALUES (1);",
+        );
+        assert!(matches!(
+            session.run_now("INSERT INTO events PARTITION 1 (n) VALUES (1);"),
+            Err(Error::NoSuchPartition { .. })
+        ));
+    });
+}

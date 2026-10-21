@@ -43,8 +43,8 @@ pub(crate) async fn produce(
                     Some("transactions are not served by this node".to_owned()),
                 )
             } else {
-                match (&topic, partition.index) {
-                    (Some(topic), 0) => match partition.records.map(decode_batches).transpose() {
+                match &topic {
+                    Some(topic) => match partition.records.map(decode_batches).transpose() {
                         Err(crate::Error::Checksum { .. }) => refused(CORRUPT_MESSAGE, None),
                         Err(why) => refused(INVALID_RECORD, Some(why.to_string())),
                         Ok(batches) => {
@@ -59,7 +59,7 @@ pub(crate) async fn produce(
                             .await
                         }
                     },
-                    _ => refused(errors::UNKNOWN_TOPIC_OR_PARTITION, None),
+                    None => refused(errors::UNKNOWN_TOPIC_OR_PARTITION, None),
                 }
             };
             partitions.push(answer);
@@ -111,7 +111,7 @@ async fn write(
                 }
             }
         }
-        match append(shared, held, topic, batch).await {
+        match append(shared, held, (topic, index), batch).await {
             Ok(base_offset) => {
                 if answer.base_offset < 0 {
                     answer.base_offset = base_offset;
@@ -146,13 +146,15 @@ async fn write(
 async fn append(
     shared: &Arc<Shared>,
     held: &mut Held,
-    topic: &Topic<'_>,
+    (topic, index): (&Topic<'_>, i32),
     batch: &Batch,
 ) -> Result<i64, Failed> {
     if batch.records.is_empty() {
         return Ok(-1);
     }
-    let mut parameters = Parameters::new();
+    // Into the partition the client chose (ADR-0131): it hashed the key
+    // itself, and a keyless record goes where its partitioner sent it.
+    let mut parameters = Parameters::from([crate::surface::offsets::partition_parameter(index)]);
     let mut rows = String::new();
     for (at, record) in batch.records.iter().enumerate() {
         let headers = record
@@ -188,7 +190,8 @@ async fn append(
         rows.push_str(&format!("($k{at}, $v{at}, $h{at}, $t{at})"));
     }
     let script = format!(
-        "INSERT INTO {} (key, value, headers, timestamp) VALUES {rows} RETURN POSITION;",
+        "INSERT INTO {} PARTITION $partition (key, value, headers, timestamp) VALUES {rows} \
+         RETURN POSITION;",
         topic.name
     );
     let outcomes = held
@@ -198,8 +201,13 @@ async fn append(
     // could not yet say (a message another node is still applying).
     let first = match outcomes.last() {
         Some(Outcome::Value(Value::Array(positions))) => {
+            // A split topic's positions answer beside their partition.
             positions.iter().find_map(|position| match position {
                 Value::Number(tessaridb::Number::Integer(held)) => Some(*held),
+                Value::Object(place) => match place.get("position") {
+                    Some(Value::Number(tessaridb::Number::Integer(held))) => Some(*held),
+                    _ => None,
+                },
                 _ => None,
             })
         }

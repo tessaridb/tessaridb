@@ -39,22 +39,54 @@ pub(crate) fn bounds_of(info: &Value) -> Bounds {
     }
 }
 
-/// A topic's bounds, read through the caller's session.
+/// What `INFO FOR TOPIC` reports about one partition (ADR-0131): a split
+/// topic's own entry for it, or the whole report of a topic never split, which
+/// is its own partition 0; `None` for a partition the topic does not have.
+pub(crate) fn partition_info(info: &Value, index: i32) -> Option<&Value> {
+    let Value::Object(fields) = info else {
+        return None;
+    };
+    match fields.get("each") {
+        Some(Value::Array(each)) => usize::try_from(index).ok().and_then(|at| each.get(at)),
+        _ => (index == 0).then_some(info),
+    }
+}
+
+/// How many partitions `INFO FOR TOPIC` reports: one for a topic never split.
+pub(crate) fn partitions_in(info: &Value) -> usize {
+    match info {
+        Value::Object(fields) => match fields.get("each") {
+            Some(Value::Array(each)) => each.len(),
+            _ => 1,
+        },
+        _ => 1,
+    }
+}
+
+/// The parameters naming one partition, for a statement that says
+/// `PARTITION $partition`.
+pub(crate) fn partition_parameter(index: i32) -> (String, Value) {
+    (
+        "partition".to_owned(),
+        Value::Number(tessaridb::Number::Integer(i64::from(index))),
+    )
+}
+
+/// One partition's bounds, read through the caller's session; `None` when the
+/// topic has no such partition.
 pub(crate) async fn bounds(
     shared: &Arc<Shared>,
     held: &mut Held,
     topic: &Topic<'_>,
-) -> Result<Bounds, Failed> {
+    index: i32,
+) -> Result<Option<Bounds>, Failed> {
     let script = format!("INFO FOR TOPIC {};", topic.name);
     let outcomes = held
         .run(shared, topic.tenancy(), &script, &Parameters::new())
         .await?;
     Ok(match outcomes.last() {
-        Some(Outcome::Value(info)) => bounds_of(info),
-        _ => Bounds {
-            log_start: 0,
-            high_watermark: 0,
-        },
+        Some(Outcome::Value(info)) => partition_info(info, index).map(bounds_of),
+        _ => None,
     })
 }
 
@@ -80,19 +112,25 @@ fn timestamp_of(message: &Value) -> Option<i64> {
 async fn at_time(
     shared: &Arc<Shared>,
     held: &mut Held,
-    topic: &Topic<'_>,
+    (topic, index): (&Topic<'_>, i32),
     bounds: Bounds,
     target: i64,
 ) -> Result<(i64, i64), Failed> {
     let (mut low, mut high) = (bounds.log_start, bounds.high_watermark);
     let mut found = (-1, -1);
-    let script = format!("READ FROM {} AFTER $after LIMIT 1;", topic.name);
+    let script = format!(
+        "READ FROM {} PARTITION $partition AFTER $after LIMIT 1;",
+        topic.name
+    );
     while low < high {
         let middle = low.saturating_add(high.saturating_sub(low) / 2);
-        let parameters = Parameters::from([(
-            "after".to_owned(),
-            Value::Number(tessaridb::Number::Integer(middle)),
-        )]);
+        let parameters = Parameters::from([
+            (
+                "after".to_owned(),
+                Value::Number(tessaridb::Number::Integer(middle)),
+            ),
+            partition_parameter(index),
+        ]);
         let outcomes = held
             .run(shared, topic.tenancy(), &script, &parameters)
             .await?;
@@ -130,14 +168,15 @@ pub(crate) async fn list(
                 timestamp: -1,
                 offset: -1,
             };
-            let Some(topic) = topic.as_ref().filter(|_| partition.index == 0) else {
+            let Some(topic) = topic.as_ref() else {
                 answer.error_code = errors::UNKNOWN_TOPIC_OR_PARTITION;
                 partitions.push(answer);
                 continue;
             };
-            match bounds(shared, held, topic).await {
+            match bounds(shared, held, topic, partition.index).await {
                 Err(failed) => answer.error_code = code(&failed),
-                Ok(bounds) => match partition.timestamp {
+                Ok(None) => answer.error_code = errors::UNKNOWN_TOPIC_OR_PARTITION,
+                Ok(Some(bounds)) => match partition.timestamp {
                     list_offsets::EARLIEST => answer.offset = bounds.log_start,
                     list_offsets::LATEST => answer.offset = bounds.high_watermark,
                     list_offsets::MAX_TIMESTAMP => {
@@ -146,7 +185,9 @@ pub(crate) async fn list(
                             .saturating_sub(1)
                             .max(bounds.log_start);
                     }
-                    target => match at_time(shared, held, topic, bounds, target).await {
+                    target => match at_time(shared, held, (topic, partition.index), bounds, target)
+                        .await
+                    {
                         Ok((timestamp, offset)) => {
                             answer.timestamp = timestamp;
                             answer.offset = offset;

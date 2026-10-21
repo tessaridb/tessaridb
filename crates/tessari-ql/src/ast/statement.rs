@@ -1663,6 +1663,9 @@ pub enum StatementKind {
         /// `RETURN POSITION`, or nothing: an insert answers its identities, and
         /// into a topic it may answer the positions they took instead.
         answer: Answer,
+        /// `PARTITION <n>`: the partition of a split topic every row lands in
+        /// (ADR-0131).
+        partition: Option<Expr>,
     },
     /// `SELECT * FROM …`
     ///

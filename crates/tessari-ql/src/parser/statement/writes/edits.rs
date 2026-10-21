@@ -26,6 +26,13 @@ impl Parser<'_> {
             return Err(self.error_here("`INTO` and the table to write to"));
         }
         let table = self.table_ref()?;
+        // `PARTITION <n>`: the partition of a split topic the rows land in,
+        // for a writer that chose it (ADR-0131).
+        let partition = if self.eat_word("partition") {
+            Some(self.expression()?)
+        } else {
+            None
+        };
 
         // Named fields, not values: a caller's text cannot arrive in this
         // position and be read as a field name, which is the same property the
@@ -91,6 +98,7 @@ impl Parser<'_> {
             rows,
             expire,
             answer,
+            partition,
         })
     }
 

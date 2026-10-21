@@ -51,13 +51,19 @@ fn limit(key: &str, value: Option<&str>) -> Result<Option<i64>, String> {
 
 /// The `DEFINE TOPIC` a request stands for, or why it cannot be one.
 fn definition(asked: &Creatable<'_>, topic: &Topic<'_>) -> Result<String, Created> {
-    if !matches!(asked.partitions, -1 | 1) {
-        return Err(refused(
-            asked.name,
-            errors::INVALID_PARTITIONS,
-            "a topic here is one partition",
-        ));
-    }
+    // `-1` is the broker's default: one partition, a topic never split.
+    let ceiling = i32::try_from(tessari_constants::TOPIC_MAX_PARTITIONS).unwrap_or(i32::MAX);
+    let count = match asked.partitions {
+        -1 => 1,
+        count if (1..=ceiling).contains(&count) => count,
+        _ => {
+            return Err(refused(
+                asked.name,
+                errors::INVALID_PARTITIONS,
+                "a topic here has 1 to 1024 partitions",
+            ));
+        }
+    };
     if !matches!(asked.replication, -1 | 1) {
         return Err(refused(
             asked.name,
@@ -66,19 +72,21 @@ fn definition(asked: &Creatable<'_>, topic: &Topic<'_>) -> Result<String, Create
         ));
     }
     if !asked.assignments.iter().all(|(partition, brokers)| {
-        *partition == 0
+        (0..count).contains(partition)
             && brokers
                 .iter()
                 .all(|broker| *broker == super::metadata::NODE_ID)
-    }) || asked.assignments.len() > 1
-    {
+    }) {
         return Err(refused(
             asked.name,
             errors::INVALID_PARTITIONS,
-            "a topic here is one partition, on this node",
+            "a topic's partitions here are all on this node",
         ));
     }
     let mut statement = format!("DEFINE TOPIC {}", topic.name);
+    if count > 1 {
+        let _ = write!(statement, " PARTITIONS {count}");
+    }
     for (key, value) in &asked.configs {
         let bad = |why: String| refused(asked.name, errors::INVALID_CONFIG, why);
         match *key {

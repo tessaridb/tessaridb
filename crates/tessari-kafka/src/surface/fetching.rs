@@ -11,7 +11,7 @@ use crate::records::{Outgoing, OutgoingHeader, encode_batch};
 use crate::surface::Shared;
 use crate::surface::errors::{self, code};
 use crate::surface::names;
-use crate::surface::offsets::bounds_of;
+use crate::surface::offsets::{bounds_of, partition_info, partition_parameter};
 use crate::surface::running::Held;
 
 /// A message, owned, in the shape a record batch needs.
@@ -143,26 +143,32 @@ async fn once(
                 log_start_offset: -1,
                 records: None,
             };
-            let Some(topic) = topic.as_ref().filter(|_| partition.index == 0) else {
+            let Some(topic) = topic.as_ref() else {
                 answer.error_code = errors::UNKNOWN_TOPIC_OR_PARTITION;
                 partitions.push(answer);
                 continue;
             };
             let script = format!(
-                "INFO FOR TOPIC {0}; READ FROM {0} AFTER $after LIMIT {KAFKA_FETCH_MESSAGES};",
+                "INFO FOR TOPIC {0}; \
+                 READ FROM {0} PARTITION $partition AFTER $after LIMIT {KAFKA_FETCH_MESSAGES};",
                 topic.name
             );
-            let after = Parameters::from([(
-                "after".to_owned(),
-                Value::Number(tessaridb::Number::Integer(partition.fetch_offset.max(0))),
-            )]);
+            let after = Parameters::from([
+                (
+                    "after".to_owned(),
+                    Value::Number(tessaridb::Number::Integer(partition.fetch_offset.max(0))),
+                ),
+                partition_parameter(partition.index),
+            ]);
             match held.run(shared, topic.tenancy(), &script, &after).await {
                 Err(failed) => answer.error_code = code(&failed),
                 Ok(outcomes) => {
                     let bounds = outcomes
                         .iter()
                         .find_map(|outcome| match outcome {
-                            Outcome::Value(info) => Some(bounds_of(info)),
+                            Outcome::Value(info) => {
+                                partition_info(info, partition.index).map(bounds_of)
+                            }
                             _ => None,
                         })
                         .unwrap_or(crate::surface::offsets::Bounds {

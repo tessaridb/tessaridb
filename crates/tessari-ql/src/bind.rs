@@ -318,11 +318,19 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // column list is not walked because it holds **names**, and a name is
         // grammar: there is no stage at which a supplied value could arrive
         // there and be read as one.
-        StatementKind::Insert { rows, expire, .. } => {
+        StatementKind::Insert {
+            rows,
+            expire,
+            partition,
+            ..
+        } => {
             for row in rows {
                 for value in row {
                     bind_expr(value, binding)?;
                 }
+            }
+            if let Some(partition) = partition {
+                bind_expr(partition, binding)?;
             }
             bind_write_expiry(expire.as_mut(), binding)
         }

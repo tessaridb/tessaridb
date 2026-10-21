@@ -147,11 +147,21 @@ pub(super) async fn commit(
     topic: &str,
     offset: i64,
 ) -> i16 {
+    commit_at(stream, (group, generation, member), (topic, 0), offset).await
+}
+
+/// Commit one partition's offset as a member of a group; the partition's code.
+pub(super) async fn commit_at(
+    stream: &mut TcpStream,
+    (group, generation, member): (&str, i32, &str),
+    (topic, partition): (&str, i32),
+    offset: i64,
+) -> i16 {
     let mut body = place(group, generation, member);
     body.array_len(true, Some(1)).unwrap();
     body.string(true, topic).unwrap();
     body.array_len(true, Some(1)).unwrap();
-    body.i32(0);
+    body.i32(partition);
     body.i64(offset);
     body.i32(-1);
     body.nullable_string(true, None).unwrap();

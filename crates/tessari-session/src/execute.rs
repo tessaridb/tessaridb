@@ -1024,12 +1024,20 @@ impl Session<'_> {
                 rows,
                 expire,
                 answer,
+                partition,
             } => {
                 if *answer == Answer::Position {
                     self.must_be_a_topic(transaction, table).await?;
                 }
-                self.insert(transaction, table, columns, rows, expire.as_ref(), span)
-                    .await
+                self.insert(
+                    transaction,
+                    (table, partition.as_ref()),
+                    columns,
+                    rows,
+                    expire.as_ref(),
+                    span,
+                )
+                .await
             }
             StatementKind::Update {
                 target,

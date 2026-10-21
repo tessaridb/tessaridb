@@ -15,6 +15,7 @@ mod admin;
 mod brokers;
 mod carrying;
 mod groups;
+mod partitions;
 
 async fn serving() -> (String, CancellationToken) {
     let (address, stop, _) = serving_with("").await;
@@ -81,6 +82,10 @@ async fn ask(
 }
 
 fn produce_body(topic: &str, records: &[u8]) -> Vec<u8> {
+    produce_body_at(topic, 0, records)
+}
+
+fn produce_body_at(topic: &str, partition: i32, records: &[u8]) -> Vec<u8> {
     let mut body = Writer::new();
     body.nullable_string(true, None).unwrap();
     body.i16(-1);
@@ -88,7 +93,7 @@ fn produce_body(topic: &str, records: &[u8]) -> Vec<u8> {
     body.array_len(true, Some(1)).unwrap();
     body.string(true, topic).unwrap();
     body.array_len(true, Some(1)).unwrap();
-    body.i32(0);
+    body.i32(partition);
     body.nullable_bytes(true, Some(records)).unwrap();
     body.no_tagged_fields();
     body.no_tagged_fields();
@@ -110,6 +115,10 @@ fn produced(answer: &[u8]) -> (i16, i64) {
 }
 
 fn fetch_body(topic: &str, offset: i64) -> Vec<u8> {
+    fetch_body_at(topic, 0, offset)
+}
+
+fn fetch_body_at(topic: &str, partition: i32, offset: i64) -> Vec<u8> {
     let mut body = Writer::new();
     body.i32(-1);
     body.i32(0);
@@ -121,7 +130,7 @@ fn fetch_body(topic: &str, offset: i64) -> Vec<u8> {
     body.array_len(true, Some(1)).unwrap();
     body.string(true, topic).unwrap();
     body.array_len(true, Some(1)).unwrap();
-    body.i32(0);
+    body.i32(partition);
     body.i32(-1);
     body.i64(offset);
     body.i32(-1);

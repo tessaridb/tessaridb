@@ -179,10 +179,15 @@ async fn describe(shared: &Arc<Shared>, held: &mut Held, brokers: &Brokers, name
         .run(shared, topic.tenancy(), &script, &Parameters::new())
         .await
     {
-        Ok(_) => Topic {
+        Ok(outcomes) => Topic {
             error_code: errors::NONE,
             name: name.to_owned(),
-            partitions: 1,
+            partitions: match outcomes.last() {
+                Some(tessaridb::Outcome::Value(info)) => {
+                    i32::try_from(crate::surface::offsets::partitions_in(info)).unwrap_or(i32::MAX)
+                }
+                _ => 1,
+            },
             leader: leader(shared, brokers, &topic).await,
         },
         Err(failed) => unknown(code(&failed)),
@@ -204,19 +209,11 @@ pub(crate) async fn topics(
         }
         return topics;
     }
+    // Described one by one, because each says how many partitions it has.
     let visible = listing::visible(shared, held).await;
     let mut topics = Vec::with_capacity(visible.len());
     for name in visible {
-        let leader = match names::topic(&name, shared.database.as_ref()) {
-            Some(topic) => leader(shared, brokers, &topic).await,
-            None => brokers.this().node_id,
-        };
-        topics.push(Topic {
-            error_code: errors::NONE,
-            name,
-            partitions: 1,
-            leader,
-        });
+        topics.push(describe(shared, held, brokers, &name).await);
     }
     topics
 }

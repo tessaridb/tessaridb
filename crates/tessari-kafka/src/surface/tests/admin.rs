@@ -8,7 +8,7 @@ use super::{ask, serving_with};
 use crate::codec::{Reader, Writer};
 
 /// Create one topic with `partitions` and `configs`; its code.
-async fn create(
+pub(super) async fn create(
     stream: &mut TcpStream,
     name: &str,
     partitions: i32,
@@ -119,8 +119,9 @@ async fn a_client_creates_and_drops_topics_and_lists_every_database() {
         36,
         "exists, checked only"
     );
+    // Above the store's ceiling of partitions (ADR-0131).
     assert_eq!(
-        create(&mut stream, "events", 3, &[], false).await,
+        create(&mut stream, "events", 1_025, &[], false).await,
         37,
         "INVALID_PARTITIONS"
     );

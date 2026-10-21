@@ -105,7 +105,8 @@ const fn by_class(class: RefusalClass) -> i16 {
 /// The variant's name, for the two the protocol has codes for.
 fn refusal_name(refused: &Error) -> Option<&'static str> {
     match refused {
-        Error::NotATopic { .. } => Some("NotATopic"),
+        // A partition the topic does not have is unknown the same way.
+        Error::NotATopic { .. } | Error::NoSuchPartition { .. } => Some("NotATopic"),
         // A namespace, a database or a table the catalog does not hold: each
         // is a topic that does not exist, from the client's side.
         Error::Unknown {

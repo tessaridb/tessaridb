@@ -439,9 +439,13 @@ fn erase_statement(statement: &mut Statement) {
             expire,
             // An answer carries no span.
             answer: _,
+            partition,
         } => {
             erase_write_expiry(expire.as_mut());
             erase_table(table);
+            if let Some(partition) = partition {
+                erase_expr(partition);
+            }
             for column in columns.iter_mut() {
                 erase_name(column);
             }

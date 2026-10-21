@@ -15,6 +15,7 @@ use tessaridb::{Number, Outcome, Parameters, Value};
 use crate::api::committed::{CommitRequest, Committed, FetchRequest};
 use crate::surface::errors::{self, code};
 use crate::surface::names;
+use crate::surface::offsets::{partition_info, partition_parameter, partitions_in};
 use crate::surface::running::Held;
 use crate::surface::{Shared, listing};
 
@@ -47,11 +48,12 @@ pub(crate) async fn commit(
             let answered = match &topic {
                 _ if allowed != errors::NONE => allowed,
                 None => errors::UNKNOWN_TOPIC_OR_PARTITION,
-                Some(_) if partition.index != 0 => errors::UNKNOWN_TOPIC_OR_PARTITION,
                 Some(_) if partition.offset < 0 => errors::OFFSET_OUT_OF_RANGE,
                 Some(topic) => {
+                    // The partition's own reader position (ADR-0131); a
+                    // partition the topic does not have is refused by name.
                     let script = format!(
-                        "READ FROM {} FOR CONSUMER $name AFTER $offset LIMIT 0;",
+                        "READ FROM {} PARTITION $partition FOR CONSUMER $name AFTER $offset LIMIT 0;",
                         topic.name
                     );
                     let parameters = Parameters::from([
@@ -60,6 +62,7 @@ pub(crate) async fn commit(
                             "offset".to_owned(),
                             Value::Number(Number::Integer(partition.offset)),
                         ),
+                        partition_parameter(partition.index),
                     ]);
                     match held
                         .run(shared, topic.tenancy(), &script, &parameters)
@@ -103,55 +106,67 @@ pub(crate) async fn fetch(
 ) -> Vec<(String, Vec<Committed>)> {
     let name = reader(request.group);
     let every = request.topics.is_none();
-    let asked: Vec<(String, Vec<i32>)> = match &request.topics {
+    let asked: Vec<(String, Option<Vec<i32>>)> = match &request.topics {
         Some(topics) => topics
             .iter()
-            .map(|(topic, partitions)| ((*topic).to_owned(), partitions.clone()))
+            .map(|(topic, partitions)| ((*topic).to_owned(), Some(partitions.clone())))
             .collect(),
         None => listing::visible(shared, held)
             .await
             .into_iter()
-            .map(|topic| (topic, vec![0]))
+            .map(|topic| (topic, None))
             .collect(),
     };
     let mut answers = Vec::with_capacity(asked.len());
     for (asked, partitions) in asked {
-        let (offset, found) = match names::topic(&asked, shared.database.as_ref()) {
-            None => (-1, errors::UNKNOWN_TOPIC_OR_PARTITION),
+        let (info, found) = match names::topic(&asked, shared.database.as_ref()) {
+            None => (None, errors::UNKNOWN_TOPIC_OR_PARTITION),
             Some(topic) => {
                 let script = format!("INFO FOR TOPIC {};", topic.name);
                 match held
                     .run(shared, topic.tenancy(), &script, &Parameters::new())
                     .await
                 {
-                    Ok(outcomes) => match outcomes.last() {
-                        Some(Outcome::Value(info)) => {
-                            (position_of(info, &name).unwrap_or(-1), errors::NONE)
-                        }
-                        _ => (-1, errors::NONE),
+                    Ok(mut outcomes) => match outcomes.pop() {
+                        Some(Outcome::Value(info)) => (Some(info), errors::NONE),
+                        _ => (None, errors::NONE),
                     },
-                    Err(failed) => (-1, code(&failed)),
+                    Err(failed) => (None, code(&failed)),
                 }
             }
         };
-        if every && (offset < 0 || found != errors::NONE) {
+        // Every partition the topic has when the group asked for all of them.
+        let partitions = partitions.unwrap_or_else(|| {
+            let count = info.as_ref().map_or(1, partitions_in);
+            (0..i32::try_from(count).unwrap_or(i32::MAX)).collect()
+        });
+        let committed: Vec<Committed> = partitions
+            .iter()
+            .map(
+                |index| match info.as_ref().map(|info| partition_info(info, *index)) {
+                    Some(Some(partition)) => Committed {
+                        index: *index,
+                        offset: position_of(partition, &name).unwrap_or(-1),
+                        error_code: found,
+                    },
+                    Some(None) => Committed {
+                        index: *index,
+                        offset: -1,
+                        error_code: errors::UNKNOWN_TOPIC_OR_PARTITION,
+                    },
+                    None => Committed {
+                        index: *index,
+                        offset: -1,
+                        error_code: found,
+                    },
+                },
+            )
+            .collect();
+        if every
+            && (found != errors::NONE || committed.iter().all(|partition| partition.offset < 0))
+        {
             continue;
         }
-        let committed = partitions
-            .iter()
-            .map(|index| match *index {
-                0 => Committed {
-                    index: 0,
-                    offset,
-                    error_code: found,
-                },
-                other => Committed {
-                    index: other,
-                    offset: -1,
-                    error_code: errors::UNKNOWN_TOPIC_OR_PARTITION,
-                },
-            })
-            .collect();
         answers.push((asked, committed));
     }
     answers
