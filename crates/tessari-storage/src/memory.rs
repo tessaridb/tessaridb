@@ -33,13 +33,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use dashmap::DashMap;
 use tessari_encoding::{KeyKind, RecordKey, StoreKey, StoreValue, VersionPositionKey};
-use tessari_kv::{
-    GroupFuture, Key, KeyRange, Keyspace, KvBackend, KvFuture, MemoryBackend, Precondition,
-    ScanRequest, Value, WriteBatch, WriteOp,
-};
+use tessari_kv::{KeyRange, KvBackend, MemoryBackend, Precondition, Value, WriteBatch, WriteOp};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
 use crate::catalog::system::{RECORD_COUNTS, SYSTEM_DATABASE, SYSTEM_NAMESPACE};
+
+mod dropped;
+mod routed;
+mod space;
+
+pub(crate) use space::SpaceMemory;
 
 /// Where a record or modified-order key names its namespace, database and
 /// table: after the tag.
@@ -55,13 +58,35 @@ const PLACE_LEN: usize = 12;
 /// them.
 type Place = [u8; PLACE_LEN];
 
-/// The spaces this node holds in memory, by table.
+/// One held space: its own keys, and the prefix of its count record's
+/// versions, which live in the system counts table and so carry no place of
+/// the space's own.
+#[derive(Debug)]
+pub(crate) struct Space {
+    count_versions: Vec<u8>,
+    memory: SpaceMemory,
+}
+
+impl Space {
+    /// The space's keys.
+    pub(crate) fn memory(&self) -> &SpaceMemory {
+        &self.memory
+    }
+}
+
+/// The spaces this node holds in memory: a map from each held table to the
+/// map of its own keys.
 #[derive(Debug, Default)]
 pub(crate) struct HeldSpaces {
     /// Whether any space is held, so a store with none pays one load per key.
     any: AtomicBool,
-    /// Each held table and the prefix of its count record's versions.
-    tables: DashMap<Place, Vec<u8>>,
+    /// Each held table and its keys.
+    tables: DashMap<Place, Arc<Space>>,
+    /// Spaces a drop has named, and the version they were first seen gone at
+    /// (`dropped.rs`).
+    dropping: DashMap<Place, Option<Sequence>>,
+    /// Whether `dropping` names any, so a commit with none pays one load.
+    any_dropping: AtomicBool,
 }
 
 impl HeldSpaces {
@@ -73,43 +98,51 @@ impl HeldSpaces {
         self.tables
             .entry(place_of(namespace, database, table))
             .or_insert_with(|| {
-                RecordKey::versions_prefix(
-                    SYSTEM_NAMESPACE,
-                    SYSTEM_DATABASE,
-                    RECORD_COUNTS,
-                    &RecordId::Int(i64::from(table.get())),
-                )
+                Arc::new(Space {
+                    count_versions: RecordKey::versions_prefix(
+                        SYSTEM_NAMESPACE,
+                        SYSTEM_DATABASE,
+                        RECORD_COUNTS,
+                        &RecordId::Int(i64::from(table.get())),
+                    ),
+                    memory: SpaceMemory::new(),
+                })
             });
         // Release: pairs with the Acquire in `routes`, after the insert.
         self.any.store(true, Ordering::Release);
     }
 
-    /// Whether `key` belongs to a held space.
-    fn routes(&self, key: &[u8]) -> bool {
+    /// Every held space, as it stands.
+    pub(crate) fn all(&self) -> Vec<Arc<Space>> {
+        self.tables
+            .iter()
+            .map(|held| Arc::clone(held.value()))
+            .collect()
+    }
+
+    /// The held space `key` belongs to, if any.
+    fn routes(&self, key: &[u8]) -> Option<Arc<Space>> {
         // Acquire: pairs with the Release in `hold`.
         if !self.any.load(Ordering::Acquire) {
-            return false;
+            return None;
         }
-        let Some(tag) = key.first() else {
-            return false;
-        };
+        let tag = key.first()?;
         let at = if *tag == KeyKind::Record.tag() || *tag == KeyKind::ModifiedOrder.tag() {
             PLACE_AT
         } else if *tag == KeyKind::ExpiryIndex.tag() {
             EXPIRY_PLACE_AT
         } else {
-            return false;
+            return None;
         };
-        let Some(place) = place_in(key, at) else {
-            return false;
-        };
+        let place = place_in(key, at)?;
         if *tag == KeyKind::Record.tag() && place == counts_place() {
             return self
                 .tables
                 .iter()
-                .any(|held| key.starts_with(held.value().as_slice()));
+                .find(|held| key.starts_with(held.value().count_versions.as_slice()))
+                .map(|held| Arc::clone(held.value()));
         }
-        self.tables.contains_key(&place)
+        self.tables.get(&place).map(|held| Arc::clone(held.value()))
     }
 }
 
@@ -137,7 +170,8 @@ fn place_of(namespace: NamespaceId, database: DatabaseId, table: TableId) -> Pla
 #[derive(Debug)]
 pub(crate) struct Routed {
     disk: Arc<dyn KvBackend>,
-    memory: MemoryBackend,
+    /// The version key, when the newest commit wrote only held spaces.
+    version: MemoryBackend,
     held: Arc<HeldSpaces>,
 }
 
@@ -145,40 +179,27 @@ impl Routed {
     pub(crate) fn new(disk: Arc<dyn KvBackend>, held: Arc<HeldSpaces>) -> Self {
         Self {
             disk,
-            memory: MemoryBackend::new(),
+            version: MemoryBackend::new(),
             held,
         }
     }
 
-    /// Node memory alone, for the one reader that walks every table's entries
-    /// and must find the held ones too: the expiry removal pass.
-    pub(crate) fn memory(&self) -> &MemoryBackend {
-        &self.memory
-    }
-
-    fn side(&self, key: &[u8]) -> &dyn KvBackend {
-        if self.held.routes(key) {
-            &self.memory
-        } else {
-            &*self.disk
+    /// Where `key` lives: its held space, or the store's backend.
+    fn side(&self, key: &[u8]) -> Side<'_> {
+        match self.held.routes(key) {
+            Some(space) => Side::Held(space),
+            None => Side::Disk(&*self.disk),
         }
     }
 
-    fn side_of(&self, range: &KeyRange) -> &dyn KvBackend {
-        if self.in_memory(range) {
-            &self.memory
-        } else {
-            &*self.disk
-        }
-    }
-
-    /// Whether `range` reads a held space: its start names one.
-    fn in_memory(&self, range: &KeyRange) -> bool {
+    /// Where `range` lives: the side of its start, so a range across tables —
+    /// which starts with no table — reads the store's backend alone.
+    fn side_of(&self, range: &KeyRange) -> Side<'_> {
         match range.start() {
             std::ops::Bound::Included(start) | std::ops::Bound::Excluded(start) => {
-                self.held.routes(start.as_slice())
+                self.side(start.as_slice())
             }
-            std::ops::Bound::Unbounded => false,
+            std::ops::Bound::Unbounded => Side::Disk(&*self.disk),
         }
     }
 
@@ -187,7 +208,7 @@ impl Routed {
         let key = VersionPositionKey.encode();
         let keyspace = VersionPositionKey::keyspace();
         let disk = self.disk.get(keyspace, &key).await?;
-        let memory = self.memory.get(keyspace, &key).await?;
+        let memory = self.version.get(keyspace, &key).await?;
         Ok(match (disk, memory) {
             (Some(disk), Some(memory)) => {
                 if decoded(&memory) > decoded(&disk) {
@@ -230,7 +251,7 @@ impl Routed {
                     disk = expect(disk, precondition);
                 }
             }
-            let mut memory = WriteBatch::new();
+            let mut held: Vec<(Arc<Space>, WriteBatch)> = Vec::new();
             let mut version = None;
             for op in batch.ops() {
                 if *op.key() == version_key {
@@ -238,8 +259,11 @@ impl Routed {
                     if let WriteOp::Put { value, .. } = op {
                         current = Some(value.clone());
                     }
-                } else if self.held.routes(op.key().as_slice()) {
-                    memory = with(memory, op.clone());
+                } else if let Some(space) = self.held.routes(op.key().as_slice()) {
+                    match held.iter_mut().find(|(seen, _)| Arc::ptr_eq(seen, &space)) {
+                        Some((_, batch)) => *batch = with(std::mem::take(batch), op.clone()),
+                        None => held.push((space, with(WriteBatch::new(), op.clone()))),
+                    }
                 } else {
                     disk = with(disk, op.clone());
                 }
@@ -247,20 +271,23 @@ impl Routed {
             // The version goes where the rest of the commit goes: to disk with
             // anything durable, to memory with a commit that wrote only held
             // records.
+            let mut memory_version = WriteBatch::new();
             if let Some(version) = version {
                 if disk.ops().is_empty() {
-                    memory = with(memory, version);
+                    memory_version = with(memory_version, version);
                 } else {
                     disk = with(disk, version);
                 }
             }
-            parts.push(Parts { disk, memory });
+            parts.push(Parts {
+                disk,
+                held,
+                version: memory_version,
+            });
         }
         Ok((parts, None))
     }
-}
 
-impl Routed {
     /// [`Self::split`] for one batch: its halves, or its version conflict.
     async fn one(&self, batch: WriteBatch) -> tessari_kv::Result<Option<Parts>> {
         let (mut parts, refused) = self.split(vec![batch]).await?;
@@ -269,12 +296,46 @@ impl Routed {
             None => Ok(parts.pop()),
         }
     }
+
+    /// A batch's memory half: each held space's part, then the version.
+    async fn land_held(&self, parts: Parts) -> tessari_kv::Result<()> {
+        for (space, batch) in parts.held {
+            space.memory.apply(batch).await?;
+        }
+        if !parts.version.is_empty() {
+            self.version.apply(parts.version).await?;
+        }
+        Ok(())
+    }
 }
 
-/// One batch's two halves.
+/// One side of the router, held for the length of one call.
+enum Side<'a> {
+    Disk(&'a dyn KvBackend),
+    Held(Arc<Space>),
+}
+
+impl Side<'_> {
+    fn backend(&self) -> &dyn KvBackend {
+        match self {
+            Self::Disk(disk) => *disk,
+            Self::Held(space) => &space.memory,
+        }
+    }
+}
+
+/// One batch's parts: the store's backend's, each held space's, and the
+/// version key when the commit wrote only held spaces.
 struct Parts {
     disk: WriteBatch,
-    memory: WriteBatch,
+    held: Vec<(Arc<Space>, WriteBatch)>,
+    version: WriteBatch,
+}
+
+impl Parts {
+    fn holds_memory(&self) -> bool {
+        !self.held.is_empty() || !self.version.is_empty()
+    }
 }
 
 fn decoded(value: &Value) -> Sequence {
@@ -301,157 +362,6 @@ fn expect(batch: WriteBatch, precondition: &Precondition) -> WriteBatch {
         } => batch.expect_value(keyspace, key, expected),
         Precondition::Absent { keyspace, key } => batch.expect_absent(keyspace, key),
         Precondition::Exists { keyspace, key } => batch.expect_exists(keyspace, key),
-    }
-}
-
-impl KvBackend for Routed {
-    fn name(&self) -> &'static str {
-        self.disk.name()
-    }
-
-    fn get<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, Option<Value>> {
-        if *key == VersionPositionKey.encode() {
-            return Box::pin(self.version());
-        }
-        self.side(key.as_slice()).get(keyspace, key)
-    }
-
-    fn scan<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
-        self.side_of(&request.range).scan(request)
-    }
-
-    fn sweep<'a>(&'a self, request: &'a ScanRequest) -> KvFuture<'a, Vec<(Key, Value)>> {
-        self.side_of(&request.range).sweep(request)
-    }
-
-    fn first_of_each<'a>(
-        &'a self,
-        keyspace: Keyspace,
-        ranges: &'a [KeyRange],
-    ) -> KvFuture<'a, Vec<Option<(Key, Value)>>> {
-        // Whole to one side when every range is on it, so a backend that answers
-        // many ranges in one ask still does.
-        let held: Vec<bool> = ranges.iter().map(|range| self.in_memory(range)).collect();
-        if held.iter().all(|held| !held) {
-            return self.disk.first_of_each(keyspace, ranges);
-        }
-        if held.iter().all(|held| *held) {
-            return self.memory.first_of_each(keyspace, ranges);
-        }
-        Box::pin(async move {
-            let mut found = Vec::with_capacity(ranges.len());
-            for range in ranges {
-                let side = self.side_of(range);
-                found.push(
-                    side.first_of_each(keyspace, std::slice::from_ref(range))
-                        .await?
-                        .pop()
-                        .flatten(),
-                );
-            }
-            Ok(found)
-        })
-    }
-
-    fn count<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, u64> {
-        self.side_of(range).count(keyspace, range)
-    }
-
-    fn contains<'a>(&'a self, keyspace: Keyspace, key: &'a Key) -> KvFuture<'a, bool> {
-        if *key == VersionPositionKey.encode() {
-            return Box::pin(async move { Ok(self.version().await?.is_some()) });
-        }
-        self.side(key.as_slice()).contains(keyspace, key)
-    }
-
-    fn delete_range<'a>(&'a self, keyspace: Keyspace, range: &'a KeyRange) -> KvFuture<'a, ()> {
-        self.side_of(range).delete_range(keyspace, range)
-    }
-
-    fn apply(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
-        Box::pin(async move {
-            let Some(parts) = self.one(batch).await? else {
-                return Ok(());
-            };
-            if !parts.disk.is_empty() {
-                self.disk.apply(parts.disk).await?;
-            }
-            if !parts.memory.is_empty() {
-                self.memory.apply(parts.memory).await?;
-            }
-            Ok(())
-        })
-    }
-
-    fn apply_unsynced(&self, batch: WriteBatch) -> KvFuture<'_, ()> {
-        Box::pin(async move {
-            let Some(parts) = self.one(batch).await? else {
-                return Ok(());
-            };
-            if !parts.disk.is_empty() {
-                self.disk.apply_unsynced(parts.disk).await?;
-            }
-            if !parts.memory.is_empty() {
-                self.memory.apply(parts.memory).await?;
-            }
-            Ok(())
-        })
-    }
-
-    fn sync_applied(&self) -> KvFuture<'_, ()> {
-        self.disk.sync_applied()
-    }
-
-    fn apply_group(&self, batches: Vec<WriteBatch>) -> GroupFuture<'_> {
-        Box::pin(async move {
-            let (parts, refused) = match self.split(batches).await {
-                Ok(split) => split,
-                Err(failure) => return (0, Err(failure)),
-            };
-            // The disk halves land first, as one group, and only the batches
-            // whose disk half landed have their memory half applied.
-            let mut durable = Vec::new();
-            let mut owners = Vec::new();
-            for (index, part) in parts.iter().enumerate() {
-                if !part.disk.is_empty() {
-                    durable.push(part.disk.clone());
-                    owners.push(index);
-                }
-            }
-            let (on_disk, failed) = if durable.is_empty() {
-                (0, Ok(()))
-            } else {
-                self.disk.apply_group(durable).await
-            };
-            let landed = match &failed {
-                Ok(()) => parts.len(),
-                Err(_) => owners.get(on_disk).copied().unwrap_or(parts.len()),
-            };
-            for part in parts.into_iter().take(landed) {
-                if !part.memory.is_empty()
-                    && let Err(failure) = self.memory.apply(part.memory).await
-                {
-                    return (0, Err(failure));
-                }
-            }
-            match (failed, refused) {
-                (Err(failure), _) => (landed, Err(failure)),
-                (Ok(()), Some(refused)) => (landed, Err(refused)),
-                (Ok(()), None) => (landed, Ok(())),
-            }
-        })
-    }
-
-    fn groups_writes(&self) -> bool {
-        self.disk.groups_writes()
-    }
-
-    fn background_errors(&self) -> KvFuture<'_, u64> {
-        self.disk.background_errors()
-    }
-
-    fn close(self: Arc<Self>) -> KvFuture<'static, ()> {
-        Arc::clone(&self.disk).close()
     }
 }
 

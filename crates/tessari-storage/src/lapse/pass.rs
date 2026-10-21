@@ -61,14 +61,18 @@ impl Store {
     /// led elsewhere.
     pub async fn remove_expired(&self) -> Result<Lapsed> {
         let mut lapsed = Lapsed::default();
+        // A dropped space a reader held back is released here once it is not.
+        self.release_dropped_spaces().await?;
         let now = self.begin().await?.clock();
         // The store's backend, then node memory: a range across tables reads
         // the backend alone, so the entries of a space held in memory are found
         // only by asking memory for them (ADR-0130).
         self.remove_expired_from(self.backend(), now, &mut lapsed)
             .await?;
-        self.remove_expired_from(self.held_memory(), now, &mut lapsed)
-            .await?;
+        for space in self.held_memory() {
+            self.remove_expired_from(space.memory(), now, &mut lapsed)
+                .await?;
+        }
         Ok(lapsed)
     }
 

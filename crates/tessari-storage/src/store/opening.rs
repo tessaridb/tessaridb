@@ -66,7 +66,7 @@ impl Store {
         // held space as it sees every other staged write (ADR-0130).
         let held = Arc::new(crate::memory::HeldSpaces::default());
         let routed = Arc::new(crate::memory::Routed::new(backend, Arc::clone(&held)));
-        let backend: Arc<dyn KvBackend> = routed.clone();
+        let backend: Arc<dyn KvBackend> = routed;
         let store = Self {
             // Every read the turn's holder makes sees what is staged behind it;
             // every other read sees the engine alone (`crate::gate`). Only a
@@ -92,7 +92,6 @@ impl Store {
             served,
             expiring,
             held,
-            held_memory: routed,
             public_appends: Arc::new(crate::topic::PublicRates::default()),
             divergences: Arc::new(AtomicU64::new(0)),
             discarded: Arc::new(AtomicU64::new(0)),

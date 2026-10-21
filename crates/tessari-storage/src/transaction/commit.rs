@@ -317,7 +317,7 @@ impl Transaction<'_> {
     /// record this one wrote, [`Error::CommitContention`] when every attempt
     /// lost the race for the committed tail, or a substrate error.
     pub async fn commit(self) -> Result<Sequence> {
-        self.settle(Settle::Apply)
+        self.commit_placed()
             .await
             .map(|committed| committed.sequence)
     }
@@ -333,7 +333,16 @@ impl Transaction<'_> {
     ///
     /// The same as [`commit`](Self::commit).
     pub async fn commit_placed(self) -> Result<Committed> {
-        self.settle(Settle::Apply).await
+        let store = self.store;
+        let committed = self.settle(Settle::Apply).await?;
+        // With this transaction's snapshot gone, a space it dropped leaves node
+        // memory now, unless an older reader still sees it (ADR-0130). The
+        // commit has landed, so a failure here is the expiry pass's to retry,
+        // not this caller's to see.
+        if let Err(failure) = store.release_dropped_spaces().await {
+            tracing::warn!(error = %failure, "a dropped space stays in memory");
+        }
+        Ok(committed)
     }
 
     /// Run every check a commit runs, then discard the work.

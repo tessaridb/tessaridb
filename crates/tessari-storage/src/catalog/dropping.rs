@@ -28,6 +28,18 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             return Ok(false);
         };
         self.transaction.store().series().forget(id);
+        // A space held in memory is released once this drop lands and no
+        // reader can see it; until then this is only a hint (ADR-0130).
+        if matches!(
+            definition.kind,
+            super::TableKind::Space(super::SpaceDeclaration { memory: true, .. })
+        ) {
+            self.transaction.store().held_spaces().dropping(
+                definition.namespace,
+                definition.database,
+                id,
+            );
+        }
         let qualified = qualify(
             Level::Table,
             &[definition.namespace.get(), definition.database.get()],

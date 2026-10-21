@@ -373,9 +373,38 @@ impl Store {
         &self.held
     }
 
-    /// Node memory alone: where the held spaces' keys live.
-    pub(crate) fn held_memory(&self) -> &dyn tessari_kv::KvBackend {
-        self.held_memory.memory()
+    /// The spaces held in node memory, each with its own keys.
+    pub(crate) fn held_memory(&self) -> Vec<Arc<crate::memory::Space>> {
+        self.held.all()
+    }
+
+    /// How many keys node memory holds for the held spaces, the version key
+    /// aside — what a test of a released space counts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when node memory cannot be walked.
+    #[cfg(feature = "test-support")]
+    pub async fn held_keys(&self) -> Result<usize> {
+        use tessari_encoding::StoreKey as _;
+        use tessari_kv::KvBackend as _;
+        let version = tessari_encoding::VersionPositionKey.encode();
+        let mut held = 0_usize;
+        for space in self.held_memory() {
+            for keyspace in tessari_kv::Keyspace::ALL {
+                let pairs = space
+                    .memory()
+                    .scan(&tessari_kv::ScanRequest {
+                        keyspace: *keyspace,
+                        range: tessari_kv::KeyRange::prefix(&[]),
+                        direction: tessari_kv::ScanDirection::Forward,
+                        limit: None,
+                    })
+                    .await?;
+                held = held.saturating_add(pairs.iter().filter(|(key, _)| *key != version).count());
+            }
+        }
+        Ok(held)
     }
 
     /// The backend as shared, for what holds it beyond one call.

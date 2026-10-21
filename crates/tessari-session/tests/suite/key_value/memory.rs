@@ -223,3 +223,75 @@ fn a_node_beside_another_writer_refuses_to_write_an_in_memory_space() {
         );
     });
 }
+
+/// The keys node memory holds for the held spaces.
+fn held_keys(store: &Store) -> usize {
+    store.held_keys().now().unwrap()
+}
+
+#[test]
+fn dropping_an_in_memory_space_frees_its_keys_and_no_other() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        run(&mut session, "DEFINE SPACE warm IN MEMORY MAX 10;");
+        run(&mut session, "SET warm:'kept' = 1;");
+        let warm = held_keys(&backend.store);
+        run(&mut session, "DEFINE SPACE hot IN MEMORY MAX 10;");
+        run(&mut session, "SET hot:'a' = 1;");
+        run(&mut session, "INCR hot:'a';");
+        run(&mut session, "SET hot:'b' = 'x' EXPIRE 1h;");
+        // Control: the space's records, expiry entry and count are in memory.
+        assert!(held_keys(&backend.store) > warm, "{}", backend.name);
+        run(&mut session, "DROP SPACE hot;");
+        assert_eq!(
+            held_keys(&backend.store),
+            warm,
+            "{}: the dropped space's keys stayed in memory",
+            backend.name
+        );
+        assert_eq!(value(&mut session, "GET warm:'kept';"), Value::from(1));
+        // A space redefined under the name is a new one and starts empty.
+        run(&mut session, "DEFINE SPACE hot IN MEMORY MAX 10;");
+        assert_eq!(keys(&mut session, "KEYS FROM hot;"), 0);
+    });
+}
+
+#[test]
+fn a_reader_older_than_the_drop_keeps_the_space_until_it_ends() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        run(&mut session, "DEFINE SPACE hot IN MEMORY MAX 10;");
+        run(&mut session, "SET hot:'a' = 1;");
+        let held = held_keys(&backend.store);
+        // A reader whose snapshot is older than the drop: what it may read
+        // stays until it ends.
+        let reader = backend.store.begin().now().unwrap();
+        run(&mut session, "DROP SPACE hot;");
+        assert_eq!(
+            held_keys(&backend.store),
+            held,
+            "{}: the space left memory under a reader that can still see it",
+            backend.name
+        );
+        drop(reader);
+        // The housekeeping pass releases what the reader held back.
+        backend.store.remove_expired().now().unwrap();
+        assert_eq!(held_keys(&backend.store), 0, "{}", backend.name);
+    });
+}
+
+#[test]
+fn a_cancelled_drop_of_an_in_memory_space_frees_nothing() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        run(&mut session, "DEFINE SPACE hot IN MEMORY MAX 10;");
+        run(&mut session, "SET hot:'a' = 1;");
+        let held = held_keys(&backend.store);
+        run(&mut session, "BEGIN; DROP SPACE hot; CANCEL;");
+        backend.store.remove_expired().now().unwrap();
+        assert_eq!(held_keys(&backend.store), held, "{}", backend.name);
+        assert_eq!(value(&mut session, "GET hot:'a';"), Value::from(1));
+        run(&mut session, "SET hot:'b' = 2;");
+        assert_eq!(keys(&mut session, "KEYS FROM hot;"), 2);
+    });
+}

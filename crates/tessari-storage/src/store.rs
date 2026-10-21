@@ -246,8 +246,6 @@ pub struct Store {
     expiring: Arc<crate::lapse::Expiring>,
     /// The spaces this node holds in memory, which the backend routes (ADR-0130).
     held: Arc<crate::memory::HeldSpaces>,
-    /// Node memory, where the held spaces' keys live.
-    held_memory: Arc<crate::memory::Routed>,
     /// How much of each `PUBLIC` topic's anonymous allowance is spent, on this
     /// node (G037). See [`crate::topic`]'s rate module for why it is not stored.
     public_appends: Arc<crate::topic::PublicRates>,

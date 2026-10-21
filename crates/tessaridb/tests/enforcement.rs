@@ -1095,7 +1095,14 @@ const TABLES: &[Table] = &[
         // `Store::close` arrived. **Exempt, as the end of a lifetime**: it takes
         // the store by value, so no session or transaction can be open on it,
         // reads and writes no record, and refuses while another handle lives.
-        expected: 80,
+        //
+        // 81 since a dropped in-memory space is released (G079 W5c):
+        // `Store::held_keys`. **Exempt, as test support**: it is compiled only
+        // under the `test-support` feature, which no shipped binary enables, and
+        // answers how many keys node memory holds — a count, never a key or a
+        // value. Re-classification trigger: the feature reaching a shipped build,
+        // or the method answering anything but a count.
+        expected: 81,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1348,7 +1355,9 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 167 since `Store::open_async` (G077 W5a), classified above.
     //
     // 168 since `Db::close` (G077 W6b), classified above.
-    assert_eq!(total, 168, "the counted tables no longer sum to 168");
+    //
+    // 169 since `Store::held_keys` (G079 W5c), test support, classified above.
+    assert_eq!(total, 169, "the counted tables no longer sum to 169");
 }
 
 /// Every `.rs` file under a directory.

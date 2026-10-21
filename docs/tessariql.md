@@ -6918,7 +6918,9 @@ DEFINE SPACE hot IN MEMORY MAX 100000;
   **`InMemoryBesideDurable`**: the two would not survive a restart together.
 - A node writes a held space only while no other node in its cluster may write;
   otherwise the write is refused with **`InMemoryOnACluster`**.
-- `DROP SPACE` leaves the keys in memory until the next restart.
+- Each held space keeps its keys in a map of its own. `DROP SPACE` frees that
+  map as soon as the drop commits — or, when a transaction that began before
+  the drop is still open, as soon as the last such transaction ends.
 
 ### Composition
 

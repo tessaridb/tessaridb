@@ -50,21 +50,24 @@ fn count(table: u32) -> Vec<u8> {
 #[test]
 fn only_the_keys_of_a_held_table_are_routed_to_memory() {
     let held = HeldSpaces::default();
-    assert!(!held.routes(&record(40)), "nothing is held yet");
+    assert!(held.routes(&record(40)).is_none(), "nothing is held yet");
     held.hold(NAMESPACE, DATABASE, TableId::new(40));
-    assert!(held.routes(&record(40)));
-    assert!(held.routes(&expiry(40)));
-    assert!(held.routes(&count(40)));
-    assert!(held.routes(&ModifiedKey::table_prefix(
-        NAMESPACE,
-        DATABASE,
-        TableId::new(40)
-    )));
+    assert!(held.routes(&record(40)).is_some());
+    assert!(held.routes(&expiry(40)).is_some());
+    assert!(held.routes(&count(40)).is_some());
+    assert!(
+        held.routes(&ModifiedKey::table_prefix(
+            NAMESPACE,
+            DATABASE,
+            TableId::new(40)
+        ))
+        .is_some()
+    );
     // The neighbours stay on disk: another table, its count, a table-less prefix.
-    assert!(!held.routes(&record(41)));
-    assert!(!held.routes(&expiry(41)));
-    assert!(!held.routes(&count(41)));
-    assert!(!held.routes(&count(400)));
+    assert!(held.routes(&record(41)).is_none());
+    assert!(held.routes(&expiry(41)).is_none());
+    assert!(held.routes(&count(41)).is_none());
+    assert!(held.routes(&count(400)).is_none());
     // The same table identifier in another database — a catalog table shares it.
     let elsewhere = RecordKey::new(
         SYSTEM_NAMESPACE,
@@ -73,7 +76,7 @@ fn only_the_keys_of_a_held_table_are_routed_to_memory() {
         RecordId::from("k"),
         Sequence::new(7),
     );
-    assert!(!held.routes(elsewhere.encode().as_slice()));
-    assert!(!held.routes(&[KeyKind::Record.tag()]));
-    assert!(!held.routes(&[]));
+    assert!(held.routes(elsewhere.encode().as_slice()).is_none());
+    assert!(held.routes(&[KeyKind::Record.tag()]).is_none());
+    assert!(held.routes(&[]).is_none());
 }
