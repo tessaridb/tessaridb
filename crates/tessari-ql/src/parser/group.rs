@@ -11,6 +11,15 @@
 
 use super::Parser;
 use super::statement::NamedConsumer;
+
+/// What `ACK` and `NACK` name: the topic, its partition, the group and the
+/// positions.
+type Settlement = (
+    TableRef,
+    Option<crate::ast::Expr>,
+    NamedConsumer,
+    Vec<crate::ast::Expr>,
+);
 use crate::ast::{GroupClauses, StatementKind, TableRef};
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
@@ -109,22 +118,23 @@ impl Parser<'_> {
         })
     }
 
-    /// `ACK <topic> FOR CONSUMER '<name>' AT <expr>[, <expr>…]`, `ACK`
+    /// `ACK <topic> [PARTITION <expr>] FOR CONSUMER '<name>' AT <expr>[, <expr>…]`, `ACK`
     /// consumed.
     pub(super) fn ack_statement(&mut self) -> Result<StatementKind> {
-        let (topic, (consumer, consumer_parameter), positions) = self.settlement()?;
+        let (topic, partition, (consumer, consumer_parameter), positions) = self.settlement()?;
         Ok(StatementKind::AckTopic {
             topic,
             consumer,
             consumer_parameter,
             positions,
+            partition,
         })
     }
 
-    /// `NACK <topic> FOR CONSUMER '<name>' AT <expr>[, <expr>…] [DELAY d]`,
+    /// `NACK <topic> [PARTITION <expr>] FOR CONSUMER '<name>' AT <expr>[, <expr>…] [DELAY d]`,
     /// `NACK` consumed.
     pub(super) fn nack_statement(&mut self) -> Result<StatementKind> {
-        let (topic, (consumer, consumer_parameter), positions) = self.settlement()?;
+        let (topic, partition, (consumer, consumer_parameter), positions) = self.settlement()?;
         let delay = if self.eat_word("delay") {
             Some(self.positive_duration(
                 "a duration above zero, like `5s` — how long before the message is handed out again",
@@ -138,6 +148,7 @@ impl Parser<'_> {
             consumer_parameter,
             positions,
             delay,
+            partition,
         })
     }
 
@@ -166,9 +177,14 @@ impl Parser<'_> {
         Ok((name, self.table_ref()?))
     }
 
-    /// `<topic> FOR CONSUMER '<name>' AT <expr>[, <expr>…]`.
-    fn settlement(&mut self) -> Result<(TableRef, NamedConsumer, Vec<crate::ast::Expr>)> {
+    /// `<topic> [PARTITION <expr>] FOR CONSUMER '<name>' AT <expr>[, <expr>…]`.
+    fn settlement(&mut self) -> Result<Settlement> {
         let topic = self.table_ref()?;
+        let partition = if self.eat_word("partition") {
+            Some(self.expression()?)
+        } else {
+            None
+        };
         let (Some(consumer), parameter) = self.for_consumer()? else {
             return Err(
                 self.error_here("`FOR CONSUMER '<name>'` — the group that handed the messages out")
@@ -179,6 +195,6 @@ impl Parser<'_> {
         while self.eat_punct(Punct::Comma) {
             positions.push(self.expression()?);
         }
-        Ok((topic, (consumer, parameter), positions))
+        Ok((topic, partition, (consumer, parameter), positions))
     }
 }

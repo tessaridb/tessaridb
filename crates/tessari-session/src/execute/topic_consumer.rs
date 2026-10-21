@@ -46,10 +46,18 @@ impl Session<'_> {
         }
 
         let (context, topic) = self.group_topic(transaction, declared.topic, span).await?;
+        // A split topic's group lives in each partition, declared alike, so the
+        // first one answers for all (ADR-0131).
+        let held_in = self
+            .partition_homes(transaction, topic)
+            .await?
+            .first()
+            .copied()
+            .unwrap_or(topic);
         let group = Self::existing_group(
             transaction,
             &context,
-            topic,
+            held_in,
             declared.group,
             declared.topic,
             span,

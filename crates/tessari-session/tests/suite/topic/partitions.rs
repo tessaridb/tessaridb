@@ -310,3 +310,87 @@ fn a_dead_letter_to_a_split_topic_lands_in_one_of_its_partitions() {
         assert_eq!(landed, 1, "{}", backend.name);
     });
 }
+
+/// A partition's entry in `INFO FOR TOPIC`.
+fn partition_report(
+    session: &mut tessari_session::Session<'_>,
+    topic: &str,
+    partition: usize,
+) -> std::collections::BTreeMap<String, Value> {
+    let Value::Array(each) = field(session, &format!("INFO FOR TOPIC {topic};"), "each") else {
+        panic!("INFO FOR TOPIC {topic} lists no partitions");
+    };
+    match each.get(partition) {
+        Some(Value::Object(report)) => report.clone(),
+        other => panic!("partition {partition} of {topic}: {other:?}"),
+    }
+}
+
+#[test]
+fn a_group_on_a_split_topic_holds_each_partition_on_its_own() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        // "user-42" lands in partition 0 of two, "abc" in partition 1.
+        run(
+            &mut session,
+            "DEFINE TOPIC orders PARTITIONS 2 BY customer;\n\
+             DEFINE GROUP 'billing' ON TOPIC orders ACK DEADLINE 30s;\n\
+             CREATE orders = { customer: 'user-42' };\n\
+             CREATE orders = { customer: 'user-42', n: 2 };\n\
+             CREATE orders = { customer: 'abc' };",
+        );
+        let first = "READ FROM orders PARTITION 0 FOR CONSUMER 'billing';";
+        assert_eq!(rows(&mut session, first), 1, "{}", backend.name);
+        // One in flight in partition 0 holds that partition and no other.
+        assert_eq!(rows(&mut session, first), 0, "{}", backend.name);
+        assert_eq!(
+            rows(
+                &mut session,
+                "READ FROM orders PARTITION 1 FOR CONSUMER 'billing';"
+            ),
+            1,
+            "{}",
+            backend.name
+        );
+        assert!(matches!(
+            session.run_now("ACK orders FOR CONSUMER 'billing' AT 1;"),
+            Err(Error::PartitionNotNamed { .. })
+        ));
+        assert_eq!(
+            value(
+                &mut session,
+                "ACK orders PARTITION 0 FOR CONSUMER 'billing' AT 1;"
+            ),
+            Value::from(1),
+            "{}",
+            backend.name
+        );
+        assert_eq!(rows(&mut session, first), 1, "{}", backend.name);
+        let report = partition_report(&mut session, "orders", 0);
+        let Some(Value::Object(groups)) = report.get("groups") else {
+            panic!("{report:?}");
+        };
+        let Some(Value::Object(billing)) = groups.get("billing") else {
+            panic!("{groups:?}");
+        };
+        assert_eq!(
+            billing.get("committed"),
+            Some(&Value::from(1)),
+            "{billing:?}"
+        );
+        assert_eq!(
+            billing.get("position"),
+            Some(&Value::from(2)),
+            "{billing:?}"
+        );
+        // Dropped from every partition at once.
+        run(&mut session, "DROP GROUP 'billing' ON TOPIC orders;");
+        let report = partition_report(&mut session, "orders", 1);
+        assert_eq!(
+            report.get("groups"),
+            Some(&Value::Object(std::collections::BTreeMap::new())),
+            "{}: {report:?}",
+            backend.name
+        );
+    });
+}

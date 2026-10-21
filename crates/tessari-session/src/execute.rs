@@ -320,9 +320,16 @@ impl Session<'_> {
                 consumer,
                 consumer_parameter: _,
                 positions,
+                partition,
             } => {
-                self.ack_topic(transaction, topic, consumer, positions, span)
-                    .await
+                self.ack_topic(
+                    transaction,
+                    (topic, partition.as_ref()),
+                    consumer,
+                    positions,
+                    span,
+                )
+                .await
             }
             StatementKind::NackTopic {
                 topic,
@@ -330,9 +337,16 @@ impl Session<'_> {
                 consumer_parameter: _,
                 positions,
                 delay,
+                partition,
             } => {
-                self.nack_topic(transaction, topic, consumer, (positions, *delay), span)
-                    .await
+                self.nack_topic(
+                    transaction,
+                    (topic, partition.as_ref()),
+                    consumer,
+                    (positions, *delay),
+                    span,
+                )
+                .await
             }
             StatementKind::DefineField {
                 name,

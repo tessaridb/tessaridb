@@ -592,13 +592,19 @@ fn erase_statement(statement: &mut Statement) {
             erase_expr(start_at);
         }
         StatementKind::AckTopic {
-            topic, positions, ..
+            topic,
+            positions,
+            partition,
+            ..
         }
         | StatementKind::NackTopic {
-            topic, positions, ..
+            topic,
+            positions,
+            partition,
+            ..
         } => {
             erase_table(topic);
-            for position in positions {
+            for position in positions.iter_mut().chain(partition.as_mut()) {
                 erase_expr(position);
             }
         }

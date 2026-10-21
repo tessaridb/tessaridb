@@ -68,6 +68,47 @@ impl Session<'_> {
         }
     }
 
+    /// The topic a statement naming `table` and `partition` reaches — the
+    /// partition of a split topic, or the topic itself (ADR-0131).
+    pub(crate) async fn named_partition(
+        &self,
+        transaction: &mut Transaction<'_>,
+        topic: &TableRef,
+        table: TableId,
+        partition: Option<&Expr>,
+        span: Span,
+    ) -> Result<TableId> {
+        let Some(TableKind::Topic(declared)) = Catalog::new(transaction)
+            .table(table)
+            .await?
+            .map(|definition| definition.kind)
+        else {
+            return Ok(table);
+        };
+        self.partition_read(transaction, topic, (table, &declared), partition, span)
+            .await
+    }
+
+    /// The topics a group on `table` lives in: each partition of a split topic,
+    /// or the topic itself (ADR-0131).
+    pub(crate) async fn partition_homes(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: TableId,
+    ) -> Result<Vec<TableId>> {
+        Ok(match Catalog::new(transaction).table(table).await? {
+            Some(tessari_storage::TableDefinition {
+                kind:
+                    TableKind::Topic(TopicDeclaration {
+                        partitions: Some(partitioning),
+                        ..
+                    }),
+                ..
+            }) => partitioning.children,
+            _ => vec![table],
+        })
+    }
+
     /// The topic a read of `topic` reads: the partition it names of a split
     /// topic, or the topic itself — which, never split, is its own partition 0
     /// (ADR-0131).

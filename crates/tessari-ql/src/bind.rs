@@ -464,8 +464,17 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             Ok(())
         }
         StatementKind::AlterGroup { start_at, .. } => bind_expr(start_at, binding),
-        StatementKind::AckTopic { positions, .. } | StatementKind::NackTopic { positions, .. } => {
-            for position in positions {
+        StatementKind::AckTopic {
+            positions,
+            partition,
+            ..
+        }
+        | StatementKind::NackTopic {
+            positions,
+            partition,
+            ..
+        } => {
+            for position in positions.iter_mut().chain(partition.as_mut()) {
                 bind_expr(position, binding)?;
             }
             Ok(())

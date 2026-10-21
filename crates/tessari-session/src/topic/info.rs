@@ -45,49 +45,7 @@ impl Session<'_> {
             .topic_after(context.namespace, context.database, table, u64::MAX, 0)
             .await?;
         let last = held.last.unwrap_or(0);
-        let readers = Catalog::new(transaction)
-            .topic_positions(context.namespace, context.database, table)
-            .await?
-            .into_iter()
-            .map(|(name, position)| {
-                (
-                    name,
-                    Value::Object(BTreeMap::from([
-                        ("position".to_owned(), whole(position)),
-                        ("lag".to_owned(), whole(last.saturating_sub(position))),
-                    ])),
-                )
-            })
-            .collect();
-        // A group's lag counts from its committed position — the last one
-        // below which everything is acknowledged — because that is how far it
-        // would have to go back to if every member stopped now (G042).
-        let groups = Catalog::new(transaction)
-            .topic_groups(context.namespace, context.database, table)
-            .await?
-            .into_iter()
-            .map(|(name, state)| {
-                let committed = state.committed();
-                let declared = state.declaration;
-                let mut group = BTreeMap::from([
-                    ("position".to_owned(), whole(state.cursor)),
-                    ("committed".to_owned(), whole(committed)),
-                    ("lag".to_owned(), whole(last.saturating_sub(committed))),
-                    (
-                        "in_flight".to_owned(),
-                        whole(u64::try_from(state.flight.len()).unwrap_or(u64::MAX)),
-                    ),
-                    ("redelivered".to_owned(), whole(state.redelivered)),
-                    ("dead_lettered".to_owned(), whole(state.dead_lettered)),
-                    ("deadline".to_owned(), Value::Duration(declared.deadline)),
-                    ("width".to_owned(), whole(declared.width)),
-                ]);
-                if let Some(deliveries) = declared.deliveries {
-                    group.insert("deliveries".to_owned(), whole(deliveries));
-                }
-                (name, Value::Object(group))
-            })
-            .collect();
+        let (readers, groups) = readers_and_groups(transaction, &context, table, last).await?;
         // The topic consumers reading this topic (ADR-0087). A destination the
         // caller may not read is named `hidden` rather than left out: the
         // consumer is still there, and its absence would read as none.
@@ -167,13 +125,18 @@ impl Session<'_> {
                     let held = transaction
                         .topic_after(context.namespace, context.database, *child, u64::MAX, 0)
                         .await?;
+                    let last = held.last.unwrap_or(0);
+                    let (readers, groups) =
+                        readers_and_groups(transaction, &context, *child, last).await?;
                     each.push(Value::Object(BTreeMap::from([
+                        ("consumers".to_owned(), Value::Object(readers)),
+                        ("groups".to_owned(), Value::Object(groups)),
                         (
                             "partition".to_owned(),
                             whole(u64::try_from(index).unwrap_or(u64::MAX)),
                         ),
                         ("first".to_owned(), held.first.map_or(Value::None, whole)),
-                        ("last".to_owned(), whole(held.last.unwrap_or(0))),
+                        ("last".to_owned(), whole(last)),
                     ])));
                 }
                 report.insert(
@@ -189,4 +152,57 @@ impl Session<'_> {
         }
         Ok(report)
     }
+}
+
+/// How far each named reader and each group of one topic has got.
+async fn readers_and_groups(
+    transaction: &mut Transaction<'_>,
+    context: &crate::context::Context,
+    table: tessari_types::TableId,
+    last: u64,
+) -> Result<(BTreeMap<String, Value>, BTreeMap<String, Value>)> {
+    let readers = Catalog::new(transaction)
+        .topic_positions(context.namespace, context.database, table)
+        .await?
+        .into_iter()
+        .map(|(name, position)| {
+            (
+                name,
+                Value::Object(BTreeMap::from([
+                    ("position".to_owned(), whole(position)),
+                    ("lag".to_owned(), whole(last.saturating_sub(position))),
+                ])),
+            )
+        })
+        .collect();
+    // A group's lag counts from its committed position — the last one
+    // below which everything is acknowledged — because that is how far it
+    // would have to go back to if every member stopped now (G042).
+    let groups = Catalog::new(transaction)
+        .topic_groups(context.namespace, context.database, table)
+        .await?
+        .into_iter()
+        .map(|(name, state)| {
+            let committed = state.committed();
+            let declared = state.declaration;
+            let mut group = BTreeMap::from([
+                ("position".to_owned(), whole(state.cursor)),
+                ("committed".to_owned(), whole(committed)),
+                ("lag".to_owned(), whole(last.saturating_sub(committed))),
+                (
+                    "in_flight".to_owned(),
+                    whole(u64::try_from(state.flight.len()).unwrap_or(u64::MAX)),
+                ),
+                ("redelivered".to_owned(), whole(state.redelivered)),
+                ("dead_lettered".to_owned(), whole(state.dead_lettered)),
+                ("deadline".to_owned(), Value::Duration(declared.deadline)),
+                ("width".to_owned(), whole(declared.width)),
+            ]);
+            if let Some(deliveries) = declared.deliveries {
+                group.insert("deliveries".to_owned(), whole(deliveries));
+            }
+            (name, Value::Object(group))
+        })
+        .collect();
+    Ok((readers, groups))
 }

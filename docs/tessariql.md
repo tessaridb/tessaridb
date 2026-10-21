@@ -7983,6 +7983,15 @@ each partition's `first` and `last`; `DROP TOPIC` drops the partitions with the
 topic; `BACKUP SCRIPT` writes every partition's messages back as appends, which
 land by key again (and in turn without one).
 
+A group declared on a split topic is one group per partition: `DEFINE GROUP`,
+`ALTER GROUP … START AT` and `DROP GROUP` act on every partition, a member reads
+`READ FROM orders PARTITION p FOR CONSUMER 'billing'`, and settles with `ACK
+orders PARTITION p FOR CONSUMER 'billing' AT …` (or `NACK`), because a position
+means something only within its partition. Each partition's entry in `INFO FOR
+TOPIC` carries its own `consumers` and `groups`. A `DEFINE TOPIC CONSUMER` of a
+split topic runs its `PARALLELISM` members on every partition, each under the
+group that partition holds.
+
 A split topic is written in store format 9: a store an older build made holds
 its format until `ALTER STORE FINALIZE FORMAT`, and `PARTITIONS` is refused as
 `FormatNotFinalized` until then.

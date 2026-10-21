@@ -93,7 +93,9 @@ async fn read_and_apply(
         .run_with(
             &format!(
                 "{}READ FROM {} FOR CONSUMER '{}' LIMIT {limit};",
-                names.tenancy, names.topic, names.group
+                names.tenancy,
+                names.source(),
+                names.group
             ),
             &Parameters::new(),
         )
@@ -180,7 +182,9 @@ async fn read_and_hand_back(work: &mut Atomic<'_, '_>, names: &Names) -> Result<
         .run_with(
             &format!(
                 "{}READ FROM {} FOR CONSUMER '{}' LIMIT 1;",
-                names.tenancy, names.topic, names.group
+                names.tenancy,
+                names.source(),
+                names.group
             ),
             &Parameters::new(),
         )
@@ -226,7 +230,7 @@ fn settle_list(
         .collect();
     script.push_str(&format!(
         " {verb} {} FOR CONSUMER '{}' AT {};",
-        names.topic,
+        names.source(),
         names.group,
         references.join(", ")
     ));

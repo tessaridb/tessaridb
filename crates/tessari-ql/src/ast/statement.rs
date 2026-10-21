@@ -283,6 +283,8 @@ pub enum StatementKind {
         consumer_parameter: Option<crate::ast::ParameterSlot>,
         /// The positions acknowledged.
         positions: Vec<Expr>,
+        /// `PARTITION <n>` of a split topic (ADR-0131).
+        partition: Option<Expr>,
     },
     /// `NACK events FOR CONSUMER 'billing' AT 7 DELAY 5s` — those messages are
     /// to be handed out again, now or after the delay.
@@ -296,6 +298,8 @@ pub enum StatementKind {
         consumer_parameter: Option<crate::ast::ParameterSlot>,
         /// The positions given back.
         positions: Vec<Expr>,
+        /// `PARTITION <n>` of a split topic (ADR-0131).
+        partition: Option<Expr>,
         /// How long before they may be handed out again.
         delay: Option<Duration>,
     },

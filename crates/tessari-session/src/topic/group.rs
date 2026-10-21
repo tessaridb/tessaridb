@@ -99,8 +99,11 @@ impl Session<'_> {
         span: Span,
     ) -> Result<Outcome> {
         let (context, table) = self.group_topic(transaction, topic, span).await?;
+        // A split topic's group is one group per partition (ADR-0131).
+        let homes = self.partition_homes(transaction, table).await?;
+        let first = homes.first().copied().unwrap_or(table);
         if Catalog::new(transaction)
-            .topic_group(context.namespace, context.database, table, name)
+            .topic_group(context.namespace, context.database, first, name)
             .await?
             .is_some()
         {
@@ -132,17 +135,19 @@ impl Session<'_> {
             width: clauses.in_flight.unwrap_or(DEFAULT_WIDTH),
             dead_letter,
         };
-        let cursor = Catalog::new(transaction)
-            .topic_position(context.namespace, context.database, table, name)
-            .await?
-            .unwrap_or(0);
-        Catalog::new(transaction).put_topic_group(
-            context.namespace,
-            context.database,
-            table,
-            name,
-            &GroupState::new(declaration, cursor),
-        );
+        for home in homes {
+            let cursor = Catalog::new(transaction)
+                .topic_position(context.namespace, context.database, home, name)
+                .await?
+                .unwrap_or(0);
+            Catalog::new(transaction).put_topic_group(
+                context.namespace,
+                context.database,
+                home,
+                name,
+                &GroupState::new(declaration, cursor),
+            );
+        }
         Ok(Outcome::Done)
     }
 
@@ -155,13 +160,15 @@ impl Session<'_> {
         span: Span,
     ) -> Result<Outcome> {
         let (context, table) = self.group_topic(transaction, topic, span).await?;
-        Self::existing_group(transaction, &context, table, name, topic, span).await?;
-        Catalog::new(transaction).drop_topic_group(
-            context.namespace,
-            context.database,
-            table,
-            name,
-        );
+        for home in self.partition_homes(transaction, table).await? {
+            Self::existing_group(transaction, &context, home, name, topic, span).await?;
+            Catalog::new(transaction).drop_topic_group(
+                context.namespace,
+                context.database,
+                home,
+                name,
+            );
+        }
         Ok(Outcome::Done)
     }
 
@@ -176,23 +183,27 @@ impl Session<'_> {
         span: Span,
     ) -> Result<Outcome> {
         let (context, table) = self.group_topic(transaction, topic, span).await?;
-        let mut state =
-            Self::existing_group(transaction, &context, table, name, topic, span).await?;
-        state.cursor = self
+        let cursor = self
             .whole(
                 transaction,
                 start_at,
                 "a position is a whole number at or above zero",
             )
             .await?;
-        state.flight.clear();
-        Catalog::new(transaction).put_topic_group(
-            context.namespace,
-            context.database,
-            table,
-            name,
-            &state,
-        );
+        // Every partition of a split topic starts there (ADR-0131).
+        for home in self.partition_homes(transaction, table).await? {
+            let mut state =
+                Self::existing_group(transaction, &context, home, name, topic, span).await?;
+            state.cursor = cursor;
+            state.flight.clear();
+            Catalog::new(transaction).put_topic_group(
+                context.namespace,
+                context.database,
+                home,
+                name,
+                &state,
+            );
+        }
         Ok(Outcome::Done)
     }
 
@@ -331,7 +342,7 @@ impl Session<'_> {
     pub(crate) async fn ack_topic(
         &self,
         transaction: &mut Transaction<'_>,
-        topic: &TableRef,
+        topic: (&TableRef, Option<&Expr>),
         consumer: &str,
         positions: &[Expr],
         span: Span,
@@ -363,7 +374,7 @@ impl Session<'_> {
     pub(crate) async fn nack_topic(
         &self,
         transaction: &mut Transaction<'_>,
-        topic: &TableRef,
+        topic: (&TableRef, Option<&Expr>),
         consumer: &str,
         (positions, delay): (&[Expr], Option<tessari_types::Duration>),
         span: Span,
@@ -399,12 +410,15 @@ impl Session<'_> {
     async fn settling(
         &self,
         transaction: &mut Transaction<'_>,
-        topic: &TableRef,
+        (topic, partition): (&TableRef, Option<&Expr>),
         consumer: &str,
         positions: &[Expr],
         span: Span,
     ) -> Result<(Context, TableId, GroupState, Vec<u64>)> {
         let (context, table) = self.group_topic(transaction, topic, span).await?;
+        let table = self
+            .named_partition(transaction, topic, table, partition, span)
+            .await?;
         let Some(state) = Catalog::new(transaction)
             .topic_group(context.namespace, context.database, table, consumer)
             .await?
