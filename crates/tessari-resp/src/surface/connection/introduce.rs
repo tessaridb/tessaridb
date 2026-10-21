@@ -1,10 +1,12 @@
 //! A connection introducing itself: `AUTH`, `HELLO` and `CLIENT`.
 
+use tessari_types::RefusalClass;
 use tessaridb::BUILD_VERSION;
 use zeroize::Zeroize as _;
 
 use super::Connection;
 use crate::codec::{Protocol, Reply};
+use crate::surface::replies;
 use crate::surface::running::Failed;
 
 impl Connection {
@@ -21,6 +23,9 @@ impl Connection {
             }
             Err(Failed::Busy) => Err(Reply::error("TRYAGAIN the node is busy; try again")),
             Err(Failed::Lost) => Err(Reply::error("ERR the sign-in was lost; reconnect")),
+            // The store's throttle says wait, and saying "wrong password"
+            // instead would send a client that had it right to retype it.
+            Err(failed @ Failed::Refused(_)) if throttled(&failed) => Err(replies::failed(&failed)),
             Err(Failed::Refused(_)) => Err(Reply::error(
                 "WRONGPASS invalid username-password pair or user is disabled.",
             )),
@@ -129,4 +134,8 @@ fn check_name(name: &[u8]) -> Result<(), Reply> {
             "ERR Client names cannot contain spaces, newlines or special characters.",
         ))
     }
+}
+
+fn throttled(failed: &Failed) -> bool {
+    matches!(failed, Failed::Refused(refused) if refused.class() == RefusalClass::Throttled)
 }
