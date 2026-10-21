@@ -11,7 +11,9 @@ use std::collections::BTreeMap;
 
 use tessari_types::{RecordId, RecordRef, RefusalClass, TableId, Value};
 
-use crate::{AccessPath, Coordinated, Outcome, Plan, Result};
+use crate::{
+    AccessPath, Coordinated, Coordination, Db, Outcome, Parameters, Plan, Result, Session, Surface,
+};
 
 /// The kind an answered request is carried back under; a refusal's kind is its
 /// class byte, which is never zero.
@@ -24,6 +26,53 @@ pub struct CarriedRefusal {
     pub class: RefusalClass,
     /// The store's own sentence.
     pub message: String,
+}
+
+/// Why a request refused here did not answer once carried.
+#[derive(Debug)]
+pub enum NotCarried {
+    /// This node's refusal: it names no node that answers instead, this node
+    /// carries nothing, or the link failed — the refusal still says where to go.
+    Here(crate::Error),
+    /// The answering node's refusal.
+    There(CarriedRefusal),
+}
+
+/// Carry `script`, which `session` ran here and `refused` refused, to the node
+/// the refusal names, and answer with that node's outcomes (ADR-0108 D1).
+///
+/// The caller decides that it MAY travel — nothing of it landed here and
+/// [`crate::travels`] admits it.
+///
+/// # Errors
+///
+/// [`NotCarried`].
+pub async fn carry(
+    db: &Db,
+    session: &Session<'_>,
+    refused: crate::Error,
+    script: &str,
+    parameters: &Parameters,
+) -> std::result::Result<Vec<Outcome>, NotCarried> {
+    let (Some(coordinator), Some(to)) = (db.coordinator(), db.answers_instead(&refused).await)
+    else {
+        return Err(NotCarried::Here(refused));
+    };
+    let answered = coordinator
+        .coordinate(&Coordination {
+            to,
+            user: session.signed_in(),
+            namespace: None,
+            database: None,
+            script,
+            parameters,
+            surface: Surface::Outcomes,
+        })
+        .await;
+    match answered {
+        Ok(answer) => decode(&answer).map_err(NotCarried::There),
+        Err(_) => Err(NotCarried::Here(refused)),
+    }
 }
 
 /// What the answering node sends back for `ran`.

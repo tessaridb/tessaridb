@@ -12,6 +12,9 @@ use crate::surface::Shared;
 pub(crate) enum Failed {
     /// The store refused it, in the store's words and class.
     Refused(tessaridb::Error),
+    /// The node it was carried to refused it, in that store's words and class
+    /// (G079 W5d).
+    Carried(tessaridb::carried::CarriedRefusal),
     /// Every store slot was taken; the client may try again.
     Busy,
     /// The work panicked and took the session with it; the connection ends.
@@ -90,14 +93,31 @@ impl Held {
             .bridge
             .call_here(session, move |held: Detached| async move {
                 let mut attached = held.attach(db.store());
-                let answer = attached.run_with(&script, parameters).await;
+                let answer = match attached.run_with(&script, parameters).await {
+                    // Refused here because another node answers it — the leader
+                    // of the topic it writes — and nothing of it landed here:
+                    // carried there, as HTTP carries a script (ADR-0108 D1).
+                    Err(refused) if !attached.landed() && tessaridb::travels(&script) => {
+                        tessaridb::carried::carry(&db, &attached, refused, &script, parameters)
+                            .await
+                            .map_err(|not| match not {
+                                tessaridb::carried::NotCarried::Here(refused) => {
+                                    Failed::Refused(refused)
+                                }
+                                tessaridb::carried::NotCarried::There(refused) => {
+                                    Failed::Carried(refused)
+                                }
+                            })
+                    }
+                    answered => answered.map_err(Failed::Refused),
+                };
                 (attached.detach(), answer)
             })
             .await;
         match bridged {
             Bridged::Answered((session, answer)) => {
                 self.session = Some(session);
-                answer.map_err(Failed::Refused)
+                answer
             }
             Bridged::Busy(session) => {
                 self.session = Some(session);

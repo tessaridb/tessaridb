@@ -72,6 +72,7 @@ pub(crate) fn code(failed: &Failed) -> i16 {
         Failed::Busy => REQUEST_TIMED_OUT,
         Failed::Lost => UNKNOWN_SERVER_ERROR,
         Failed::Refused(refused) => refusal(refused),
+        Failed::Carried(refused) => by_class(refused.class),
     }
 }
 
@@ -83,7 +84,12 @@ fn refusal(refused: &Error) -> i16 {
     if matches!(name, Some("TopicMessageTooLarge" | "TopicRetainExceeded")) {
         return MESSAGE_TOO_LARGE;
     }
-    match refused.class() {
+    by_class(refused.class())
+}
+
+/// The code a refusal answers with, by its class alone.
+const fn by_class(class: RefusalClass) -> i16 {
+    match class {
         RefusalClass::Unauthenticated | RefusalClass::Forbidden => TOPIC_AUTHORIZATION_FAILED,
         RefusalClass::Retry | RefusalClass::Unavailable | RefusalClass::Elsewhere => {
             REQUEST_TIMED_OUT

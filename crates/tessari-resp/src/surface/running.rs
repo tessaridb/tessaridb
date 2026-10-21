@@ -72,7 +72,16 @@ impl Held {
                     // nothing of it landed here: carried there, as HTTP carries
                     // a script (ADR-0108 D1).
                     Err(refused) if !attached.landed() && tessaridb::travels(&prefixed) => {
-                        carry(&db, &attached, refused, &prefixed, &parameters).await
+                        tessaridb::carried::carry(&db, &attached, refused, &prefixed, &parameters)
+                            .await
+                            .map_err(|not| match not {
+                                tessaridb::carried::NotCarried::Here(refused) => {
+                                    Failed::Refused(refused)
+                                }
+                                tessaridb::carried::NotCarried::There(refused) => {
+                                    Failed::Carried(refused)
+                                }
+                            })
                     }
                     answered => answered.map_err(Failed::Refused),
                 };
@@ -125,38 +134,6 @@ impl Held {
     /// Go back to an anonymous session, as `RESET` does.
     pub(crate) fn forget(&mut self, shared: &Shared) {
         self.session = Some(shared.db.session().detach());
-    }
-}
-
-/// `refused` carried to the node it names, answered with that node's outcomes,
-/// or the refusal itself when it names none or this node carries nothing.
-async fn carry(
-    db: &tessaridb::Db,
-    session: &tessaridb::Session<'_>,
-    refused: tessaridb::Error,
-    script: &str,
-    parameters: &Parameters,
-) -> Result<Vec<Outcome>, Failed> {
-    let (Some(coordinator), Some(to)) = (db.coordinator(), db.answers_instead(&refused).await)
-    else {
-        return Err(Failed::Refused(refused));
-    };
-    let answered = coordinator
-        .coordinate(&tessaridb::Coordination {
-            to,
-            user: session.signed_in(),
-            namespace: None,
-            database: None,
-            script,
-            parameters,
-            surface: tessaridb::Surface::Outcomes,
-        })
-        .await;
-    match answered {
-        Ok(answer) => tessaridb::carried::decode(&answer).map_err(Failed::Carried),
-        // The link failed: the caller sees the refusal this node gave, which
-        // names where to go.
-        Err(_) => Err(Failed::Refused(refused)),
     }
 }
 

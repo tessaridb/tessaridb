@@ -128,8 +128,12 @@ async fn write(
             }
             Err(failed) => {
                 answer.error_code = code(&failed);
-                if let Failed::Refused(refused) = &failed {
-                    answer.error_message = Some(refused.to_string());
+                match &failed {
+                    Failed::Refused(refused) => answer.error_message = Some(refused.to_string()),
+                    Failed::Carried(refused) => {
+                        answer.error_message = Some(refused.message.clone())
+                    }
+                    Failed::Busy | Failed::Lost => {}
                 }
                 return answer;
             }

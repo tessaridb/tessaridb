@@ -153,6 +153,7 @@ async fn create_one(
         error_code,
         message: answered.err().and_then(|failed| match failed {
             Failed::Refused(refused) if error_code != errors::NONE => Some(refused.to_string()),
+            Failed::Carried(refused) if error_code != errors::NONE => Some(refused.message),
             _ => None,
         }),
     }

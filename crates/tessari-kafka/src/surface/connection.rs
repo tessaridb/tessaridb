@@ -183,6 +183,10 @@ async fn handle(
                         Some("the node is busy; try again".to_owned()),
                     ),
                     Err(Failed::Lost) => return Reply::Close("the sign-in panicked"),
+                    // A sign-in is never carried.
+                    Err(Failed::Carried(refused)) => {
+                        (sasl::SASL_AUTHENTICATION_FAILED, Some(refused.message))
+                    }
                 },
                 Err(why) => (sasl::SASL_AUTHENTICATION_FAILED, Some(why.to_string())),
             };
