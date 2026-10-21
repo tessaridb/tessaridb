@@ -528,7 +528,18 @@ const TABLES: &[Table] = &[
         // for its directory to be released. **Exempt under E3**: it takes the
         // database by value, so no session can be open on it, takes no reach and
         // returns no record; the binary calls it when it stops.
-        expected: 41,
+        //
+        // 43 since Kafka Metadata names a cluster (G079 W5d-4):
+        // `Db::membership` reads this node's id and every member row, and
+        // `Db::database_led_elsewhere` names the node leading a database's
+        // range. Both **exempt on `member`'s ground**: reads of what was
+        // applied, disclosing topology — node ids, addresses, who leads — and
+        // no record, user or grant. The Kafka surface answers them in Metadata
+        // and FindCoordinator to a caller it signed in, and names a topic's
+        // leader only after `INFO FOR TOPIC` ran as that caller.
+        // Re-classification trigger: `member`'s — an answer to a caller who
+        // was not signed in.
+        expected: 43,
         count: |text| public_functions(&every_block(text, "impl Db")),
     },
     Table {
@@ -1367,7 +1378,8 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 169 since `Store::held_keys` (G079 W5c), test support, classified above.
     //
     // 170 since `Store::led_elsewhere` (G079 W5d), classified above.
-    assert_eq!(total, 170, "the counted tables no longer sum to 170");
+    // 172 since `Db::membership` and `Db::database_led_elsewhere` (G079 W5d-4).
+    assert_eq!(total, 172, "the counted tables no longer sum to 172");
 }
 
 /// Every `.rs` file under a directory.

@@ -21,6 +21,8 @@ pub(crate) const UNKNOWN_TOPIC_OR_PARTITION: i16 = 3;
 pub(crate) const REQUEST_TIMED_OUT: i16 = 7;
 /// Retriable: the coordinator cannot take the group right now.
 pub(crate) const COORDINATOR_NOT_AVAILABLE: i16 = 15;
+/// Retriable: another broker coordinates the group; the client finds it again.
+pub(crate) const NOT_COORDINATOR: i16 = 16;
 /// A topic name that is not a name.
 pub(crate) const INVALID_TOPIC_EXCEPTION: i16 = 17;
 /// A member's generation is not the group's.

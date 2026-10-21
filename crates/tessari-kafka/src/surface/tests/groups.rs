@@ -85,7 +85,7 @@ pub(super) async fn join_new(stream: &mut TcpStream, group: &str) -> Joined {
     join(stream, 7, group, &told.member).await
 }
 
-async fn sync(
+pub(super) async fn sync(
     stream: &mut TcpStream,
     group: &str,
     generation: i32,
@@ -125,7 +125,12 @@ fn place(group: &str, generation: i32, member: &str) -> Writer {
     body
 }
 
-async fn heartbeat(stream: &mut TcpStream, group: &str, generation: i32, member: &str) -> i16 {
+pub(super) async fn heartbeat(
+    stream: &mut TcpStream,
+    group: &str,
+    generation: i32,
+    member: &str,
+) -> i16 {
     let mut body = place(group, generation, member);
     body.no_tagged_fields();
     let answer = ask(stream, 12, 4, true, &body.into_bytes()).await;
@@ -134,7 +139,7 @@ async fn heartbeat(stream: &mut TcpStream, group: &str, generation: i32, member:
     reader.i16("error").unwrap()
 }
 
-async fn commit(
+pub(super) async fn commit(
     stream: &mut TcpStream,
     group: &str,
     generation: i32,
@@ -164,7 +169,7 @@ async fn commit(
 }
 
 /// The committed offsets fetched: every topic answered with its first partition's offset and code.
-async fn committed(
+pub(super) async fn committed(
     stream: &mut TcpStream,
     group: &str,
     topic: Option<&str>,

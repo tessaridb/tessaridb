@@ -9196,7 +9196,13 @@ that names neither keeps redirects naming `AT`, as they did before the clauses
 existed. `INFO FOR NODE` reports both for each peer (`null` when unsaid).
 `KAFKA AT 'host:port'` says where a Kafka client reaches the peer, and is
 changed with `ALTER REPLICA … KAFKA AT …` or removed with `KAFKA NONE`; it is
-reported beside them as `kafka`.
+reported beside them as `kafka`. Every peer that says it is a broker in Kafka
+`Metadata`, numbered alike on every node (a node's place among the members' node
+ids, plus one), and a topic's partition is led by the broker of the node leading
+its database. `FindCoordinator` names the node leading the database bare topic
+names are read in (the store's leader when none is named), and a group request
+sent to any other node answers `NOT_COORDINATOR`, so a group's members meet on
+one node. A node whose leader names no Kafka address answers as before, itself.
 A write a node may not take is carried over the peer link to the writable peer
 (from `0.21.0-beta`), and a node with no peer link refuses it naming where that
 peer takes writes.

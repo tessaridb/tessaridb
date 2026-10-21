@@ -387,16 +387,12 @@ fn what_a_score_reads_is_the_query_and_not_the_document() {
 
     let (short, short_store) = corpus(10);
     short.reset();
-    let brief = Instant::now();
     let from_short = scores(&short_store);
-    let brief = brief.elapsed();
     assert_eq!(short.postings(), expected);
 
     let (long, long_store) = corpus(100);
     long.reset();
-    let lengthy = Instant::now();
     let from_long = scores(&long_store);
-    let lengthy = lengthy.elapsed();
     assert_eq!(
         long.postings(),
         expected,
@@ -411,6 +407,19 @@ fn what_a_score_reads_is_the_query_and_not_the_document() {
     // does not pay for it: the whole read is allowed to grow — the records are
     // ten times bigger and are still decoded and returned — but nowhere near
     // linearly, which is what re-analysing every scored record would have cost.
+    // Each side is the fastest of several runs: a busy machine only ever adds
+    // time, so the minimum is the read's own cost and one slow run is not.
+    let fastest = |store: &Store| {
+        (0..5)
+            .map(|_| {
+                let started = Instant::now();
+                scores(store);
+                started.elapsed()
+            })
+            .min()
+            .unwrap()
+    };
+    let (brief, lengthy) = (fastest(&short_store), fastest(&long_store));
     assert!(
         lengthy < brief * 6,
         "scoring cost grew with document length: {brief:?} then {lengthy:?}"

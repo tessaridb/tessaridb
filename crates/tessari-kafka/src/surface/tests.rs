@@ -12,6 +12,7 @@ use crate::records::{Header, Outgoing, decode_batches, encode_batch};
 use crate::surface::{Database, Node};
 
 mod admin;
+mod brokers;
 mod carrying;
 mod groups;
 

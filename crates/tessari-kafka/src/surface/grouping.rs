@@ -12,7 +12,7 @@ use crate::error::Result;
 use crate::header::RequestHeader;
 use crate::surface::coordinator::Joiner;
 use crate::surface::running::Held;
-use crate::surface::{Shared, administering, committing, errors, metadata};
+use crate::surface::{Shared, administering, committing, errors, metadata, placing};
 
 /// How long a member's sync waits for the leader's assignments. The leader
 /// that never sends them is let go at its session timeout, which ends the
@@ -51,7 +51,7 @@ pub(crate) struct From<'a> {
 
 /// Whether an anonymous session may act: only on a store with no users,
 /// which answers anything for anyone.
-async fn store_is_open(shared: &Arc<Shared>, held: &mut Held) -> bool {
+pub(crate) async fn store_is_open(shared: &Arc<Shared>, held: &mut Held) -> bool {
     held.run_at(shared, None, None, "INFO FOR STORE;", &Parameters::new())
         .await
         .is_ok()
@@ -66,12 +66,16 @@ pub(crate) async fn answer(
     writer: &mut Writer,
 ) -> Grouped {
     let (version, flexible) = (from.header.version, from.header.flexible);
+    if let Some(refused) = placing::elsewhere(shared, held, from, reader, writer).await {
+        return refused;
+    }
     let written = match from.header.key {
         FIND_COORDINATOR => {
             let Ok(request) = coordinator::Request::read(reader, version, flexible) else {
                 return Grouped::Unreadable;
             };
-            let broker = metadata::broker(shared, from.reached);
+            let brokers = metadata::brokers(shared, held, from.reached).await;
+            let broker = brokers.coordinator(shared).await;
             let answers: Vec<_> = request
                 .keys
                 .iter()

@@ -204,13 +204,15 @@ async fn handle(
         }
         METADATA => match metadata::Request::read(&mut reader, version, flexible) {
             Ok(request) => {
-                let topics = describing::topics(shared, held, request.topics.as_deref()).await;
-                let broker = describing::broker(shared, reached);
+                let brokers = describing::brokers(shared, held, reached).await;
+                let topics =
+                    describing::topics(shared, held, &brokers, request.topics.as_deref()).await;
                 metadata::write_response(
                     &mut writer,
                     version,
                     flexible,
-                    &broker,
+                    &brokers.listed,
+                    brokers.this().node_id,
                     CLUSTER_ID,
                     &topics,
                 )

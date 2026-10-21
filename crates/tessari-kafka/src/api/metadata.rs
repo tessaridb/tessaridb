@@ -1,7 +1,8 @@
 //! Metadata: which brokers exist, which topics, and who leads each partition.
 //!
-//! This node is the one broker, the controller and the leader of every
-//! partition (ADR-0129 D7), so the answer is a description of itself.
+//! A node standing alone is the one broker, the controller and the leader of
+//! every partition (ADR-0129 D7); on a cluster every member a Kafka client can
+//! reach is a broker and a partition is led by the node leading its database.
 
 use crate::codec::{Reader, Writer};
 use crate::error::Result;
@@ -56,7 +57,7 @@ impl<'a> Request<'a> {
     }
 }
 
-/// The broker this node presents itself as.
+/// A broker the answer names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Broker {
     /// Its id.
@@ -76,6 +77,8 @@ pub struct Topic {
     pub name: String,
     /// How many partitions it has (0 when it does not exist).
     pub partitions: i32,
+    /// The broker leading its partitions.
+    pub leader: i32,
 }
 
 /// Write the metadata response at `version`.
@@ -87,25 +90,28 @@ pub fn write_response(
     writer: &mut Writer,
     version: i16,
     flexible: bool,
-    broker: &Broker,
+    brokers: &[Broker],
+    controller: i32,
     cluster_id: &str,
     topics: &[Topic],
 ) -> Result<()> {
     if version >= 3 {
         writer.i32(0);
     }
-    writer.array_len(flexible, Some(1))?;
-    writer.i32(broker.node_id);
-    writer.string(flexible, &broker.host)?;
-    writer.i32(broker.port);
-    writer.nullable_string(flexible, None)?;
-    if flexible {
-        writer.no_tagged_fields();
+    writer.array_len(flexible, Some(brokers.len()))?;
+    for broker in brokers {
+        writer.i32(broker.node_id);
+        writer.string(flexible, &broker.host)?;
+        writer.i32(broker.port);
+        writer.nullable_string(flexible, None)?;
+        if flexible {
+            writer.no_tagged_fields();
+        }
     }
     if version >= 2 {
         writer.nullable_string(flexible, Some(cluster_id))?;
     }
-    writer.i32(broker.node_id);
+    writer.i32(controller);
     writer.array_len(flexible, Some(topics.len()))?;
     for topic in topics {
         writer.i16(topic.error_code);
@@ -116,14 +122,14 @@ pub fn write_response(
         for index in 0..topic.partitions.max(0) {
             writer.i16(0);
             writer.i32(index);
-            writer.i32(broker.node_id);
+            writer.i32(topic.leader);
             if version >= 7 {
                 writer.i32(-1);
             }
             writer.array_len(flexible, Some(1))?;
-            writer.i32(broker.node_id);
+            writer.i32(topic.leader);
             writer.array_len(flexible, Some(1))?;
-            writer.i32(broker.node_id);
+            writer.i32(topic.leader);
             if version >= 5 {
                 writer.array_len(flexible, Some(0))?;
             }

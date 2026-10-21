@@ -187,7 +187,7 @@ async fn a_client_creates_and_drops_topics_and_lists_every_database() {
     stop.cancel();
 }
 
-async fn sign_in(stream: &mut TcpStream, user: &str, password: &str) {
+pub(super) async fn sign_in(stream: &mut TcpStream, user: &str, password: &str) {
     let mut body = Writer::new();
     body.string(false, "PLAIN").unwrap();
     let answer = ask(stream, 17, 1, false, &body.into_bytes()).await;

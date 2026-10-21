@@ -27,6 +27,7 @@ mod listing;
 mod metadata;
 mod names;
 mod offsets;
+mod placing;
 mod producers;
 mod producing;
 mod running;
