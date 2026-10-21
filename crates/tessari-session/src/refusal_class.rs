@@ -198,6 +198,7 @@ impl Error {
             | Self::NotABucket { .. }
             | Self::NotAQueue { .. }
             | Self::NotATopic { .. }
+            | Self::PositionNotDecided { .. }
             | Self::NoSuchGroup { .. }
             | Self::NotAGroup { .. }
             | Self::AfterOnGroup { .. }

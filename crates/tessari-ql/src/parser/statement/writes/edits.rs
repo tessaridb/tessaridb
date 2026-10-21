@@ -75,11 +75,22 @@ impl Parser<'_> {
         }
 
         let expire = self.write_expiry()?;
+        let answer = if self.eat_keyword(Keyword::Return) {
+            if !self.eat_word("position") {
+                return Err(self.error_here(
+                    "`POSITION` — an insert answers its identities, or with `RETURN POSITION` the positions its messages took",
+                ));
+            }
+            Answer::Position
+        } else {
+            Answer::Nothing
+        };
         Ok(StatementKind::Insert {
             table,
             columns,
             rows,
             expire,
+            answer,
         })
     }
 
@@ -93,9 +104,18 @@ impl Parser<'_> {
         if !self.eat_keyword(Keyword::Return) {
             return Ok(Answer::Nothing);
         }
+        if self.peek_word("position") {
+            if verb != Keyword::Create {
+                return Err(self.error_here(
+                    "`BEFORE` or `AFTER` — only a create or an insert takes a position, as a message appended to a topic",
+                ));
+            }
+            self.eat_word("position");
+            return Ok(Answer::Position);
+        }
         let before = self.eat_word("before");
         if !before && !self.eat_word("after") {
-            return Err(self.error_here("`BEFORE` or `AFTER` after `RETURN`"));
+            return Err(self.error_here("`BEFORE`, `AFTER` or `POSITION` after `RETURN`"));
         }
         match (verb, before) {
             (Keyword::Create, true) => Err(self.error_here(

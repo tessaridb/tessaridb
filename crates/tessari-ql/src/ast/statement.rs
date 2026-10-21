@@ -1649,6 +1649,9 @@ pub enum StatementKind {
         /// being answered, or that it never does (ADR-0122 A2). Taken only by a
         /// table that declares expiry; absent keeps the instant the record has.
         expire: Option<WriteExpiry>,
+        /// `RETURN POSITION`, or nothing: an insert answers its identities, and
+        /// into a topic it may answer the positions they took instead.
+        answer: Answer,
     },
     /// `SELECT * FROM …`
     ///

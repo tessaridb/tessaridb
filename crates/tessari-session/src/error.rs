@@ -2608,6 +2608,17 @@ pub enum Error {
         span: Span,
     },
 
+    /// `RETURN POSITION` inside `BEGIN … COMMIT`, where no position is decided
+    /// yet (ADR-0129 D10).
+    #[error(
+        "a position is decided when the message commits, and this write is inside a transaction (at {span}) — \
+         run it on its own, or read the positions with `READ FROM` after the `COMMIT`"
+    )]
+    PositionNotDecided {
+        /// Where the clause was written.
+        span: Span,
+    },
+
     /// A group of that name already reads the topic (G042).
     #[error(
         "{topic} already has a group named '{group}' (at {span}) — `IF NOT EXISTS` accepts \

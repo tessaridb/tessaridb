@@ -2,8 +2,8 @@
 
 use tessari_encoding::{NODE_ID_LEN, decode_payload};
 use tessari_ql::{
-    ConsumerSource, CreateTarget, FieldMapping, FieldPath, Name, ReachRef, Span, StatementKind,
-    TableChange, TableRef,
+    Answer, ConsumerSource, CreateTarget, FieldMapping, FieldPath, Name, ReachRef, Span,
+    StatementKind, TableChange, TableRef,
 };
 use tessari_storage::{
     Catalog, FieldShape, IndexShape, QueueDeclaration, SeriesDeclaration, TableKind, TableShape,
@@ -884,6 +884,9 @@ impl Session<'_> {
                 answer,
                 expire,
             } => {
+                if *answer == Answer::Position {
+                    self.must_be_a_topic(transaction, &target.table).await?;
+                }
                 let (_, address) = self.writable(transaction, target).await?;
                 let settled = self
                     .resolve_write_expiry(transaction, address.table, expire.as_ref())
@@ -926,6 +929,10 @@ impl Session<'_> {
                 if let Some(marker) = marker {
                     marker.leave(transaction);
                 }
+                // The identity, which the commit turns into the position it took.
+                if *answer == Answer::Position {
+                    return Ok(Outcome::Keys(vec![address.id]));
+                }
                 Ok(answered(*answer, Value::None, payload))
             }
             StatementKind::Create {
@@ -934,6 +941,9 @@ impl Session<'_> {
                 answer,
                 expire,
             } => {
+                if *answer == Answer::Position {
+                    self.must_be_a_topic(transaction, table).await?;
+                }
                 self.create_named_by_the_store(
                     transaction,
                     table,
@@ -949,7 +959,11 @@ impl Session<'_> {
                 columns,
                 rows,
                 expire,
+                answer,
             } => {
+                if *answer == Answer::Position {
+                    self.must_be_a_topic(transaction, table).await?;
+                }
                 self.insert(transaction, table, columns, rows, expire.as_ref(), span)
                     .await
             }

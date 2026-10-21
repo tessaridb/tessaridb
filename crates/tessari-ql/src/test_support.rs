@@ -436,6 +436,8 @@ fn erase_statement(statement: &mut Statement) {
             columns,
             rows,
             expire,
+            // An answer carries no span.
+            answer: _,
         } => {
             erase_write_expiry(expire.as_mut());
             erase_table(table);

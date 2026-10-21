@@ -141,6 +141,13 @@ pub enum Answer {
     Before,
     /// `RETURN AFTER` — the record as it stands after it.
     After,
+    /// `RETURN POSITION` — the position each new message took in its topic
+    /// (ADR-0129 D10).
+    ///
+    /// Taken only by a `CREATE` or an `INSERT` that runs as its own
+    /// transaction: a position is decided when the message commits, so inside
+    /// `BEGIN … COMMIT` there is nothing yet to answer.
+    Position,
 }
 
 /// How much a conditional delete may remove.

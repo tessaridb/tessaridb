@@ -44,6 +44,28 @@ pub(crate) struct Reading<'a> {
 }
 
 impl Session<'_> {
+    /// Refuse `RETURN POSITION` on a table that is not a topic, before the
+    /// write runs (ADR-0129 D10): only a topic gives its records positions.
+    pub(crate) async fn must_be_a_topic(
+        &self,
+        transaction: &mut Transaction<'_>,
+        topic: &TableRef,
+    ) -> Result<()> {
+        let (_, table) = self.resolve_table(transaction, topic).await?;
+        let is_topic = Catalog::new(transaction)
+            .table(table)
+            .await?
+            .is_some_and(|definition| matches!(definition.kind, TableKind::Topic(_)));
+        if is_topic {
+            Ok(())
+        } else {
+            Err(Error::NotATopic {
+                table: topic.name.text.clone(),
+                span: topic.span,
+            })
+        }
+    }
+
     /// The messages of a topic after a position, oldest first.
     ///
     /// Each answers as `{ position, value }` under its own identity. A named

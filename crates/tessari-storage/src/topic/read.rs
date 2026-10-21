@@ -108,3 +108,31 @@ impl Transaction<'_> {
         Ok(found)
     }
 }
+
+impl Transaction<'_> {
+    /// The position each of `ids` holds in a topic, `None` for one that holds
+    /// none here (ADR-0129 D10).
+    ///
+    /// Read from the index the commit maintains, so it answers for messages
+    /// that have committed and been applied on this node; a message whose
+    /// commit another node is still applying answers `None` rather than a
+    /// guess.
+    ///
+    /// # Errors
+    ///
+    /// A backend failure.
+    pub async fn topic_positions(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        ids: &[RecordId],
+    ) -> Result<Vec<Option<u64>>> {
+        let mut positions = Vec::with_capacity(ids.len());
+        for id in ids {
+            positions
+                .push(super::position_of(self.store(), (namespace, database, table), id).await?);
+        }
+        Ok(positions)
+    }
+}

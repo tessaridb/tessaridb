@@ -163,3 +163,77 @@ fn after_and_limit_bound_the_read_and_a_plain_table_is_not_a_topic() {
         assert!(why.contains("whole number"), "{why}");
     });
 }
+
+/// The positions a lone append answers, as integers in the order of its rows.
+fn positions(session: &mut tessari_session::Session<'_>, script: &str) -> Vec<i64> {
+    match super::super::key_value::value(session, script) {
+        tessari_types::Value::Array(items) => items
+            .into_iter()
+            .map(|item| match item {
+                tessari_types::Value::Number(tessari_types::Number::Integer(held)) => held,
+                other => panic!("{script} answered a position of {other:?}"),
+            })
+            .collect(),
+        other => panic!("{script} answered {other:?}"),
+    }
+}
+
+#[test]
+fn a_lone_append_answers_the_positions_its_messages_took() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        assert_eq!(
+            positions(&mut session, "CREATE events = { n: 1 } RETURN POSITION;"),
+            [1]
+        );
+        assert_eq!(
+            positions(
+                &mut session,
+                "INSERT INTO events (n) VALUES (2), (3), (4) RETURN POSITION;"
+            ),
+            [2, 3, 4],
+            "{}",
+            backend.name
+        );
+        assert_eq!(
+            positions(
+                &mut session,
+                "CREATE events:'named' = { n: 5 } RETURN POSITION;"
+            ),
+            [5]
+        );
+        // What READ FROM answers for the same messages, so the two agree.
+        let (answered, _) = read(&mut session, "READ FROM events AFTER 1 LIMIT 3;");
+        let read_positions: Vec<u64> = answered.iter().map(|(position, _)| *position).collect();
+        assert_eq!(read_positions, [2, 3, 4]);
+    });
+}
+
+#[test]
+fn a_position_is_refused_where_none_is_decided_or_none_exists() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        run(&mut session, "DEFINE COLLECTION notes;");
+        let inside = refused(
+            &mut session,
+            "BEGIN; CREATE events = { n: 1 } RETURN POSITION; COMMIT;",
+        );
+        assert!(
+            inside.contains("decided when the message commits"),
+            "{inside}"
+        );
+        let elsewhere = refused(
+            &mut session,
+            "INSERT INTO notes (n) VALUES (1) RETURN POSITION;",
+        );
+        assert!(elsewhere.contains("is not a topic"), "{elsewhere}");
+        let verb = refused(&mut session, "UPDATE events:1 = { n: 2 } RETURN POSITION;");
+        assert!(
+            verb.contains("only a create or an insert takes a position"),
+            "{verb}"
+        );
+        // Nothing the refused transaction or the refused insert wrote landed.
+        let (answered, _) = read(&mut session, "READ FROM events;");
+        assert!(answered.is_empty(), "{answered:?}");
+    });
+}

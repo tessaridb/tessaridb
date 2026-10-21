@@ -3,9 +3,9 @@
 use super::{Consumer, Session, advised, conflicting, read_version, settle};
 use crate::error::{Error, Result};
 use crate::outcome::Outcome;
-use tessari_ql::{Statement, StatementKind};
+use tessari_ql::{Answer, CreateTarget, Statement, StatementKind, TableRef};
 use tessari_storage::{Store, Transaction};
-use tessari_types::Sequence;
+use tessari_types::{Number, Sequence, Value};
 
 impl<'a> Session<'a> {
     /// One statement, inside the open transaction or in one of its own.
@@ -140,6 +140,9 @@ impl<'a> Session<'a> {
                 }
                 // A transaction is one snapshot too, for the same reason.
                 (None, Some((transaction, _))) => {
+                    if answers_position(other).is_some() {
+                        return Err(Error::PositionNotDecided { span });
+                    }
                     self.acknowledge_open = self.acknowledge_open.max(statement.acknowledge);
                     self.across_open |= statement.across;
                     let gather = self.gather.take();
@@ -169,6 +172,9 @@ impl<'a> Session<'a> {
                             Ok(()) => {
                                 if let StatementKind::DefineRollup { name, source, .. } = other {
                                     self.backfilled(store, source, name).await?;
+                                }
+                                if let Some(table) = answers_position(other) {
+                                    return self.positioned(store, table, outcome).await;
                                 }
                                 return Ok(outcome);
                             }
@@ -211,5 +217,60 @@ impl<'a> Session<'a> {
                 Err(refusal) => return Err(refusal),
             }
         }
+    }
+}
+
+impl<'a> Session<'a> {
+    /// The positions a committed append's messages took, in place of their
+    /// identities (ADR-0129 D10).
+    ///
+    /// Read after the commit, because that is where a position is decided; a
+    /// message another node is still applying answers `NONE`.
+    async fn positioned(
+        &self,
+        store: &'a Store,
+        table: &TableRef,
+        outcome: Outcome,
+    ) -> Result<Outcome> {
+        let Outcome::Keys(ids) = outcome else {
+            return Ok(outcome);
+        };
+        let mut transaction = store.begin().await?;
+        let (context, id) = self.resolve_table(&mut transaction, table).await?;
+        let positions = transaction
+            .topic_positions(context.namespace, context.database, id, &ids)
+            .await?;
+        Ok(Outcome::Value(Value::Array(
+            positions
+                .into_iter()
+                .map(|position| {
+                    position.map_or(Value::None, |held| {
+                        Value::Number(Number::Integer(i64::try_from(held).unwrap_or(i64::MAX)))
+                    })
+                })
+                .collect(),
+        )))
+    }
+}
+
+/// The topic a `RETURN POSITION` append writes, if the statement is one.
+fn answers_position(kind: &StatementKind) -> Option<&TableRef> {
+    match kind {
+        StatementKind::Insert {
+            table,
+            answer: Answer::Position,
+            ..
+        } => Some(table),
+        StatementKind::Create {
+            target: CreateTarget::Generated(table),
+            answer: Answer::Position,
+            ..
+        } => Some(table),
+        StatementKind::Create {
+            target: CreateTarget::Named(target),
+            answer: Answer::Position,
+            ..
+        } => Some(&target.table),
+        _ => None,
     }
 }
