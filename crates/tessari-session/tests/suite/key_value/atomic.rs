@@ -137,6 +137,30 @@ fn set_if_equal_is_a_compare_and_set() {
     });
 }
 
+#[test]
+fn del_if_equal_removes_only_the_value_it_names() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        run(&mut session, "SET cache:'v' = 'one' EXPIRE 1h;");
+        assert_eq!(
+            value(&mut session, "DEL cache:'v' IF = 'zero';"),
+            Value::Bool(false)
+        );
+        assert_eq!(value(&mut session, "GET cache:'v';"), Value::from("one"));
+        assert_eq!(
+            value(&mut session, "DEL cache:'v' IF = 'one';"),
+            Value::Bool(true),
+            "{}",
+            backend.name
+        );
+        assert_eq!(value(&mut session, "GET cache:'v';"), Value::None);
+        assert_eq!(
+            value(&mut session, "DEL cache:'v' IF = 'one';"),
+            Value::Bool(false)
+        );
+    });
+}
+
 /// S3.3: no increment is lost, and none is refused, under contention.
 #[test]
 fn concurrent_increments_all_land_and_none_is_refused() {

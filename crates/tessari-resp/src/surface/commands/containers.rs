@@ -72,6 +72,40 @@ pub(super) fn ranked(value: Value) -> Result<Vec<(String, f64)>, Reply> {
     }
 }
 
+/// A ranking as the store holds one: a set of `[score, member]` pairs.
+pub(super) fn held_ranking(pairs: &[(String, f64)]) -> Value {
+    Value::Set(
+        pairs
+            .iter()
+            .map(|(member, at)| {
+                Value::Array(vec![
+                    Value::Number(Number::Float(*at)),
+                    Value::String(member.clone()),
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// A sorted-set source, which may also be a plain set: each member then
+/// scores 1, as the reference treats a set handed to `ZUNION` and its kin.
+pub(super) fn ranked_or_members(value: Value) -> Result<Vec<(String, f64)>, Reply> {
+    if let Value::Set(held) = &value
+        && ranking(held).is_none()
+    {
+        return held
+            .iter()
+            .map(|member| {
+                values::rendered(member)
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                    .map(|member| (member, 1.0))
+                    .ok_or_else(replies::wrong_type)
+            })
+            .collect();
+    }
+    ranked(value)
+}
+
 /// The pairs of a set that is a ranking, in its order; `None` when it is not.
 fn ranking(pairs: &BTreeSet<Value>) -> Option<Vec<(String, f64)>> {
     if pairs.is_empty() {

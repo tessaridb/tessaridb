@@ -311,6 +311,14 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             }
             found
         }
+        StatementKind::Del {
+            target,
+            expected: Some(expected),
+        } => {
+            let mut found = vec![&target.table];
+            found.extend(in_expr(expected));
+            found
+        }
         StatementKind::Structure { target, op } => {
             let mut found = vec![&target.table];
             found.extend(op.second_key().map(|to| &to.table));
@@ -384,7 +392,10 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::Reveal { target, .. }
         | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }
-        | StatementKind::Del { target }
+        | StatementKind::Del {
+            target,
+            expected: None,
+        }
         | StatementKind::Persist { target }
         // A release names one record in one queue, so the queue is the table the
         // grant is asked about, and a targeted claim names one the same way.
@@ -450,8 +461,14 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // the bare read does, so it is answered for here rather than left to the
         // fact that the statement's own `from` is not a table.
         StatementKind::Let { value, .. }
-        | StatementKind::Return { value }
-        | StatementKind::Throw { value } => in_expr(value),
+        | StatementKind::Return { value } => in_expr(value),
+        StatementKind::Throw { value, condition } => {
+            let mut found = in_expr(value);
+            if let Some(condition) = condition {
+                found.extend(in_expr(condition));
+            }
+            found
+        }
     }
 }
 

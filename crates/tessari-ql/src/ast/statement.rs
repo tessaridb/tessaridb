@@ -1843,6 +1843,9 @@ pub enum StatementKind {
     Throw {
         /// The message. Evaluated, so it may name what went wrong.
         value: Expr,
+        /// `THROW … IF <condition>` refuses only when this holds — a guard.
+        /// A condition answering nothing does not hold, as in `IF`.
+        condition: Option<Expr>,
     },
     /// `UPSERT users:1 = { … }` — write the record whether or not it is there.
     ///
@@ -2009,10 +2012,14 @@ pub enum StatementKind {
         /// The key.
         target: RecordTarget,
     },
-    /// `DEL sessions:'abc'`
+    /// `DEL sessions:'abc'`, or `DEL sessions:'abc' IF = 'v'`, which removes
+    /// the key only while it holds that value and answers whether it did — the
+    /// delete beside `SET … IF =` (G079 C6).
     Del {
         /// The key to remove.
         target: RecordTarget,
+        /// The value the key must hold for the delete to happen.
+        expected: Option<Expr>,
     },
     /// `PUT media:'/logo.png' = 0x0a1b` — a file's whole content.
     ///

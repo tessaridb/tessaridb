@@ -414,12 +414,22 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         StatementKind::Reveal { target, .. }
         | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }
-        | StatementKind::Del { target }
+        | StatementKind::Del {
+            target,
+            expected: None,
+        }
         // A release names one record, and a record's identity may be a
         // parameter wherever a record's identity may be one.
         // A targeted claim names one record for the same reason a release does.
         | StatementKind::ClaimRecord { target, .. }
         | StatementKind::Read { target, .. } => bind_target(target, binding),
+        StatementKind::Del {
+            target,
+            expected: Some(expected),
+        } => {
+            bind_target(target, binding)?;
+            bind_expr(expected, binding)
+        }
         StatementKind::Release {
             target, not_before, ..
         } => {
@@ -511,8 +521,13 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             Ok(())
         }
         StatementKind::Let { value, .. }
-        | StatementKind::Return { value }
-        | StatementKind::Throw { value } => bind_expr(value, binding),
+        | StatementKind::Return { value } => bind_expr(value, binding),
+        StatementKind::Throw { value, condition } => {
+            bind_expr(value, binding)?;
+            condition
+                .as_mut()
+                .map_or(Ok(()), |condition| bind_expr(condition, binding))
+        }
         StatementKind::Select(select) => bind_select(select, binding),
         // The read it explains is a read, so its parameters bind the same way —
         // and an `EXPLAIN` of a parameterised read is exactly what somebody

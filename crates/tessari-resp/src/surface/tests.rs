@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::codec::Reply;
 use crate::surface::{Node, Space};
 
+mod algebra;
 mod carrying;
 mod containers;
 mod keys;

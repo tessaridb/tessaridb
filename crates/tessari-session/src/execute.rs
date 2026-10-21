@@ -1116,7 +1116,13 @@ impl Session<'_> {
             // Never answers: it fails, and the failure discards the work above
             // it in the transaction. That is what makes it a guard rather than a
             // log line.
-            StatementKind::Throw { value } => {
+            StatementKind::Throw { value, condition } => {
+                if let Some(condition) = condition {
+                    let held = self.evaluate(transaction, condition).await?;
+                    if !crate::condition::boolean(&held, condition.span)? {
+                        return Ok(Outcome::Done);
+                    }
+                }
                 let message = match self.evaluate(transaction, value).await? {
                     // A string is used as written, so `THROW 'already paid'`
                     // reads back exactly as it was typed rather than quoted.
@@ -1212,7 +1218,17 @@ impl Session<'_> {
                 self.delete_record(transaction, address, span).await?;
                 Ok(answered(*answer, before, Value::None))
             }
-            StatementKind::Del { target } => {
+            StatementKind::Del {
+                target,
+                expected: Some(expected),
+            } => {
+                self.delete_key_if(transaction, target, expected, span)
+                    .await
+            }
+            StatementKind::Del {
+                target,
+                expected: None,
+            } => {
                 self.clear_file(transaction, target).await?;
                 let (_, address) = self.address(transaction, target).await?;
                 self.delete_record(transaction, address, span).await?;

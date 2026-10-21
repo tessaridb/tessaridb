@@ -7,10 +7,14 @@
 
 mod arguments;
 mod change;
+mod combine;
 mod containers;
 mod hashes;
 mod keys;
 mod lists;
+mod pops;
+mod ranges;
+mod scans;
 mod sets;
 mod strings;
 mod zsets;
@@ -54,6 +58,9 @@ pub(crate) enum Procedure {
     Multi,
     Exec,
     Discard,
+    /// `WATCH key …`: `EXEC` refused if any of them changes first.
+    Watch(Vec<Vec<u8>>),
+    Unwatch,
     Keys(Vec<u8>),
     Scan {
         cursor: u64,
@@ -70,6 +77,12 @@ pub(crate) enum Procedure {
         change: change::Change,
     },
     SetIfNoneExist(Vec<(Vec<u8>, Vec<u8>)>),
+    /// Keys read together, and one of them written while it still holds what
+    /// was read (`*STORE`, `LMPOP`, `ZMPOP`).
+    Rewrite {
+        keys: Vec<Vec<u8>>,
+        compute: crate::surface::rewrite::Compute,
+    },
     Rename {
         from: Vec<u8>,
         to: Vec<u8>,
@@ -115,6 +128,9 @@ pub(crate) fn plan(
             || lists::serves(&name)
             || sets::serves(&name)
             || zsets::serves(&name)
+            || combine::serves(&name)
+            || scans::serves(&name)
+            || pops::serves(&name)
         {
             Err(replies::no_space())
         } else {
@@ -127,7 +143,15 @@ pub(crate) fn plan(
     if let Some(step) = keys::plan(&name, arguments, space, binder)? {
         return Ok(step);
     }
-    for family in [hashes::plan, lists::plan, sets::plan, zsets::plan] {
+    for family in [
+        hashes::plan,
+        lists::plan,
+        sets::plan,
+        zsets::plan,
+        combine::plan,
+        scans::plan,
+        pops::plan,
+    ] {
         if let Some(step) = family(&name, arguments, space, binder)? {
             return Ok(step);
         }

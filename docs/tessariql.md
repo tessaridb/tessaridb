@@ -3995,7 +3995,13 @@ BEGIN;
 UPDATE orders:1 SET total = 40;
 THROW IF total > 100 THEN 'over the limit' ELSE 'fine' END;
 COMMIT;
+
+THROW 'already paid' IF (GET orders:1).paid;
 ```
+
+`THROW … IF <condition>` refuses only when the condition holds, so a guard reads
+as one. A condition that answers nothing does not hold, exactly as in `IF`, and
+one that is not a truth at all is refused as the mistake it is.
 
 `IF` made a decision **computable**; `THROW` makes it **enforceable**. Before it,
 every refusal had to be a condition the store itself happened to check — so a
@@ -6797,7 +6803,9 @@ KEYS FROM sessions RANGE 'a'..'m';
 - `SET` writes; the whole value is replaced, never merged.
 - `GET` returns the value, or `NONE` when the key is not there. `NONE` and a
   stored `NULL` are different answers, which is the point of having both.
-- `DEL` removes the key.
+- `DEL` removes the key. `DEL k IF = v` removes it only while it still holds `v`
+  and answers whether it did — the delete beside `SET … IF =`, so a lease is
+  released only by its holder.
 - `KEYS` lists keys, optionally over a range. A range is meaningful because keys
   are record ids and record ids are order-encoded (`docs/key-grammar.md` §5), so
   the bound names a contiguous stretch of the space rather than an arbitrary

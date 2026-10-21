@@ -94,8 +94,14 @@ impl Parser<'_> {
                 self.advance();
                 // The value position: the message is a value, and a bare name
                 // here would be a table exactly as it is in every other one.
+                let value = self.expression()?;
                 StatementKind::Throw {
-                    value: self.expression()?,
+                    value,
+                    condition: if self.eat_keyword(Keyword::If) {
+                        Some(self.expression()?)
+                    } else {
+                        None
+                    },
                 }
             }
             Some(Keyword::Set) => self.write_statement(Keyword::Set)?,
@@ -227,9 +233,14 @@ impl Parser<'_> {
             Some(Keyword::Backup) => self.backup_statement()?,
             Some(Keyword::Del) => {
                 self.advance();
-                StatementKind::Del {
-                    target: self.record_target()?,
-                }
+                let target = self.record_target()?;
+                let expected = if self.eat_keyword(Keyword::If) {
+                    self.expect_punct(Punct::Equals, "`=` and the value the key must hold")?;
+                    Some(self.expression()?)
+                } else {
+                    None
+                };
+                StatementKind::Del { target, expected }
             }
             Some(Keyword::Relate) => self.relate_statement()?,
             Some(Keyword::Keys) => self.keys_statement()?,

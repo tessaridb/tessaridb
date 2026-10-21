@@ -211,3 +211,13 @@ SCORES POP cache:'board' HIGHEST;
 --- case: a container write on a key holding another kind is refused
 LIST PUSH cache:'cart' BACK 1;
 --- expect: error KeyHoldsAnotherKind
+
+--- case: a delete may name the value the key must still hold
+SET cache:'lease' = 'worker-7';
+DEL cache:'lease' IF = 'worker-8';
+--- expect: value false
+
+--- case: and removes it when it does
+DEL cache:'lease' IF = 'worker-7';
+GET cache:'lease';
+--- expect: value NONE

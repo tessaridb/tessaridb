@@ -188,6 +188,9 @@ pub(crate) fn connection(name: &str, arguments: &[Vec<u8>]) -> Result<Option<Ste
         "MULTI" => Step::Procedure(Procedure::Multi),
         "EXEC" => Step::Procedure(Procedure::Exec),
         "DISCARD" => Step::Procedure(Procedure::Discard),
+        "WATCH" if arguments.is_empty() => return Err(replies::arity(name)),
+        "WATCH" => Step::Procedure(Procedure::Watch(arguments.to_vec())),
+        "UNWATCH" => Step::Procedure(Procedure::Unwatch),
         "TESSARIDB.USE" => match arguments {
             [namespace, database, space] => {
                 let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();

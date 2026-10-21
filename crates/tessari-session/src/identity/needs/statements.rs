@@ -49,11 +49,15 @@ impl Needs {
             // topology.
             StatementKind::Let { value, .. }
             | StatementKind::Return { value }
-            | StatementKind::Throw { value }
+            | StatementKind::Throw { value, .. }
                 if holds_node_read(value) =>
             {
                 Self::OPERATE_STORE
             }
+            StatementKind::Throw {
+                condition: Some(condition),
+                ..
+            } if holds_node_read(condition) => Self::OPERATE_STORE,
             StatementKind::Let { .. }
             | StatementKind::Return { .. }
             | StatementKind::Throw { .. }

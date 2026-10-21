@@ -25,6 +25,7 @@ use crate::surface::statement::{Binder, Planned};
 use crate::surface::{Shared, Space};
 
 mod introduce;
+mod watch;
 
 /// How often an idle connection looks at whether the node is stopping.
 const WATCH_STOPPING: Duration = Duration::from_secs(1);
@@ -65,6 +66,8 @@ struct Connection {
     id: u64,
     peer: Option<SocketAddr>,
     multi: Option<Queue>,
+    /// What each `WATCH`ed key held, for the next `EXEC`'s guards.
+    watched: Vec<(Vec<u8>, tessaridb::Value)>,
     cursors: Cursors,
 }
 
@@ -87,6 +90,7 @@ where
         id: shared.next_client(),
         peer,
         multi: None,
+        watched: Vec::new(),
         cursors: Cursors::default(),
         shared,
     };
@@ -236,8 +240,17 @@ impl Connection {
             Ok(Step::Procedure(Procedure::Exec)) => return (self.exec().await, Flow::Continue),
             Ok(Step::Procedure(Procedure::Discard)) => {
                 self.multi = None;
+                self.watched.clear();
                 return (Reply::OK, Flow::Continue);
             }
+            Ok(Step::Procedure(Procedure::Watch(_))) => {
+                return (
+                    Reply::error("ERR WATCH inside MULTI is not allowed"),
+                    Flow::Continue,
+                );
+            }
+            // `EXEC` forgets what was watched anyway.
+            Ok(Step::Procedure(Procedure::Unwatch)) => Queued::Reply(Reply::OK),
             Ok(Step::Procedure(Procedure::Multi)) => {
                 return (
                     Reply::error("ERR MULTI calls can not be nested"),
@@ -280,20 +293,30 @@ impl Connection {
 
     /// `EXEC`: every queued command's statements in one transaction.
     async fn exec(&mut self) -> Reply {
-        let Some(queue) = self.multi.take() else {
+        let Some(mut queue) = self.multi.take() else {
             return Reply::error("ERR EXEC without MULTI");
         };
+        let watched = std::mem::take(&mut self.watched);
         if queue.failed {
             return Reply::error("EXECABORT Transaction discarded because of previous errors.");
         }
-        let statements: Vec<String> = queue
-            .commands
-            .iter()
-            .filter_map(|queued| match queued {
-                Queued::Planned(planned) => Some(planned.statements.clone()),
-                Queued::Reply(_) => None,
-            })
-            .flatten()
+        let guards = match self.space.as_ref() {
+            Some(space) => watch::guards(watched, space, &mut queue.binder),
+            None => Vec::new(),
+        };
+        let guarded = guards.len();
+        let statements: Vec<String> = guards
+            .into_iter()
+            .chain(
+                queue
+                    .commands
+                    .iter()
+                    .filter_map(|queued| match queued {
+                        Queued::Planned(planned) => Some(planned.statements.clone()),
+                        Queued::Reply(_) => None,
+                    })
+                    .flatten(),
+            )
             .collect();
         let mut outcomes = if statements.is_empty() {
             Vec::new()
@@ -307,6 +330,10 @@ impl Connection {
             };
             match against.run(&statements, &parameters).await {
                 Ok(outcomes) => outcomes,
+                // A watched key changed: the transaction did not run.
+                Err(failed) if error_text(&replies::failed(&failed)).contains(watch::WATCHED) => {
+                    return Reply::Nil;
+                }
                 Err(failed) => {
                     return Reply::error(format!(
                         "EXECABORT Transaction discarded: {}",
@@ -316,6 +343,8 @@ impl Connection {
             }
         }
         .into_iter();
+        // The guards answer nothing of their own.
+        outcomes.by_ref().take(guarded).for_each(drop);
         let replies = queue
             .commands
             .into_iter()
@@ -336,6 +365,7 @@ impl Connection {
             Procedure::Reset => {
                 self.protocol = Protocol::Two;
                 self.multi = None;
+                self.watched.clear();
                 self.name = None;
                 self.user = None;
                 self.space = self.shared.space.clone();
@@ -364,6 +394,11 @@ impl Connection {
                 Reply::OK
             }
             Procedure::Exec => Reply::error("ERR EXEC without MULTI"),
+            Procedure::Watch(keys) => self.watch(keys).await,
+            Procedure::Unwatch => {
+                self.watched.clear();
+                Reply::OK
+            }
             Procedure::Discard => Reply::error("ERR DISCARD without MULTI"),
             store => {
                 let Some(space) = self.space.as_ref() else {
@@ -394,6 +429,7 @@ impl Connection {
                     Procedure::RandomKey => against.first_key().await,
                     Procedure::Change { key, change } => against.change(&key, &change).await,
                     Procedure::SetIfNoneExist(pairs) => against.set_if_none_exist(&pairs).await,
+                    Procedure::Rewrite { keys, compute } => against.rewrite(&keys, &compute).await,
                     Procedure::Rename { from, to, only_new } => {
                         against.rename(&from, &to, only_new).await
                     }

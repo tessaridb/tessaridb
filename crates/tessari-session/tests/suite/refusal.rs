@@ -132,3 +132,44 @@ fn a_refusal_that_is_not_reached_changes_nothing() {
 
     assert_eq!(rows(&mut session, "SELECT * FROM orders;"), 2);
 }
+
+#[test]
+fn a_guard_refuses_only_when_its_condition_holds() {
+    let store = store();
+    let mut session = ready(&store);
+
+    // Not holding: nothing is refused and the writes beside it commit.
+    session
+        .run_now(
+            "BEGIN; THROW 'already paid' IF (GET orders:1).paid = false;\n\
+             UPDATE orders:1 MERGE { total: 40 }; COMMIT;",
+        )
+        .unwrap();
+    assert_eq!(
+        rows(&mut session, "SELECT * FROM orders WHERE total = 40;"),
+        1
+    );
+    // A condition that answers nothing does not hold, as it does not in `IF`.
+    session
+        .run_now("THROW 'no such field' IF (GET orders:1).missing = true;")
+        .unwrap();
+    // Holding: the refusal names the message and discards the work above it.
+    let refused = session
+        .run_now(
+            "BEGIN; UPDATE orders:1 MERGE { total: 50 };\n\
+             THROW 'already paid' IF (GET orders:1).paid; COMMIT;",
+        )
+        .expect_err("a guard whose condition holds refuses")
+        .to_string();
+    assert!(refused.starts_with("already paid"), "got {refused}");
+    assert_eq!(
+        rows(&mut session, "SELECT * FROM orders WHERE total = 40;"),
+        1
+    );
+    // A condition that is not a truth is a mistake, and is refused as one.
+    let mistaken = session
+        .run_now("THROW 'x' IF 42;")
+        .expect_err("a number is not a condition")
+        .to_string();
+    assert!(!mistaken.starts_with('x'), "got {mistaken}");
+}

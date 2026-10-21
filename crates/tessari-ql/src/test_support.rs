@@ -67,7 +67,13 @@ fn erase_statement(statement: &mut Statement) {
     match &mut statement.kind {
         StatementKind::Select(select) => erase_select(select),
         StatementKind::Explain(select) => erase_select(select),
-        StatementKind::Return { value } | StatementKind::Throw { value } => erase_expr(value),
+        StatementKind::Return { value } => erase_expr(value),
+        StatementKind::Throw { value, condition } => {
+            erase_expr(value);
+            if let Some(condition) = condition {
+                erase_expr(condition);
+            }
+        }
         StatementKind::Let { value, span, .. } => {
             *span = CANONICAL;
             erase_expr(value);
@@ -526,9 +532,19 @@ fn erase_statement(statement: &mut Statement) {
         }
         StatementKind::Delete { target, .. }
         | StatementKind::Get { target }
-        | StatementKind::Del { target }
+        | StatementKind::Del {
+            target,
+            expected: None,
+        }
         | StatementKind::Persist { target }
         | StatementKind::Read { target, .. } => erase_record(target),
+        StatementKind::Del {
+            target,
+            expected: Some(expected),
+        } => {
+            erase_record(target);
+            erase_expr(expected);
+        }
         StatementKind::DeleteWhere {
             table, condition, ..
         } => {

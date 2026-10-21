@@ -22,6 +22,7 @@ mod glob;
 mod kinds;
 mod procedures;
 mod replies;
+mod rewrite;
 mod running;
 mod space;
 mod statement;

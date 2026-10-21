@@ -8,6 +8,7 @@ use crate::surface::Space;
 use crate::surface::commands::Step;
 use crate::surface::commands::arguments::integer;
 use crate::surface::commands::containers::{self, first, ranked, score, text};
+use crate::surface::commands::ranges::{Bound, Lex, Range};
 use crate::surface::replies;
 use crate::surface::statement::{Binder, Planned};
 use crate::surface::values;
@@ -24,6 +25,9 @@ const NAMES: &[&str] = &[
     "ZRANGEBYSCORE",
     "ZREVRANGE",
     "ZREVRANGEBYSCORE",
+    "ZRANGEBYLEX",
+    "ZREVRANGEBYLEX",
+    "ZLEXCOUNT",
     "ZRANK",
     "ZREVRANK",
     "ZPOPMIN",
@@ -34,45 +38,6 @@ const NAMES: &[&str] = &[
 /// Whether `name` is one of these commands.
 pub(super) fn serves(name: &str) -> bool {
     NAMES.contains(&name)
-}
-
-/// One end of a score range: `5`, `(5` for excluded, `-inf`, `+inf`.
-#[derive(Clone, Copy)]
-struct Bound {
-    at: f64,
-    excluded: bool,
-}
-
-impl Bound {
-    fn read(bytes: &[u8]) -> Result<Self, Reply> {
-        let (excluded, digits) = match bytes.strip_prefix(b"(") {
-            Some(rest) => (true, rest),
-            None => (false, bytes),
-        };
-        let at = match digits.to_ascii_lowercase().as_slice() {
-            b"-inf" => f64::NEG_INFINITY,
-            b"+inf" | b"inf" => f64::INFINITY,
-            _ => values::float(digits)
-                .ok_or_else(|| Reply::error("ERR min or max is not a float"))?,
-        };
-        Ok(Self { at, excluded })
-    }
-
-    fn below(self, score: f64) -> bool {
-        if self.excluded {
-            self.at < score
-        } else {
-            self.at <= score
-        }
-    }
-
-    fn above(self, score: f64) -> bool {
-        if self.excluded {
-            score < self.at
-        } else {
-            score <= self.at
-        }
-    }
 }
 
 /// A read of the whole ranking, lowest first, answered by `answer`.
@@ -394,75 +359,27 @@ fn reads(name: &str, rest: &[Vec<u8>], target: &str) -> Result<Planned, Reply> {
                 random_members(&pairs, count, with_scores)
             })
         }
-        _ => ranges(name, rest, target)?,
-    })
-}
-
-/// `ZRANGE` and the older range commands it subsumes.
-fn ranges(name: &str, rest: &[Vec<u8>], target: &str) -> Result<Planned, Reply> {
-    let [start, stop, options @ ..] = rest else {
-        return Err(replies::arity(name));
-    };
-    let (mut by_score, mut reverse) = (
-        matches!(name, "ZRANGEBYSCORE" | "ZREVRANGEBYSCORE"),
-        matches!(name, "ZREVRANGE" | "ZREVRANGEBYSCORE"),
-    );
-    let (mut with_scores, mut limit) = (false, None);
-    let mut words = options.iter();
-    while let Some(word) = words.next() {
-        match word.to_ascii_uppercase().as_slice() {
-            b"WITHSCORES" => with_scores = true,
-            b"BYSCORE" if name == "ZRANGE" => by_score = true,
-            b"REV" if name == "ZRANGE" => reverse = true,
-            b"LIMIT" => {
-                let offset = integer(words.next().ok_or_else(replies::syntax)?)?;
-                let count = integer(words.next().ok_or_else(replies::syntax)?)?;
-                limit = Some((offset, count));
-            }
-            _ => return Err(replies::syntax()),
-        }
-    }
-    if by_score {
-        // A reversed score range names its high end first.
-        let (first_bound, second_bound) = (Bound::read(start)?, Bound::read(stop)?);
-        let (low, high) = if reverse {
-            (second_bound, first_bound)
-        } else {
-            (first_bound, second_bound)
-        };
-        return Ok(read(target, move |mut pairs| {
-            if reverse {
-                pairs.reverse();
-            }
-            let within = pairs
-                .into_iter()
-                .filter(|(_, at)| low.below(*at) && high.above(*at));
-            let paged: Vec<(String, f64)> = match limit {
-                Some((offset, count)) => {
-                    let offset = usize::try_from(offset).unwrap_or(usize::MAX);
-                    let count = usize::try_from(count).unwrap_or(usize::MAX);
-                    within.skip(offset).take(count).collect()
-                }
-                None => within.collect(),
+        "ZLEXCOUNT" => {
+            let [low, high] = rest else {
+                return Err(replies::arity(name));
             };
-            listed(&paged, with_scores)
-        }));
-    }
-    if limit.is_some() {
-        return Err(Reply::error(
-            "ERR syntax error, LIMIT is only supported in combination with either BYSCORE or BYLEX",
-        ));
-    }
-    let (start, stop) = (integer(start)?, integer(stop)?);
-    Ok(read(target, move |mut pairs| {
-        if reverse {
-            pairs.reverse();
+            let (low, high) = (Lex::read(low)?, Lex::read(high)?);
+            read(target, move |pairs| {
+                containers::integer(
+                    pairs
+                        .iter()
+                        .filter(|(member, _)| low.below(member) && high.above(member))
+                        .count(),
+                )
+            })
         }
-        match containers::span(pairs.len(), start, stop) {
-            Some((from, to)) => listed(pairs.get(from..=to).unwrap_or(&[]), with_scores),
-            None => Reply::Array(Vec::new()),
+        _ => {
+            let range = Range::read(name, rest, false)?;
+            read(target, move |pairs| {
+                listed(&range.select(pairs), range.with_scores)
+            })
         }
-    }))
+    })
 }
 
 /// `ZRANDMEMBER`: one member, `count` distinct ones, or with a negative count
