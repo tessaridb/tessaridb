@@ -29,6 +29,7 @@ pub(crate) fn declared_topic(clauses: &TopicClauses) -> TopicDeclaration {
         retain_bytes: clauses.retain_bytes,
         public: clauses.public.map(|(rate, per)| PublicAppend { rate, per }),
         deduplicate: clauses.deduplicate.clone(),
+        partitions: None,
     }
 }
 
@@ -54,6 +55,12 @@ pub(crate) fn topic_clauses(declared: &TopicDeclaration) -> String {
     }
     if let Some((window, field)) = &declared.deduplicate {
         let _ = write!(clauses, " DEDUPLICATE {} ON {field}", window.to_literal());
+    }
+    if let Some(partitioning) = &declared.partitions {
+        let _ = write!(clauses, " PARTITIONS {}", partitioning.children.len());
+        if let Some(by) = &partitioning.by {
+            let _ = write!(clauses, " BY {by}");
+        }
     }
     clauses
 }

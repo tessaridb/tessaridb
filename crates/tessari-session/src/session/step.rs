@@ -4,7 +4,7 @@ use super::{Consumer, Session, advised, conflicting, read_version, settle};
 use crate::error::{Error, Result};
 use crate::outcome::Outcome;
 use tessari_ql::{Answer, CreateTarget, Statement, StatementKind, TableRef};
-use tessari_storage::{Store, Transaction};
+use tessari_storage::{Catalog, Store, TableDefinition, TableKind, TopicDeclaration, Transaction};
 use tessari_types::{Number, Sequence, Value};
 
 impl<'a> Session<'a> {
@@ -242,6 +242,51 @@ impl<'a> Session<'a> {
         };
         let mut transaction = store.begin().await?;
         let (context, id) = self.resolve_table(&mut transaction, table).await?;
+        let children = match Catalog::new(&mut transaction).table(id).await? {
+            Some(TableDefinition {
+                kind:
+                    TableKind::Topic(TopicDeclaration {
+                        partitions: Some(partitioning),
+                        ..
+                    }),
+                ..
+            }) => partitioning.children,
+            _ => Vec::new(),
+        };
+        if !children.is_empty() {
+            // A split topic's message holds a position in the partition it
+            // landed in, so the answer names both (ADR-0131).
+            let mut placed: Vec<Option<(usize, u64)>> = vec![None; ids.len()];
+            for (partition, child) in children.into_iter().enumerate() {
+                let positions = transaction
+                    .topic_positions(context.namespace, context.database, child, &ids)
+                    .await?;
+                for (slot, position) in placed.iter_mut().zip(positions) {
+                    if slot.is_none() {
+                        *slot = position.map(|position| (partition, position));
+                    }
+                }
+            }
+            let whole = |number: u64| {
+                Value::Number(Number::Integer(i64::try_from(number).unwrap_or(i64::MAX)))
+            };
+            return Ok(Outcome::Value(Value::Array(
+                placed
+                    .into_iter()
+                    .map(|place| {
+                        place.map_or(Value::None, |(partition, position)| {
+                            Value::Object(std::collections::BTreeMap::from([
+                                (
+                                    "partition".to_owned(),
+                                    whole(u64::try_from(partition).unwrap_or(u64::MAX)),
+                                ),
+                                ("position".to_owned(), whole(position)),
+                            ]))
+                        })
+                    })
+                    .collect(),
+            )));
+        }
         let positions = transaction
             .topic_positions(context.namespace, context.database, id, &ids)
             .await?;

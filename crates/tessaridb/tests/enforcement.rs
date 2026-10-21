@@ -1121,7 +1121,16 @@ const TABLES: &[Table] = &[
         // entry beyond the membership and leadership rows, or grant. Its caller
         // is the session's read routing, after the statement is authorized.
         // Re-classification trigger: it answering anything about a record.
-        expected: 82,
+        //
+        // 83 since a topic can be split (G079 W6a, ADR-0131):
+        // `Store::partition_turn`. Classified **not a data path**, on
+        // `admit_public_append`'s ground: it advances a per-node count held in
+        // this process's memory and answers the next turn — a number, never a
+        // record, catalog entry or grant. Its caller is the session's append,
+        // after the statement is authorized, and the turn only moves which
+        // partition a keyless message lands in. Re-classification trigger: the
+        // turn deciding whether a write lands rather than where.
+        expected: 83,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1379,7 +1388,9 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 170 since `Store::led_elsewhere` (G079 W5d), classified above.
     // 172 since `Db::membership` and `Db::database_led_elsewhere` (G079 W5d-4).
-    assert_eq!(total, 172, "the counted tables no longer sum to 172");
+    //
+    // 173 since `Store::partition_turn` (G079 W6a), classified above.
+    assert_eq!(total, 173, "the counted tables no longer sum to 173");
 }
 
 /// Every `.rs` file under a directory.

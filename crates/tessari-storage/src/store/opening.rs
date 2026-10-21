@@ -93,6 +93,7 @@ impl Store {
             expiring,
             held,
             public_appends: Arc::new(crate::topic::PublicRates::default()),
+            partition_turns: Arc::new(crate::topic::PartitionTurns::default()),
             divergences: Arc::new(AtomicU64::new(0)),
             discarded: Arc::new(AtomicU64::new(0)),
             campaigns: Arc::new(AtomicU64::new(0)),

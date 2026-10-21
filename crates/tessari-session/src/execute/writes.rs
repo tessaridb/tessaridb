@@ -251,7 +251,13 @@ impl Session<'_> {
         let identity = self
             .free_identity(transaction, &context, id, &payload, table.span)
             .await?;
-        let address = RecordAddress::new(context.namespace, context.database, id, identity.clone());
+        // A split topic's message lands in the partition its key chooses; the
+        // identity is still the topic's, so none repeats across partitions.
+        let home = self
+            .partition_for(definition.as_deref(), &payload, table.span)?
+            .unwrap_or(id);
+        let address =
+            RecordAddress::new(context.namespace, context.database, home, identity.clone());
         self.put_record(transaction, address.clone(), payload.clone(), span)
             .await?;
         super::expiry::settle_write_expiry(transaction, &address, settled);
@@ -478,8 +484,11 @@ impl Session<'_> {
             let identity = self
                 .free_identity(transaction, &context, id, &payload, table.span)
                 .await?;
+            let home = self
+                .partition_for(definition.as_deref(), &payload, table.span)?
+                .unwrap_or(id);
             let address =
-                RecordAddress::new(context.namespace, context.database, id, identity.clone());
+                RecordAddress::new(context.namespace, context.database, home, identity.clone());
             self.put_record(transaction, address.clone(), payload, span)
                 .await?;
             super::expiry::settle_write_expiry(transaction, &address, settled);

@@ -86,6 +86,13 @@ impl Store {
             .admit(topic, rule, count, std::time::Instant::now())
     }
 
+    /// The turn the next keyless message of the split topic `topic` takes on
+    /// this node, counting from 0 (ADR-0131). Counted in memory.
+    #[must_use]
+    pub fn partition_turn(&self, topic: TableId) -> u64 {
+        self.partition_turns.take(topic)
+    }
+
     /// Which tables carry a retention floor.
     pub(crate) fn expiring(&self) -> &crate::lapse::Expiring {
         &self.expiring

@@ -15,6 +15,10 @@ fn every_shape_round_trips() {
                 per: Duration::from_seconds(60),
             }),
             deduplicate: Some((Duration::from_seconds(300), "msg_id".to_owned())),
+            partitions: Some(Partitioning {
+                by: Some("user".to_owned()),
+                children: vec![TableId::new(7), TableId::new(8)],
+            }),
         },
         TopicDeclaration {
             retain: None,
@@ -22,6 +26,14 @@ fn every_shape_round_trips() {
             retain_bytes: None,
             public: None,
             deduplicate: None,
+            partitions: None,
+        },
+        TopicDeclaration {
+            partitions: Some(Partitioning {
+                by: None,
+                children: vec![TableId::new(3)],
+            }),
+            ..TopicDeclaration::default()
         },
     ];
     for shape in shapes {

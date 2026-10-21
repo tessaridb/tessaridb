@@ -93,7 +93,7 @@ pub use catalog::{
     EdgeOrder, EngineField, EngineMember, EventDeclaration, Eviction, FailoverDefinition,
     FailoverStamp, Feed, FieldDefinition, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition,
     Greeter, GroupDeclaration, GroupState, Held, InFlight, IndexDefinition, IndexShape, JoinTicket,
-    Kind, LeadershipDefinition, Mapped, NamespaceDefinition, OnFailure, PublicAppend,
+    Kind, LeadershipDefinition, Mapped, NamespaceDefinition, OnFailure, Partitioning, PublicAppend,
     QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach,
     ReplicaDefinition, Role, RollupCompute, RollupDeclaration, RollupFold, SYSTEM_DATABASE,
     SYSTEM_NAMESPACE, SearchCosts, SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration,

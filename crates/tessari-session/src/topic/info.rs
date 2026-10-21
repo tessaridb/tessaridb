@@ -155,6 +155,38 @@ impl Session<'_> {
                 .await?;
             report.insert("bytes".to_owned(), whole(bytes));
         }
+        // A split topic holds nothing itself; each partition's figures are its
+        // own topic's (ADR-0131). `NULL` says the topic was never split.
+        match &declared.partitions {
+            None => {
+                report.insert("partitions".to_owned(), Value::Null);
+            }
+            Some(partitioning) => {
+                let mut each = Vec::with_capacity(partitioning.children.len());
+                for (index, child) in partitioning.children.iter().enumerate() {
+                    let held = transaction
+                        .topic_after(context.namespace, context.database, *child, u64::MAX, 0)
+                        .await?;
+                    each.push(Value::Object(BTreeMap::from([
+                        (
+                            "partition".to_owned(),
+                            whole(u64::try_from(index).unwrap_or(u64::MAX)),
+                        ),
+                        ("first".to_owned(), held.first.map_or(Value::None, whole)),
+                        ("last".to_owned(), whole(held.last.unwrap_or(0))),
+                    ])));
+                }
+                report.insert(
+                    "partitions".to_owned(),
+                    whole(u64::try_from(each.len()).unwrap_or(u64::MAX)),
+                );
+                report.insert(
+                    "by".to_owned(),
+                    partitioning.by.as_deref().map_or(Value::Null, Value::from),
+                );
+                report.insert("each".to_owned(), Value::Array(each));
+            }
+        }
         Ok(report)
     }
 }

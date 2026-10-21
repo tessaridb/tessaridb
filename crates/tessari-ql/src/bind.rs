@@ -452,8 +452,13 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             bind_identity(lower, *span, binding)?;
             bind_identity(upper, *span, binding)
         }
-        StatementKind::ReadTopic { after, limit, .. } => {
-            for bound in [after, limit].into_iter().flatten() {
+        StatementKind::ReadTopic {
+            after,
+            limit,
+            partition,
+            ..
+        } => {
+            for bound in [after, limit, partition].into_iter().flatten() {
                 bind_expr(bound, binding)?;
             }
             Ok(())

@@ -21,8 +21,10 @@
 mod rate;
 mod read;
 mod size;
+mod turns;
 
 pub(crate) use rate::PublicRates;
+pub(crate) use turns::PartitionTurns;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -152,6 +154,15 @@ pub(crate) async fn admit(
         let Some((name, declared)) = topics.get(&topic) else {
             continue;
         };
+        // A split topic's messages live in its partitions; one written to the
+        // parent would be read by no partition's reader (ADR-0131).
+        if declared.partitions.is_some()
+            && matches!(mutation.value.value(), RecordValue::Present(_))
+        {
+            return Err(Error::TopicIsSplit {
+                topic: name.clone(),
+            });
+        }
         let address = RecordAddress::new(topic.0, topic.1, topic.2, mutation.id.clone());
         let held = view
             .read_newest_stamped(&address)

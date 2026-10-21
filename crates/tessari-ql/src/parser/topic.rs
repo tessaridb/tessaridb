@@ -72,6 +72,18 @@ impl Parser<'_> {
                 )?;
                 self.expect_keyword(Keyword::On, "`ON` and the field a repeat is recognised by")?;
                 clauses.deduplicate = Some((window, self.name()?.text));
+            } else if clauses.partitions.is_none() && self.eat_word("partitions") {
+                // The ceiling is the engine's and is judged where the topic is
+                // declared (ADR-0131).
+                let count = self.positive_count(
+                    "a whole number from 1 to 1024 — the partitions the topic is split into",
+                )?;
+                let by = if self.eat_word("by") {
+                    Some(self.name()?.text)
+                } else {
+                    None
+                };
+                clauses.partitions = Some((count, by));
             } else {
                 break;
             }
@@ -98,11 +110,16 @@ impl Parser<'_> {
         })
     }
 
-    /// `READ FROM <topic> [FOR CONSUMER '<name>'] [AFTER <expr>] [LIMIT <expr>]`,
-    /// `READ` consumed and `FROM` next.
+    /// `READ FROM <topic> [PARTITION <expr>] [FOR CONSUMER '<name>'] [AFTER <expr>]
+    /// [LIMIT <expr>]`, `READ` consumed and `FROM` next.
     pub(super) fn read_topic(&mut self) -> Result<StatementKind> {
         self.expect_keyword(Keyword::From, "`FROM` and the topic")?;
         let topic = self.table_ref()?;
+        let partition = if self.eat_word("partition") {
+            Some(self.expression()?)
+        } else {
+            None
+        };
         let (consumer, consumer_parameter) = self.for_consumer()?;
         let after = if self.eat_word("after") {
             Some(self.expression()?)
@@ -120,6 +137,7 @@ impl Parser<'_> {
             consumer_parameter,
             after,
             limit,
+            partition,
         })
     }
 

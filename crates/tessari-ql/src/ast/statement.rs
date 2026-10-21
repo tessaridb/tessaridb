@@ -228,6 +228,8 @@ pub enum StatementKind {
         after: Option<Expr>,
         /// The most messages to answer.
         limit: Option<Expr>,
+        /// `PARTITION <n>`: the partition of a split topic to read (ADR-0131).
+        partition: Option<Expr>,
     },
     /// `DEFINE GROUP 'billing' ON TOPIC events ACK DEADLINE 30s DELIVERIES 5
     /// IN FLIGHT 10 DEAD LETTER TO events_dead` — readers under one name who

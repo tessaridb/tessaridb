@@ -310,6 +310,9 @@ pub struct TopicClauses {
     /// `DEDUPLICATE 5m ON msg_id` — a message whose `msg_id` was published less
     /// than the window ago is not appended (ADR-0124 D8).
     pub deduplicate: Option<(Duration, String)>,
+    /// `PARTITIONS 3 BY user` — how many partitions, and the field whose value
+    /// picks one (round robin when none is named) (ADR-0131).
+    pub partitions: Option<(u64, Option<String>)>,
 }
 
 /// What `DEFINE GROUP` declares after the topic (G042, ADR-0086).

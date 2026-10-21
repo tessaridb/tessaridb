@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use tessari_types::{Duration, Number, Value};
+use tessari_types::{Duration, Number, TableId, Value};
 
 use super::definition::object;
 use crate::error::{Error, Result};
@@ -44,6 +44,22 @@ pub struct TopicDeclaration {
     /// How long a published key is remembered, and the field holding it: a
     /// message repeating a key inside the window is not appended (ADR-0124 D8).
     pub deduplicate: Option<(Duration, String)>,
+    /// The partitions this topic is split into; `None` for a topic that holds
+    /// its messages itself (ADR-0131).
+    pub partitions: Option<Partitioning>,
+}
+
+/// A topic split into partitions, each a topic of its own (ADR-0131).
+///
+/// The parent holds no message: an append to it lands in one of `children`,
+/// so positions, retention, readers and groups are each child's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Partitioning {
+    /// The field whose value picks a message's partition; round robin when
+    /// `None`.
+    pub by: Option<String>,
+    /// The partitions in order, each a child topic's table.
+    pub children: Vec<TableId>,
 }
 
 const ENTITY: &str = "topic";
@@ -54,6 +70,8 @@ const FIELD_PUBLIC_RATE: &str = "public_rate";
 const FIELD_PUBLIC_PER: &str = "public_per";
 const FIELD_DEDUPLICATE: &str = "deduplicate";
 const FIELD_DEDUPLICATE_ON: &str = "deduplicate_on";
+const FIELD_PARTITIONS: &str = "partitions";
+const FIELD_PARTITIONS_BY: &str = "partitions_by";
 
 fn positive(fields: &BTreeMap<String, Value>, field: &'static str) -> Result<Option<u64>> {
     match fields.get(field) {
@@ -105,6 +123,17 @@ impl TopicDeclaration {
             fields.insert(FIELD_DEDUPLICATE.to_owned(), Value::Duration(*window));
             fields.insert(FIELD_DEDUPLICATE_ON.to_owned(), Value::from(field.as_str()));
         }
+        if let Some(partitioning) = &self.partitions {
+            let children = partitioning
+                .children
+                .iter()
+                .map(|child| integer(u64::from(child.get())))
+                .collect();
+            fields.insert(FIELD_PARTITIONS.to_owned(), Value::Array(children));
+            if let Some(by) = &partitioning.by {
+                fields.insert(FIELD_PARTITIONS_BY.to_owned(), Value::from(by.as_str()));
+            }
+        }
         Value::Object(fields)
     }
 
@@ -149,7 +178,41 @@ impl TopicDeclaration {
                     });
                 }
             },
+            partitions: partitioning(fields)?,
         })
+    }
+}
+
+fn partitioning(fields: &BTreeMap<String, Value>) -> Result<Option<Partitioning>> {
+    let malformed = |field, found| Error::CatalogMalformed {
+        entity: ENTITY,
+        field,
+        found,
+    };
+    let by = match fields.get(FIELD_PARTITIONS_BY) {
+        None => None,
+        Some(Value::String(by)) => Some(by.clone()),
+        Some(other) => return Err(malformed(FIELD_PARTITIONS_BY, other.type_name())),
+    };
+    match fields.get(FIELD_PARTITIONS) {
+        None if by.is_none() => Ok(None),
+        None => Err(malformed(
+            FIELD_PARTITIONS_BY,
+            "a partition key without partitions",
+        )),
+        Some(Value::Array(children)) if !children.is_empty() => {
+            let children = children
+                .iter()
+                .map(|child| match child {
+                    Value::Number(Number::Integer(id)) => u32::try_from(*id)
+                        .map(TableId::new)
+                        .map_err(|_| malformed(FIELD_PARTITIONS, "a table id out of range")),
+                    other => Err(malformed(FIELD_PARTITIONS, other.type_name())),
+                })
+                .collect::<Result<_>>()?;
+            Ok(Some(Partitioning { by, children }))
+        }
+        Some(other) => Err(malformed(FIELD_PARTITIONS, other.type_name())),
     }
 }
 

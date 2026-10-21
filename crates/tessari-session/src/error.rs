@@ -2837,6 +2837,61 @@ pub enum Error {
         span: Span,
     },
 
+    /// A topic split into more partitions than one topic may have (ADR-0131).
+    #[error(
+        "a topic is split into 1 to {ceiling} partitions, not {asked} (at {span})",
+        ceiling = tessari_constants::TOPIC_MAX_PARTITIONS
+    )]
+    PartitionsAboveCeiling {
+        /// The count asked for.
+        asked: u64,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A read of a split topic that names no partition (ADR-0131): the
+    /// partitions have no single order between them to answer in.
+    #[error(
+        "{topic} is split into partitions and has no one order to read (at {span}) — \
+         read one with `READ FROM {topic} PARTITION <n>`"
+    )]
+    PartitionNotNamed {
+        /// The topic as written.
+        topic: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A partition a topic does not have (ADR-0131).
+    #[error(
+        "{topic} has {count} partition(s), numbered from 0 — there is no partition {asked} (at {span})"
+    )]
+    NoSuchPartition {
+        /// The topic as written.
+        topic: String,
+        /// How many partitions it has; a topic never split has one.
+        count: u64,
+        /// The partition asked for.
+        asked: u64,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A split topic's key field holding a value no partition can be chosen
+    /// by (ADR-0131).
+    #[error(
+        "a topic is split by `{field}`, which holds {found} here — a string, an integer, a uuid or \
+         bytes chooses a partition (at {span})"
+    )]
+    PartitionKey {
+        /// The field the topic is split by.
+        field: String,
+        /// What the field held.
+        found: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A claim for more records than one statement may take.
     ///
     /// A bound rather than a tuning knob: without one, a single statement holds

@@ -286,3 +286,12 @@ pub const DEFAULT_LOG_RETENTION_RECORDS: u64 = 100_000;
 /// is to name the ceiling rather than to quietly hand back fewer records than
 /// were asked for.
 pub const MAX_CLAIM_RECORDS: u64 = 500;
+
+/// The most partitions one topic may be split into (ADR-0131).
+///
+/// Each partition is a topic of its own with its catalog row, reader positions
+/// and group records, and an append to a key-less topic walks them in turn, so
+/// the bound is what keeps one declaration from writing an unbounded catalog.
+/// It is the same order as a broker's per-topic practice and well above what a
+/// group of consumers divides.
+pub const TOPIC_MAX_PARTITIONS: u64 = 1_024;

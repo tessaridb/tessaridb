@@ -97,13 +97,19 @@ pub(super) async fn records(
     body: &mut String,
 ) -> Result<u64> {
     let name = &table.name;
-    let rows = match reader
-        .run_boxed(&format!("SELECT * FROM {name};"))
-        .await?
-        .pop()
-    {
-        Some(Outcome::Records { records, .. }) => records,
-        _ => return Ok(0),
+    let rows = match &table.kind {
+        TableKind::Topic(tessari_storage::TopicDeclaration {
+            partitions: Some(partitioning),
+            ..
+        }) => partitioned(reader, name, partitioning.children.len()).await?,
+        _ => match reader
+            .run_boxed(&format!("SELECT * FROM {name};"))
+            .await?
+            .pop()
+        {
+            Some(Outcome::Records { records, .. }) => records,
+            _ => return Ok(0),
+        },
     };
     let mut written = 0_u64;
     for (at, (id, value)) in rows.iter().enumerate() {
@@ -149,6 +155,50 @@ pub(super) async fn records(
         body.push_str("COMMIT;\n");
     }
     Ok(written)
+}
+
+/// Every message of a split topic, partition by partition in position order.
+///
+/// The topic itself holds none and its partitions have no names a `SELECT`
+/// could reach, so they are read the way a reader reads them (ADR-0131).
+/// Written back as appends to the topic, each lands where its key chooses —
+/// the partition it came from, for a message that carries one.
+async fn partitioned(
+    reader: &mut Session<'_>,
+    name: &str,
+    count: usize,
+) -> Result<Vec<(tessari_types::RecordId, Value)>> {
+    let mut rows = Vec::new();
+    for partition in 0..count {
+        let mut after = 0_i64;
+        loop {
+            let page = match reader
+                .run_boxed(&format!(
+                    "READ FROM {name} PARTITION {partition} AFTER {after} LIMIT {BATCH};"
+                ))
+                .await?
+                .pop()
+            {
+                Some(Outcome::Records { records, .. }) => records,
+                _ => Vec::new(),
+            };
+            if page.is_empty() {
+                break;
+            }
+            for (id, message) in page {
+                let Value::Object(mut fields) = message else {
+                    continue;
+                };
+                if let Some(Value::Number(tessari_types::Number::Integer(position))) =
+                    fields.get("position")
+                {
+                    after = *position;
+                }
+                rows.push((id, fields.remove("value").unwrap_or(Value::None)));
+            }
+        }
+    }
+    Ok(rows)
 }
 
 /// `EXPIRE <record> <instant>` after a record that carries one — the instant as

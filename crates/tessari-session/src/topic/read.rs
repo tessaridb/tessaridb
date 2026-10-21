@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use tessari_ql::{Expr, Span, TableRef};
-use tessari_storage::{Catalog, Messages, TableKind, Transaction};
-use tessari_types::{Number, RecordId, Value};
+use tessari_storage::{Catalog, Messages, TableKind, TopicDeclaration, Transaction};
+use tessari_types::{Number, RecordId, TableId, Value};
 
 use crate::AccessPath;
 use crate::error::{Error, Result};
@@ -41,6 +41,8 @@ pub(crate) struct Reading<'a> {
     pub(crate) after: Option<&'a Expr>,
     /// `LIMIT <count>`.
     pub(crate) limit: Option<&'a Expr>,
+    /// `PARTITION <n>` (ADR-0131).
+    pub(crate) partition: Option<&'a Expr>,
 }
 
 impl Session<'_> {
@@ -66,6 +68,53 @@ impl Session<'_> {
         }
     }
 
+    /// The topic a read of `topic` reads: the partition it names of a split
+    /// topic, or the topic itself — which, never split, is its own partition 0
+    /// (ADR-0131).
+    async fn partition_read(
+        &self,
+        transaction: &mut Transaction<'_>,
+        topic: &TableRef,
+        (table, declared): (TableId, &TopicDeclaration),
+        partition: Option<&Expr>,
+        span: Span,
+    ) -> Result<TableId> {
+        let children = declared
+            .partitions
+            .as_ref()
+            .map(|partitioning| partitioning.children.as_slice());
+        let Some(partition) = partition else {
+            return match children {
+                Some(_) => Err(Error::PartitionNotNamed {
+                    topic: topic.name.text.clone(),
+                    span,
+                }),
+                None => Ok(table),
+            };
+        };
+        let asked = self
+            .whole(
+                transaction,
+                partition,
+                "a partition is a whole number at or above zero",
+            )
+            .await?;
+        let found = match children {
+            Some(children) => usize::try_from(asked)
+                .ok()
+                .and_then(|place| children.get(place).copied()),
+            None => (asked == 0).then_some(table),
+        };
+        found.ok_or_else(|| Error::NoSuchPartition {
+            topic: topic.name.text.clone(),
+            count: children.map_or(1, |children| {
+                u64::try_from(children.len()).unwrap_or(u64::MAX)
+            }),
+            asked,
+            span,
+        })
+    }
+
     /// The messages of a topic after a position, oldest first.
     ///
     /// Each answers as `{ position, value }` under its own identity. A named
@@ -81,16 +130,25 @@ impl Session<'_> {
         span: Span,
     ) -> Result<Outcome> {
         let (context, table) = self.resolve_table(transaction, topic).await?;
-        let is_topic = Catalog::new(transaction)
+        let Some(TableKind::Topic(declared)) = Catalog::new(transaction)
             .table(table)
             .await?
-            .is_some_and(|definition| matches!(definition.kind, TableKind::Topic(_)));
-        if !is_topic {
+            .map(|definition| definition.kind)
+        else {
             return Err(Error::NotATopic {
                 table: topic.name.text.clone(),
                 span,
             });
-        }
+        };
+        let table = self
+            .partition_read(
+                transaction,
+                topic,
+                (table, &declared),
+                reading.partition,
+                span,
+            )
+            .await?;
         if let Some(consumer) = reading.consumer
             && let Some(state) = Catalog::new(transaction)
                 .topic_group(context.namespace, context.database, table, consumer)

@@ -49,6 +49,10 @@ DEFINE QUEUE jobs TIMEOUT 30s;
 CREATE jobs:1 = { job: 'send' };
 DEFINE TOPIC events;
 CREATE events:'e1' = { kind: 'paid' };
+DEFINE TOPIC split PARTITIONS 2 BY customer;
+CREATE split:'s1' = { customer: 'user-42' };
+CREATE split:'s2' = { customer: 'user-42', n: 2 };
+CREATE split:'s3' = { customer: 'abc' };
 DEFINE VECTOR embeddings DIMENSION 2 DISTANCE cosine;
 CREATE embeddings:1 = { vector: [0.6, 0.8] };
 DEFINE GEO places;
@@ -75,6 +79,8 @@ const INTERROGATION: &[&str] = &[
     "READ media:'/logo.png';",
     "SELECT * FROM jobs;",
     "SELECT * FROM events;",
+    "READ FROM split PARTITION 0;",
+    "READ FROM split PARTITION 1;",
     "SELECT * FROM embeddings;",
     "SELECT * FROM places;",
     "SELECT * FROM message;",

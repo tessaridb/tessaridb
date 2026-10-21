@@ -7948,10 +7948,50 @@ last one below which everything is acknowledged, and its `lag` counts from
 not. **Watch `lag`.** A reader whose lag keeps growing will one day be passed by
 retention, and the `lapsed` note will then be the first thing that says so.
 
+### Splitting a topic into partitions
+
+```tessariql
+DEFINE TOPIC orders PARTITIONS 3 BY customer RETAIN 7d;
+CREATE orders = { customer: 'user-42', total: 10 } RETURN POSITION;  -- [{ partition: 1, position: 1 }]
+READ FROM orders PARTITION 1 FOR CONSUMER 'billing' LIMIT 50;
+```
+
+`PARTITIONS n` (1 to 1024) splits a topic into `n` partitions, each an order of
+its own with its own dense positions, retention, readers and lapsed notes; the
+topic's other clauses apply to every partition. The count is fixed when the
+topic is declared.
+
+An append chooses its partition. With `BY field`, the field's bytes — a string
+as UTF-8, bytes as they are, an integer as its decimal text, a uuid as its 16
+bytes — are hashed with the murmur2 hash a Kafka client's default partitioner
+uses, so a key lands in the same partition whichever side wrote it, and every
+message of one key is in one order. A message without the field, and every
+message of a topic split with no `BY`, takes the partitions in turn — counted
+per node, in memory. A key of any other kind is refused as `PartitionKey`.
+`RETURN POSITION` answers the partition beside the position. A store-named
+identity is the topic's, so no two messages share one; an identity you name is
+checked only within the partition it lands in.
+
+A read names its partition: `READ FROM orders` alone is refused as
+`PartitionNotNamed`, because the partitions have no one order between them, and
+a partition the topic does not have is `NoSuchPartition`. A topic never split is
+its own partition 0. The partitions themselves have no names a statement can
+use: `CREATE`, `INSERT` and a dead letter are the ways in, and an `UPSERT` of a
+split topic is refused as `TopicIsSplit` rather than written where no
+partition's reader would see it. `INFO FOR TOPIC` reports `partitions`, `by` and
+each partition's `first` and `last`; `DROP TOPIC` drops the partitions with the
+topic; `BACKUP SCRIPT` writes every partition's messages back as appends, which
+land by key again (and in turn without one).
+
+A split topic is written in store format 9: a store an older build made holds
+its format until `ALTER STORE FINALIZE FORMAT`, and `PARTITIONS` is refused as
+`FormatNotFinalized` until then.
+
 ### What a topic is not
 
-A topic cannot be split into shards in this build: one topic is one order.
-Messages are read by asking; a subscriber that wants them pushed follows the
+A topic is not split across nodes: each topic — and each partition of a split
+one — is one order on the node that leads its database. Messages are read by
+asking; a subscriber that wants them pushed follows the
 change feed of the topic's table. A topic is not a queue: a queue hands each
 record to one worker and forgets it when the work is done, a topic keeps every
 message for every reader.

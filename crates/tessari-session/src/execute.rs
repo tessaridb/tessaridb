@@ -6,8 +6,9 @@ use tessari_ql::{
     StatementKind, TableChange, TableRef,
 };
 use tessari_storage::{
-    Catalog, FieldShape, IndexShape, QueueDeclaration, SeriesDeclaration, TableKind, TableShape,
-    Transaction, VectorDistance, ViewDeclaration, WordSetKind, violations,
+    Catalog, FieldShape, IndexShape, QueueDeclaration, SeriesDeclaration, TableDefinition,
+    TableKind, TableShape, TopicDeclaration, Transaction, VectorDistance, ViewDeclaration,
+    WordSetKind, violations,
 };
 
 use tessari_types::{IdentityKind, ShardId, Value};
@@ -27,6 +28,7 @@ mod editing;
 mod expiry;
 mod fields;
 mod format;
+mod partitions;
 mod relations;
 mod tables;
 mod topic_consumer;
@@ -236,6 +238,25 @@ impl Session<'_> {
                 name,
                 if_not_exists,
                 clauses,
+            } if clauses.partitions.is_some() => {
+                let (count, by) = clauses
+                    .partitions
+                    .as_ref()
+                    .map_or((0, None), |(count, by)| (*count, by.as_deref()));
+                self.define_partitioned_topic(
+                    transaction,
+                    name,
+                    clauses,
+                    (count, by),
+                    *if_not_exists,
+                    span,
+                )
+                .await
+            }
+            StatementKind::DefineTopic {
+                name,
+                if_not_exists,
+                clauses,
             } => {
                 self.define_table(
                     transaction,
@@ -255,6 +276,7 @@ impl Session<'_> {
                 consumer_parameter: _,
                 after,
                 limit,
+                partition,
             } => {
                 self.read_topic(
                     transaction,
@@ -263,6 +285,7 @@ impl Session<'_> {
                         consumer: consumer.as_deref(),
                         after: after.as_ref(),
                         limit: limit.as_ref(),
+                        partition: partition.as_ref(),
                     },
                     span,
                 )
@@ -696,6 +719,21 @@ impl Session<'_> {
                 {
                     Catalog::new(transaction).drop_table(chunk_id).await?;
                 }
+                // A split topic's partitions carry names nothing can drop by
+                // naming, so they go with the topic (ADR-0131).
+                if let Some(TableDefinition {
+                    kind:
+                        TableKind::Topic(TopicDeclaration {
+                            partitions: Some(partitioning),
+                            ..
+                        }),
+                    ..
+                }) = Catalog::new(transaction).table(id).await?
+                {
+                    for child in partitioning.children {
+                        Catalog::new(transaction).drop_table(child).await?;
+                    }
+                }
                 Catalog::new(transaction).drop_table(id).await?;
                 Ok(Outcome::Done)
             }
@@ -916,6 +954,14 @@ impl Session<'_> {
                     && marker.seen(transaction).await?
                 {
                     return Ok(answered(*answer, Value::None, Value::None));
+                }
+                // A split topic's message lands in the partition its key
+                // chooses (ADR-0131).
+                let mut address = address;
+                if let Some(partition) =
+                    self.partition_for(definition.as_ref(), &payload, target.span)?
+                {
+                    address.table = partition;
                 }
                 // A create over a record that is already there is refused. The
                 // alternative is silent replacement, which loses a record with

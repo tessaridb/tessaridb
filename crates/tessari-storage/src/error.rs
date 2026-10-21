@@ -587,6 +587,16 @@ pub enum Error {
         topic: String,
     },
 
+    /// A message written to a split topic itself rather than to one of its
+    /// partitions (ADR-0131).
+    #[error(
+        "topic {topic} is split into partitions and holds no message itself; append to it with CREATE or INSERT, which choose the partition"
+    )]
+    TopicIsSplit {
+        /// The topic that refused the write.
+        topic: String,
+    },
+
     /// A message is larger than its topic's `MAX BYTES` (G037).
     #[error("topic {topic} takes messages of at most {max} bytes; this one is larger")]
     TopicMessageTooLarge {
@@ -1227,6 +1237,7 @@ impl Error {
             | Self::InMemoryBesideDurable { .. }
             | Self::InMemoryOnACluster { .. }
             | Self::TopicIsAppendOnly { .. }
+            | Self::TopicIsSplit { .. }
             | Self::TopicMessageTooLarge { .. }
             | Self::TopicRetainExceeded { .. }
             | Self::TopicPositionsExhausted

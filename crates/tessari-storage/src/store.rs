@@ -249,6 +249,9 @@ pub struct Store {
     /// How much of each `PUBLIC` topic's anonymous allowance is spent, on this
     /// node (G037). See [`crate::topic`]'s rate module for why it is not stored.
     public_appends: Arc<crate::topic::PublicRates>,
+    /// The next partition each split topic's keyless message takes, on this
+    /// node (ADR-0131).
+    partition_turns: Arc<crate::topic::PartitionTurns>,
     /// Log divergences refused since this process opened the store.
     ///
     /// Shared with every handle for the same reason the snapshot registry is:

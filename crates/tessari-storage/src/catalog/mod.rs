@@ -94,7 +94,7 @@ pub(crate) use rows::CatalogRows;
 pub use shard::{ShardMap, ShardSpan};
 pub use space::{Eviction, SpaceDeclaration, SpaceLimit};
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
-pub use topic::{PublicAppend, TopicDeclaration};
+pub use topic::{Partitioning, PublicAppend, TopicDeclaration};
 pub use user::{Role, UserDefinition, Verb};
 pub use vault::VaultRoot;
 pub use words::{WordSet, WordSetKind};

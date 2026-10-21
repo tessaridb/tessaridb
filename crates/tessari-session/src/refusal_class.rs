@@ -198,6 +198,9 @@ impl Error {
             | Self::NotABucket { .. }
             | Self::NotAQueue { .. }
             | Self::NotATopic { .. }
+            | Self::PartitionNotNamed { .. }
+            | Self::NoSuchPartition { .. }
+            | Self::PartitionKey { .. }
             | Self::PositionNotDecided { .. }
             | Self::NoSuchGroup { .. }
             | Self::NotAGroup { .. }
@@ -213,6 +216,7 @@ impl Error {
             | Self::NoDelayField { .. }
             | Self::NotAnInstant { .. }
             | Self::DeduplicationKey { .. }
+            | Self::PartitionsAboveCeiling { .. }
             | Self::ClaimDeadlineUnreachable { .. }
             | Self::NotWrittenByHand { .. }
             | Self::FileIsNotBytes { .. }
