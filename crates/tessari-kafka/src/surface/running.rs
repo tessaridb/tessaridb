@@ -21,6 +21,8 @@ pub(crate) enum Failed {
 /// A connection's hold on the store: its session, between requests.
 pub(crate) struct Held {
     session: Option<Detached>,
+    /// The store user signed in, empty for an anonymous session.
+    user: String,
 }
 
 impl Held {
@@ -28,7 +30,13 @@ impl Held {
     pub(crate) fn anonymous(shared: &Shared) -> Self {
         Self {
             session: Some(shared.db.session().detach()),
+            user: String::new(),
         }
+    }
+
+    /// The store user signed in, empty for an anonymous session.
+    pub(crate) fn user(&self) -> &str {
+        &self.user
     }
 
     /// Replace the session with `session`, signed in elsewhere.
@@ -46,14 +54,38 @@ impl Held {
         script: &str,
         parameters: &Parameters,
     ) -> Result<Vec<Outcome>, Failed> {
+        self.run_at(shared, Some(tenancy.0), Some(tenancy.1), script, parameters)
+            .await
+    }
+
+    /// Run `script` in the namespace and database given, where either may be
+    /// absent for a statement about the store or a namespace; each given name
+    /// must already have been checked as an identifier.
+    pub(crate) async fn run_at(
+        &mut self,
+        shared: &Arc<Shared>,
+        namespace: Option<&str>,
+        database: Option<&str>,
+        script: &str,
+        parameters: &Parameters,
+    ) -> Result<Vec<Outcome>, Failed> {
         let Some(session) = self.session.take() else {
             return Err(Failed::Lost);
         };
         let db = Arc::clone(&shared.db);
-        let script = format!(
-            "USE NAMESPACE {}; USE DATABASE {};\n{script}",
-            tenancy.0, tenancy.1
-        );
+        let mut prefixed = String::with_capacity(script.len().saturating_add(64));
+        if let Some(namespace) = namespace {
+            prefixed.push_str("USE NAMESPACE ");
+            prefixed.push_str(namespace);
+            prefixed.push_str("; ");
+        }
+        if let Some(database) = database {
+            prefixed.push_str("USE DATABASE ");
+            prefixed.push_str(database);
+            prefixed.push_str("; ");
+        }
+        prefixed.push_str(script);
+        let script = prefixed;
         let bridged = shared
             .bridge
             .call_here(session, move |held: Detached| async move {
@@ -84,6 +116,7 @@ impl Held {
     ) -> Result<(), Failed> {
         let fresh = shared.db.session().detach();
         let db = Arc::clone(&shared.db);
+        let user_name = user.to_owned();
         let (user, password) = (
             user.to_owned(),
             zeroize::Zeroizing::new(password.to_owned()),
@@ -99,6 +132,7 @@ impl Held {
         match bridged {
             Bridged::Answered((session, Ok(()))) => {
                 self.replace(session);
+                self.user = user_name;
                 Ok(())
             }
             Bridged::Answered((_, Err(refused))) => Err(Failed::Refused(refused)),

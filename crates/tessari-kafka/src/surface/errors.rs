@@ -19,6 +19,40 @@ pub(crate) const OFFSET_OUT_OF_RANGE: i16 = 1;
 pub(crate) const UNKNOWN_TOPIC_OR_PARTITION: i16 = 3;
 /// Retriable: the request did not complete in time.
 pub(crate) const REQUEST_TIMED_OUT: i16 = 7;
+/// Retriable: the coordinator cannot take the group right now.
+pub(crate) const COORDINATOR_NOT_AVAILABLE: i16 = 15;
+/// A topic name that is not a name.
+pub(crate) const INVALID_TOPIC_EXCEPTION: i16 = 17;
+/// A member's generation is not the group's.
+pub(crate) const ILLEGAL_GENERATION: i16 = 22;
+/// A member's protocols share nothing with the group's.
+pub(crate) const INCONSISTENT_GROUP_PROTOCOL: i16 = 23;
+/// An empty group id.
+pub(crate) const INVALID_GROUP_ID: i16 = 24;
+/// A member the group does not hold.
+pub(crate) const UNKNOWN_MEMBER_ID: i16 = 25;
+/// A session timeout outside the bounds.
+pub(crate) const INVALID_SESSION_TIMEOUT: i16 = 26;
+/// The group is rebalancing; the member rejoins.
+pub(crate) const REBALANCE_IN_PROGRESS: i16 = 27;
+/// Not permitted to take part in a group.
+pub(crate) const GROUP_AUTHORIZATION_FAILED: i16 = 30;
+/// A topic of that name already exists.
+pub(crate) const TOPIC_ALREADY_EXISTS: i16 = 36;
+/// A partition count this node cannot serve.
+pub(crate) const INVALID_PARTITIONS: i16 = 37;
+/// A replication factor this node cannot serve.
+pub(crate) const INVALID_REPLICATION_FACTOR: i16 = 38;
+/// A topic configuration this node cannot honour.
+pub(crate) const INVALID_CONFIG: i16 = 40;
+/// A group that still has members cannot be deleted.
+pub(crate) const NON_EMPTY_GROUP: i16 = 68;
+/// A group this node does not hold.
+pub(crate) const GROUP_ID_NOT_FOUND: i16 = 69;
+/// A first join: the member rejoins with the id it is given.
+pub(crate) const MEMBER_ID_REQUIRED: i16 = 79;
+/// The group holds as many members as it may.
+pub(crate) const GROUP_MAX_SIZE_REACHED: i16 = 81;
 /// A message larger than the topic takes.
 pub(crate) const MESSAGE_TOO_LARGE: i16 = 10;
 /// Not permitted on this topic.

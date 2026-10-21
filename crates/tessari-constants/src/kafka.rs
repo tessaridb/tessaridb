@@ -40,3 +40,51 @@ pub const KAFKA_MAX_FETCH_WAIT_MILLIS: u64 = 30_000;
 /// to find out, so a partition of tiny messages does not walk the whole topic
 /// for one answer.
 pub const KAFKA_FETCH_MESSAGES: u64 = 1_000;
+
+/// How long a new group waits for more members before its first assignment.
+///
+/// Unit: milliseconds.
+///
+/// Consumers of one application start at nearly the same moment; without a
+/// pause the first one is assigned everything and the rest each cause another
+/// rebalance. A broker waits three seconds; half a second covers a process
+/// starting its consumers together without delaying a lone one noticeably.
+pub const KAFKA_INITIAL_REBALANCE_DELAY_MILLIS: u64 = 500;
+
+/// The shortest session timeout a group member may ask for.
+///
+/// Unit: milliseconds.
+///
+/// A broker's own floor: shorter, a member is declared dead between two
+/// heartbeats of an ordinary client.
+pub const KAFKA_MIN_SESSION_TIMEOUT_MILLIS: i32 = 6_000;
+
+/// The longest session timeout a group member may ask for.
+///
+/// Unit: milliseconds.
+///
+/// A broker's own ceiling, thirty minutes: a crashed member holds its
+/// partitions this long at most.
+pub const KAFKA_MAX_SESSION_TIMEOUT_MILLIS: i32 = 1_800_000;
+
+/// The most members one group holds.
+///
+/// Membership is node memory; a client that joins in a loop would otherwise
+/// grow one group without bound.
+pub const KAFKA_GROUP_MAX_MEMBERS: usize = 1_000;
+
+/// The most groups a node holds in memory at once.
+///
+/// A group with no members is let go to make room for a new one — its
+/// committed offsets are reader positions in the store and stay there.
+pub const KAFKA_MAX_GROUPS: usize = 10_000;
+
+/// The most bytes a member's subscriptions, or its assignment, may hold.
+///
+/// Unit: bytes.
+///
+/// Both are kept in node memory for as long as the member is; a consumer's
+/// subscription to a few hundred topics is a few kilobytes, so this leaves
+/// room for large ones while keeping a group of the most members far below a
+/// frame each.
+pub const KAFKA_GROUP_MEMBER_BYTES: usize = 64 * 1024;

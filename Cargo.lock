@@ -1855,6 +1855,7 @@ version = "0.36.2"
 dependencies = [
  "crc32c",
  "dashmap",
+ "getrandom 0.4.3",
  "lz4_flex",
  "miniz_oxide",
  "rustls",

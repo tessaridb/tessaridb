@@ -3,13 +3,13 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use tessaridb::{Outcome, Parameters, Value};
+use tessaridb::Parameters;
 
 use crate::api::metadata::{Broker, Topic};
 use crate::surface::Shared;
 use crate::surface::errors::{self, code};
-use crate::surface::names;
 use crate::surface::running::Held;
+use crate::surface::{listing, names};
 
 /// The id this node answers as, broker and controller alike.
 pub(crate) const NODE_ID: i32 = 1;
@@ -58,9 +58,8 @@ async fn describe(shared: &Arc<Shared>, held: &mut Held, name: &str) -> Topic {
     }
 }
 
-/// The topics asked about, or — asked for all — the topics of the database
-/// bare names are read in, which is the only database a client can name
-/// without knowing the store's tenancy.
+/// The topics asked about, or — asked for all — every topic the caller may
+/// see, across every database it may read.
 pub(crate) async fn topics(
     shared: &Arc<Shared>,
     held: &mut Held,
@@ -73,30 +72,8 @@ pub(crate) async fn topics(
         }
         return topics;
     }
-    let Some(database) = shared.database.clone() else {
-        return Vec::new();
-    };
-    let tenancy = (database.namespace.as_str(), database.database.as_str());
-    let listed = match held
-        .run(shared, tenancy, "INFO FOR DATABASE;", &Parameters::new())
+    listing::visible(shared, held)
         .await
-    {
-        Ok(outcomes) => match outcomes.last() {
-            Some(Outcome::Value(Value::Object(fields))) => match fields.get("topics") {
-                Some(Value::Array(names)) => names
-                    .iter()
-                    .filter_map(|name| match name {
-                        Value::String(name) => Some(name.clone()),
-                        _ => None,
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            },
-            _ => Vec::new(),
-        },
-        Err(_) => Vec::new(),
-    };
-    listed
         .into_iter()
         .map(|name| Topic {
             error_code: errors::NONE,

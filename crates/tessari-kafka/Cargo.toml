@@ -21,6 +21,7 @@ tessari-constants.workspace = true
 tessari-serve.workspace = true
 tessari-types.workspace = true
 dashmap.workspace = true
+getrandom.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
 # Connections are tasks on the process's runtime, which the binary builds;

@@ -15,6 +15,7 @@ use zeroize::Zeroize as _;
 use crate::api::{self, fetch, init_producer, list_offsets, metadata, produce, sasl, versions};
 use crate::codec::{Reader, Writer};
 use crate::header::{RequestHeader, write_response_header};
+use crate::surface::grouping::{self, Grouped};
 use crate::surface::running::{Failed, Held};
 use crate::surface::{Shared, fetching, metadata as describing, offsets, producing};
 
@@ -50,6 +51,7 @@ enum Reply {
 pub(crate) async fn converse<S>(
     shared: Arc<Shared>,
     reached: Option<SocketAddr>,
+    peer: Option<SocketAddr>,
     mut stream: S,
 ) -> std::io::Result<()>
 where
@@ -75,7 +77,7 @@ where
         .await
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "a frame stalled"))??;
         let busy = shared.stopping.busy();
-        let reply = handle(&shared, &mut held, &mut sasl, reached, &body).await;
+        let reply = handle(&shared, &mut held, &mut sasl, (reached, peer), &body).await;
         // A SASL token carries a password; the frame that held it is wiped.
         body.zeroize();
         match reply {
@@ -127,7 +129,7 @@ async fn handle(
     shared: &Arc<Shared>,
     held: &mut Held,
     sasl: &mut Sasl,
-    reached: Option<SocketAddr>,
+    (reached, peer): (Option<SocketAddr>, Option<SocketAddr>),
     body: &[u8],
 ) -> Reply {
     let mut reader = Reader::new(body);
@@ -258,7 +260,18 @@ async fn handle(
             }
             Err(_) => return Reply::Close("an unreadable init producer id request"),
         },
-        _ => return Reply::Close("an api this node has not taken on yet"),
+        _ => {
+            let from = grouping::From {
+                header: &header,
+                reached,
+                peer,
+            };
+            match grouping::answer(shared, held, &from, &mut reader, &mut writer).await {
+                Grouped::Written(written) => written,
+                Grouped::Unreadable => return Reply::Close("an unreadable request body"),
+                Grouped::NotMine => return Reply::Close("an api this node has not taken on yet"),
+            }
+        }
     };
     match answered {
         Ok(()) => Reply::Answer(writer.into_bytes()),

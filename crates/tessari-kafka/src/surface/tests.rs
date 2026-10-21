@@ -11,22 +11,35 @@ use crate::codec::{Reader, Writer};
 use crate::records::{Header, Outgoing, decode_batches, encode_batch};
 use crate::surface::{Database, Node};
 
+mod admin;
+mod groups;
+
 async fn serving() -> (String, CancellationToken) {
+    let (address, stop, _) = serving_with("").await;
+    (address, stop)
+}
+
+/// A node over a fresh store holding `app.main.orders`, after `setup` ran on it.
+async fn serving_with(setup: &str) -> (String, CancellationToken, Arc<tessaridb::Db>) {
     let db = Arc::new(tessaridb::Db::in_memory().await.unwrap());
     let mut session = db.session();
     session
         .run("DEFINE NAMESPACE app; USE NAMESPACE app; DEFINE DATABASE main; USE DATABASE main; DEFINE TOPIC orders;")
         .await
         .unwrap();
+    if !setup.is_empty() {
+        session.run(setup).await.unwrap();
+    }
     drop(session);
-    let node = Node::bind(db, "127.0.0.1:0")
+    let served = Arc::clone(&db);
+    let node = Node::bind(served, "127.0.0.1:0")
         .unwrap()
         .reading_bare_names_in(Database::parse("app.main").unwrap());
     let address = node.address().unwrap();
     let stop = CancellationToken::new();
     let stopping = stop.clone();
     tokio::spawn(async move { node.serve(stopping).await });
-    (address, stop)
+    (address, stop, db)
 }
 
 /// Send one request (header v2 for a flexible version) and read its answer's body.

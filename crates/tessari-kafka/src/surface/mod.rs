@@ -16,9 +16,14 @@
 //! connections bounded by the same door ceiling and its store calls by the
 //! same bridge, and its stages driven by the process through [`Stopping`].
 
+mod administering;
+mod committing;
 mod connection;
+mod coordinator;
 mod errors;
 mod fetching;
+mod grouping;
+mod listing;
 mod metadata;
 mod names;
 mod offsets;
@@ -36,6 +41,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 
+use coordinator::Coordinator;
 pub use names::Database;
 use producers::Producers;
 
@@ -45,6 +51,8 @@ pub(crate) struct Shared {
     pub(crate) bridge: Arc<Bridge>,
     pub(crate) stopping: Arc<Stopping>,
     pub(crate) producers: Producers,
+    /// Every group's membership, in node memory.
+    pub(crate) coordinator: Arc<Coordinator>,
     /// The address Metadata gives clients, when the operator named one.
     pub(crate) advertised: Option<(String, i32)>,
     /// The database a bare topic name is read in.
@@ -75,6 +83,7 @@ impl Node {
                 bridge: Arc::new(Bridge::new(MAX_STORE_CALLS)),
                 stopping: Stopping::new(),
                 producers: Producers::new(),
+                coordinator: Arc::new(Coordinator::new()),
                 advertised: None,
                 database: None,
             }),
@@ -140,6 +149,23 @@ impl Node {
     pub async fn serve(&self, stop: CancellationToken) -> std::io::Result<()> {
         let listener = tokio::net::TcpListener::from_std(self.listener.try_clone()?)?;
         let mut connections = JoinSet::new();
+        let sweeping = tokio::spawn(Arc::clone(&self.shared.coordinator).sweep_until_stopped());
+        let served = self.accept(&listener, &mut connections, &stop).await;
+        // The coordinator's waits end with the accepting, so a join parked for
+        // its round does not hold the drain for a whole rebalance timeout.
+        self.shared.coordinator.stop();
+        if let Err(why) = sweeping.await {
+            tracing::warn!(error = %why, "the kafka group sweeper ended in a panic");
+        }
+        served
+    }
+
+    async fn accept(
+        &self,
+        listener: &tokio::net::TcpListener,
+        connections: &mut JoinSet<()>,
+        stop: &CancellationToken,
+    ) -> std::io::Result<()> {
         loop {
             let accepted = tokio::select! {
                 biased;
@@ -191,7 +217,7 @@ impl Node {
                             .await
                             {
                                 Ok(Ok(secured)) => {
-                                    connection::converse(shared, reached, secured).await
+                                    connection::converse(shared, reached, Some(peer), secured).await
                                 }
                                 Ok(Err(why)) => {
                                     tracing::info!(error = %why, "kafka connection failed its TLS handshake");
@@ -203,7 +229,7 @@ impl Node {
                                 }
                             }
                         }
-                        None => connection::converse(shared, reached, stream).await,
+                        None => connection::converse(shared, reached, Some(peer), stream).await,
                     };
                     match ended {
                         Ok(()) => tracing::debug!("kafka connection closed"),
