@@ -3,6 +3,7 @@
 
 mod announcing;
 mod cluster;
+mod kafka;
 
 use crate::arguments::Serving;
 use crate::greeting_round::greeting;
@@ -194,6 +195,7 @@ pub(crate) fn serve(
         }
         None => None,
     };
+    let kafka = kafka::bind(&db, serving, secured.as_ref())?;
     // `GET /wire` carries the wire protocol over a WebSocket (ADR-0089), so it is
     // handed the wire node's door; a process serving HTTP alone answers it 404.
     if let (Some(node), Some(http)) = (&wire, &mut http) {
@@ -203,7 +205,13 @@ pub(crate) fn serve(
     // On the error stream, so a node whose output is being piped somewhere still
     // tells a person at the terminal that it came up and where. What was *bound*
     // rather than what was asked for, which is what makes `:0` usable.
-    announce(wire.as_ref(), http.as_ref(), &clients, peers.as_ref())?;
+    announce(
+        wire.as_ref(),
+        http.as_ref(),
+        kafka.as_ref(),
+        &clients,
+        peers.as_ref(),
+    )?;
 
     // After both surfaces are bound and before either serves, so a node that
     // could not take its address does not connect to a broker on the way to
@@ -266,6 +274,7 @@ pub(crate) fn serve(
             wake: Box::new(move || stop.cancel()),
         });
     }
+    let kafka_stops = kafka::count(kafka.as_ref(), &mut census, &mut surfaces);
     // The peer surface's own counts, made here rather than owned by the door,
     // because the cadences beside it live in this binary. Counted alongside
     // the others so a drain waits on it and a scrape reports it, for the reason
@@ -354,8 +363,8 @@ pub(crate) fn serve(
     // address was given — said here rather than assumed, because the two are
     // far enough apart to drift. Checked before anything is started, so a
     // refusal leaves nothing running behind it.
-    if wire.is_none() && http.is_none() {
-        return Err("--serve or --http wants an address".to_owned());
+    if wire.is_none() && http.is_none() && kafka.is_none() {
+        return Err("--serve, --http or --kafka wants an address".to_owned());
     }
     let wire = wire.map(std::sync::Arc::new);
     let http = http.map(std::sync::Arc::new);
@@ -414,6 +423,7 @@ pub(crate) fn serve(
                 node.serve(stop).await
             }));
         }
+        kafka::listen(&mut listening, kafka, kafka_stops.clone());
         // The watcher is what turns the stop token into the stages, and it runs
         // beside the listeners it stops.
         tokio::join!(shutdown::watch(&asked, &surfaces, quiet.as_ref()), async {

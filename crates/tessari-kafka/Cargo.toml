@@ -1,0 +1,38 @@
+[package]
+name = "tessari-kafka"
+description = "The Kafka protocol as a surface of a TessariDB node: its topics, its groups, its users"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+crc32c.workspace = true
+lz4_flex.workspace = true
+miniz_oxide.workspace = true
+ruzstd.workspace = true
+snap.workspace = true
+tessaridb.workspace = true
+tessari-constants.workspace = true
+tessari-serve.workspace = true
+tessari-types.workspace = true
+dashmap.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+# Connections are tasks on the process's runtime, which the binary builds;
+# this crate creates none (ADR-0085).
+tokio = { workspace = true, features = ["net", "rt", "sync", "time", "macros", "io-util"] }
+tokio-util.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+
+[dev-dependencies]
+# The surface is served in its tests on a runtime the test owns.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+
+[lints]
+workspace = true

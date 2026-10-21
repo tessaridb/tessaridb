@@ -517,6 +517,7 @@ crates/
   tessaridb                     the embedded front door — open, run, follow the changes
   tessari-http                the HTTP and WebSocket surface
   tessari-wire                the wire protocol
+  tessari-kafka               the Kafka protocol over the store's own topics
   tessari-serve               stopping a serving process in the order the stages require
   tessari-ingest              running the declared stream consumers: source, shaping, runner
   tessari-backup              log as backup, replay as restore

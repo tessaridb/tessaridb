@@ -31,8 +31,18 @@ tessari-http = { path = "crates/tessari-http", version = "0.36.2" }
 tessari-ingest = { path = "crates/tessari-ingest", version = "0.36.2" }
 tessari-serve = { path = "crates/tessari-serve", version = "0.36.2" }
 tessari-vault = { path = "crates/tessari-vault", version = "0.36.2" }
+tessari-kafka = { path = "crates/tessari-kafka", version = "0.36.2" }
 
 thiserror = "2"
+# The Kafka surface's record batches (ADR-0129): CRC-32C, and the four codecs a
+# producer may compress with. All four are already in the tree under the storage
+# engine; the surface only DECOMPRESSES, because a fetch answers uncompressed.
+# `checked-decode` because the bytes come from a client, not from this store.
+crc32c = "0.6.8"
+lz4_flex = { version = "0.14", default-features = false, features = ["std", "safe-decode", "checked-decode"] }
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
+snap = "1.1.2"
 # The serving runtime (ADR-0085). Default features off here, so every crate names
 # only what it uses: a library takes `rt` and `sync`, and only the binary asks for
 # the multi-threaded scheduler, the signal driver and the macros.
