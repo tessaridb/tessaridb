@@ -52,9 +52,27 @@ pub(crate) fn no_space() -> Reply {
     )
 }
 
+/// The reply the protocol gives in its own words for a container write the
+/// store refused, where it has one.
+pub(crate) fn container(refused: &tessaridb::Error) -> Option<Reply> {
+    match refused {
+        tessaridb::Error::KeyHoldsAnotherKind { .. } => Some(wrong_type()),
+        tessaridb::Error::NoSuchList { .. } => Some(Reply::error("ERR no such key")),
+        tessaridb::Error::ListIndexOutOfRange { .. } => {
+            Some(Reply::error("ERR index out of range"))
+        }
+        _ => None,
+    }
+}
+
 /// A statement that did not answer, as the reply a client can act on: the
 /// class decides the first word, the store's own words follow.
 pub(crate) fn failed(failed: &Failed) -> Reply {
+    if let Failed::Refused(refused) = failed
+        && let Some(reply) = container(refused)
+    {
+        return reply;
+    }
     match failed {
         Failed::Refused(refused) => {
             Reply::Error(Cow::Owned(format!("{} {refused}", word(refused.class()))))

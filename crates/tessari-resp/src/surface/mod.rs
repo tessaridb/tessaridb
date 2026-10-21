@@ -19,6 +19,7 @@
 mod commands;
 mod connection;
 mod glob;
+mod kinds;
 mod procedures;
 mod replies;
 mod running;

@@ -179,7 +179,7 @@ async fn keys_and_scan_walk_every_key_once_text_and_bytes_alike() {
     stop.cancel();
 }
 
-fn bytes_of(reply: Reply) -> Vec<u8> {
+pub(super) fn bytes_of(reply: Reply) -> Vec<u8> {
     match reply {
         Reply::Bulk(bytes) => bytes,
         other => format!("{other:?}").into_bytes(),
@@ -188,7 +188,7 @@ fn bytes_of(reply: Reply) -> Vec<u8> {
 
 /// The items of an array reply; none for any other, which the assertions
 /// on them then catch.
-fn array(reply: Reply) -> Vec<Reply> {
+pub(super) fn array(reply: Reply) -> Vec<Reply> {
     match reply {
         Reply::Array(items) => items,
         _ => Vec::new(),

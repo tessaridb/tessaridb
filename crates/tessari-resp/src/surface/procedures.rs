@@ -109,6 +109,9 @@ impl Against<'_> {
         let parameters = binder.into_parameters();
         match self.run(&planned.statements, &parameters).await {
             Ok(outcomes) => (planned.decode)(outcomes),
+            Err(Failed::Refused(refused)) if replies::container(&refused).is_some() => {
+                replies::container(&refused).unwrap_or_else(replies::syntax)
+            }
             Err(Failed::Refused(refused))
                 if refused.class() == RefusalClass::Invalid && planned.on_invalid.is_some() =>
             {
@@ -119,7 +122,11 @@ impl Against<'_> {
     }
 
     /// One statement with its parameters, answering its one value.
-    async fn value(&mut self, statement: String, binder: Binder) -> Result<Value, Failed> {
+    pub(crate) async fn value(
+        &mut self,
+        statement: String,
+        binder: Binder,
+    ) -> Result<Value, Failed> {
         let outcomes = self.run(&[statement], &binder.into_parameters()).await?;
         Ok(outcomes.into_iter().next().map_or(Value::None, value_of))
     }
@@ -205,7 +212,7 @@ impl Against<'_> {
         &mut self,
         cursors: &mut Cursors,
         cursor: u64,
-        pattern: Option<&[u8]>,
+        (pattern, kind): (Option<&[u8]>, Option<&str>),
         count: u64,
     ) -> Reply {
         let after = if cursor == 0 {
@@ -226,11 +233,24 @@ impl Against<'_> {
             Some(last) if full => cursors.hand_out(last.clone()),
             _ => 0,
         };
-        let matched = keys
+        let mut matched: Vec<&RecordId> = keys
             .iter()
-            .map(values::identity)
-            .filter(|bytes| pattern.is_none_or(|pattern| glob::matches(pattern, bytes)))
-            .map(Reply::Bulk)
+            .filter(|key| {
+                pattern.is_none_or(|pattern| glob::matches(pattern, &values::identity(key)))
+            })
+            .collect();
+        if let Some(kind) = kind {
+            match self.kinds(&matched).await {
+                Ok(kinds) => {
+                    let mut held = kinds.into_iter();
+                    matched.retain(|_| held.next() == Some(kind));
+                }
+                Err(failed) => return replies::failed(&failed),
+            }
+        }
+        let matched = matched
+            .into_iter()
+            .map(|key| Reply::Bulk(values::identity(key)))
             .collect();
         Reply::Array(vec![
             Reply::Bulk(next.to_string().into_bytes()),

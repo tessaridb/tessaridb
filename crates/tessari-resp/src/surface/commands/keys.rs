@@ -5,6 +5,7 @@ use tessaridb::Value;
 use crate::codec::Reply;
 use crate::surface::Space;
 use crate::surface::commands::arguments::{Expiry, expiry, expiry_value, integer};
+use crate::surface::commands::containers;
 use crate::surface::commands::strings::{expires_at, string_reply};
 use crate::surface::commands::{Procedure, Step};
 use crate::surface::replies;
@@ -194,10 +195,11 @@ pub(super) fn plan(
                 Box::new(|outcomes| {
                     let held = outcomes.into_iter().next().map_or(Value::None, value_of);
                     Reply::Status(
-                        match string_reply(&held) {
-                            Reply::Nil => "none",
-                            Reply::Bulk(_) => "string",
-                            _ => "unknown",
+                        match (containers::kind(&held), string_reply(&held)) {
+                            (_, Reply::Nil) => "none",
+                            ("string", Reply::Bulk(_)) => "string",
+                            ("string", _) => "unknown",
+                            (kind, _) => kind,
                         }
                         .into(),
                     )
@@ -340,7 +342,7 @@ fn scan(arguments: &[Vec<u8>]) -> Result<Step, Reply> {
         .ok_or_else(|| Reply::error("ERR invalid cursor"))?;
     let mut pattern = None;
     let mut count = 10_u64;
-    let mut typed_away = false;
+    let mut kind = None;
     let mut rest = options.iter();
     while let Some(option) = rest.next() {
         let value = rest.next().ok_or_else(replies::syntax)?;
@@ -352,21 +354,15 @@ fn scan(arguments: &[Vec<u8>]) -> Result<Step, Reply> {
                     .filter(|count| *count > 0)
                     .ok_or_else(replies::syntax)?;
             }
-            // Every key of a space is a string, so any other type is none.
-            b"TYPE" => typed_away = !value.eq_ignore_ascii_case(b"string"),
+            b"TYPE" => kind = Some(String::from_utf8_lossy(value).to_ascii_lowercase()),
             _ => return Err(replies::syntax()),
         }
-    }
-    if typed_away {
-        return Ok(Step::Reply(Reply::Array(vec![
-            Reply::text("0"),
-            Reply::Array(Vec::new()),
-        ])));
     }
     Ok(Step::Procedure(Procedure::Scan {
         cursor,
         pattern,
         count,
+        kind,
     }))
 }
 

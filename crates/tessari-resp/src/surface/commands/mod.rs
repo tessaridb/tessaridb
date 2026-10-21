@@ -7,8 +7,13 @@
 
 mod arguments;
 mod change;
+mod containers;
+mod hashes;
 mod keys;
+mod lists;
+mod sets;
 mod strings;
+mod zsets;
 
 use crate::codec::{Command, Reply};
 use crate::surface::Space;
@@ -17,6 +22,7 @@ use crate::surface::statement::{Binder, Planned};
 
 pub(crate) use arguments::{Expiry, now_millis};
 pub(crate) use change::{Change, changed};
+pub(crate) use containers::kind;
 pub(crate) use keys::{When, expire};
 pub(crate) use strings::string_reply;
 
@@ -53,6 +59,8 @@ pub(crate) enum Procedure {
         cursor: u64,
         pattern: Option<Vec<u8>>,
         count: u64,
+        /// Only keys holding this kind, as `TYPE` names it.
+        kind: Option<String>,
     },
     RandomKey,
     /// A read, a change made in Rust, and a write that holds only if the key
@@ -101,7 +109,13 @@ pub(crate) fn plan(
         return Ok(step);
     }
     let Some(space) = context.space else {
-        return if strings::serves(&name) || keys::serves(&name) {
+        return if strings::serves(&name)
+            || keys::serves(&name)
+            || hashes::serves(&name)
+            || lists::serves(&name)
+            || sets::serves(&name)
+            || zsets::serves(&name)
+        {
             Err(replies::no_space())
         } else {
             Err(replies::unknown(first))
@@ -112,6 +126,11 @@ pub(crate) fn plan(
     }
     if let Some(step) = keys::plan(&name, arguments, space, binder)? {
         return Ok(step);
+    }
+    for family in [hashes::plan, lists::plan, sets::plan, zsets::plan] {
+        if let Some(step) = family(&name, arguments, space, binder)? {
+            return Ok(step);
+        }
     }
     Err(replies::unknown(first))
 }

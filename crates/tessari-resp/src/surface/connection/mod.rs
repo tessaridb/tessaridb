@@ -380,9 +380,15 @@ impl Connection {
                         cursor,
                         pattern,
                         count,
+                        kind,
                     } => {
                         against
-                            .scan(&mut self.cursors, cursor, pattern.as_deref(), count)
+                            .scan(
+                                &mut self.cursors,
+                                cursor,
+                                (pattern.as_deref(), kind.as_deref()),
+                                count,
+                            )
                             .await
                     }
                     Procedure::RandomKey => against.first_key().await,
