@@ -53,6 +53,12 @@ impl Decoder {
         self.buffer.extend_from_slice(bytes);
     }
 
+    /// How many bytes are held and not yet read as a command.
+    #[must_use]
+    pub fn buffered(&self) -> usize {
+        self.buffer.len().saturating_sub(self.read)
+    }
+
     /// Whether bytes are held that are not a whole command yet.
     #[must_use]
     pub fn holds_a_part(&self) -> bool {

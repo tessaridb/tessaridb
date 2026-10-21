@@ -6,6 +6,7 @@
 //! connection carries out.
 
 mod arguments;
+mod blocking;
 mod change;
 mod combine;
 mod containers;
@@ -25,6 +26,7 @@ use crate::surface::replies;
 use crate::surface::statement::{Binder, Planned};
 
 pub(crate) use arguments::{Expiry, now_millis};
+pub(crate) use blocking::{Shape, found_nothing};
 pub(crate) use change::{Change, changed};
 pub(crate) use containers::kind;
 pub(crate) use keys::{When, expire};
@@ -98,6 +100,13 @@ pub(crate) enum Procedure {
         at: Expiry,
         when: keys::When,
     },
+    /// A blocking pop: its non-blocking `form`, tried again on every commit
+    /// until it finds something or `wait` passes (`None` is no limit).
+    Block {
+        form: Command,
+        wait: Option<std::time::Duration>,
+        shape: Shape,
+    },
 }
 
 /// What a command needs to be read.
@@ -131,6 +140,7 @@ pub(crate) fn plan(
             || combine::serves(&name)
             || scans::serves(&name)
             || pops::serves(&name)
+            || blocking::serves(&name)
         {
             Err(replies::no_space())
         } else {
@@ -141,6 +151,9 @@ pub(crate) fn plan(
         return Ok(step);
     }
     if let Some(step) = keys::plan(&name, arguments, space, binder)? {
+        return Ok(step);
+    }
+    if let Some(step) = blocking::plan(&name, arguments)? {
         return Ok(step);
     }
     for family in [

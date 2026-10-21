@@ -11,6 +11,7 @@ use crate::codec::Reply;
 use crate::surface::{Node, Space};
 
 mod algebra;
+mod blocking;
 mod carrying;
 mod containers;
 mod keys;
@@ -110,6 +111,7 @@ fn parse(bytes: &[u8]) -> Option<(Reply, usize)> {
             bytes.get(end..end.saturating_add(2))?;
             (Reply::Bulk(data), end.saturating_add(2))
         }
+        b'*' if count() < 0 => (Reply::NilArray, after),
         b'*' | b'%' => {
             let pairs = bytes[0] == b'%';
             let wanted =

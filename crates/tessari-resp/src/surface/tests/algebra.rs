@@ -195,7 +195,10 @@ async fn a_multi_pop_takes_from_the_first_key_holding_any() {
         Reply::Array(vec![bulk("l1"), texts(&["a"])])
     );
     assert_eq!(client.ask(&["EXISTS", "l1"]).await, Reply::Integer(0));
-    assert_eq!(client.ask(&["LMPOP", "1", "l1", "LEFT"]).await, Reply::Nil);
+    assert_eq!(
+        client.ask(&["LMPOP", "1", "l1", "LEFT"]).await,
+        Reply::NilArray
+    );
     client.ask(&["ZADD", "z", "1", "a", "2", "b"]).await;
     assert_eq!(
         client.ask(&["ZMPOP", "1", "z", "MAX"]).await,
@@ -223,7 +226,7 @@ async fn concurrent_multi_pops_hand_out_each_element_once() {
             let mut taken = Vec::new();
             loop {
                 let reply = client.ask(&["LMPOP", "1", "jobs", "LEFT"]).await;
-                if reply == Reply::Nil {
+                if reply == Reply::NilArray {
                     return taken;
                 }
                 assert!(matches!(reply, Reply::Array(_)), "{reply:?}");
@@ -258,7 +261,7 @@ async fn exec_does_not_run_when_a_watched_key_changed() {
         Reply::Error(text) if text.contains("inside MULTI")
     ));
     watcher.ask(&["SET", "k", "3"]).await;
-    assert_eq!(watcher.ask(&["EXEC"]).await, Reply::Nil);
+    assert_eq!(watcher.ask(&["EXEC"]).await, Reply::NilArray);
     assert_eq!(watcher.ask(&["GET", "k"]).await, bulk("2"));
     // Unchanged, the transaction runs; and EXEC forgot the watch.
     watcher.ask(&["WATCH", "k"]).await;
@@ -273,7 +276,7 @@ async fn exec_does_not_run_when_a_watched_key_changed() {
     other.ask(&["SET", "fresh", "x"]).await;
     watcher.ask(&["MULTI"]).await;
     watcher.ask(&["DEL", "fresh"]).await;
-    assert_eq!(watcher.ask(&["EXEC"]).await, Reply::Nil);
+    assert_eq!(watcher.ask(&["EXEC"]).await, Reply::NilArray);
     // UNWATCH forgets it.
     watcher.ask(&["WATCH", "k"]).await;
     other.ask(&["SET", "k", "9"]).await;

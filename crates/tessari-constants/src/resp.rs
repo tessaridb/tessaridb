@@ -80,6 +80,17 @@ pub const RESP_LCS_MAX_CELLS: usize = 4 * 1024 * 1024;
 /// that never sends a newline is a buffer that never stops growing.
 pub const RESP_INLINE_MAX_BYTES: usize = 64 * 1024;
 
+/// How many bytes a connection waiting in a blocking pop reads ahead and holds
+/// for the commands after it; past this it stops reading until it answers.
+///
+/// Unit: bytes.
+///
+/// The connection keeps reading while it waits so that it notices the client
+/// leaving — a client gone is a client that must not be handed an element —
+/// and a client that pipelines without end behind a blocked command is a
+/// buffer that never stops growing.
+pub const RESP_BLOCKED_READ_AHEAD_BYTES: usize = 1024 * 1024;
+
 /// How long a command keeps trying when another write came first: one that
 /// reads a value, changes it and writes it back (`APPEND`, `SETRANGE`,
 /// `INCRBYFLOAT`, the container moves), and a transaction (`EXEC`) the store

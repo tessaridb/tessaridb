@@ -30,6 +30,10 @@ pub enum Reply {
     Bulk(Vec<u8>),
     /// Nothing: no such key, a condition that did not hold.
     Nil,
+    /// Nothing where an array was asked for — a blocking pop that timed out, a
+    /// multi-key pop that found nothing, a transaction a watched key stopped:
+    /// `*-1` in RESP2, where a client tells it from a nil string.
+    NilArray,
     /// A sequence of replies.
     Array(Vec<Reply>),
     /// Pairs, written as a map in RESP3 and a flat array in RESP2.
@@ -76,6 +80,10 @@ pub fn encode(reply: &Reply, protocol: Protocol, out: &mut Vec<u8>) {
         }
         Reply::Nil => match protocol {
             Protocol::Two => out.extend_from_slice(b"$-1\r\n"),
+            Protocol::Three => out.extend_from_slice(b"_\r\n"),
+        },
+        Reply::NilArray => match protocol {
+            Protocol::Two => out.extend_from_slice(b"*-1\r\n"),
             Protocol::Three => out.extend_from_slice(b"_\r\n"),
         },
         Reply::Array(items) => {
@@ -188,6 +196,8 @@ mod tests {
         assert_eq!(written(&Reply::text("hi"), Protocol::Two), "$2\r\nhi\r\n");
         assert_eq!(written(&Reply::Nil, Protocol::Two), "$-1\r\n");
         assert_eq!(written(&Reply::Nil, Protocol::Three), "_\r\n");
+        assert_eq!(written(&Reply::NilArray, Protocol::Two), "*-1\r\n");
+        assert_eq!(written(&Reply::NilArray, Protocol::Three), "_\r\n");
         let map = Reply::Map(vec![(Reply::text("k"), Reply::Integer(1))]);
         assert_eq!(written(&map, Protocol::Two), "*2\r\n$1\r\nk\r\n:1\r\n");
         assert_eq!(written(&map, Protocol::Three), "%1\r\n$1\r\nk\r\n:1\r\n");

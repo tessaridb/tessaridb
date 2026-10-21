@@ -110,7 +110,7 @@ pub(super) fn plan(
         Ok(Rewritten {
             key: 0,
             write: Write::Nothing,
-            reply: Reply::Nil,
+            reply: Reply::NilArray,
         })
     };
     Ok(Some(Step::Procedure(Procedure::Rewrite {

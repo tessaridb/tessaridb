@@ -24,6 +24,7 @@ use crate::surface::running::Held;
 use crate::surface::statement::{Binder, Planned};
 use crate::surface::{Shared, Space};
 
+mod blocked;
 mod introduce;
 mod watch;
 
@@ -69,6 +70,8 @@ struct Connection {
     /// What each `WATCH`ed key held, for the next `EXEC`'s guards.
     watched: Vec<(Vec<u8>, tessaridb::Value)>,
     cursors: Cursors,
+    /// A blocking pop that found nothing yet, for the connection to wait on.
+    blocked: Option<blocked::Blocked>,
 }
 
 /// Serve one connection until the client closes it, it idles out, a command
@@ -92,6 +95,7 @@ where
         multi: None,
         watched: Vec::new(),
         cursors: Cursors::default(),
+        blocked: None,
         shared,
     };
     let mut decoder = Decoder::new();
@@ -116,12 +120,27 @@ where
                 }
             };
             let busy = connection.shared.stopping.busy();
-            let (reply, flow) = connection.handle(command).await;
+            let (mut reply, flow) = connection.handle(command).await;
+            drop(busy);
+            if let Some(blocked) = connection.blocked.take() {
+                // The replies before it are the client's to read while it waits.
+                if !out.is_empty() {
+                    stream.write_all(&out).await?;
+                    stream.flush().await?;
+                    out.clear();
+                }
+                match connection
+                    .wait(blocked, &mut stream, &mut decoder, &mut chunk)
+                    .await?
+                {
+                    Some(waited) => reply = waited,
+                    None => return Ok(()),
+                }
+            }
             connection
                 .shared
                 .stopping
                 .answered(matches!(reply, Reply::Error(_)));
-            drop(busy);
             encode(&reply, connection.protocol, &mut out);
             if flow == Flow::Close {
                 stream.write_all(&out).await?;
@@ -260,18 +279,23 @@ impl Connection {
             Ok(Step::Procedure(Procedure::Quit)) => return (Reply::OK, Flow::Close),
             Ok(Step::Reply(reply)) => Queued::Reply(reply),
             Ok(Step::Statements(planned)) => Queued::Planned(planned),
+            // Inside MULTI a blocking pop does not block: it is its form, when
+            // that is a statement.
+            Ok(Step::Procedure(Procedure::Block { form, .. })) => {
+                let context = Context {
+                    space: self.space.as_ref(),
+                };
+                match commands::plan(&form, &context, &mut queue.binder) {
+                    Ok(Step::Statements(planned)) => Queued::Planned(planned),
+                    _ => {
+                        queue.failed = true;
+                        return (not_in_multi(command), Flow::Continue);
+                    }
+                }
+            }
             Ok(Step::Procedure(_)) => {
                 queue.failed = true;
-                let name = command
-                    .first()
-                    .map(|name| String::from_utf8_lossy(name).to_ascii_lowercase())
-                    .unwrap_or_default();
-                return (
-                    Reply::error(format!(
-                        "ERR '{name}' is not offered inside MULTI on this node"
-                    )),
-                    Flow::Continue,
-                );
+                return (not_in_multi(command), Flow::Continue);
             }
             Err(reply) => {
                 queue.failed = true;
@@ -332,7 +356,7 @@ impl Connection {
                 Ok(outcomes) => outcomes,
                 // A watched key changed: the transaction did not run.
                 Err(failed) if error_text(&replies::failed(&failed)).contains(watch::WATCHED) => {
-                    return Reply::Nil;
+                    return Reply::NilArray;
                 }
                 Err(failed) => {
                     return Reply::error(format!(
@@ -400,6 +424,7 @@ impl Connection {
                 Reply::OK
             }
             Procedure::Discard => Reply::error("ERR DISCARD without MULTI"),
+            Procedure::Block { form, wait, shape } => self.block(form, wait, shape).await,
             store => {
                 let Some(space) = self.space.as_ref() else {
                     return (replies::no_space(), Flow::Continue);
@@ -445,6 +470,17 @@ impl Connection {
         };
         (reply, Flow::Continue)
     }
+}
+
+/// The refusal of a command `MULTI` cannot queue.
+fn not_in_multi(command: &Command) -> Reply {
+    let name = command
+        .first()
+        .map(|name| String::from_utf8_lossy(name).to_ascii_lowercase())
+        .unwrap_or_default();
+    Reply::error(format!(
+        "ERR '{name}' is not offered inside MULTI on this node"
+    ))
 }
 
 fn error_text(reply: &Reply) -> String {
