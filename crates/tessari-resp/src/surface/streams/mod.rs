@@ -20,6 +20,7 @@ use crate::surface::values;
 
 mod entry;
 mod groups;
+mod pending;
 
 pub(crate) use entry::Entry;
 use entry::{Held, PAGE, instant, integer, length, missing, refused, reply_count, whole};
@@ -245,6 +246,8 @@ impl Against<'_> {
         trim: Option<Trim>,
         fields: &[(String, Vec<u8>)],
     ) -> Result<Reply, Reply> {
+        // The store's object value is ordered by field name; this builds one
+        // message, owned by this command alone, and shares nothing.
         let body: BTreeMap<String, Value> = fields
             .iter()
             .map(|(field, value)| (field.clone(), values::stored(value)))

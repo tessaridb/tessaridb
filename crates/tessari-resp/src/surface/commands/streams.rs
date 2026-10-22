@@ -161,7 +161,7 @@ pub(super) fn id(bytes: &[u8]) -> Result<(u64, Option<u64>), Reply> {
 }
 
 /// The first ID a range starting at `bytes` includes.
-fn lower(bytes: &[u8]) -> Result<Option<Id>, Reply> {
+pub(super) fn lower(bytes: &[u8]) -> Result<Option<Id>, Reply> {
     match bytes {
         b"-" => return Ok(Some(Id::LEAST)),
         b"+" => return Ok(Some(Id::MOST)),
@@ -180,7 +180,7 @@ fn lower(bytes: &[u8]) -> Result<Option<Id>, Reply> {
 }
 
 /// The last ID a range ending at `bytes` includes.
-fn upper(bytes: &[u8]) -> Result<Option<Id>, Reply> {
+pub(super) fn upper(bytes: &[u8]) -> Result<Option<Id>, Reply> {
     match bytes {
         b"-" => return Ok(Some(Id::LEAST)),
         b"+" => return Ok(Some(Id::MOST)),
@@ -413,7 +413,7 @@ pub(super) fn plan(name: &str, arguments: &[Vec<u8>]) -> Result<Option<Step>, Re
                     "ERR XINFO STREAM FULL is not offered on this node",
                 ));
             }
-            _ => return Err(replies::syntax()),
+            _ => return super::pending::info(arguments),
         },
         // A message is never changed and its position never chosen.
         "XDEL" => {

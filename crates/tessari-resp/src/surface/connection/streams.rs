@@ -4,7 +4,7 @@
 
 use super::Connection;
 use crate::codec::{Command, Reply};
-use crate::surface::commands::{Group, Id, Shape, Since, Stream, Wanted};
+use crate::surface::commands::{Group, Id, Pending, Shape, Since, Stream, Wanted};
 use crate::surface::procedures::Against;
 use crate::surface::replies;
 
@@ -103,5 +103,18 @@ impl Connection {
         form.extend(keys.into_iter().map(|(key, _)| key.into_bytes()));
         form.extend(ends);
         self.block(form, wait, Shape::AsIs).await
+    }
+
+    pub(super) async fn pending(&mut self, pending: Pending) -> Reply {
+        let Some(space) = self.space.as_ref() else {
+            return replies::no_space();
+        };
+        Against {
+            shared: &self.shared,
+            held: &mut self.held,
+            space,
+        }
+        .pending(&pending)
+        .await
     }
 }

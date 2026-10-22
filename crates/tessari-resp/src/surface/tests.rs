@@ -17,6 +17,7 @@ mod containers;
 mod fields;
 mod groups;
 mod keys;
+mod pending;
 mod pubsub;
 mod session;
 mod streams;

@@ -24,7 +24,7 @@ fn no_key() -> Reply {
     )
 }
 
-fn no_group(key: &str, group: &str) -> Reply {
+pub(super) fn no_group(key: &str, group: &str) -> Reply {
     Reply::error(format!(
         "NOGROUP No such key '{key}' or consumer group '{group}'"
     ))
@@ -32,7 +32,7 @@ fn no_group(key: &str, group: &str) -> Reply {
 
 /// Whether `failed` says the group is not there: the topic has no group of
 /// that name, or the name reads it as a plain consumer.
-const fn not_a_group(failed: &Failed) -> bool {
+pub(super) const fn not_a_group(failed: &Failed) -> bool {
     matches!(
         failed,
         Failed::Refused(
