@@ -44,6 +44,15 @@ pub(crate) fn unknown(name: &[u8]) -> Reply {
     ))
 }
 
+/// A stream key naming a topic split into partitions, which has no one order
+/// for a stream's IDs to follow.
+pub(crate) fn split_stream(key: &str) -> Reply {
+    Reply::error(format!(
+        "ERR {key} is split into partitions and a stream is one topic in one order: \
+         read a partition with READ FROM {key} PARTITION <n>, or use a topic that is not split"
+    ))
+}
+
 /// A command run with no space chosen.
 pub(crate) fn no_space() -> Reply {
     Reply::error(

@@ -191,6 +191,38 @@ async fn a_stream_is_trimmed_and_refuses_what_it_cannot_be() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_split_topic_is_refused_as_a_stream_and_nothing_is_appended() {
+    let (address, stop, db) = serving_with("DEFINE TOPIC split PARTITIONS 2;").await;
+    let mut client = Client::to(&address).await;
+    for asked in [
+        &["XADD", "split", "*", "n", "1"][..],
+        &["XLEN", "split"][..],
+        &["XRANGE", "split", "-", "+"][..],
+    ] {
+        let answer = client.ask(asked).await;
+        assert!(
+            matches!(&answer, Reply::Error(said) if said.starts_with("ERR") && said.contains("partitions")),
+            "{asked:?}: {answer:?}"
+        );
+    }
+    let outcomes = db
+        .session()
+        .run(
+            "USE NAMESPACE app; USE DATABASE main; \
+             READ FROM split PARTITION 0; READ FROM split PARTITION 1;",
+        )
+        .await
+        .unwrap();
+    for outcome in &outcomes[2..] {
+        assert!(
+            matches!(outcome, tessaridb::Outcome::Records { records, .. } if records.is_empty()),
+            "{outcome:?}"
+        );
+    }
+    stop.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn xread_answers_past_each_id_and_xinfo_describes_the_stream() {
     let (address, stop, _) = serving_with("").await;
     let mut client = Client::to(&address).await;

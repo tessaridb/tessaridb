@@ -102,6 +102,9 @@ impl Against<'_> {
             Err(failed) => return Err(refused(&failed)),
         };
         let at = |name: &str| fields.get(name).and_then(whole);
+        if at("partitions").is_some() {
+            return Err(replies::split_stream(key));
+        }
         Ok(Some(Held {
             first: at("first"),
             last: at("last").unwrap_or(0),
@@ -252,6 +255,9 @@ impl Against<'_> {
             .iter()
             .map(|(field, value)| (field.clone(), values::stored(value)))
             .collect();
+        // Asked before the append: a split topic would take the message and
+        // answer a partition, leaving a client told of a failure to retry it.
+        self.held(key).await?;
         let append = format!("CREATE {key} = $body RETURN POSITION");
         let mut parameters = Parameters::new();
         parameters.insert("body".to_owned(), Value::Object(body));
