@@ -7869,7 +7869,9 @@ cannot start from an instant, for the reason they cannot skip with `AFTER`.
 A message appended before a store kept the instant — every one written before
 format 9, and every one on a store that has not been finalized to it — answers
 no `appended` and counts as older than any instant. A store restored from a
-script appends its messages again and gives them the instant of the restore.
+snapshot, or a follower that copied its leader's state, keeps each message's
+position and instant as the source gave them; one restored from a script appends
+its messages again and gives them the instant of the restore.
 
 ### Consumer groups: acknowledge each message
 

@@ -47,6 +47,7 @@ mod parts;
 mod reporting;
 mod reseeding;
 mod restoring;
+pub use restoring::RestoredTopics;
 mod upgrading;
 use upgrading::{
     give_an_older_log_its_home, give_an_older_log_its_writer, read_format_version,

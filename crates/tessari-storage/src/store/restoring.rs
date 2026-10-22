@@ -12,20 +12,71 @@
 //! log's position: a restored state has no log below the positions it came
 //! from, and those are written once, at the end, by [`Store::finish_state`].
 //!
+//! A topic's entries are the exception, carried rather than derived: a restore
+//! meets messages in key order and would number them in that order, where the
+//! source numbered them as they were committed. So the entries a chunk derived
+//! are cleared and the source's are installed in their place, by
+//! [`Store::restore_topic_entries`], before the state is finished.
+//!
 //! The result is the source store as it would stand pruned at those positions,
 //! which is a state this engine already has — so a log backup taken from the
 //! source `FROM` the next position applies onto it.
 
+use std::collections::{HashMap, HashSet};
+
 use tessari_encoding::{
-    AppliedPositionKey, LogId, LogRecord, LogStartKey, ReclaimFloorKey, StoreKey, StoreValue,
-    TopicHeadKey,
+    AppliedPositionKey, ExpiryMark, LogId, LogRecord, LogStartKey, Mutation, ReclaimFloorKey,
+    RecordKey, RecordValue, StampedValue, StoreKey, StoreValue, TopicEntryKey, TopicHeadKey,
+    TopicOffsetKey,
 };
-use tessari_kv::WriteBatch;
-use tessari_types::Sequence;
+use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
+use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, TableId};
 
 use super::Store;
 use crate::error::Result;
-use crate::state::TopicHead;
+use crate::state::{TopicEntry, TopicHead};
+use crate::transaction::RecordAddress;
+
+type Topic = (NamespaceId, DatabaseId, TableId);
+
+/// How many stored keys one page of a topic's record walk reads, and how many
+/// messages one removal chunk carries.
+const PAGE: usize = 1_000;
+
+/// What installing a state's topic entries has done so far, carried from one
+/// batch of entries to the next.
+#[derive(Debug, Default)]
+pub struct RestoredTopics {
+    /// The topics whose derived entries have been cleared.
+    cleared: HashSet<Topic>,
+    /// Per topic, the lowest position carried for a message this store does
+    /// not hold — one appended after the state's version.
+    unheld: HashMap<Topic, u64>,
+}
+
+impl RestoredTopics {
+    /// `heads`, each lowered to where its topic stood at the state's version.
+    ///
+    /// The heads are read after the state, so a message appended meanwhile has
+    /// raised one. Positions are given in commit order, so every position at or
+    /// above the lowest one a message outside the state holds was given after
+    /// the state was read — and the log above the state gives them again.
+    #[must_use]
+    pub fn heads(&self, heads: Vec<TopicHead>) -> Vec<TopicHead> {
+        heads
+            .into_iter()
+            .map(|mut head| {
+                if let Some(first) = self
+                    .unheld
+                    .get(&(head.namespace, head.database, head.table))
+                {
+                    head.last = head.last.min(first.saturating_sub(1));
+                }
+                head
+            })
+            .collect()
+    }
+}
 
 impl Store {
     /// Begin reading this store's current state.
@@ -94,6 +145,198 @@ impl Store {
                 }),
             ) if decided.decision == tessari_encoding::Decision::Pending => Ok(()),
             (landed, _) => landed,
+        }
+    }
+
+    /// Install a state's topic entries in place of the ones its chunks derived.
+    ///
+    /// The first time a topic is met, every entry this store holds for it is
+    /// cleared; then each carried entry is written, with its identity entry
+    /// beside it, for a message this store holds. One for a message it does not
+    /// hold was appended after the state's version and is passed over —
+    /// recorded in `restored`, so [`RestoredTopics::heads`] can lower the
+    /// topic's head to match.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend error when a record cannot be read or the batch cannot
+    /// land.
+    pub async fn restore_topic_entries(
+        &self,
+        entries: &[TopicEntry],
+        restored: &mut RestoredTopics,
+    ) -> Result<()> {
+        let _turn = self.writing.hold().await;
+        self.writing.land_all(self.backend.as_ref()).await;
+        let view = self.begin_local().await?;
+        let mut batch = WriteBatch::new();
+        for entry in entries {
+            let key = &entry.key;
+            let topic = (key.namespace, key.database, key.table);
+            if restored.cleared.insert(topic) {
+                let (namespace, database, table) = topic;
+                self.backend
+                    .delete_range(
+                        TopicOffsetKey::keyspace(),
+                        &KeyRange::prefix(&TopicOffsetKey::table_prefix(
+                            namespace, database, table,
+                        )),
+                    )
+                    .await?;
+                self.backend
+                    .delete_range(
+                        TopicEntryKey::keyspace(),
+                        &KeyRange::prefix(&TopicEntryKey::table_prefix(namespace, database, table)),
+                    )
+                    .await?;
+            }
+            let address =
+                RecordAddress::new(key.namespace, key.database, key.table, key.id.clone());
+            let held = view
+                .read_newest_stamped(&address)
+                .await?
+                .is_some_and(|(_, stamped)| !stamped.value().is_tombstone());
+            if !held {
+                let lowest = restored.unheld.entry(topic).or_insert(key.offset);
+                *lowest = (*lowest).min(key.offset);
+                continue;
+            }
+            batch = batch
+                .put(
+                    TopicOffsetKey::keyspace(),
+                    key.encode(),
+                    entry.mark.encode(),
+                )
+                .put(
+                    TopicEntryKey::keyspace(),
+                    TopicEntryKey {
+                        namespace: key.namespace,
+                        database: key.database,
+                        table: key.table,
+                        id: key.id.clone(),
+                        offset: key.offset,
+                    }
+                    .encode(),
+                    ExpiryMark.encode(),
+                );
+        }
+        drop(view);
+        self.writing
+            .apply(batch, self.backend.as_ref(), crate::gate::Landing::Synced)
+            .await?;
+        Ok(())
+    }
+
+    /// Finish the topics of a state that carried their entries, inside
+    /// `within`, and answer how many messages were removed.
+    ///
+    /// Two things the entries cannot do on their own. A topic none of whose
+    /// entries were carried still holds the ones its chunks derived, and they
+    /// are cleared. And a message the state holds with no entry was removed
+    /// from the source — by retention or a trim, always from the front — after
+    /// the state's version and before its entries were read: no position can
+    /// be given to it that the source gave, and the log above the state removes
+    /// it anyway, so it is removed here. A topic's copy is then the messages the
+    /// state holds that the source still held when its entries were read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store cannot be read or a removal is refused.
+    pub async fn finish_topics(&self, within: Reach, restored: &RestoredTopics) -> Result<u64> {
+        let request = ScanRequest {
+            keyspace: TopicHeadKey::keyspace(),
+            range: KeyRange::prefix(&[TopicHeadKey::KIND.tag()]),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+        let mut removed = 0_u64;
+        for (key, _) in self.backend.scan(&request).await? {
+            let head = TopicHeadKey::decode(key.as_slice())?;
+            if !within.contains(Reach::Database(head.namespace, head.database)) {
+                continue;
+            }
+            let topic = (head.namespace, head.database, head.table);
+            if !restored.cleared.contains(&topic) {
+                let _turn = self.writing.hold().await;
+                self.writing.land_all(self.backend.as_ref()).await;
+                self.clear_topic(topic).await?;
+            }
+            removed = removed.saturating_add(self.remove_unplaced(topic).await?);
+        }
+        Ok(removed)
+    }
+
+    /// Remove both of a topic's entry indexes.
+    async fn clear_topic(&self, (namespace, database, table): Topic) -> Result<()> {
+        self.backend
+            .delete_range(
+                TopicOffsetKey::keyspace(),
+                &KeyRange::prefix(&TopicOffsetKey::table_prefix(namespace, database, table)),
+            )
+            .await?;
+        self.backend
+            .delete_range(
+                TopicEntryKey::keyspace(),
+                &KeyRange::prefix(&TopicEntryKey::table_prefix(namespace, database, table)),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Remove every message of `topic` that holds no position.
+    async fn remove_unplaced(&self, topic: Topic) -> Result<u64> {
+        let (namespace, database, table) = topic;
+        let every = KeyRange::prefix(&RecordKey::table_prefix(namespace, database, table));
+        let mut unplaced: Vec<Mutation> = Vec::new();
+        let mut removed = 0_u64;
+        let mut after = None;
+        let mut decided: Option<Vec<u8>> = None;
+        loop {
+            let request = ScanRequest {
+                keyspace: RecordKey::keyspace(),
+                range: after
+                    .as_ref()
+                    .map_or_else(|| every.clone(), |after| every.resuming_after(after)),
+                direction: ScanDirection::Forward,
+                limit: Some(PAGE),
+            };
+            let page = self.backend.sweep(&request).await?;
+            let last = page.len() < PAGE;
+            for (key, value) in page {
+                after = Some(key.clone());
+                let stored = RecordKey::decode(key.as_slice())?;
+                let prefix = RecordKey::versions_prefix(namespace, database, table, &stored.id);
+                // Versions sort newest-first: the first one decides the record.
+                if decided.as_deref() == Some(prefix.as_slice()) {
+                    continue;
+                }
+                decided = Some(prefix);
+                if StampedValue::decode(value.as_slice())?
+                    .value()
+                    .is_tombstone()
+                    || crate::topic::position_of(self, topic, &stored.id)
+                        .await?
+                        .is_some()
+                {
+                    continue;
+                }
+                unplaced.push(Mutation {
+                    namespace,
+                    database,
+                    table,
+                    id: stored.id,
+                    shard: None,
+                    value: StampedValue::new(RecordValue::Tombstone),
+                });
+            }
+            if unplaced.len() >= PAGE || (last && !unplaced.is_empty()) {
+                removed = removed.saturating_add(u64::try_from(unplaced.len()).unwrap_or(u64::MAX));
+                self.restore_state_chunk(&LogRecord::new(std::mem::take(&mut unplaced)))
+                    .await?;
+            }
+            if last {
+                return Ok(removed);
+            }
         }
     }
 

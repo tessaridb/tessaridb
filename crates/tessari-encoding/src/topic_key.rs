@@ -179,6 +179,12 @@ impl TopicOffsetKey {
 }
 
 impl TopicEntryKey {
+    /// The prefix every message of one topic is filed under.
+    #[must_use]
+    pub fn table_prefix(namespace: NamespaceId, database: DatabaseId, table: TableId) -> Vec<u8> {
+        prefix(KeyKind::TopicEntry, namespace, database, table)
+    }
+
     /// The prefix under which one message's single entry sits.
     #[must_use]
     pub fn message_prefix(

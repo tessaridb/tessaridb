@@ -20,6 +20,7 @@ mod reseed;
 mod restore;
 mod restore_sync;
 mod state;
+mod topic_state;
 mod vault_restore;
 mod vault_shredding;
 mod version;

@@ -141,9 +141,9 @@ pub use sealing::{
     mint_vault_key, open_data_key, open_field, recipients, remove_recipient, reseal_named,
     rewrap_own_vault, seal_secrets, unseal_own_vault, vault_key_scope,
 };
-pub use state::{StateReader, TopicHead};
+pub use state::{StateReader, TopicEntry, TopicHead};
 pub use statistics::{estimate_equality, estimate_range};
-pub use store::{Health, Store};
+pub use store::{Health, RestoredTopics, Store};
 pub use tally::AcrossOutcome;
 pub use tessari_encoding::{
     BUILD_VERSION, Decision, IndexStatistics, LogId, NODE_ID_LEN, Roles, TransactionId,

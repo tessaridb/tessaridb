@@ -897,6 +897,15 @@ messages rather than read as zero (G055 C8).
 Every one of them is written in the batch of the record it describes, on the
 commit and on a follower's apply, and none is carried in the log.
 
+A state copy — a snapshot restore, or a follower re-seeding from its leader —
+carries `0x1c` rather than deriving it, because a copy meets messages in key
+order and would number them in that order: the copy's own entries for a topic
+are cleared, the source's are installed for the messages the copy holds, and
+`0x1d` is derived from them. An entry for a message appended after the state's
+version is passed over and lowers the copied `0x1e` to where the topic stood; a
+message the state holds whose entry retention removed while the state was read
+is removed from the copy, as the log above it removes it.
+
 ### 6.3 `FormatVersion` — keyspace `meta`
 
 ```

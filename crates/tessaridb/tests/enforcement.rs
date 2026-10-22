@@ -1130,7 +1130,19 @@ const TABLES: &[Table] = &[
         // after the statement is authorized, and the turn only moves which
         // partition a keyless message lands in. Re-classification trigger: the
         // turn deciding whether a write lands rather than where.
-        expected: 83,
+        //
+        // 84 since a state copy carries each topic's positions (G079 W8b-2,
+        // ADR-0133 D3): `Store::restore_topic_entries` and
+        // `Store::finish_topics`, the second removing messages no entry places
+        // with no identity, on the same ground. Classified **exempt,
+        // on `restore_state_chunk`'s ground**: it writes index entries with no
+        // identity, for messages the store already holds, and its callers are
+        // `backup::read_state` (`--restore`, a process holding the store, which
+        // refuses a store that holds anything) and the follower's own copy
+        // (`copying::copy`) — neither reachable from a session or a route.
+        // Re-classification trigger: any caller reachable from a session or a
+        // route.
+        expected: 85,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1390,7 +1402,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 172 since `Db::membership` and `Db::database_led_elsewhere` (G079 W5d-4).
     //
     // 173 since `Store::partition_turn` (G079 W6a), classified above.
-    assert_eq!(total, 173, "the counted tables no longer sum to 173");
+    //
+    // 175 since `Store::restore_topic_entries` and `Store::finish_topics`
+    // (G079 W8b-2), classified above.
+    assert_eq!(total, 175, "the counted tables no longer sum to 175");
 }
 
 /// Every `.rs` file under a directory.

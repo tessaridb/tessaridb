@@ -8,8 +8,16 @@
 //! frame    <tag:u8>
 //!   tag 2  chunk   <length:u32> <crc32:u32> <a log record of up to CHUNK mutations>
 //!   tag 4  topic   <namespace:u32> <database:u32> <table:u32> <last:u64>
-//!   tag 5  end     <chunks:u64> <records:u64> <crc32 of the sixteen bytes before it:u32>
+//!   tag 6  entry   <key length:u16> <a 0x1c topic entry key> <mark length:u8> <its mark>
+//!   tag 5  end     <chunks:u64> <records:u64> <entries:u64> <crc32 of the bytes before it:u32>
 //! ```
+//!
+//! Format 2 added the entries, each message's position and append instant as
+//! the source gave them (ADR-0133 D3): a restore derives the rest of a topic
+//! again, and would number its messages in key order rather than in the order
+//! they were committed. A format-1 file carries none, ends with no entry count,
+//! and restores as it always did; a build that reads only format 1 refuses a
+//! format-2 file by its format.
 //!
 //! A chunk is written in the log record codec, because a chunk IS a set of
 //! mutations and the codec already says how to carry one, versions and all. The
@@ -27,8 +35,8 @@
 
 use std::io::{Read, Write};
 
-use tessari_encoding::{LogId, NodeVersion, StoreValue};
-use tessari_storage::Store;
+use tessari_encoding::{LogId, NodeVersion, StoreKey, StoreValue};
+use tessari_storage::{RestoredTopics, Store};
 use tessari_types::{Reach, Sequence};
 
 use crate::format::fill;
@@ -42,8 +50,11 @@ use frames::{Frame, Frames, Item};
 /// What every snapshot file begins with.
 pub const STATE_MAGIC: &[u8; 11] = b"TESSARISNAP";
 
-/// The snapshot format's own version.
-const STATE_FORMAT: u8 = 1;
+/// The snapshot format's own version, the one this build writes.
+const STATE_FORMAT: u8 = 2;
+
+/// The oldest snapshot format this build reads.
+const OLDEST_STATE_FORMAT: u8 = 1;
 
 /// How many records one chunk holds.
 const CHUNK: usize = 500;
@@ -51,6 +62,10 @@ const CHUNK: usize = 500;
 const FRAME_CHUNK: u8 = 2;
 const FRAME_TOPIC: u8 = 4;
 const FRAME_END: u8 = 5;
+const FRAME_ENTRY: u8 = 6;
+
+/// How many topic entries one restore batch installs.
+const ENTRIES: usize = 1_000;
 
 /// What a snapshot holds, as writing or reading it found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +80,8 @@ pub struct StateTaken {
     pub records: u64,
     /// How many topics' last positions it carries.
     pub topics: usize,
+    /// How many topic entries it carries.
+    pub entries: u64,
 }
 
 /// Whether a file beginning with `opening` is a snapshot rather than a log.
@@ -141,9 +158,29 @@ pub async fn write_state_within(
         out.write_all(&topic.table.get().to_be_bytes())?;
         out.write_all(&topic.last.to_be_bytes())?;
     }
-    let mut end = [0_u8; 16];
+    let mut entries = 0_u64;
+    loop {
+        let page = reader.topic_entries(ENTRIES).await?;
+        if page.is_empty() {
+            break;
+        }
+        for entry in &page {
+            let key = entry.key.encode();
+            let mark = entry.mark.encode();
+            let key_length = u16::try_from(key.as_slice().len()).map_err(|_| Error::NotABackup)?;
+            let mark_length = u8::try_from(mark.as_slice().len()).map_err(|_| Error::NotABackup)?;
+            out.write_all(&[FRAME_ENTRY])?;
+            out.write_all(&key_length.to_be_bytes())?;
+            out.write_all(key.as_slice())?;
+            out.write_all(&[mark_length])?;
+            out.write_all(mark.as_slice())?;
+            entries = entries.saturating_add(1);
+        }
+    }
+    let mut end = [0_u8; 24];
     end[..8].copy_from_slice(&chunks.to_be_bytes());
-    end[8..].copy_from_slice(&records.to_be_bytes());
+    end[8..16].copy_from_slice(&records.to_be_bytes());
+    end[16..].copy_from_slice(&entries.to_be_bytes());
     out.write_all(&[FRAME_END])?;
     out.write_all(&end)?;
     out.write_all(&check::crc32(&end).to_be_bytes())?;
@@ -153,6 +190,7 @@ pub async fn write_state_within(
         positions,
         records,
         topics: topics.len(),
+        entries,
     })
 }
 
@@ -198,16 +236,31 @@ pub async fn read_state<R: Read>(
     }
     verify_state(&mut open()?)?;
     let mut topics = Vec::new();
+    let mut entries = Vec::new();
+    let mut restored = RestoredTopics::default();
     let mut input = open()?;
     let mut frames = Frames::open(&mut input)?;
     let taken = loop {
         match frames.next()? {
             Frame::Item(Item::Chunk(chunk)) => store.restore_state_chunk(&chunk).await?,
             Frame::Item(Item::Topic(topic)) => topics.push(topic),
+            Frame::Item(Item::Entry(entry)) => {
+                entries.push(entry);
+                if entries.len() >= ENTRIES {
+                    store.restore_topic_entries(&entries, &mut restored).await?;
+                    entries.clear();
+                }
+            }
             Frame::End(taken) => break taken,
         }
     };
-    store.finish_state(&taken.positions, &topics).await?;
+    if frames.carries_entries() {
+        store.restore_topic_entries(&entries, &mut restored).await?;
+        store.finish_topics(Reach::Store, &restored).await?;
+    }
+    store
+        .finish_state(&taken.positions, &restored.heads(topics))
+        .await?;
     // Restored on its own, nobody else will finish what the cut decided: the
     // store settles it, leaving the undecided for the log above (Q-922b).
     store.settle_restored().await?;
@@ -222,3 +275,6 @@ fn exact<const N: usize>(input: &mut impl Read) -> Result<[u8; N]> {
         Filled::Empty | Filled::Short => Err(Error::StateIncomplete),
     }
 }
+
+#[cfg(test)]
+mod tests;
