@@ -1,0 +1,50 @@
+[package]
+name = "tessari-kafka"
+description = "The Kafka protocol as a surface of a TessariDB node: its topics, its groups, its users"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+crc32c.workspace = true
+lz4_flex.workspace = true
+miniz_oxide.workspace = true
+ruzstd.workspace = true
+snap.workspace = true
+tessaridb = { workspace = true, optional = true }
+tessari-constants.workspace = true
+tessari-serve = { workspace = true, optional = true }
+tessari-types = { workspace = true, optional = true }
+dashmap = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
+tracing.workspace = true
+zeroize.workspace = true
+# Connections are tasks on the process's runtime, which the binary builds;
+# this crate creates none (ADR-0085).
+tokio = { workspace = true, optional = true, features = ["net", "rt", "sync", "time", "macros", "io-util"] }
+tokio-util = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+
+[features]
+# The node's surface: the listener, the connections and the statements they run. Off,
+# the crate is its decoders alone, which is how `fuzz/protocols` takes it (G079 C8).
+default = ["surface"]
+surface = ["dep:tessaridb", "dep:tessari-serve", "dep:tessari-types", "dep:dashmap", "dep:getrandom", "dep:tokio", "dep:tokio-util", "dep:rustls", "dep:tokio-rustls"]
+
+[dev-dependencies]
+# A certificate minted per test for the TLS rows of the negative matrix (G079 C8).
+tessari-serve = { workspace = true, features = ["test-support"] }
+# The surface is served in its tests on a runtime the test owns.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "test-util"] }
+# A cluster arranged in the test: a membership row and a leadership (G079 W5d).
+tessari-encoding.workspace = true
+tessari-storage = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

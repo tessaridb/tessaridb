@@ -105,6 +105,13 @@ const FLAG_EXPIRES: u8 = 0b0010_0000;
 /// value written before this bit existed, so nothing on disk is rewritten.
 const FLAG_ACROSS: u8 = 0b0100_0000;
 
+/// Set when a record version carries an instant for some of its hash's fields
+/// (ADR-0132): each such field stops being answered at its own instant. Clear
+/// on every version written before it existed and on every version that gives
+/// no field one, so nothing on disk is rewritten; a build that predates it
+/// refuses the bit rather than reading past it (format 9).
+const FLAG_FIELDS: u8 = 0b1000_0000;
+
 /// Every defined flag bit and what it names, for the format surface.
 pub(crate) const FLAGS: &[(u8, &str)] = &[
     (FLAG_TOMBSTONE, "tombstone"),
@@ -114,6 +121,7 @@ pub(crate) const FLAGS: &[(u8, &str)] = &[
     (FLAG_ORDER, "order"),
     (FLAG_EXPIRES, "expires"),
     (FLAG_ACROSS, "across"),
+    (FLAG_FIELDS, "fields"),
 ];
 
 /// Bytes an expiry instant occupies when a version carries one.

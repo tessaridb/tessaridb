@@ -154,7 +154,12 @@ const RELEASED: &[&str] = &[
     "0.35.0",
     "0.35.1",
     "0.35.2",
+    "0.35.3",
 ];
+
+/// Stores written by released builds on TessariKV, which this build opens and reads
+/// back as the build that wrote them answered — made by the same `generate.sh`.
+const RELEASED_ON_TESSARIKV: &[&str] = &["0.36.0", "0.36.1", "0.36.2"];
 
 /// The binary this crate builds, which is the one an operator upgrades to.
 const TESSARIDB: &str = env!("CARGO_BIN_EXE_tessaridb");
@@ -164,16 +169,20 @@ fn minor(version: &str) -> u32 {
     version.split('.').nth(1).unwrap().parse().unwrap()
 }
 
-/// `RELEASED` is a list that grows with every release, and nothing else fails
+/// `RELEASED_ON_TESSARIKV` is a list that grows with every release, and nothing else fails
 /// when it stops growing: 0.27.0 and 0.27.1 shipped the format promise and were
-/// missing from it (G062 G1). So the list must name exactly the stores on disk,
+/// missing from it (G062 G1). So the two lists must name exactly the stores on disk,
 /// and the newest of them may trail this build by one minor at most — the
 /// current release cannot be among them before its image is published. It
 /// compares minors only, so across a major bump it says nothing — that release
 /// checks the fixtures by hand.
 #[test]
 fn the_released_stores_keep_up_with_the_releases() {
-    let mut listed: Vec<&str> = RELEASED.to_vec();
+    let mut listed: Vec<&str> = RELEASED
+        .iter()
+        .chain(RELEASED_ON_TESSARIKV)
+        .copied()
+        .collect();
     listed.sort_unstable();
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/released");
@@ -186,9 +195,9 @@ fn the_released_stores_keep_up_with_the_releases() {
     on_disk.sort_unstable();
     assert_eq!(
         listed, on_disk,
-        "RELEASED and tests/fixtures/released disagree"
+        "RELEASED, RELEASED_ON_TESSARIKV and tests/fixtures/released disagree"
     );
-    let newest = RELEASED.iter().map(|version| minor(version)).max().unwrap();
+    let newest = listed.iter().map(|version| minor(version)).max().unwrap();
     let this_build = minor(env!("CARGO_PKG_VERSION"));
     assert!(
         this_build.saturating_sub(newest) <= 1,
@@ -250,6 +259,74 @@ fn a_store_written_by_each_released_build_is_refused_untouched_with_the_way_acro
             files_of(&store),
             before,
             "{version}: the refused store was changed"
+        );
+    }
+}
+
+/// Run one script against `store` with this build and keep what it printed, on
+/// either stream.
+fn answer(store: &std::path::Path, script: &str) -> String {
+    let ran = std::process::Command::new(TESSARIDB)
+        .arg(store)
+        .arg("-f")
+        .arg(released(script))
+        .output()
+        .unwrap();
+    assert!(
+        ran.status.success(),
+        "{script} failed: {}{}",
+        String::from_utf8_lossy(&ran.stdout),
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    // Notes go to standard error; the records are what decides the comparison.
+    let mut printed = String::from_utf8(ran.stdout).unwrap();
+    printed.push_str(&String::from_utf8(ran.stderr).unwrap());
+    printed
+}
+
+/// What an answer says about the data: every record and every count, without
+/// the access path that served it or the notes about how — those are what a
+/// newer build is allowed to change.
+fn records_and_counts(printed: &str) -> Vec<String> {
+    printed
+        .lines()
+        .filter(|line| !line.starts_with("note:"))
+        .map(|line| match line.split_once(", via ") {
+            Some((count, _)) if line.starts_with('(') => format!("{count})"),
+            _ => line.to_owned(),
+        })
+        .collect()
+}
+
+/// A store written by a released build on TessariKV opens under this one and reads back what
+/// that build answered — before its indexes are rebuilt by this build and after.
+#[test]
+fn a_store_written_by_each_released_build_on_tessarikv_reads_back_what_that_build_answered() {
+    for version in RELEASED_ON_TESSARIKV {
+        let copy = tempfile::tempdir().unwrap();
+        let store = copy.path().join("store");
+        std::fs::create_dir(&store).unwrap();
+        for file in std::fs::read_dir(released(version)).unwrap() {
+            let file = file.unwrap();
+            std::fs::copy(file.path(), store.join(file.file_name())).unwrap();
+        }
+        let expected = records_and_counts(
+            &std::fs::read_to_string(released(&format!("{version}.answers"))).unwrap(),
+        );
+        assert!(expected.len() > 40, "{version}: the oracle is empty");
+
+        let before = answer(&store, "read.tessariql");
+        assert_eq!(
+            records_and_counts(&before),
+            expected,
+            "{version}: this build reads the store differently from the build that wrote it"
+        );
+        answer(&store, "rebuild.tessariql");
+        let after = answer(&store, "read.tessariql");
+        assert_eq!(
+            records_and_counts(&after),
+            expected,
+            "{version}: the rebuilt indexes answer differently"
         );
     }
 }

@@ -74,3 +74,43 @@ fn a_head_round_trips() {
         head
     );
 }
+
+#[test]
+fn a_position_mark_carries_the_append_instant() {
+    let stamped = TopicMark {
+        appended: Some(1_761_100_000_123),
+    };
+    assert_eq!(
+        TopicMark::decode(stamped.encode().as_slice()).unwrap(),
+        stamped
+    );
+    let bare = TopicMark { appended: None };
+    assert_eq!(TopicMark::decode(bare.encode().as_slice()).unwrap(), bare);
+}
+
+#[test]
+fn a_mark_written_before_the_instant_reads_as_none() {
+    // Every position written before ADR-0133 holds an expiry mark: the header
+    // and nothing else.
+    let legacy = ExpiryMark.encode();
+    assert_eq!(
+        TopicMark::decode(legacy.as_slice()).unwrap(),
+        TopicMark { appended: None }
+    );
+}
+
+#[test]
+fn a_mark_of_the_wrong_length_is_refused() {
+    let mut short = TopicMark { appended: Some(7) }.encode().as_slice().to_vec();
+    short.pop();
+    assert!(matches!(
+        TopicMark::decode(&short),
+        Err(crate::Error::ValueTruncated { .. })
+    ));
+    let mut long = TopicMark { appended: Some(7) }.encode().as_slice().to_vec();
+    long.push(0);
+    assert!(matches!(
+        TopicMark::decode(&long),
+        Err(crate::Error::TrailingBytes { .. })
+    ));
+}

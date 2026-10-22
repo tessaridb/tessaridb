@@ -2,12 +2,13 @@
 
 use tessari_encoding::{NODE_ID_LEN, decode_payload};
 use tessari_ql::{
-    ConsumerSource, CreateTarget, FieldMapping, FieldPath, Name, ReachRef, Span, StatementKind,
-    TableChange, TableRef,
+    Answer, ConsumerSource, CreateTarget, FieldMapping, FieldPath, Name, ReachRef, Span,
+    StatementKind, TableChange, TableRef,
 };
 use tessari_storage::{
-    Catalog, FieldShape, IndexShape, QueueDeclaration, SeriesDeclaration, TableKind, TableShape,
-    Transaction, VectorDistance, ViewDeclaration, WordSetKind, violations,
+    Catalog, FieldShape, IndexShape, QueueDeclaration, SeriesDeclaration, TableDefinition,
+    TableKind, TableShape, TopicDeclaration, Transaction, VectorDistance, ViewDeclaration,
+    WordSetKind, violations,
 };
 
 use tessari_types::{IdentityKind, ShardId, Value};
@@ -27,6 +28,7 @@ mod editing;
 mod expiry;
 mod fields;
 mod format;
+mod partitions;
 mod relations;
 mod tables;
 mod topic_consumer;
@@ -59,6 +61,7 @@ struct Peer<'a> {
     endpoint: &'a str,
     clients: Option<&'a str>,
     http: Option<&'a str>,
+    kafka: Option<&'a str>,
     roles: Option<&'a [Name]>,
     node: Option<[u8; NODE_ID_LEN]>,
     replicates: Option<&'a ReachRef>,
@@ -214,13 +217,14 @@ impl Session<'_> {
             StatementKind::DefineSpace {
                 name,
                 if_not_exists,
+                memory,
                 limit,
             } => {
                 self.define_table(
                     transaction,
                     name,
                     TableShape {
-                        kind: TableKind::Space(crate::kv::declared_space(*limit)),
+                        kind: TableKind::Space(crate::kv::declared_space(*memory, *limit)),
                         ..TableShape::default()
                     },
                     *if_not_exists,
@@ -230,6 +234,25 @@ impl Session<'_> {
             }
             // A topic declares no fields either; what it declares is how long it
             // keeps a message, how large one may be, and who may append (G037).
+            StatementKind::DefineTopic {
+                name,
+                if_not_exists,
+                clauses,
+            } if clauses.partitions.is_some() => {
+                let (count, by) = clauses
+                    .partitions
+                    .as_ref()
+                    .map_or((0, None), |(count, by)| (*count, by.as_deref()));
+                self.define_partitioned_topic(
+                    transaction,
+                    name,
+                    clauses,
+                    (count, by),
+                    *if_not_exists,
+                    span,
+                )
+                .await
+            }
             StatementKind::DefineTopic {
                 name,
                 if_not_exists,
@@ -252,7 +275,10 @@ impl Session<'_> {
                 consumer,
                 consumer_parameter: _,
                 after,
+                since,
+                member,
                 limit,
+                partition,
             } => {
                 self.read_topic(
                     transaction,
@@ -260,7 +286,10 @@ impl Session<'_> {
                     crate::topic::Reading {
                         consumer: consumer.as_deref(),
                         after: after.as_ref(),
+                        since: since.as_ref(),
                         limit: limit.as_ref(),
+                        partition: partition.as_ref(),
+                        member: member.as_deref(),
                     },
                     span,
                 )
@@ -285,9 +314,28 @@ impl Session<'_> {
                 name,
                 name_parameter: _,
                 topic,
-                start_at,
+                change,
+            } => match change {
+                tessari_ql::GroupChange::StartAt(start_at) => {
+                    self.alter_group(transaction, name, topic, start_at, span)
+                        .await
+                }
+                tessari_ql::GroupChange::AddMember(member, _) => {
+                    self.change_member(transaction, (name, topic), member, true, span)
+                        .await
+                }
+                tessari_ql::GroupChange::DropMember(member, _) => {
+                    self.change_member(transaction, (name, topic), member, false, span)
+                        .await
+                }
+            },
+            StatementKind::HandTopic(hand) => self.hand_topic(transaction, hand, span).await,
+            StatementKind::TrimTopic {
+                topic,
+                partition,
+                bound,
             } => {
-                self.alter_group(transaction, name, topic, start_at, span)
+                self.trim_topic(transaction, (topic, partition.as_ref()), bound, span)
                     .await
             }
             StatementKind::AckTopic {
@@ -295,9 +343,16 @@ impl Session<'_> {
                 consumer,
                 consumer_parameter: _,
                 positions,
+                partition,
             } => {
-                self.ack_topic(transaction, topic, consumer, positions, span)
-                    .await
+                self.ack_topic(
+                    transaction,
+                    (topic, partition.as_ref()),
+                    consumer,
+                    positions,
+                    span,
+                )
+                .await
             }
             StatementKind::NackTopic {
                 topic,
@@ -305,9 +360,16 @@ impl Session<'_> {
                 consumer_parameter: _,
                 positions,
                 delay,
+                partition,
             } => {
-                self.nack_topic(transaction, topic, consumer, (positions, *delay), span)
-                    .await
+                self.nack_topic(
+                    transaction,
+                    (topic, partition.as_ref()),
+                    consumer,
+                    (positions, *delay),
+                    span,
+                )
+                .await
             }
             StatementKind::DefineField {
                 name,
@@ -443,6 +505,7 @@ impl Session<'_> {
                 endpoint,
                 clients,
                 http,
+                kafka,
                 roles,
                 node,
                 replicates,
@@ -459,6 +522,7 @@ impl Session<'_> {
                         endpoint,
                         clients: clients.as_deref(),
                         http: http.as_deref(),
+                        kafka: kafka.as_deref(),
                         roles: roles.as_deref(),
                         node: *node,
                         replicates: replicates.as_ref(),
@@ -692,6 +756,21 @@ impl Session<'_> {
                 {
                     Catalog::new(transaction).drop_table(chunk_id).await?;
                 }
+                // A split topic's partitions carry names nothing can drop by
+                // naming, so they go with the topic (ADR-0131).
+                if let Some(TableDefinition {
+                    kind:
+                        TableKind::Topic(TopicDeclaration {
+                            partitions: Some(partitioning),
+                            ..
+                        }),
+                    ..
+                }) = Catalog::new(transaction).table(id).await?
+                {
+                    for child in partitioning.children {
+                        Catalog::new(transaction).drop_table(child).await?;
+                    }
+                }
                 Catalog::new(transaction).drop_table(id).await?;
                 Ok(Outcome::Done)
             }
@@ -884,6 +963,9 @@ impl Session<'_> {
                 answer,
                 expire,
             } => {
+                if *answer == Answer::Position {
+                    self.must_be_a_topic(transaction, &target.table).await?;
+                }
                 let (_, address) = self.writable(transaction, target).await?;
                 let settled = self
                     .resolve_write_expiry(transaction, address.table, expire.as_ref())
@@ -910,6 +992,14 @@ impl Session<'_> {
                 {
                     return Ok(answered(*answer, Value::None, Value::None));
                 }
+                // A split topic's message lands in the partition its key
+                // chooses (ADR-0131).
+                let mut address = address;
+                if let Some(partition) =
+                    self.partition_for(definition.as_ref(), &payload, target.span)?
+                {
+                    address.table = partition;
+                }
                 // A create over a record that is already there is refused. The
                 // alternative is silent replacement, which loses a record with
                 // nothing anywhere to notice — and `UPDATE` and `SET` both say
@@ -926,6 +1016,10 @@ impl Session<'_> {
                 if let Some(marker) = marker {
                     marker.leave(transaction);
                 }
+                // The identity, which the commit turns into the position it took.
+                if *answer == Answer::Position {
+                    return Ok(Outcome::Keys(vec![address.id]));
+                }
                 Ok(answered(*answer, Value::None, payload))
             }
             StatementKind::Create {
@@ -934,6 +1028,9 @@ impl Session<'_> {
                 answer,
                 expire,
             } => {
+                if *answer == Answer::Position {
+                    self.must_be_a_topic(transaction, table).await?;
+                }
                 self.create_named_by_the_store(
                     transaction,
                     table,
@@ -949,9 +1046,21 @@ impl Session<'_> {
                 columns,
                 rows,
                 expire,
+                answer,
+                partition,
             } => {
-                self.insert(transaction, table, columns, rows, expire.as_ref(), span)
-                    .await
+                if *answer == Answer::Position {
+                    self.must_be_a_topic(transaction, table).await?;
+                }
+                self.insert(
+                    transaction,
+                    (table, partition.as_ref()),
+                    columns,
+                    rows,
+                    expire.as_ref(),
+                    span,
+                )
+                .await
             }
             StatementKind::Update {
                 target,
@@ -1030,7 +1139,13 @@ impl Session<'_> {
             // Never answers: it fails, and the failure discards the work above
             // it in the transaction. That is what makes it a guard rather than a
             // log line.
-            StatementKind::Throw { value } => {
+            StatementKind::Throw { value, condition } => {
+                if let Some(condition) = condition {
+                    let held = self.evaluate(transaction, condition).await?;
+                    if !crate::condition::boolean(&held, condition.span)? {
+                        return Ok(Outcome::Done);
+                    }
+                }
                 let message = match self.evaluate(transaction, value).await? {
                     // A string is used as written, so `THROW 'already paid'`
                     // reads back exactly as it was typed rather than quoted.
@@ -1100,6 +1215,9 @@ impl Session<'_> {
             StatementKind::Incr { target, by } => {
                 self.increment(transaction, target, by.as_ref(), span).await
             }
+            StatementKind::Structure { target, op } => {
+                self.structure(transaction, target, op, span).await
+            }
             StatementKind::Expire { target, at } => self.expire_key(transaction, target, at).await,
             StatementKind::Persist { target } => self.persist_key(transaction, target).await,
             StatementKind::Delete { target, answer } => {
@@ -1123,7 +1241,17 @@ impl Session<'_> {
                 self.delete_record(transaction, address, span).await?;
                 Ok(answered(*answer, before, Value::None))
             }
-            StatementKind::Del { target } => {
+            StatementKind::Del {
+                target,
+                expected: Some(expected),
+            } => {
+                self.delete_key_if(transaction, target, expected, span)
+                    .await
+            }
+            StatementKind::Del {
+                target,
+                expected: None,
+            } => {
                 self.clear_file(transaction, target).await?;
                 let (_, address) = self.address(transaction, target).await?;
                 self.delete_record(transaction, address, span).await?;

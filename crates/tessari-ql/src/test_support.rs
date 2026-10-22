@@ -67,7 +67,13 @@ fn erase_statement(statement: &mut Statement) {
     match &mut statement.kind {
         StatementKind::Select(select) => erase_select(select),
         StatementKind::Explain(select) => erase_select(select),
-        StatementKind::Return { value } | StatementKind::Throw { value } => erase_expr(value),
+        StatementKind::Return { value } => erase_expr(value),
+        StatementKind::Throw { value, condition } => {
+            erase_expr(value);
+            if let Some(condition) = condition {
+                erase_expr(condition);
+            }
+        }
         StatementKind::Let { value, span, .. } => {
             *span = CANONICAL;
             erase_expr(value);
@@ -224,6 +230,7 @@ fn erase_statement(statement: &mut Statement) {
                 erase_name(name);
             }
             InfoSubject::Topic(table) => erase_table(table),
+            InfoSubject::Group { topic, .. } => erase_table(topic),
             InfoSubject::VaultRecords { table, after, .. } => {
                 erase_table(table);
                 if let Some(after) = after {
@@ -324,6 +331,7 @@ fn erase_statement(statement: &mut Statement) {
                 | crate::ReplicaChange::At(_)
                 | crate::ReplicaChange::ClientsAt(_)
                 | crate::ReplicaChange::HttpAt(_)
+                | crate::ReplicaChange::KafkaAt(_)
                 | crate::ReplicaChange::Region(_) => {}
             }
         }
@@ -436,9 +444,15 @@ fn erase_statement(statement: &mut Statement) {
             columns,
             rows,
             expire,
+            // An answer carries no span.
+            answer: _,
+            partition,
         } => {
             erase_write_expiry(expire.as_mut());
             erase_table(table);
+            if let Some(partition) = partition {
+                erase_expr(partition);
+            }
             for column in columns.iter_mut() {
                 erase_name(column);
             }
@@ -480,6 +494,13 @@ fn erase_statement(statement: &mut Statement) {
             erase_record(target);
             erase_expr(value);
         }
+        StatementKind::Structure { target, op } => {
+            erase_record(target);
+            if let Some(to) = op.second_key_mut() {
+                erase_record(to);
+            }
+            op.expressions_mut().into_iter().for_each(erase_expr);
+        }
         StatementKind::Incr { target, by } => {
             erase_record(target);
             if let Some(by) = by {
@@ -512,9 +533,19 @@ fn erase_statement(statement: &mut Statement) {
         }
         StatementKind::Delete { target, .. }
         | StatementKind::Get { target }
-        | StatementKind::Del { target }
+        | StatementKind::Del {
+            target,
+            expected: None,
+        }
         | StatementKind::Persist { target }
         | StatementKind::Read { target, .. } => erase_record(target),
+        StatementKind::Del {
+            target,
+            expected: Some(expected),
+        } => {
+            erase_record(target);
+            erase_expr(expected);
+        }
         StatementKind::DeleteWhere {
             table, condition, ..
         } => {
@@ -556,11 +587,13 @@ fn erase_statement(statement: &mut Statement) {
         StatementKind::ReadTopic {
             topic,
             after,
+            since,
             limit,
+            partition,
             ..
         } => {
             erase_table(topic);
-            for bound in [after, limit].into_iter().flatten() {
+            for bound in [after, since, limit, partition].into_iter().flatten() {
                 erase_expr(bound);
             }
         }
@@ -581,20 +614,56 @@ fn erase_statement(statement: &mut Statement) {
             }
         }
         StatementKind::DropGroup { topic, .. } => erase_table(topic),
-        StatementKind::AlterGroup {
-            topic, start_at, ..
+        StatementKind::AlterGroup { topic, change, .. } => {
+            erase_table(topic);
+            if let crate::ast::GroupChange::StartAt(start_at) = change {
+                erase_expr(start_at);
+            }
+        }
+        StatementKind::HandTopic(hand) => {
+            let crate::ast::Hand {
+                topic,
+                partition,
+                handing,
+                idle,
+                ..
+            } = hand.as_mut();
+            erase_table(topic);
+            match handing {
+                crate::ast::Handing::At(positions) => positions.iter_mut().for_each(erase_expr),
+                crate::ast::Handing::After { after, limit } => {
+                    erase_expr(after);
+                    erase_expr(limit);
+                }
+            }
+            partition.iter_mut().chain(idle.iter_mut()).for_each(erase_expr);
+        }
+        StatementKind::TrimTopic {
+            topic,
+            partition,
+            bound,
         } => {
             erase_table(topic);
-            erase_expr(start_at);
+            let (crate::ast::TrimBound::Keep(reach) | crate::ast::TrimBound::Before(reach)) = bound;
+            erase_expr(reach);
+            if let Some(partition) = partition {
+                erase_expr(partition);
+            }
         }
         StatementKind::AckTopic {
-            topic, positions, ..
+            topic,
+            positions,
+            partition,
+            ..
         }
         | StatementKind::NackTopic {
-            topic, positions, ..
+            topic,
+            positions,
+            partition,
+            ..
         } => {
             erase_table(topic);
-            for position in positions {
+            for position in positions.iter_mut().chain(partition.as_mut()) {
                 erase_expr(position);
             }
         }

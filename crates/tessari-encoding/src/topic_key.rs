@@ -1,7 +1,7 @@
 //! The two indexes of a topic's order (G037).
 //!
 //! ```text
-//! <0x1c> <namespace:u32> <database:u32> <table:u32> <offset:u64> <record-id>
+//! <0x1c> <namespace:u32> <database:u32> <table:u32> <offset:u64> <record-id> → [appended ms]
 //! <0x1d> <namespace:u32> <database:u32> <table:u32> <record-id> <offset:u64>
 //! <0x1e> <namespace:u32> <database:u32> <table:u32>        → last position given
 //! ```
@@ -10,23 +10,26 @@
 //! messages were committed. The first index answers *what comes after position
 //! n* with a forward read from n; the second answers *which position does this
 //! message hold*, which is what removing a message needs, since the message
-//! itself does not carry it. Both are written in the message's own batch and
-//! nothing is stored under either key: its presence is the whole statement.
+//! itself does not carry it. Both are written in the message's own batch. The
+//! second holds nothing — its presence is the whole statement — and the first
+//! holds the instant the message was appended, or nothing for one appended
+//! before its topic kept the instant (ADR-0133 D3).
 //!
 //! The third holds the last position the topic has given, and is never
 //! removed. It is not the last entry of the first index: retention may remove
 //! every message, and a topic that then started again from 1 would hand a
 //! reader positions it has already passed.
 
-use tessari_kv::Key;
+use tessari_kv::{Key, Value};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::expiry_key::ExpiryMark;
 use crate::keys::StoreKey;
 use crate::kind::KeyKind;
 use crate::order::{KeyReader, KeyWriter};
 use crate::record_id;
+use crate::value::{StoreValue, split_header, with_header};
 
 /// One message of a topic, filed by its position.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,6 +179,12 @@ impl TopicOffsetKey {
 }
 
 impl TopicEntryKey {
+    /// The prefix every message of one topic is filed under.
+    #[must_use]
+    pub fn table_prefix(namespace: NamespaceId, database: DatabaseId, table: TableId) -> Vec<u8> {
+        prefix(KeyKind::TopicEntry, namespace, database, table)
+    }
+
     /// The prefix under which one message's single entry sits.
     #[must_use]
     pub fn message_prefix(
@@ -192,8 +201,54 @@ impl TopicEntryKey {
     }
 }
 
+/// What a position's entry holds: the instant its message was appended, in
+/// milliseconds since the epoch (ADR-0133 D3).
+///
+/// The header alone — every position written before the instant was kept — is
+/// a mark with no instant, so the entries already on disk read unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopicMark {
+    /// When the message was appended, or `None` for one appended before a
+    /// topic kept the instant.
+    pub appended: Option<u64>,
+}
+
+impl StoreValue for TopicMark {
+    fn encode(&self) -> Value {
+        let Some(appended) = self.appended else {
+            return ExpiryMark.encode();
+        };
+        let mut bytes = with_header(0, 8);
+        bytes.extend_from_slice(&appended.to_be_bytes());
+        Value::from(bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let (_, payload) = split_header(bytes, 0)?;
+        if payload.is_empty() {
+            return Ok(Self { appended: None });
+        }
+        let instant: [u8; 8] = payload
+            .get(..8)
+            .and_then(|head| head.try_into().ok())
+            .ok_or(Error::ValueTruncated {
+                len: bytes.len(),
+                needed: bytes.len().saturating_add(8).saturating_sub(payload.len()),
+            })?;
+        if payload.len() > 8 {
+            return Err(Error::TrailingBytes {
+                kind: KeyKind::TopicOffset,
+                extra: payload.len().saturating_sub(8),
+            });
+        }
+        Ok(Self {
+            appended: Some(u64::from_be_bytes(instant)),
+        })
+    }
+}
+
 impl StoreKey for TopicOffsetKey {
-    type Value = ExpiryMark;
+    type Value = TopicMark;
 
     const KIND: KeyKind = KeyKind::TopicOffset;
 

@@ -229,3 +229,28 @@ fn a_leader_yields_only_to_a_preferred_candidate_that_is_caught_up() {
         None
     );
 }
+
+/// Q-970, on a placed range's own line: the instant a range's leader stops
+/// being heard is the instant [`heard_a_leader_on`] turns false.
+#[test]
+fn a_node_stops_hearing_a_ranges_leader_at_the_instant_it_is_told_it_will() {
+    let declared = [
+        named("a", "10.0.0.1:9000", NODE),
+        named("me", "10.0.0.2:9000", ANOTHER),
+    ];
+    let within = tessari_storage::LEASE_TTL;
+    let greeted_at = Instant::now();
+    let mut heard = Directory::new();
+    heard.heard("10.0.0.1:9000", on_a_line(NODE, shard(2), 3), greeted_at);
+    let until = heard_a_leader_on_until(shard(2), ANOTHER, &declared, &heard, None, within)
+        .expect("a range leader heard is a range leader that lapses at an instant");
+    assert_eq!(until, greeted_at + within);
+    let at = |now| heard_a_leader_on(shard(2), ANOTHER, &declared, &heard, None, now, within);
+    assert!(at(until - Duration::from_millis(1)));
+    assert!(!at(until + Duration::from_millis(1)));
+    // The control: another range's line heard nothing, so nothing lapses on it.
+    assert_eq!(
+        heard_a_leader_on_until(shard(3), ANOTHER, &declared, &heard, None, within),
+        None
+    );
+}

@@ -1411,9 +1411,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-backup"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "tempfile",
  "tessari-encoding",
@@ -1724,7 +1724,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-bench"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "tessari-backup",
  "tessari-encoding",
@@ -1739,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-cli"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "futures-util",
  "libc",
@@ -1752,8 +1752,10 @@ dependencies = [
  "tessari-constants",
  "tessari-http",
  "tessari-ingest",
+ "tessari-kafka",
  "tessari-kv",
  "tessari-ql",
+ "tessari-resp",
  "tessari-serve",
  "tessari-session",
  "tessari-storage",
@@ -1770,7 +1772,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-conformance"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "tempfile",
  "tessari-kv",
@@ -1783,11 +1785,11 @@ dependencies = [
 
 [[package]]
 name = "tessari-constants"
-version = "0.36.2"
+version = "0.37.0"
 
 [[package]]
 name = "tessari-encoding"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "proptest",
  "rust_decimal",
@@ -1799,7 +1801,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-geo"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "proptest",
  "tessari-types",
@@ -1808,7 +1810,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-http"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "axum",
  "dashmap",
@@ -1837,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-ingest"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "rdkafka",
  "tessari-kv",
@@ -1849,15 +1851,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "tessari-kafka"
+version = "0.37.0"
+dependencies = [
+ "crc32c",
+ "dashmap",
+ "getrandom 0.4.3",
+ "lz4_flex",
+ "miniz_oxide",
+ "rustls",
+ "ruzstd",
+ "snap",
+ "tessari-constants",
+ "tessari-encoding",
+ "tessari-serve",
+ "tessari-storage",
+ "tessari-types",
+ "tessaridb",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "tessari-kv"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "tessari-lsm"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "dashmap",
  "tempfile",
@@ -1876,7 +1904,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-ql"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "rust_decimal",
  "tessari-types",
@@ -1885,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-query"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "tessari-ql",
  "tessari-types",
@@ -1893,8 +1921,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "tessari-resp"
+version = "0.37.0"
+dependencies = [
+ "dashmap",
+ "rustls",
+ "tessari-constants",
+ "tessari-encoding",
+ "tessari-serve",
+ "tessari-storage",
+ "tessari-types",
+ "tessaridb",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "tessari-serve"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "futures-util",
  "rcgen",
@@ -1908,7 +1956,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-session"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "argon2",
  "dashmap",
@@ -1938,7 +1986,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-storage"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "dashmap",
  "futures-util",
@@ -1958,7 +2006,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-types"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "rust_decimal",
  "serde",
@@ -1967,7 +2015,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-vault"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -1981,7 +2029,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-wire"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "dashmap",
  "getrandom 0.4.3",
@@ -2010,7 +2058,7 @@ dependencies = [
 
 [[package]]
 name = "tessaridb"
-version = "0.36.2"
+version = "0.37.0"
 dependencies = [
  "tempfile",
  "tessari-encoding",

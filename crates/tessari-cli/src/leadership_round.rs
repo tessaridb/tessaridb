@@ -74,11 +74,11 @@ pub(crate) async fn stand_for_leadership(
             Ok(identity) => identity,
             Err(why) => {
                 tracing::warn!(error = %why, "this node cannot say who it is");
-                return;
+                return None;
             }
         };
         if !tessari_wire::stands(me.roles) {
-            return;
+            return None;
         }
         // Both in one transaction: the membership and the policy stamp are
         // read on every tick of this cadence, and a node the operator made
@@ -87,7 +87,7 @@ pub(crate) async fn stand_for_leadership(
             Ok(read) => read,
             Err(why) => {
                 tracing::warn!(error = %why, "this node cannot say who its peers are");
-                return;
+                return None;
             }
         };
         // The periods this cluster runs under: the policy the log carries,
@@ -99,9 +99,7 @@ pub(crate) async fn stand_for_leadership(
             });
         *cadence = periods.campaign();
         voter.hold_for(periods.lease());
-        let Some(voting) = tessari_wire::voters(me.roles, &declared, &me.id) else {
-            return;
-        };
+        let voting = tessari_wire::voters(me.roles, &declared, &me.id)?;
         // ADR-0082. The placed range on its own line, beside the store's:
         // the store line's own guards return early — a follower that hears
         // the store leader does not stand for the STORE — and a range
@@ -132,14 +130,103 @@ pub(crate) async fn stand_for_leadership(
             stand_for_a_placed_range(db, &candidate, (on_a_line, yielded), now),
             stand_for_the_store(db, &candidate, (&mut renewing, policy), now),
         );
+        let staggered = [
+            renewing.not_before(),
+            on_a_line.as_ref().and_then(|(_, line)| line.not_before()),
+        ];
+        due_to_stand(&candidate, staggered, now, *cadence)
     };
-    // Nothing wakes the campaign early: it runs on the policy's cadence alone.
-    let unwoken = tokio::sync::Notify::new();
-    tessari_wire::every_paced("leadership", &stop, &unwoken, cadence, async move |now| {
-        pass(now, &mut cadence).await;
+    // Woken early only at the instant this node becomes due to stand (Q-970):
+    // otherwise it runs on the policy's cadence alone.
+    let woken = std::sync::Arc::new(tokio::sync::Notify::new());
+    let waking = std::sync::Arc::clone(&woken);
+    tessari_wire::every_paced("leadership", &stop, &woken, cadence, async move |now| {
+        if let Some(due) = pass(now, &mut cadence).await {
+            let waking = std::sync::Arc::clone(&waking);
+            drop(tokio::spawn(async move {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(due)).await;
+                waking.notify_one();
+            }));
+        }
         Ok(cadence)
     })
     .await;
+}
+
+/// The instant inside the next `cadence` at which this node becomes due to
+/// stand on either line it campaigns on — the store's or its placed range's —
+/// when there is one (Q-970): it stops hearing a leader there, or the stagger
+/// after a round it lost on that line ends.
+///
+/// # Why the cadence is woken for it
+///
+/// A node asks whether it hears a leader only on this cadence's ticks, and
+/// every node started together ticks together. Left to the tick,
+/// [`tessari_wire::election_timeout`]'s spread is rounded to one: two
+/// survivors whose spreads fall in the same tick stand on it, each grants the
+/// other the epoch before its own self-vote, both lose, and both wait out a
+/// lease to collide again — the first failover after a cluster started took
+/// 1.8-3.8 s where every later one took about one. Woken at the instant, a node
+/// stands on its own spread, which is what the spread was for. The stagger
+/// after a lost round is a spread of the same kind and is woken on the same way.
+fn due_to_stand(
+    candidate: &Candidate<'_>,
+    staggered: [Option<std::time::Instant>; 2],
+    now: std::time::Instant,
+    cadence: std::time::Duration,
+) -> Option<std::time::Instant> {
+    let within = standing_window(candidate);
+    let heard = candidate.published.current();
+    let store = tessari_wire::heard_a_leader_until(
+        candidate.declared,
+        &heard,
+        candidate.voter.granted_elsewhere_at(candidate.me),
+        within,
+    );
+    let placed =
+        tessari_wire::campaign_line(candidate.declared, &candidate.me, candidate.leads_the_store)
+            .and_then(|range| {
+                tessari_wire::heard_a_leader_on_until(
+                    range,
+                    candidate.me,
+                    candidate.declared,
+                    &heard,
+                    candidate.voter.granted_elsewhere_on(range, candidate.me),
+                    within,
+                )
+            });
+    soonest_in_the_tick([store, placed].into_iter().chain(staggered), now, cadence)
+}
+
+/// The soonest of `instants` that falls after `now` and before the next tick,
+/// one millisecond past it: a leader heard exactly `within` ago is still heard,
+/// and a stagger that ends at an instant has not ended before it. An instant
+/// the regular tick reaches first is left to the tick.
+fn soonest_in_the_tick(
+    instants: impl IntoIterator<Item = Option<std::time::Instant>>,
+    now: std::time::Instant,
+    cadence: std::time::Duration,
+) -> Option<std::time::Instant> {
+    let next_tick = now.checked_add(cadence)?;
+    instants
+        .into_iter()
+        .flatten()
+        .filter_map(|at| at.checked_add(std::time::Duration::from_millis(1)))
+        .filter(|due| *due > now && *due < next_tick)
+        .min()
+}
+
+/// How long this node goes without hearing a leader before it stands: the
+/// lease plus its own spread (G053 SG2b), for the grant it last decided.
+fn standing_window(candidate: &Candidate<'_>) -> std::time::Duration {
+    tessari_wire::election_timeout(
+        candidate.me,
+        candidate
+            .voter
+            .decided()
+            .unwrap_or(tessari_types::Epoch::ZERO),
+        candidate.periods.lease(),
+    )
 }
 
 /// Stand for the store line, if this node is the one that should (ADR-0066).
@@ -191,11 +278,7 @@ async fn stand_for_the_store(
         &published.current(),
         voter.granted_elsewhere_at(me),
         now,
-        tessari_wire::election_timeout(
-            me,
-            voter.decided().unwrap_or(tessari_types::Epoch::ZERO),
-            periods.lease(),
-        ),
+        standing_window(candidate),
     ) {
         return;
     }
@@ -368,14 +451,7 @@ pub(crate) async fn stand_for_a_placed_range(
         &candidate.published.current(),
         candidate.voter.granted_elsewhere_on(range, candidate.me),
         now,
-        tessari_wire::election_timeout(
-            candidate.me,
-            candidate
-                .voter
-                .decided()
-                .unwrap_or(tessari_types::Epoch::ZERO),
-            candidate.periods.lease(),
-        ),
+        standing_window(candidate),
     ) {
         return;
     }
@@ -510,4 +586,42 @@ async fn hands_to_the_preferred(
     );
     *yielded = Some((range, now));
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::soonest_in_the_tick;
+
+    const TICK: Duration = Duration::from_millis(100);
+
+    #[test]
+    fn the_soonest_instant_inside_the_tick_is_woken_on_a_millisecond_past_it() {
+        let now = Instant::now();
+        let late = now + Duration::from_millis(70);
+        let early = now + Duration::from_millis(20);
+        assert_eq!(
+            soonest_in_the_tick([Some(late), Some(early)], now, TICK),
+            Some(early + Duration::from_millis(1))
+        );
+    }
+
+    #[test]
+    fn an_instant_the_tick_reaches_first_or_one_already_past_wakes_nothing() {
+        let now = Instant::now();
+        let past = now - Duration::from_millis(5);
+        let beyond = now + TICK;
+        assert_eq!(
+            soonest_in_the_tick([Some(past), Some(beyond)], now, TICK),
+            None
+        );
+        assert_eq!(soonest_in_the_tick([None, None], now, TICK), None);
+        // The control: the same instants with one inside the tick do wake.
+        let inside = now + Duration::from_millis(50);
+        assert_eq!(
+            soonest_in_the_tick([Some(past), Some(inside), Some(beyond)], now, TICK),
+            Some(inside + Duration::from_millis(1))
+        );
+    }
 }

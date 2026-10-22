@@ -9,7 +9,11 @@ use tessari_session::RunNow;
 mod atomic;
 mod bounded;
 mod expiry;
+mod fields;
+mod memory;
 mod removal;
+mod sets;
+mod structure;
 mod walk;
 
 use std::sync::Arc;

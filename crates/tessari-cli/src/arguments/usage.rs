@@ -8,6 +8,19 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --serve <host:port> serve this store over the wire protocol until stopped
   --http <host:port> serve this store over HTTP until stopped; may accompany
                   --serve, and one process then holds both
+  --kafka <host:port> serve the store's topics over the Kafka protocol (the
+                  standard port is 9092); default TESSARIDB_KAFKA
+  --kafka-advertise <host:port> the broker address Kafka clients are told to
+                  reconnect to; default TESSARIDB_KAFKA_ADVERTISE, else the
+                  address each client reached
+  --kafka-database <namespace>.<database> where a bare Kafka topic name is
+                  read; default TESSARIDB_KAFKA_DATABASE, else names are
+                  <namespace>.<database>.<topic>
+  --resp <host:port> serve the store's spaces over the RESP protocol (the
+                  standard port is 6379); default TESSARIDB_RESP
+  --resp-space <namespace>.<database>.<space> the space a RESP connection
+                  starts in; default TESSARIDB_RESP_SPACE, else a connection
+                  names one with TESSARIDB.USE
   --backup-dir <folder> where a serving node writes `BACKUP … TO '<name>'`;
                   without it every `TO` is refused
   --unseal-for <duration> how long an unseal lasts before the store seals itself,

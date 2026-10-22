@@ -8,9 +8,12 @@ use tessari_session::RunNow;
 mod consumers;
 mod declaring;
 mod groups;
+mod members;
 mod order;
+mod partitions;
 mod public;
 mod retention;
+mod trim;
 
 use std::collections::BTreeMap;
 

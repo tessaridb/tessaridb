@@ -52,6 +52,7 @@ const FIELD_REPLICATES: &str = "replicates";
 const FIELD_LEADS: &str = "leads";
 const FIELD_CLIENTS: &str = "clients";
 const FIELD_HTTP: &str = "http";
+const FIELD_KAFKA: &str = "kafka";
 const FIELD_FINGERPRINT: &str = "fingerprint";
 const FIELD_JOIN: &str = "join";
 const FIELD_RELEASING: &str = "releasing";
@@ -165,6 +166,9 @@ pub struct ReplicaDefinition {
     /// The HTTP base a client reaches that peer at (`HTTP AT`), for the
     /// `Location` of a `307`. `None` for the same reason as [`Self::clients`].
     pub http: Option<String>,
+    /// Where a Kafka client reaches that peer (`KAFKA AT`), for the broker
+    /// Metadata names (G079 W5d). `None` for the same reason as [`Self::clients`].
+    pub kafka: Option<String>,
     /// The SHA-256 of the one certificate allowed to bind this row
     /// (`FINGERPRINT`, ADR-0108 D9), lowercase hex.
     ///
@@ -239,6 +243,9 @@ impl ReplicaDefinition {
         if let Some(http) = &self.http {
             fields.insert(FIELD_HTTP.to_owned(), Value::from(http.as_str()));
         }
+        if let Some(kafka) = &self.kafka {
+            fields.insert(FIELD_KAFKA.to_owned(), Value::from(kafka.as_str()));
+        }
         // Both written only when there is one, so a row declared before
         // ADR-0108 D9 keeps its bytes.
         if let Some(fingerprint) = &self.fingerprint {
@@ -298,6 +305,7 @@ impl ReplicaDefinition {
                 .transpose()?,
             clients: text_in(fields, FIELD_CLIENTS)?,
             http: text_in(fields, FIELD_HTTP)?,
+            kafka: text_in(fields, FIELD_KAFKA)?,
             fingerprint: text_in(fields, FIELD_FINGERPRINT)?,
             join: join_in(fields)?,
             releasing: flag_in(fields, FIELD_RELEASING)?,

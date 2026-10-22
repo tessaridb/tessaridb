@@ -56,14 +56,20 @@ impl Session<'_> {
     ) -> Result<Outcome> {
         // Resolved before the write, so a refused expiry writes nothing.
         let at = match expire {
-            Some(expire) => match self.instant(transaction, expire).await? {
-                Instant::Future(at) => Some(at),
-                Instant::Passed => {
-                    return Err(Error::InvalidExpiry {
-                        reason: "a SET's EXPIRE must be in the future",
-                        span: expire.span,
-                    });
-                }
+            Some(expire) => match self.evaluate(transaction, expire).await? {
+                // `NULL` is what `TTL` answers for a key that never expires, so
+                // writing it back writes one that never expires: a value and its
+                // expiry move together in one statement, `EXPIRE TTL k`.
+                Value::Null => None,
+                when => match instant_of(transaction.clock(), when, expire.span)? {
+                    Instant::Future(at) => Some(at),
+                    Instant::Passed => {
+                        return Err(Error::InvalidExpiry {
+                            reason: "a SET's EXPIRE must be in the future",
+                            span: expire.span,
+                        });
+                    }
+                },
             },
             None => None,
         };
@@ -105,8 +111,11 @@ impl Session<'_> {
             // part of the version, so moving one is a write like any other and
             // reaches the log, a follower and a backup by the ordinary road.
             Instant::Future(at) => {
+                // The fields' own instants are the version's too, and stand.
+                let fields = transaction.field_expiry(&address).await?;
                 transaction.put(address.clone(), held);
                 transaction.expire_pending(&address, at);
+                transaction.expire_fields_pending(&address, fields);
             }
         }
         Ok(Outcome::Value(Value::Bool(true)))
@@ -125,10 +134,12 @@ impl Session<'_> {
         let Some(held) = transaction.get(&address).await? else {
             return Ok(Outcome::Value(Value::Bool(false)));
         };
+        let fields = transaction.field_expiry(&address).await?;
         transaction.put(address.clone(), held);
         // Said on purpose, which a table that declares expiry would otherwise
         // read as a plain write and keep the instant (ADR-0122 A3).
         transaction.persist_pending(&address);
+        transaction.expire_fields_pending(&address, fields);
         Ok(Outcome::Value(Value::Bool(true)))
     }
 
@@ -145,12 +156,7 @@ impl Session<'_> {
         let Some(at) = transaction.expires(&address).await? else {
             return Ok(Value::Null);
         };
-        let left = at.saturating_sub(transaction.clock());
-        let seconds = i64::try_from(left / 1_000).unwrap_or(i64::MAX);
-        let nanos = u32::try_from(left % 1_000)
-            .unwrap_or(0)
-            .saturating_mul(NANOS_PER_MILLI);
-        Ok(Duration::new(seconds, nanos).map_or(Value::Null, Value::Duration))
+        Ok(duration_left(at, transaction.clock()))
     }
 
     /// Resolve an `EXPIRE` operand against the transaction's clock.
@@ -159,25 +165,38 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         when: &Expr,
     ) -> Result<Instant> {
-        let refused = |reason| Error::InvalidExpiry {
-            reason,
-            span: when.span,
-        };
-        let too_far = || refused("the expiry is past what a millisecond clock can hold");
-        let now = i64::try_from(transaction.clock()).map_err(|_| too_far())?;
-        let at = match self.evaluate(transaction, when).await? {
-            Value::Duration(span) => {
-                millis(span.seconds(), span.nanos()).and_then(|span| now.checked_add(span))
-            }
-            Value::Datetime(instant) => millis(instant.seconds(), instant.nanos()),
-            _ => return Err(refused("an expiry is a duration or a datetime")),
-        }
-        .ok_or_else(too_far)?;
-        if at <= now {
-            return Ok(Instant::Passed);
-        }
-        Ok(Instant::Future(u64::try_from(at).map_err(|_| too_far())?))
+        let value = self.evaluate(transaction, when).await?;
+        instant_of(transaction.clock(), value, when.span)
     }
+}
+
+/// The time from `now` until `at`, both in milliseconds, as a duration.
+pub(crate) fn duration_left(at: u64, now: u64) -> Value {
+    let left = at.saturating_sub(now);
+    let seconds = i64::try_from(left / 1_000).unwrap_or(i64::MAX);
+    let nanos = u32::try_from(left % 1_000)
+        .unwrap_or(0)
+        .saturating_mul(NANOS_PER_MILLI);
+    Duration::new(seconds, nanos).map_or(Value::Null, Value::Duration)
+}
+
+/// Resolve an evaluated `EXPIRE` operand against the clock `now`.
+fn instant_of(now: u64, when: Value, span: Span) -> Result<Instant> {
+    let refused = |reason| Error::InvalidExpiry { reason, span };
+    let too_far = || refused("the expiry is past what a millisecond clock can hold");
+    let now = i64::try_from(now).map_err(|_| too_far())?;
+    let at = match when {
+        Value::Duration(span) => {
+            millis(span.seconds(), span.nanos()).and_then(|span| now.checked_add(span))
+        }
+        Value::Datetime(instant) => millis(instant.seconds(), instant.nanos()),
+        _ => return Err(refused("an expiry is a duration or a datetime")),
+    }
+    .ok_or_else(too_far)?;
+    if at <= now {
+        return Ok(Instant::Passed);
+    }
+    Ok(Instant::Future(u64::try_from(at).map_err(|_| too_far())?))
 }
 
 /// Whole milliseconds in a seconds-and-nanoseconds pair, rounded toward zero.

@@ -7,19 +7,21 @@
 use std::io::Read;
 
 use tessari_encoding::{LogId, LogRecord, NodeVersion, StoreValue};
-use tessari_storage::TopicHead;
+use tessari_encoding::{StoreKey, TopicMark, TopicOffsetKey};
+use tessari_storage::{TopicEntry, TopicHead};
 use tessari_types::{DatabaseId, NamespaceId, Sequence, TableId};
 
-use super::{STATE_FORMAT, StateTaken, exact, is_state};
+use super::{OLDEST_STATE_FORMAT, STATE_FORMAT, StateTaken, exact, is_state};
 use crate::format::Head;
 use crate::{Error, FRAME_SECTION, FRAME_SHARD_SECTION, Result, check, log_in, shard_log_in};
 
-use super::{FRAME_CHUNK, FRAME_END, FRAME_TOPIC};
+use super::{FRAME_CHUNK, FRAME_END, FRAME_ENTRY, FRAME_TOPIC};
 
 /// One thing a snapshot carries after its head.
 pub(super) enum Item {
     Chunk(LogRecord),
     Topic(TopicHead),
+    Entry(TopicEntry),
 }
 
 /// What the next read of a snapshot found.
@@ -33,12 +35,14 @@ pub(super) enum Frame {
 /// A snapshot whose head has been read and checked, read on frame by frame.
 pub(super) struct Frames<'a, R> {
     input: &'a mut R,
+    format: u8,
     writer: NodeVersion,
     version: Sequence,
     positions: Vec<(LogId, Sequence)>,
     chunks: u64,
     records: u64,
     topics: usize,
+    entries: u64,
 }
 
 impl<'a, R: Read> Frames<'a, R> {
@@ -53,7 +57,7 @@ impl<'a, R: Read> Frames<'a, R> {
             return Err(Error::NotABackup);
         }
         let [format, codec] = exact::<2>(input)?;
-        if format != STATE_FORMAT {
+        if !(OLDEST_STATE_FORMAT..=STATE_FORMAT).contains(&format) {
             return Err(Error::Unsupported {
                 what: "snapshot format",
                 found: format,
@@ -90,13 +94,20 @@ impl<'a, R: Read> Frames<'a, R> {
         }
         Ok(Self {
             input,
+            format,
             writer,
             version,
             positions,
             chunks: 0,
             records: 0,
             topics: 0,
+            entries: 0,
         })
+    }
+
+    /// Whether the file carries its topics' entries — format 2 on.
+    pub(super) const fn carries_entries(&self) -> bool {
+        self.format >= 2
     }
 
     /// Read the next frame, refusing one that is damaged, cut short or not a
@@ -143,13 +154,30 @@ impl<'a, R: Read> Frames<'a, R> {
                     last,
                 })))
             }
+            Ok([FRAME_ENTRY]) if self.format >= 2 => {
+                let key_length = u16::from_be_bytes(exact::<2>(input)?);
+                let key = bounded(input, usize::from(key_length))?;
+                let [mark_length] = exact::<1>(input)?;
+                let mark = bounded(input, usize::from(mark_length))?;
+                self.entries = self.entries.saturating_add(1);
+                Ok(Frame::Item(Item::Entry(TopicEntry {
+                    key: TopicOffsetKey::decode(&key)?,
+                    mark: TopicMark::decode(&mark)?,
+                })))
+            }
             Ok([FRAME_END]) => {
-                let end = exact::<16>(input)?;
+                // Format 1 counts chunks and records; format 2 entries as well.
+                let mut end = exact::<16>(input)?.to_vec();
+                if self.format >= 2 {
+                    end.extend_from_slice(&exact::<8>(input)?);
+                }
                 let sum = u32::from_be_bytes(exact::<4>(input)?);
-                let (counted, held) = end.split_at(8);
-                let whole = check::crc32(&end) == sum
-                    && counted == self.chunks.to_be_bytes()
-                    && held == self.records.to_be_bytes();
+                let mut counts = self.chunks.to_be_bytes().to_vec();
+                counts.extend_from_slice(&self.records.to_be_bytes());
+                if self.format >= 2 {
+                    counts.extend_from_slice(&self.entries.to_be_bytes());
+                }
+                let whole = check::crc32(&end) == sum && end == counts;
                 if !whole {
                     return Err(Error::StateIncomplete);
                 }
@@ -159,10 +187,20 @@ impl<'a, R: Read> Frames<'a, R> {
                     positions: std::mem::take(&mut self.positions),
                     records: self.records,
                     topics: self.topics,
+                    entries: self.entries,
                 }))
             }
             Ok(_) => Err(Error::NotABackup),
             Err(_) => Err(Error::StateIncomplete),
         }
+    }
+}
+
+/// Exactly `length` bytes, or the file ended before its end frame.
+fn bounded(input: &mut impl Read, length: usize) -> Result<Vec<u8>> {
+    let mut bytes = vec![0_u8; length];
+    match crate::format::fill(input, &mut bytes)? {
+        crate::Filled::Whole => Ok(bytes),
+        crate::Filled::Empty | crate::Filled::Short => Err(Error::StateIncomplete),
     }
 }

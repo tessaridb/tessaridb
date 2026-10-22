@@ -10,10 +10,10 @@ Eleven engines. One transaction. One binary. A real-time multi-model database,
 written in Rust, for AI applications and the products built around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.36.2-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.37.0-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.98%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-1611%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-1633%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/tessaridb/tessaridb-protocol) ·
@@ -22,8 +22,8 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is pre-1.0 — `0.36.2`.** It is released and tested, published as
-> a container image (`tessaridb/tessaridb:0.36.2`; the image tracks the
+> **TessariDB is pre-1.0 — `0.37.0`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.37.0`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
 > What a pre-1.0 release does not promise yet is permanence of the language and the wire:
@@ -150,17 +150,17 @@ store rather than three stores, and queues and topics share one row. The
 
 | Engine | What it gives you | Cases | State |
 |---|---|---|:--|
-| **Documents** | schemaless or schemafull records, nested objects and arrays, typed fields with defaults, a document filtered by the sub-document it contains — through a containment index that changes the cost and never the answer — JSON text read into a document and written back out | 71 + 85 + 16 | ✅ runs |
+| **Documents** | schemaless or schemafull records, nested objects and arrays, typed fields with defaults, a document filtered by the sub-document it contains — through a containment index that changes the cost and never the answer — JSON text read into a document and written back out | 71 + 87 + 16 | ✅ runs |
 | **Relational** | declared tables and fields, unique and multi-field indexes, joins whose answer an index may not change, `INSERT` of several records in one statement at identities the store produces | 63 + 27 + 51 + 21 | ✅ runs |
 | **Graph** | edge tables, `RELATE`, properties on the edge, multi-hop traversal in both directions, an edge table that names the pair it joins and refuses every other, a declared graph that holds its own records with no table declared beside it and takes them with it when dropped, tables you already have joining it with `IN`, `DEFINE EDGE` writing adjacency beside the node so a hop is a range read, an edge removed by the pair it joins, `DEPTH n` bounding a repeated hop, and `PATH TO … DEPTH n [WEIGHT f]` answering the shortest or cheapest path within that bound | 76 | ✅ runs |
-| **Key–value** | `SPACE`s — one key, one whole value, a per-key expiry (`EXPIRE`, `TTL`, `PERSIST`), atomic `INCR` and conditional `SET … IF`, and a seeking key walk by range or prefix with `AFTER`/`LIMIT` paging, and a key limit (`MAX n`) that evicts the least recently modified or refuses, on memory and on disk | 33 | ✅ runs |
+| **Key–value** | `SPACE`s — one key, one whole value, a per-key expiry (`EXPIRE`, `TTL`, `PERSIST`), atomic `INCR`, conditional `SET … IF` and `DEL … IF =`, and a seeking key walk by range or prefix with `AFTER`/`LIMIT` paging, and a key limit (`MAX n`) that evicts the least recently modified or refuses, on memory and on disk; a key holding a list, a hash, a set or a ranking changed by one atomic statement each (`LIST PUSH`, `HASH SET`, `MEMBERS ADD`, `SCORES ADD` …) and a ranking cut by position, score or member, and a hash field that expires on its own (`HASH EXPIRE`, `HASH TTL`, `HASH PERSIST`) | 47 | ✅ runs |
 | **Objects & files** | `BUCKET`s — bytes addressed by path, byte-range reads, writes at an offset, metadata that is an ordinary record, and a declared ceiling on the largest file the bucket takes | 38 | ✅ runs |
 | **Full-text** | per-field analyzers, whole-term search, prefix search a reader is served by while still typing — a starred word ranked as it is typed and a phrase ending in one — fuzzy search that survives a typo or a swapped pair of letters, measured against the word the text held rather than its stem, lowercase · ASCII folding · Porter2 stemming and Snowball Russian, German, French and Spanish, a quoted phrase with declared slop that widens the window without relaxing the order, `OR` and `NOT` inside a query, per-field weighting written as arithmetic, a `did you mean` suggestion that is a field beside the records and never a substitution into the query, and highlighting that marks the token the read actually reached rather than the characters that were typed, `search::explain` saying what each word of a score contributed, ranked pages that resume below their anchor rather than re-reading the table, and `POSITIONS` / `OFFSETS` / `NO SCORE` on the index as costs that never change an answer, `MATCHES INFIX` from a suffix structure over the dictionary rather than n-grams, and `DEFINE SEARCH` — several fields of several tables ranked as one collection by BM25F, per-field weights and operators, query-time synonyms and stop words, snippets, ranked type-ahead and facets, scored from its postings alone when they can decide the query, Chinese and Japanese searchable one ideograph to a token, and a space of plain text searched through its `value` | 126 | ✅ runs |
 | **Vector** | cosine, Euclidean and dot distance, kNN ordering, a graph index that declares whether it answered exactly, and a field that declares how wide its vectors are so a write of any other width is refused where it happens, and a vector store declared as one so the width, the index and the requirement cannot come apart, and a read that says what it will spend on the walk, and a recall the store reports only once something has measured it, and a filtered nearest read walked through the graph with the whole condition tested on every record it answers with, and an index that keeps one byte per component and rescores on the full vectors | 56 | ✅ runs |
 | **Vault** | a store whose declared fields can be `SECRET`, sealed under a per-record key before the record is encoded so the index, the change feed, the replication log and a backup all carry ciphertext, read only by `REVEAL` naming one record, sealed and unsealed by a passphrase that reaches memory and never disk, and dropped by destroying the key rather than the rows, with an opaque recipient set the engine carries and never reads, and a strictness a vault cannot be talked out of because a field nobody declared is a field nothing seals, with a trail every `REVEAL` writes to and `INFO FOR AUDIT` reads back, and edited field by field so that rotating a secret keeps the recipients it was shared with, an unseal that lasts a period and a passphrase that can change — the store's, or the vault's own so the store's passphrase opens nothing in it | 67 | ✅ runs |
 | **Time-series** | `DEFINE SERIES` — a table with a declared retention, past which a record is not answered with while its bytes are still there and its removal is a separate act, epoch-anchored windows every process agrees on, aggregates per window, and retention as a statement over any table that reports what it removed; ordered by event time with `TIME`, windows filled over a stated range, the newest record per key, `ASOF JOIN`, counter folds, rollups kept by the writes, aged records removed as one range, and batches of events appended over HTTP | 27 | ✅ runs |
 | **References** | `FETCH` — follow a reference, an array of them, or a nested route, without a join | 13 | ✅ runs |
-| **Queues & topics** | `DEFINE QUEUE` — work handed out one holder at a time under a hold that lapses, first-in-first-out by identity, by a declared priority, or on the record you name, held back until a declared instant, an attempt ceiling whose dead letter is a predicate or a topic the spent record moves to, a claim that takes only the work matching a condition and passes over what other claims are taking, a claim that is an ordinary write so it replicates, recovers and needs no lease manager, and a claimant a session declares so it can hand back everything it holds and nobody else's, by name or one record at a time, on a strict table or a loose one, and work a holder may compare-and-set without losing the hold — declared strict or lenient and in a graph or in none, so a queue is an end of a link like any other table, and a hold that no write can drop by saying nothing about it, and a declared window inside which an identity created again — even after its work was done — writes nothing; and `DEFINE TOPIC` — an append-only order whose messages hold dense positions decided at commit, whose named readers keep their place in the store and move it in their own transaction, whose retention — by age or by bytes kept — tells a reader how much it missed, and which a topic declared `PUBLIC` lets a caller nobody signed in append to at a declared rate, and a declared window inside which a message repeating a key is not appended; and `DEFINE GROUP` — workers sharing a topic, each message held in flight until it is acknowledged, handed out again on a negative acknowledgement or a passed deadline, and dead-lettered past its deliveries; and `DEFINE TOPIC CONSUMER` — a topic read into a table through a group, each message applied exactly once in the transaction that acknowledges it | 79 + 40 | ✅ runs |
+| **Queues & topics** | `DEFINE QUEUE` — work handed out one holder at a time under a hold that lapses, first-in-first-out by identity, by a declared priority, or on the record you name, held back until a declared instant, an attempt ceiling whose dead letter is a predicate or a topic the spent record moves to, a claim that takes only the work matching a condition and passes over what other claims are taking, a claim that is an ordinary write so it replicates, recovers and needs no lease manager, and a claimant a session declares so it can hand back everything it holds and nobody else's, by name or one record at a time, on a strict table or a loose one, and work a holder may compare-and-set without losing the hold — declared strict or lenient and in a graph or in none, so a queue is an end of a link like any other table, and a hold that no write can drop by saying nothing about it, and a declared window inside which an identity created again — even after its work was done — writes nothing; and `DEFINE TOPIC` — an append-only order whose messages hold dense positions decided at commit and the instant they were appended (`READ … SINCE` an instant), whose named readers keep their place in the store and move it in their own transaction, whose retention — by age or by bytes kept — and whose `TRIM` of its oldest messages tell a reader how much it missed, and which a topic declared `PUBLIC` lets a caller nobody signed in append to at a declared rate, and a declared window inside which a message repeating a key is not appended; and `DEFINE GROUP` — workers sharing a topic, each message held in flight until it is acknowledged, handed out again on a negative acknowledgement or a passed deadline or held until settled, recorded against the member it was handed to and handed on to another, and dead-lettered past its deliveries; and `DEFINE TOPIC CONSUMER` — a topic read into a table through a group, each message applied exactly once in the transaction that acknowledges it | 79 + 46 | ✅ runs |
 | **Geospatial** | a geometry type on an exact integer grid, eight predicates over whole shapes, geodesic distance and area, shapes written as literals, a spatial index seven of the eight predicates and a radius read go through, a nearest-first read over positions and areas and under a `WHERE`, distance between any two shapes to their nearest points, counting by cell, a geo store declared as one so the field, the index and the requirement cannot come apart, a measured query covering, and a measured refinement ratio saying what that index's candidates cost | 74 | ✅ runs |
 
 Underneath all of them, one substrate with two backends: **in memory**, and
@@ -181,7 +181,7 @@ possible rather than aspirational.
 | **Real-time** | change subscriptions as a first-class feature — over the wire and over a WebSocket |
 | **Stream ingestion** | `DEFINE KAFKA CONSUMER` — one statement says what to read, where it lands and under which group, and the node runs it; at-least-once, never exactly-once |
 | **Multi-tenant** | namespaces and databases, users, roles, `GRANT` and `REVOKE` per database |
-| **Four ways in** | embedded library · `tessaridb` CLI · HTTP + WebSocket · a framed binary wire protocol |
+| **Six ways in** | embedded library · `tessaridb` CLI · HTTP + WebSocket · a framed binary wire protocol · **the Kafka protocol** (`--kafka`) and **RESP** (`--resp`), so an existing Kafka or RESP client connects by changing its address |
 | **Operable** | health and readiness endpoints, Prometheus metrics, graceful drain, log-as-backup with replay-as-restore |
 | **Specified** | the wire and value protocol is [published](https://github.com/tessaridb/tessaridb-protocol) with a shared conformance corpus, so a client in any language is written from the spec and not from our source |
 
@@ -207,7 +207,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.36.2` · not published to crates.io.** What
+**Stage: active development · `0.37.0` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -215,6 +215,11 @@ follows is what runs today, not a roadmap.
   WebSocket surface, the binary wire protocol (v1.0, with a published spec and
   conformance corpus), single-node serving with roles, endpoints and graceful
   drain, backup and restore.
+- ✅ **Kafka and RESP clients:** `--kafka` serves the Kafka protocol over the
+  store's topics (produce, fetch, consumer groups, partitions, SASL, TLS) and
+  `--resp` serves RESP2/RESP3 over a space (strings, hashes, lists, sets, sorted
+  sets, transactions, pub/sub, streams with groups); each states where it departs
+  from the original in its documentation page.
 - ✅ **Clusters:** a node joins a running cluster with one flag and declares no
   membership of its own; leadership is elected by a majority of the coordinating
   members and held on a renewable lease, so a leader that has lost the cluster
@@ -517,6 +522,8 @@ crates/
   tessaridb                     the embedded front door — open, run, follow the changes
   tessari-http                the HTTP and WebSocket surface
   tessari-wire                the wire protocol
+  tessari-kafka               the Kafka protocol over the store's own topics
+  tessari-resp                the RESP protocol over the store's own spaces
   tessari-serve               stopping a serving process in the order the stages require
   tessari-ingest              running the declared stream consumers: source, shaping, runner
   tessari-backup              log as backup, replay as restore

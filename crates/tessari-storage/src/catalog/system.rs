@@ -202,6 +202,13 @@ pub const ROLLUP_STATES: TableId = TableId::new(28);
 /// (Q-708).
 pub const KAFKA_QUARANTINE: TableId = TableId::new(29);
 
+/// Each topic's clock: the instant its newest message was appended, which no
+/// later append goes back on (ADR-0133 D3).
+///
+/// One row per topic, written by the appending commit itself, so a replica
+/// applying the log derives the same instants without reading a clock.
+pub const TOPIC_CLOCKS: TableId = TableId::new(30);
+
 /// Every system table and its name, in id order — part of the on-disk format,
 /// because a row's key carries the table id (`docs/key-grammar.md` §9).
 pub const ALL: &[(TableId, &str)] = &[
@@ -234,6 +241,7 @@ pub const ALL: &[(TableId, &str)] = &[
     (VIEW_MEMBERS, "VIEW_MEMBERS"),
     (ROLLUP_STATES, "ROLLUP_STATES"),
     (KAFKA_QUARANTINE, "KAFKA_QUARANTINE"),
+    (TOPIC_CLOCKS, "TOPIC_CLOCKS"),
 ];
 
 /// The one record [`VAULT_ROOT`] holds.

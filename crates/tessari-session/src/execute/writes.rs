@@ -251,7 +251,13 @@ impl Session<'_> {
         let identity = self
             .free_identity(transaction, &context, id, &payload, table.span)
             .await?;
-        let address = RecordAddress::new(context.namespace, context.database, id, identity.clone());
+        // A split topic's message lands in the partition its key chooses; the
+        // identity is still the topic's, so none repeats across partitions.
+        let home = self
+            .partition_for(definition.as_deref(), &payload, table.span)?
+            .unwrap_or(id);
+        let address =
+            RecordAddress::new(context.namespace, context.database, home, identity.clone());
         self.put_record(transaction, address.clone(), payload.clone(), span)
             .await?;
         super::expiry::settle_write_expiry(transaction, &address, settled);
@@ -426,7 +432,7 @@ impl Session<'_> {
     pub(super) async fn insert(
         &self,
         transaction: &mut Transaction<'_>,
-        table: &TableRef,
+        (table, partition): (&TableRef, Option<&tessari_ql::Expr>),
         columns: &[Name],
         rows: &[Vec<tessari_ql::Expr>],
         expire: Option<&tessari_ql::WriteExpiry>,
@@ -446,6 +452,15 @@ impl Session<'_> {
             });
         }
 
+        // A partition the writer named holds every row; otherwise each row's
+        // key chooses (ADR-0131).
+        let named = match partition {
+            Some(partition) => Some(
+                self.named_partition(transaction, table, id, Some(partition), table.span)
+                    .await?,
+            ),
+            None => None,
+        };
         let mut produced = Vec::with_capacity(rows.len());
         for row in rows {
             let mut fields = BTreeMap::new();
@@ -478,8 +493,14 @@ impl Session<'_> {
             let identity = self
                 .free_identity(transaction, &context, id, &payload, table.span)
                 .await?;
+            let home = match named {
+                Some(named) => named,
+                None => self
+                    .partition_for(definition.as_deref(), &payload, table.span)?
+                    .unwrap_or(id),
+            };
             let address =
-                RecordAddress::new(context.namespace, context.database, id, identity.clone());
+                RecordAddress::new(context.namespace, context.database, home, identity.clone());
             self.put_record(transaction, address.clone(), payload, span)
                 .await?;
             super::expiry::settle_write_expiry(transaction, &address, settled);

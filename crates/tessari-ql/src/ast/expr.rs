@@ -310,6 +310,9 @@ pub struct TopicClauses {
     /// `DEDUPLICATE 5m ON msg_id` — a message whose `msg_id` was published less
     /// than the window ago is not appended (ADR-0124 D8).
     pub deduplicate: Option<(Duration, String)>,
+    /// `PARTITIONS 3 BY user` — how many partitions, and the field whose value
+    /// picks one (round robin when none is named) (ADR-0131).
+    pub partitions: Option<(u64, Option<String>)>,
 }
 
 /// What `DEFINE GROUP` declares after the topic (G042, ADR-0086).
@@ -319,14 +322,76 @@ pub struct TopicClauses {
 /// choice about the reader's work that the store cannot guess.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupClauses {
-    /// `ACK DEADLINE 30s` — how long a reader has to acknowledge a message.
-    pub deadline: Duration,
+    /// `ACK DEADLINE 30s` — how long a reader has to acknowledge a message;
+    /// `ACK DEADLINE NONE` (`None`) holds it until a statement settles it or
+    /// hands it out again (ADR-0133).
+    pub deadline: Option<Duration>,
     /// `DELIVERIES n` — after this many deliveries a message is dead-lettered.
     pub deliveries: Option<u64>,
     /// `IN FLIGHT n` — the most messages the group holds unacknowledged.
     pub in_flight: Option<u64>,
     /// `DEAD LETTER TO <topic>` — where a dead-lettered message is appended.
     pub dead_letter: Option<TableRef>,
+}
+
+/// `MEMBER '<name>' [HELD]` on a group read: which member of the group reads,
+/// and whether it asks for what it already holds (ADR-0133, W8d).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupMember {
+    /// The member, a quoted name as a consumer's is.
+    pub name: String,
+    /// The parameter the name is bound from, until binding writes it
+    /// (ADR-0127).
+    pub name_parameter: Option<crate::ast::ParameterSlot>,
+    /// `HELD`: the member's own messages in flight, handed to it again.
+    pub held: bool,
+}
+
+/// What `ALTER GROUP` changes (G042, ADR-0133).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupChange {
+    /// `START AT <expr>` — the position the group has been given up to.
+    StartAt(Expr),
+    /// `ADD MEMBER '<name>'`.
+    AddMember(String, Option<crate::ast::ParameterSlot>),
+    /// `DROP MEMBER '<name>'` — the member and what it holds.
+    DropMember(String, Option<crate::ast::ParameterSlot>),
+}
+
+/// Which held messages a `HAND` moves (ADR-0133).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Handing {
+    /// `AT p, …` — these positions, when held.
+    At(Vec<Expr>),
+    /// `AFTER p LIMIT n` — the first `n` held after `p`.
+    After {
+        /// The position after which to look.
+        after: Box<Expr>,
+        /// The most to move.
+        limit: Box<Expr>,
+    },
+}
+
+/// `HAND <topic> [PARTITION <expr>] FOR CONSUMER '<group>' AT … | AFTER …
+/// LIMIT … TO '<member>' [IF IDLE <duration>]` (ADR-0133).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hand {
+    /// The topic.
+    pub topic: TableRef,
+    /// `PARTITION <n>` of a split topic (ADR-0131).
+    pub partition: Option<Expr>,
+    /// The group holding the messages.
+    pub consumer: String,
+    /// The parameter the group's name is bound from (ADR-0127).
+    pub consumer_parameter: Option<crate::ast::ParameterSlot>,
+    /// Which messages.
+    pub handing: Handing,
+    /// The member they are handed to.
+    pub member: String,
+    /// The parameter the member's name is bound from.
+    pub member_parameter: Option<crate::ast::ParameterSlot>,
+    /// `IF IDLE <duration>` — only messages delivered at least that long ago.
+    pub idle: Option<Expr>,
 }
 
 /// `MAX n [EVICT NONE]` on `DEFINE SPACE` (G036).

@@ -49,11 +49,17 @@ impl Needs {
             // topology.
             StatementKind::Let { value, .. }
             | StatementKind::Return { value }
-            | StatementKind::Throw { value }
+            | StatementKind::Throw { value, .. }
                 if holds_node_read(value) =>
             {
                 Self::OPERATE_STORE
             }
+            StatementKind::Throw {
+                condition: Some(condition),
+                ..
+            } if holds_node_read(condition) => Self::OPERATE_STORE,
+            // `HASH TTL` reads its key and writes nothing (ADR-0132).
+            StatementKind::Structure { op, .. } if op.reads_only() => Self::READ,
             StatementKind::Let { .. }
             | StatementKind::Return { .. }
             | StatementKind::Throw { .. }
@@ -75,9 +81,17 @@ impl Needs {
             // reader's stored position: that position is the reader's own place
             // in what it may read (G037).
             | StatementKind::ReadTopic { .. }
-            // Settling a message is the rest of reading it (G042).
+            // Settling a message is the rest of reading it (G042), and so is
+            // handing one to another member or changing who the members are:
+            // each settles what the group holds, not how the topic is read
+            // (ADR-0133).
             | StatementKind::AckTopic { .. }
             | StatementKind::NackTopic { .. }
+            | StatementKind::HandTopic(_)
+            | StatementKind::AlterGroup {
+                change: tessari_ql::GroupChange::AddMember(..) | tessari_ql::GroupChange::DropMember(..),
+                ..
+            }
             // Explaining a read is reading: the catalog, about a table. The
             // caller must be allowed both, and `tables_named` says which.
             | StatementKind::Explain(_)
@@ -460,7 +474,10 @@ impl Needs {
             | StatementKind::Expire { .. }
             | StatementKind::Persist { .. }
             | StatementKind::Incr { .. }
+            | StatementKind::Structure { .. }
             | StatementKind::Del { .. }
+            // A trim removes messages, which is writing the topic (W8c).
+            | StatementKind::TrimTopic { .. }
             | StatementKind::Put { .. } => Self::WRITE,
         }
     }

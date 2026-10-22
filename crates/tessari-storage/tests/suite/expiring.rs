@@ -113,6 +113,7 @@ fn a_replica_of_a_limited_space_holds_what_the_writer_kept() {
                         max: 3,
                         eviction: Eviction::Modified,
                     }),
+                    memory: false,
                 }),
                 ..TableShape::default()
             },
@@ -173,4 +174,98 @@ fn a_replica_of_a_limited_space_holds_what_the_writer_kept() {
         ]
     );
     assert_eq!(order(&replica_backend), order(&source_backend));
+}
+
+/// The fields of a hash, as the store holds its payload.
+fn hash(fields: &[&str]) -> Vec<u8> {
+    let object = fields
+        .iter()
+        .map(|field| ((*field).to_owned(), tessari_types::Value::from(1_i64)))
+        .collect();
+    tessari_encoding::encode_payload(&tessari_types::Value::Object(object))
+        .as_slice()
+        .to_vec()
+}
+
+/// The field names a read answers, or `None` for no record.
+fn fields_read(store: &Store, address: &RecordAddress) -> Option<Vec<String>> {
+    let payload = store.begin().now().unwrap().get(address).now().unwrap()?;
+    match tessari_encoding::decode_payload(&payload).unwrap() {
+        tessari_types::Value::Object(fields) => Some(fields.into_keys().collect()),
+        other => Some(vec![format!("{other:?}")]),
+    }
+}
+
+/// A transaction whose clock reads past `instant`, begun without waiting on
+/// anything but the millisecond itself.
+fn after_instant(store: &Store, instant: u64) -> tessari_storage::Transaction<'_> {
+    loop {
+        let transaction = store.begin().now().unwrap();
+        if transaction.clock() > instant {
+            return transaction;
+        }
+    }
+}
+
+#[test]
+fn a_hash_field_given_an_instant_keeps_it_until_its_field_is_written() {
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
+    let key = at("h");
+    let far = later(&store);
+    let mut transaction = store.begin().now().unwrap();
+    transaction.put(key.clone(), hash(&["a", "b"]));
+    transaction.expire_fields_pending(&key, vec![("a".to_owned(), far)]);
+    assert_eq!(
+        transaction.field_expiry(&key).now().unwrap(),
+        [("a".to_owned(), far)]
+    );
+    transaction.commit().now().unwrap();
+    let mut reading = store.begin().now().unwrap();
+    assert_eq!(
+        reading.field_expiry(&key).now().unwrap(),
+        [("a".to_owned(), far)]
+    );
+    // A plain write replaces the version, its fields' instants included —
+    // the stored ones, and ones this transaction gave before writing again.
+    let mut transaction = store.begin().now().unwrap();
+    transaction.put(key.clone(), hash(&["a", "b"]));
+    assert!(transaction.field_expiry(&key).now().unwrap().is_empty());
+    transaction.expire_fields_pending(&key, vec![("b".to_owned(), far)]);
+    transaction.put(key.clone(), hash(&["a", "b"]));
+    assert!(transaction.field_expiry(&key).now().unwrap().is_empty());
+    transaction.commit().now().unwrap();
+    assert!(
+        store
+            .begin()
+            .now()
+            .unwrap()
+            .field_expiry(&key)
+            .now()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_hash_field_past_its_instant_is_not_read_and_the_last_takes_the_key() {
+    let store = Store::open(Arc::new(MemoryBackend::new())).now().unwrap();
+    let key = at("h");
+    let mut transaction = store.begin().now().unwrap();
+    let soon = transaction.clock().saturating_add(1);
+    transaction.put(key.clone(), hash(&["a", "b"]));
+    transaction.expire_fields_pending(&key, vec![("a".to_owned(), soon)]);
+    transaction.commit().now().unwrap();
+    let mut reading = after_instant(&store, soon);
+    assert!(reading.field_expiry(&key).now().unwrap().is_empty());
+    drop(reading);
+    assert_eq!(fields_read(&store, &key), Some(vec!["b".to_owned()]));
+    // An instant already past, given in the writing transaction, removes the
+    // field there; the last field removed so takes the key with it.
+    let mut transaction = store.begin().now().unwrap();
+    let now = transaction.clock();
+    transaction.put(key.clone(), hash(&["b"]));
+    transaction.expire_fields_pending(&key, vec![("b".to_owned(), now)]);
+    assert_eq!(transaction.get(&key).now().unwrap(), None);
+    transaction.commit().now().unwrap();
+    assert_eq!(fields_read(&store, &key), None);
 }

@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use tessari_ql::{Span, TableRef};
-use tessari_storage::{Catalog, Feed, TableKind, Transaction};
+use tessari_storage::{Catalog, Feed, GroupState, InFlight, TableKind, Transaction};
 use tessari_types::{Number, Value};
 
 use crate::error::{Error, Result};
@@ -15,6 +15,56 @@ fn whole(count: u64) -> Value {
 }
 
 impl Session<'_> {
+    /// The report `INFO FOR GROUP` answers (ADR-0133): the group's figures as
+    /// `INFO FOR TOPIC` gives them, every message it holds with who holds it
+    /// and since when, and every member it has seen with how many it holds.
+    pub(crate) async fn info_group(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &str,
+        topic: &TableRef,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let (context, table) = self.group_topic(transaction, topic, span).await?;
+        let state = Self::existing_group(transaction, &context, table, name, topic, span).await?;
+        let last = transaction
+            .topic_after(context.namespace, context.database, table, u64::MAX, 0)
+            .await?
+            .last
+            .unwrap_or(0);
+        let mut report = figures(&state, last);
+        report.insert("name".to_owned(), Value::from(name));
+        report.insert("topic".to_owned(), Value::from(topic.name.text.as_str()));
+        report.insert(
+            "held".to_owned(),
+            Value::Array(state.flight.iter().map(in_flight).collect()),
+        );
+        let members = state
+            .members
+            .iter()
+            .map(|member| {
+                let holds = state
+                    .flight
+                    .iter()
+                    .filter(|held| held.member.as_deref() == Some(member.name.as_str()))
+                    .count();
+                (
+                    member.name.clone(),
+                    Value::Object(BTreeMap::from([
+                        ("seen".to_owned(), Value::Datetime(member.seen)),
+                        ("active".to_owned(), Value::Datetime(member.active)),
+                        (
+                            "held".to_owned(),
+                            whole(u64::try_from(holds).unwrap_or(u64::MAX)),
+                        ),
+                    ])),
+                )
+            })
+            .collect();
+        report.insert("members".to_owned(), Value::Object(members));
+        Ok(report)
+    }
+
     /// The report `INFO FOR TOPIC` answers.
     ///
     /// `last` is the last position the topic has given and `first` the first it
@@ -45,49 +95,7 @@ impl Session<'_> {
             .topic_after(context.namespace, context.database, table, u64::MAX, 0)
             .await?;
         let last = held.last.unwrap_or(0);
-        let readers = Catalog::new(transaction)
-            .topic_positions(context.namespace, context.database, table)
-            .await?
-            .into_iter()
-            .map(|(name, position)| {
-                (
-                    name,
-                    Value::Object(BTreeMap::from([
-                        ("position".to_owned(), whole(position)),
-                        ("lag".to_owned(), whole(last.saturating_sub(position))),
-                    ])),
-                )
-            })
-            .collect();
-        // A group's lag counts from its committed position — the last one
-        // below which everything is acknowledged — because that is how far it
-        // would have to go back to if every member stopped now (G042).
-        let groups = Catalog::new(transaction)
-            .topic_groups(context.namespace, context.database, table)
-            .await?
-            .into_iter()
-            .map(|(name, state)| {
-                let committed = state.committed();
-                let declared = state.declaration;
-                let mut group = BTreeMap::from([
-                    ("position".to_owned(), whole(state.cursor)),
-                    ("committed".to_owned(), whole(committed)),
-                    ("lag".to_owned(), whole(last.saturating_sub(committed))),
-                    (
-                        "in_flight".to_owned(),
-                        whole(u64::try_from(state.flight.len()).unwrap_or(u64::MAX)),
-                    ),
-                    ("redelivered".to_owned(), whole(state.redelivered)),
-                    ("dead_lettered".to_owned(), whole(state.dead_lettered)),
-                    ("deadline".to_owned(), Value::Duration(declared.deadline)),
-                    ("width".to_owned(), whole(declared.width)),
-                ]);
-                if let Some(deliveries) = declared.deliveries {
-                    group.insert("deliveries".to_owned(), whole(deliveries));
-                }
-                (name, Value::Object(group))
-            })
-            .collect();
+        let (readers, groups) = readers_and_groups(transaction, &context, table, last).await?;
         // The topic consumers reading this topic (ADR-0087). A destination the
         // caller may not read is named `hidden` rather than left out: the
         // consumer is still there, and its absence would read as none.
@@ -155,6 +163,122 @@ impl Session<'_> {
                 .await?;
             report.insert("bytes".to_owned(), whole(bytes));
         }
+        // A split topic holds nothing itself; each partition's figures are its
+        // own topic's (ADR-0131). `NULL` says the topic was never split.
+        match &declared.partitions {
+            None => {
+                report.insert("partitions".to_owned(), Value::Null);
+            }
+            Some(partitioning) => {
+                let mut each = Vec::with_capacity(partitioning.children.len());
+                for (index, child) in partitioning.children.iter().enumerate() {
+                    let held = transaction
+                        .topic_after(context.namespace, context.database, *child, u64::MAX, 0)
+                        .await?;
+                    let last = held.last.unwrap_or(0);
+                    let (readers, groups) =
+                        readers_and_groups(transaction, &context, *child, last).await?;
+                    each.push(Value::Object(BTreeMap::from([
+                        ("consumers".to_owned(), Value::Object(readers)),
+                        ("groups".to_owned(), Value::Object(groups)),
+                        (
+                            "partition".to_owned(),
+                            whole(u64::try_from(index).unwrap_or(u64::MAX)),
+                        ),
+                        ("first".to_owned(), held.first.map_or(Value::None, whole)),
+                        ("last".to_owned(), whole(last)),
+                    ])));
+                }
+                report.insert(
+                    "partitions".to_owned(),
+                    whole(u64::try_from(each.len()).unwrap_or(u64::MAX)),
+                );
+                report.insert(
+                    "by".to_owned(),
+                    partitioning.by.as_deref().map_or(Value::Null, Value::from),
+                );
+                report.insert("each".to_owned(), Value::Array(each));
+            }
+        }
         Ok(report)
     }
+}
+
+/// How far each named reader and each group of one topic has got.
+async fn readers_and_groups(
+    transaction: &mut Transaction<'_>,
+    context: &crate::context::Context,
+    table: tessari_types::TableId,
+    last: u64,
+) -> Result<(BTreeMap<String, Value>, BTreeMap<String, Value>)> {
+    let readers = Catalog::new(transaction)
+        .topic_positions(context.namespace, context.database, table)
+        .await?
+        .into_iter()
+        .map(|(name, position)| {
+            (
+                name,
+                Value::Object(BTreeMap::from([
+                    ("position".to_owned(), whole(position)),
+                    ("lag".to_owned(), whole(last.saturating_sub(position))),
+                ])),
+            )
+        })
+        .collect();
+    // A group's lag counts from its committed position — the last one
+    // below which everything is acknowledged — because that is how far it
+    // would have to go back to if every member stopped now (G042).
+    let groups = Catalog::new(transaction)
+        .topic_groups(context.namespace, context.database, table)
+        .await?
+        .into_iter()
+        .map(|(name, state)| (name, Value::Object(figures(&state, last))))
+        .collect();
+    Ok((readers, groups))
+}
+
+/// Where one group stands, as `INFO FOR TOPIC` reports each of a topic's
+/// groups and `INFO FOR GROUP` begins its report.
+fn figures(state: &GroupState, last: u64) -> BTreeMap<String, Value> {
+    let committed = state.committed();
+    let declared = state.declaration;
+    let mut group = BTreeMap::from([
+        ("position".to_owned(), whole(state.cursor)),
+        ("committed".to_owned(), whole(committed)),
+        ("lag".to_owned(), whole(last.saturating_sub(committed))),
+        (
+            "in_flight".to_owned(),
+            whole(u64::try_from(state.flight.len()).unwrap_or(u64::MAX)),
+        ),
+        ("redelivered".to_owned(), whole(state.redelivered)),
+        ("dead_lettered".to_owned(), whole(state.dead_lettered)),
+        (
+            "deadline".to_owned(),
+            declared.deadline.map_or(Value::None, Value::Duration),
+        ),
+        ("width".to_owned(), whole(declared.width)),
+    ]);
+    if let Some(deliveries) = declared.deliveries {
+        group.insert("deliveries".to_owned(), whole(deliveries));
+    }
+    group
+}
+
+fn instant(held: Option<tessari_types::Datetime>) -> Value {
+    held.map_or(Value::None, Value::Datetime)
+}
+
+/// `INFO FOR GROUP`'s report on one message in flight.
+fn in_flight(held: &InFlight) -> Value {
+    Value::Object(BTreeMap::from([
+        ("position".to_owned(), whole(held.position)),
+        ("deliveries".to_owned(), whole(held.deliveries)),
+        (
+            "member".to_owned(),
+            held.member.as_deref().map_or(Value::None, Value::from),
+        ),
+        ("delivered".to_owned(), instant(held.delivered)),
+        ("appended".to_owned(), instant(held.appended)),
+        ("until".to_owned(), instant(held.until)),
+    ]))
 }

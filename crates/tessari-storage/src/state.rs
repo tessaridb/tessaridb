@@ -17,7 +17,10 @@
 //! is why [`RECORD_COUNTS`](crate::catalog::system::RECORD_COUNTS) is skipped
 //! here. Read separately: a topic's last-given position, which is written by
 //! `topic::maintain` but never removed, so the messages that survive retention
-//! cannot say how far the topic had counted.
+//! cannot say how far the topic had counted. Read separately as well: each
+//! message's position and append instant, which a restore would otherwise give
+//! again in the order it meets the messages — key order, not commit order — and
+//! so number differently from the source (ADR-0133 D3, Q-G079-12).
 //!
 //! # One version, and where each log stood at it
 //!
@@ -47,7 +50,7 @@ use std::sync::Arc;
 
 use tessari_encoding::{
     LogId, LogRecord, Mutation, RecordKey, RecordValue, StampedValue, StoreKey, StoreValue,
-    TopicHeadKey,
+    TopicHeadKey, TopicMark, TopicOffsetKey,
 };
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, ShardId, TableId};
@@ -74,6 +77,15 @@ pub struct TopicHead {
     pub last: u64,
 }
 
+/// One message's place in its topic, carried beside the records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopicEntry {
+    /// The topic, the message and the position it holds.
+    pub key: TopicOffsetKey,
+    /// When the message was appended.
+    pub mark: TopicMark,
+}
+
 /// A read of a store's state at one version, handed out a chunk at a time.
 pub struct StateReader<'a> {
     store: &'a Store,
@@ -93,6 +105,9 @@ pub struct StateReader<'a> {
     held: Option<Mutation>,
     /// What follows the records of transactions across leaders.
     tail: tail::Tail,
+    /// The topic entry the entry walk continues after; `None` before the first.
+    entries_after: Option<Key>,
+    entries_done: bool,
 }
 
 impl<'a> StateReader<'a> {
@@ -123,6 +138,8 @@ impl<'a> StateReader<'a> {
                     maps: BTreeMap::new(),
                     held: None,
                     tail: tail::Tail::default(),
+                    entries_after: None,
+                    entries_done: false,
                 });
             }
         }
@@ -171,6 +188,48 @@ impl StateReader<'_> {
             });
         }
         Ok(heads)
+    }
+
+    /// The next topic entries, at most `limit` of them, in position order
+    /// within each topic; empty once every one has been read.
+    ///
+    /// The index holds no versions, so these are read as they stand now: an
+    /// entry for a message appended after the state's version is among them,
+    /// and is the restore's to pass over (`Store::restore_topic_entries`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the index keyspace cannot be read or an entry
+    /// decoded.
+    pub async fn topic_entries(&mut self, limit: usize) -> Result<Vec<TopicEntry>> {
+        let every = KeyRange::prefix(&[TopicOffsetKey::KIND.tag()]);
+        let mut entries = Vec::new();
+        while entries.len() < limit && !self.entries_done {
+            let wanted = limit.saturating_sub(entries.len());
+            let request = ScanRequest {
+                keyspace: TopicOffsetKey::keyspace(),
+                range: self
+                    .entries_after
+                    .as_ref()
+                    .map_or_else(|| every.clone(), |after| every.resuming_after(after)),
+                direction: ScanDirection::Forward,
+                limit: Some(wanted),
+            };
+            let page = self.store.backend().scan(&request).await?;
+            self.entries_done = page.len() < wanted;
+            for (key, value) in page {
+                self.entries_after = Some(key.clone());
+                let key = TopicOffsetKey::decode(key.as_slice())?;
+                if self
+                    .within
+                    .contains(Reach::Database(key.namespace, key.database))
+                {
+                    let mark = TopicMark::decode(value.as_slice())?;
+                    entries.push(TopicEntry { key, mark });
+                }
+            }
+        }
+        Ok(entries)
     }
 
     /// The next records of the state, at most `limit` of them, in key order.

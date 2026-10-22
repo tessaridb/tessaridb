@@ -24,14 +24,15 @@ mod expr;
 mod info;
 mod select;
 mod statement;
+mod structure;
 mod tables;
 mod users;
 use tessari_types::{Assertion, FieldKind, Path, RecordId};
 
 use crate::token::Span;
 pub use expr::{
-    Aggregate, ArithmeticOp, Expr, ExprKind, Field, GroupClauses, Identity, RangeExpr, Retention,
-    SetCondition, SpaceBound, TopicClauses, Written,
+    Aggregate, ArithmeticOp, Expr, ExprKind, Field, GroupChange, GroupClauses, GroupMember, Hand,
+    Handing, Identity, RangeExpr, Retention, SetCondition, SpaceBound, TopicClauses, Written,
 };
 pub use select::{
     Admitted, AnsweredBy, Approximation, Fill, FillMode, Fusion, Hop, JoinSide, Ordering,
@@ -41,6 +42,10 @@ pub use select::{
 pub use statement::{
     BackupForm, RollupCompute, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator,
     StatementKind,
+};
+pub use structure::{
+    Container, FieldExpiryCondition, ListEnd, Presence, RangeEnd, ScoreCompare, ScoreRange,
+    StructureOp,
 };
 
 /// A parsed script: statements in the order they were written.
@@ -141,6 +146,13 @@ pub enum Answer {
     Before,
     /// `RETURN AFTER` — the record as it stands after it.
     After,
+    /// `RETURN POSITION` — the position each new message took in its topic
+    /// (ADR-0129 D10).
+    ///
+    /// Taken only by a `CREATE` or an `INSERT` that runs as its own
+    /// transaction: a position is decided when the message commits, so inside
+    /// `BEGIN … COMMIT` there is nothing yet to answer.
+    Position,
 }
 
 /// How much a conditional delete may remove.
@@ -159,6 +171,15 @@ pub enum DeleteBound {
     AtMost(u64),
     /// `LIMIT ALL` — every record the condition holds for, however many that is.
     All,
+}
+
+/// How far a `TRIM` removes a topic's oldest messages (W8c).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrimBound {
+    /// `KEEP n` — every message but the newest `n`.
+    Keep(Expr),
+    /// `BEFORE p` — every message below position `p`.
+    Before(Expr),
 }
 
 /// How an `UPDATE` changes the record it names.
@@ -272,6 +293,8 @@ pub enum ReplicaChange {
     ClientsAt(Option<String>),
     /// `HTTP AT 'http://b2:8000'`, or `HTTP NONE`.
     HttpAt(Option<String>),
+    /// `KAFKA AT 'b2:9092'`, or `KAFKA NONE` (G079 W5d).
+    KafkaAt(Option<String>),
     /// `REGION 'eu'`, or `REGION NONE` (G057 C3).
     Region(Option<String>),
 }

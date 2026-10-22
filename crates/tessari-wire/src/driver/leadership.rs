@@ -75,15 +75,49 @@ pub fn heard_a_leader(
     now: Instant,
     within: Duration,
 ) -> bool {
-    let by_grant = granted.is_some_and(|at| now.saturating_duration_since(at) <= within);
-    by_grant
-        || declared
-            .iter()
-            .filter_map(|peer| heard.at(&peer.endpoint))
-            .any(|seen| {
-                seen.said.current_as_of == Some(Duration::ZERO)
-                    && now.saturating_duration_since(seen.at) <= within
-            })
+    newest_heard(declared, heard, granted)
+        .is_some_and(|at| now.saturating_duration_since(at) <= within)
+}
+
+/// The instant [`heard_a_leader`] turns false on the evidence held now: the
+/// newest grant or leader's greeting, plus `within`. `None` when there is no
+/// such evidence — or when the sum cannot be represented, which is never an
+/// instant to wake on.
+///
+/// # Why the cadence needs the instant and not only the answer
+///
+/// Q-970. The answer is asked on the campaign cadence's ticks, and every node
+/// started together ticks together. [`election_timeout`]'s spread then reaches
+/// the decision rounded to a tick: two survivors whose spreads fall in one tick
+/// stand on that tick, each grants the other the epoch before its own
+/// self-vote, both lose it, and both wait out the lease to do it again. Woken
+/// at this instant instead, a node stands on its own spread, which is what the
+/// spread was for.
+#[must_use]
+pub fn heard_a_leader_until(
+    declared: &[ReplicaDefinition],
+    heard: &Directory,
+    granted: Option<Instant>,
+    within: Duration,
+) -> Option<Instant> {
+    newest_heard(declared, heard, granted)?.checked_add(within)
+}
+
+/// The newest of the two kinds of evidence [`heard_a_leader`] reads. Its answer
+/// is whether that newest one is within the bound, which is the same as asking
+/// whether any one is, because an older piece is never the nearer one.
+fn newest_heard(
+    declared: &[ReplicaDefinition],
+    heard: &Directory,
+    granted: Option<Instant>,
+) -> Option<Instant> {
+    declared
+        .iter()
+        .filter_map(|peer| heard.at(&peer.endpoint))
+        .filter(|seen| seen.said.current_as_of == Some(Duration::ZERO))
+        .map(|seen| seen.at)
+        .chain(granted)
+        .max()
 }
 
 /// The newest failover policy a live peer advertises, when it supersedes this
@@ -218,19 +252,45 @@ pub fn heard_a_leader_on(
     now: Instant,
     within: Duration,
 ) -> bool {
-    let by_grant = granted.is_some_and(|at| now.saturating_duration_since(at) <= within);
-    by_grant
-        || declared
-            .iter()
-            .filter_map(|peer| heard.at(&peer.endpoint))
-            .any(|seen| {
-                seen.said.node != me
-                    && seen
-                        .said
-                        .line
-                        .is_some_and(|line| line.range == range && line.leading > Epoch::ZERO)
-                    && now.saturating_duration_since(seen.at) <= within
-            })
+    newest_heard_on(range, me, declared, heard, granted)
+        .is_some_and(|at| now.saturating_duration_since(at) <= within)
+}
+
+/// [`heard_a_leader_until`] on one placed range's line: the instant
+/// [`heard_a_leader_on`] turns false on the evidence held now (Q-970).
+#[must_use]
+pub fn heard_a_leader_on_until(
+    range: Reach,
+    me: [u8; NODE_ID_LEN],
+    declared: &[ReplicaDefinition],
+    heard: &Directory,
+    granted: Option<Instant>,
+    within: Duration,
+) -> Option<Instant> {
+    newest_heard_on(range, me, declared, heard, granted)?.checked_add(within)
+}
+
+/// The newest evidence [`heard_a_leader_on`] reads, for [`newest_heard`]'s reason.
+fn newest_heard_on(
+    range: Reach,
+    me: [u8; NODE_ID_LEN],
+    declared: &[ReplicaDefinition],
+    heard: &Directory,
+    granted: Option<Instant>,
+) -> Option<Instant> {
+    declared
+        .iter()
+        .filter_map(|peer| heard.at(&peer.endpoint))
+        .filter(|seen| {
+            seen.said.node != me
+                && seen
+                    .said
+                    .line
+                    .is_some_and(|line| line.range == range && line.leading > Epoch::ZERO)
+        })
+        .map(|seen| seen.at)
+        .chain(granted)
+        .max()
 }
 
 /// The preferred candidate this node should hand `range` to, when it leads the

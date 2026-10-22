@@ -108,6 +108,9 @@ impl Session<'_> {
                     .await?
             }
             InfoSubject::Topic(table) => self.info_topic(transaction, table, span).await?,
+            InfoSubject::Group { name, topic, .. } => {
+                self.info_group(transaction, name, topic, span).await?
+            }
             InfoSubject::Bucket(name) => self.info_bucket(transaction, name, span).await?,
             InfoSubject::Recipients(target) => {
                 self.info_recipients(transaction, target, span).await?

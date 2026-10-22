@@ -52,6 +52,8 @@ forms! {
     DropGroup => "DROP GROUP",
     AlterGroup => "ALTER GROUP",
     AckTopic => "ACK",
+    HandTopic => "HAND",
+    TrimTopic => "TRIM",
     NackTopic => "NACK",
     DefineBucket => "DEFINE BUCKET",
     DefineCollection => "DEFINE COLLECTION",
@@ -148,6 +150,7 @@ forms! {
     Expire => "EXPIRE",
     Persist => "PERSIST",
     Incr => "INCR",
+    Structure => "LIST PUSH",
     Put => "PUT",
     Read => "READ",
     Backup => "BACKUP",
@@ -256,6 +259,8 @@ mod tests {
              DEFINE GROUP 'mail' ON TOPIC events ACK DEADLINE 30s;\
              ACK events FOR CONSUMER 'mail' AT 1;\
              NACK events FOR CONSUMER 'mail' AT 1;\
+             TRIM events KEEP 1;\
+             HAND events FOR CONSUMER 'mail' AT 1 TO 'bob';\
              ALTER GROUP 'mail' ON TOPIC events START AT 0;\
              DROP GROUP 'mail' ON TOPIC events;\
              DEFINE BUCKET b;\
@@ -349,6 +354,7 @@ mod tests {
              EXPIRE s:1 1s;\
              PERSIST s:1;\
              INCR s:1;\
+             LIST PUSH s:2 BACK 1;\
              KEYS FROM s;\
              PUT b:'/a.txt' = 0x0a;\
              READ b:'/a.txt';\

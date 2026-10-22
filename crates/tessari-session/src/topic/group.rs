@@ -10,13 +10,12 @@
 
 use std::collections::BTreeMap;
 
-use tessari_ql::{Expr, GroupClauses, Span, TableRef};
-use tessari_storage::{
-    Catalog, GroupDeclaration, GroupState, InFlight, RecordAddress, TableKind, Transaction,
-};
+use tessari_ql::{Expr, GroupClauses, GroupMember, Span, TableRef};
+use tessari_storage::{Catalog, GroupDeclaration, GroupState, TableKind, Transaction};
 use tessari_types::{Datetime, Number, RecordId, TableId, Value};
 
-use super::read::missed;
+use super::flight::seen;
+use super::read::with_appended;
 use crate::AccessPath;
 use crate::context::Context;
 use crate::error::{Error, Result};
@@ -29,17 +28,21 @@ use crate::session::Session;
 /// which is the only width that keeps the topic's order.
 const DEFAULT_WIDTH: u64 = 1;
 
-fn whole(count: u64) -> Value {
+pub(super) fn whole(count: u64) -> Value {
     Value::Number(Number::Integer(i64::try_from(count).unwrap_or(i64::MAX)))
 }
 
-/// One message as a group read answers it.
-fn handed(position: u64, value: Value, deliveries: u64) -> Value {
-    Value::Object(BTreeMap::from([
-        ("position".to_owned(), whole(position)),
-        ("value".to_owned(), value),
-        ("deliveries".to_owned(), whole(deliveries)),
-    ]))
+/// One message as a group read answers it, with the instant it was appended
+/// when its topic kept one (ADR-0133).
+pub(super) fn handed(position: u64, value: Value, deliveries: u64, appended: Option<u64>) -> Value {
+    with_appended(
+        Value::Object(BTreeMap::from([
+            ("position".to_owned(), whole(position)),
+            ("value".to_owned(), value),
+            ("deliveries".to_owned(), whole(deliveries)),
+        ])),
+        appended,
+    )
 }
 
 impl Session<'_> {
@@ -99,8 +102,11 @@ impl Session<'_> {
         span: Span,
     ) -> Result<Outcome> {
         let (context, table) = self.group_topic(transaction, topic, span).await?;
+        // A split topic's group is one group per partition (ADR-0131).
+        let homes = self.partition_homes(transaction, table).await?;
+        let first = homes.first().copied().unwrap_or(table);
         if Catalog::new(transaction)
-            .topic_group(context.namespace, context.database, table, name)
+            .topic_group(context.namespace, context.database, first, name)
             .await?
             .is_some()
         {
@@ -132,17 +138,19 @@ impl Session<'_> {
             width: clauses.in_flight.unwrap_or(DEFAULT_WIDTH),
             dead_letter,
         };
-        let cursor = Catalog::new(transaction)
-            .topic_position(context.namespace, context.database, table, name)
-            .await?
-            .unwrap_or(0);
-        Catalog::new(transaction).put_topic_group(
-            context.namespace,
-            context.database,
-            table,
-            name,
-            &GroupState::new(declaration, cursor),
-        );
+        for home in homes {
+            let cursor = Catalog::new(transaction)
+                .topic_position(context.namespace, context.database, home, name)
+                .await?
+                .unwrap_or(0);
+            Catalog::new(transaction).put_topic_group(
+                context.namespace,
+                context.database,
+                home,
+                name,
+                &GroupState::new(declaration, cursor),
+            );
+        }
         Ok(Outcome::Done)
     }
 
@@ -155,13 +163,15 @@ impl Session<'_> {
         span: Span,
     ) -> Result<Outcome> {
         let (context, table) = self.group_topic(transaction, topic, span).await?;
-        Self::existing_group(transaction, &context, table, name, topic, span).await?;
-        Catalog::new(transaction).drop_topic_group(
-            context.namespace,
-            context.database,
-            table,
-            name,
-        );
+        for home in self.partition_homes(transaction, table).await? {
+            Self::existing_group(transaction, &context, home, name, topic, span).await?;
+            Catalog::new(transaction).drop_topic_group(
+                context.namespace,
+                context.database,
+                home,
+                name,
+            );
+        }
         Ok(Outcome::Done)
     }
 
@@ -176,23 +186,27 @@ impl Session<'_> {
         span: Span,
     ) -> Result<Outcome> {
         let (context, table) = self.group_topic(transaction, topic, span).await?;
-        let mut state =
-            Self::existing_group(transaction, &context, table, name, topic, span).await?;
-        state.cursor = self
+        let cursor = self
             .whole(
                 transaction,
                 start_at,
                 "a position is a whole number at or above zero",
             )
             .await?;
-        state.flight.clear();
-        Catalog::new(transaction).put_topic_group(
-            context.namespace,
-            context.database,
-            table,
-            name,
-            &state,
-        );
+        // Every partition of a split topic starts there (ADR-0131).
+        for home in self.partition_homes(transaction, table).await? {
+            let mut state =
+                Self::existing_group(transaction, &context, home, name, topic, span).await?;
+            state.cursor = cursor;
+            state.flight.clear();
+            Catalog::new(transaction).put_topic_group(
+                context.namespace,
+                context.database,
+                home,
+                name,
+                &state,
+            );
+        }
         Ok(Outcome::Done)
     }
 
@@ -202,99 +216,52 @@ impl Session<'_> {
     /// new messages after the group's cursor while the group has room in
     /// flight. A due message already delivered as often as the group allows is
     /// dead-lettered instead, and one that retention removed is dropped from
-    /// flight and counted as passed over.
+    /// flight and counted as passed over. A read naming a member records it
+    /// against what it is handed; with `HELD` it is handed what it holds after
+    /// `after` instead (ADR-0133).
     pub(crate) async fn read_group(
         &self,
         transaction: &mut Transaction<'_>,
         (context, table): (&Context, TableId),
         (topic, name): (&TableRef, &str),
-        mut state: GroupState,
+        (mut state, member, after): (GroupState, Option<&GroupMember>, u64),
         limit: u64,
         span: Span,
     ) -> Result<Outcome> {
         let now = crate::call::instant(span)?;
-        let until = later(now, state.declaration.deadline, span)?;
+        let until = match state.declaration.deadline {
+            Some(deadline) => Some(later(now, deadline, span)?),
+            None => None,
+        };
         let limit = usize::try_from(limit).unwrap_or(usize::MAX);
         let mut answered: Vec<(RecordId, u64, Value)> = Vec::new();
-        let mut missed_count = 0_u64;
+        let holder = member.map(|member| member.name.as_str());
 
-        let due: Vec<InFlight> = state
-            .flight
-            .iter()
-            .copied()
-            .filter(|held| held.until <= now)
-            .collect();
-        for held in due {
-            if answered.len() >= limit {
-                break;
-            }
-            let message = self
-                .message_at(transaction, context, table, held.position)
+        let missed_count = if let Some(member) = member.filter(|member| member.held) {
+            let (held, passed) = self
+                .read_held(
+                    transaction,
+                    (context, table),
+                    &mut state,
+                    (member.name.as_str(), after, limit),
+                    (now, until),
+                )
                 .await?;
-            let spent = state
-                .declaration
-                .deliveries
-                .is_some_and(|most| held.deliveries >= most);
-            if spent || message.is_none() {
-                state.flight.retain(|other| other.position != held.position);
-            }
-            match message {
-                None => missed_count = missed_count.saturating_add(1),
-                Some((_, value)) if spent => {
-                    state.dead_lettered = state.dead_lettered.saturating_add(1);
-                    if let Some(letters) = state.declaration.dead_letter {
-                        self.dead_letter(
-                            transaction,
-                            (context, letters),
-                            (topic, name),
-                            held,
-                            value,
-                            span,
-                        )
-                        .await?;
-                    }
-                }
-                Some((id, value)) => {
-                    let deliveries = held.deliveries.saturating_add(1);
-                    state.redelivered = state.redelivered.saturating_add(1);
-                    if let Some(entry) = state
-                        .flight
-                        .iter_mut()
-                        .find(|other| other.position == held.position)
-                    {
-                        entry.until = until;
-                        entry.deliveries = deliveries;
-                    }
-                    answered.push((id, held.position, handed(held.position, value, deliveries)));
-                }
-            }
-        }
-
-        let room = usize::try_from(state.declaration.width)
-            .unwrap_or(usize::MAX)
-            .saturating_sub(state.flight.len())
-            .min(limit.saturating_sub(answered.len()));
-        if room > 0 {
-            let after = state.cursor;
-            let found = transaction
-                .topic_after(context.namespace, context.database, table, after, room)
-                .await?;
-            let passed = missed(&found, after);
-            missed_count = missed_count.saturating_add(passed);
-            let reached = found.messages.last().map(|message| message.position);
-            for message in found.messages {
-                state.flight.push(InFlight {
-                    position: message.position,
-                    until,
-                    deliveries: 1,
-                });
-                answered.push((
-                    message.id,
-                    message.position,
-                    handed(message.position, message.value, 1),
-                ));
-            }
-            state.cursor = reached.unwrap_or_else(|| after.saturating_add(passed));
+            answered = held;
+            passed
+        } else {
+            self.hand_out(
+                transaction,
+                (context, table),
+                (topic, name),
+                (&mut state, holder),
+                (limit, &mut answered),
+                (now, until, span),
+            )
+            .await?
+        };
+        if let Some(holder) = holder {
+            seen(&mut state, holder, now, !answered.is_empty());
         }
         state.flight.sort_by_key(|held| held.position);
         answered.sort_by_key(|(_, position, _)| *position);
@@ -331,7 +298,7 @@ impl Session<'_> {
     pub(crate) async fn ack_topic(
         &self,
         transaction: &mut Transaction<'_>,
-        topic: &TableRef,
+        topic: (&TableRef, Option<&Expr>),
         consumer: &str,
         positions: &[Expr],
         span: Span,
@@ -363,7 +330,7 @@ impl Session<'_> {
     pub(crate) async fn nack_topic(
         &self,
         transaction: &mut Transaction<'_>,
-        topic: &TableRef,
+        topic: (&TableRef, Option<&Expr>),
         consumer: &str,
         (positions, delay): (&[Expr], Option<tessari_types::Duration>),
         span: Span,
@@ -379,7 +346,7 @@ impl Session<'_> {
         let mut settled = 0_u64;
         for held in &mut state.flight {
             if positions.contains(&held.position) {
-                held.until = from;
+                held.until = Some(from);
                 settled = settled.saturating_add(1);
             }
         }
@@ -399,12 +366,15 @@ impl Session<'_> {
     async fn settling(
         &self,
         transaction: &mut Transaction<'_>,
-        topic: &TableRef,
+        (topic, partition): (&TableRef, Option<&Expr>),
         consumer: &str,
         positions: &[Expr],
         span: Span,
     ) -> Result<(Context, TableId, GroupState, Vec<u64>)> {
         let (context, table) = self.group_topic(transaction, topic, span).await?;
+        let table = self
+            .named_partition(transaction, topic, table, partition, span)
+            .await?;
         let Some(state) = Catalog::new(transaction)
             .topic_group(context.namespace, context.database, table, consumer)
             .await?
@@ -427,58 +397,5 @@ impl Session<'_> {
             );
         }
         Ok((context, table, state, named))
-    }
-
-    /// The message at one position, or `None` when retention removed it.
-    async fn message_at(
-        &self,
-        transaction: &mut Transaction<'_>,
-        context: &Context,
-        table: TableId,
-        position: u64,
-    ) -> Result<Option<(RecordId, Value)>> {
-        let found = transaction
-            .topic_after(
-                context.namespace,
-                context.database,
-                table,
-                position.saturating_sub(1),
-                1,
-            )
-            .await?;
-        Ok(found
-            .messages
-            .into_iter()
-            .find(|message| message.position == position)
-            .map(|message| (message.id, message.value)))
-    }
-
-    /// Append a message given up on to the group's dead letter.
-    async fn dead_letter(
-        &self,
-        transaction: &mut Transaction<'_>,
-        (context, letters): (&Context, TableId),
-        (topic, group): (&TableRef, &str),
-        held: InFlight,
-        value: Value,
-        span: Span,
-    ) -> Result<()> {
-        let letter = Value::Object(BTreeMap::from([
-            ("topic".to_owned(), Value::from(topic.name.text.as_str())),
-            ("group".to_owned(), Value::from(group)),
-            ("position".to_owned(), whole(held.position)),
-            ("deliveries".to_owned(), whole(held.deliveries)),
-            ("value".to_owned(), value),
-        ]));
-        let id = self
-            .free_identity(transaction, context, letters, &letter, span)
-            .await?;
-        self.put_record(
-            transaction,
-            RecordAddress::new(context.namespace, context.database, letters, id),
-            letter,
-            span,
-        )
-        .await
     }
 }

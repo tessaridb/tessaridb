@@ -170,7 +170,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // is about the topic's contents: only a caller who may read the topic
         // may ask (G037).
         StatementKind::Info {
-            subject: InfoSubject::Topic(table),
+            subject: InfoSubject::Topic(table) | InfoSubject::Group { topic: table, .. },
         } => vec![table],
 
         // A listing of a vault's ids names the vault, and for the reason every
@@ -311,6 +311,22 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             }
             found
         }
+        StatementKind::Del {
+            target,
+            expected: Some(expected),
+        } => {
+            let mut found = vec![&target.table];
+            found.extend(in_expr(expected));
+            found
+        }
+        StatementKind::Structure { target, op } => {
+            let mut found = vec![&target.table];
+            found.extend(op.second_key().map(|to| &to.table));
+            for expr in op.expressions() {
+                found.extend(in_expr(expr));
+            }
+            found
+        }
         StatementKind::Incr { target, by } => {
             let mut found = vec![&target.table];
             if let Some(by) = by {
@@ -376,7 +392,10 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::Reveal { target, .. }
         | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }
-        | StatementKind::Del { target }
+        | StatementKind::Del {
+            target,
+            expected: None,
+        }
         | StatementKind::Persist { target }
         // A release names one record in one queue, so the queue is the table the
         // grant is asked about, and a targeted claim names one the same way.
@@ -398,10 +417,13 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         StatementKind::DefineGroup { topic, clauses, .. } => {
             std::iter::once(topic).chain(clauses.dead_letter.as_ref()).collect()
         }
-        StatementKind::DropGroup { topic, .. }
+        // A trim removes the topic's own messages (W8c).
+        StatementKind::TrimTopic { topic, .. }
+        | StatementKind::DropGroup { topic, .. }
         | StatementKind::AlterGroup { topic, .. }
         | StatementKind::AckTopic { topic, .. }
         | StatementKind::NackTopic { topic, .. } => vec![topic],
+        StatementKind::HandTopic(hand) => vec![&hand.topic],
 
         // Releasing many reaches the one queue it names — which is the whole
         // reason it names one: a sweep over every queue would ask a permission
@@ -442,8 +464,14 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // the bare read does, so it is answered for here rather than left to the
         // fact that the statement's own `from` is not a table.
         StatementKind::Let { value, .. }
-        | StatementKind::Return { value }
-        | StatementKind::Throw { value } => in_expr(value),
+        | StatementKind::Return { value } => in_expr(value),
+        StatementKind::Throw { value, condition } => {
+            let mut found = in_expr(value);
+            if let Some(condition) = condition {
+                found.extend(in_expr(condition));
+            }
+            found
+        }
     }
 }
 

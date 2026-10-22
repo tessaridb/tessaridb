@@ -93,9 +93,12 @@ impl Session<'_> {
             let at = self
                 .free_identity(transaction, &context, letters, &letter, span)
                 .await?;
+            let home = self
+                .appended_home(transaction, letters, &letter, span)
+                .await?;
             self.put_record(
                 transaction,
-                RecordAddress::new(context.namespace, context.database, letters, at),
+                RecordAddress::new(context.namespace, context.database, home, at),
                 letter,
                 span,
             )

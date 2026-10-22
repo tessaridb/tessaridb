@@ -1,7 +1,7 @@
 //! Reading a topic after a position.
 
 use std::ops::Bound;
-use tessari_encoding::{StoreKey, TopicOffsetKey, decode_payload};
+use tessari_encoding::{StoreKey, StoreValue, TopicMark, TopicOffsetKey, decode_payload};
 
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
@@ -18,6 +18,9 @@ pub struct Message {
     pub id: RecordId,
     /// What it holds.
     pub value: Value,
+    /// When it was appended, in milliseconds since the epoch — `None` for a
+    /// message appended before its topic kept the instant (ADR-0133 D3).
+    pub appended: Option<u64>,
 }
 
 /// What a read of a topic found.
@@ -85,7 +88,7 @@ impl Transaction<'_> {
             if page.is_empty() {
                 break;
             }
-            for (key, _) in &page {
+            for (key, mark) in &page {
                 let entry = TopicOffsetKey::decode(key.as_slice())?;
                 from = entry.offset.saturating_add(1);
                 let address = RecordAddress::new(namespace, database, table, entry.id.clone());
@@ -97,6 +100,7 @@ impl Transaction<'_> {
                         position: entry.offset,
                         id: entry.id,
                         value: decode_payload(&payload)?,
+                        appended: TopicMark::decode(mark.as_slice())?.appended,
                     }),
                     None => found.lapsed = found.lapsed.saturating_add(1),
                 }
@@ -106,5 +110,106 @@ impl Transaction<'_> {
             }
         }
         Ok(found)
+    }
+}
+
+impl Transaction<'_> {
+    /// The first position of a topic appended at or after `instant`
+    /// milliseconds, or `None` when every message it holds is older
+    /// (ADR-0133 D3).
+    ///
+    /// Instants never decrease along a topic's positions, and the positions it
+    /// holds are dense from its first, so a binary search over them answers in
+    /// as many index reads as the topic has bits of length. A message appended
+    /// before its topic kept the instant counts as older than every instant.
+    /// The answer is read from the committed index; a position this
+    /// transaction cannot see yet is one a read from it stops before.
+    ///
+    /// # Errors
+    ///
+    /// A backend failure, or an entry that cannot be decoded.
+    pub async fn topic_since(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        instant: u64,
+    ) -> Result<Option<u64>> {
+        let topic = (namespace, database, table);
+        let Some(first) = super::edge(self.store(), topic, ScanDirection::Forward).await? else {
+            return Ok(None);
+        };
+        let last = super::head(self.store(), topic).await?;
+        let at_or_after =
+            |appended: Option<u64>| appended.is_some_and(|appended| appended >= instant);
+        let (mut low, mut high) = (first, last.saturating_add(1));
+        // Every position below `low` is older than `instant`; the first one at
+        // or after it, if any, is below `high`.
+        while low < high {
+            let middle = low.saturating_add(high.saturating_sub(low) / 2);
+            match self.appended_at(topic, middle).await? {
+                Some((_, appended)) if at_or_after(appended) => high = middle,
+                Some((at, _)) => low = at.saturating_add(1),
+                None => high = middle,
+            }
+        }
+        Ok(match self.appended_at(topic, low).await? {
+            Some((at, appended)) if at <= last && at_or_after(appended) => Some(at),
+            _ => None,
+        })
+    }
+
+    /// The first position at or after `offset` and the instant it was
+    /// appended at, or `None` when the topic holds nothing from there on.
+    async fn appended_at(
+        &self,
+        (namespace, database, table): super::Topic,
+        offset: u64,
+    ) -> Result<Option<(u64, Option<u64>)>> {
+        let start = TopicOffsetKey::from_offset(namespace, database, table, offset);
+        let end = KeyRange::prefix(&TopicOffsetKey::table_prefix(namespace, database, table))
+            .end()
+            .clone();
+        let request = ScanRequest {
+            keyspace: TopicOffsetKey::keyspace(),
+            range: KeyRange::from_bounds(Bound::Included(Key::from_slice(&start)), end),
+            direction: ScanDirection::Forward,
+            limit: Some(1),
+        };
+        match self.store().backend().scan(&request).await?.first() {
+            Some((key, mark)) => Ok(Some((
+                TopicOffsetKey::decode(key.as_slice())?.offset,
+                TopicMark::decode(mark.as_slice())?.appended,
+            ))),
+            None => Ok(None),
+        }
+    }
+}
+
+impl Transaction<'_> {
+    /// The position each of `ids` holds in a topic, `None` for one that holds
+    /// none here (ADR-0129 D10).
+    ///
+    /// Read from the index the commit maintains, so it answers for messages
+    /// that have committed and been applied on this node; a message whose
+    /// commit another node is still applying answers `None` rather than a
+    /// guess.
+    ///
+    /// # Errors
+    ///
+    /// A backend failure.
+    pub async fn topic_positions(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        ids: &[RecordId],
+    ) -> Result<Vec<Option<u64>>> {
+        let mut positions = Vec::with_capacity(ids.len());
+        for id in ids {
+            positions
+                .push(super::position_of(self.store(), (namespace, database, table), id).await?);
+        }
+        Ok(positions)
     }
 }

@@ -47,6 +47,8 @@ mod census;
 mod error;
 mod listening;
 mod stopping;
+#[cfg(feature = "test-support")]
+pub mod testing;
 pub mod tls;
 
 pub use crate::accepting::{ACCEPT_PAUSE, passes};

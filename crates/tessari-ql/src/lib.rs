@@ -30,14 +30,16 @@ mod token;
 
 pub use ast::{
     Admitted, Aggregate, Answer, AnsweredBy, Approximation, ArithmeticOp, Assignment, AutoSplit,
-    BackupForm, ColumnDeclaration, ConsumerSource, CreateTarget, Credential, DeleteBound,
-    Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field, FieldMapping,
-    FieldPath, Fill, FillMode, Fusion, GroupClauses, Hop, Identity, InfoSubject, JoinSide, Name,
-    NamespaceChange, OnFailure, Ordering, ParameterSlot, Password, PathTo, Projected, Projection,
-    RangeExpr, ReachRef, RecordTarget, ReplicaChange, Retention, RollupCompute, Script, SearchAsk,
-    SearchCosts, SearchField, SearchMember, SearchOperator, Select, SetCondition, Source,
-    SpaceBound, Statement, StatementKind, TableChange, TableExpiry, TableRef, Timeout,
-    TopicClauses, UserChange, UserGrant, Using, Version, WriteExpiry, Written,
+    BackupForm, ColumnDeclaration, ConsumerSource, Container, CreateTarget, Credential,
+    DeleteBound, Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field,
+    FieldExpiryCondition, FieldMapping, FieldPath, Fill, FillMode, Fusion, GroupChange,
+    GroupClauses, GroupMember, Hand, Handing, Hop, Identity, InfoSubject, JoinSide, ListEnd, Name,
+    NamespaceChange, OnFailure, Ordering, ParameterSlot, Password, PathTo, Presence, Projected,
+    Projection, RangeEnd, RangeExpr, ReachRef, RecordTarget, ReplicaChange, Retention,
+    RollupCompute, ScoreCompare, ScoreRange, Script, SearchAsk, SearchCosts, SearchField,
+    SearchMember, SearchOperator, Select, SetCondition, Source, SpaceBound, Statement,
+    StatementKind, StructureOp, TableChange, TableExpiry, TableRef, Timeout, TopicClauses,
+    TrimBound, UserChange, UserGrant, Using, Version, WriteExpiry, Written,
 };
 pub use bind::{Parameters, bind_expression, bind_read};
 pub use error::{Error, Result};

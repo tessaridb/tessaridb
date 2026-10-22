@@ -160,10 +160,18 @@ impl Parser<'_> {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
                 let name = self.name()?;
+                let memory = self.space_in_memory()?;
+                let limit = self.space_bound()?;
+                if memory && limit.is_none() {
+                    return Err(self.error_here(
+                        "`MAX n` — a space held in memory states how many keys it may hold",
+                    ));
+                }
                 Ok(StatementKind::DefineSpace {
                     name,
                     if_not_exists,
-                    limit: self.space_bound()?,
+                    memory,
+                    limit,
                 })
             }
             Some(Keyword::Graph) => {

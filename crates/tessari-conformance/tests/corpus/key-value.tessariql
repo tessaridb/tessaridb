@@ -180,3 +180,68 @@ SET strict:'b' = 1;
 --- case: a space may not hold nothing
 DEFINE SPACE nothing MAX 0;
 --- expect: error UnexpectedToken
+
+--- case: a list is pushed at either end and answers its length
+LIST PUSH cache:'jobs' BACK 'a', 'b';
+LIST PUSH cache:'jobs' FRONT 'z';
+--- expect: value 3
+
+--- case: and popped from either end
+LIST POP cache:'jobs' BACK LIMIT 2;
+--- expect: value ['b', 'a']
+
+--- case: a hash set counts the fields it added
+HASH SET cache:'cart' 'apples' = 3, 'pears' = 1;
+HASH SET cache:'cart' 'apples' = 4, 'plums' = 2;
+--- expect: value 1
+
+--- case: a hash field is incremented in place
+HASH INCR cache:'cart' 'apples' BY 2;
+--- expect: value 6
+
+--- case: members are added once
+MEMBERS ADD cache:'tags' 'rust', 'db', 'rust';
+--- expect: value 2
+
+--- case: a ranking pops its highest
+SCORES ADD cache:'board' 'ada' = 10, 'bob' = 7;
+SCORES POP cache:'board' HIGHEST;
+--- expect: value [['ada', 10.0]]
+
+--- case: a ranking is cut by position, counted from the highest when negative
+SCORES ADD cache:'rank' 'a' = 1, 'b' = 2, 'c' = 3, 'd' = 4;
+SCORES REMOVE cache:'rank' RANK FROM -2 TO -1;
+--- expect: value 2
+
+--- case: a score range may leave its ends out, and NONE leaves a side open
+SCORES ADD cache:'rank' 'e' = 5, 'f' = 6;
+SCORES REMOVE cache:'rank' SCORE FROM 1 EXCLUSIVE TO NONE;
+--- expect: value 3
+
+--- case: a hash field is given an instant of its own, one answer per field named
+HASH SET cache:'fx' 'a' = 1, 'b' = 2;
+HASH EXPIRE cache:'fx' 'a', 'zz' AT 1h;
+--- expect: value [1, -2]
+
+--- case: a field with no instant has no time left, and a field not there is not there
+HASH TTL cache:'fx' 'b', 'zz';
+--- expect: value [NULL, NONE]
+
+--- case: an instant not in the future removes the field
+HASH EXPIRE cache:'fx' 'a' AT 0s;
+GET cache:'fx';
+--- expect: value { b: 2 }
+
+--- case: a container write on a key holding another kind is refused
+LIST PUSH cache:'cart' BACK 1;
+--- expect: error KeyHoldsAnotherKind
+
+--- case: a delete may name the value the key must still hold
+SET cache:'lease' = 'worker-7';
+DEL cache:'lease' IF = 'worker-8';
+--- expect: value false
+
+--- case: and removes it when it does
+DEL cache:'lease' IF = 'worker-7';
+GET cache:'lease';
+--- expect: value NONE

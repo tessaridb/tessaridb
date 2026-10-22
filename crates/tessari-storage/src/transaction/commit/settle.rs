@@ -17,6 +17,12 @@ impl Transaction<'_> {
                 sequence: self.store.committed_tail(log).await?,
             });
         }
+        // A transaction writing only spaces held in memory is committed without
+        // the log, and one writing such a space beside anything else is refused
+        // here, before any leadership question (ADR-0130).
+        if let Some(held) = self.held_only().await? {
+            return self.settle_held(settle, held).await;
+        }
         // First, and after the empty check rather than before it. First because
         // a node that has run out of leadership should not be doing schema
         // validation on work it is about to refuse; after the empty check
@@ -176,8 +182,8 @@ impl Transaction<'_> {
                 if let Some(admitted) = crate::topic::admit(
                     self.store,
                     evicted.as_ref().unwrap_or(&record),
-                    self.clock(),
-                    identity.id,
+                    (self.clock(), identity.id),
+                    &self.trims,
                 )
                 .await?
                 {
@@ -255,49 +261,7 @@ impl Transaction<'_> {
                 let batch = if crate::intents::derives_nothing(carried) {
                     written
                 } else {
-                    // Index entries are derived here rather than carried in the record,
-                    // and they are derived inside the loop because they depend on the
-                    // committed state this attempt is building on (see `crate::index`).
-                    let batch =
-                        crate::index::maintain(self.store, carried, written, commit_version)
-                            .await?;
-                    // Adjacency is derived in the same place and for the same reason: a
-                    // replica reaches its state by replaying this record, so entries the
-                    // leader merely added to its own batch would never exist on a
-                    // follower — a walk that finds nothing there while the leader is
-                    // correct, with nothing in an error state.
-                    let batch = crate::adjacency::maintain(self.store, carried, batch).await?;
-                    // And the record counts, in the same batch and for the third time
-                    // for the same reason: the planner on a follower must read the same
-                    // number as the planner on the leader, or one query takes two access
-                    // paths depending on which node answered it.
-                    let batch =
-                        crate::cardinality::maintain(self.store, carried, batch, commit_version)
-                            .await?;
-                    // And the catalog's id counters, past the ids this record hands
-                    // out, so a follower promoted to leader resumes after them.
-                    let batch = crate::catalog::maintain_allocators(
-                        self.store,
-                        carried,
-                        batch,
-                        commit_version,
-                    )
-                    .await?;
-                    // The expiry index, last and in the same batch as the records it
-                    // describes: an entry written anywhere else is an entry that can be
-                    // left behind (G035).
-                    let batch = crate::lapse::maintain(self.store, carried, batch).await?;
-                    // And a limited space's modified-order index, which the evictions
-                    // above read on the next commit (G036).
-                    let batch =
-                        crate::bounded::maintain(self.store, carried, batch, commit_version)
-                            .await?;
-                    // And a topic's positions, dense in commit order (G037).
-                    let batch = crate::topic::maintain(self.store, carried, batch).await?;
-                    // And this node's format stamp, when the record finalizes it
-                    // (ADR-0118) — on the leader as on every follower.
-                    crate::format_stamp::maintain(self.store, carried, batch, commit_version)
-                        .await?
+                    self.derived(carried, written, commit_version).await?
                 };
                 // Everything above this ran. This is the whole difference between a
                 // rehearsal and a write, and it is one line so that it can only ever
@@ -381,5 +345,52 @@ impl Transaction<'_> {
                 }
             }
         }
+    }
+
+    /// Everything a commit derives from its record into the batch beside it —
+    /// index and adjacency entries, record counts, id counters, the expiry and
+    /// modified-order indexes, topic positions and the format stamp — in the
+    /// order each one's reader depends on.
+    ///
+    /// One function for both commits that write records: the logged one and a
+    /// held space's (ADR-0130), so the two cannot come to derive differently.
+    pub(super) async fn derived(
+        &self,
+        carried: &LogRecord,
+        written: tessari_kv::WriteBatch,
+        commit_version: Sequence,
+    ) -> Result<tessari_kv::WriteBatch> {
+        // Index entries are derived here rather than carried in the record,
+        // and they are derived inside the loop because they depend on the
+        // committed state this attempt is building on (see `crate::index`).
+        let batch = crate::index::maintain(self.store, carried, written, commit_version).await?;
+        // Adjacency is derived in the same place and for the same reason: a
+        // replica reaches its state by replaying this record, so entries the
+        // leader merely added to its own batch would never exist on a
+        // follower — a walk that finds nothing there while the leader is
+        // correct, with nothing in an error state.
+        let batch = crate::adjacency::maintain(self.store, carried, batch).await?;
+        // And the record counts, in the same batch and for the third time
+        // for the same reason: the planner on a follower must read the same
+        // number as the planner on the leader, or one query takes two access
+        // paths depending on which node answered it.
+        let batch =
+            crate::cardinality::maintain(self.store, carried, batch, commit_version).await?;
+        // And the catalog's id counters, past the ids this record hands
+        // out, so a follower promoted to leader resumes after them.
+        let batch =
+            crate::catalog::maintain_allocators(self.store, carried, batch, commit_version).await?;
+        // The expiry index, last and in the same batch as the records it
+        // describes: an entry written anywhere else is an entry that can be
+        // left behind (G035).
+        let batch = crate::lapse::maintain(self.store, carried, batch).await?;
+        // And a limited space's modified-order index, which the evictions
+        // above read on the next commit (G036).
+        let batch = crate::bounded::maintain(self.store, carried, batch, commit_version).await?;
+        // And a topic's positions, dense in commit order (G037).
+        let batch = crate::topic::maintain(self.store, carried, batch).await?;
+        // And this node's format stamp, when the record finalizes it
+        // (ADR-0118) — on the leader as on every follower.
+        crate::format_stamp::maintain(self.store, carried, batch, commit_version).await
     }
 }

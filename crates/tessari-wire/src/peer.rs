@@ -97,6 +97,10 @@ pub enum PeerFrame {
     StateChunk,
     /// The last frame of a copy: the counts and the topic heads.
     StateEnd,
+    /// A batch of the copied topics' entries — each message's position and
+    /// append instant — sent after the chunks and before the end (ADR-0133 D3).
+    /// A follower of an earlier build refuses it, so followers upgrade first.
+    StateEntries,
     /// A follower holding the connection open to be SENT what its leader
     /// commits, naming every log it follows and the first position it does not
     /// hold in each (ADR-0106 D5). Sent again after each round it applied, so
@@ -192,6 +196,8 @@ impl PeerFrame {
             Self::StreamFrom => 34,
             Self::Held => 35,
             Self::Restarted => 36,
+            // 37 and 38 are the client's `Progress` and `Part`.
+            Self::StateEntries => 39,
         }
     }
 
@@ -228,6 +234,7 @@ impl PeerFrame {
             34 => Some(Self::StreamFrom),
             35 => Some(Self::Held),
             36 => Some(Self::Restarted),
+            39 => Some(Self::StateEntries),
             _ => None,
         }
     }

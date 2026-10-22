@@ -10,7 +10,9 @@
 
 mod atomic;
 pub(crate) mod expiry;
+mod held;
 mod space;
+mod structure;
 mod walk;
 
 pub(crate) use atomic::{CONFLICT_DEADLINE, retried_on_conflict};

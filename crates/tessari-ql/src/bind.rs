@@ -302,6 +302,15 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
                 _ => Ok(()),
             }
         }
+        StatementKind::Structure { target, op } => {
+            bind_target(target, binding)?;
+            if let Some(to) = op.second_key_mut() {
+                bind_target(to, binding)?;
+            }
+            op.expressions_mut()
+                .into_iter()
+                .try_for_each(|expr| bind_expr(expr, binding))
+        }
         StatementKind::Incr { target, by } => {
             bind_target(target, binding)?;
             match by {
@@ -318,11 +327,19 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // column list is not walked because it holds **names**, and a name is
         // grammar: there is no stage at which a supplied value could arrive
         // there and be read as one.
-        StatementKind::Insert { rows, expire, .. } => {
+        StatementKind::Insert {
+            rows,
+            expire,
+            partition,
+            ..
+        } => {
             for row in rows {
                 for value in row {
                     bind_expr(value, binding)?;
                 }
+            }
+            if let Some(partition) = partition {
+                bind_expr(partition, binding)?;
             }
             bind_write_expiry(expire.as_mut(), binding)
         }
@@ -397,12 +414,22 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         StatementKind::Reveal { target, .. }
         | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }
-        | StatementKind::Del { target }
+        | StatementKind::Del {
+            target,
+            expected: None,
+        }
         // A release names one record, and a record's identity may be a
         // parameter wherever a record's identity may be one.
         // A targeted claim names one record for the same reason a release does.
         | StatementKind::ClaimRecord { target, .. }
         | StatementKind::Read { target, .. } => bind_target(target, binding),
+        StatementKind::Del {
+            target,
+            expected: Some(expected),
+        } => {
+            bind_target(target, binding)?;
+            bind_expr(expected, binding)
+        }
         StatementKind::Release {
             target, not_before, ..
         } => {
@@ -452,15 +479,58 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             bind_identity(lower, *span, binding)?;
             bind_identity(upper, *span, binding)
         }
-        StatementKind::ReadTopic { after, limit, .. } => {
-            for bound in [after, limit].into_iter().flatten() {
+        StatementKind::ReadTopic {
+            after,
+            since,
+            limit,
+            partition,
+            ..
+        } => {
+            for bound in [after, since, limit, partition].into_iter().flatten() {
                 bind_expr(bound, binding)?;
             }
             Ok(())
         }
-        StatementKind::AlterGroup { start_at, .. } => bind_expr(start_at, binding),
-        StatementKind::AckTopic { positions, .. } | StatementKind::NackTopic { positions, .. } => {
-            for position in positions {
+        StatementKind::AlterGroup { change, .. } => match change {
+            crate::ast::GroupChange::StartAt(start_at) => bind_expr(start_at, binding),
+            crate::ast::GroupChange::AddMember(..) | crate::ast::GroupChange::DropMember(..) => Ok(()),
+        },
+        StatementKind::HandTopic(hand) => {
+            let crate::ast::Hand {
+                partition,
+                handing,
+                idle,
+                ..
+            } = hand.as_mut();
+            let handed: Vec<&mut crate::ast::Expr> = match handing {
+                crate::ast::Handing::At(positions) => positions.iter_mut().collect(),
+                crate::ast::Handing::After { after, limit } => vec![&mut **after, &mut **limit],
+            };
+            for bound in handed.into_iter().chain(partition.as_mut()).chain(idle.as_mut()) {
+                bind_expr(bound, binding)?;
+            }
+            Ok(())
+        }
+        StatementKind::TrimTopic {
+            partition, bound, ..
+        } => {
+            let (crate::ast::TrimBound::Keep(reach) | crate::ast::TrimBound::Before(reach)) = bound;
+            for bound in std::iter::once(reach).chain(partition.as_mut()) {
+                bind_expr(bound, binding)?;
+            }
+            Ok(())
+        }
+        StatementKind::AckTopic {
+            positions,
+            partition,
+            ..
+        }
+        | StatementKind::NackTopic {
+            positions,
+            partition,
+            ..
+        } => {
+            for position in positions.iter_mut().chain(partition.as_mut()) {
                 bind_expr(position, binding)?;
             }
             Ok(())
@@ -480,8 +550,13 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             Ok(())
         }
         StatementKind::Let { value, .. }
-        | StatementKind::Return { value }
-        | StatementKind::Throw { value } => bind_expr(value, binding),
+        | StatementKind::Return { value } => bind_expr(value, binding),
+        StatementKind::Throw { value, condition } => {
+            bind_expr(value, binding)?;
+            condition
+                .as_mut()
+                .map_or(Ok(()), |condition| bind_expr(condition, binding))
+        }
         StatementKind::Select(select) => bind_select(select, binding),
         // The read it explains is a read, so its parameters bind the same way —
         // and an `EXPLAIN` of a parameterised read is exactly what somebody

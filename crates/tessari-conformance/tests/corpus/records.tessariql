@@ -396,6 +396,14 @@ COMMIT;
 SELECT * FROM staff WHERE name = 'nobody';
 --- expect: rows 0
 
+--- case: a guard refuses only when its condition holds
+THROW 'not paid' IF (GET staff:30) != NONE;
+--- expect: ok
+
+--- case: and when it holds the refusal is the guard's
+THROW 'nobody is here' IF (GET staff:30) = NONE;
+--- expect: error Thrown
+
 # `RETURN BEFORE` / `RETURN AFTER` — a write answering with what it wrote. Opt-in,
 # because a store that shipped the record back on every write would make the
 # common case pay for the rare one. The two pairings that could only ever answer

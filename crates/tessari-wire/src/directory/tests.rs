@@ -30,6 +30,7 @@ fn declared(id: u32, endpoint: &str, node: Option<[u8; NODE_ID_LEN]>) -> Replica
         leads: None,
         clients: None,
         http: None,
+        kafka: None,
         fingerprint: None,
         join: None,
         releasing: false,

@@ -183,6 +183,7 @@ impl Session<'_> {
                 leads,
                 clients: peer.clients.map(str::to_owned),
                 http: peer.http.map(str::to_owned),
+                kafka: peer.kafka.map(str::to_owned),
                 fingerprint: peer.fingerprint.map(str::to_owned),
                 join: None,
                 releasing: false,
@@ -311,6 +312,11 @@ impl Session<'_> {
             ReplicaChange::HttpAt(http) => {
                 Catalog::new(transaction)
                     .amend_replica(&name.text, |row| row.http.clone_from(http))
+                    .await?
+            }
+            ReplicaChange::KafkaAt(kafka) => {
+                Catalog::new(transaction)
+                    .amend_replica(&name.text, |row| row.kafka.clone_from(kafka))
                     .await?
             }
             ReplicaChange::Region(region) => {

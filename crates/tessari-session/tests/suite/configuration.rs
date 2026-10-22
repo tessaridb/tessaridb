@@ -1478,6 +1478,40 @@ impl tessari_session::Certificates for Required {
     }
 }
 
+/// A node listening on a Kafka and a RESP surface besides the wire.
+#[derive(Debug)]
+struct Listening;
+
+impl tessari_session::Certificates for Listening {
+    fn presented(&self) -> Vec<tessari_session::Presented> {
+        Vec::new()
+    }
+
+    fn clients(&self) -> tessari_session::ClientTransport {
+        tessari_session::ClientTransport {
+            tls: false,
+            required: false,
+        }
+    }
+
+    fn listeners(&self) -> Vec<tessari_session::Listener> {
+        vec![
+            tessari_session::Listener {
+                surface: "wire",
+                address: "127.0.0.1:9080".to_owned(),
+            },
+            tessari_session::Listener {
+                surface: "kafka",
+                address: "127.0.0.1:9092".to_owned(),
+            },
+            tessari_session::Listener {
+                surface: "resp",
+                address: "127.0.0.1:6379".to_owned(),
+            },
+        ]
+    }
+}
+
 impl tessari_session::Certificates for Clear {
     fn presented(&self) -> Vec<tessari_session::Presented> {
         Vec::new()
@@ -1577,15 +1611,42 @@ fn a_node_reports_how_it_serves_its_clients() {
         };
         report.get("clients").cloned().expect("a clients entry")
     };
-    let transport = |tls: bool, required: bool| {
+    let transport = |tls: bool, required: bool, listeners: &[(&str, &str)]| {
+        let listeners = listeners
+            .iter()
+            .map(|(surface, address)| {
+                Value::Object(std::collections::BTreeMap::from([
+                    ("surface".to_owned(), Value::from(*surface)),
+                    ("address".to_owned(), Value::from(*address)),
+                ]))
+            })
+            .collect();
         Value::Object(std::collections::BTreeMap::from([
             ("tls".to_owned(), Value::Bool(tls)),
             ("required".to_owned(), Value::Bool(required)),
+            ("listeners".to_owned(), Value::Array(listeners)),
         ]))
     };
-    assert_eq!(clients(Some(Arc::new(Shown))), transport(true, false));
-    assert_eq!(clients(Some(Arc::new(Required))), transport(true, true));
-    assert_eq!(clients(Some(Arc::new(Clear))), transport(false, false));
+    assert_eq!(clients(Some(Arc::new(Shown))), transport(true, false, &[]));
+    assert_eq!(
+        clients(Some(Arc::new(Required))),
+        transport(true, true, &[])
+    );
+    assert_eq!(clients(Some(Arc::new(Clear))), transport(false, false, &[]));
+    // Every client surface the process listens on, the Kafka and RESP ones
+    // included, by the address it actually took (G079 C9).
+    assert_eq!(
+        clients(Some(Arc::new(Listening))),
+        transport(
+            false,
+            false,
+            &[
+                ("wire", "127.0.0.1:9080"),
+                ("kafka", "127.0.0.1:9092"),
+                ("resp", "127.0.0.1:6379")
+            ]
+        )
+    );
     assert_eq!(clients(None), Value::Null);
 }
 

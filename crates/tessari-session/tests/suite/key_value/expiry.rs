@@ -188,6 +188,51 @@ fn a_set_whose_expiry_is_not_in_the_future_is_refused_and_writes_nothing() {
 }
 
 #[test]
+fn a_set_whose_expiry_is_null_never_expires_so_a_ttl_carries_across() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        run(&mut session, "SET cache:'k' = 1 EXPIRE 1h;");
+        run(&mut session, "SET cache:'k' = 2 EXPIRE NULL;");
+        assert_eq!(
+            value(&mut session, "RETURN TTL cache:'k';"),
+            Value::Null,
+            "{}",
+            backend.name
+        );
+        // TTL's own answer for a key that never expires, written back, writes
+        // one that never expires; a duration carries the expiry across.
+        run(&mut session, "SET cache:'forever' = 1;");
+        run(&mut session, "SET cache:'soon' = 1 EXPIRE 1h;");
+        run(
+            &mut session,
+            "BEGIN; SET cache:'a' = 1 EXPIRE TTL cache:'forever'; \
+             SET cache:'b' = 1 EXPIRE TTL cache:'soon'; COMMIT;",
+        );
+        assert_eq!(value(&mut session, "RETURN TTL cache:'a';"), Value::Null);
+        assert!(matches!(
+            value(&mut session, "RETURN TTL cache:'b';"),
+            Value::Duration(_)
+        ));
+        run(
+            &mut session,
+            "SET cache:'copy' = GET cache:'soon' EXPIRE TTL cache:'soon';",
+        );
+        assert_eq!(value(&mut session, "GET cache:'copy';"), Value::from(1));
+        assert!(matches!(
+            value(&mut session, "RETURN TTL cache:'copy';"),
+            Value::Duration(_)
+        ));
+        // NONE is no key, and stays a refusal rather than a permanent write.
+        let why = refused(
+            &mut session,
+            "SET cache:'c' = 1 EXPIRE TTL cache:'missing';",
+        );
+        assert!(why.contains("a duration or a datetime"), "{why}");
+        assert_eq!(value(&mut session, "GET cache:'c';"), Value::None);
+    });
+}
+
+#[test]
 fn a_transaction_sees_its_own_expiring_write_on_its_own_clock() {
     on_each_backend(|backend| {
         let mut session = opened(&backend.store);

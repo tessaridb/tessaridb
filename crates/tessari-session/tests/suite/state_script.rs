@@ -49,6 +49,10 @@ DEFINE QUEUE jobs TIMEOUT 30s;
 CREATE jobs:1 = { job: 'send' };
 DEFINE TOPIC events;
 CREATE events:'e1' = { kind: 'paid' };
+DEFINE TOPIC split PARTITIONS 2 BY customer;
+CREATE split:'s1' = { customer: 'user-42' };
+CREATE split:'s2' = { customer: 'user-42', n: 2 };
+CREATE split:'s3' = { customer: 'abc' };
 DEFINE VECTOR embeddings DIMENSION 2 DISTANCE cosine;
 CREATE embeddings:1 = { vector: [0.6, 0.8] };
 DEFINE GEO places;
@@ -75,6 +79,8 @@ const INTERROGATION: &[&str] = &[
     "READ media:'/logo.png';",
     "SELECT * FROM jobs;",
     "SELECT * FROM events;",
+    "READ FROM split PARTITION 0;",
+    "READ FROM split PARTITION 1;",
     "SELECT * FROM embeddings;",
     "SELECT * FROM places;",
     "SELECT * FROM message;",
@@ -117,12 +123,18 @@ fn a_script_rebuilds_a_store_that_answers_what_the_source_answers() {
     let mut here = signed_in(&source, "root");
     let mut there = signed_in(&target, "root");
     for read in INTERROGATION {
+        // A message is appended again when the script runs, and its header
+        // says so: the instant is the one thing a topic's answer may differ in.
         assert_eq!(
-            format!("{:?}", here.run_now(read).unwrap()),
-            format!("{:?}", there.run_now(read).unwrap()),
+            without_appended(format!("{:?}", here.run_now(read).unwrap())),
+            without_appended(format!("{:?}", there.run_now(read).unwrap())),
             "the two stores disagree about {read}"
         );
     }
+    assert!(
+        script.contains("each appended at the instant the script runs"),
+        "the header names what a topic loses"
+    );
     // An expiry is carried as the time it had left, and a key without one stays
     // without one.
     let mut ttl = |key: &str| {
@@ -275,4 +287,17 @@ fn a_record_whose_instant_passed_before_the_restore_is_not_written_back() {
             .unwrap()
     );
     assert!(read.contains("stays") && !read.contains("soon"), "{read}");
+}
+
+/// An answer's debug text with every message's `appended` instant removed.
+fn without_appended(mut answer: String) -> String {
+    const FIELD: &str = "\"appended\": Datetime(Datetime { ";
+    while let Some(start) = answer.find(FIELD) {
+        let Some(length) = answer[start..].find("}), ") else {
+            break;
+        };
+        let end = start.saturating_add(length).saturating_add("}), ".len());
+        answer.replace_range(start..end, "");
+    }
+    answer
 }

@@ -112,6 +112,24 @@ ACK jobs FOR CONSUMER 'nobody' AT 1;
 READ FROM jobs FOR CONSUMER 'workers' AFTER 2;
 --- expect: error AfterOnGroup
 
+--- case: a member belongs to a group
+READ FROM jobs FOR CONSUMER 'nobody' MEMBER 'alice';
+--- expect: error NoGroupForMember
+
+--- case: a group with no deadline keeps a message for its member
+DEFINE GROUP 'held' ON TOPIC jobs ACK DEADLINE NONE IN FLIGHT 10;
+READ FROM jobs FOR CONSUMER 'held' MEMBER 'alice' LIMIT 1;
+READ FROM jobs FOR CONSUMER 'held' MEMBER 'alice' HELD;
+--- expect: rows 1
+
+--- case: a held message is handed to another member
+HAND jobs FOR CONSUMER 'held' AFTER 0 LIMIT 10 TO 'bob';
+--- expect: rows 1
+
+--- case: a member dropped takes what it held with it
+ALTER GROUP 'held' ON TOPIC jobs DROP MEMBER 'bob';
+--- expect: value 1
+
 --- case: a topic cannot be its own group's dead letter
 DEFINE GROUP 'loop' ON TOPIC jobs ACK DEADLINE 30s DELIVERIES 3 DEAD LETTER TO jobs;
 --- expect: error DeadLetterIsTheTopic
@@ -197,3 +215,16 @@ CREATE payments = { payment_id: 1.5 };
 --- case: a topic that deduplicates names the field it reads the key from
 DEFINE TOPIC unkeyed DEDUPLICATE 5m;
 --- expect: error UnexpectedToken
+
+--- case: a trim removes a topic's oldest messages, the one way a caller removes any
+DEFINE TOPIC trimmed;
+CREATE trimmed:'t1' = { n: 1 };
+CREATE trimmed:'t2' = { n: 2 };
+CREATE trimmed:'t3' = { n: 3 };
+TRIM trimmed KEEP 1;
+READ FROM trimmed;
+--- expect: rows 1
+
+--- case: a trim's bound is a whole number
+TRIM trimmed BEFORE 'second';
+--- expect: error InvalidPosition

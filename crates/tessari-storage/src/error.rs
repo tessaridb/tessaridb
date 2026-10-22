@@ -545,6 +545,36 @@ pub enum Error {
         max: u64,
     },
 
+    /// A transaction wrote a space held in memory and something durable
+    /// (ADR-0130).
+    ///
+    /// A memory write is gone after a restart and a durable one is not, so the
+    /// two cannot be one commit; write each in its own transaction.
+    #[error(
+        "space {space} is held in memory and this transaction also writes durable records; \
+         commit the space's writes on their own"
+    )]
+    InMemoryBesideDurable {
+        /// The held space the transaction wrote.
+        space: String,
+    },
+
+    /// A space held in memory was written in a namespace more than one node may
+    /// write (ADR-0130, G079 W5d).
+    ///
+    /// On a cluster a held space is held by the leader of its range, as every
+    /// write is admitted there; a `MULTI MASTER` namespace has no one leader, so
+    /// there is no node whose memory the space could be.
+    #[error(
+        "space {space} is held in memory and its namespace may be written by more than one \
+         node; a held space lives on the one node that leads it, and a namespace written \
+         MULTI MASTER has none"
+    )]
+    InMemoryOnACluster {
+        /// The held space the write named.
+        space: String,
+    },
+
     /// A commit would rewrite a message of a topic, or delete one whose retention
     /// has not passed (G037).
     ///
@@ -553,6 +583,16 @@ pub enum Error {
         "topic {topic} is append-only: a message is never rewritten or deleted; append a correction instead"
     )]
     TopicIsAppendOnly {
+        /// The topic that refused the write.
+        topic: String,
+    },
+
+    /// A message written to a split topic itself rather than to one of its
+    /// partitions (ADR-0131).
+    #[error(
+        "topic {topic} is split into partitions and holds no message itself; append to it with CREATE or INSERT, which choose the partition"
+    )]
+    TopicIsSplit {
         /// The topic that refused the write.
         topic: String,
     },
@@ -1194,7 +1234,10 @@ impl Error {
             | Self::IndexReadsOneField { .. }
             | Self::UniqueViolation { .. }
             | Self::SpaceFull { .. }
+            | Self::InMemoryBesideDurable { .. }
+            | Self::InMemoryOnACluster { .. }
             | Self::TopicIsAppendOnly { .. }
+            | Self::TopicIsSplit { .. }
             | Self::TopicMessageTooLarge { .. }
             | Self::TopicRetainExceeded { .. }
             | Self::TopicPositionsExhausted

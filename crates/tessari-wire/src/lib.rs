@@ -144,8 +144,9 @@ pub use crate::door::Holding;
 pub use crate::driver::{
     CadenceError, Collecting, PassFailed, Published, Renewing, bootstrap_from, campaign_line,
     campaigns_for, due_in, election_timeout, every, every_paced, heard_a_leader, heard_a_leader_on,
-    heard_a_newer_policy, leader_of_range, names_a_peer, preferred_to_yield_to, released, stands,
-    stands_for, stands_for_a_placed_line, stands_for_the_store, upstream, voters,
+    heard_a_leader_on_until, heard_a_leader_until, heard_a_newer_policy, leader_of_range,
+    names_a_peer, preferred_to_yield_to, released, stands, stands_for, stands_for_a_placed_line,
+    stands_for_the_store, upstream, voters,
 };
 pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]

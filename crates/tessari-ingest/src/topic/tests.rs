@@ -278,3 +278,56 @@ async fn a_consumers_writes_run_the_destinations_events_once_each() {
     totals.sort_unstable();
     assert_eq!(totals, (1..=40).collect::<Vec<_>>());
 }
+
+/// A consumer of a split topic reads every partition, each under the group it
+/// holds there (ADR-0131).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_consumer_of_a_split_topic_applies_every_partitions_messages() {
+    let store = store_with(
+        "DEFINE TOPIC parts PARTITIONS 3 BY order_id; \
+         DEFINE GROUP 'rows' ON TOPIC parts ACK DEADLINE 30s IN FLIGHT 64 \
+         DELIVERIES 3 DEAD LETTER TO orders_dead;",
+    )
+    .await;
+    let (stop, stopped) = watch::channel(false);
+    let runner = tokio::spawn(run_topic_consumers(store.clone(), stopped));
+    run(
+        &store,
+        "DEFINE TOPIC CONSUMER parts_in FROM parts GROUP 'rows' INTO order_rows \
+         IDENTITY order_id MAP amount AS total ON FAILURE quarantine;",
+    )
+    .await;
+    let mut script = String::from("BEGIN;");
+    for at in 1..=60 {
+        script.push_str(&format!(
+            " CREATE parts = {{ order_id: {at}, amount: {at} }};"
+        ));
+    }
+    script.push_str(" COMMIT;");
+    run(&store, &script).await;
+    // The keys spread over every partition, so a member missing one leaves
+    // its messages unapplied.
+    let Some(Outcome::Value(Value::Object(report))) =
+        run(&store, "INFO FOR TOPIC parts;").await.pop()
+    else {
+        panic!("INFO FOR TOPIC parts answered no report");
+    };
+    let Some(Value::Array(each)) = report.get("each") else {
+        panic!("{report:?}");
+    };
+    assert!(
+        each.iter().all(|partition| !matches!(partition,
+            Value::Object(fields) if fields.get("last") == Some(&Value::Number(tessari_types::Number::Integer(0))))),
+        "a partition received nothing: {each:?}"
+    );
+    until("every message landing", || async {
+        rows(&store).await.len() == 60
+    })
+    .await;
+    assert_eq!(store.running().progress("parts_in").unwrap().applied, 60);
+    stop.send_replace(true);
+    tokio::time::timeout(PATIENCE, runner)
+        .await
+        .unwrap()
+        .unwrap();
+}

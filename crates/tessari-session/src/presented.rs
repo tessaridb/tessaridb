@@ -29,6 +29,15 @@ pub struct ClientTransport {
     pub required: bool,
 }
 
+/// One client surface this node listens on, by the address it took (G079 C9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listener {
+    /// Which surface — `wire`, `http`, `kafka` or `resp`.
+    pub surface: &'static str,
+    /// The address it is bound to, port resolved.
+    pub address: String,
+}
+
 /// Reads, when asked, the certificates this node presents now.
 pub trait Certificates: Send + Sync + std::fmt::Debug {
     /// Every certificate presented at this moment, one per surface.
@@ -36,4 +45,9 @@ pub trait Certificates: Send + Sync + std::fmt::Debug {
 
     /// How this node serves its clients.
     fn clients(&self) -> ClientTransport;
+
+    /// The client surfaces this node listens on; none when it names none.
+    fn listeners(&self) -> Vec<Listener> {
+        Vec::new()
+    }
 }

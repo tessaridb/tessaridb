@@ -66,7 +66,26 @@ impl FormatVersion {
     /// (Q-S3-34): key kinds `0x45` (a retired entry) and `0x46` (the version
     /// from which they are kept). An older build would neither write them nor
     /// remove them, so a store holding them is one it must not open.
-    pub const CURRENT: Self = Self(8);
+    ///
+    /// Moved to 9 when a topic could be split into partitions (ADR-0131): an
+    /// older build reading the declaration would append to the parent as one
+    /// topic, where no partition's reader would ever see the message.
+    pub const CURRENT: Self = Self(9);
+
+    /// The first format whose topics may be split into partitions (ADR-0131).
+    /// Named for the reason [`Self::HOMED_LOG`] is.
+    pub const SPLIT_TOPIC: Self = Self(9);
+
+    /// The first format whose hash fields may each stop being answered at an
+    /// instant of their own (ADR-0132). Named for the reason
+    /// [`Self::HOMED_LOG`] is.
+    pub const FIELD_EXPIRY: Self = Self(9);
+
+    /// The first format whose topics keep the instant each message was
+    /// appended (ADR-0133 D3): an older build would read a position's entry
+    /// and the topic's clock record without knowing either. Named for the
+    /// reason [`Self::HOMED_LOG`] is.
+    pub const TOPIC_CLOCK: Self = Self(9);
 
     /// The first format whose stores keep retired entries of a plain index, so
     /// that a transaction behind the committed tail may still read through one
@@ -120,6 +139,7 @@ impl FormatVersion {
             6 => (0, 28),
             7 => (0, 33),
             8 => (0, 34),
+            9 => (0, 37),
             _ => return None,
         };
         Some(crate::NodeVersion {

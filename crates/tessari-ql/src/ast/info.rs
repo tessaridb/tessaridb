@@ -91,6 +91,16 @@ pub enum InfoSubject {
     },
     /// `INFO FOR TOPIC events` — a topic's positions and its readers' (G037).
     Topic(TableRef),
+    /// `INFO FOR GROUP 'mail' ON TOPIC events` — one group's messages in flight,
+    /// who holds each and since when, and its members (ADR-0133, W8d).
+    Group {
+        /// The group, a quoted name.
+        name: String,
+        /// The parameter the name is bound from, until binding writes it.
+        name_parameter: Option<crate::ast::ParameterSlot>,
+        /// The topic it reads.
+        topic: TableRef,
+    },
     /// `INFO FOR BUCKET media` — one bucket's name and the largest file it takes.
     ///
     /// Distinct from `INFO FOR TABLE` for the reason [`InfoSubject::Vault`] is:

@@ -38,6 +38,14 @@ pub(crate) const fn retried_on_conflict(kind: &StatementKind) -> bool {
     matches!(
         kind,
         StatementKind::Incr { .. }
+            // A container write reads the key it writes, as `INCR` does (G079 C6).
+            | StatementKind::Structure { .. }
+            // A conditional delete reads the key it removes, as a conditional
+            // `SET` does (G079 C6).
+            | StatementKind::Del {
+                expected: Some(_),
+                ..
+            }
             | StatementKind::Set {
                 condition: Some(_),
                 ..
@@ -54,6 +62,11 @@ pub(crate) const fn retried_on_conflict(kind: &StatementKind) -> bool {
             // (G042).
             | StatementKind::AckTopic { .. }
             | StatementKind::NackTopic { .. }
+            | StatementKind::HandTopic(_)
+            | StatementKind::AlterGroup {
+                change: tessari_ql::GroupChange::AddMember(..) | tessari_ql::GroupChange::DropMember(..),
+                ..
+            }
     )
 }
 
@@ -86,6 +99,25 @@ impl Session<'_> {
             transaction.expire_pending(&address, at);
         }
         Ok(Outcome::Value(next))
+    }
+
+    /// `DEL key IF = value` — the key goes only while it holds `value`; answers
+    /// whether it went. A space key is no file, so there are no chunks to clear.
+    pub(crate) async fn delete_key_if(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+        expected: &Expr,
+        span: Span,
+    ) -> Result<Outcome> {
+        let (_, address) = self.writable(transaction, target).await?;
+        let holds = self
+            .set_condition_holds(transaction, target, &SetCondition::Equals(expected.clone()))
+            .await?;
+        if holds {
+            self.delete_record(transaction, address, span).await?;
+        }
+        Ok(Outcome::Value(Value::Bool(holds)))
     }
 
     /// Whether a conditional `SET`'s condition holds for the key as it is now.

@@ -57,6 +57,7 @@ mod lifetime;
 mod lines;
 mod log;
 mod log_holds;
+mod memory;
 mod node;
 #[cfg(feature = "test-support")]
 mod now;
@@ -91,13 +92,14 @@ pub use catalog::{
     ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition,
     EdgeOrder, EngineField, EngineMember, EventDeclaration, Eviction, FailoverDefinition,
     FailoverStamp, Feed, FieldDefinition, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition,
-    Greeter, GroupDeclaration, GroupState, Held, InFlight, IndexDefinition, IndexShape, JoinTicket,
-    Kind, LeadershipDefinition, Mapped, NamespaceDefinition, OnFailure, PublicAppend,
-    QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach,
-    ReplicaDefinition, Role, RollupCompute, RollupDeclaration, RollupFold, SYSTEM_DATABASE,
-    SYSTEM_NAMESPACE, SearchCosts, SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration,
-    SpaceLimit, StoredKind, TableDefinition, TableExpiry, TableKind, TableShape, TopicDeclaration,
-    UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
+    Greeter, GroupDeclaration, GroupMemberState, GroupState, Held, InFlight, IndexDefinition,
+    IndexShape, JoinTicket, Kind, LeadershipDefinition, Mapped, NamespaceDefinition, OnFailure,
+    Partitioning, PublicAppend, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL,
+    QueueDeclaration, RECORD_LEVEL, Reach, ReplicaDefinition, Role, RollupCompute,
+    RollupDeclaration, RollupFold, SYSTEM_DATABASE, SYSTEM_NAMESPACE, SearchCosts,
+    SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration, SpaceLimit, StoredKind,
+    TableDefinition, TableExpiry, TableKind, TableShape, TopicDeclaration, UNIT_WEIGHT,
+    UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
     VectorDistance, Verb, ViewDeclaration, WordSet, WordSetKind, another_node_may_write, governing,
     names_a_peer, the_row_a_greeting_binds,
 };
@@ -140,9 +142,9 @@ pub use sealing::{
     mint_vault_key, open_data_key, open_field, recipients, remove_recipient, reseal_named,
     rewrap_own_vault, seal_secrets, unseal_own_vault, vault_key_scope,
 };
-pub use state::{StateReader, TopicHead};
+pub use state::{StateReader, TopicEntry, TopicHead};
 pub use statistics::{estimate_equality, estimate_range};
-pub use store::{Health, Store};
+pub use store::{Health, RestoredTopics, Store};
 pub use tally::AcrossOutcome;
 pub use tessari_encoding::{
     BUILD_VERSION, Decision, IndexStatistics, LogId, NODE_ID_LEN, Roles, TransactionId,
@@ -153,7 +155,7 @@ pub use tessari_encoding::{
 pub use tessari_kv::ErrorCategory;
 pub use transaction::{
     AcrossPart, Committed, Expansion, FieldedPostings, Neighbour, PlacesNearest, RecordAddress,
-    RecordWalk, Region, SearchCounts, StoredRecord, Transaction, Window,
+    RecordWalk, Region, SearchCounts, StoredRecord, TopicTrim, Transaction, Window, back_off,
 };
 pub use vault::{OpenVault, SealState};
 pub use views::ViewState;

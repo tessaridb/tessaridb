@@ -59,6 +59,7 @@ use tessari_types::ShardId;
 
 mod across;
 mod balance;
+pub mod carried;
 mod changes;
 mod coordinate;
 mod db;
@@ -78,14 +79,14 @@ pub use tessari_session::redact::{Visible, seen};
 pub use tessari_session::travels;
 pub use tessari_session::{
     AccessPath, AcrossRefusal, Detached, Error, Exactness, Nearest, Note, Outcome, Parameters,
-    PartRefused, RefusalKind, Result, Session, Suggestion, Ticket, VaultAct, VaultTarget,
+    PartRefused, Plan, RefusalKind, Result, Session, Suggestion, Ticket, VaultAct, VaultTarget,
 };
 /// The store's own refusals, which [`Error::Store`] carries — named so a surface
 /// can tell the one that means *go there* (`WriteIsElsewhere`) from the rest.
 pub use tessari_storage::Error as StoreError;
 pub use tessari_storage::{
     BUILD_VERSION, Change, ChangeKind, Changes, LeadershipDefinition, Lease, LogId, NODE_ID_LEN,
-    Reach, Subscription, Upstream, Watch, Writer,
+    Reach, Subscription, Upstream, Watch, Writer, back_off,
 };
 pub use tessari_types::{
     DatabaseId, Datetime, Duration, FieldKind, Geometry, NamespaceId, Number, Path as FieldPath,

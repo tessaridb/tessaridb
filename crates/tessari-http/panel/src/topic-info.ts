@@ -46,6 +46,23 @@ export interface Topic {
   readonly readers: ReadonlyMap<string, Reader>;
   readonly groups: ReadonlyMap<string, Group>;
   readonly ingestedBy: ReadonlyMap<string, Ingest>;
+  /** `PARTITIONS n [BY f]`: each partition is a topic of its own; `null` when never split. */
+  readonly partitions: Partitions | null;
+}
+
+/** One partition of a split topic, as Kafka clients see partition `index`. */
+export interface Partition {
+  readonly index: number;
+  readonly first: number | null;
+  readonly last: number;
+  /** The furthest any reader or group of this partition is behind. */
+  readonly behind: number;
+}
+
+export interface Partitions {
+  /** The field a message's partition is chosen by; `null` when spread evenly. */
+  readonly by: string | null;
+  readonly each: readonly Partition[];
 }
 
 const whole = (value: unknown): number | null =>
@@ -132,6 +149,31 @@ export function topic(value: unknown): Topic | null {
     readers: entries(fields["consumers"], reader),
     groups: entries(fields["groups"], group),
     ingestedBy: entries(fields["ingested_by"], ingest),
+    partitions: partitioned(fields),
+  };
+}
+
+function partitioned(fields: Record<string, unknown>): Partitions | null {
+  const each = fields["each"];
+  if (whole(fields["partitions"]) === null || !Array.isArray(each)) {
+    return null;
+  }
+  const by = fields["by"];
+  return {
+    by: typeof by === "string" ? by : null,
+    each: each.flatMap((value: unknown) => {
+      const one = fieldsOf(value);
+      const index = whole(one?.["partition"]);
+      const last = whole(one?.["last"]);
+      if (one === null || index === null || last === null) {
+        return [];
+      }
+      const lags = [
+        ...entries(one["consumers"], reader).values(),
+        ...entries(one["groups"], group).values(),
+      ].map((held) => held.lag);
+      return [{ index, first: whole(one["first"]), last, behind: lags.length === 0 ? 0 : Math.max(...lags) }];
+    }),
   };
 }
 

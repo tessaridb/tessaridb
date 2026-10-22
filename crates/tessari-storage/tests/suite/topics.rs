@@ -201,3 +201,251 @@ fn a_replica_holds_what_a_size_retention_kept() {
     assert!(bytes(&source) <= 64);
     assert_eq!(bytes(&replica), bytes(&source));
 }
+
+fn wall_millis() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+}
+
+/// A store with one topic, and the address of a message in it.
+fn one_topic() -> (
+    Store,
+    tessari_types::NamespaceId,
+    tessari_types::DatabaseId,
+    tessari_types::TableId,
+) {
+    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let store = Store::open(backend).now().unwrap();
+    let mut transaction = store.begin().now().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").now().unwrap();
+    let database = catalog.create_database(namespace.id, "app").now().unwrap();
+    let topic = catalog
+        .create_table(
+            namespace.id,
+            database.id,
+            "events",
+            TableShape {
+                kind: TableKind::Topic(TopicDeclaration::default()),
+                ..TableShape::default()
+            },
+        )
+        .now()
+        .unwrap();
+    transaction.commit().now().unwrap();
+    (store, namespace.id, database.id, topic.id)
+}
+
+fn append(
+    store: &Store,
+    (namespace, database, topic): (
+        tessari_types::NamespaceId,
+        tessari_types::DatabaseId,
+        tessari_types::TableId,
+    ),
+    ids: &[&str],
+) {
+    let mut transaction = store.begin().now().unwrap();
+    for id in ids {
+        transaction.put(
+            RecordAddress::new(namespace, database, topic, RecordId::from(*id)),
+            encode_payload(&Value::from(*id)).into_bytes(),
+        );
+    }
+    transaction.commit().now().unwrap();
+}
+
+/// Wait, without sleeping, until the wall clock has passed `instant`.
+fn past(instant: u64) {
+    while wall_millis() <= instant {
+        std::hint::spin_loop();
+    }
+}
+
+/// Every message carries the instant its commit appended it, one instant per
+/// commit, never earlier than the one before (ADR-0133 D3).
+#[test]
+fn a_message_carries_the_instant_it_was_appended() {
+    let (store, namespace, database, topic) = one_topic();
+    let before = wall_millis();
+    append(&store, (namespace, database, topic), &["m1"]);
+    let between = wall_millis();
+    past(between);
+    append(&store, (namespace, database, topic), &["m2", "m3"]);
+    let after = wall_millis();
+    let read = store
+        .begin()
+        .now()
+        .unwrap()
+        .topic_after(namespace, database, topic, 0, 100)
+        .now()
+        .unwrap();
+    let instants: Vec<u64> = read
+        .messages
+        .iter()
+        .map(|message| message.appended.unwrap())
+        .collect();
+    assert_eq!(instants.len(), 3);
+    assert!(
+        before <= instants[0] && instants[0] <= between,
+        "{instants:?}"
+    );
+    assert!(
+        between < instants[1] && instants[1] <= after,
+        "{instants:?}"
+    );
+    assert_eq!(instants[1], instants[2], "one commit, one instant");
+}
+
+/// A clock already ahead of this node's — a leader before this one ran fast —
+/// is kept rather than gone back on, so instants never decrease in a topic.
+#[test]
+fn a_topic_clock_never_goes_back() {
+    let (store, namespace, database, topic) = one_topic();
+    let ahead = wall_millis().saturating_add(3_600_000);
+    let clocks = tessari_storage::SYSTEM_TABLES
+        .iter()
+        .find(|(_, name)| *name == "TOPIC_CLOCKS")
+        .unwrap()
+        .0;
+    let mut transaction = store.begin().now().unwrap();
+    transaction.put(
+        RecordAddress::new(
+            tessari_types::NamespaceId::new(0),
+            tessari_types::DatabaseId::new(0),
+            clocks,
+            RecordId::Text(format!(
+                "{}/{}/{}",
+                namespace.get(),
+                database.get(),
+                topic.get()
+            )),
+        ),
+        encode_payload(&Value::from(i64::try_from(ahead).unwrap())).into_bytes(),
+    );
+    transaction.commit().now().unwrap();
+    append(&store, (namespace, database, topic), &["m1"]);
+    let read = store
+        .begin()
+        .now()
+        .unwrap()
+        .topic_after(namespace, database, topic, 0, 100)
+        .now()
+        .unwrap();
+    assert_eq!(read.messages[0].appended, Some(ahead));
+}
+
+/// `SINCE` answers the first position appended at or after an instant, and
+/// nothing when every message is older (ADR-0133 D3).
+#[test]
+fn since_finds_the_first_message_at_or_after_an_instant() {
+    let (store, namespace, database, topic) = one_topic();
+    let since = |instant: u64| {
+        store
+            .begin()
+            .now()
+            .unwrap()
+            .topic_since(namespace, database, topic, instant)
+            .now()
+            .unwrap()
+    };
+    assert_eq!(since(0), None, "an empty topic");
+    let mut instants = Vec::new();
+    for batch in [&["m1"][..], &["m2", "m3"], &["m4"], &["m5"]] {
+        append(&store, (namespace, database, topic), batch);
+        let read = store
+            .begin()
+            .now()
+            .unwrap()
+            .topic_after(namespace, database, topic, 0, 100)
+            .now()
+            .unwrap();
+        let newest = read.messages.last().unwrap().appended.unwrap();
+        instants.push(newest);
+        past(newest);
+    }
+    assert_eq!(since(0), Some(1));
+    assert_eq!(since(instants[0]), Some(1));
+    assert_eq!(
+        since(instants[0].saturating_add(1)),
+        Some(2),
+        "the first of a commit's two"
+    );
+    assert_eq!(since(instants[1]), Some(2));
+    assert_eq!(since(instants[2]), Some(4));
+    assert_eq!(since(instants[3]), Some(5));
+    assert_eq!(since(instants[3].saturating_add(1)), None);
+}
+
+/// A store still holding the format before the instant keeps no clock and
+/// answers no instant, so the build before it can still open the store
+/// (ADR-0133 D3, ADR-0118).
+#[test]
+fn a_store_holding_an_older_format_keeps_no_append_instant() {
+    use tessari_encoding::{FormatVersion, FormatVersionKey, StoreKey, StoreValue};
+    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
+    let mut transaction = store.begin().now().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").now().unwrap();
+    let database = catalog.create_database(namespace.id, "app").now().unwrap();
+    let topic = catalog
+        .create_table(
+            namespace.id,
+            database.id,
+            "events",
+            TableShape {
+                kind: TableKind::Topic(TopicDeclaration::default()),
+                ..TableShape::default()
+            },
+        )
+        .now()
+        .unwrap();
+    transaction.commit().now().unwrap();
+    backend
+        .apply(tessari_kv::WriteBatch::new().put(
+            FormatVersionKey::keyspace(),
+            FormatVersionKey.encode(),
+            FormatVersion::new(8).encode(),
+        ))
+        .now()
+        .unwrap();
+    append(&store, (namespace.id, database.id, topic.id), &["m1"]);
+    let read = store
+        .begin()
+        .now()
+        .unwrap()
+        .topic_after(namespace.id, database.id, topic.id, 0, 100)
+        .now()
+        .unwrap();
+    assert_eq!(read.messages.len(), 1);
+    assert_eq!(read.messages[0].appended, None);
+    let clocks = tessari_storage::SYSTEM_TABLES
+        .iter()
+        .find(|(_, name)| *name == "TOPIC_CLOCKS")
+        .unwrap()
+        .0;
+    let held = store
+        .begin()
+        .now()
+        .unwrap()
+        .get(&RecordAddress::new(
+            tessari_types::NamespaceId::new(0),
+            tessari_types::DatabaseId::new(0),
+            clocks,
+            RecordId::Text(format!(
+                "{}/{}/{}",
+                namespace.id.get(),
+                database.id.get(),
+                topic.id.get()
+            )),
+        ))
+        .now()
+        .unwrap();
+    assert_eq!(held, None, "no clock record on an older format");
+}

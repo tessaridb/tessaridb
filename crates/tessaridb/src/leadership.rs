@@ -184,4 +184,49 @@ impl Db {
             .into_iter()
             .find(|peer| peer.node.as_ref() == Some(node)))
     }
+
+    /// This node's identifier and every member row its catalog keeps — what a
+    /// surface numbers the cluster's nodes by, alike on every node (G079 W5d).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the identity or the catalog cannot be read.
+    pub async fn membership(&self) -> Result<([u8; NODE_ID_LEN], Vec<ReplicaDefinition>)> {
+        let me = self.store.node_identity().await?.id;
+        let mut transaction = self.store.begin().await?;
+        let rows = Catalog::new(&mut transaction).replicas().await?;
+        Ok((me, rows))
+    }
+
+    /// The node leading `namespace.database`'s range when it is not this node;
+    /// `None` when this node leads it, nobody does, or no such database exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read.
+    pub async fn database_led_elsewhere(
+        &self,
+        namespace: &str,
+        database: &str,
+    ) -> Result<Option<[u8; NODE_ID_LEN]>> {
+        let ids = {
+            let mut transaction = self.store.begin().await?;
+            let catalog = Catalog::new(&mut transaction);
+            match catalog.namespace_id(namespace).await? {
+                Some(space) => catalog
+                    .database_id(space, database)
+                    .await?
+                    .map(|named| (space, named)),
+                None => None,
+            }
+        };
+        let Some((space, named)) = ids else {
+            return Ok(None);
+        };
+        Ok(self
+            .store
+            .led_elsewhere(space, named)
+            .await?
+            .map(|(_, node, _)| node))
+    }
 }

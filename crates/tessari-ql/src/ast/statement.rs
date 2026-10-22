@@ -4,7 +4,7 @@ use super::{
     Answer, ColumnDeclaration, ConsumerSource, CreateTarget, Credential, DeleteBound, EdgeClause,
     Edit, Expr, FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name,
     NamespaceChange, OnFailure, RangeExpr, ReachRef, RecordTarget, Select, SetCondition,
-    SpaceBound, TableChange, TableExpiry, TableRef, TopicClauses, UserChange, UserGrant,
+    SpaceBound, TableChange, TableExpiry, TableRef, TopicClauses, TrimBound, UserChange, UserGrant,
     WriteExpiry, Written,
 };
 use crate::token::Span;
@@ -199,6 +199,8 @@ pub enum StatementKind {
         name: Name,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
+        /// `IN MEMORY` — the space's keys live in node memory only (ADR-0130).
+        memory: bool,
         /// `MAX n [EVICT NONE]` — the most keys the space holds (G036).
         limit: Option<SpaceBound>,
     },
@@ -213,7 +215,7 @@ pub enum StatementKind {
         clauses: TopicClauses,
     },
     /// `READ FROM events FOR CONSUMER 'billing' AFTER 41 LIMIT 100` — the
-    /// messages of a topic after a position (G037).
+    /// messages of a topic after a position (G037), or `SINCE` an instant.
     ReadTopic {
         /// The topic.
         topic: TableRef,
@@ -224,8 +226,15 @@ pub enum StatementKind {
         consumer_parameter: Option<crate::ast::ParameterSlot>,
         /// The position to read after, instead of the stored one.
         after: Option<Expr>,
+        /// `SINCE <instant>`: read from the first message appended at or after
+        /// it, instead of after the stored position (ADR-0133 D3).
+        since: Option<Expr>,
+        /// `MEMBER '<name>' [HELD]`: the member of the group reading (ADR-0133).
+        member: Option<Box<crate::ast::GroupMember>>,
         /// The most messages to answer.
         limit: Option<Expr>,
+        /// `PARTITION <n>`: the partition of a split topic to read (ADR-0131).
+        partition: Option<Expr>,
     },
     /// `DEFINE GROUP 'billing' ON TOPIC events ACK DEADLINE 30s DELIVERIES 5
     /// IN FLIGHT 10 DEAD LETTER TO events_dead` — readers under one name who
@@ -256,7 +265,8 @@ pub enum StatementKind {
     },
     /// `ALTER GROUP 'billing' ON TOPIC events START AT 41` — the group next
     /// hands out the message after that position, and forgets what it holds in
-    /// flight.
+    /// flight; `ADD MEMBER 'c'` / `DROP MEMBER 'c'` change its members
+    /// (ADR-0133).
     AlterGroup {
         /// The group.
         name: String,
@@ -265,9 +275,12 @@ pub enum StatementKind {
         name_parameter: Option<crate::ast::ParameterSlot>,
         /// Its topic.
         topic: TableRef,
-        /// The position it is to have been given everything up to.
-        start_at: Expr,
+        /// What changes.
+        change: crate::ast::GroupChange,
     },
+    /// `HAND events FOR CONSUMER 'mail' AT 7 TO 'bob' [IF IDLE 1m]` — held
+    /// messages handed to another member (ADR-0133).
+    HandTopic(Box<crate::ast::Hand>),
     /// `ACK events FOR CONSUMER 'billing' AT 7, 8` — those messages are done.
     AckTopic {
         /// The topic.
@@ -279,6 +292,8 @@ pub enum StatementKind {
         consumer_parameter: Option<crate::ast::ParameterSlot>,
         /// The positions acknowledged.
         positions: Vec<Expr>,
+        /// `PARTITION <n>` of a split topic (ADR-0131).
+        partition: Option<Expr>,
     },
     /// `NACK events FOR CONSUMER 'billing' AT 7 DELAY 5s` — those messages are
     /// to be handed out again, now or after the delay.
@@ -292,8 +307,20 @@ pub enum StatementKind {
         consumer_parameter: Option<crate::ast::ParameterSlot>,
         /// The positions given back.
         positions: Vec<Expr>,
+        /// `PARTITION <n>` of a split topic (ADR-0131).
+        partition: Option<Expr>,
         /// How long before they may be handed out again.
         delay: Option<Duration>,
+    },
+    /// `TRIM events KEEP 1000` / `TRIM events BEFORE 42` — remove a topic's
+    /// oldest messages, the one way a caller removes any (W8c).
+    TrimTopic {
+        /// The topic.
+        topic: TableRef,
+        /// `PARTITION <n>` of a split topic (ADR-0131).
+        partition: Option<Expr>,
+        /// How far the trim reaches.
+        bound: TrimBound,
     },
     /// `DEFINE BUCKET media MAX 5242880` — a table whose records are files.
     ///
@@ -743,6 +770,9 @@ pub enum StatementKind {
         clients: Option<String>,
         /// Its HTTP base (`HTTP AT`), when said — the `Location` a `307` names.
         http: Option<String>,
+        /// Where a Kafka client reaches it (`KAFKA AT`), when said — the broker
+        /// Metadata names for what it leads (G079 W5d).
+        kafka: Option<String>,
         /// What that peer is for, as the words a statement wrote.
         ///
         /// `None` when the declaration did not say, which reads as no roles: a
@@ -1649,6 +1679,12 @@ pub enum StatementKind {
         /// being answered, or that it never does (ADR-0122 A2). Taken only by a
         /// table that declares expiry; absent keeps the instant the record has.
         expire: Option<WriteExpiry>,
+        /// `RETURN POSITION`, or nothing: an insert answers its identities, and
+        /// into a topic it may answer the positions they took instead.
+        answer: Answer,
+        /// `PARTITION <n>`: the partition of a split topic every row lands in
+        /// (ADR-0131).
+        partition: Option<Expr>,
     },
     /// `SELECT * FROM …`
     ///
@@ -1826,6 +1862,9 @@ pub enum StatementKind {
     Throw {
         /// The message. Evaluated, so it may name what went wrong.
         value: Expr,
+        /// `THROW … IF <condition>` refuses only when this holds — a guard.
+        /// A condition answering nothing does not hold, as in `IF`.
+        condition: Option<Expr>,
     },
     /// `UPSERT users:1 = { … }` — write the record whether or not it is there.
     ///
@@ -1969,6 +2008,15 @@ pub enum StatementKind {
         /// How much to add; absent adds one.
         by: Option<Expr>,
     },
+    /// `LIST PUSH queue:'jobs' BACK 'a'`, `HASH SET …`, `MEMBERS ADD …`,
+    /// `SCORES ADD …` — change the container a key holds in one statement
+    /// (G079 C6).
+    Structure {
+        /// The key.
+        target: RecordTarget,
+        /// What is done to it.
+        op: super::StructureOp,
+    },
     /// `EXPIRE sessions:'abc' 30s` — give an existing key an expiry, or move
     /// the one it has (G035). A duration that is zero or negative, or a datetime
     /// already passed, removes the key.
@@ -1983,10 +2031,14 @@ pub enum StatementKind {
         /// The key.
         target: RecordTarget,
     },
-    /// `DEL sessions:'abc'`
+    /// `DEL sessions:'abc'`, or `DEL sessions:'abc' IF = 'v'`, which removes
+    /// the key only while it holds that value and answers whether it did — the
+    /// delete beside `SET … IF =` (G079 C6).
     Del {
         /// The key to remove.
         target: RecordTarget,
+        /// The value the key must hold for the delete to happen.
+        expected: Option<Expr>,
     },
     /// `PUT media:'/logo.png' = 0x0a1b` — a file's whole content.
     ///

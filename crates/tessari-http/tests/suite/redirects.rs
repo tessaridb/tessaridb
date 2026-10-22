@@ -71,6 +71,7 @@ fn one_of_two(addressed: bool) -> Arc<Db> {
             leads: None,
             clients: addressed.then(|| THEIR_CLIENTS.to_owned()),
             http: addressed.then(|| THEIR_HTTP.to_owned()),
+            kafka: None,
             fingerprint: None,
             join: None,
             releasing: false,

@@ -3,7 +3,8 @@
 //!
 //! One connection carries the whole copy, as a base backup streams: a head
 //! naming the reach, the version and where each log stood at it; the state in
-//! chunks; an end with the counts and the topic heads. The leader's read
+//! chunks; the topics' entries in batches; an end with the counts and the topic
+//! heads. The leader's read
 //! transaction and its prune hold live as long as the connection, so a follower
 //! that dies mid-copy holds nothing.
 //!
@@ -13,8 +14,10 @@
 
 use std::time::Duration;
 
-use tessari_encoding::{LogId, LogRecord, NODE_ID_LEN, StoreValue};
-use tessari_storage::{Store, TopicHead};
+use tessari_encoding::{
+    LogId, LogRecord, NODE_ID_LEN, StoreKey, StoreValue, TopicMark, TopicOffsetKey,
+};
+use tessari_storage::{RestoredTopics, Store, TopicEntry, TopicHead};
 use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, TableId};
 
 use crate::collection::Answering;
@@ -28,6 +31,10 @@ use crate::peer::{Hello, PeerFrame};
 /// How many records one chunk frame carries — few enough that a chunk of large
 /// files stays far inside the frame ceiling.
 const COPY_CHUNK: usize = 64;
+
+/// How many topic entries one entries frame carries — each is a key and a few
+/// bytes of mark, so a batch stays far inside the frame ceiling.
+const COPY_ENTRIES: usize = 1_000;
 
 /// What one copy installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +91,15 @@ pub(crate) async fn serve(
         )
         .await?;
     }
+    let mut entries = 0_u64;
+    loop {
+        let page = reader.topic_entries(COPY_ENTRIES).await.map_err(refused)?;
+        if page.is_empty() {
+            break;
+        }
+        entries = entries.saturating_add(u64::try_from(page.len()).unwrap_or(u64::MAX));
+        write(PeerFrame::StateEntries.tag(), entries_body(&page)).await?;
+    }
     let topics = reader.topic_heads().await.map_err(refused)?;
     let mut end = Vec::new();
     frame::put_u64(&mut end, records);
@@ -94,6 +110,7 @@ pub(crate) async fn serve(
         frame::put_u32(&mut end, topic.table.get());
         frame::put_u64(&mut end, topic.last);
     }
+    frame::put_u64(&mut end, entries);
     write(PeerFrame::StateEnd.tag(), end).await?;
     hold.keep_for(Duration::from_secs(
         tessari_constants::REPLICA_COPY_GRACE_SECONDS,
@@ -146,22 +163,35 @@ async fn receive(link: &mut Link, into: &Store) -> Result<Copied> {
     };
     let before = into.committed_version().await.map_err(refused)?;
     let mut records = 0_u64;
+    let mut entries = 0_u64;
+    let mut restored = RestoredTopics::default();
     loop {
         let (tag, body) = next(link).await?;
         if tag == PeerFrame::StateChunk.tag() {
             let chunk = LogRecord::decode(&body).map_err(|_| Error::Malformed)?;
             records = records.saturating_add(u64::try_from(chunk.mutations().len()).unwrap_or(0));
             into.restore_state_chunk(&chunk).await.map_err(refused)?;
+        } else if tag == PeerFrame::StateEntries.tag() {
+            let page = entries_in(&body)?;
+            entries = entries.saturating_add(u64::try_from(page.len()).unwrap_or(u64::MAX));
+            into.restore_topic_entries(&page, &mut restored)
+                .await
+                .map_err(refused)?;
         } else if tag == PeerFrame::StateEnd.tag() {
-            let (carried, topics) = end(&body)?;
-            if carried != records {
-                // A count that disagrees is a copy that lost a chunk on the way:
-                // standing the logs at the leader's positions now would claim a
-                // state this node does not hold.
+            let (carried, topics, sent) = end(&body)?;
+            // A count that disagrees is a copy that lost a frame on the way:
+            // standing the logs at the leader's positions now would claim a
+            // state this node does not hold. A leader of an earlier build
+            // sends no entries and counts none.
+            if carried != records || sent.is_some_and(|sent| sent != entries) {
                 return Err(Error::Malformed);
             }
-            let removed = into.sweep_unreplaced(over, before).await.map_err(refused)?;
-            into.finish_state(&positions, &topics)
+            let mut removed = into.sweep_unreplaced(over, before).await.map_err(refused)?;
+            if sent.is_some() {
+                let unplaced = into.finish_topics(over, &restored).await.map_err(refused)?;
+                removed = removed.saturating_add(unplaced);
+            }
+            into.finish_state(&positions, &restored.heads(topics))
                 .await
                 .map_err(refused)?;
             return Ok(Copied {
@@ -204,7 +234,33 @@ fn head(body: &[u8]) -> Result<Head> {
     Ok((over, Sequence::new(version), positions))
 }
 
-fn end(body: &[u8]) -> Result<(u64, Vec<TopicHead>)> {
+/// A batch of topic entries as an entries frame carries them.
+fn entries_body(page: &[TopicEntry]) -> Vec<u8> {
+    let mut body = Vec::new();
+    frame::put_u32(&mut body, u32::try_from(page.len()).unwrap_or(u32::MAX));
+    for entry in page {
+        frame::put_bytes(&mut body, entry.key.encode().as_slice());
+        frame::put_bytes(&mut body, entry.mark.encode().as_slice());
+    }
+    body
+}
+
+fn entries_in(body: &[u8]) -> Result<Vec<TopicEntry>> {
+    let (count, mut at) = frame::take_u32(body, 0)?;
+    let mut page = Vec::new();
+    for _ in 0..count {
+        let (key, after_key) = frame::take_bytes(body, at)?;
+        let (mark, after) = frame::take_bytes(body, after_key)?;
+        page.push(TopicEntry {
+            key: TopicOffsetKey::decode(&key).map_err(|_| Error::Malformed)?,
+            mark: TopicMark::decode(&mark).map_err(|_| Error::Malformed)?,
+        });
+        at = after;
+    }
+    Ok(page)
+}
+
+fn end(body: &[u8]) -> Result<(u64, Vec<TopicHead>, Option<u64>)> {
     let (records, at) = frame::take_u64(body, 0)?;
     let (count, mut at) = frame::take_u32(body, at)?;
     let mut topics = Vec::new();
@@ -221,5 +277,13 @@ fn end(body: &[u8]) -> Result<(u64, Vec<TopicHead>)> {
         });
         at = next_at;
     }
-    Ok((records, topics))
+    let entries = if at < body.len() {
+        Some(frame::take_u64(body, at)?.0)
+    } else {
+        None
+    };
+    Ok((records, topics, entries))
 }
+
+#[cfg(test)]
+mod tests;

@@ -47,6 +47,7 @@ mod parts;
 mod reporting;
 mod reseeding;
 mod restoring;
+pub use restoring::RestoredTopics;
 mod upgrading;
 use upgrading::{
     give_an_older_log_its_home, give_an_older_log_its_writer, read_format_version,
@@ -244,9 +245,14 @@ pub struct Store {
     /// Whether any record version in this store has ever carried an expiry
     /// (G035). See [`crate::lapse`] for why the commit path asks.
     expiring: Arc<crate::lapse::Expiring>,
+    /// The spaces this node holds in memory, which the backend routes (ADR-0130).
+    held: Arc<crate::memory::HeldSpaces>,
     /// How much of each `PUBLIC` topic's anonymous allowance is spent, on this
     /// node (G037). See [`crate::topic`]'s rate module for why it is not stored.
     public_appends: Arc<crate::topic::PublicRates>,
+    /// The next partition each split topic's keyless message takes, on this
+    /// node (ADR-0131).
+    partition_turns: Arc<crate::topic::PartitionTurns>,
     /// Log divergences refused since this process opened the store.
     ///
     /// Shared with every handle for the same reason the snapshot registry is:

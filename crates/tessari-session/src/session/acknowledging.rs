@@ -59,8 +59,9 @@ impl Session<'_> {
         asked: Option<Acknowledge>,
         span: Span,
     ) -> Result<Option<Waiting>> {
-        // A read commits an empty transaction, and waits for nobody.
-        if !transaction.writes_anything() {
+        // A read commits an empty transaction, and a write held only in
+        // memory lands nothing in the log: neither waits for anybody.
+        if !transaction.lands_in_the_log().await? {
             return Ok(None);
         }
         self.acknowledgement_in(transaction, None, asked, span)

@@ -44,6 +44,12 @@ const chosen = (): Node =>
         "counts from there.",
     ),
     answer("topic-groups", "small"),
+    el("h3", {}, "Partitions"),
+    note(
+      "What a Kafka client sees: a topic never split is its partition 0, and a split topic's " +
+        "partitions are topics of their own, each with its own positions, readers and groups.",
+    ),
+    answer("topic-partitions", "small"),
     el("h3", {}, "Into tables"),
     note(
       "A topic consumer reads this topic as a group member and writes each message into a " +

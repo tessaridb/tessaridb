@@ -198,9 +198,22 @@ impl Error {
             | Self::NotABucket { .. }
             | Self::NotAQueue { .. }
             | Self::NotATopic { .. }
+            | Self::PartitionNotNamed { .. }
+            | Self::KeyHoldsAnotherKind { .. }
+            | Self::NoSuchList { .. }
+            | Self::ListIndexOutOfRange { .. }
+            | Self::NotAWholeNumber { .. }
+            | Self::NameNotText { .. }
+            | Self::MemberIsAContainer { .. }
+            | Self::ScoreNotANumber { .. }
+            | Self::NoSuchPartition { .. }
+            | Self::PartitionKey { .. }
+            | Self::PositionNotDecided { .. }
             | Self::NoSuchGroup { .. }
             | Self::NotAGroup { .. }
             | Self::AfterOnGroup { .. }
+            | Self::NoGroupForMember { .. }
+            | Self::InvalidIdle { .. }
             | Self::DeadLetterIsTheTopic { .. }
             | Self::TopicConsumerSpansDatabases { .. }
             | Self::QuarantineNeedsDeadLetter { .. }
@@ -212,6 +225,7 @@ impl Error {
             | Self::NoDelayField { .. }
             | Self::NotAnInstant { .. }
             | Self::DeduplicationKey { .. }
+            | Self::PartitionsAboveCeiling { .. }
             | Self::ClaimDeadlineUnreachable { .. }
             | Self::NotWrittenByHand { .. }
             | Self::FileIsNotBytes { .. }

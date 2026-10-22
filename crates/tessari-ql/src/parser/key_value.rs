@@ -58,6 +58,19 @@ impl Parser<'_> {
         Ok(SetCondition::Equals(self.expression()?))
     }
 
+    /// The optional `IN MEMORY` after `DEFINE SPACE name` (ADR-0130).
+    ///
+    /// `memory` is contextual, as `max` and `evict` are.
+    pub(super) fn space_in_memory(&mut self) -> Result<bool> {
+        if !self.eat_keyword(Keyword::In) {
+            return Ok(false);
+        }
+        if !self.eat_word("memory") {
+            return Err(self.error_here("`MEMORY` — where an `IN` space keeps its keys"));
+        }
+        Ok(true)
+    }
+
     /// The optional `MAX n [EVICT NONE]` after `DEFINE SPACE name` (G036).
     ///
     /// `max` and `evict` are contextual for the reason every word in this file

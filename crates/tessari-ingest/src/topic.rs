@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tessari_storage::{Catalog, ConsumerDefinition, Feed, Store};
+use tessari_storage::{Catalog, ConsumerDefinition, Feed, Store, TableKind, TopicDeclaration};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -64,6 +64,21 @@ pub(crate) struct Names {
     pub(crate) table: String,
     /// The group read as, written inside `'…'`.
     pub(crate) group: String,
+    /// How many partitions the topic is split into, when it is (ADR-0131).
+    pub(crate) partitions: Option<usize>,
+    /// The one partition this member reads, when the topic is split.
+    pub(crate) partition: Option<usize>,
+}
+
+impl Names {
+    /// What a statement names to reach this member's messages: the topic, or
+    /// one of its partitions.
+    pub(crate) fn source(&self) -> String {
+        match self.partition {
+            Some(partition) => format!("{} PARTITION {partition}", self.topic),
+            None => self.topic.clone(),
+        }
+    }
 }
 
 /// Whether a group name can stand inside `'…'` — the pattern a group is
@@ -109,6 +124,16 @@ async fn declared(
                 .find(|held| held.id == id)
                 .map(|held| held.name.clone())
         };
+        let partitions = tables
+            .iter()
+            .find(|held| held.id == topic)
+            .and_then(|held| match &held.kind {
+                TableKind::Topic(TopicDeclaration {
+                    partitions: Some(partitioning),
+                    ..
+                }) => Some(partitioning.children.len()),
+                _ => None,
+            });
         let names = match (
             namespace,
             database,
@@ -126,6 +151,8 @@ async fn declared(
                     topic,
                     table,
                     group: definition.group.clone(),
+                    partitions,
+                    partition: None,
                 }
             }
             _ => {
@@ -207,13 +234,28 @@ async fn reconcile(store: &Store, running: &mut HashMap<String, Members>) {
         }
         store.running().started(&definition.name);
         let (signal, stopped) = watch::channel(false);
-        let shared = (Arc::new(definition.clone()), Arc::new(names.clone()));
-        let tasks = (0..definition.parallelism)
-            .map(|_| {
+        let shared = Arc::new(definition.clone());
+        // A split topic is read partition by partition: each partition is an
+        // order of its own with its own group, so each gets its members.
+        let sources: Vec<Arc<Names>> = match names.partitions {
+            Some(count) => (0..count)
+                .map(|partition| {
+                    Arc::new(Names {
+                        partition: Some(partition),
+                        ..names.clone()
+                    })
+                })
+                .collect(),
+            None => vec![Arc::new(names.clone())],
+        };
+        let tasks = sources
+            .iter()
+            .flat_map(|source| (0..definition.parallelism).map(move |_| source))
+            .map(|source| {
                 tokio::spawn(member(
                     store.clone(),
-                    Arc::clone(&shared.0),
-                    Arc::clone(&shared.1),
+                    Arc::clone(&shared),
+                    Arc::clone(source),
                     stopped.clone(),
                 ))
             })

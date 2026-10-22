@@ -6,6 +6,7 @@
 //! together.
 
 mod conflicts;
+mod held;
 #[cfg(test)]
 mod moved_map;
 mod ranges;
@@ -85,7 +86,7 @@ impl Drop for Transaction<'_> {
 /// back before it sleeps (`crate::gate`), so a waiting writer blocks only itself,
 /// and it waits as a suspended task rather than a sleeping thread, so the worker
 /// it runs on goes on serving every other task meanwhile.
-async fn back_off(attempt: u32) {
+pub async fn back_off(attempt: u32) {
     tokio::time::sleep(waiting_for(attempt, jitter())).await;
 }
 
@@ -184,6 +185,7 @@ impl Transaction<'_> {
             self.lifetimes
                 .insert(address.clone(), super::Lifetime::Carried(at));
         }
+        self.field_expiring.remove(&address);
         self.writes.insert(address, RecordValue::Present(payload));
     }
 
@@ -271,6 +273,7 @@ impl Transaction<'_> {
     pub fn delete(&mut self, address: RecordAddress) {
         self.expiring.remove(&address);
         self.lifetimes.remove(&address);
+        self.field_expiring.remove(&address);
         self.writes.insert(address, RecordValue::Tombstone);
     }
 
@@ -316,7 +319,7 @@ impl Transaction<'_> {
     /// record this one wrote, [`Error::CommitContention`] when every attempt
     /// lost the race for the committed tail, or a substrate error.
     pub async fn commit(self) -> Result<Sequence> {
-        self.settle(Settle::Apply)
+        self.commit_placed()
             .await
             .map(|committed| committed.sequence)
     }
@@ -332,7 +335,16 @@ impl Transaction<'_> {
     ///
     /// The same as [`commit`](Self::commit).
     pub async fn commit_placed(self) -> Result<Committed> {
-        self.settle(Settle::Apply).await
+        let store = self.store;
+        let committed = self.settle(Settle::Apply).await?;
+        // With this transaction's snapshot gone, a space it dropped leaves node
+        // memory now, unless an older reader still sees it (ADR-0130). The
+        // commit has landed, so a failure here is the expiry pass's to retry,
+        // not this caller's to see.
+        if let Err(failure) = store.release_dropped_spaces().await {
+            tracing::warn!(error = %failure, "a dropped space stays in memory");
+        }
+        Ok(committed)
     }
 
     /// Run every check a commit runs, then discard the work.
@@ -406,9 +418,15 @@ impl Transaction<'_> {
                 table: address.table,
                 id: address.id.clone(),
                 shard: placement.shard_of(address),
-                value: match self.expiring.get(address) {
-                    Some(at) => StampedValue::stamped(stamp, value.clone()).expiring(*at),
-                    None => StampedValue::stamped(stamp, value.clone()),
+                value: {
+                    let stamped = match self.expiring.get(address) {
+                        Some(at) => StampedValue::stamped(stamp, value.clone()).expiring(*at),
+                        None => StampedValue::stamped(stamp, value.clone()),
+                    };
+                    match self.field_expiring.get(address) {
+                        Some(fields) => stamped.with_field_expiry(fields.clone()),
+                        None => stamped,
+                    }
                 },
             });
         }

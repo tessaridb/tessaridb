@@ -86,6 +86,13 @@ impl Store {
             .admit(topic, rule, count, std::time::Instant::now())
     }
 
+    /// The turn the next keyless message of the split topic `topic` takes on
+    /// this node, counting from 0 (ADR-0131). Counted in memory.
+    #[must_use]
+    pub fn partition_turn(&self, topic: TableId) -> u64 {
+        self.partition_turns.take(topic)
+    }
+
     /// Which tables carry a retention floor.
     pub(crate) fn expiring(&self) -> &crate::lapse::Expiring {
         &self.expiring
@@ -366,6 +373,45 @@ impl Store {
     /// writes are futures, so no store call blocks the thread that drives it.
     pub(crate) fn backend(&self) -> &dyn tessari_kv::KvBackend {
         &*self.backend
+    }
+
+    /// The spaces this node holds in memory (ADR-0130).
+    pub(crate) fn held_spaces(&self) -> &crate::memory::HeldSpaces {
+        &self.held
+    }
+
+    /// The spaces held in node memory, each with its own keys.
+    pub(crate) fn held_memory(&self) -> Vec<Arc<crate::memory::Space>> {
+        self.held.all()
+    }
+
+    /// How many keys node memory holds for the held spaces, the version key
+    /// aside — what a test of a released space counts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when node memory cannot be walked.
+    #[cfg(feature = "test-support")]
+    pub async fn held_keys(&self) -> Result<usize> {
+        use tessari_encoding::StoreKey as _;
+        use tessari_kv::KvBackend as _;
+        let version = tessari_encoding::VersionPositionKey.encode();
+        let mut held = 0_usize;
+        for space in self.held_memory() {
+            for keyspace in tessari_kv::Keyspace::ALL {
+                let pairs = space
+                    .memory()
+                    .scan(&tessari_kv::ScanRequest {
+                        keyspace: *keyspace,
+                        range: tessari_kv::KeyRange::prefix(&[]),
+                        direction: tessari_kv::ScanDirection::Forward,
+                        limit: None,
+                    })
+                    .await?;
+                held = held.saturating_add(pairs.iter().filter(|(key, _)| *key != version).count());
+            }
+        }
+        Ok(held)
     }
 
     /// The backend as shared, for what holds it beyond one call.

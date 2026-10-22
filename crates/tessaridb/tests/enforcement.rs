@@ -528,7 +528,18 @@ const TABLES: &[Table] = &[
         // for its directory to be released. **Exempt under E3**: it takes the
         // database by value, so no session can be open on it, takes no reach and
         // returns no record; the binary calls it when it stops.
-        expected: 41,
+        //
+        // 43 since Kafka Metadata names a cluster (G079 W5d-4):
+        // `Db::membership` reads this node's id and every member row, and
+        // `Db::database_led_elsewhere` names the node leading a database's
+        // range. Both **exempt on `member`'s ground**: reads of what was
+        // applied, disclosing topology — node ids, addresses, who leads — and
+        // no record, user or grant. The Kafka surface answers them in Metadata
+        // and FindCoordinator to a caller it signed in, and names a topic's
+        // leader only after `INFO FOR TOPIC` ran as that caller.
+        // Re-classification trigger: `member`'s — an answer to a caller who
+        // was not signed in.
+        expected: 43,
         count: |text| public_functions(&every_block(text, "impl Db")),
     },
     Table {
@@ -1095,7 +1106,43 @@ const TABLES: &[Table] = &[
         // `Store::close` arrived. **Exempt, as the end of a lifetime**: it takes
         // the store by value, so no session or transaction can be open on it,
         // reads and writes no record, and refuses while another handle lives.
-        expected: 80,
+        //
+        // 81 since a dropped in-memory space is released (G079 W5c):
+        // `Store::held_keys`. **Exempt, as test support**: it is compiled only
+        // under the `test-support` feature, which no shipped binary enables, and
+        // answers how many keys node memory holds — a count, never a key or a
+        // value. Re-classification trigger: the feature reaching a shipped build,
+        // or the method answering anything but a count.
+        //
+        // 82 since a read of a held space is sent to its leader (G079 W5d):
+        // `Store::led_elsewhere`. **Exempt, on `tail_leadership`'s ground**: it
+        // answers who leads a database's range — the endpoint, node and epoch
+        // every `WriteIsElsewhere` already carries — and reads no record, catalog
+        // entry beyond the membership and leadership rows, or grant. Its caller
+        // is the session's read routing, after the statement is authorized.
+        // Re-classification trigger: it answering anything about a record.
+        //
+        // 83 since a topic can be split (G079 W6a, ADR-0131):
+        // `Store::partition_turn`. Classified **not a data path**, on
+        // `admit_public_append`'s ground: it advances a per-node count held in
+        // this process's memory and answers the next turn — a number, never a
+        // record, catalog entry or grant. Its caller is the session's append,
+        // after the statement is authorized, and the turn only moves which
+        // partition a keyless message lands in. Re-classification trigger: the
+        // turn deciding whether a write lands rather than where.
+        //
+        // 84 since a state copy carries each topic's positions (G079 W8b-2,
+        // ADR-0133 D3): `Store::restore_topic_entries` and
+        // `Store::finish_topics`, the second removing messages no entry places
+        // with no identity, on the same ground. Classified **exempt,
+        // on `restore_state_chunk`'s ground**: it writes index entries with no
+        // identity, for messages the store already holds, and its callers are
+        // `backup::read_state` (`--restore`, a process holding the store, which
+        // refuses a store that holds anything) and the follower's own copy
+        // (`copying::copy`) — neither reachable from a session or a route.
+        // Re-classification trigger: any caller reachable from a session or a
+        // route.
+        expected: 85,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1348,7 +1395,17 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 167 since `Store::open_async` (G077 W5a), classified above.
     //
     // 168 since `Db::close` (G077 W6b), classified above.
-    assert_eq!(total, 168, "the counted tables no longer sum to 168");
+    //
+    // 169 since `Store::held_keys` (G079 W5c), test support, classified above.
+    //
+    // 170 since `Store::led_elsewhere` (G079 W5d), classified above.
+    // 172 since `Db::membership` and `Db::database_led_elsewhere` (G079 W5d-4).
+    //
+    // 173 since `Store::partition_turn` (G079 W6a), classified above.
+    //
+    // 175 since `Store::restore_topic_entries` and `Store::finish_topics`
+    // (G079 W8b-2), classified above.
+    assert_eq!(total, 175, "the counted tables no longer sum to 175");
 }
 
 /// Every `.rs` file under a directory.

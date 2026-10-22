@@ -30,6 +30,10 @@ pub(crate) async fn described_replica(
             "http".to_owned(),
             replica.http.as_deref().map_or(Value::Null, Value::from),
         ),
+        (
+            "kafka".to_owned(),
+            replica.kafka.as_deref().map_or(Value::Null, Value::from),
+        ),
         // Reported because it is now *routing*, not decoration: this is the
         // field that decides where a forwarded write lands, and a setting an
         // operator can write but cannot read back is one they cannot check

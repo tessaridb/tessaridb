@@ -289,8 +289,16 @@ async fn placed_ids(store: &Store) -> Result<Vec<(TableId, String, String, Strin
 }
 
 /// Whether a table's kind carries records a script writes.
+///
+/// A space held in memory does not: its keys are gone after a restart, so a
+/// backup that restored them would make them outlive the node (ADR-0130).
 const fn holds_records(kind: &TableKind) -> bool {
-    !matches!(kind, TableKind::View(_) | TableKind::Vault(_))
+    !matches!(
+        kind,
+        TableKind::View(_)
+            | TableKind::Vault(_)
+            | TableKind::Space(tessari_storage::SpaceDeclaration { memory: true, .. })
+    )
 }
 
 /// The params of the database `reader` has selected, in name order.

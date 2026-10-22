@@ -64,7 +64,7 @@ mod outcome;
 mod param;
 mod plan;
 mod presented;
-pub use presented::{Certificates, ClientTransport, Presented};
+pub use presented::{Certificates, ClientTransport, Listener, Presented};
 mod pushdown;
 mod queue;
 mod rank;

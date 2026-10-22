@@ -18,7 +18,7 @@ impl Session<'_> {
     /// Asked where the statement runs, and never where a replicated record is
     /// applied: the leader decides whether the newer value is written at all,
     /// and a replica applying it has already been told it was.
-    pub(super) async fn refuse_a_format_the_store_does_not_hold(
+    pub(crate) async fn refuse_a_format_the_store_does_not_hold(
         &self,
         what: &'static str,
         needs: FormatVersion,

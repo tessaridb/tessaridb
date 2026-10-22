@@ -2608,6 +2608,17 @@ pub enum Error {
         span: Span,
     },
 
+    /// `RETURN POSITION` inside `BEGIN … COMMIT`, where no position is decided
+    /// yet (ADR-0129 D10).
+    #[error(
+        "a position is decided when the message commits, and this write is inside a transaction (at {span}) — \
+         run it on its own, or read the positions with `READ FROM` after the `COMMIT`"
+    )]
+    PositionNotDecided {
+        /// Where the clause was written.
+        span: Span,
+    },
+
     /// A group of that name already reads the topic (G042).
     #[error(
         "{topic} already has a group named '{group}' (at {span}) — `IF NOT EXISTS` accepts \
@@ -2645,6 +2656,23 @@ pub enum Error {
          acknowledgement explicit"
     )]
     NotAGroup {
+        /// The reader.
+        consumer: String,
+        /// The topic as written.
+        topic: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// `MEMBER` on a read under a name that is no group's (ADR-0133).
+    ///
+    /// Refused rather than read as the plain reader: a member that was never
+    /// recorded would be told its messages are held for it.
+    #[error(
+        "'{consumer}' reads {topic} without a group, so it has no members (at {span}) — \
+         `DEFINE GROUP` makes one"
+    )]
+    NoGroupForMember {
         /// The reader.
         consumer: String,
         /// The topic as written.
@@ -2724,6 +2752,13 @@ pub enum Error {
         kind: &'static str,
         /// The statement that names it.
         instead: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// `HAND … IF IDLE` given something that is not a duration (ADR-0133).
+    #[error("a duration — how long a held message has waited since it was delivered (at {span})")]
+    InvalidIdle {
         /// Where it was written.
         span: Span,
     },
@@ -2821,6 +2856,136 @@ pub enum Error {
         /// The key field the topic declares.
         field: String,
         /// The value's type.
+        found: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A topic split into more partitions than one topic may have (ADR-0131).
+    #[error(
+        "a topic is split into 1 to {ceiling} partitions, not {asked} (at {span})",
+        ceiling = tessari_constants::TOPIC_MAX_PARTITIONS
+    )]
+    PartitionsAboveCeiling {
+        /// The count asked for.
+        asked: u64,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A read of a split topic that names no partition (ADR-0131): the
+    /// partitions have no single order between them to answer in.
+    #[error(
+        "{topic} is split into partitions and has no one order to read (at {span}) — \
+         read one with `READ FROM {topic} PARTITION <n>`"
+    )]
+    PartitionNotNamed {
+        /// The topic as written.
+        topic: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A container write on a key holding another kind (G079 C6).
+    #[error("{key} holds a {holds}, not a {wanted} (at {span})")]
+    KeyHoldsAnotherKind {
+        /// The key.
+        key: String,
+        /// What it holds.
+        holds: &'static str,
+        /// What the statement writes.
+        wanted: &'static str,
+        /// Where the key was written.
+        span: Span,
+    },
+
+    /// `LIST SET` on a key holding no list (G079 C6).
+    #[error("no list {key} to set an element of (at {span})")]
+    NoSuchList {
+        /// The key.
+        key: String,
+        /// Where the key was written.
+        span: Span,
+    },
+
+    /// `LIST SET` at an index the list does not have (G079 C6).
+    #[error("index {index} is outside the list {key}, which holds {length} (at {span})")]
+    ListIndexOutOfRange {
+        /// The key.
+        key: String,
+        /// The index as written.
+        index: i64,
+        /// How many elements the list holds.
+        length: u64,
+        /// Where the index was written.
+        span: Span,
+    },
+
+    /// An index or a limit that is not a whole number of the right sign
+    /// (G079 C6).
+    #[error("a {what} is a whole number, and this is not one (at {span})")]
+    NotAWholeNumber {
+        /// What the number was for.
+        what: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A hash field or a ranked member that is not text (G079 C6): an object's
+    /// names are text.
+    #[error("a {what} is named by text, and this is {found} (at {span})")]
+    NameNotText {
+        /// What the name was for.
+        what: &'static str,
+        /// The kind supplied.
+        found: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A member of a set that is itself a container, or nothing (G079 C6).
+    #[error("a member is a single value, and this is {found} (at {span})")]
+    MemberIsAContainer {
+        /// The kind supplied.
+        found: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A score that is not a finite number (G079 C6).
+    #[error("a score is a finite number, and this is {found} (at {span})")]
+    ScoreNotANumber {
+        /// What was supplied.
+        found: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A partition a topic does not have (ADR-0131).
+    #[error(
+        "{topic} has {count} partition(s), numbered from 0 — there is no partition {asked} (at {span})"
+    )]
+    NoSuchPartition {
+        /// The topic as written.
+        topic: String,
+        /// How many partitions it has; a topic never split has one.
+        count: u64,
+        /// The partition asked for.
+        asked: u64,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A split topic's key field holding a value no partition can be chosen
+    /// by (ADR-0131).
+    #[error(
+        "a topic is split by `{field}`, which holds {found} here — a string, an integer, a uuid or \
+         bytes chooses a partition (at {span})"
+    )]
+    PartitionKey {
+        /// The field the topic is split by.
+        field: String,
+        /// What the field held.
         found: &'static str,
         /// Where the statement is.
         span: Span,

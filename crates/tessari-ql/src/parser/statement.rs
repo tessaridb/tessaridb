@@ -94,8 +94,14 @@ impl Parser<'_> {
                 self.advance();
                 // The value position: the message is a value, and a bare name
                 // here would be a table exactly as it is in every other one.
+                let value = self.expression()?;
                 StatementKind::Throw {
-                    value: self.expression()?,
+                    value,
+                    condition: if self.eat_keyword(Keyword::If) {
+                        Some(self.expression()?)
+                    } else {
+                        None
+                    },
                 }
             }
             Some(Keyword::Set) => self.write_statement(Keyword::Set)?,
@@ -227,9 +233,14 @@ impl Parser<'_> {
             Some(Keyword::Backup) => self.backup_statement()?,
             Some(Keyword::Del) => {
                 self.advance();
-                StatementKind::Del {
-                    target: self.record_target()?,
-                }
+                let target = self.record_target()?;
+                let expected = if self.eat_keyword(Keyword::If) {
+                    self.expect_punct(Punct::Equals, "`=` and the value the key must hold")?;
+                    Some(self.expression()?)
+                } else {
+                    None
+                };
+                StatementKind::Del { target, expected }
             }
             Some(Keyword::Relate) => self.relate_statement()?,
             Some(Keyword::Keys) => self.keys_statement()?,
@@ -263,11 +274,19 @@ impl Parser<'_> {
             _ if self.eat_word("claim") => self.claim_statement(start)?,
             _ if self.eat_word("ack") => self.ack_statement()?,
             _ if self.eat_word("nack") => self.nack_statement()?,
+            // `trim` for the same reason: a text column called `trim` is ordinary.
+            _ if self.eat_word("trim") => self.trim_statement()?,
+            _ if self.eat_word("hand") => self.hand_statement()?,
             // `expire` and `persist` for the same reason as `claim`: a cache's
             // own tables are where an `expire` column lives (G035).
             _ if self.eat_word("expire") => self.expire_statement()?,
             _ if self.eat_word("persist") => self.persist_statement()?,
             _ if self.eat_word("incr") => self.incr_statement()?,
+            // The container writes (G079 C6), contextual for the same reason.
+            _ if self.eat_word("list") => self.list_statement()?,
+            _ if self.eat_word("hash") => self.hash_statement()?,
+            _ if self.eat_word("members") => self.members_statement()?,
+            _ if self.eat_word("scores") => self.scores_statement()?,
             _ if self.eat_word("release") => self.release_statement(start)?,
             _ if self.eat_word("reveal") => self.reveal_statement(start)?,
             _ if self.eat_word("add") => self.add_recipient_statement(start)?,

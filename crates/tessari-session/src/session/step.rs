@@ -3,9 +3,11 @@
 use super::{Consumer, Session, advised, conflicting, read_version, settle};
 use crate::error::{Error, Result};
 use crate::outcome::Outcome;
-use tessari_ql::{Statement, StatementKind};
-use tessari_storage::{Store, Transaction};
-use tessari_types::Sequence;
+use tessari_ql::{Answer, CreateTarget, Statement, StatementKind, TableRef};
+use tessari_storage::{
+    Catalog, Store, TableDefinition, TableKind, TopicDeclaration, Transaction, back_off,
+};
+use tessari_types::{Number, Sequence, Value};
 
 impl<'a> Session<'a> {
     /// One statement, inside the open transaction or in one of its own.
@@ -26,6 +28,11 @@ impl<'a> Session<'a> {
         let expanded = self.expand_views(store, &statement.kind).await?;
         let kind = expanded.as_ref().unwrap_or(&statement.kind);
         self.authorize(store, kind, span).await?;
+        // A write is sent to the leader by its commit; a read of a held space
+        // is sent there here, before it can answer from this node (W5d).
+        if matches!(crate::Effect::of(kind), crate::Effect::Read) {
+            self.held_read_here(store, kind, span).await?;
+        }
         match kind {
             StatementKind::Use {
                 namespace,
@@ -140,6 +147,9 @@ impl<'a> Session<'a> {
                 }
                 // A transaction is one snapshot too, for the same reason.
                 (None, Some((transaction, _))) => {
+                    if answers_position(other).is_some() {
+                        return Err(Error::PositionNotDecided { span });
+                    }
                     self.acknowledge_open = self.acknowledge_open.max(statement.acknowledge);
                     self.across_open |= statement.across;
                     let gather = self.gather.take();
@@ -153,6 +163,7 @@ impl<'a> Session<'a> {
                     // the caller would do (`crate::kv::atomic`).
                     let retried = crate::kv::retried_on_conflict(other);
                     let started = std::time::Instant::now();
+                    let mut attempt = 0_u32;
                     loop {
                         let mut transaction = store.begin().await?;
                         let outcome = self.execute(&mut transaction, other, span).await?;
@@ -170,6 +181,9 @@ impl<'a> Session<'a> {
                                 if let StatementKind::DefineRollup { name, source, .. } = other {
                                     self.backfilled(store, source, name).await?;
                                 }
+                                if let Some(table) = answers_position(other) {
+                                    return self.positioned(store, table, outcome).await;
+                                }
                                 return Ok(outcome);
                             }
                             Err(Error::Store(refusal))
@@ -177,8 +191,11 @@ impl<'a> Session<'a> {
                                     && conflicting(&refusal)
                                     && started.elapsed() < crate::kv::CONFLICT_DEADLINE =>
                             {
-                                // Let the winner finish before reading again.
-                                std::thread::yield_now();
+                                // Let the winner finish before reading again,
+                                // at a jittered distance so that the losers do
+                                // not all read again together.
+                                attempt = attempt.saturating_add(1);
+                                back_off(attempt).await;
                             }
                             Err(refusal) => return Err(refusal),
                         }
@@ -197,6 +214,7 @@ impl<'a> Session<'a> {
         name: &tessari_ql::Name,
     ) -> Result<()> {
         let started = std::time::Instant::now();
+        let mut attempt = 0_u32;
         loop {
             let mut transaction = store.begin().await?;
             self.backfill_rollup(&mut transaction, source, name).await?;
@@ -206,10 +224,111 @@ impl<'a> Session<'a> {
                     if conflicting(&refusal)
                         && started.elapsed() < crate::kv::CONFLICT_DEADLINE =>
                 {
-                    std::thread::yield_now();
+                    attempt = attempt.saturating_add(1);
+                    back_off(attempt).await;
                 }
                 Err(refusal) => return Err(refusal),
             }
         }
+    }
+}
+
+impl<'a> Session<'a> {
+    /// The positions a committed append's messages took, in place of their
+    /// identities (ADR-0129 D10).
+    ///
+    /// Read after the commit, because that is where a position is decided; a
+    /// message another node is still applying answers `NONE`.
+    async fn positioned(
+        &self,
+        store: &'a Store,
+        table: &TableRef,
+        outcome: Outcome,
+    ) -> Result<Outcome> {
+        let Outcome::Keys(ids) = outcome else {
+            return Ok(outcome);
+        };
+        let mut transaction = store.begin().await?;
+        let (context, id) = self.resolve_table(&mut transaction, table).await?;
+        let children = match Catalog::new(&mut transaction).table(id).await? {
+            Some(TableDefinition {
+                kind:
+                    TableKind::Topic(TopicDeclaration {
+                        partitions: Some(partitioning),
+                        ..
+                    }),
+                ..
+            }) => partitioning.children,
+            _ => Vec::new(),
+        };
+        if !children.is_empty() {
+            // A split topic's message holds a position in the partition it
+            // landed in, so the answer names both (ADR-0131).
+            let mut placed: Vec<Option<(usize, u64)>> = vec![None; ids.len()];
+            for (partition, child) in children.into_iter().enumerate() {
+                let positions = transaction
+                    .topic_positions(context.namespace, context.database, child, &ids)
+                    .await?;
+                for (slot, position) in placed.iter_mut().zip(positions) {
+                    if slot.is_none() {
+                        *slot = position.map(|position| (partition, position));
+                    }
+                }
+            }
+            let whole = |number: u64| {
+                Value::Number(Number::Integer(i64::try_from(number).unwrap_or(i64::MAX)))
+            };
+            return Ok(Outcome::Value(Value::Array(
+                placed
+                    .into_iter()
+                    .map(|place| {
+                        place.map_or(Value::None, |(partition, position)| {
+                            Value::Object(std::collections::BTreeMap::from([
+                                (
+                                    "partition".to_owned(),
+                                    whole(u64::try_from(partition).unwrap_or(u64::MAX)),
+                                ),
+                                ("position".to_owned(), whole(position)),
+                            ]))
+                        })
+                    })
+                    .collect(),
+            )));
+        }
+        let positions = transaction
+            .topic_positions(context.namespace, context.database, id, &ids)
+            .await?;
+        Ok(Outcome::Value(Value::Array(
+            positions
+                .into_iter()
+                .map(|position| {
+                    position.map_or(Value::None, |held| {
+                        Value::Number(Number::Integer(i64::try_from(held).unwrap_or(i64::MAX)))
+                    })
+                })
+                .collect(),
+        )))
+    }
+}
+
+/// The topic a `RETURN POSITION` append writes, if the statement is one.
+fn answers_position(kind: &StatementKind) -> Option<&TableRef> {
+    match kind {
+        StatementKind::Insert {
+            table,
+            answer: Answer::Position,
+            ..
+        } => Some(table),
+        StatementKind::Create {
+            target: CreateTarget::Generated(table),
+            answer: Answer::Position,
+            ..
+        } => Some(table),
+        StatementKind::Create {
+            target: CreateTarget::Named(target),
+            answer: Answer::Position,
+            ..
+        } => Some(&target.table),
+        _ => None,
     }
 }

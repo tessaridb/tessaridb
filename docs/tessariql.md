@@ -3995,7 +3995,13 @@ BEGIN;
 UPDATE orders:1 SET total = 40;
 THROW IF total > 100 THEN 'over the limit' ELSE 'fine' END;
 COMMIT;
+
+THROW 'already paid' IF (GET orders:1).paid;
 ```
+
+`THROW … IF <condition>` refuses only when the condition holds, so a guard reads
+as one. A condition that answers nothing does not hold, exactly as in `IF`, and
+one that is not a truth at all is refused as the mistake it is.
 
 `IF` made a decision **computable**; `THROW` makes it **enforceable**. Before it,
 every refusal had to be a condition the store itself happened to check — so a
@@ -6797,7 +6803,9 @@ KEYS FROM sessions RANGE 'a'..'m';
 - `SET` writes; the whole value is replaced, never merged.
 - `GET` returns the value, or `NONE` when the key is not there. `NONE` and a
   stored `NULL` are different answers, which is the point of having both.
-- `DEL` removes the key.
+- `DEL` removes the key. `DEL k IF = v` removes it only while it still holds `v`
+  and answers whether it did — the delete beside `SET … IF =`, so a lease is
+  released only by its holder.
 - `KEYS` lists keys, optionally over a range. A range is meaningful because keys
   are record ids and record ids are order-encoded (`docs/key-grammar.md` §5), so
   the bound names a contiguous stretch of the space rather than an arbitrary
@@ -6820,6 +6828,9 @@ RETURN TTL sessions:'abc';
 - A `SET` replaces the whole version, so a `SET` without `EXPIRE` **clears** an
   expiry the key had. A `SET` whose `EXPIRE` is not in the future is refused and
   writes nothing.
+- `EXPIRE NULL` writes a key that never expires — `NULL` is what `TTL` answers
+  for one — so `SET b = GET a EXPIRE TTL a` copies a key with its expiry, whether
+  it has one or not. `TTL` of a missing key is `NONE`, which stays refused.
 - `EXPIRE key when` sets or moves the expiry of a key that exists and answers
   `true`, or answers `false` when there is no key. A duration that is zero or
   negative, or a datetime already past, **removes** the key.
@@ -6894,8 +6905,135 @@ DEFINE SPACE tickets MAX 500 EVICT NONE;
   writers adding different keys at once cannot both pass it. Evictions are
   ordinary deletes carried in that commit's log record: a follower applies them
   and never evicts on its own, and the change feed shows them.
-- A space is written back by `INFO FOR TABLE` as `DEFINE SPACE name [MAX n
-  [EVICT NONE]]`.
+- A space is written back by `INFO FOR TABLE` as `DEFINE SPACE name [IN MEMORY]
+  [MAX n [EVICT NONE]]`.
+
+### A space held in memory
+
+```
+DEFINE SPACE hot IN MEMORY MAX 100000;
+```
+
+- The definition is ordinary catalog: it is replicated, backed up and kept across
+  a restart. The space's **keys** live in this node's memory only — a write
+  takes no log record and no device sync, no follower receives it, no backup
+  carries it, and a restart empties the space.
+- Everything else is a space's: transactions, `INCR`, conditional `SET`, expiry,
+  `MAX`/`EVICT NONE`, `KEYS` walks.
+- `MAX n` is required, because a space in memory with no limit is a node that
+  runs out of memory.
+- A transaction that writes a held space and anything durable is refused with
+  **`InMemoryBesideDurable`**: the two would not survive a restart together.
+- On a cluster a held space belongs to the **leader of its range**, as every
+  write does: one copy, in that node's memory. A write sent to another node is
+  redirected to the leader (**`WriteIsElsewhere`**), a node holding no
+  leadership refuses it as it refuses any write, and a failover starts the
+  space empty on the new leader, as a restart does. A read of it on another
+  node is redirected to the leader too (**`ReadIsElsewhere`**), because no
+  other node holds any of it and an answer there would pass for an empty space.
+  A held write puts nothing in the log, so it is answered on the leader without
+  waiting for the copies its namespace's `ACKNOWLEDGE` asks of durable writes.
+- A namespace more than one node may write (`MULTI MASTER`) has no one owner
+  for a held space, and a write to one is refused with
+  **`InMemoryOnACluster`**.
+- Each held space keeps its keys in a map of its own. `DROP SPACE` frees that
+  map as soon as the drop commits — or, when a transaction that began before
+  the drop is still open, as soon as the last such transaction ends.
+
+### Data structures on a space
+
+A key may hold a list, a hash, a set of members, or members ranked by score,
+and each is changed by a statement of its own that reads the key and writes it
+— atomic the way `INCR` is.
+
+```
+LIST PUSH queue:'jobs' BACK 'a', 'b';
+LIST PUSH queue:'jobs' FRONT 'z' IF PRESENT;
+LIST POP queue:'jobs' FRONT;
+LIST POP queue:'jobs' BACK LIMIT 10;
+LIST SET queue:'jobs' AT -1 = 'last';
+LIST TRIM queue:'jobs' FROM 0 TO 99;
+LIST REMOVE queue:'jobs' 'a' LIMIT 2 FROM BACK;
+LIST INSERT queue:'jobs' 'x' BEFORE 'b';
+LIST MOVE queue:'jobs' BACK TO queue:'done' FRONT;
+
+HASH SET carts:'u1' 'apples' = 3, 'pears' = 1;
+HASH SET carts:'u1' 'plums' = 2 IF ABSENT;
+HASH REMOVE carts:'u1' 'pears';
+HASH INCR carts:'u1' 'apples' BY 2;
+HASH EXPIRE carts:'u1' 'plums' AT 30m IF NONE;
+HASH TTL carts:'u1' 'plums', 'apples';
+HASH PERSIST carts:'u1' 'plums';
+
+MEMBERS ADD tags:'post:7' 'rust', 'db';
+MEMBERS REMOVE tags:'post:7' 'db';
+MEMBERS POP tags:'post:7' LIMIT 2;
+MEMBERS MOVE tags:'post:7' 'rust' TO tags:'post:8';
+
+SCORES ADD board:'top' 'ada' = 10, 'bob' = 7;
+SCORES ADD board:'top' 'bob' = 9 IF GREATER CHANGED;
+SCORES ADD board:'top' 'cy' = 1 IF ABSENT;
+SCORES INCR board:'top' 'ada' BY 1.5;
+SCORES REMOVE board:'top' 'cy';
+SCORES REMOVE board:'top' RANK FROM 0 TO -11;
+SCORES REMOVE board:'top' SCORE FROM NONE TO 2 EXCLUSIVE;
+SCORES REMOVE board:'top' MEMBER FROM 'a' TO 'c';
+SCORES POP board:'top' HIGHEST LIMIT 3;
+```
+
+- A list is an array, a hash an object of fields, a set of members a set, and a
+  ranking a set of `[score, member]` pairs — so the set's own order, score and
+  then member, is the ranking, lowest first. They are ordinary values: `GET
+  carts:'u1'` reads the whole hash, `(GET carts:'u1').apples` one field,
+  `array::len(GET queue:'jobs')` a list's length.
+- Each statement answers what it did: `LIST PUSH` the new length, `LIST POP`
+  the element (or an array of them with `LIMIT`), `LIST REMOVE`, `HASH SET`,
+  `HASH REMOVE`, `MEMBERS ADD`, `MEMBERS REMOVE` and `SCORES REMOVE` how many
+  elements they added or removed, `HASH INCR` and `SCORES INCR` the new number,
+  `LIST INSERT` the new length — `-1` when the element it goes beside is not
+  there, `0` when the list is not — `MEMBERS MOVE` whether it moved, and
+  `SCORES POP` `[[member, score], …]`. `SCORES ADD … CHANGED` counts members
+  given another score as well as new ones.
+- `LIST PUSH … FRONT` puts each value at the front in turn, so the last one
+  named ends first. Indexes count from zero at the front and from `-1` at the
+  back; `LIST TRIM` keeps the elements from the first index to the second, both
+  included. `MEMBERS POP` takes members at random.
+- `SCORES REMOVE … RANK FROM a TO b` removes a ranking's members by position,
+  lowest first and from `-1` at the highest, both ends included; `SCORE FROM lo
+  TO hi` by score and `MEMBER FROM lo TO hi` by member text. Either end of those
+  two may be followed by `EXCLUSIVE` to leave it out, and an end that is `NONE`
+  leaves that side open. Each answers how many went.
+- A removal that empties a container **deletes the key**: no key holds an empty
+  list, hash or set. A write keeps the expiry the key had, as `INCR` does.
+- A hash field may stop being answered at an instant of its own:
+  `HASH EXPIRE k f, … AT when [IF NONE | IF SOME | IF LATER | IF SOONER]`, where
+  `when` is a datetime or a duration from now, answers one number per field —
+  `-2` no such field, `0` the condition did not hold, `1` given the instant, `2`
+  removed there and then because the instant is not in the future. `IF NONE`
+  takes only a field with no instant and `IF SOME` only one that has one; for
+  `IF LATER` and `IF SOONER` a field with no instant is later than any.
+  `HASH TTL k f, …` answers per field the time left, `NULL` for a field that
+  never expires and `NONE` for no field — it is a read. `HASH PERSIST k f, …`
+  answers `-2`, `-1` for a field with no instant, or `1` for one cleared. A
+  field past its instant is left out of every read of the key, and a hash whose
+  every field has passed is no key at all. Overwriting a field with
+  `HASH SET`, or removing it, drops its instant; `HASH INCR` and the key's own
+  `EXPIRE` and `PERSIST` keep it; a whole-key `SET` replaces every one. Giving
+  a field an instant needs a store at format 9 (`ALTER STORE FINALIZE FORMAT`).
+- A statement on a key holding another kind is refused with
+  **`KeyHoldsAnotherKind`**, naming both. `LIST SET` on no list is
+  **`NoSuchList`** and past the end **`ListIndexOutOfRange`**; an index or a
+  limit that is not a whole number is **`NotAWholeNumber`**; a field or a ranked
+  member is text (**`NameNotText`**), a member of a set is a single value
+  (**`MemberIsAContainer`**), and a score is a finite number
+  (**`ScoreNotANumber`**).
+- Two writers of one key cannot both win, and run as a statement of its own a
+  lost race is run again on a fresh snapshot, as `INCR`'s is — so eight writers
+  pushing onto one list land every element, none twice. `LIST MOVE` and
+  `MEMBERS MOVE` write both keys in the one statement.
+- The container is one value under its key, so a write re-encodes all of it:
+  these statements fit the containers a cache keeps, not ones of millions of
+  elements.
 
 ### Composition
 
@@ -7635,6 +7773,7 @@ READ FROM events;
 READ FROM events AFTER 41 LIMIT 100;
 READ FROM events FOR CONSUMER 'billing' LIMIT 50;
 READ FROM events FOR CONSUMER 'billing' AFTER 0;
+READ FROM events SINCE datetime '2026-10-22T09:00:00Z' LIMIT 100;
 
 INFO FOR TOPIC events;
 DROP TOPIC events;
@@ -7708,7 +7847,31 @@ CONSUMER` it also moves the stored position there, which is how a reader is
 rewound or skipped forward. Without `LIMIT` a read answers at most **100**
 messages.
 
-Each message answers under its own identity as `{ position, value }`.
+Each message answers under its own identity as `{ position, value, appended }`.
+
+### When a message was appended
+
+`appended` is the instant the message's commit appended it, to the
+millisecond. Every message of one commit has the same instant, and **an instant
+never goes back along a topic**: a commit takes the later of its own clock and
+the instant the topic last gave, so a leader whose clock runs behind the one
+before it does not number time backwards. A replica answers the instants the
+writer gave, because the instant travels in the log with the commit rather than
+being read from each node's clock.
+
+`READ FROM events SINCE <datetime>` starts at the first message appended at or
+after that instant — found in as many index reads as the topic has bits of
+length, not by reading from the start — and answers nothing when every message
+is older. It takes the place of `AFTER` (the two do not combine), and with `FOR
+CONSUMER` it moves the stored position as `AFTER` does. A group's members
+cannot start from an instant, for the reason they cannot skip with `AFTER`.
+
+A message appended before a store kept the instant — every one written before
+format 9, and every one on a store that has not been finalized to it — answers
+no `appended` and counts as older than any instant. A store restored from a
+snapshot, or a follower that copied its leader's state, keeps each message's
+position and instant as the source gave them; one restored from a script appends
+its messages again and gives them the instant of the restore.
 
 ### Consumer groups: acknowledge each message
 
@@ -7732,7 +7895,7 @@ ON TOPIC events …`, `ACK events FOR CONSUMER $group AT $positions`.
 Once a group is declared under a name, `READ FROM … FOR CONSUMER` that name
 **hands the messages out** instead of moving a position: each one is held in
 flight for the group with a deadline, and answers as `{ position, value,
-deliveries }`. Then:
+deliveries, appended }`. Then:
 
 - `ACK … AT p, …` — those messages are done and are never handed out to the
   group again. `AT $positions` takes one bound array of positions instead of
@@ -7753,15 +7916,57 @@ deliveries }`. Then:
   a message handed out again may then arrive after later ones.
 - `ALTER GROUP … START AT n` — the group next hands out position `n + 1`, and
   forgets what it held in flight.
+- `ACK DEADLINE NONE` — a message is held until it is acknowledged or a
+  statement hands it out again (`NACK`); no deadline passes on its own.
 
 `ACK DEADLINE` is required and has no default, for the reason a queue's
-`TIMEOUT` has none. A group declared under a name that already has a stored
+`TIMEOUT` has none — `NONE` is a choice written down, not a default. A group declared under a name that already has a stored
 position takes it over. `AFTER` on a group read is refused (`AfterOnGroup`) —
 a member cannot skip the group's work; `ACK` under a name with no group is
 refused (`NotAGroup`), because nothing is held to settle; a topic cannot be its
 own group's dead letter (`DeadLetterIsTheTopic`). The members of a group take
 turns on its record, as readers under one name take turns on a position, so a
 read or an acknowledgement that meets another is run again.
+
+#### Members
+
+A read may name the **member** of the group that reads:
+
+```tessariql
+READ FROM events FOR CONSUMER 'mailer' MEMBER 'worker-1' LIMIT 10;
+READ FROM events FOR CONSUMER 'mailer' MEMBER 'worker-1' HELD AFTER 41;
+INFO FOR GROUP 'mailer' ON TOPIC events;
+```
+
+Each message it is handed is recorded against it, with the instant it was
+delivered and the instant it was appended. `HELD` hands the member back the
+messages it already holds — after a position with `AFTER`, which is the one
+`AFTER` a group read accepts — and counts each as another delivery. A member's
+name, like the group's, may be a bound parameter. `MEMBER` under a name with no
+group is refused (`NoGroupForMember`), and `HELD` needs a member.
+
+```tessariql
+HAND events FOR CONSUMER 'mailer' AT 41, 42 TO 'worker-2';
+HAND events FOR CONSUMER 'mailer' AFTER 0 LIMIT 10 TO 'worker-2' IF IDLE 5m;
+ALTER GROUP 'mailer' ON TOPIC events ADD MEMBER 'worker-3';
+ALTER GROUP 'mailer' ON TOPIC events DROP MEMBER 'worker-1';
+```
+
+`HAND` moves held messages to another member as a delivery to it — the count
+goes up and the delivery instant, and any deadline, begin again — and answers
+the messages it moved: the positions it names that are held, or the first `n`
+held after a position, only those delivered at least `IF IDLE d` ago (a
+duration, else `InvalidIdle`). A held message retention removed is dropped and
+counted in a `lapsed` note. `ADD MEMBER` answers `1` when the member is new and
+`0` when the group knew it; `DROP MEMBER` forgets the member and what it held,
+which is never handed out again, and answers how many that was. Handing and the
+members are settling, as `ACK` is, so they need what reading the topic needs.
+
+`INFO FOR GROUP 'g' ON TOPIC t` reports the group's figures as `INFO FOR TOPIC`
+gives them, `held` — each message in flight as `{ position, deliveries, member,
+delivered, appended, until }` — and `members`, each with `seen` (its last read),
+`active` (its last read that was handed something) and how many it `held`. A
+group read answers each message's `appended` instant beside its `position`.
 
 What each form promises:
 
@@ -7800,6 +8005,29 @@ on from where it was. **A reader whose next position was removed is told**: the
 read carries a `lapsed` note naming how many messages it passed over, and moves a
 named reader's position past them so the note is given once. Nothing is ever
 skipped silently.
+
+### Trimming the front: `TRIM`
+
+A message is never deleted by a caller, with one exception: the oldest messages
+of a topic, all of them up to a point, at once. `TRIM` answers how many it removed.
+
+```tessariql
+DEFINE TOPIC jobs_log;
+CREATE jobs_log:'a' = { n: 1 };
+CREATE jobs_log:'b' = { n: 2 };
+CREATE jobs_log:'c' = { n: 3 };
+TRIM jobs_log KEEP 2;
+TRIM jobs_log BEFORE 3;
+```
+
+`KEEP n` removes every message but the newest `n`; `BEFORE p` removes every
+message below position `p`. The messages left are dense from the first one held,
+positions are never reused, and a reader whose next position went is told by a
+`lapsed` note, as one behind retention is. A trim writes in its transaction and
+is undone with it. `DELETE` of a message is still refused as `TopicIsAppendOnly`:
+the commit admits a message's deletion only when a `TRIM` in the same transaction
+reaches it, which is what keeps a hole out of a topic. A split topic is trimmed a
+partition at a time, `TRIM jobs_log PARTITION 0 KEEP 100`.
 
 ### Publishing once: `DEDUPLICATE … ON`
 
@@ -7913,10 +8141,62 @@ last one below which everything is acknowledged, and its `lag` counts from
 not. **Watch `lag`.** A reader whose lag keeps growing will one day be passed by
 retention, and the `lapsed` note will then be the first thing that says so.
 
+### Splitting a topic into partitions
+
+```tessariql
+DEFINE TOPIC orders PARTITIONS 3 BY customer RETAIN 7d;
+CREATE orders = { customer: 'user-42', total: 10 } RETURN POSITION;  -- [{ partition: 1, position: 1 }]
+READ FROM orders PARTITION 1 FOR CONSUMER 'billing' LIMIT 50;
+```
+
+`PARTITIONS n` (1 to 1024) splits a topic into `n` partitions, each an order of
+its own with its own dense positions, retention, readers and lapsed notes; the
+topic's other clauses apply to every partition. The count is fixed when the
+topic is declared.
+
+An append chooses its partition. With `BY field`, the field's bytes — a string
+as UTF-8, bytes as they are, an integer as its decimal text, a uuid as its 16
+bytes — are hashed with the murmur2 hash a Kafka client's default partitioner
+uses, so a key lands in the same partition whichever side wrote it, and every
+message of one key is in one order. A message without the field, and every
+message of a topic split with no `BY`, takes the partitions in turn — counted
+per node, in memory. A key of any other kind is refused as `PartitionKey`. A writer that chose the
+partition itself names it — `INSERT INTO orders PARTITION 2 (customer) VALUES
+('user-42')` lands every row in partition 2, whatever its key — which is how a
+Kafka producer's records land where its partitioner sent them.
+`RETURN POSITION` answers the partition beside the position. A store-named
+identity is the topic's, so no two messages share one; an identity you name is
+checked only within the partition it lands in.
+
+A read names its partition: `READ FROM orders` alone is refused as
+`PartitionNotNamed`, because the partitions have no one order between them, and
+a partition the topic does not have is `NoSuchPartition`. A topic never split is
+its own partition 0. The partitions themselves have no names a statement can
+use: `CREATE`, `INSERT` and a dead letter are the ways in, and an `UPSERT` of a
+split topic is refused as `TopicIsSplit` rather than written where no
+partition's reader would see it. `INFO FOR TOPIC` reports `partitions`, `by` and
+each partition's `first` and `last`; `DROP TOPIC` drops the partitions with the
+topic; `BACKUP SCRIPT` writes every partition's messages back as appends, which
+land by key again (and in turn without one).
+
+A group declared on a split topic is one group per partition: `DEFINE GROUP`,
+`ALTER GROUP … START AT` and `DROP GROUP` act on every partition, a member reads
+`READ FROM orders PARTITION p FOR CONSUMER 'billing'`, and settles with `ACK
+orders PARTITION p FOR CONSUMER 'billing' AT …` (or `NACK`), because a position
+means something only within its partition. Each partition's entry in `INFO FOR
+TOPIC` carries its own `consumers` and `groups`. A `DEFINE TOPIC CONSUMER` of a
+split topic runs its `PARALLELISM` members on every partition, each under the
+group that partition holds.
+
+A split topic is written in store format 9: a store an older build made holds
+its format until `ALTER STORE FINALIZE FORMAT`, and `PARTITIONS` is refused as
+`FormatNotFinalized` until then.
+
 ### What a topic is not
 
-A topic cannot be split into shards in this build: one topic is one order.
-Messages are read by asking; a subscriber that wants them pushed follows the
+A topic is not split across nodes: each topic — and each partition of a split
+one — is one order on the node that leads its database. Messages are read by
+asking; a subscriber that wants them pushed follows the
 change feed of the topic's table. A topic is not a queue: a queue hands each
 record to one worker and forgets it when the work is done, a topic keeps every
 message for every reader.
@@ -9161,6 +9441,15 @@ front of the request's path. Both are optional and replicate with the row, so a
 node can say where to go from what it has applied, with the peer link down. A row
 that names neither keeps redirects naming `AT`, as they did before the clauses
 existed. `INFO FOR NODE` reports both for each peer (`null` when unsaid).
+`KAFKA AT 'host:port'` says where a Kafka client reaches the peer, and is
+changed with `ALTER REPLICA … KAFKA AT …` or removed with `KAFKA NONE`; it is
+reported beside them as `kafka`. Every peer that says it is a broker in Kafka
+`Metadata`, numbered alike on every node (a node's place among the members' node
+ids, plus one), and a topic's partition is led by the broker of the node leading
+its database. `FindCoordinator`, and the controller `Metadata` gives, name the node leading the database bare topic
+names are read in (the store's leader when none is named), and a group request
+sent to any other node answers `NOT_COORDINATOR`, so a group's members meet on
+one node. A node whose leader names no Kafka address answers as before, itself.
 A write a node may not take is carried over the peer link to the writable peer
 (from `0.21.0-beta`), and a node with no peer link refuses it naming where that
 peer takes writes.
@@ -10240,7 +10529,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.36.2", "build": "0.36.2", "endpoints": ["db-1.internal:9000"],
+ "version": "0.37.0", "build": "0.37.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

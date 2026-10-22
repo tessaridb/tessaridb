@@ -232,7 +232,9 @@ pub(super) fn edge_identity(out: &RecordAddress, into: &RecordAddress) -> Record
 
 pub(super) fn answered(answer: Answer, before: Value, after: Value) -> Outcome {
     match answer {
-        Answer::Nothing => Outcome::Done,
+        // A position is the parser's to refuse on every verb but a create or
+        // an insert, and both answer it before reaching here.
+        Answer::Nothing | Answer::Position => Outcome::Done,
         Answer::Before => Outcome::Value(before),
         Answer::After => Outcome::Value(after),
     }

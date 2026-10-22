@@ -124,6 +124,7 @@ fn read_on_a_topic_reads_and_keeps_a_position_and_write_appends() {
                  DEFINE USER ria ON prod.app ROLE editor PASSWORD '{PASSWORD}';\n\
                  DEFINE USER wes ON prod.app ROLE editor PASSWORD '{PASSWORD}';\n\
                  GRANT read ON events TO ria; GRANT write ON events TO wes;\n\
+                 DEFINE GROUP 'mail' ON TOPIC events ACK DEADLINE NONE;\n\
                  CREATE events = {{ n: 1 }};"
             ),
         );
@@ -150,6 +151,14 @@ fn read_on_a_topic_reads_and_keeps_a_position_and_write_appends() {
         run(&mut wes, "USE NAMESPACE prod; USE DATABASE app;");
         run(&mut wes, "CREATE events = { n: 2 };");
         let why = refused(&mut wes, "READ FROM events;");
+        assert!(
+            why.contains("\"wes\" has not been granted read on \"events\""),
+            "{}: {why}",
+            backend.name
+        );
+        // A group's report names its members and what they hold, which is
+        // about the topic's contents (ADR-0133).
+        let why = refused(&mut wes, "INFO FOR GROUP 'mail' ON TOPIC events;");
         assert!(
             why.contains("\"wes\" has not been granted read on \"events\""),
             "{}: {why}",

@@ -76,6 +76,16 @@ pub struct Serving {
     pub wire: Option<String>,
     /// HTTP.
     pub http: Option<String>,
+    /// The Kafka protocol over the store's topics (ADR-0129).
+    pub kafka: Option<String>,
+    /// The address Kafka Metadata advertises instead of the one a client reached.
+    pub kafka_advertise: Option<String>,
+    /// The `<namespace>.<database>` a bare Kafka topic name is read in.
+    pub kafka_database: Option<String>,
+    /// The RESP protocol over the store's spaces (ADR-0129).
+    pub resp: Option<String>,
+    /// The `<namespace>.<database>.<space>` a RESP connection starts in.
+    pub resp_space: Option<String>,
     /// The folder `BACKUP … TO` writes into; absent, every `TO` is refused.
     pub backups: Option<PathBuf>,
     /// How long an unseal lasts; absent, `TESSARIDB_UNSEAL_FOR` or ten minutes.
@@ -91,7 +101,7 @@ impl Serving {
     /// Whether any surface was asked for.
     #[must_use]
     pub const fn asked(&self) -> bool {
-        self.wire.is_some() || self.http.is_some()
+        self.wire.is_some() || self.http.is_some() || self.kafka.is_some() || self.resp.is_some()
     }
 }
 
@@ -204,6 +214,36 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                     .ok_or_else(|| "--http wants a host:port".to_owned())?;
                 serving.http = Some(address);
                 source = Source::Serve;
+            }
+            "--kafka" => {
+                let address = arguments
+                    .next()
+                    .ok_or_else(|| "--kafka wants a host:port".to_owned())?;
+                serving.kafka = Some(address);
+                source = Source::Serve;
+            }
+            "--kafka-advertise" => {
+                serving.kafka_advertise = Some(arguments.next().ok_or_else(|| {
+                    "--kafka-advertise wants the host:port clients reach".to_owned()
+                })?);
+            }
+            "--kafka-database" => {
+                serving.kafka_database = Some(arguments.next().ok_or_else(|| {
+                    "--kafka-database wants the <namespace>.<database> bare topic names are read in".to_owned()
+                })?);
+            }
+            "--resp" => {
+                let address = arguments
+                    .next()
+                    .ok_or_else(|| "--resp wants a host:port".to_owned())?;
+                serving.resp = Some(address);
+                source = Source::Serve;
+            }
+            "--resp-space" => {
+                serving.resp_space = Some(arguments.next().ok_or_else(|| {
+                    "--resp-space wants the <namespace>.<database>.<space> connections start in"
+                        .to_owned()
+                })?);
             }
             "--backup-dir" => {
                 let folder = arguments
