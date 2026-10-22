@@ -127,7 +127,7 @@ pub(crate) enum Stream {
 }
 
 /// A key as the topic it names.
-fn key(bytes: &[u8]) -> Result<String, Reply> {
+pub(super) fn key(bytes: &[u8]) -> Result<String, Reply> {
     std::str::from_utf8(bytes)
         .ok()
         .filter(|name| is_identifier(name))
@@ -145,7 +145,7 @@ fn invalid_id() -> Reply {
 }
 
 /// `ms` or `ms-seq`; `ms` alone answers `None` for its sequence.
-fn id(bytes: &[u8]) -> Result<(u64, Option<u64>), Reply> {
+pub(super) fn id(bytes: &[u8]) -> Result<(u64, Option<u64>), Reply> {
     let text = std::str::from_utf8(bytes).map_err(|_| invalid_id())?;
     let number = |part: &str| {
         part.bytes()
@@ -199,7 +199,7 @@ fn upper(bytes: &[u8]) -> Result<Option<Id>, Reply> {
 }
 
 /// A count that may not be negative.
-fn count(bytes: &[u8]) -> Result<u64, Reply> {
+pub(super) fn count(bytes: &[u8]) -> Result<u64, Reply> {
     u64::try_from(integer(bytes)?).map_err(|_| replies::not_an_integer())
 }
 

@@ -4,7 +4,7 @@
 
 use super::Connection;
 use crate::codec::{Command, Reply};
-use crate::surface::commands::{Id, Shape, Since, Stream};
+use crate::surface::commands::{Group, Id, Shape, Since, Stream, Wanted};
 use crate::surface::procedures::Against;
 use crate::surface::replies;
 
@@ -48,6 +48,60 @@ impl Connection {
         form.push(b"STREAMS".to_vec());
         form.extend(keys.into_iter().map(|(key, _)| key.into_bytes()));
         form.extend(ids);
+        self.block(form, wait, Shape::AsIs).await
+    }
+
+    pub(super) async fn group(&mut self, group: Group) -> Reply {
+        let Some(space) = self.space.as_ref() else {
+            return replies::no_space();
+        };
+        let mut against = Against {
+            shared: &self.shared,
+            held: &mut self.held,
+            space,
+        };
+        // Only a read of new entries waits; a member's own held entries are
+        // there or not.
+        let Group::Read {
+            group: name,
+            consumer,
+            count,
+            block: Some(wait),
+            settle,
+            keys,
+        } = group
+        else {
+            return against.group(&group).await;
+        };
+        if keys.iter().any(|(_, wanted)| *wanted != Wanted::New) {
+            return against
+                .group(&Group::Read {
+                    group: name,
+                    consumer,
+                    count,
+                    block: None,
+                    settle,
+                    keys,
+                })
+                .await;
+        }
+        let mut form: Command = vec![
+            b"XREADGROUP".to_vec(),
+            b"GROUP".to_vec(),
+            name.into_bytes(),
+            consumer.into_bytes(),
+        ];
+        if let Some(count) = count {
+            form.push(b"COUNT".to_vec());
+            form.push(count.to_string().into_bytes());
+        }
+        if settle {
+            form.push(b"NOACK".to_vec());
+        }
+        form.push(b"STREAMS".to_vec());
+        let ends = vec![b">".to_vec(); keys.len()];
+        form.extend(keys.into_iter().map(|(key, _)| key.into_bytes()));
+        form.extend(ends);
         self.block(form, wait, Shape::AsIs).await
     }
 }

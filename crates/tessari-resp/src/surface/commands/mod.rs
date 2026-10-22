@@ -11,6 +11,7 @@ mod change;
 mod combine;
 mod containers;
 mod fields;
+mod groups;
 mod hashes;
 mod keys;
 mod lists;
@@ -32,6 +33,7 @@ pub(crate) use arguments::{Expiry, now_millis};
 pub(crate) use blocking::{Shape, found_nothing};
 pub(crate) use change::{Change, changed};
 pub(crate) use containers::kind;
+pub(crate) use groups::{Group, Start, Wanted};
 pub(crate) use keys::{When, expire};
 pub(crate) use pubsub::{Asked, Listening, listening_command};
 pub(crate) use streams::{Id, Since, Stream, Trim};
@@ -139,6 +141,8 @@ pub(crate) enum Procedure {
     Pubsub(Asked),
     /// A stream command, over the topic its key names.
     Stream(Stream),
+    /// A stream group command, over the topic's group.
+    Group(Group),
 }
 
 /// What a command needs to be read.
@@ -178,6 +182,7 @@ pub(crate) fn plan(
             || pops::serves(&name)
             || blocking::serves(&name)
             || streams::serves(&name)
+            || groups::serves(&name)
         {
             Err(replies::no_space())
         } else {
@@ -194,6 +199,9 @@ pub(crate) fn plan(
         return Ok(step);
     }
     if let Some(step) = streams::plan(&name, arguments)? {
+        return Ok(step);
+    }
+    if let Some(step) = groups::plan(&name, arguments)? {
         return Ok(step);
     }
     for family in [

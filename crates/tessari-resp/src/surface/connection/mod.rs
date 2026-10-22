@@ -431,6 +431,7 @@ impl Connection {
             } => self.publish(kind, &channel, &message).await,
             Procedure::Pubsub(asked) => self.pubsub(asked).await,
             Procedure::Stream(stream) => self.stream(stream).await,
+            Procedure::Group(group) => self.group(group).await,
             store => {
                 let Some(space) = self.space.as_ref() else {
                     return (replies::no_space(), Flow::Continue);

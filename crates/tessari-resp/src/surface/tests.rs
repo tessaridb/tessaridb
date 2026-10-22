@@ -15,6 +15,7 @@ mod blocking;
 mod carrying;
 mod containers;
 mod fields;
+mod groups;
 mod keys;
 mod pubsub;
 mod session;
