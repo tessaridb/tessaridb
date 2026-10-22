@@ -154,6 +154,7 @@ const RELEASED: &[&str] = &[
     "0.35.0",
     "0.35.1",
     "0.35.2",
+    "0.35.3",
 ];
 
 /// Stores written by released builds on TessariKV, which this build opens and reads
