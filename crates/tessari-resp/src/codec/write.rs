@@ -44,6 +44,12 @@ pub enum Reply {
     /// Ordered pairs that may repeat a key — a member and its score — each
     /// an array of two in RESP3, and one flat array in RESP2.
     Pairs(Vec<(Reply, Reply)>),
+    /// Something the node says without being asked — a published message,
+    /// a subscription's notice: a push in RESP3, an array in RESP2.
+    Push(Vec<Reply>),
+    /// Several replies to one command, each written as its own — `SUBSCRIBE
+    /// a b` answers one notice per channel.
+    Several(Vec<Reply>),
 }
 
 impl Reply {
@@ -86,12 +92,14 @@ pub fn encode(reply: &Reply, protocol: Protocol, out: &mut Vec<u8>) {
             Protocol::Two => out.extend_from_slice(b"*-1\r\n"),
             Protocol::Three => out.extend_from_slice(b"_\r\n"),
         },
-        Reply::Array(items) => {
-            out.push(b'*');
-            decimal(out, length(items.len()));
-            out.extend_from_slice(b"\r\n");
-            for item in items {
-                encode(item, protocol, out);
+        Reply::Array(items) => sequence(out, b'*', items, protocol),
+        Reply::Push(items) => match protocol {
+            Protocol::Two => sequence(out, b'*', items, protocol),
+            Protocol::Three => sequence(out, b'>', items, protocol),
+        },
+        Reply::Several(replies) => {
+            for reply in replies {
+                encode(reply, protocol, out);
             }
         }
         Reply::Map(pairs) => {
@@ -133,6 +141,35 @@ pub fn encode(reply: &Reply, protocol: Protocol, out: &mut Vec<u8>) {
                 encode(second, protocol, out);
             }
         }
+    }
+}
+
+/// Append a push of `parts`, each as bytes, to `out` in `protocol` — what a
+/// published message is written as, straight from the bytes every subscriber
+/// shares, with no reply built for it.
+pub fn encode_push(parts: &[&[u8]], protocol: Protocol, out: &mut Vec<u8>) {
+    out.push(match protocol {
+        Protocol::Two => b'*',
+        Protocol::Three => b'>',
+    });
+    decimal(out, length(parts.len()));
+    out.extend_from_slice(b"\r\n");
+    for part in parts {
+        out.push(b'$');
+        decimal(out, length(part.len()));
+        out.extend_from_slice(b"\r\n");
+        out.extend_from_slice(part);
+        out.extend_from_slice(b"\r\n");
+    }
+}
+
+/// A count of `items` behind `kind`, then each of them.
+fn sequence(out: &mut Vec<u8>, kind: u8, items: &[Reply], protocol: Protocol) {
+    out.push(kind);
+    decimal(out, length(items.len()));
+    out.extend_from_slice(b"\r\n");
+    for item in items {
+        encode(item, protocol, out);
     }
 }
 
@@ -219,6 +256,29 @@ mod tests {
         assert_eq!(
             written(&Reply::Array(vec![Reply::Nil, Reply::OK]), Protocol::Two),
             "*2\r\n$-1\r\n+OK\r\n"
+        );
+        let push = Reply::Push(vec![Reply::text("message"), Reply::Integer(1)]);
+        assert_eq!(
+            written(&push, Protocol::Two),
+            "*2\r\n$7\r\nmessage\r\n:1\r\n"
+        );
+        assert_eq!(
+            written(&push, Protocol::Three),
+            ">2\r\n$7\r\nmessage\r\n:1\r\n"
+        );
+        let mut shared = Vec::new();
+        encode_push(
+            &[b"message".as_slice(), b"news"],
+            Protocol::Three,
+            &mut shared,
+        );
+        assert_eq!(shared, b">2\r\n$7\r\nmessage\r\n$4\r\nnews\r\n");
+        assert_eq!(
+            written(
+                &Reply::Several(vec![Reply::OK, Reply::Integer(2)]),
+                Protocol::Two
+            ),
+            "+OK\r\n:2\r\n"
         );
     }
 }

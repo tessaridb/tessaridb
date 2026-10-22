@@ -4,4 +4,4 @@ mod read;
 mod write;
 
 pub use read::{Command, Decoder};
-pub use write::{Protocol, Reply, encode};
+pub use write::{Protocol, Reply, encode, encode_push};

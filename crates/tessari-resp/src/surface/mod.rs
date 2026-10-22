@@ -16,6 +16,7 @@
 //! its connections bounded by the same door ceiling and its store calls by the
 //! same bridge, and its stages driven by the process through [`Stopping`].
 
+mod channels;
 mod commands;
 mod connection;
 mod glob;
@@ -32,7 +33,10 @@ use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tessari_constants::{GREETING_SECONDS, MAX_CONNECTIONS, MAX_STORE_CALLS};
+use tessari_constants::{
+    GREETING_SECONDS, MAX_CONNECTIONS, MAX_STORE_CALLS, RESP_PUBSUB_QUEUE, RESP_PUBSUB_QUEUE_BYTES,
+    RESP_PUBSUB_RECHECK_SECONDS, RESP_PUBSUB_SUBSCRIPTIONS,
+};
 use tessari_serve::{ACCEPT_PAUSE, Admitting, Bridge, Stopping, passes};
 use tessaridb::Db;
 use tokio::task::JoinSet;
@@ -48,6 +52,14 @@ pub(crate) struct Shared {
     pub(crate) stopping: Arc<Stopping>,
     /// The space a connection starts in, when the operator named one.
     pub(crate) space: Option<Space>,
+    /// Who listens to what (ADR-0133 D1).
+    pub(crate) channels: Arc<channels::Channels>,
+    /// How much one subscriber may have waiting: messages, then bytes.
+    pub(crate) inbox: (usize, usize),
+    /// How long the store's word on listening or publishing is kept.
+    pub(crate) recheck: std::time::Duration,
+    /// The most a connection listens on.
+    pub(crate) subscriptions: usize,
     clients: AtomicU64,
 }
 
@@ -84,6 +96,10 @@ impl Node {
                 bridge: Arc::new(Bridge::new(MAX_STORE_CALLS)),
                 stopping: Stopping::new(),
                 space: None,
+                channels: Arc::default(),
+                inbox: (RESP_PUBSUB_QUEUE, RESP_PUBSUB_QUEUE_BYTES),
+                recheck: std::time::Duration::from_secs(RESP_PUBSUB_RECHECK_SECONDS),
+                subscriptions: RESP_PUBSUB_SUBSCRIPTIONS,
                 clients: AtomicU64::new(0),
             }),
             door: Admitting::to(MAX_CONNECTIONS),
@@ -104,6 +120,23 @@ impl Node {
     pub fn serving_space(mut self, space: Space) -> Self {
         if let Some(shared) = Arc::get_mut(&mut self.shared) {
             shared.space = Some(space);
+        }
+        self
+    }
+
+    /// Subscribers' inboxes and the cadence of their re-checks, smaller than
+    /// the node's own so a test can reach them.
+    #[cfg(test)]
+    pub(crate) fn listening_within(
+        mut self,
+        inbox: (usize, usize),
+        recheck: std::time::Duration,
+        subscriptions: usize,
+    ) -> Self {
+        if let Some(shared) = Arc::get_mut(&mut self.shared) {
+            shared.inbox = inbox;
+            shared.recheck = recheck;
+            shared.subscriptions = subscriptions;
         }
         self
     }

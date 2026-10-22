@@ -102,3 +102,54 @@ pub const RESP_BLOCKED_READ_AHEAD_BYTES: usize = 1024 * 1024;
 /// budget in time rather than in tries, so four writers on one key all land
 /// rather than the unlucky one giving up after a fixed count.
 pub const RESP_CHANGE_PATIENCE_MILLIS: u64 = 1_000;
+
+/// The most published messages one subscriber may have waiting to be written;
+/// past this, or past [`RESP_PUBSUB_QUEUE_BYTES`], it is cut off and its
+/// connection closed.
+///
+/// Unit: messages.
+///
+/// Pub/sub keeps nothing, so a subscriber that does not read is the one place a
+/// published message can pile up — in this node's memory, on behalf of a client
+/// that stopped reading. Disconnecting it is the protocol's own answer, and the
+/// one a client can see: a message dropped silently would leave it believing
+/// it had heard everything.
+pub const RESP_PUBSUB_QUEUE: usize = 65_536;
+
+/// The most bytes of published messages one subscriber may have waiting.
+///
+/// Unit: bytes.
+///
+/// The count above bounds small messages and this bounds large ones; either
+/// reached cuts the subscriber off.
+pub const RESP_PUBSUB_QUEUE_BYTES: usize = 32 * 1024 * 1024;
+
+/// How often a listening connection asks the store again whether its user may
+/// still read its space, and a publishing one whether it may still write it.
+///
+/// Unit: seconds.
+///
+/// A revoked grant reaches a subscription within this long rather than at the
+/// next sign-in, and a connection publishing a thousand messages a second asks
+/// once rather than a thousand times.
+pub const RESP_PUBSUB_RECHECK_SECONDS: u64 = 5;
+
+/// The most published messages a connection writes at once before it looks at
+/// its socket again.
+///
+/// Unit: messages.
+///
+/// Messages that arrived together are written together — one write for many —
+/// and a flood still leaves the connection reading its client's commands
+/// between rounds.
+pub const RESP_PUBSUB_DRAIN: usize = 256;
+
+/// The most channels, shard channels and patterns one connection may listen on
+/// together.
+///
+/// Unit: subscriptions.
+///
+/// Every publish in a database is matched against every pattern listened on in
+/// it, so one connection holding a million patterns would make every other
+/// publisher there pay for them; past this a subscription is refused.
+pub const RESP_PUBSUB_SUBSCRIPTIONS: usize = 65_536;

@@ -10,10 +10,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tessari_constants::{
-    FRAME_STALL_SECONDS, RESP_IDLE_SECONDS, RESP_MULTI_COMMANDS, RESP_PIPELINE_COMMANDS,
-};
-use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
+use tessari_constants::{RESP_MULTI_COMMANDS, RESP_PIPELINE_COMMANDS};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use zeroize::Zeroize;
 
 use crate::codec::{Command, Decoder, Protocol, Reply, encode};
@@ -26,6 +24,8 @@ use crate::surface::{Shared, Space};
 
 mod blocked;
 mod introduce;
+mod reading;
+mod subscribed;
 mod watch;
 
 /// How often an idle connection looks at whether the node is stopping.
@@ -72,6 +72,10 @@ struct Connection {
     cursors: Cursors,
     /// A blocking pop that found nothing yet, for the connection to wait on.
     blocked: Option<blocked::Blocked>,
+    /// What it listens on, while it listens on anything.
+    subscribed: Option<subscribed::Subscribed>,
+    /// When the store last said this user may publish.
+    published: Option<std::time::Instant>,
 }
 
 /// Serve one connection until the client closes it, it idles out, a command
@@ -96,6 +100,8 @@ where
         watched: Vec::new(),
         cursors: Cursors::default(),
         blocked: None,
+        subscribed: None,
+        published: None,
         shared,
     };
     let mut decoder = Decoder::new();
@@ -163,40 +169,13 @@ where
             tokio::task::yield_now().await;
             continue;
         }
-        let Some(read) = next_bytes(&connection.shared, &decoder, &mut stream, &mut chunk).await?
+        let Some(read) = connection
+            .next_bytes(&decoder, &mut stream, &mut chunk)
+            .await?
         else {
             return Ok(());
         };
         decoder.extend(&chunk[..read]);
-    }
-}
-
-/// The next bytes, or `None` when the connection ended, idled out, stalled
-/// half-way through a command, or the node is stopping.
-async fn next_bytes<S: AsyncRead + Unpin>(
-    shared: &Shared,
-    decoder: &Decoder,
-    stream: &mut S,
-    chunk: &mut [u8],
-) -> std::io::Result<Option<usize>> {
-    let mut idle = Duration::ZERO;
-    loop {
-        match tokio::time::timeout(WATCH_STOPPING, stream.read(chunk)).await {
-            Ok(Ok(0)) => return Ok(None),
-            Ok(Ok(read)) => return Ok(Some(read)),
-            Ok(Err(why)) => return Err(why),
-            Err(_) => {
-                idle = idle.saturating_add(WATCH_STOPPING);
-                let patience = if decoder.holds_a_part() {
-                    FRAME_STALL_SECONDS
-                } else {
-                    RESP_IDLE_SECONDS
-                };
-                if shared.stopping.asked() || idle >= Duration::from_secs(patience) {
-                    return Ok(None);
-                }
-            }
-        }
     }
 }
 
@@ -215,6 +194,9 @@ impl Connection {
     }
 
     async fn answer(&mut self, command: &Command) -> (Reply, Flow) {
+        if let Some(reply) = self.while_listening(command) {
+            return (reply, Flow::Continue);
+        }
         let mut fresh = Binder::default();
         let context = Context {
             space: self.space.as_ref(),
@@ -395,21 +377,33 @@ impl Connection {
                 self.space = self.shared.space.clone();
                 self.cursors = Cursors::default();
                 self.held.forget(&self.shared);
+                self.subscribed = None;
+                self.published = None;
                 Reply::Status("RESET".into())
             }
             Procedure::Auth { user, mut password } => {
                 let reply = self.auth(user.as_deref(), &password).await;
                 password.zeroize();
+                self.forget_authority();
                 reply
             }
             Procedure::Hello {
                 protocol,
                 auth,
                 name,
-            } => self.hello(protocol, auth, name).await,
+            } => {
+                let reply = self.hello(protocol, auth, name).await;
+                self.forget_authority();
+                reply
+            }
             Procedure::Client(arguments) => self.client(&arguments),
+            // Its channels are named in its space's database.
+            Procedure::Use(_) if self.is_listening() => Reply::error(
+                "ERR leave every channel before choosing another space with TESSARIDB.USE",
+            ),
             Procedure::Use(space) => {
                 self.space = Some(space);
+                self.published = None;
                 self.cursors = Cursors::default();
                 Reply::OK
             }
@@ -425,6 +419,14 @@ impl Connection {
             }
             Procedure::Discard => Reply::error("ERR DISCARD without MULTI"),
             Procedure::Block { form, wait, shape } => self.block(form, wait, shape).await,
+            Procedure::Listen { what, names } => self.listen(what, names).await,
+            Procedure::Leave { what, names } => self.leave(what, names),
+            Procedure::Publish {
+                kind,
+                channel,
+                message,
+            } => self.publish(kind, &channel, &message).await,
+            Procedure::Pubsub(asked) => self.pubsub(asked).await,
             store => {
                 let Some(space) = self.space.as_ref() else {
                     return (replies::no_space(), Flow::Continue);

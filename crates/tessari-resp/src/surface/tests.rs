@@ -16,12 +16,21 @@ mod carrying;
 mod containers;
 mod fields;
 mod keys;
+mod pubsub;
 mod session;
 mod strings;
 
 /// A node over a fresh store holding the space `app.main.cache`, after
 /// `setup` ran on it; connections start in that space.
 async fn serving_with(setup: &str) -> (String, CancellationToken, Arc<tessaridb::Db>) {
+    serving_adjusted(setup, |node| node).await
+}
+
+/// As [`serving_with`], the node changed by `adjust` before it serves.
+async fn serving_adjusted(
+    setup: &str,
+    adjust: impl FnOnce(Node) -> Node,
+) -> (String, CancellationToken, Arc<tessaridb::Db>) {
     let db = Arc::new(tessaridb::Db::in_memory().await.unwrap());
     let mut session = db.session();
     session
@@ -35,9 +44,11 @@ async fn serving_with(setup: &str) -> (String, CancellationToken, Arc<tessaridb:
         session.run(setup).await.unwrap();
     }
     drop(session);
-    let node = Node::bind(Arc::clone(&db), "127.0.0.1:0")
-        .unwrap()
-        .serving_space(Space::parse("app.main.cache").unwrap());
+    let node = adjust(
+        Node::bind(Arc::clone(&db), "127.0.0.1:0")
+            .unwrap()
+            .serving_space(Space::parse("app.main.cache").unwrap()),
+    );
     let address = node.address().unwrap();
     let stop = CancellationToken::new();
     let stopping = stop.clone();
@@ -113,8 +124,9 @@ fn parse(bytes: &[u8]) -> Option<(Reply, usize)> {
             (Reply::Bulk(data), end.saturating_add(2))
         }
         b'*' if count() < 0 => (Reply::NilArray, after),
-        b'*' | b'%' => {
+        b'*' | b'%' | b'>' => {
             let pairs = bytes[0] == b'%';
+            let pushed = bytes[0] == b'>';
             let wanted =
                 usize::try_from(count())
                     .unwrap()
@@ -133,6 +145,8 @@ fn parse(bytes: &[u8]) -> Option<(Reply, usize)> {
                     paired.push((key, value));
                 }
                 (Reply::Map(paired), at)
+            } else if pushed {
+                (Reply::Push(items), at)
             } else {
                 (Reply::Array(items), at)
             }

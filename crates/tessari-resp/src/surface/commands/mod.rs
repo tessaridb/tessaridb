@@ -15,6 +15,7 @@ mod hashes;
 mod keys;
 mod lists;
 mod pops;
+mod pubsub;
 mod ranges;
 mod scans;
 mod sets;
@@ -31,6 +32,7 @@ pub(crate) use blocking::{Shape, found_nothing};
 pub(crate) use change::{Change, changed};
 pub(crate) use containers::kind;
 pub(crate) use keys::{When, expire};
+pub(crate) use pubsub::{Asked, Listening, listening_command};
 pub(crate) use strings::string_reply;
 
 /// What a command asks for.
@@ -115,6 +117,24 @@ pub(crate) enum Procedure {
         wait: Option<std::time::Duration>,
         shape: Shape,
     },
+    /// `SUBSCRIBE`, `PSUBSCRIBE`, `SSUBSCRIBE`.
+    Listen {
+        what: Listening,
+        names: Vec<Vec<u8>>,
+    },
+    /// `UNSUBSCRIBE`, `PUNSUBSCRIBE`, `SUNSUBSCRIBE`; no names is all of them.
+    Leave {
+        what: Listening,
+        names: Vec<Vec<u8>>,
+    },
+    /// `PUBLISH`, `SPUBLISH`.
+    Publish {
+        kind: crate::surface::channels::Kind,
+        channel: Vec<u8>,
+        message: Vec<u8>,
+    },
+    /// `PUBSUB CHANNELS | NUMSUB | NUMPAT | SHARDCHANNELS | SHARDNUMSUB`.
+    Pubsub(Asked),
 }
 
 /// What a command needs to be read.
@@ -136,6 +156,9 @@ pub(crate) fn plan(
     let name = String::from_utf8_lossy(&name);
     let arguments = &command[1..];
     if let Some(step) = arguments::connection(&name, arguments)? {
+        return Ok(step);
+    }
+    if let Some(step) = pubsub::plan(&name, arguments)? {
         return Ok(step);
     }
     let Some(space) = context.space else {
