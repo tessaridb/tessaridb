@@ -110,8 +110,9 @@ impl Parser<'_> {
         })
     }
 
-    /// `READ FROM <topic> [PARTITION <expr>] [FOR CONSUMER '<name>'] [AFTER <expr>]
-    /// [LIMIT <expr>]`, `READ` consumed and `FROM` next.
+    /// `READ FROM <topic> [PARTITION <expr>] [FOR CONSUMER '<name>']
+    /// [AFTER <expr> | SINCE <expr>] [LIMIT <expr>]`, `READ` consumed and
+    /// `FROM` next.
     pub(super) fn read_topic(&mut self) -> Result<StatementKind> {
         self.expect_keyword(Keyword::From, "`FROM` and the topic")?;
         let topic = self.table_ref()?;
@@ -121,10 +122,12 @@ impl Parser<'_> {
             None
         };
         let (consumer, consumer_parameter) = self.for_consumer()?;
-        let after = if self.eat_word("after") {
-            Some(self.expression()?)
+        let (after, since) = if self.eat_word("after") {
+            (Some(self.expression()?), None)
+        } else if self.eat_word("since") {
+            (None, Some(self.expression()?))
         } else {
-            None
+            (None, None)
         };
         let limit = if self.eat_word("limit") {
             Some(self.expression()?)
@@ -136,6 +139,7 @@ impl Parser<'_> {
             consumer,
             consumer_parameter,
             after,
+            since,
             limit,
             partition,
         })

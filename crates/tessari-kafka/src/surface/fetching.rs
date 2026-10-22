@@ -26,9 +26,10 @@ struct Owned {
 /// A Kafka record from a message the topic answered.
 ///
 /// A message a Kafka client wrote carries its parts; any other — appended by a
-/// statement — is sent as its JSON, with no key, so a Kafka consumer reads every
-/// message of the topic and not only the ones a Kafka producer wrote.
-fn record_of(position: i64, value: &Value) -> Owned {
+/// statement — is sent as its JSON, with no key and the instant it was
+/// appended as its timestamp, so a Kafka consumer reads every message of the
+/// topic and not only the ones a Kafka producer wrote.
+fn record_of(position: i64, value: &Value, appended: i64) -> Owned {
     let offset = position.saturating_sub(1);
     if let Value::Object(fields) = value
         && let (Some(Value::Datetime(at)), Some(payload)) =
@@ -69,7 +70,7 @@ fn record_of(position: i64, value: &Value) -> Owned {
     tessari_types::json::write(&mut json, value, &tessari_types::json::Names::new());
     Owned {
         offset,
-        timestamp: -1,
+        timestamp: appended,
         key: None,
         value: Some(json.into_bytes()),
         headers: Vec::new(),
@@ -193,7 +194,14 @@ async fn once(
                                                     position,
                                                 ))),
                                                 Some(value),
-                                            ) => Some(record_of(*position, value)),
+                                            ) => Some(record_of(
+                                                *position,
+                                                value,
+                                                crate::surface::offsets::millis_of(
+                                                    fields.get("appended"),
+                                                )
+                                                .unwrap_or(-1),
+                                            )),
                                             _ => None,
                                         }
                                     }

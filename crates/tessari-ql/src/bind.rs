@@ -481,11 +481,12 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         }
         StatementKind::ReadTopic {
             after,
+            since,
             limit,
             partition,
             ..
         } => {
-            for bound in [after, limit, partition].into_iter().flatten() {
+            for bound in [after, since, limit, partition].into_iter().flatten() {
                 bind_expr(bound, binding)?;
             }
             Ok(())

@@ -81,6 +81,12 @@ impl FormatVersion {
     /// [`Self::HOMED_LOG`] is.
     pub const FIELD_EXPIRY: Self = Self(9);
 
+    /// The first format whose topics keep the instant each message was
+    /// appended (ADR-0133 D3): an older build would read a position's entry
+    /// and the topic's clock record without knowing either. Named for the
+    /// reason [`Self::HOMED_LOG`] is.
+    pub const TOPIC_CLOCK: Self = Self(9);
+
     /// The first format whose stores keep retired entries of a plain index, so
     /// that a transaction behind the committed tail may still read through one
     /// (Q-S3-34). Named for the reason [`Self::HOMED_LOG`] is.

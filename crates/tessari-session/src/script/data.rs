@@ -71,8 +71,9 @@ pub(super) async fn declared(
 pub(super) fn note(table: &TableDefinition) -> Option<&'static str> {
     match table.kind {
         TableKind::Topic(_) => Some(
-            "messages are written again in order and numbered again from 1; \
-             reader positions and groups are not carried",
+            "messages are written again in order and numbered again from 1, each \
+             appended at the instant the script runs; reader positions and groups are not \
+             carried",
         ),
         TableKind::Queue(_) => Some("holds and attempt counts are not carried"),
         TableKind::Vault(_) => Some("its secrets are not carried"),

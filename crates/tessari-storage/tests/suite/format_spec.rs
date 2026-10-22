@@ -307,8 +307,9 @@ fn every_value_and_record_id_encodes_under_a_listed_tag() {
 /// tables 26–29 — which is what this test exists to stop happening again. Catalog definitions are records whose fields an
 /// older build ignores, so a field added to one is not part of the surface.
 ///
-/// Format 9 took the `fields` flag bit before any release wrote it (ADR-0132),
-/// so its pin moved with it rather than the version.
+/// Format 9 took the `fields` flag bit, and a topic's append instant with
+/// system table 30, before any release wrote either (ADR-0132, ADR-0133), so
+/// its pin moved with them rather than the version.
 ///
 /// Format 7 pins format 6's digest on purpose: it changed what an older build
 /// would WRITE into a table that declares expiry, not a value it would misread
@@ -318,7 +319,7 @@ const PINNED: &[(u32, u64)] = &[
     (6, 0x0f84_240b_dcf7_1521),
     (7, 0x0f84_240b_dcf7_1521),
     (8, 0x1f2f_e3f9_42fd_df1c),
-    (9, 0xaeec_e2b7_78ef_e897),
+    (9, 0xf378_276c_d9f6_09e0),
 ];
 
 /// FNV-1a over one line per unit — stable across builds and platforms, which

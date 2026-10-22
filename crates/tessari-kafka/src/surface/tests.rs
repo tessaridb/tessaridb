@@ -271,3 +271,73 @@ async fn a_topic_the_store_does_not_hold_is_unknown_and_an_offset_past_the_end_i
     assert_eq!(error, 1, "OFFSET_OUT_OF_RANGE past an empty topic's end");
     stop.cancel();
 }
+
+/// A message appended by a statement carries the instant it was appended as
+/// its Kafka timestamp — the log's own time — rather than none (ADR-0133 D3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_message_a_statement_appended_carries_its_append_time() {
+    let wall = || {
+        i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap()
+    };
+    let before = wall();
+    let (address, stop, _) = serving_with("CREATE orders:'n1' = { amount: 5 };").await;
+    let after = wall();
+    let mut stream = TcpStream::connect(&address).await.unwrap();
+    let (error, _, records) =
+        fetched(&ask(&mut stream, 1, 12, true, &fetch_body("orders", 0)).await);
+    assert_eq!(error, 0);
+    let batches = decode_batches(&records).unwrap();
+    let timestamp = batches[0].records[0].timestamp;
+    assert!(
+        before <= timestamp && timestamp <= after,
+        "{before} <= {timestamp} <= {after}"
+    );
+    stop.cancel();
+}
+
+/// ListOffsets by time finds a statement-appended message by the instant it
+/// was appended, the timestamp a fetch reports for it (ADR-0133 D3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offsets_for_a_time_find_messages_a_statement_appended() {
+    let (address, stop, _) = serving_with(
+        "CREATE orders:'n1' = { amount: 1 }; CREATE orders:'n2' = { amount: 2 }; \
+         CREATE orders:'n3' = { amount: 3 };",
+    )
+    .await;
+    let mut stream = TcpStream::connect(&address).await.unwrap();
+    let (_, _, records) = fetched(&ask(&mut stream, 1, 12, true, &fetch_body("orders", 0)).await);
+    let stamps: Vec<i64> = decode_batches(&records)
+        .unwrap()
+        .iter()
+        .flat_map(|batch| batch.records.iter().map(|record| record.timestamp))
+        .collect();
+    assert_eq!(stamps.len(), 3);
+    let target = stamps[2];
+    let expected = stamps.iter().position(|stamp| *stamp >= target).unwrap();
+    let mut body = Writer::new();
+    body.i32(-1);
+    body.array_len(false, Some(1)).unwrap();
+    body.string(false, "orders").unwrap();
+    body.array_len(false, Some(1)).unwrap();
+    body.i32(0);
+    body.i64(target);
+    let answer = ask(&mut stream, 2, 1, false, &body.into_bytes()).await;
+    let mut reader = Reader::new(&answer);
+    reader.array_len(false, "topics").unwrap();
+    reader.string(false, "name").unwrap();
+    reader.array_len(false, "partitions").unwrap();
+    reader.i32("index").unwrap();
+    assert_eq!(reader.i16("error").unwrap(), 0);
+    assert_eq!(reader.i64("timestamp").unwrap(), stamps[expected]);
+    assert_eq!(
+        reader.i64("offset").unwrap(),
+        i64::try_from(expected).unwrap()
+    );
+    stop.cancel();
+}

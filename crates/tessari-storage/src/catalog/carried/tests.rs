@@ -271,6 +271,27 @@ fn every_system_table_has_a_recorded_replication_class() {
         Carried::Everywhere,
         "a removal must reach a follower of one namespace too"
     );
+    // 30 — a topic's clock goes where its topic goes, or a follower holding
+    // the topic files its positions without the writer's instants.
+    assert_eq!(
+        class(
+            system::TOPIC_CLOCKS,
+            RecordId::from("3/4/7"),
+            Some(Value::Null)
+        ),
+        Carried::Within(Reach::Database(NamespaceId::new(3), DatabaseId::new(4)))
+    );
+    for unproven in ["3/4", "3/4/7/8", "a/4/7"] {
+        assert_eq!(
+            class(
+                system::TOPIC_CLOCKS,
+                RecordId::from(unproven),
+                Some(Value::Null)
+            ),
+            Carried::StoreOnly,
+            "{unproven}"
+        );
+    }
 
     for table in [
         system::ALLOCATORS,

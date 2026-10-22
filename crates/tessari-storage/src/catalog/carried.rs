@@ -215,6 +215,11 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
         // And a removed node, for the same reason: a follower that missed it
         // would admit the node every other one refuses.
         (t, _) if t == system::TOMBSTONED_NODES => Carried::Everywhere,
+        // A topic's clock travels with the topic: a follower holding the topic
+        // files each new position with the instant this row gives it, so one
+        // that missed the row would answer no instant where the writer answers
+        // one (ADR-0133 D3). The tenancy is in the row's identity.
+        (t, _) if t == system::TOPIC_CLOCKS => clocked(&mutation.id),
         // Everything else, named rather than left to a catch-all so that the
         // ratchet below is a statement about a set somebody wrote down:
         //   ALLOCATORS        one counter per level, for the whole store
@@ -227,6 +232,20 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
         //                     nothing in this build removes a leadership row
         _ => Carried::StoreOnly,
     })
+}
+
+/// Who a topic's clock row is carried to: the database its identity names.
+fn clocked(id: &RecordId) -> Carried {
+    let RecordId::Text(row) = id else {
+        return Carried::StoreOnly;
+    };
+    let mut parts = row.split('/').map(str::parse::<u32>);
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(Ok(namespace)), Some(Ok(database)), Some(Ok(_)), None) => Carried::Within(
+            Reach::Database(NamespaceId::new(namespace), DatabaseId::new(database)),
+        ),
+        _ => Carried::StoreOnly,
+    }
 }
 
 /// Who a qualified-name record is carried to.

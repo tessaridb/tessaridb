@@ -275,6 +275,7 @@ impl Session<'_> {
                 consumer,
                 consumer_parameter: _,
                 after,
+                since,
                 limit,
                 partition,
             } => {
@@ -284,6 +285,7 @@ impl Session<'_> {
                     crate::topic::Reading {
                         consumer: consumer.as_deref(),
                         after: after.as_ref(),
+                        since: since.as_ref(),
                         limit: limit.as_ref(),
                         partition: partition.as_ref(),
                     },

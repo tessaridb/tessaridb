@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use tessari_ql::{Expr, Span, TableRef};
 use tessari_storage::{Catalog, Messages, TableKind, TopicDeclaration, Transaction};
-use tessari_types::{Number, RecordId, TableId, Value};
+use tessari_types::{DatabaseId, Datetime, NamespaceId, Number, RecordId, TableId, Value};
 
 use crate::AccessPath;
 use crate::error::{Error, Result};
@@ -39,6 +39,8 @@ pub(crate) struct Reading<'a> {
     pub(crate) consumer: Option<&'a str>,
     /// `AFTER <position>`.
     pub(crate) after: Option<&'a Expr>,
+    /// `SINCE <instant>` (ADR-0133 D3).
+    pub(crate) since: Option<&'a Expr>,
     /// `LIMIT <count>`.
     pub(crate) limit: Option<&'a Expr>,
     /// `PARTITION <n>` (ADR-0131).
@@ -195,7 +197,7 @@ impl Session<'_> {
                 .topic_group(context.namespace, context.database, table, consumer)
                 .await?
         {
-            if reading.after.is_some() {
+            if reading.after.is_some() || reading.since.is_some() {
                 return Err(Error::AfterOnGroup {
                     group: consumer.to_owned(),
                     span,
@@ -223,8 +225,8 @@ impl Session<'_> {
                 )
                 .await;
         }
-        let named = match reading.after {
-            Some(after) => Some(
+        let named = match (reading.after, reading.since) {
+            (Some(after), _) => Some(
                 self.whole(
                     transaction,
                     after,
@@ -232,7 +234,15 @@ impl Session<'_> {
                 )
                 .await?,
             ),
-            None => None,
+            (None, Some(since)) => Some(
+                self.after_instant(
+                    transaction,
+                    (context.namespace, context.database, table),
+                    since,
+                )
+                .await?,
+            ),
+            (None, None) => None,
         };
         let stored = match reading.consumer {
             Some(consumer) => {
@@ -299,7 +309,7 @@ impl Session<'_> {
                     ),
                     ("value".to_owned(), message.value),
                 ]));
-                (message.id, body)
+                (message.id, with_appended(body, message.appended))
             })
             .collect();
         Ok(Outcome::Records {
@@ -309,6 +319,39 @@ impl Session<'_> {
             suggestion: None,
             only: false,
         })
+    }
+
+    /// The position a read `SINCE` an instant starts after: the one before the
+    /// first message appended at or after it, or the last position given when
+    /// every message is older (ADR-0133 D3).
+    async fn after_instant(
+        &self,
+        transaction: &mut Transaction<'_>,
+        (namespace, database, table): (NamespaceId, DatabaseId, TableId),
+        since: &Expr,
+    ) -> Result<u64> {
+        let reason = "an instant is a datetime at or after 1970";
+        let instant = match self.evaluate(transaction, since).await? {
+            Value::Datetime(at) => millis_of(at),
+            _ => None,
+        }
+        .ok_or(Error::InvalidPosition {
+            reason,
+            span: since.span,
+        })?;
+        Ok(
+            match transaction
+                .topic_since(namespace, database, table, instant)
+                .await?
+            {
+                Some(first) => first.saturating_sub(1),
+                None => transaction
+                    .topic_after(namespace, database, table, 0, 0)
+                    .await?
+                    .last
+                    .unwrap_or(0),
+            },
+        )
     }
 
     /// A whole number at or above zero, from an expression.
@@ -336,6 +379,33 @@ impl Session<'_> {
                 .collect(),
             value => Ok(vec![position_of(value, reason, expr.span)?]),
         }
+    }
+}
+
+/// An instant as whole milliseconds since the epoch, rounded toward it, or
+/// `None` for one before it.
+fn millis_of(at: Datetime) -> Option<u64> {
+    let seconds = u64::try_from(at.seconds()).ok()?;
+    seconds
+        .checked_mul(1000)?
+        .checked_add(u64::from(at.nanos() / 1_000_000))
+}
+
+/// A message's body with the instant it was appended, when its topic kept
+/// one (ADR-0133 D3).
+pub(super) fn with_appended(body: Value, appended: Option<u64>) -> Value {
+    let at = appended.and_then(|appended| {
+        Datetime::new(
+            i64::try_from(appended / 1000).ok()?,
+            u32::try_from((appended % 1000).checked_mul(1_000_000)?).ok()?,
+        )
+    });
+    match (body, at) {
+        (Value::Object(mut fields), Some(at)) => {
+            fields.insert("appended".to_owned(), Value::Datetime(at));
+            Value::Object(fields)
+        }
+        (body, _) => body,
     }
 }
 

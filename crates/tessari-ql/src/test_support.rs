@@ -586,12 +586,13 @@ fn erase_statement(statement: &mut Statement) {
         StatementKind::ReadTopic {
             topic,
             after,
+            since,
             limit,
             partition,
             ..
         } => {
             erase_table(topic);
-            for bound in [after, limit, partition].into_iter().flatten() {
+            for bound in [after, since, limit, partition].into_iter().flatten() {
                 erase_expr(bound);
             }
         }

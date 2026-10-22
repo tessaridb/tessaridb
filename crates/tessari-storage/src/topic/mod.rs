@@ -18,6 +18,7 @@
 //! topic accepts is of a message whose retention has passed, which is what the
 //! node's housekeeping issues.
 
+mod clock;
 mod rate;
 mod read;
 mod size;
@@ -29,8 +30,8 @@ pub(crate) use turns::PartitionTurns;
 use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_encoding::{
-    ExpiryMark, LogRecord, RecordValue, StoreKey, StoreValue, TopicEntryKey, TopicHeadKey,
-    TopicOffsetKey,
+    ExpiryMark, FormatVersion, LogRecord, RecordValue, StoreKey, StoreValue, TopicEntryKey,
+    TopicHeadKey, TopicMark, TopicOffsetKey,
 };
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
@@ -149,6 +150,7 @@ pub(crate) async fn admit(
     }
     let mut mutations = record.mutations().to_vec();
     let mut stamped = false;
+    let mut appended = BTreeSet::new();
     for mutation in &mut mutations {
         let topic = (mutation.namespace, mutation.database, mutation.table);
         let Some((name, declared)) = topics.get(&topic) else {
@@ -201,6 +203,7 @@ pub(crate) async fn admit(
             mutation.value = mutation.value.clone().expiring(at);
             stamped = true;
         }
+        appended.insert(topic);
     }
     // A size retention is enforced after every message has been admitted, so
     // the total it judges is the one the commit would leave (G055 C8).
@@ -210,6 +213,12 @@ pub(crate) async fn admit(
         {
             stamped = true;
         }
+    }
+    // Each topic the commit appends to gives its messages one instant, on a
+    // store whose format keeps it (ADR-0133 D3).
+    if !appended.is_empty() && store.held_format().await? >= FormatVersion::TOPIC_CLOCK {
+        clock::stamp(&view, &appended, now, node, &mut mutations).await?;
+        stamped = true;
     }
     if !stamped {
         return Ok(None);
@@ -245,6 +254,7 @@ pub(crate) async fn maintain(
     if topics.is_empty() {
         return Ok(batch);
     }
+    let instants = clock::given(record, &topics.keys().copied().collect())?;
     let mut next: BTreeMap<Topic, u64> = BTreeMap::new();
     for mutation in record.mutations() {
         let topic = (mutation.namespace, mutation.database, mutation.table);
@@ -261,7 +271,10 @@ pub(crate) async fn maintain(
                         .checked_add(1)
                         .ok_or(Error::TopicPositionsExhausted)?,
                 };
-                batch = put_entries(batch, topic, &mutation.id, offset);
+                let mark = TopicMark {
+                    appended: instants.get(&topic).copied(),
+                };
+                batch = put_entries(batch, topic, &mutation.id, offset, mark);
                 let following = offset
                     .checked_add(1)
                     .ok_or(Error::TopicPositionsExhausted)?;
@@ -321,6 +334,7 @@ fn put_entries(
     (namespace, database, table): Topic,
     id: &RecordId,
     offset: u64,
+    mark: TopicMark,
 ) -> WriteBatch {
     batch
         .put(
@@ -333,7 +347,7 @@ fn put_entries(
                 id: id.clone(),
             }
             .encode(),
-            ExpiryMark.encode(),
+            mark.encode(),
         )
         .put(
             TopicEntryKey::keyspace(),

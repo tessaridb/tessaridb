@@ -215,7 +215,7 @@ pub enum StatementKind {
         clauses: TopicClauses,
     },
     /// `READ FROM events FOR CONSUMER 'billing' AFTER 41 LIMIT 100` — the
-    /// messages of a topic after a position (G037).
+    /// messages of a topic after a position (G037), or `SINCE` an instant.
     ReadTopic {
         /// The topic.
         topic: TableRef,
@@ -226,6 +226,9 @@ pub enum StatementKind {
         consumer_parameter: Option<crate::ast::ParameterSlot>,
         /// The position to read after, instead of the stored one.
         after: Option<Expr>,
+        /// `SINCE <instant>`: read from the first message appended at or after
+        /// it, instead of after the stored position (ADR-0133 D3).
+        since: Option<Expr>,
         /// The most messages to answer.
         limit: Option<Expr>,
         /// `PARTITION <n>`: the partition of a split topic to read (ADR-0131).

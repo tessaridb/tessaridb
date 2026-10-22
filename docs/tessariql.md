@@ -7773,6 +7773,7 @@ READ FROM events;
 READ FROM events AFTER 41 LIMIT 100;
 READ FROM events FOR CONSUMER 'billing' LIMIT 50;
 READ FROM events FOR CONSUMER 'billing' AFTER 0;
+READ FROM events SINCE datetime '2026-10-22T09:00:00Z' LIMIT 100;
 
 INFO FOR TOPIC events;
 DROP TOPIC events;
@@ -7846,7 +7847,29 @@ CONSUMER` it also moves the stored position there, which is how a reader is
 rewound or skipped forward. Without `LIMIT` a read answers at most **100**
 messages.
 
-Each message answers under its own identity as `{ position, value }`.
+Each message answers under its own identity as `{ position, value, appended }`.
+
+### When a message was appended
+
+`appended` is the instant the message's commit appended it, to the
+millisecond. Every message of one commit has the same instant, and **an instant
+never goes back along a topic**: a commit takes the later of its own clock and
+the instant the topic last gave, so a leader whose clock runs behind the one
+before it does not number time backwards. A replica answers the instants the
+writer gave, because the instant travels in the log with the commit rather than
+being read from each node's clock.
+
+`READ FROM events SINCE <datetime>` starts at the first message appended at or
+after that instant — found in as many index reads as the topic has bits of
+length, not by reading from the start — and answers nothing when every message
+is older. It takes the place of `AFTER` (the two do not combine), and with `FOR
+CONSUMER` it moves the stored position as `AFTER` does. A group's members
+cannot start from an instant, for the reason they cannot skip with `AFTER`.
+
+A message appended before a store kept the instant — every one written before
+format 9, and every one on a store that has not been finalized to it — answers
+no `appended` and counts as older than any instant. A store restored from a
+script appends its messages again and gives them the instant of the restore.
 
 ### Consumer groups: acknowledge each message
 

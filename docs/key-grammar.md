@@ -872,7 +872,7 @@ compute with.
 ```text
 <0x1a> <at:u64 ms> <namespace:u32> <database:u32> <table:u32> <record-id>             → empty
 <0x1b> <namespace:u32> <database:u32> <table:u32> <version:u64> <record-id>           → empty
-<0x1c> <namespace:u32> <database:u32> <table:u32> <position:u64> <record-id>          → empty
+<0x1c> <namespace:u32> <database:u32> <table:u32> <position:u64> <record-id>          → [<appended:u64 ms>]
 <0x1d> <namespace:u32> <database:u32> <table:u32> <record-id> <position:u64>          → empty
 <0x1e> <namespace:u32> <database:u32> <table:u32>                                     → <u64>
 <0x43> <namespace:u32> <database:u32> <table:u32>                                     → <u64>
@@ -884,7 +884,10 @@ the start. `0x1b` files each key of a space that declared a limit by the version
 it was last written at, so the least recently modified keys come first. `0x1c`
 and `0x1d` file each message of a topic by its position and by its identity —
 the first serves a read after a position, the second the removal of a message,
-which does not carry its position. `0x1e` holds the last position the topic has
+which does not carry its position. A `0x1c` entry holds the millisecond its
+message was appended (ADR-0133 D3), the instant the appending commit gave its
+topic's clock (system table `30`); an entry written before format 9 holds
+nothing and answers no instant. `0x1e` holds the last position the topic has
 given and is never removed, so a topic that retention has emptied does not start
 numbering again from 1. `0x43` holds how many payload bytes a topic declared
 `RETAIN BYTES` holds, written only for such a topic so its count is complete
@@ -1168,6 +1171,7 @@ already written carries it. A new table takes the next id; none is reused.
 | `27` | `VIEW_MEMBERS` | which group of a grouped materialized view each source record is in, both ways round |
 | `28` | `ROLLUP_STATES` | the exact state of each rollup key's float sums for its last-written window |
 | `29` | `KAFKA_QUARANTINE` | the messages each Kafka consumer quarantined, by partition and offset |
+| `30` | `TOPIC_CLOCKS` | each topic's clock: the instant its newest message was appended, never lower than the one before (row `ns/db/table`, ADR-0133) |
 
 ## 10. Format versions
 
@@ -1187,7 +1191,7 @@ and is rewritten at open only where the row below says so.
 | `6` | a containment index's entries, key kind `0x44` (ADR-0116) | opened as is and keeps its stamp; a containment index is refused until the store is finalized (ADR-0118) |
 | `7` | a table may declare that its records expire — no key or value changes (the `expires` flag is §7.1's), so the surface digest is format 6's; what moves is the **write rule**: a build before it would clear a record's instant on a plain write and stamp no default (ADR-0122 A8) | opened as is and keeps its stamp; `DEFINE`/`ALTER … EXPIRE` is refused until the store is finalized |
 | `8` | a plain index keeps its removed entries as retired entries, key kinds `0x45` and `0x46` (Q-S3-34) | opened as is and keeps its stamp; no retired entry is written and a transaction behind the tail reads as before until the store is finalized |
-| `9` | a topic may be split into partitions (ADR-0131) — a catalog change: a build before it would append to a split topic itself, where no partition's reader sees the message — and a hash field may carry an instant of its own, flag `0x80` (ADR-0132), which a build before it refuses as a reserved bit | opened as is and keeps its stamp; `DEFINE TOPIC … PARTITIONS` and `HASH EXPIRE` are refused until the store is finalized |
+| `9` | a topic may be split into partitions (ADR-0131) — a catalog change: a build before it would append to a split topic itself, where no partition's reader sees the message — and a hash field may carry an instant of its own, flag `0x80` (ADR-0132), which a build before it refuses as a reserved bit; and a topic keeps each message's append instant in its `0x1c` entry and its clock in system table `30` (ADR-0133) | opened as is and keeps its stamp; `DEFINE TOPIC … PARTITIONS` and `HASH EXPIRE` are refused, and a topic keeps no append instant, until the store is finalized |
 
 **The stamp is the format the store holds, and it lags this build** (ADR-0118,
 from `0.31.0-beta`). A build opens an older store and keeps its stamp, so the

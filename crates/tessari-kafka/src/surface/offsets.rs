@@ -90,21 +90,27 @@ pub(crate) async fn bounds(
     })
 }
 
-/// A message's timestamp in milliseconds, when it was written by a Kafka client.
-fn timestamp_of(message: &Value) -> Option<i64> {
-    let Value::Object(fields) = message else {
-        return None;
-    };
-    let Some(Value::Object(inner)) = fields.get("value") else {
-        return None;
-    };
-    match inner.get("timestamp") {
+/// A datetime as whole milliseconds since the epoch, when it is one.
+pub(crate) fn millis_of(value: Option<&Value>) -> Option<i64> {
+    match value {
         Some(Value::Datetime(at)) => at
             .seconds()
             .checked_mul(1000)
             .and_then(|millis| millis.checked_add(i64::from(at.nanos() / 1_000_000))),
         _ => None,
     }
+}
+
+/// A message's timestamp in milliseconds: the one a Kafka client wrote, or
+/// else the instant the message was appended (ADR-0133 D3).
+fn timestamp_of(message: &Value) -> Option<i64> {
+    let Value::Object(fields) = message else {
+        return None;
+    };
+    let Some(Value::Object(inner)) = fields.get("value") else {
+        return millis_of(fields.get("appended"));
+    };
+    millis_of(inner.get("timestamp")).or_else(|| millis_of(fields.get("appended")))
 }
 
 /// The first offset at or after `target` milliseconds, by halving the range:
