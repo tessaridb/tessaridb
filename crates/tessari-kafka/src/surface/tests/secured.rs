@@ -38,6 +38,19 @@ async fn what_comes_back(stream: &mut TcpStream) -> Vec<u8> {
     back
 }
 
+/// An `ApiVersions` v0 request with correlation id 7, framed.
+fn versions_frame() -> Vec<u8> {
+    let mut frame = Writer::new();
+    frame.i16(18);
+    frame.i16(0);
+    frame.i32(7);
+    frame.nullable_string(false, Some("test")).unwrap();
+    let frame = frame.into_bytes();
+    let mut sent = u32::try_from(frame.len()).unwrap().to_be_bytes().to_vec();
+    sent.extend_from_slice(&frame);
+    sent
+}
+
 fn one_record() -> Vec<u8> {
     let mut batch = Writer::new();
     encode_batch(
@@ -68,15 +81,7 @@ async fn a_node_with_a_certificate_answers_tls_and_nothing_in_the_clear() {
     // In the clear a request is a failed handshake: what comes back is a TLS
     // alert record (content type 21) or nothing, never a Kafka answer.
     let mut clear = TcpStream::connect(&address).await.unwrap();
-    let mut frame = Writer::new();
-    frame.i16(18);
-    frame.i16(0);
-    frame.i32(7);
-    frame.nullable_string(false, Some("test")).unwrap();
-    let frame = frame.into_bytes();
-    let mut sent = u32::try_from(frame.len()).unwrap().to_be_bytes().to_vec();
-    sent.extend_from_slice(&frame);
-    tokio::io::AsyncWriteExt::write_all(&mut clear, &sent)
+    tokio::io::AsyncWriteExt::write_all(&mut clear, &versions_frame())
         .await
         .unwrap();
     let back = what_comes_back(&mut clear).await;
@@ -184,6 +189,68 @@ async fn a_viewer_fetches_and_is_refused_every_produce_and_create() {
             .run("USE NAMESPACE app; USE DATABASE main; INFO FOR TOPIC made_by_a_viewer;")
             .await
             .is_err()
+    );
+    stop.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_full_door_turns_the_next_connection_away_and_a_freed_place_admits_it() {
+    let mut door = None;
+    let (address, stop, _) = serving_adjusted("", |node| {
+        door = Some(Arc::clone(&node.door));
+        node
+    })
+    .await;
+    let door = door.unwrap();
+    // Every place taken directly, rather than by opening that many connections.
+    let mut places = Vec::new();
+    while let Some(place) = door.admit() {
+        places.push(place);
+    }
+    let mut turned = TcpStream::connect(&address).await.unwrap();
+    drop(tokio::io::AsyncWriteExt::write_all(&mut turned, &versions_frame()).await);
+    let back = what_comes_back(&mut turned).await;
+    assert!(
+        back.is_empty(),
+        "a turned-away connection was answered: {back:?}"
+    );
+    drop(places);
+    let mut admitted = TcpStream::connect(&address).await.unwrap();
+    assert_eq!(versions(&mut admitted).await, 0);
+    stop.cancel();
+}
+
+/// Read until the node closes `stream`, and say how long that took on the
+/// test's clock.
+async fn closed_after<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> Duration {
+    let began = tokio::time::Instant::now();
+    let mut chunk = [0_u8; 64];
+    while stream.read(&mut chunk).await.unwrap_or(0) > 0 {}
+    began.elapsed()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_that_says_nothing_is_closed_when_its_idle_time_runs_out() {
+    let (address, stop, _) = serving_with("").await;
+    let mut idle = TcpStream::connect(&address).await.unwrap();
+    let waited = closed_after(&mut idle).await;
+    assert!(
+        waited >= Duration::from_secs(tessari_constants::KAFKA_IDLE_SECONDS),
+        "{waited:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_tls_connection_that_never_greets_is_closed_at_the_greeting_limit() {
+    let (server, _) = tessari_serve::testing::loopback().unwrap();
+    let (address, stop, _) = serving_adjusted("", |node| node.securing(server)).await;
+    let mut silent = TcpStream::connect(&address).await.unwrap();
+    let waited = closed_after(&mut silent).await;
+    assert!(
+        waited >= Duration::from_secs(tessari_constants::GREETING_SECONDS)
+            && waited < Duration::from_secs(tessari_constants::KAFKA_IDLE_SECONDS),
+        "{waited:?}"
     );
     stop.cancel();
 }

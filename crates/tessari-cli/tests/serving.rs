@@ -1131,6 +1131,22 @@ fn a_node_told_to_require_client_tls_refuses_to_start_without_a_certificate() {
             .env_remove("TESSARIDB_CLIENT_PLAINTEXT"),
     );
     assert!(by_variable.contains("--tls-cert"), "{by_variable}");
+
+    // A node serving only the Kafka or the RESP surface is held to it too.
+    for (flag, served) in [("--kafka", "kafka"), ("--resp", "resp")] {
+        let alone = refused_start(
+            Command::new(TESSARIDB)
+                .arg(&store)
+                .args([flag, "127.0.0.1:0", "--require-client-tls"])
+                .env_remove("TESSARIDB_REQUIRE_CLIENT_TLS")
+                .env_remove("TESSARIDB_CLIENT_PLAINTEXT"),
+        );
+        assert!(alone.contains("--tls-cert"), "{flag}: {alone}");
+        assert!(
+            !alone.contains(&format!("serving the {served} protocol")),
+            "{flag} was served: {alone}"
+        );
+    }
 }
 
 #[test]

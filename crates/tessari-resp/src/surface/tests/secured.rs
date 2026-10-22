@@ -114,3 +114,65 @@ async fn a_viewer_reads_a_stream_and_is_refused_every_write_to_it() {
     );
     stop.cancel();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_full_door_turns_the_next_connection_away_and_a_freed_place_admits_it() {
+    let mut door = None;
+    let (address, stop, _) = serving_adjusted("", |node| {
+        door = Some(Arc::clone(&node.door));
+        node
+    })
+    .await;
+    let door = door.unwrap();
+    // Every place taken directly, rather than by opening that many connections.
+    let mut places = Vec::new();
+    while let Some(place) = door.admit() {
+        places.push(place);
+    }
+    let turned = ping(TcpStream::connect(&address).await.unwrap()).await;
+    assert!(
+        turned.is_empty(),
+        "a turned-away connection was answered: {turned:?}"
+    );
+    drop(places);
+    assert_eq!(
+        ping(TcpStream::connect(&address).await.unwrap()).await,
+        b"+PONG\r\n"
+    );
+    stop.cancel();
+}
+
+/// Read until the node closes `stream`, and say how long that took on the
+/// test's clock.
+async fn closed_after<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> Duration {
+    let began = tokio::time::Instant::now();
+    let mut chunk = [0_u8; 64];
+    while stream.read(&mut chunk).await.unwrap_or(0) > 0 {}
+    began.elapsed()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_that_says_nothing_is_closed_when_its_idle_time_runs_out() {
+    let (address, stop, _) = serving_with("").await;
+    let mut idle = TcpStream::connect(&address).await.unwrap();
+    let waited = closed_after(&mut idle).await;
+    assert!(
+        waited >= Duration::from_secs(tessari_constants::RESP_IDLE_SECONDS),
+        "{waited:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_tls_connection_that_never_greets_is_closed_at_the_greeting_limit() {
+    let (server, _) = tessari_serve::testing::loopback().unwrap();
+    let (address, stop, _) = serving_adjusted("", |node| node.securing(server)).await;
+    let mut silent = TcpStream::connect(&address).await.unwrap();
+    let waited = closed_after(&mut silent).await;
+    assert!(
+        waited >= Duration::from_secs(tessari_constants::GREETING_SECONDS)
+            && waited < Duration::from_secs(tessari_constants::RESP_IDLE_SECONDS),
+        "{waited:?}"
+    );
+    stop.cancel();
+}
