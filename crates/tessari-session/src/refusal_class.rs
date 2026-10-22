@@ -213,6 +213,7 @@ impl Error {
             | Self::NotAGroup { .. }
             | Self::AfterOnGroup { .. }
             | Self::NoGroupForMember { .. }
+            | Self::InvalidIdle { .. }
             | Self::DeadLetterIsTheTopic { .. }
             | Self::TopicConsumerSpansDatabases { .. }
             | Self::QuarantineNeedsDeadLetter { .. }

@@ -269,3 +269,171 @@ fn session_error(session: &mut Session<'_>, script: &str) -> Error {
         Ok(outcomes) => panic!("{script} answered {outcomes:?}"),
     }
 }
+
+fn holders(session: &mut Session<'_>) -> Vec<(u64, Value)> {
+    held(&report(session, "mail"))
+        .iter()
+        .map(|entry| {
+            (
+                whole(entry, "position"),
+                entry.get("member").cloned().unwrap(),
+            )
+        })
+        .collect()
+}
+
+fn mail_held_by_alice(session: &mut Session<'_>, count: u64) {
+    run(
+        session,
+        "DEFINE GROUP 'mail' ON TOPIC events ACK DEADLINE NONE IN FLIGHT 10;",
+    );
+    appended(session, count);
+    run(
+        session,
+        &format!("READ FROM events FOR CONSUMER 'mail' MEMBER 'alice' LIMIT {count};"),
+    );
+}
+
+#[test]
+fn hand_gives_held_messages_to_another_member() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        mail_held_by_alice(&mut session, 2);
+        assert_eq!(
+            given(
+                &mut session,
+                "HAND events FOR CONSUMER 'mail' AT 1, 5 TO 'bob';"
+            ),
+            vec![(1, 2)],
+            "{}: a position nothing holds is passed over",
+            backend.name
+        );
+        assert_eq!(
+            holders(&mut session),
+            vec![(1, Value::from("bob")), (2, Value::from("alice"))]
+        );
+        assert_eq!(
+            given(
+                &mut session,
+                "READ FROM events FOR CONSUMER 'mail' MEMBER 'bob' HELD;"
+            ),
+            vec![(1, 3)]
+        );
+    });
+}
+
+#[test]
+fn hand_after_a_position_takes_what_has_been_idle_long_enough_up_to_the_limit() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        mail_held_by_alice(&mut session, 3);
+        std::thread::sleep(Duration::from_millis(30));
+        // The control arm: nothing has been idle for an hour.
+        assert_eq!(
+            given(
+                &mut session,
+                "HAND events FOR CONSUMER 'mail' AFTER 0 LIMIT 10 TO 'bob' IF IDLE 1h;"
+            ),
+            vec![]
+        );
+        assert_eq!(
+            given(
+                &mut session,
+                "HAND events FOR CONSUMER 'mail' AFTER 1 LIMIT 1 TO 'bob' IF IDLE 10ms;"
+            ),
+            vec![(2, 2)],
+            "{}",
+            backend.name
+        );
+        assert_eq!(
+            holders(&mut session),
+            vec![
+                (1, Value::from("alice")),
+                (2, Value::from("bob")),
+                (3, Value::from("alice"))
+            ]
+        );
+    });
+}
+
+#[test]
+fn hand_drops_a_held_message_retention_removed_and_says_so() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        mail_held_by_alice(&mut session, 2);
+        run(&mut session, "TRIM events BEFORE 2;");
+        match run(
+            &mut session,
+            "HAND events FOR CONSUMER 'mail' AT 1, 2 TO 'bob';",
+        ) {
+            Outcome::Records { records, notes, .. } => {
+                assert_eq!(records.len(), 1, "{}", backend.name);
+                assert!(
+                    notes.iter().any(|note| matches!(
+                        note,
+                        tessari_session::Note::Lapsed { missed: 1, .. }
+                    )),
+                    "{}: {notes:?}",
+                    backend.name
+                );
+            }
+            other => panic!("HAND answered {other:?}"),
+        }
+        assert_eq!(holders(&mut session), vec![(2, Value::from("bob"))]);
+    });
+}
+
+#[test]
+fn a_member_is_added_and_dropped_with_what_it_held() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        mail_held_by_alice(&mut session, 2);
+        let add = "ALTER GROUP 'mail' ON TOPIC events ADD MEMBER 'carol';";
+        assert_eq!(value(&mut session, add), Value::Number(Number::Integer(1)));
+        assert_eq!(value(&mut session, add), Value::Number(Number::Integer(0)));
+        assert_eq!(
+            value(
+                &mut session,
+                "ALTER GROUP 'mail' ON TOPIC events DROP MEMBER 'alice';"
+            ),
+            Value::Number(Number::Integer(2)),
+            "{}",
+            backend.name
+        );
+        assert_eq!(holders(&mut session), vec![]);
+        let report = report(&mut session, "mail");
+        let Some(Value::Object(members)) = report.get("members") else {
+            panic!("members is {:?}", report.get("members"));
+        };
+        assert_eq!(members.keys().collect::<Vec<_>>(), vec!["carol"]);
+        assert_eq!(
+            value(
+                &mut session,
+                "ALTER GROUP 'mail' ON TOPIC events DROP MEMBER 'nobody';"
+            ),
+            Value::Number(Number::Integer(0))
+        );
+    });
+}
+
+#[test]
+fn hand_needs_a_group_and_a_member_to_hand_to() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        mail_held_by_alice(&mut session, 1);
+        for (script, expected) in [
+            ("HAND events FOR CONSUMER 'mail' AT 1;", "`TO '<member>'`"),
+            (
+                "HAND events FOR CONSUMER 'solo' AT 1 TO 'bob';",
+                "without a group",
+            ),
+            (
+                "HAND events FOR CONSUMER 'mail' AT 1 TO 'bob' IF IDLE 'long';",
+                "a duration",
+            ),
+        ] {
+            let why = refused(&mut session, script);
+            assert!(why.contains(expected), "{}: {script}: {why}", backend.name);
+        }
+    });
+}

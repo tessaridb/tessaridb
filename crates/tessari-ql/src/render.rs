@@ -75,6 +75,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DropGroup { .. } => Err(unrenderable("DROP GROUP", span)),
         StatementKind::AlterGroup { .. } => Err(unrenderable("ALTER GROUP", span)),
         StatementKind::AckTopic { .. } => Err(unrenderable("ACK", span)),
+        StatementKind::HandTopic(_) => Err(unrenderable("HAND", span)),
         StatementKind::NackTopic { .. } => Err(unrenderable("NACK", span)),
         StatementKind::TrimTopic { .. } => Err(unrenderable("TRIM", span)),
         StatementKind::DefineBucket { .. } => Err(unrenderable("DEFINE BUCKET", span)),

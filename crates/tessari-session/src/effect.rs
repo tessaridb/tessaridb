@@ -282,6 +282,7 @@ impl Effect {
             | StatementKind::AlterGroup { .. }
             | StatementKind::AckTopic { .. }
             | StatementKind::NackTopic { .. }
+            | StatementKind::HandTopic(_)
             // A trim deletes messages (W8c).
             | StatementKind::TrimTopic { .. }
             | StatementKind::ClaimRecord { .. }

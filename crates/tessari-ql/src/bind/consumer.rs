@@ -29,6 +29,23 @@ pub(super) fn bind_consumer_names(kind: &mut StatementKind, binding: &Binding<'_
                     ..
                 },
         } => return bind_consumer_name(name_parameter, name, binding),
+        StatementKind::AlterGroup {
+            change:
+                crate::ast::GroupChange::AddMember(member, parameter)
+                | crate::ast::GroupChange::DropMember(member, parameter),
+            ..
+        } => bind_consumer_name(parameter, member, binding)?,
+        StatementKind::HandTopic(hand) => {
+            let crate::ast::Hand {
+                consumer,
+                consumer_parameter,
+                member,
+                member_parameter,
+                ..
+            } = hand.as_mut();
+            bind_consumer_name(member_parameter, member, binding)?;
+            return bind_consumer_name(consumer_parameter, consumer, binding);
+        }
         _ => {}
     }
     match kind {

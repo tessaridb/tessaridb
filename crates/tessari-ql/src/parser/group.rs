@@ -20,7 +20,9 @@ type Settlement = (
     NamedConsumer,
     Vec<crate::ast::Expr>,
 );
-use crate::ast::{GroupClauses, GroupMember, StatementKind, TableRef, TrimBound};
+use crate::ast::{
+    GroupChange, GroupClauses, GroupMember, Hand, Handing, StatementKind, TableRef, TrimBound,
+};
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
 
@@ -106,21 +108,83 @@ impl Parser<'_> {
         })
     }
 
-    /// `ALTER GROUP '<name>' ON TOPIC <topic> START AT <expr>`, the words
-    /// `ALTER GROUP` consumed.
+    /// `ALTER GROUP '<name>' ON TOPIC <topic> START AT <expr> | ADD MEMBER
+    /// '<name>' | DROP MEMBER '<name>'`, the words `ALTER GROUP` consumed.
     pub(super) fn alter_group(&mut self) -> Result<StatementKind> {
         let ((name, name_parameter), topic) = self.group_on_topic()?;
-        self.expect_word(
-            "start",
-            "`START AT n` — the position the group has been given up to",
-        )?;
-        self.expect_word("at", "`AT` and a position")?;
+        let change = if self.eat_word("add") {
+            self.expect_word("member", "`MEMBER` and a quoted name after `ADD`")?;
+            let (member, parameter) = self.consumer_name()?;
+            GroupChange::AddMember(member, parameter)
+        } else if self.eat_keyword(Keyword::Drop) {
+            self.expect_word("member", "`MEMBER` and a quoted name after `DROP`")?;
+            let (member, parameter) = self.consumer_name()?;
+            GroupChange::DropMember(member, parameter)
+        } else {
+            self.expect_word(
+                "start",
+                "`START AT n`, `ADD MEMBER '<name>'` or `DROP MEMBER '<name>'`",
+            )?;
+            self.expect_word("at", "`AT` and a position")?;
+            GroupChange::StartAt(self.expression()?)
+        };
         Ok(StatementKind::AlterGroup {
             name,
             name_parameter,
             topic,
-            start_at: self.expression()?,
+            change,
         })
+    }
+
+    /// `HAND <topic> [PARTITION <expr>] FOR CONSUMER '<group>' AT <expr>[, …] |
+    /// AFTER <expr> LIMIT <expr> TO '<member>' [IF IDLE <expr>]`, `HAND`
+    /// consumed (ADR-0133).
+    pub(super) fn hand_statement(&mut self) -> Result<StatementKind> {
+        let topic = self.table_ref()?;
+        let partition = if self.eat_word("partition") {
+            Some(self.expression()?)
+        } else {
+            None
+        };
+        let (Some(consumer), consumer_parameter) = self.for_consumer()? else {
+            return Err(self.error_here("`FOR CONSUMER '<name>'` — the group holding the messages"));
+        };
+        let handing = if self.eat_word("after") {
+            let after = self.expression()?;
+            self.expect_word("limit", "`LIMIT n` — the most messages to hand")?;
+            Handing::After {
+                after: Box::new(after),
+                limit: Box::new(self.expression()?),
+            }
+        } else {
+            self.expect_word("at", "`AT` and the positions, or `AFTER p LIMIT n`")?;
+            let mut positions = vec![self.expression()?];
+            while self.eat_punct(Punct::Comma) {
+                positions.push(self.expression()?);
+            }
+            Handing::At(positions)
+        };
+        self.expect_keyword(
+            Keyword::To,
+            "`TO '<member>'` — the member the messages go to",
+        )?;
+        let (member, member_parameter) = self.consumer_name()?;
+        let idle = if self.eat_keyword(Keyword::If) {
+            self.expect_word("idle", "`IDLE` and how long a message has waited")?;
+            Some(self.expression()?)
+        } else {
+            None
+        };
+        Ok(StatementKind::HandTopic(Box::new(Hand {
+            topic,
+            partition,
+            consumer,
+            consumer_parameter,
+            handing,
+            member,
+            member_parameter,
+            idle,
+        })))
     }
 
     /// `ACK <topic> [PARTITION <expr>] FOR CONSUMER '<name>' AT <expr>[, <expr>…]`, `ACK`

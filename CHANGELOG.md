@@ -32,7 +32,9 @@ compares carries no pre-release suffix.
 - **Group members.** `ACK DEADLINE NONE` holds a message until it is settled; `READ … FOR CONSUMER 'g' MEMBER 'c'`
   records who holds each message and when it was delivered, `… MEMBER 'c' HELD [AFTER p]` hands a member back what it
   holds, and `INFO FOR GROUP 'g' ON TOPIC t` reports both. A group read answers each message's `appended`.
-- **1631 conformance cases** define the language and run in the build.
+  `HAND t FOR CONSUMER 'g' AT p, … | AFTER p LIMIT n TO 'c' [IF IDLE d]` hands held messages to another member;
+  `ALTER GROUP … ADD MEMBER | DROP MEMBER` changes the members, a dropped member's messages with it.
+- **1633 conformance cases** define the language and run in the build.
 
 ## 0.36.2 — 2026-10-19
 

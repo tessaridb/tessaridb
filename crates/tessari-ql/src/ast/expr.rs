@@ -347,6 +347,53 @@ pub struct GroupMember {
     pub held: bool,
 }
 
+/// What `ALTER GROUP` changes (G042, ADR-0133).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupChange {
+    /// `START AT <expr>` — the position the group has been given up to.
+    StartAt(Expr),
+    /// `ADD MEMBER '<name>'`.
+    AddMember(String, Option<crate::ast::ParameterSlot>),
+    /// `DROP MEMBER '<name>'` — the member and what it holds.
+    DropMember(String, Option<crate::ast::ParameterSlot>),
+}
+
+/// Which held messages a `HAND` moves (ADR-0133).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Handing {
+    /// `AT p, …` — these positions, when held.
+    At(Vec<Expr>),
+    /// `AFTER p LIMIT n` — the first `n` held after `p`.
+    After {
+        /// The position after which to look.
+        after: Box<Expr>,
+        /// The most to move.
+        limit: Box<Expr>,
+    },
+}
+
+/// `HAND <topic> [PARTITION <expr>] FOR CONSUMER '<group>' AT … | AFTER …
+/// LIMIT … TO '<member>' [IF IDLE <duration>]` (ADR-0133).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hand {
+    /// The topic.
+    pub topic: TableRef,
+    /// `PARTITION <n>` of a split topic (ADR-0131).
+    pub partition: Option<Expr>,
+    /// The group holding the messages.
+    pub consumer: String,
+    /// The parameter the group's name is bound from (ADR-0127).
+    pub consumer_parameter: Option<crate::ast::ParameterSlot>,
+    /// Which messages.
+    pub handing: Handing,
+    /// The member they are handed to.
+    pub member: String,
+    /// The parameter the member's name is bound from.
+    pub member_parameter: Option<crate::ast::ParameterSlot>,
+    /// `IF IDLE <duration>` — only messages delivered at least that long ago.
+    pub idle: Option<Expr>,
+}
+
 /// `MAX n [EVICT NONE]` on `DEFINE SPACE` (G036).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpaceBound {

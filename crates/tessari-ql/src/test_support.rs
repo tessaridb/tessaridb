@@ -614,11 +614,29 @@ fn erase_statement(statement: &mut Statement) {
             }
         }
         StatementKind::DropGroup { topic, .. } => erase_table(topic),
-        StatementKind::AlterGroup {
-            topic, start_at, ..
-        } => {
+        StatementKind::AlterGroup { topic, change, .. } => {
             erase_table(topic);
-            erase_expr(start_at);
+            if let crate::ast::GroupChange::StartAt(start_at) = change {
+                erase_expr(start_at);
+            }
+        }
+        StatementKind::HandTopic(hand) => {
+            let crate::ast::Hand {
+                topic,
+                partition,
+                handing,
+                idle,
+                ..
+            } = hand.as_mut();
+            erase_table(topic);
+            match handing {
+                crate::ast::Handing::At(positions) => positions.iter_mut().for_each(erase_expr),
+                crate::ast::Handing::After { after, limit } => {
+                    erase_expr(after);
+                    erase_expr(limit);
+                }
+            }
+            partition.iter_mut().chain(idle.iter_mut()).for_each(erase_expr);
         }
         StatementKind::TrimTopic {
             topic,

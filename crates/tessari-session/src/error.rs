@@ -2756,6 +2756,13 @@ pub enum Error {
         span: Span,
     },
 
+    /// `HAND … IF IDLE` given something that is not a duration (ADR-0133).
+    #[error("a duration — how long a held message has waited since it was delivered (at {span})")]
+    InvalidIdle {
+        /// Where it was written.
+        span: Span,
+    },
+
     /// A position or a count on `READ FROM` that is not a whole number at or
     /// above zero (G037).
     #[error("{reason} (at {span})")]

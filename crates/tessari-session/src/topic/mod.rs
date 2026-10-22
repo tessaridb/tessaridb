@@ -11,6 +11,7 @@
 
 mod flight;
 mod group;
+mod hand;
 mod info;
 mod public;
 mod read;

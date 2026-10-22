@@ -52,6 +52,7 @@ forms! {
     DropGroup => "DROP GROUP",
     AlterGroup => "ALTER GROUP",
     AckTopic => "ACK",
+    HandTopic => "HAND",
     TrimTopic => "TRIM",
     NackTopic => "NACK",
     DefineBucket => "DEFINE BUCKET",
@@ -259,6 +260,7 @@ mod tests {
              ACK events FOR CONSUMER 'mail' AT 1;\
              NACK events FOR CONSUMER 'mail' AT 1;\
              TRIM events KEEP 1;\
+             HAND events FOR CONSUMER 'mail' AT 1 TO 'bob';\
              ALTER GROUP 'mail' ON TOPIC events START AT 0;\
              DROP GROUP 'mail' ON TOPIC events;\
              DEFINE BUCKET b;\

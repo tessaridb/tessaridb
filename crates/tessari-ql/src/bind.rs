@@ -491,7 +491,26 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             }
             Ok(())
         }
-        StatementKind::AlterGroup { start_at, .. } => bind_expr(start_at, binding),
+        StatementKind::AlterGroup { change, .. } => match change {
+            crate::ast::GroupChange::StartAt(start_at) => bind_expr(start_at, binding),
+            crate::ast::GroupChange::AddMember(..) | crate::ast::GroupChange::DropMember(..) => Ok(()),
+        },
+        StatementKind::HandTopic(hand) => {
+            let crate::ast::Hand {
+                partition,
+                handing,
+                idle,
+                ..
+            } = hand.as_mut();
+            let handed: Vec<&mut crate::ast::Expr> = match handing {
+                crate::ast::Handing::At(positions) => positions.iter_mut().collect(),
+                crate::ast::Handing::After { after, limit } => vec![&mut **after, &mut **limit],
+            };
+            for bound in handed.into_iter().chain(partition.as_mut()).chain(idle.as_mut()) {
+                bind_expr(bound, binding)?;
+            }
+            Ok(())
+        }
         StatementKind::TrimTopic {
             partition, bound, ..
         } => {

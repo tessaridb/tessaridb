@@ -81,9 +81,17 @@ impl Needs {
             // reader's stored position: that position is the reader's own place
             // in what it may read (G037).
             | StatementKind::ReadTopic { .. }
-            // Settling a message is the rest of reading it (G042).
+            // Settling a message is the rest of reading it (G042), and so is
+            // handing one to another member or changing who the members are:
+            // each settles what the group holds, not how the topic is read
+            // (ADR-0133).
             | StatementKind::AckTopic { .. }
             | StatementKind::NackTopic { .. }
+            | StatementKind::HandTopic(_)
+            | StatementKind::AlterGroup {
+                change: tessari_ql::GroupChange::AddMember(..) | tessari_ql::GroupChange::DropMember(..),
+                ..
+            }
             // Explaining a read is reading: the catalog, about a table. The
             // caller must be allowed both, and `tables_named` says which.
             | StatementKind::Explain(_)

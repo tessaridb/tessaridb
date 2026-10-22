@@ -265,7 +265,8 @@ pub enum StatementKind {
     },
     /// `ALTER GROUP 'billing' ON TOPIC events START AT 41` — the group next
     /// hands out the message after that position, and forgets what it holds in
-    /// flight.
+    /// flight; `ADD MEMBER 'c'` / `DROP MEMBER 'c'` change its members
+    /// (ADR-0133).
     AlterGroup {
         /// The group.
         name: String,
@@ -274,9 +275,12 @@ pub enum StatementKind {
         name_parameter: Option<crate::ast::ParameterSlot>,
         /// Its topic.
         topic: TableRef,
-        /// The position it is to have been given everything up to.
-        start_at: Expr,
+        /// What changes.
+        change: crate::ast::GroupChange,
     },
+    /// `HAND events FOR CONSUMER 'mail' AT 7 TO 'bob' [IF IDLE 1m]` — held
+    /// messages handed to another member (ADR-0133).
+    HandTopic(Box<crate::ast::Hand>),
     /// `ACK events FOR CONSUMER 'billing' AT 7, 8` — those messages are done.
     AckTopic {
         /// The topic.

@@ -7945,6 +7945,23 @@ messages it already holds — after a position with `AFTER`, which is the one
 name, like the group's, may be a bound parameter. `MEMBER` under a name with no
 group is refused (`NoGroupForMember`), and `HELD` needs a member.
 
+```tessariql
+HAND events FOR CONSUMER 'mailer' AT 41, 42 TO 'worker-2';
+HAND events FOR CONSUMER 'mailer' AFTER 0 LIMIT 10 TO 'worker-2' IF IDLE 5m;
+ALTER GROUP 'mailer' ON TOPIC events ADD MEMBER 'worker-3';
+ALTER GROUP 'mailer' ON TOPIC events DROP MEMBER 'worker-1';
+```
+
+`HAND` moves held messages to another member as a delivery to it — the count
+goes up and the delivery instant, and any deadline, begin again — and answers
+the messages it moved: the positions it names that are held, or the first `n`
+held after a position, only those delivered at least `IF IDLE d` ago (a
+duration, else `InvalidIdle`). A held message retention removed is dropped and
+counted in a `lapsed` note. `ADD MEMBER` answers `1` when the member is new and
+`0` when the group knew it; `DROP MEMBER` forgets the member and what it held,
+which is never handed out again, and answers how many that was. Handing and the
+members are settling, as `ACK` is, so they need what reading the topic needs.
+
 `INFO FOR GROUP 'g' ON TOPIC t` reports the group's figures as `INFO FOR TOPIC`
 gives them, `held` — each message in flight as `{ position, deliveries, member,
 delivered, appended, until }` — and `members`, each with `seen` (its last read),

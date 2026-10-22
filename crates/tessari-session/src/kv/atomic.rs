@@ -62,6 +62,11 @@ pub(crate) const fn retried_on_conflict(kind: &StatementKind) -> bool {
             // (G042).
             | StatementKind::AckTopic { .. }
             | StatementKind::NackTopic { .. }
+            | StatementKind::HandTopic(_)
+            | StatementKind::AlterGroup {
+                change: tessari_ql::GroupChange::AddMember(..) | tessari_ql::GroupChange::DropMember(..),
+                ..
+            }
     )
 }
 

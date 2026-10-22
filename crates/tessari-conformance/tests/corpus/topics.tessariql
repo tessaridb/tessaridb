@@ -122,6 +122,14 @@ READ FROM jobs FOR CONSUMER 'held' MEMBER 'alice' LIMIT 1;
 READ FROM jobs FOR CONSUMER 'held' MEMBER 'alice' HELD;
 --- expect: rows 1
 
+--- case: a held message is handed to another member
+HAND jobs FOR CONSUMER 'held' AFTER 0 LIMIT 10 TO 'bob';
+--- expect: rows 1
+
+--- case: a member dropped takes what it held with it
+ALTER GROUP 'held' ON TOPIC jobs DROP MEMBER 'bob';
+--- expect: value 1
+
 --- case: a topic cannot be its own group's dead letter
 DEFINE GROUP 'loop' ON TOPIC jobs ACK DEADLINE 30s DELIVERIES 3 DEAD LETTER TO jobs;
 --- expect: error DeadLetterIsTheTopic

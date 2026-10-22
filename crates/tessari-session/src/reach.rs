@@ -423,6 +423,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::AlterGroup { topic, .. }
         | StatementKind::AckTopic { topic, .. }
         | StatementKind::NackTopic { topic, .. } => vec![topic],
+        StatementKind::HandTopic(hand) => vec![&hand.topic],
 
         // Releasing many reaches the one queue it names — which is the whole
         // reason it names one: a sweep over every queue would ask a permission

@@ -314,11 +314,22 @@ impl Session<'_> {
                 name,
                 name_parameter: _,
                 topic,
-                start_at,
-            } => {
-                self.alter_group(transaction, name, topic, start_at, span)
-                    .await
-            }
+                change,
+            } => match change {
+                tessari_ql::GroupChange::StartAt(start_at) => {
+                    self.alter_group(transaction, name, topic, start_at, span)
+                        .await
+                }
+                tessari_ql::GroupChange::AddMember(member, _) => {
+                    self.change_member(transaction, (name, topic), member, true, span)
+                        .await
+                }
+                tessari_ql::GroupChange::DropMember(member, _) => {
+                    self.change_member(transaction, (name, topic), member, false, span)
+                        .await
+                }
+            },
+            StatementKind::HandTopic(hand) => self.hand_topic(transaction, hand, span).await,
             StatementKind::TrimTopic {
                 topic,
                 partition,
