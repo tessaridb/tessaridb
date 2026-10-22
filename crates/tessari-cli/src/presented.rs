@@ -11,6 +11,9 @@ pub(crate) struct Shown {
     pub(crate) peers: Option<tessari_wire::PeerKeys>,
     /// `--require-client-tls` was in force at start-up.
     pub(crate) required: bool,
+    /// The client surfaces as bound, set once they are (after this is handed
+    /// to the store, which happens before anything binds).
+    pub(crate) listeners: std::sync::OnceLock<Vec<tessari_session::Listener>>,
 }
 
 impl tessari_session::Certificates for Shown {
@@ -44,5 +47,9 @@ impl tessari_session::Certificates for Shown {
             tls: self.clients.is_some(),
             required: self.required,
         }
+    }
+
+    fn listeners(&self) -> Vec<tessari_session::Listener> {
+        self.listeners.get().cloned().unwrap_or_default()
     }
 }

@@ -127,11 +127,15 @@ pub(crate) fn serve(
     // What each surface presents, for `INFO FOR NODE` — the fingerprint an
     // operator pins a newcomer's row with is read off the newcomer (D9) — and
     // how the clients are served, which a serving node always has an answer to.
-    db.presenting(std::sync::Arc::new(crate::presented::Shown {
+    let shown = std::sync::Arc::new(crate::presented::Shown {
         clients: secured.clone(),
         peers: peers.as_ref().map(|surface| surface.keys.clone()),
         required: matches!(clients, crate::tls::Clients::Tls { required: true, .. }),
-    }));
+        listeners: std::sync::OnceLock::new(),
+    });
+    let reader: std::sync::Arc<dyn tessari_session::Certificates> =
+        std::sync::Arc::<crate::presented::Shown>::clone(&shown);
+    db.presenting(reader);
     let db = std::sync::Arc::new(db);
     // Every session this node opens gathers the shards of a split table it
     // lacks from their leaders (G033, ADR-0083) — on the wire and over HTTP
@@ -207,7 +211,7 @@ pub(crate) fn serve(
     // On the error stream, so a node whose output is being piped somewhere still
     // tells a person at the terminal that it came up and where. What was *bound*
     // rather than what was asked for, which is what makes `:0` usable.
-    announce(
+    let listening = announce(
         wire.as_ref(),
         http.as_ref(),
         kafka.as_ref(),
@@ -215,6 +219,8 @@ pub(crate) fn serve(
         &clients,
         peers.as_ref(),
     )?;
+    // Set once, here, so `INFO FOR NODE` names every surface by its bound address.
+    drop(shown.listeners.set(listening));
 
     // After both surfaces are bound and before either serves, so a node that
     // could not take its address does not connect to a broker on the way to

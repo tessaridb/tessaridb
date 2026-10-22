@@ -56,6 +56,31 @@ function answer(scraped: { status: number; body: unknown }): string {
   return scraped.status + " " + words;
 }
 
+/** How the clients are served, in the words the start line uses. */
+function served(clients: unknown): string {
+  if (typeof clients !== "object" || clients === null) {
+    return "this process serves no clients";
+  }
+  const { tls, required } = clients as { tls?: unknown; required?: unknown };
+  return tls === true ? (required === true ? "over TLS only (required)" : "over TLS") : "in the clear";
+}
+
+/**
+ * Every client surface by the address it took — the wire, HTTP, and the Kafka
+ * and RESP ports an existing client is pointed at.
+ */
+function listening(clients: unknown): string {
+  const listeners =
+    typeof clients === "object" && clients !== null
+      ? (clients as { listeners?: unknown }).listeners
+      : undefined;
+  const named = (Array.isArray(listeners) ? listeners : []).flatMap((each: unknown) => {
+    const { surface, address } = (each ?? {}) as { surface?: unknown; address?: unknown };
+    return typeof surface === "string" && typeof address === "string" ? [`${surface} ${address}`] : [];
+  });
+  return named.length === 0 ? "none named" : named.join(" · ");
+}
+
 export async function readNode(): Promise<void> {
   say("node-status", "asking…");
   try {
@@ -63,11 +88,17 @@ export async function readNode(): Promise<void> {
     const all = answered ?? {};
     // `cluster` is its own object and belongs on the cluster tab; what is left
     // is this machine, which is what this pane claims to show.
-    const { cluster, ...mine } = all;
+    const { cluster, clients, ...mine } = all;
     // The format the store holds beside the one this build writes: they differ
     // until `ALTER STORE FINALIZE FORMAT`, which closes the way back (ADR-0118).
     const store = held(await valueOf("INFO FOR STORE;", "Node")) ?? {};
-    facts("node-facts", { ...mine, format: store["format"], writes: store["writes"] });
+    facts("node-facts", {
+      ...mine,
+      clients: served(clients),
+      listening: listening(clients),
+      format: store["format"],
+      writes: store["writes"],
+    });
     const peers =
       typeof cluster === "object" && cluster !== null
         ? (cluster as { peers?: unknown }).peers

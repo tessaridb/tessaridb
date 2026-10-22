@@ -192,10 +192,32 @@ function choose(name: string): void {
   draw(topics);
 }
 
+function drawPartitions(found: Topic): void {
+  const split = found.partitions;
+  if (split === null) {
+    at("topic-partitions").appendChild(note("never split: Kafka clients see this topic as partition 0"));
+    return;
+  }
+  const table = headed(["partition", "first", "last", "messages", "furthest behind"]);
+  const rows = table.createTBody();
+  for (const each of split.each) {
+    const row = rows.insertRow();
+    numberCell(row, each.index);
+    row.insertCell().textContent = each.first === null ? "none held" : String(each.first);
+    numberCell(row, each.last);
+    numberCell(row, each.first === null || each.last < each.first ? 0 : each.last - each.first + 1);
+    numberCell(row, each.behind);
+  }
+  at("topic-partitions").appendChild(
+    note(split.by === null ? "spread over the partitions evenly" : `a message's partition is chosen by ${split.by}`),
+  );
+  at("topic-partitions").appendChild(table);
+}
+
 function drawChosen(): void {
   const found = chosen();
   at("topic-chosen").textContent = found?.name ?? "none chosen";
-  for (const id of ["topic-facts", "topic-readers", "topic-groups", "topic-ingested"]) {
+  for (const id of ["topic-facts", "topic-readers", "topic-groups", "topic-partitions", "topic-ingested"]) {
     clear(id);
   }
   disable("browse-read", found === null);
@@ -236,6 +258,7 @@ function drawChosen(): void {
       row.insertCell().textContent = each.deadline;
     }
     at("topic-groups").appendChild(found.groups.size > 0 ? groups : note("no group settles this topic"));
+    drawPartitions(found);
     const ingested = headed(["consumer", "group", "into", "here"]);
     const ingestedRows = ingested.createTBody();
     for (const [name, each] of found.ingestedBy) {

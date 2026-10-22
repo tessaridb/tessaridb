@@ -1097,7 +1097,31 @@
       repeats: typeof window2 === "string" && typeof key === "string" ? { key, window: window2 } : null,
       readers: entries(fields["consumers"], reader),
       groups: entries(fields["groups"], group),
-      ingestedBy: entries(fields["ingested_by"], ingest)
+      ingestedBy: entries(fields["ingested_by"], ingest),
+      partitions: partitioned(fields)
+    };
+  }
+  function partitioned(fields) {
+    const each = fields["each"];
+    if (whole(fields["partitions"]) === null || !Array.isArray(each)) {
+      return null;
+    }
+    const by = fields["by"];
+    return {
+      by: typeof by === "string" ? by : null,
+      each: each.flatMap((value2) => {
+        const one2 = fieldsOf(value2);
+        const index = whole(one2?.["partition"]);
+        const last = whole(one2?.["last"]);
+        if (one2 === null || index === null || last === null) {
+          return [];
+        }
+        const lags = [
+          ...entries(one2["consumers"], reader).values(),
+          ...entries(one2["groups"], group).values()
+        ].map((held6) => held6.lag);
+        return [{ index, first: whole(one2["first"]), last, behind: lags.length === 0 ? 0 : Math.max(...lags) }];
+      })
     };
   }
   function keeps(topic2) {
@@ -1294,10 +1318,31 @@
     settled("browse-status");
     draw2(topics);
   }
+  function drawPartitions(found) {
+    const split = found.partitions;
+    if (split === null) {
+      at("topic-partitions").appendChild(note("never split: Kafka clients see this topic as partition 0"));
+      return;
+    }
+    const table = headed(["partition", "first", "last", "messages", "furthest behind"]);
+    const rows2 = table.createTBody();
+    for (const each of split.each) {
+      const row = rows2.insertRow();
+      numberCell(row, each.index);
+      row.insertCell().textContent = each.first === null ? "none held" : String(each.first);
+      numberCell(row, each.last);
+      numberCell(row, each.first === null || each.last < each.first ? 0 : each.last - each.first + 1);
+      numberCell(row, each.behind);
+    }
+    at("topic-partitions").appendChild(
+      note(split.by === null ? "spread over the partitions evenly" : `a message's partition is chosen by ${split.by}`)
+    );
+    at("topic-partitions").appendChild(table);
+  }
   function drawChosen() {
     const found = chosen();
     at("topic-chosen").textContent = found?.name ?? "none chosen";
-    for (const id of ["topic-facts", "topic-readers", "topic-groups", "topic-ingested"]) {
+    for (const id of ["topic-facts", "topic-readers", "topic-groups", "topic-partitions", "topic-ingested"]) {
       clear(id);
     }
     disable("browse-read", found === null);
@@ -1350,6 +1395,7 @@
         row.insertCell().textContent = each.deadline;
       }
       at("topic-groups").appendChild(found.groups.size > 0 ? groups : note("no group settles this topic"));
+      drawPartitions(found);
       const ingested = headed(["consumer", "group", "into", "here"]);
       const ingestedRows = ingested.createTBody();
       for (const [name, each] of found.ingestedBy) {
@@ -3099,14 +3145,35 @@ Shown once. The node keeps only its digest.`);
     const words6 = typeof body === "object" && body !== null ? Object.entries(body).map(([name, value2]) => name + " " + String(value2)).join(", ") : String(body).trim();
     return scraped.status + " " + words6;
   }
+  function served(clients) {
+    if (typeof clients !== "object" || clients === null) {
+      return "this process serves no clients";
+    }
+    const { tls, required } = clients;
+    return tls === true ? required === true ? "over TLS only (required)" : "over TLS" : "in the clear";
+  }
+  function listening(clients) {
+    const listeners4 = typeof clients === "object" && clients !== null ? clients.listeners : void 0;
+    const named = (Array.isArray(listeners4) ? listeners4 : []).flatMap((each) => {
+      const { surface, address } = each ?? {};
+      return typeof surface === "string" && typeof address === "string" ? [`${surface} ${address}`] : [];
+    });
+    return named.length === 0 ? "none named" : named.join(" · ");
+  }
   async function readNode() {
     say("node-status", "asking…");
     try {
       const answered2 = held3(await valueOf("INFO FOR NODE;", "Node"));
       const all2 = answered2 ?? {};
-      const { cluster, ...mine2 } = all2;
+      const { cluster, clients, ...mine2 } = all2;
       const store = held3(await valueOf("INFO FOR STORE;", "Node")) ?? {};
-      facts("node-facts", { ...mine2, format: store["format"], writes: store["writes"] });
+      facts("node-facts", {
+        ...mine2,
+        clients: served(clients),
+        listening: listening(clients),
+        format: store["format"],
+        writes: store["writes"]
+      });
       const peers = typeof cluster === "object" && cluster !== null ? cluster.peers : void 0;
       clear("cluster-map");
       draw5(at("cluster-map"), all2);

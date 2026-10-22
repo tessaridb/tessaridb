@@ -406,9 +406,20 @@ impl Session<'_> {
             .as_ref()
             .map_or(Value::Null, |certificates| {
                 let transport = certificates.clients();
+                let listeners = certificates
+                    .listeners()
+                    .into_iter()
+                    .map(|listener| {
+                        Value::Object(BTreeMap::from([
+                            ("surface".to_owned(), Value::from(listener.surface)),
+                            ("address".to_owned(), Value::String(listener.address)),
+                        ]))
+                    })
+                    .collect();
                 Value::Object(BTreeMap::from([
                     ("tls".to_owned(), Value::Bool(transport.tls)),
                     ("required".to_owned(), Value::Bool(transport.required)),
+                    ("listeners".to_owned(), Value::Array(listeners)),
                 ]))
             })
     }

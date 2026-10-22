@@ -961,6 +961,10 @@ fn a_cluster_node_told_nothing_about_its_clients_serves_them_in_the_clear_and_it
         CLEAR_CLUSTER_PEERS.as_ref(),
         "--seed".as_ref(),
         A_SEED.as_ref(),
+        "--kafka".as_ref(),
+        "127.0.0.1:0".as_ref(),
+        "--resp".as_ref(),
+        "127.0.0.1:0".as_ref(),
     ]
     .iter()
     .map(|part| part.to_os_string())
@@ -993,8 +997,19 @@ fn a_cluster_node_told_nothing_about_its_clients_serves_them_in_the_clear_and_it
         .unwrap();
     let report = String::from_utf8_lossy(&report.stdout);
     assert!(
-        report.contains("clients: { required: false, tls: false }"),
+        report.contains("required: false, tls: false }"),
         "INFO FOR NODE reports the clients in the clear: {report}"
+    );
+    // And every client surface it listens on, by the address it took (G079 C9).
+    for surface in ["'wire'", "'kafka'", "'resp'"] {
+        assert!(
+            report.contains(&format!("surface: {surface}")),
+            "INFO FOR NODE lists the {surface} listener: {report}"
+        );
+    }
+    assert!(
+        report.contains(&format!("address: '{CLEAR_CLUSTER_WIRE}'")),
+        "{report}"
     );
 
     // A caller holding a certificate another authority issued is refused at the
