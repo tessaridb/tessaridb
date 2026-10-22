@@ -23,6 +23,22 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.37.1 — 2026-10-22
+
+### Fixed
+
+- **The console counts a split topic by its partitions.** The topic list showed `held 0` and `last 0` for a topic
+  declared with `PARTITIONS`; it now shows the messages held across the partitions and how many partitions there
+  are, and the topic's page lists each partition's first, last, held and behind, with its readers and groups.
+- **The console browses a split topic one partition at a time.** Browsing one was refused; a Partition field now
+  appears for a split topic and the read names it.
+- **The node card lists one listener per line**, so the row no longer runs past the pane and hides the values beside
+  it.
+
+### Changed
+
+- The console says under an `IN MEMORY` space's keys that it is empty after a restart and is not in a backup.
+
 ## 0.37.0 — 2026-10-22
 
 ### Added

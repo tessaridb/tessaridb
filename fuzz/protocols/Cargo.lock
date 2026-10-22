@@ -192,11 +192,11 @@ dependencies = [
 
 [[package]]
 name = "tessari-constants"
-version = "0.37.0"
+version = "0.37.1"
 
 [[package]]
 name = "tessari-kafka"
-version = "0.37.0"
+version = "0.37.1"
 dependencies = [
  "crc32c",
  "lz4_flex",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-resp"
-version = "0.37.0"
+version = "0.37.1"
 dependencies = [
  "tessari-constants",
  "thiserror",
