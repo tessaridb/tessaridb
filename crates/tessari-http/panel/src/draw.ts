@@ -101,6 +101,10 @@ export function facts(where: string, held: Record<string, unknown>): void {
     if (typeof value === "number") {
       box.classList.add("number");
     }
+    // A value of several lines keeps them: the cell breaks where the value does.
+    if (typeof value === "string" && value.includes("\n")) {
+      box.classList.add("lines");
+    }
   }
   at(where).appendChild(table);
 }

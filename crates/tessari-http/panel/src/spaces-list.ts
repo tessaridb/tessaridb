@@ -31,13 +31,20 @@ function strings(answered: Result | null, field: string): string[] {
   return Array.isArray(list) ? list.filter((each): each is string => typeof each === "string") : [];
 }
 
+/** The spaces declared `IN MEMORY`: never logged or backed up, empty after a restart. */
+const inMemory = new Set<string>();
+
 function isSpace(result: Result): string | null {
   const fields = fieldsOf(result.value);
   const name = fields?.["table"];
   const definition = fields?.["definition"];
-  return typeof name === "string" && typeof definition === "string" && definition.startsWith("DEFINE SPACE ")
-    ? name
-    : null;
+  if (typeof name !== "string" || typeof definition !== "string" || !definition.startsWith("DEFINE SPACE ")) {
+    return null;
+  }
+  if (/\bIN MEMORY\b/.test(definition)) {
+    inMemory.add(name);
+  }
+  return name;
 }
 
 /** The spaces of the database chosen at the top of the Data page. */
@@ -66,6 +73,7 @@ async function readSpaces(): Promise<void> {
       }
       answered = body.results;
     }
+    inMemory.clear();
     const spaces = answered.map(isSpace).filter((name): name is string => name !== null);
     offer("kv-space", spaces);
     if (spaces.length === 0) {
@@ -117,6 +125,11 @@ async function listKeys(): Promise<void> {
       throw new Error(typeof refused === "string" ? refused : `the node answered ${status}`);
     }
     drawKeys(keys.filter((each): each is string => typeof each === "string"));
+    if (inMemory.has(value("kv-space"))) {
+      const kept = made("p", "trailer");
+      kept.textContent = "held in memory: these keys are not in the log or a backup, and a restart empties them";
+      at("kv-list").appendChild(kept);
+    }
     if (keys.length === 0) {
       state("kv-status", "empty", prefix === "" ? "The space holds no key." : `No key starts with ${prefix}.`);
     } else if (keys.length >= KEYS_SHOWN) {

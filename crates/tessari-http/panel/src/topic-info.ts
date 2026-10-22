@@ -57,6 +57,9 @@ export interface Partition {
   readonly last: number;
   /** The furthest any reader or group of this partition is behind. */
   readonly behind: number;
+  /** The names reading this partition alone, and its groups (a Kafka group is `kafka:<group>`). */
+  readonly readers: ReadonlySet<string>;
+  readonly groups: ReadonlySet<string>;
 }
 
 export interface Partitions {
@@ -168,11 +171,13 @@ function partitioned(fields: Record<string, unknown>): Partitions | null {
       if (one === null || index === null || last === null) {
         return [];
       }
-      const lags = [
-        ...entries(one["consumers"], reader).values(),
-        ...entries(one["groups"], group).values(),
-      ].map((held) => held.lag);
-      return [{ index, first: whole(one["first"]), last, behind: lags.length === 0 ? 0 : Math.max(...lags) }];
+      const readers = entries(one["consumers"], reader);
+      const groups = entries(one["groups"], group);
+      const lags = [...readers.values(), ...groups.values()].map((held) => held.lag);
+      return [{
+        index, first: whole(one["first"]), last, behind: lags.length === 0 ? 0 : Math.max(...lags),
+        readers: new Set(readers.keys()), groups: new Set(groups.keys()),
+      }];
     }),
   };
 }
@@ -193,12 +198,38 @@ export function repeats(topic: Topic): string {
     : `dropped within ${topic.repeats.window} by ${topic.repeats.key}`;
 }
 
-/** How many messages the topic holds right now — positions are dense. */
-export const held = (topic: Topic): number =>
-  topic.first === null || topic.last < topic.first ? 0 : topic.last - topic.first + 1;
+/** How many messages a range holds right now — positions are dense. */
+export const heldIn = (range: { readonly first: number | null; readonly last: number }): number =>
+  range.first === null || range.last < range.first ? 0 : range.last - range.first + 1;
 
-/** The reader or group furthest behind, in messages. */
+/**
+ * How many messages the topic holds right now. A split topic's own `first` and
+ * `last` describe its unsplit range, which holds nothing once it is split; its
+ * messages are counted in its partitions.
+ */
+export const held = (topic: Topic): number =>
+  topic.partitions === null
+    ? heldIn(topic)
+    : topic.partitions.each.reduce((sum, each) => sum + heldIn(each), 0);
+
+/** The reader or group furthest behind, in messages — on a split topic, in any partition. */
 export function behind(topic: Topic): number {
+  if (topic.partitions !== null) {
+    return topic.partitions.each.reduce((most, each) => Math.max(most, each.behind), 0);
+  }
   const lags = [...topic.readers.values(), ...topic.groups.values()].map((each) => each.lag);
   return lags.length === 0 ? 0 : Math.max(...lags);
+}
+
+/** How many readers and groups read the topic; on a split topic, the names across its partitions. */
+export function readerCount(topic: Topic): number {
+  return topic.partitions === null
+    ? topic.readers.size
+    : new Set(topic.partitions.each.flatMap((each) => [...each.readers])).size;
+}
+
+export function groupCount(topic: Topic): number {
+  return topic.partitions === null
+    ? topic.groups.size
+    : new Set(topic.partitions.each.flatMap((each) => [...each.groups])).size;
 }

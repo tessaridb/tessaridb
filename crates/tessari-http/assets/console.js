@@ -976,6 +976,9 @@
       if (typeof value2 === "number") {
         box2.classList.add("number");
       }
+      if (typeof value2 === "string" && value2.includes("\n")) {
+        box2.classList.add("lines");
+      }
     }
     at(where3).appendChild(table);
   }
@@ -1116,11 +1119,17 @@
         if (one2 === null || index === null || last === null) {
           return [];
         }
-        const lags = [
-          ...entries(one2["consumers"], reader).values(),
-          ...entries(one2["groups"], group).values()
-        ].map((held6) => held6.lag);
-        return [{ index, first: whole(one2["first"]), last, behind: lags.length === 0 ? 0 : Math.max(...lags) }];
+        const readers = entries(one2["consumers"], reader);
+        const groups = entries(one2["groups"], group);
+        const lags = [...readers.values(), ...groups.values()].map((held6) => held6.lag);
+        return [{
+          index,
+          first: whole(one2["first"]),
+          last,
+          behind: lags.length === 0 ? 0 : Math.max(...lags),
+          readers: new Set(readers.keys()),
+          groups: new Set(groups.keys())
+        }];
       })
     };
   }
@@ -1134,10 +1143,20 @@
   function repeats(topic2) {
     return topic2.repeats === null ? "kept" : `dropped within ${topic2.repeats.window} by ${topic2.repeats.key}`;
   }
-  var held5 = (topic2) => topic2.first === null || topic2.last < topic2.first ? 0 : topic2.last - topic2.first + 1;
+  var heldIn = (range) => range.first === null || range.last < range.first ? 0 : range.last - range.first + 1;
+  var held5 = (topic2) => topic2.partitions === null ? heldIn(topic2) : topic2.partitions.each.reduce((sum, each) => sum + heldIn(each), 0);
   function behind(topic2) {
+    if (topic2.partitions !== null) {
+      return topic2.partitions.each.reduce((most, each) => Math.max(most, each.behind), 0);
+    }
     const lags = [...topic2.readers.values(), ...topic2.groups.values()].map((each) => each.lag);
     return lags.length === 0 ? 0 : Math.max(...lags);
+  }
+  function readerCount(topic2) {
+    return topic2.partitions === null ? topic2.readers.size : new Set(topic2.partitions.each.flatMap((each) => [...each.readers])).size;
+  }
+  function groupCount(topic2) {
+    return topic2.partitions === null ? topic2.groups.size : new Set(topic2.partitions.each.flatMap((each) => [...each.groups])).size;
   }
 
   // src/topic-names.ts
@@ -1299,11 +1318,15 @@
         pick.addEventListener("click", () => choose(each.name));
         row.insertCell().appendChild(pick);
         numberCell(row, held5(each));
-        numberCell(row, each.last);
+        if (each.partitions === null) {
+          numberCell(row, each.last);
+        } else {
+          row.insertCell().textContent = `${each.partitions.each.length} partitions`;
+        }
         row.insertCell().textContent = keeps(each);
         row.insertCell().textContent = repeats(each);
-        numberCell(row, each.readers.size);
-        numberCell(row, each.groups.size);
+        numberCell(row, readerCount(each));
+        numberCell(row, groupCount(each));
         numberCell(row, behind(each));
       }
       at("topics-list").appendChild(table);
@@ -1313,7 +1336,11 @@
   function choose(name) {
     chosenName = name;
     const found = chosen();
-    setValue("browse-after", String(found === null || found.first === null ? 0 : found.first - 1));
+    const split = found?.partitions ?? null;
+    const start = split === null ? found : split.each[0] ?? null;
+    setValue("browse-partition", "0");
+    hide("browse-partition-field", split === null);
+    setValue("browse-after", String(start === null || start.first === null ? 0 : start.first - 1));
     clear("browse-list");
     settled("browse-status");
     draw2(topics);
@@ -1324,14 +1351,14 @@
       at("topic-partitions").appendChild(note("never split: Kafka clients see this topic as partition 0"));
       return;
     }
-    const table = headed(["partition", "first", "last", "messages", "furthest behind"]);
+    const table = headed(["partition", "first", "last", "held", "behind"]);
     const rows2 = table.createTBody();
     for (const each of split.each) {
       const row = rows2.insertRow();
       numberCell(row, each.index);
       row.insertCell().textContent = each.first === null ? "none held" : String(each.first);
       numberCell(row, each.last);
-      numberCell(row, each.first === null || each.last < each.first ? 0 : each.last - each.first + 1);
+      numberCell(row, heldIn(each));
       numberCell(row, each.behind);
     }
     at("topic-partitions").appendChild(
@@ -1348,10 +1375,11 @@
     disable("browse-read", found === null);
     disable("browse-next", found === null);
     if (found !== null) {
+      const split = found.partitions;
       facts("topic-facts", {
         held: held5(found),
-        first: found.first ?? "none held",
-        last: found.last,
+        // A split topic's own first and last are its unsplit range; its positions are per partition.
+        ...split === null ? { first: found.first ?? "none held", last: found.last } : { partitions: split.each.length, "split by": split.by ?? "spread evenly" },
         keeps: keeps(found),
         "bytes held": found.bytes === null ? "not counted" : `${found.bytes} bytes`,
         "largest message": found.maxBytes === null ? "any size" : `${found.maxBytes} bytes`
@@ -1422,14 +1450,21 @@
     const found = chosen();
     const after2 = aWhole(trimmed("browse-after"));
     const count2 = aWhole(trimmed("browse-count"));
+    const partition = aWhole(trimmed("browse-partition"));
+    const parts = found?.partitions?.each.length ?? null;
     if (place2 === null || found === null || after2 === null || count2 === null || count2 < 1 || count2 > 100) {
       say("browse-status", "a position from 0 and a count from 1 to 100", true);
       return;
     }
+    if (parts !== null && (partition === null || partition >= parts)) {
+      say("browse-status", `a partition from 0 to ${parts - 1}`, true);
+      return;
+    }
+    const which = parts === null ? "" : ` PARTITION ${partition}`;
     state("browse-status", "waiting", "reading…");
     try {
       const answered2 = await valueOf(
-        tenancy(place2.namespace, place2.database) + `READ FROM ${found.name} AFTER ${after2} LIMIT ${count2};`,
+        tenancy(place2.namespace, place2.database) + `READ FROM ${found.name}${which} AFTER ${after2} LIMIT ${count2};`,
         SCREEN
       );
       const records = answered2?.records ?? [];
@@ -3158,7 +3193,7 @@ Shown once. The node keeps only its digest.`);
       const { surface, address } = each ?? {};
       return typeof surface === "string" && typeof address === "string" ? [`${surface} ${address}`] : [];
     });
-    return named.length === 0 ? "none named" : named.join(" · ");
+    return named.length === 0 ? "none named" : named.join("\n");
   }
   async function readNode() {
     say("node-status", "asking…");
@@ -4461,11 +4496,18 @@ ${bytes.toLocaleString("en")} bytes`;
     const list = held3(answered2)?.[field];
     return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
   }
+  var inMemory = /* @__PURE__ */ new Set();
   function isSpace(result) {
     const fields = fieldsOf(result.value);
     const name = fields?.["table"];
     const definition2 = fields?.["definition"];
-    return typeof name === "string" && typeof definition2 === "string" && definition2.startsWith("DEFINE SPACE ") ? name : null;
+    if (typeof name !== "string" || typeof definition2 !== "string" || !definition2.startsWith("DEFINE SPACE ")) {
+      return null;
+    }
+    if (/\bIN MEMORY\b/.test(definition2)) {
+      inMemory.add(name);
+    }
+    return name;
   }
   async function readSpaces() {
     const namespace = aName(value("data-namespace"));
@@ -4490,6 +4532,7 @@ ${bytes.toLocaleString("en")} bytes`;
         }
         answered2 = body.results;
       }
+      inMemory.clear();
       const spaces = answered2.map(isSpace).filter((name) => name !== null);
       offer("kv-space", spaces);
       if (spaces.length === 0) {
@@ -4533,6 +4576,11 @@ ${bytes.toLocaleString("en")} bytes`;
         throw new Error(typeof refused === "string" ? refused : `the node answered ${status}`);
       }
       drawKeys(keys.filter((each) => typeof each === "string"));
+      if (inMemory.has(value("kv-space"))) {
+        const kept2 = made("p", "trailer");
+        kept2.textContent = "held in memory: these keys are not in the log or a backup, and a restart empties them";
+        at("kv-list").appendChild(kept2);
+      }
       if (keys.length === 0) {
         state("kv-status", "empty", prefix === "" ? "The space holds no key." : `No key starts with ${prefix}.`);
       } else if (keys.length >= KEYS_SHOWN) {
