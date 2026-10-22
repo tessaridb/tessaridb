@@ -276,6 +276,7 @@ impl Session<'_> {
                 consumer_parameter: _,
                 after,
                 since,
+                member,
                 limit,
                 partition,
             } => {
@@ -288,6 +289,7 @@ impl Session<'_> {
                         since: since.as_ref(),
                         limit: limit.as_ref(),
                         partition: partition.as_ref(),
+                        member: member.as_deref(),
                     },
                     span,
                 )

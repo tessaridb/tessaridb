@@ -114,6 +114,7 @@ impl Parser<'_> {
                     InfoSubject::Vault(table.name)
                 }
             }
+            _ if self.eat_word("group") => self.info_group()?,
             _ if self.eat_word("topic") => {
                 if self.topic_consumer_follows(false) {
                     self.eat_word("consumer");

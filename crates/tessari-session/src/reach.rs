@@ -170,7 +170,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // is about the topic's contents: only a caller who may read the topic
         // may ask (G037).
         StatementKind::Info {
-            subject: InfoSubject::Topic(table),
+            subject: InfoSubject::Topic(table) | InfoSubject::Group { topic: table, .. },
         } => vec![table],
 
         // A listing of a vault's ids names the vault, and for the reason every

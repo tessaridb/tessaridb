@@ -31,8 +31,8 @@ use tessari_types::{Assertion, FieldKind, Path, RecordId};
 
 use crate::token::Span;
 pub use expr::{
-    Aggregate, ArithmeticOp, Expr, ExprKind, Field, GroupClauses, Identity, RangeExpr, Retention,
-    SetCondition, SpaceBound, TopicClauses, Written,
+    Aggregate, ArithmeticOp, Expr, ExprKind, Field, GroupClauses, GroupMember, Identity, RangeExpr,
+    Retention, SetCondition, SpaceBound, TopicClauses, Written,
 };
 pub use select::{
     Admitted, AnsweredBy, Approximation, Fill, FillMode, Fusion, Hop, JoinSide, Ordering,

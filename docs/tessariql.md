@@ -7895,7 +7895,7 @@ ON TOPIC events …`, `ACK events FOR CONSUMER $group AT $positions`.
 Once a group is declared under a name, `READ FROM … FOR CONSUMER` that name
 **hands the messages out** instead of moving a position: each one is held in
 flight for the group with a deadline, and answers as `{ position, value,
-deliveries }`. Then:
+deliveries, appended }`. Then:
 
 - `ACK … AT p, …` — those messages are done and are never handed out to the
   group again. `AT $positions` takes one bound array of positions instead of
@@ -7916,15 +7916,40 @@ deliveries }`. Then:
   a message handed out again may then arrive after later ones.
 - `ALTER GROUP … START AT n` — the group next hands out position `n + 1`, and
   forgets what it held in flight.
+- `ACK DEADLINE NONE` — a message is held until it is acknowledged or a
+  statement hands it out again (`NACK`); no deadline passes on its own.
 
 `ACK DEADLINE` is required and has no default, for the reason a queue's
-`TIMEOUT` has none. A group declared under a name that already has a stored
+`TIMEOUT` has none — `NONE` is a choice written down, not a default. A group declared under a name that already has a stored
 position takes it over. `AFTER` on a group read is refused (`AfterOnGroup`) —
 a member cannot skip the group's work; `ACK` under a name with no group is
 refused (`NotAGroup`), because nothing is held to settle; a topic cannot be its
 own group's dead letter (`DeadLetterIsTheTopic`). The members of a group take
 turns on its record, as readers under one name take turns on a position, so a
 read or an acknowledgement that meets another is run again.
+
+#### Members
+
+A read may name the **member** of the group that reads:
+
+```tessariql
+READ FROM events FOR CONSUMER 'mailer' MEMBER 'worker-1' LIMIT 10;
+READ FROM events FOR CONSUMER 'mailer' MEMBER 'worker-1' HELD AFTER 41;
+INFO FOR GROUP 'mailer' ON TOPIC events;
+```
+
+Each message it is handed is recorded against it, with the instant it was
+delivered and the instant it was appended. `HELD` hands the member back the
+messages it already holds — after a position with `AFTER`, which is the one
+`AFTER` a group read accepts — and counts each as another delivery. A member's
+name, like the group's, may be a bound parameter. `MEMBER` under a name with no
+group is refused (`NoGroupForMember`), and `HELD` needs a member.
+
+`INFO FOR GROUP 'g' ON TOPIC t` reports the group's figures as `INFO FOR TOPIC`
+gives them, `held` — each message in flight as `{ position, deliveries, member,
+delivered, appended, until }` — and `members`, each with `seen` (its last read),
+`active` (its last read that was handed something) and how many it `held`. A
+group read answers each message's `appended` instant beside its `position`.
 
 What each form promises:
 

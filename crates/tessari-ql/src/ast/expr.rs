@@ -322,14 +322,29 @@ pub struct TopicClauses {
 /// choice about the reader's work that the store cannot guess.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupClauses {
-    /// `ACK DEADLINE 30s` — how long a reader has to acknowledge a message.
-    pub deadline: Duration,
+    /// `ACK DEADLINE 30s` — how long a reader has to acknowledge a message;
+    /// `ACK DEADLINE NONE` (`None`) holds it until a statement settles it or
+    /// hands it out again (ADR-0133).
+    pub deadline: Option<Duration>,
     /// `DELIVERIES n` — after this many deliveries a message is dead-lettered.
     pub deliveries: Option<u64>,
     /// `IN FLIGHT n` — the most messages the group holds unacknowledged.
     pub in_flight: Option<u64>,
     /// `DEAD LETTER TO <topic>` — where a dead-lettered message is appended.
     pub dead_letter: Option<TableRef>,
+}
+
+/// `MEMBER '<name>' [HELD]` on a group read: which member of the group reads,
+/// and whether it asks for what it already holds (ADR-0133, W8d).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupMember {
+    /// The member, a quoted name as a consumer's is.
+    pub name: String,
+    /// The parameter the name is bound from, until binding writes it
+    /// (ADR-0127).
+    pub name_parameter: Option<crate::ast::ParameterSlot>,
+    /// `HELD`: the member's own messages in flight, handed to it again.
+    pub held: bool,
 }
 
 /// `MAX n [EVICT NONE]` on `DEFINE SPACE` (G036).

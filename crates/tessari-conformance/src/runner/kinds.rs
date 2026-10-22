@@ -123,6 +123,7 @@ pub(crate) fn kind_name(error: &Error) -> &'static str {
         Error::NoSuchGroup { .. } => "NoSuchGroup",
         Error::NotAGroup { .. } => "NotAGroup",
         Error::AfterOnGroup { .. } => "AfterOnGroup",
+        Error::NoGroupForMember { .. } => "NoGroupForMember",
         Error::DeadLetterIsTheTopic { .. } => "DeadLetterIsTheTopic",
         Error::TopicConsumerSpansDatabases { .. } => "TopicConsumerSpansDatabases",
         Error::QuarantineNeedsDeadLetter { .. } => "QuarantineNeedsDeadLetter",

@@ -2664,6 +2664,23 @@ pub enum Error {
         span: Span,
     },
 
+    /// `MEMBER` on a read under a name that is no group's (ADR-0133).
+    ///
+    /// Refused rather than read as the plain reader: a member that was never
+    /// recorded would be told its messages are held for it.
+    #[error(
+        "'{consumer}' reads {topic} without a group, so it has no members (at {span}) — \
+         `DEFINE GROUP` makes one"
+    )]
+    NoGroupForMember {
+        /// The reader.
+        consumer: String,
+        /// The topic as written.
+        topic: String,
+        /// Where it was written.
+        span: Span,
+    },
+
     /// `AFTER` on a read by a group member (G042).
     #[error(
         "'{group}' is a group, and a member cannot skip the group's work with `AFTER` \

@@ -230,6 +230,7 @@ fn erase_statement(statement: &mut Statement) {
                 erase_name(name);
             }
             InfoSubject::Topic(table) => erase_table(table),
+            InfoSubject::Group { topic, .. } => erase_table(topic),
             InfoSubject::VaultRecords { table, after, .. } => {
                 erase_table(table);
                 if let Some(after) = after {

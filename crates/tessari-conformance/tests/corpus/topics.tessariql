@@ -112,6 +112,16 @@ ACK jobs FOR CONSUMER 'nobody' AT 1;
 READ FROM jobs FOR CONSUMER 'workers' AFTER 2;
 --- expect: error AfterOnGroup
 
+--- case: a member belongs to a group
+READ FROM jobs FOR CONSUMER 'nobody' MEMBER 'alice';
+--- expect: error NoGroupForMember
+
+--- case: a group with no deadline keeps a message for its member
+DEFINE GROUP 'held' ON TOPIC jobs ACK DEADLINE NONE IN FLIGHT 10;
+READ FROM jobs FOR CONSUMER 'held' MEMBER 'alice' LIMIT 1;
+READ FROM jobs FOR CONSUMER 'held' MEMBER 'alice' HELD;
+--- expect: rows 1
+
 --- case: a topic cannot be its own group's dead letter
 DEFINE GROUP 'loop' ON TOPIC jobs ACK DEADLINE 30s DELIVERIES 3 DEAD LETTER TO jobs;
 --- expect: error DeadLetterIsTheTopic

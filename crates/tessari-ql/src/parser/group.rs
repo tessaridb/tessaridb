@@ -20,7 +20,7 @@ type Settlement = (
     NamedConsumer,
     Vec<crate::ast::Expr>,
 );
-use crate::ast::{GroupClauses, StatementKind, TableRef, TrimBound};
+use crate::ast::{GroupClauses, GroupMember, StatementKind, TableRef, TrimBound};
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
 
@@ -33,7 +33,7 @@ use tessari_types::Number;
 pub const MAX_IN_FLIGHT: u64 = 10_000;
 
 impl Parser<'_> {
-    /// `DEFINE GROUP [IF NOT EXISTS] '<name>' ON TOPIC <topic> ACK DEADLINE d
+    /// `DEFINE GROUP [IF NOT EXISTS] '<name>' ON TOPIC <topic> ACK DEADLINE d | NONE
     /// [DELIVERIES n] [IN FLIGHT n] [DEAD LETTER TO <topic>]`, the words
     /// `DEFINE GROUP` consumed.
     ///
@@ -48,9 +48,14 @@ impl Parser<'_> {
             "`ACK DEADLINE d` — how long a reader has before its message is handed out again",
         )?;
         self.expect_word("deadline", "`DEADLINE` and how long a reader has")?;
-        let deadline = self.positive_duration(
-            "a duration above zero, like `30s` — how long a reader has to acknowledge",
-        )?;
+        // `NONE` holds a message until a statement settles it (ADR-0133).
+        let deadline = if self.eat_keyword(Keyword::None) {
+            None
+        } else {
+            Some(self.positive_duration(
+                "a duration above zero, like `30s`, or `NONE` — how long a reader has to acknowledge",
+            )?)
+        };
         let mut clauses = GroupClauses {
             deadline,
             deliveries: None,
@@ -192,6 +197,42 @@ impl Parser<'_> {
         };
         self.advance();
         Ok(width)
+    }
+
+    /// `MEMBER '<name>' [HELD]` after a reader's name, or nothing (ADR-0133).
+    ///
+    /// A member belongs to a group, so it needs the group's name before it, and
+    /// what is held is a member's, so `HELD` needs the member.
+    pub(super) fn group_member(&mut self, grouped: bool) -> Result<Option<Box<GroupMember>>> {
+        if !self.eat_word("member") {
+            if self.eat_word("held") {
+                return Err(self
+                    .error_here("`MEMBER '<name>'` before `HELD` — what is held is one member's"));
+            }
+            return Ok(None);
+        }
+        if !grouped {
+            return Err(self.error_here(
+                "`FOR CONSUMER '<group>'` before `MEMBER` — a member belongs to a group",
+            ));
+        }
+        let (name, name_parameter) = self.consumer_name()?;
+        Ok(Some(Box::new(GroupMember {
+            name,
+            name_parameter,
+            held: self.eat_word("held"),
+        })))
+    }
+
+    /// `INFO FOR GROUP '<name>' ON TOPIC <topic>`, the words `INFO FOR GROUP`
+    /// consumed.
+    pub(super) fn info_group(&mut self) -> Result<crate::ast::InfoSubject> {
+        let ((name, name_parameter), topic) = self.group_on_topic()?;
+        Ok(crate::ast::InfoSubject::Group {
+            name,
+            name_parameter,
+            topic,
+        })
     }
 
     /// `'<name>' ON TOPIC <topic>`.

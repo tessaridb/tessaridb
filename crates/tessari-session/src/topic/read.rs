@@ -45,6 +45,8 @@ pub(crate) struct Reading<'a> {
     pub(crate) limit: Option<&'a Expr>,
     /// `PARTITION <n>` (ADR-0131).
     pub(crate) partition: Option<&'a Expr>,
+    /// `MEMBER '<name>' [HELD]` (ADR-0133).
+    pub(crate) member: Option<&'a tessari_ql::GroupMember>,
 }
 
 impl Session<'_> {
@@ -197,12 +199,26 @@ impl Session<'_> {
                 .topic_group(context.namespace, context.database, table, consumer)
                 .await?
         {
-            if reading.after.is_some() || reading.since.is_some() {
+            // A member may ask for what it holds after a position; nobody may
+            // skip the group's work.
+            let held = reading.member.is_some_and(|member| member.held);
+            if (reading.after.is_some() && !held) || reading.since.is_some() {
                 return Err(Error::AfterOnGroup {
                     group: consumer.to_owned(),
                     span,
                 });
             }
+            let after = match reading.after {
+                Some(after) => {
+                    self.whole(
+                        transaction,
+                        after,
+                        "a position is a whole number at or above zero",
+                    )
+                    .await?
+                }
+                None => 0,
+            };
             let limit = match reading.limit {
                 Some(limit) => {
                     self.whole(
@@ -219,11 +235,18 @@ impl Session<'_> {
                     transaction,
                     (&context, table),
                     (topic, consumer),
-                    state,
+                    (state, reading.member, after),
                     limit,
                     span,
                 )
                 .await;
+        }
+        if reading.member.is_some() {
+            return Err(Error::NoGroupForMember {
+                consumer: reading.consumer.unwrap_or_default().to_owned(),
+                topic: topic.name.text.clone(),
+                span,
+            });
         }
         let named = match (reading.after, reading.since) {
             (Some(after), _) => Some(
@@ -391,15 +414,19 @@ fn millis_of(at: Datetime) -> Option<u64> {
         .checked_add(u64::from(at.nanos() / 1_000_000))
 }
 
+/// The instant `millis` milliseconds after the epoch, as an append instant is
+/// kept (ADR-0133 D3).
+pub(super) fn instant_of(millis: u64) -> Option<Datetime> {
+    Datetime::new(
+        i64::try_from(millis / 1000).ok()?,
+        u32::try_from((millis % 1000).checked_mul(1_000_000)?).ok()?,
+    )
+}
+
 /// A message's body with the instant it was appended, when its topic kept
 /// one (ADR-0133 D3).
 pub(super) fn with_appended(body: Value, appended: Option<u64>) -> Value {
-    let at = appended.and_then(|appended| {
-        Datetime::new(
-            i64::try_from(appended / 1000).ok()?,
-            u32::try_from((appended % 1000).checked_mul(1_000_000)?).ok()?,
-        )
-    });
+    let at = appended.and_then(instant_of);
     match (body, at) {
         (Value::Object(mut fields), Some(at)) => {
             fields.insert("appended".to_owned(), Value::Datetime(at));

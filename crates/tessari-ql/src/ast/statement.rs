@@ -229,6 +229,8 @@ pub enum StatementKind {
         /// `SINCE <instant>`: read from the first message appended at or after
         /// it, instead of after the stored position (ADR-0133 D3).
         since: Option<Expr>,
+        /// `MEMBER '<name>' [HELD]`: the member of the group reading (ADR-0133).
+        member: Option<Box<crate::ast::GroupMember>>,
         /// The most messages to answer.
         limit: Option<Expr>,
         /// `PARTITION <n>`: the partition of a split topic to read (ADR-0131).

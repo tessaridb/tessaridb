@@ -212,6 +212,7 @@ impl Error {
             | Self::NoSuchGroup { .. }
             | Self::NotAGroup { .. }
             | Self::AfterOnGroup { .. }
+            | Self::NoGroupForMember { .. }
             | Self::DeadLetterIsTheTopic { .. }
             | Self::TopicConsumerSpansDatabases { .. }
             | Self::QuarantineNeedsDeadLetter { .. }

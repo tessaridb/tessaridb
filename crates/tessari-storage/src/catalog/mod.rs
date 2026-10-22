@@ -82,7 +82,7 @@ pub use field::{FieldDefinition, FieldShape};
 pub(crate) use format::finalized_in;
 pub use grant::GrantDefinition;
 pub use graph::GraphDefinition;
-pub use group::{GroupDeclaration, GroupState, InFlight};
+pub use group::{GroupDeclaration, GroupMemberState, GroupState, InFlight};
 pub use leadership::LeadershipDefinition;
 pub(crate) use leadership::covering;
 pub use leadership::governing;

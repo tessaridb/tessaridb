@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use tessari_ql::{Span, TableRef};
-use tessari_storage::{Catalog, Feed, TableKind, Transaction};
+use tessari_storage::{Catalog, Feed, GroupState, InFlight, TableKind, Transaction};
 use tessari_types::{Number, Value};
 
 use crate::error::{Error, Result};
@@ -15,6 +15,56 @@ fn whole(count: u64) -> Value {
 }
 
 impl Session<'_> {
+    /// The report `INFO FOR GROUP` answers (ADR-0133): the group's figures as
+    /// `INFO FOR TOPIC` gives them, every message it holds with who holds it
+    /// and since when, and every member it has seen with how many it holds.
+    pub(crate) async fn info_group(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &str,
+        topic: &TableRef,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let (context, table) = self.group_topic(transaction, topic, span).await?;
+        let state = Self::existing_group(transaction, &context, table, name, topic, span).await?;
+        let last = transaction
+            .topic_after(context.namespace, context.database, table, u64::MAX, 0)
+            .await?
+            .last
+            .unwrap_or(0);
+        let mut report = figures(&state, last);
+        report.insert("name".to_owned(), Value::from(name));
+        report.insert("topic".to_owned(), Value::from(topic.name.text.as_str()));
+        report.insert(
+            "held".to_owned(),
+            Value::Array(state.flight.iter().map(in_flight).collect()),
+        );
+        let members = state
+            .members
+            .iter()
+            .map(|member| {
+                let holds = state
+                    .flight
+                    .iter()
+                    .filter(|held| held.member.as_deref() == Some(member.name.as_str()))
+                    .count();
+                (
+                    member.name.clone(),
+                    Value::Object(BTreeMap::from([
+                        ("seen".to_owned(), Value::Datetime(member.seen)),
+                        ("active".to_owned(), Value::Datetime(member.active)),
+                        (
+                            "held".to_owned(),
+                            whole(u64::try_from(holds).unwrap_or(u64::MAX)),
+                        ),
+                    ])),
+                )
+            })
+            .collect();
+        report.insert("members".to_owned(), Value::Object(members));
+        Ok(report)
+    }
+
     /// The report `INFO FOR TOPIC` answers.
     ///
     /// `last` is the last position the topic has given and `first` the first it
@@ -182,27 +232,53 @@ async fn readers_and_groups(
         .topic_groups(context.namespace, context.database, table)
         .await?
         .into_iter()
-        .map(|(name, state)| {
-            let committed = state.committed();
-            let declared = state.declaration;
-            let mut group = BTreeMap::from([
-                ("position".to_owned(), whole(state.cursor)),
-                ("committed".to_owned(), whole(committed)),
-                ("lag".to_owned(), whole(last.saturating_sub(committed))),
-                (
-                    "in_flight".to_owned(),
-                    whole(u64::try_from(state.flight.len()).unwrap_or(u64::MAX)),
-                ),
-                ("redelivered".to_owned(), whole(state.redelivered)),
-                ("dead_lettered".to_owned(), whole(state.dead_lettered)),
-                ("deadline".to_owned(), Value::Duration(declared.deadline)),
-                ("width".to_owned(), whole(declared.width)),
-            ]);
-            if let Some(deliveries) = declared.deliveries {
-                group.insert("deliveries".to_owned(), whole(deliveries));
-            }
-            (name, Value::Object(group))
-        })
+        .map(|(name, state)| (name, Value::Object(figures(&state, last))))
         .collect();
     Ok((readers, groups))
+}
+
+/// Where one group stands, as `INFO FOR TOPIC` reports each of a topic's
+/// groups and `INFO FOR GROUP` begins its report.
+fn figures(state: &GroupState, last: u64) -> BTreeMap<String, Value> {
+    let committed = state.committed();
+    let declared = state.declaration;
+    let mut group = BTreeMap::from([
+        ("position".to_owned(), whole(state.cursor)),
+        ("committed".to_owned(), whole(committed)),
+        ("lag".to_owned(), whole(last.saturating_sub(committed))),
+        (
+            "in_flight".to_owned(),
+            whole(u64::try_from(state.flight.len()).unwrap_or(u64::MAX)),
+        ),
+        ("redelivered".to_owned(), whole(state.redelivered)),
+        ("dead_lettered".to_owned(), whole(state.dead_lettered)),
+        (
+            "deadline".to_owned(),
+            declared.deadline.map_or(Value::None, Value::Duration),
+        ),
+        ("width".to_owned(), whole(declared.width)),
+    ]);
+    if let Some(deliveries) = declared.deliveries {
+        group.insert("deliveries".to_owned(), whole(deliveries));
+    }
+    group
+}
+
+fn instant(held: Option<tessari_types::Datetime>) -> Value {
+    held.map_or(Value::None, Value::Datetime)
+}
+
+/// `INFO FOR GROUP`'s report on one message in flight.
+fn in_flight(held: &InFlight) -> Value {
+    Value::Object(BTreeMap::from([
+        ("position".to_owned(), whole(held.position)),
+        ("deliveries".to_owned(), whole(held.deliveries)),
+        (
+            "member".to_owned(),
+            held.member.as_deref().map_or(Value::None, Value::from),
+        ),
+        ("delivered".to_owned(), instant(held.delivered)),
+        ("appended".to_owned(), instant(held.appended)),
+        ("until".to_owned(), instant(held.until)),
+    ]))
 }
