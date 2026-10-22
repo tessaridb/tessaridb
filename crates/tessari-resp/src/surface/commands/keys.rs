@@ -56,7 +56,7 @@ pub(crate) enum When {
 }
 
 /// A time left as a count of `unit`: −2 no key, −1 no expiry.
-fn left(value: &Value, millis: bool) -> Reply {
+pub(super) fn left(value: &Value, millis: bool) -> Reply {
     match value {
         Value::Duration(span) => {
             let total = span

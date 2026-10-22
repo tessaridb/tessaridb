@@ -10,6 +10,7 @@ mod blocking;
 mod change;
 mod combine;
 mod containers;
+mod fields;
 mod hashes;
 mod keys;
 mod lists;
@@ -141,6 +142,7 @@ pub(crate) fn plan(
         return if strings::serves(&name)
             || keys::serves(&name)
             || hashes::serves(&name)
+            || fields::serves(&name)
             || lists::serves(&name)
             || sets::serves(&name)
             || zsets::serves(&name)
@@ -165,6 +167,7 @@ pub(crate) fn plan(
     }
     for family in [
         hashes::plan,
+        fields::plan,
         lists::plan,
         sets::plan,
         zsets::plan,

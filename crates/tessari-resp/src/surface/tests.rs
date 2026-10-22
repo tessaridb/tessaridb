@@ -14,6 +14,7 @@ mod algebra;
 mod blocking;
 mod carrying;
 mod containers;
+mod fields;
 mod keys;
 mod session;
 mod strings;
