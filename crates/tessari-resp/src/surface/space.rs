@@ -44,7 +44,7 @@ impl Space {
 }
 
 /// Whether `text` is an identifier the store's grammar reads as a name.
-fn is_identifier(text: &str) -> bool {
+pub(crate) fn is_identifier(text: &str) -> bool {
     let mut chars = text.chars();
     chars
         .next()

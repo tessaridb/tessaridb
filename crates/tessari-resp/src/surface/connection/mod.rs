@@ -25,6 +25,7 @@ use crate::surface::{Shared, Space};
 mod blocked;
 mod introduce;
 mod reading;
+mod streams;
 mod subscribed;
 mod watch;
 
@@ -271,13 +272,13 @@ impl Connection {
                     Ok(Step::Statements(planned)) => Queued::Planned(planned),
                     _ => {
                         queue.failed = true;
-                        return (not_in_multi(command), Flow::Continue);
+                        return (replies::not_in_multi(command), Flow::Continue);
                     }
                 }
             }
             Ok(Step::Procedure(_)) => {
                 queue.failed = true;
-                return (not_in_multi(command), Flow::Continue);
+                return (replies::not_in_multi(command), Flow::Continue);
             }
             Err(reply) => {
                 queue.failed = true;
@@ -337,13 +338,15 @@ impl Connection {
             match against.run(&statements, &parameters).await {
                 Ok(outcomes) => outcomes,
                 // A watched key changed: the transaction did not run.
-                Err(failed) if error_text(&replies::failed(&failed)).contains(watch::WATCHED) => {
+                Err(failed)
+                    if replies::error_text(&replies::failed(&failed)).contains(watch::WATCHED) =>
+                {
                     return Reply::NilArray;
                 }
                 Err(failed) => {
                     return Reply::error(format!(
                         "EXECABORT Transaction discarded: {}",
-                        error_text(&replies::failed(&failed))
+                        replies::error_text(&replies::failed(&failed))
                     ));
                 }
             }
@@ -427,6 +430,7 @@ impl Connection {
                 message,
             } => self.publish(kind, &channel, &message).await,
             Procedure::Pubsub(asked) => self.pubsub(asked).await,
+            Procedure::Stream(stream) => self.stream(stream).await,
             store => {
                 let Some(space) = self.space.as_ref() else {
                     return (replies::no_space(), Flow::Continue);
@@ -477,23 +481,5 @@ impl Connection {
             }
         };
         (reply, Flow::Continue)
-    }
-}
-
-/// The refusal of a command `MULTI` cannot queue.
-fn not_in_multi(command: &Command) -> Reply {
-    let name = command
-        .first()
-        .map(|name| String::from_utf8_lossy(name).to_ascii_lowercase())
-        .unwrap_or_default();
-    Reply::error(format!(
-        "ERR '{name}' is not offered inside MULTI on this node"
-    ))
-}
-
-fn error_text(reply: &Reply) -> String {
-    match reply {
-        Reply::Error(text) => text.to_string(),
-        _ => String::new(),
     }
 }

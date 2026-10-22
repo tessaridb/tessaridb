@@ -18,6 +18,7 @@ mod fields;
 mod keys;
 mod pubsub;
 mod session;
+mod streams;
 mod strings;
 
 /// A node over a fresh store holding the space `app.main.cache`, after

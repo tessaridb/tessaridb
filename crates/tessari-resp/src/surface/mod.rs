@@ -27,6 +27,7 @@ mod rewrite;
 mod running;
 mod space;
 mod statement;
+mod streams;
 mod values;
 
 use std::net::ToSocketAddrs;

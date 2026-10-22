@@ -19,6 +19,7 @@ mod pubsub;
 mod ranges;
 mod scans;
 mod sets;
+mod streams;
 mod strings;
 mod zsets;
 
@@ -33,6 +34,7 @@ pub(crate) use change::{Change, changed};
 pub(crate) use containers::kind;
 pub(crate) use keys::{When, expire};
 pub(crate) use pubsub::{Asked, Listening, listening_command};
+pub(crate) use streams::{Id, Since, Stream, Trim};
 pub(crate) use strings::string_reply;
 
 /// What a command asks for.
@@ -135,6 +137,8 @@ pub(crate) enum Procedure {
     },
     /// `PUBSUB CHANNELS | NUMSUB | NUMPAT | SHARDCHANNELS | SHARDNUMSUB`.
     Pubsub(Asked),
+    /// A stream command, over the topic its key names.
+    Stream(Stream),
 }
 
 /// What a command needs to be read.
@@ -173,6 +177,7 @@ pub(crate) fn plan(
             || scans::serves(&name)
             || pops::serves(&name)
             || blocking::serves(&name)
+            || streams::serves(&name)
         {
             Err(replies::no_space())
         } else {
@@ -186,6 +191,9 @@ pub(crate) fn plan(
         return Ok(step);
     }
     if let Some(step) = blocking::plan(&name, arguments)? {
+        return Ok(step);
+    }
+    if let Some(step) = streams::plan(&name, arguments)? {
         return Ok(step);
     }
     for family in [

@@ -41,6 +41,9 @@ pub enum Reply {
     /// A floating-point number as its digits: a double in RESP3, bytes in
     /// RESP2.
     Double(Vec<u8>),
+    /// Pairs read by key — each stream and its entries: a map in RESP3, and
+    /// an array of two-element arrays in RESP2 (`XREAD`).
+    Keyed(Vec<(Reply, Reply)>),
     /// Ordered pairs that may repeat a key — a member and its score — each
     /// an array of two in RESP3, and one flat array in RESP2.
     Pairs(Vec<(Reply, Reply)>),
@@ -102,23 +105,20 @@ pub fn encode(reply: &Reply, protocol: Protocol, out: &mut Vec<u8>) {
                 encode(reply, protocol, out);
             }
         }
-        Reply::Map(pairs) => {
-            match protocol {
-                Protocol::Two => {
-                    out.push(b'*');
-                    decimal(out, length(pairs.len().saturating_mul(2)));
-                }
-                Protocol::Three => {
-                    out.push(b'%');
-                    decimal(out, length(pairs.len()));
+        Reply::Map(pairs) => map(out, pairs, protocol),
+        Reply::Keyed(pairs) => match protocol {
+            Protocol::Two => {
+                out.push(b'*');
+                decimal(out, length(pairs.len()));
+                out.extend_from_slice(b"\r\n");
+                for (key, value) in pairs {
+                    out.extend_from_slice(b"*2\r\n");
+                    encode(key, protocol, out);
+                    encode(value, protocol, out);
                 }
             }
-            out.extend_from_slice(b"\r\n");
-            for (key, value) in pairs {
-                encode(key, protocol, out);
-                encode(value, protocol, out);
-            }
-        }
+            Protocol::Three => map(out, pairs, protocol),
+        },
         Reply::Double(digits) => match protocol {
             Protocol::Two => encode(&Reply::Bulk(digits.clone()), protocol, out),
             Protocol::Three => line(out, b',', digits),
@@ -141,6 +141,25 @@ pub fn encode(reply: &Reply, protocol: Protocol, out: &mut Vec<u8>) {
                 encode(second, protocol, out);
             }
         }
+    }
+}
+
+/// Append `pairs` as a map in RESP3 and a flat array in RESP2.
+fn map(out: &mut Vec<u8>, pairs: &[(Reply, Reply)], protocol: Protocol) {
+    match protocol {
+        Protocol::Two => {
+            out.push(b'*');
+            decimal(out, length(pairs.len().saturating_mul(2)));
+        }
+        Protocol::Three => {
+            out.push(b'%');
+            decimal(out, length(pairs.len()));
+        }
+    }
+    out.extend_from_slice(b"\r\n");
+    for (key, value) in pairs {
+        encode(key, protocol, out);
+        encode(value, protocol, out);
     }
 }
 

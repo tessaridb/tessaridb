@@ -99,3 +99,22 @@ const fn word(class: RefusalClass) -> &'static str {
         RefusalClass::Invalid | RefusalClass::Conflict | RefusalClass::Internal => "ERR",
     }
 }
+
+/// The refusal of a command `MULTI` cannot queue.
+pub(crate) fn not_in_multi(command: &crate::codec::Command) -> Reply {
+    let name = command
+        .first()
+        .map(|name| String::from_utf8_lossy(name).to_ascii_lowercase())
+        .unwrap_or_default();
+    Reply::error(format!(
+        "ERR '{name}' is not offered inside MULTI on this node"
+    ))
+}
+
+/// The text of an error reply; empty for any other.
+pub(crate) fn error_text(reply: &Reply) -> String {
+    match reply {
+        Reply::Error(text) => text.to_string(),
+        _ => String::new(),
+    }
+}
