@@ -117,9 +117,18 @@ ENV TESSARIDB_STORE=/var/lib/tessaridb/store \
 #   TESSARIDB_CLIENT_PLAINTEXT  retired in 0.24.0-beta; `1` is refused, because
 #                               a node with no certificate serves in the clear
 #                               by default
+#
+# Existing Kafka and Redis clients, each off until its address is set — a node
+# answering a protocol nobody asked it to speak is a door nobody watches:
+#
+#   TESSARIDB_KAFKA             the Kafka protocol's address, e.g. 0.0.0.0:9092
+#   TESSARIDB_KAFKA_DATABASE    <namespace>.<database> a bare topic name is read in
+#   TESSARIDB_KAFKA_ADVERTISE   the host:port Kafka clients are told to reach
+#   TESSARIDB_RESP              the RESP protocol's address, e.g. 0.0.0.0:6379
+#   TESSARIDB_RESP_SPACE        <namespace>.<database>.<space> a connection starts in
 
 VOLUME ["/var/lib/tessaridb"]
-EXPOSE 9080/tcp 8000/tcp
+EXPOSE 9080/tcp 8000/tcp 9092/tcp 6379/tcp
 
 USER tessaridb
 WORKDIR /var/lib/tessaridb
