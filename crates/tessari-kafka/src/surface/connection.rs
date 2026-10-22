@@ -40,6 +40,8 @@ enum Sasl {
 enum Reply {
     /// An answer to frame and send.
     Answer(Vec<u8>),
+    /// An answer to frame and send, after which the connection is closed.
+    Last(Vec<u8>, &'static str),
     /// Nothing: a produce with `acks = 0`.
     Silent,
     /// Close the connection: the request cannot be answered in the protocol.
@@ -81,16 +83,11 @@ where
         // A SASL token carries a password; the frame that held it is wiped.
         body.zeroize();
         match reply {
-            Reply::Answer(answer) => {
-                let size = u32::try_from(answer.len()).map_err(|_| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "an answer past the ceiling",
-                    )
-                })?;
-                stream.write_all(&size.to_be_bytes()).await?;
-                stream.write_all(&answer).await?;
-                stream.flush().await?;
+            Reply::Answer(answer) => send(&mut stream, &answer).await?,
+            Reply::Last(answer, why) => {
+                send(&mut stream, &answer).await?;
+                tracing::info!(reason = why, "kafka connection closed by the node");
+                return Ok(());
             }
             Reply::Silent => {}
             Reply::Close(why) => {
@@ -101,6 +98,19 @@ where
         shared.stopping.answered(false);
         drop(busy);
     }
+}
+
+/// Frame and send one answer.
+async fn send<S: AsyncWrite + Unpin>(stream: &mut S, answer: &[u8]) -> std::io::Result<()> {
+    let size = u32::try_from(answer.len()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "an answer past the ceiling",
+        )
+    })?;
+    stream.write_all(&size.to_be_bytes()).await?;
+    stream.write_all(answer).await?;
+    stream.flush().await
 }
 
 /// The next frame's length, or `None` when the connection ended or idled out.
@@ -196,7 +206,7 @@ async fn handle(
                 // A failed sign-in is answered and the connection then closed,
                 // as a broker does: nothing else may be sent on it.
                 return match written {
-                    Ok(()) => Reply::Answer(writer.into_bytes()),
+                    Ok(()) => Reply::Last(writer.into_bytes(), "a refused sign-in"),
                     Err(_) => Reply::Close("an answer that could not be written"),
                 };
             }

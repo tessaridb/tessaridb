@@ -19,6 +19,7 @@ mod groups;
 mod keys;
 mod pending;
 mod pubsub;
+mod secured;
 mod session;
 mod streams;
 mod strings;

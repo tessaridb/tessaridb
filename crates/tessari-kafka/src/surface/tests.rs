@@ -16,6 +16,7 @@ mod brokers;
 mod carrying;
 mod groups;
 mod partitions;
+mod secured;
 
 async fn serving() -> (String, CancellationToken) {
     let (address, stop, _) = serving_with("").await;
@@ -24,6 +25,14 @@ async fn serving() -> (String, CancellationToken) {
 
 /// A node over a fresh store holding `app.main.orders`, after `setup` ran on it.
 async fn serving_with(setup: &str) -> (String, CancellationToken, Arc<tessaridb::Db>) {
+    serving_adjusted(setup, |node| node).await
+}
+
+/// As [`serving_with`], the node changed by `adjust` before it serves.
+async fn serving_adjusted(
+    setup: &str,
+    adjust: impl FnOnce(Node) -> Node,
+) -> (String, CancellationToken, Arc<tessaridb::Db>) {
     let db = Arc::new(tessaridb::Db::in_memory().await.unwrap());
     let mut session = db.session();
     session
@@ -35,9 +44,11 @@ async fn serving_with(setup: &str) -> (String, CancellationToken, Arc<tessaridb:
     }
     drop(session);
     let served = Arc::clone(&db);
-    let node = Node::bind(served, "127.0.0.1:0")
-        .unwrap()
-        .reading_bare_names_in(Database::parse("app.main").unwrap());
+    let node = adjust(
+        Node::bind(served, "127.0.0.1:0")
+            .unwrap()
+            .reading_bare_names_in(Database::parse("app.main").unwrap()),
+    );
     let address = node.address().unwrap();
     let stop = CancellationToken::new();
     let stopping = stop.clone();
@@ -46,8 +57,8 @@ async fn serving_with(setup: &str) -> (String, CancellationToken, Arc<tessaridb:
 }
 
 /// Send one request (header v2 for a flexible version) and read its answer's body.
-async fn ask(
-    stream: &mut TcpStream,
+async fn ask<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    stream: &mut S,
     key: i16,
     version: i16,
     flexible: bool,
