@@ -27,6 +27,27 @@ compares carries no pre-release suffix.
 
 ### Added
 
+- **Kafka clients connect to the store.** `--kafka host:port` serves the Kafka protocol over the store's topics:
+  Produce, Fetch, ListOffsets, Metadata, consumer groups with committed offsets, CreateTopics and DeleteTopics,
+  SASL PLAIN against the store's users, TLS with the node's certificate. `--kafka-database ns.db` names where a bare
+  topic name is read, `--kafka-advertise` the address clients are told. On a cluster a produce sent to a node that
+  does not lead is carried to the leader, and `DEFINE REPLICA … KAFKA AT host:port` says where each node is reached.
+- **Redis clients connect to the store.** `--resp host:port` serves RESP2 and RESP3 over a space (`--resp-space
+  ns.db.space`): strings, counters and expiry; hashes, with a field expiring on its own; lists with blocking pops;
+  sets; sorted sets; `MULTI`/`EXEC`/`WATCH`; `SCAN`; `PUBLISH` and `SUBSCRIBE`; streams over topics, their groups
+  over the store's groups (`XADD` … `XAUTOCLAIM`, `XINFO`). `AUTH` and `HELLO` sign in as the store's users. A
+  command sent to a node that does not lead is carried to the leader.
+- **`DEFINE TOPIC t PARTITIONS n [BY field]`** splits a topic; an append lands by the key's murmur2, as Kafka clients
+  choose, and `READ FROM t PARTITION p` reads one. Groups and topic consumers run per partition. A store created by
+  0.37.0 is format 9; an older one keeps its format until `ALTER STORE FINALIZE FORMAT`.
+- **`DEFINE SPACE … IN MEMORY`** holds a space in node memory: no log entry, gone at a restart. On a cluster it lives
+  on its range leader, and a read elsewhere is sent there.
+- **Lists, hashes, sets and rankings on a space's key**, and a hash field with an expiry of its own.
+- **A topic message keeps the instant it was appended**; `READ FROM t SINCE <datetime>` starts there, and
+  `RETURN POSITION` answers the positions an append took.
+- `SET … EXPIRE NULL` writes a key that never expires.
+- `INFO FOR NODE` lists every client surface by its bound address under `clients.listeners`; the console shows
+  them, and a topic's partitions.
 - **`TRIM <topic> KEEP n | BEFORE p`** removes a topic's oldest messages and answers how many; a reader behind it is
   told by a `lapsed` note. `DELETE` of a message is still refused.
 - **Group members.** `ACK DEADLINE NONE` holds a message until it is settled; `READ … FOR CONSUMER 'g' MEMBER 'c'`
@@ -35,6 +56,12 @@ compares carries no pre-release suffix.
   `HAND t FOR CONSUMER 'g' AT p, … | AFTER p LIMIT n TO 'c' [IF IDLE d]` hands held messages to another member;
   `ALTER GROUP … ADD MEMBER | DROP MEMBER` changes the members, a dropped member's messages with it.
 - **1633 conformance cases** define the language and run in the build.
+
+### Fixed
+
+- A refused Kafka sign-in closes the connection; another password could be tried on it.
+- On a cluster, a write only to a space held in memory no longer waits for copies it can never get.
+- Nodes started together no longer split the first vote of an election again and again.
 
 ## 0.36.2 — 2026-10-19
 
