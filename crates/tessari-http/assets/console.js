@@ -1525,7 +1525,7 @@
     }
     if (typeof about["dead_letter"] === "string") return "queue";
     const definition2 = about["definition"];
-    for (const declared of ["series", "space", "queue"]) {
+    for (const declared of ["series", "space", "queue", "topic"]) {
       if (typeof definition2 === "string" && definition2.startsWith(`DEFINE ${declared.toUpperCase()} `)) {
         return declared;
       }

@@ -41,10 +41,11 @@ function kind(about: Record<string, unknown>): string {
   // A queue with a dead letter has no statement to read (its topic is held by
   // id), and only a queue reports one.
   if (typeof about["dead_letter"] === "string") return "queue";
-  // A series, a space and a queue carry no flag of their own; the statement that
-  // declared them says which, as the Series and Spaces panes already read it.
+  // A series, a space, a queue and a topic carry no flag of their own; the
+  // statement that declared them says which, as the Series and Spaces panes
+  // already read it.
   const definition = about["definition"];
-  for (const declared of ["series", "space", "queue"]) {
+  for (const declared of ["series", "space", "queue", "topic"]) {
     if (typeof definition === "string" && definition.startsWith(`DEFINE ${declared.toUpperCase()} `)) {
       return declared;
     }
