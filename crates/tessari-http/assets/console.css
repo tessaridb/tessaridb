@@ -775,6 +775,12 @@ td {
   transition: background-color var(--motion-fast) var(--ease);
 }
 
+/* A fact of several lines (the surfaces a node listens on) breaks where the
+   value does, so one long value cannot widen the table past its pane. */
+td.lines {
+  white-space: pre-line;
+}
+
 th {
   font-size: var(--t-12);
   color: var(--text-faint);

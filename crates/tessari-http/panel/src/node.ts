@@ -78,7 +78,9 @@ function listening(clients: unknown): string {
     const { surface, address } = (each ?? {}) as { surface?: unknown; address?: unknown };
     return typeof surface === "string" && typeof address === "string" ? [`${surface} ${address}`] : [];
   });
-  return named.length === 0 ? "none named" : named.join(" · ");
+  // One surface a line: four of them on one line ran past the pane and pushed
+  // every number in the table (`retain` among them) out of sight.
+  return named.length === 0 ? "none named" : named.join("\n");
 }
 
 export async function readNode(): Promise<void> {

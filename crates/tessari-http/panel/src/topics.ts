@@ -65,6 +65,11 @@ const messages = (): Node =>
     note("Reading here moves nobody's position: it is a look, and every reader is left where it was."),
     row(
       "default",
+      // A split topic is read one partition at a time; the field shows only for one.
+      field("Partition", number("browse-partition", { value: 0, min: 0 }), {
+        id: "browse-partition-field",
+        hidden: true,
+      }),
       field("After position", number("browse-after", { value: 0, min: 0 })),
       field("How many", number("browse-count", { value: 20, min: 1, max: 100 })),
     ),

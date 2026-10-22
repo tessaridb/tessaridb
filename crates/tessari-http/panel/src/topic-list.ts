@@ -4,12 +4,14 @@
 //! `READ FROM … AFTER n` with no consumer, which is a look and nothing more.
 
 import { held as valueHeld, ask, Unreachable, valueOf, type Answer, type Result } from "./api.js";
-import { at, clear, disable, made, say, setValue, trimmed, value } from "./dom.js";
+import { at, clear, disable, hide, made, say, setValue, trimmed, value } from "./dom.js";
 import { facts } from "./draw.js";
 import { told } from "./session.js";
 import { settled, state } from "./states.js";
 import { onArrival } from "./tabs.js";
-import { behind, fieldsOf, held, keeps, repeats, topic as asTopic, type Topic } from "./topic-info.js";
+import {
+  behind, fieldsOf, groupCount, held, heldIn, keeps, readerCount, repeats, topic as asTopic, type Topic,
+} from "./topic-info.js";
 import { aName, aWhole, tenancy } from "./topic-names.js";
 
 const SCREEN = "Topics";
@@ -171,11 +173,16 @@ function draw(read: Topic[]): void {
       pick.addEventListener("click", () => choose(each.name));
       row.insertCell().appendChild(pick);
       numberCell(row, held(each));
-      numberCell(row, each.last);
+      // A split topic has no one last position: each partition keeps its own.
+      if (each.partitions === null) {
+        numberCell(row, each.last);
+      } else {
+        row.insertCell().textContent = `${each.partitions.each.length} partitions`;
+      }
       row.insertCell().textContent = keeps(each);
       row.insertCell().textContent = repeats(each);
-      numberCell(row, each.readers.size);
-      numberCell(row, each.groups.size);
+      numberCell(row, readerCount(each));
+      numberCell(row, groupCount(each));
       numberCell(row, behind(each));
     }
     at("topics-list").appendChild(table);
@@ -186,7 +193,11 @@ function draw(read: Topic[]): void {
 function choose(name: string): void {
   chosenName = name;
   const found = chosen();
-  setValue("browse-after", String(found === null || found.first === null ? 0 : found.first - 1));
+  const split = found?.partitions ?? null;
+  const start = split === null ? found : split.each[0] ?? null;
+  setValue("browse-partition", "0");
+  hide("browse-partition-field", split === null);
+  setValue("browse-after", String(start === null || start.first === null ? 0 : start.first - 1));
   clear("browse-list");
   settled("browse-status");
   draw(topics);
@@ -198,14 +209,14 @@ function drawPartitions(found: Topic): void {
     at("topic-partitions").appendChild(note("never split: Kafka clients see this topic as partition 0"));
     return;
   }
-  const table = headed(["partition", "first", "last", "messages", "furthest behind"]);
+  const table = headed(["partition", "first", "last", "held", "behind"]);
   const rows = table.createTBody();
   for (const each of split.each) {
     const row = rows.insertRow();
     numberCell(row, each.index);
     row.insertCell().textContent = each.first === null ? "none held" : String(each.first);
     numberCell(row, each.last);
-    numberCell(row, each.first === null || each.last < each.first ? 0 : each.last - each.first + 1);
+    numberCell(row, heldIn(each));
     numberCell(row, each.behind);
   }
   at("topic-partitions").appendChild(
@@ -223,10 +234,13 @@ function drawChosen(): void {
   disable("browse-read", found === null);
   disable("browse-next", found === null);
   if (found !== null) {
+    const split = found.partitions;
     facts("topic-facts", {
       held: held(found),
-      first: found.first ?? "none held",
-      last: found.last,
+      // A split topic's own first and last are its unsplit range; its positions are per partition.
+      ...(split === null
+        ? { first: found.first ?? "none held", last: found.last }
+        : { partitions: split.each.length, "split by": split.by ?? "spread evenly" }),
       keeps: keeps(found),
       "bytes held": found.bytes === null ? "not counted" : `${found.bytes} bytes`,
       "largest message": found.maxBytes === null ? "any size" : `${found.maxBytes} bytes`,
@@ -287,14 +301,21 @@ async function browse(): Promise<void> {
   const found = chosen();
   const after = aWhole(trimmed("browse-after"));
   const count = aWhole(trimmed("browse-count"));
+  const partition = aWhole(trimmed("browse-partition"));
+  const parts = found?.partitions?.each.length ?? null;
   if (place === null || found === null || after === null || count === null || count < 1 || count > 100) {
     say("browse-status", "a position from 0 and a count from 1 to 100", true);
     return;
   }
+  if (parts !== null && (partition === null || partition >= parts)) {
+    say("browse-status", `a partition from 0 to ${parts - 1}`, true);
+    return;
+  }
+  const which = parts === null ? "" : ` PARTITION ${partition}`;
   state("browse-status", "waiting", "reading…");
   try {
     const answered = await valueOf(
-      tenancy(place.namespace, place.database) + `READ FROM ${found.name} AFTER ${after} LIMIT ${count};`,
+      tenancy(place.namespace, place.database) + `READ FROM ${found.name}${which} AFTER ${after} LIMIT ${count};`,
       SCREEN,
     );
     const records = answered?.records ?? [];
