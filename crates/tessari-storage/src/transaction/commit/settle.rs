@@ -182,8 +182,8 @@ impl Transaction<'_> {
                 if let Some(admitted) = crate::topic::admit(
                     self.store,
                     evicted.as_ref().unwrap_or(&record),
-                    self.clock(),
-                    identity.id,
+                    (self.clock(), identity.id),
+                    &self.trims,
                 )
                 .await?
                 {

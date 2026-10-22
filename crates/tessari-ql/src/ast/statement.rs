@@ -4,7 +4,7 @@ use super::{
     Answer, ColumnDeclaration, ConsumerSource, CreateTarget, Credential, DeleteBound, EdgeClause,
     Edit, Expr, FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name,
     NamespaceChange, OnFailure, RangeExpr, ReachRef, RecordTarget, Select, SetCondition,
-    SpaceBound, TableChange, TableExpiry, TableRef, TopicClauses, UserChange, UserGrant,
+    SpaceBound, TableChange, TableExpiry, TableRef, TopicClauses, TrimBound, UserChange, UserGrant,
     WriteExpiry, Written,
 };
 use crate::token::Span;
@@ -305,6 +305,16 @@ pub enum StatementKind {
         partition: Option<Expr>,
         /// How long before they may be handed out again.
         delay: Option<Duration>,
+    },
+    /// `TRIM events KEEP 1000` / `TRIM events BEFORE 42` — remove a topic's
+    /// oldest messages, the one way a caller removes any (W8c).
+    TrimTopic {
+        /// The topic.
+        topic: TableRef,
+        /// `PARTITION <n>` of a split topic (ADR-0131).
+        partition: Option<Expr>,
+        /// How far the trim reaches.
+        bound: TrimBound,
     },
     /// `DEFINE BUCKET media MAX 5242880` — a table whose records are files.
     ///

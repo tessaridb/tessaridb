@@ -274,6 +274,8 @@ impl Parser<'_> {
             _ if self.eat_word("claim") => self.claim_statement(start)?,
             _ if self.eat_word("ack") => self.ack_statement()?,
             _ if self.eat_word("nack") => self.nack_statement()?,
+            // `trim` for the same reason: a text column called `trim` is ordinary.
+            _ if self.eat_word("trim") => self.trim_statement()?,
             // `expire` and `persist` for the same reason as `claim`: a cache's
             // own tables are where an `expire` column lives (G035).
             _ if self.eat_word("expire") => self.expire_statement()?,

@@ -317,6 +317,14 @@ impl Session<'_> {
                 self.alter_group(transaction, name, topic, start_at, span)
                     .await
             }
+            StatementKind::TrimTopic {
+                topic,
+                partition,
+                bound,
+            } => {
+                self.trim_topic(transaction, (topic, partition.as_ref()), bound, span)
+                    .await
+            }
             StatementKind::AckTopic {
                 topic,
                 consumer,

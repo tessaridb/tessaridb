@@ -492,6 +492,15 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             Ok(())
         }
         StatementKind::AlterGroup { start_at, .. } => bind_expr(start_at, binding),
+        StatementKind::TrimTopic {
+            partition, bound, ..
+        } => {
+            let (crate::ast::TrimBound::Keep(reach) | crate::ast::TrimBound::Before(reach)) = bound;
+            for bound in std::iter::once(reach).chain(partition.as_mut()) {
+                bind_expr(bound, binding)?;
+            }
+            Ok(())
+        }
         StatementKind::AckTopic {
             positions,
             partition,

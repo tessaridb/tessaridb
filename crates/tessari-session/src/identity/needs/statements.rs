@@ -468,6 +468,8 @@ impl Needs {
             | StatementKind::Incr { .. }
             | StatementKind::Structure { .. }
             | StatementKind::Del { .. }
+            // A trim removes messages, which is writing the topic (W8c).
+            | StatementKind::TrimTopic { .. }
             | StatementKind::Put { .. } => Self::WRITE,
         }
     }

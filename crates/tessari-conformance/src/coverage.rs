@@ -52,6 +52,7 @@ forms! {
     DropGroup => "DROP GROUP",
     AlterGroup => "ALTER GROUP",
     AckTopic => "ACK",
+    TrimTopic => "TRIM",
     NackTopic => "NACK",
     DefineBucket => "DEFINE BUCKET",
     DefineCollection => "DEFINE COLLECTION",
@@ -257,6 +258,7 @@ mod tests {
              DEFINE GROUP 'mail' ON TOPIC events ACK DEADLINE 30s;\
              ACK events FOR CONSUMER 'mail' AT 1;\
              NACK events FOR CONSUMER 'mail' AT 1;\
+             TRIM events KEEP 1;\
              ALTER GROUP 'mail' ON TOPIC events START AT 0;\
              DROP GROUP 'mail' ON TOPIC events;\
              DEFINE BUCKET b;\

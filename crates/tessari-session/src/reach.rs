@@ -417,7 +417,9 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         StatementKind::DefineGroup { topic, clauses, .. } => {
             std::iter::once(topic).chain(clauses.dead_letter.as_ref()).collect()
         }
-        StatementKind::DropGroup { topic, .. }
+        // A trim removes the topic's own messages (W8c).
+        StatementKind::TrimTopic { topic, .. }
+        | StatementKind::DropGroup { topic, .. }
         | StatementKind::AlterGroup { topic, .. }
         | StatementKind::AckTopic { topic, .. }
         | StatementKind::NackTopic { topic, .. } => vec![topic],

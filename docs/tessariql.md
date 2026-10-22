@@ -7964,6 +7964,29 @@ read carries a `lapsed` note naming how many messages it passed over, and moves 
 named reader's position past them so the note is given once. Nothing is ever
 skipped silently.
 
+### Trimming the front: `TRIM`
+
+A message is never deleted by a caller, with one exception: the oldest messages
+of a topic, all of them up to a point, at once. `TRIM` answers how many it removed.
+
+```tessariql
+DEFINE TOPIC jobs_log;
+CREATE jobs_log:'a' = { n: 1 };
+CREATE jobs_log:'b' = { n: 2 };
+CREATE jobs_log:'c' = { n: 3 };
+TRIM jobs_log KEEP 2;
+TRIM jobs_log BEFORE 3;
+```
+
+`KEEP n` removes every message but the newest `n`; `BEFORE p` removes every
+message below position `p`. The messages left are dense from the first one held,
+positions are never reused, and a reader whose next position went is told by a
+`lapsed` note, as one behind retention is. A trim writes in its transaction and
+is undone with it. `DELETE` of a message is still refused as `TopicIsAppendOnly`:
+the commit admits a message's deletion only when a `TRIM` in the same transaction
+reaches it, which is what keeps a hole out of a topic. A split topic is trimmed a
+partition at a time, `TRIM jobs_log PARTITION 0 KEEP 100`.
+
 ### Publishing once: `DEDUPLICATE … ON`
 
 ```tessariql
@@ -10464,7 +10487,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.36.2", "build": "0.36.2", "endpoints": ["db-1.internal:9000"],
+ "version": "0.37.0", "build": "0.37.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

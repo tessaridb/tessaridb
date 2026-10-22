@@ -38,7 +38,7 @@ pub use ast::{
     ReachRef, RecordTarget, ReplicaChange, Retention, RollupCompute, ScoreCompare, ScoreRange,
     Script, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator, Select,
     SetCondition, Source, SpaceBound, Statement, StatementKind, StructureOp, TableChange,
-    TableExpiry, TableRef, Timeout, TopicClauses, UserChange, UserGrant, Using, Version,
+    TableExpiry, TableRef, Timeout, TopicClauses, TrimBound, UserChange, UserGrant, Using, Version,
     WriteExpiry, Written,
 };
 pub use bind::{Parameters, bind_expression, bind_read};

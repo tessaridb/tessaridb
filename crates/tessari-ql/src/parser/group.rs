@@ -20,7 +20,7 @@ type Settlement = (
     NamedConsumer,
     Vec<crate::ast::Expr>,
 );
-use crate::ast::{GroupClauses, StatementKind, TableRef};
+use crate::ast::{GroupClauses, StatementKind, TableRef, TrimBound};
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
 
@@ -128,6 +128,31 @@ impl Parser<'_> {
             consumer_parameter,
             positions,
             partition,
+        })
+    }
+
+    /// `TRIM <topic> [PARTITION <expr>] KEEP <expr> | BEFORE <expr>`, `TRIM`
+    /// consumed.
+    pub(super) fn trim_statement(&mut self) -> Result<StatementKind> {
+        let topic = self.table_ref()?;
+        let partition = if self.eat_word("partition") {
+            Some(self.expression()?)
+        } else {
+            None
+        };
+        let bound = if self.eat_word("keep") {
+            TrimBound::Keep(self.expression()?)
+        } else if self.eat_word("before") {
+            TrimBound::Before(self.expression()?)
+        } else {
+            return Err(self.error_here(
+                "`KEEP n` or `BEFORE p` — how many messages stay, or the first position that does",
+            ));
+        };
+        Ok(StatementKind::TrimTopic {
+            topic,
+            partition,
+            bound,
         })
     }
 

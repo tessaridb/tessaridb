@@ -173,6 +173,15 @@ pub enum DeleteBound {
     All,
 }
 
+/// How far a `TRIM` removes a topic's oldest messages (W8c).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrimBound {
+    /// `KEEP n` — every message but the newest `n`.
+    Keep(Expr),
+    /// `BEFORE p` — every message below position `p`.
+    Before(Expr),
+}
+
 /// How an `UPDATE` changes the record it names.
 ///
 /// One statement with two shapes rather than two statements, because both touch

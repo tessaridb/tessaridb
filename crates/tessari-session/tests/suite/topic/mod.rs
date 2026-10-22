@@ -12,6 +12,7 @@ mod order;
 mod partitions;
 mod public;
 mod retention;
+mod trim;
 
 use std::collections::BTreeMap;
 

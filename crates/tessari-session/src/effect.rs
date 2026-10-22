@@ -282,6 +282,8 @@ impl Effect {
             | StatementKind::AlterGroup { .. }
             | StatementKind::AckTopic { .. }
             | StatementKind::NackTopic { .. }
+            // A trim deletes messages (W8c).
+            | StatementKind::TrimTopic { .. }
             | StatementKind::ClaimRecord { .. }
             | StatementKind::Release { .. }
             | StatementKind::ReleaseAll { .. }

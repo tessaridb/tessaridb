@@ -619,6 +619,18 @@ fn erase_statement(statement: &mut Statement) {
             erase_table(topic);
             erase_expr(start_at);
         }
+        StatementKind::TrimTopic {
+            topic,
+            partition,
+            bound,
+        } => {
+            erase_table(topic);
+            let (crate::ast::TrimBound::Keep(reach) | crate::ast::TrimBound::Before(reach)) = bound;
+            erase_expr(reach);
+            if let Some(partition) = partition {
+                erase_expr(partition);
+            }
+        }
         StatementKind::AckTopic {
             topic,
             positions,

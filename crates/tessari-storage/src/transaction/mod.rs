@@ -41,6 +41,7 @@ mod retention;
 mod scan;
 mod search;
 mod spatial;
+mod trim;
 mod visible;
 mod walk;
 
@@ -53,6 +54,7 @@ pub use nearest_place::PlacesNearest;
 pub use scan::Window;
 pub use search::{Expansion, FieldedPostings, SearchCounts};
 pub use spatial::Region;
+pub use trim::TopicTrim;
 pub use walk::RecordWalk;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -61,7 +63,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tessari_encoding::RecordValue;
-use tessari_types::{RecordId, Sequence, TableId};
+use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
 use crate::owned::Owned;
 use crate::store::Store;
@@ -94,6 +96,10 @@ pub struct Transaction<'a> {
     /// (ADR-0122 A3), read at commit for a table that declares expiry: an
     /// instant cleared on purpose, or one a later plain write replaced.
     lifetimes: BTreeMap<RecordAddress, Lifetime>,
+    /// Per topic, the position below which a `TRIM` in this transaction
+    /// removes every message — the one permission under which the commit
+    /// admits a topic message's deletion (W8c).
+    trims: std::collections::HashMap<(NamespaceId, DatabaseId, TableId), u64>,
     /// The instant this transaction judges a series table's floor against.
     ///
     /// Read once, on the first question that needs it, for the reason the

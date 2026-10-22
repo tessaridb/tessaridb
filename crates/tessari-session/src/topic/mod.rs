@@ -13,6 +13,7 @@ mod group;
 mod info;
 mod public;
 mod read;
+mod trim;
 
 pub(crate) use read::Reading;
 

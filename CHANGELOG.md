@@ -23,6 +23,14 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.37.0 — unreleased
+
+### Added
+
+- **`TRIM <topic> KEEP n | BEFORE p`** removes a topic's oldest messages and answers how many; a reader behind it is
+  told by a `lapsed` note. `DELETE` of a message is still refused.
+- **1629 conformance cases** define the language and run in the build.
+
 ## 0.36.2 — 2026-10-19
 
 ### Fixed

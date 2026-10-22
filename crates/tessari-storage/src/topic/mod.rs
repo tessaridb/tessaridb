@@ -127,8 +127,9 @@ pub(crate) async fn edge(
 
 /// Admit a record's writes to the topics it touches.
 ///
-/// Refuses a rewrite, a deletion whose retention has not passed at `now`, and
-/// a message larger than its topic takes; answers the record carrying each new
+/// Refuses a rewrite, a deletion whose retention has not passed at `now` and
+/// that no `TRIM` of this transaction reaches (`trims`, W8c), and a message
+/// larger than its topic takes; answers the record carrying each new
 /// message's expiry when its topic keeps messages for a while, or `None` when
 /// nothing needed adding. Called once per commit attempt, beside the space
 /// limit, for the same reason: it is the one place every write path passes.
@@ -140,8 +141,8 @@ pub(crate) async fn edge(
 pub(crate) async fn admit(
     store: &Store,
     record: &LogRecord,
-    now: u64,
-    node: [u8; tessari_encoding::NODE_ID_LEN],
+    (now, node): (u64, [u8; tessari_encoding::NODE_ID_LEN]),
+    trims: &std::collections::HashMap<Topic, u64>,
 ) -> Result<Option<LogRecord>> {
     let mut view = store.begin_local().await?;
     let topics = topics_in(&mut view, record).await?;
@@ -173,7 +174,9 @@ pub(crate) async fn admit(
         let payload = match mutation.value.value() {
             RecordValue::Present(payload) => payload.len(),
             RecordValue::Tombstone => {
-                if held.is_some_and(|(_, held)| !held.is_expired_at(now)) {
+                if held.is_some_and(|(_, held)| !held.is_expired_at(now))
+                    && !trimmed(store, trims, topic, &mutation.id).await?
+                {
                     return Err(Error::TopicIsAppendOnly {
                         topic: name.clone(),
                     });
@@ -228,6 +231,21 @@ pub(crate) async fn admit(
         carried.set_order(order);
     }
     Ok(Some(carried))
+}
+
+/// Whether a `TRIM` of the committing transaction reaches the message `id`.
+async fn trimmed(
+    store: &Store,
+    trims: &std::collections::HashMap<Topic, u64>,
+    topic: Topic,
+    id: &RecordId,
+) -> Result<bool> {
+    let Some(below) = trims.get(&topic) else {
+        return Ok(false);
+    };
+    Ok(position_of(store, topic, id)
+        .await?
+        .is_some_and(|position| position < *below))
 }
 
 /// A duration in whole milliseconds, or `None` when it does not fit.
