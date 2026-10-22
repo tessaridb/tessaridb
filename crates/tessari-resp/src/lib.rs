@@ -19,8 +19,10 @@
 
 pub mod codec;
 mod error;
+#[cfg(feature = "surface")]
 mod surface;
 
+#[cfg(feature = "surface")]
 pub use surface::{Node, Space};
 
 pub use error::{Error, Result};

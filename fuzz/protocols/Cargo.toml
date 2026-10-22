@@ -1,0 +1,44 @@
+[package]
+name = "tessaridb-fuzz-protocols"
+version = "0.0.0"
+publish = false
+edition = "2024"
+authors = ["boogvar"]
+license = "BUSL-1.1"
+description = "Fuzz targets for the Kafka and RESP decoders, taken without the node's surface (G079 C8)"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace, beside `fuzz/`: the decoders are fuzzed without building
+# the engine, which neither of them needs.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tessari-kafka = { path = "../../crates/tessari-kafka", default-features = false }
+tessari-resp = { path = "../../crates/tessari-resp", default-features = false }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "kafka_request"
+path = "fuzz_targets/kafka_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kafka_records"
+path = "fuzz_targets/kafka_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "resp_command"
+path = "fuzz_targets/resp_command.rs"
+test = false
+doc = false
+bench = false

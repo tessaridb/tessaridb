@@ -16,20 +16,26 @@ lz4_flex.workspace = true
 miniz_oxide.workspace = true
 ruzstd.workspace = true
 snap.workspace = true
-tessaridb.workspace = true
+tessaridb = { workspace = true, optional = true }
 tessari-constants.workspace = true
-tessari-serve.workspace = true
-tessari-types.workspace = true
-dashmap.workspace = true
-getrandom.workspace = true
+tessari-serve = { workspace = true, optional = true }
+tessari-types = { workspace = true, optional = true }
+dashmap = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
 tracing.workspace = true
 zeroize.workspace = true
 # Connections are tasks on the process's runtime, which the binary builds;
 # this crate creates none (ADR-0085).
-tokio = { workspace = true, features = ["net", "rt", "sync", "time", "macros", "io-util"] }
-tokio-util.workspace = true
-rustls.workspace = true
-tokio-rustls.workspace = true
+tokio = { workspace = true, optional = true, features = ["net", "rt", "sync", "time", "macros", "io-util"] }
+tokio-util = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+
+[features]
+# The node's surface: the listener, the connections and the statements they run. Off,
+# the crate is its decoders alone, which is how `fuzz/protocols` takes it (G079 C8).
+default = ["surface"]
+surface = ["dep:tessaridb", "dep:tessari-serve", "dep:tessari-types", "dep:dashmap", "dep:getrandom", "dep:tokio", "dep:tokio-util", "dep:rustls", "dep:tokio-rustls"]
 
 [dev-dependencies]
 # A certificate minted per test for the TLS rows of the negative matrix (G079 C8).

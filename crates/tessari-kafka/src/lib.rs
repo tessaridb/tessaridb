@@ -21,8 +21,10 @@ pub mod codec;
 mod error;
 pub mod header;
 pub mod records;
+#[cfg(feature = "surface")]
 mod surface;
 
+#[cfg(feature = "surface")]
 pub use surface::{Database, Node};
 
 pub use error::{Error, Result};
