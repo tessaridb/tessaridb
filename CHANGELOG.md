@@ -32,7 +32,7 @@ compares carries no pre-release suffix.
   SASL PLAIN against the store's users, TLS with the node's certificate. `--kafka-database ns.db` names where a bare
   topic name is read, `--kafka-advertise` the address clients are told. On a cluster a produce sent to a node that
   does not lead is carried to the leader, and `DEFINE REPLICA … KAFKA AT host:port` says where each node is reached.
-- **Redis clients connect to the store.** `--resp host:port` serves RESP2 and RESP3 over a space (`--resp-space
+- **RESP clients connect to the store.** `--resp host:port` serves RESP2 and RESP3 over a space (`--resp-space
   ns.db.space`): strings, counters and expiry; hashes, with a field expiring on its own; lists with blocking pops;
   sets; sorted sets; `MULTI`/`EXEC`/`WATCH`; `SCAN`; `PUBLISH` and `SUBSCRIBE`; streams over topics, their groups
   over the store's groups (`XADD` … `XAUTOCLAIM`, `XINFO`). `AUTH` and `HELLO` sign in as the store's users. A

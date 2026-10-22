@@ -118,7 +118,7 @@ ENV TESSARIDB_STORE=/var/lib/tessaridb/store \
 #                               a node with no certificate serves in the clear
 #                               by default
 #
-# Existing Kafka and Redis clients, each off until its address is set — a node
+# Existing Kafka and RESP clients, each off until its address is set — a node
 # answering a protocol nobody asked it to speak is a door nobody watches:
 #
 #   TESSARIDB_KAFKA             the Kafka protocol's address, e.g. 0.0.0.0:9092

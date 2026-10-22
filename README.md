@@ -181,7 +181,7 @@ possible rather than aspirational.
 | **Real-time** | change subscriptions as a first-class feature — over the wire and over a WebSocket |
 | **Stream ingestion** | `DEFINE KAFKA CONSUMER` — one statement says what to read, where it lands and under which group, and the node runs it; at-least-once, never exactly-once |
 | **Multi-tenant** | namespaces and databases, users, roles, `GRANT` and `REVOKE` per database |
-| **Six ways in** | embedded library · `tessaridb` CLI · HTTP + WebSocket · a framed binary wire protocol · **the Kafka protocol** (`--kafka`) and **RESP** (`--resp`), so an existing Kafka or Redis client connects by changing its address |
+| **Six ways in** | embedded library · `tessaridb` CLI · HTTP + WebSocket · a framed binary wire protocol · **the Kafka protocol** (`--kafka`) and **RESP** (`--resp`), so an existing Kafka or RESP client connects by changing its address |
 | **Operable** | health and readiness endpoints, Prometheus metrics, graceful drain, log-as-backup with replay-as-restore |
 | **Specified** | the wire and value protocol is [published](https://github.com/tessaridb/tessaridb-protocol) with a shared conformance corpus, so a client in any language is written from the spec and not from our source |
 
@@ -215,7 +215,7 @@ follows is what runs today, not a roadmap.
   WebSocket surface, the binary wire protocol (v1.0, with a published spec and
   conformance corpus), single-node serving with roles, endpoints and graceful
   drain, backup and restore.
-- ✅ **Kafka and Redis clients:** `--kafka` serves the Kafka protocol over the
+- ✅ **Kafka and RESP clients:** `--kafka` serves the Kafka protocol over the
   store's topics (produce, fetch, consumer groups, partitions, SASL, TLS) and
   `--resp` serves RESP2/RESP3 over a space (strings, hashes, lists, sets, sorted
   sets, transactions, pub/sub, streams with groups); each states where it departs
