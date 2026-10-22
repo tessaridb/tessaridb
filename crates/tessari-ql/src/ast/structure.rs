@@ -34,6 +34,20 @@ pub enum ScoreCompare {
     Less,
 }
 
+/// When a `HASH EXPIRE` gives a field its instant (ADR-0132).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldExpiryCondition {
+    /// `IF NONE` — only a field with no instant.
+    None,
+    /// `IF SOME` — only a field that has one.
+    Some,
+    /// `IF LATER` — only an instant later than the field's; a field with none
+    /// is later than any.
+    Later,
+    /// `IF SOONER` — only an instant sooner than the field's.
+    Sooner,
+}
+
 /// One end of a score or member range: a value, or `NONE` for no end.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RangeEnd {
@@ -196,6 +210,29 @@ pub enum StructureOp {
         /// How much to add.
         by: Expr,
     },
+    /// `HASH EXPIRE k f, … AT when [IF NONE|SOME|LATER|SOONER]` — answers per
+    /// field `-2` not there, `0` its condition unmet, `1` given the instant,
+    /// `2` removed because the instant is not in the future (ADR-0132).
+    HashExpire {
+        /// The fields.
+        fields: Vec<Expr>,
+        /// A datetime, or a duration from now.
+        at: Expr,
+        /// When to give it.
+        condition: Option<FieldExpiryCondition>,
+    },
+    /// `HASH TTL k f, …` — answers per field the time left, `NULL` for a field
+    /// with no instant and `NONE` for no field. A read.
+    HashTtl {
+        /// The fields.
+        fields: Vec<Expr>,
+    },
+    /// `HASH PERSIST k f, …` — answers per field `-2` not there, `-1` no
+    /// instant, `1` its instant cleared.
+    HashPersist {
+        /// The fields.
+        fields: Vec<Expr>,
+    },
     /// `MEMBERS ADD k v, …` — answers how many are new.
     MembersAdd {
         /// The members.
@@ -268,9 +305,12 @@ impl StructureOp {
             | Self::ListRemove { .. }
             | Self::ListInsert { .. }
             | Self::ListMove { .. } => Container::List,
-            Self::HashSet { .. } | Self::HashRemove { .. } | Self::HashIncr { .. } => {
-                Container::Hash
-            }
+            Self::HashSet { .. }
+            | Self::HashRemove { .. }
+            | Self::HashIncr { .. }
+            | Self::HashExpire { .. }
+            | Self::HashTtl { .. }
+            | Self::HashPersist { .. } => Container::Hash,
             Self::MembersAdd { .. }
             | Self::MembersRemove { .. }
             | Self::MembersPop { .. }
@@ -281,6 +321,11 @@ impl StructureOp {
             | Self::ScoresRemoveRange { .. }
             | Self::ScoresPop { .. } => Container::Scores,
         }
+    }
+
+    /// Whether the statement only reads its key.
+    pub const fn reads_only(&self) -> bool {
+        matches!(self, Self::HashTtl { .. })
     }
 
     /// The second key a move writes, if this is one.
@@ -305,7 +350,12 @@ impl StructureOp {
             Self::ListPush { values, .. }
             | Self::MembersAdd { values }
             | Self::MembersRemove { values } => values.iter().collect(),
-            Self::HashRemove { fields } => fields.iter().collect(),
+            Self::HashRemove { fields }
+            | Self::HashTtl { fields }
+            | Self::HashPersist { fields } => fields.iter().collect(),
+            Self::HashExpire { fields, at, .. } => {
+                fields.iter().chain(std::iter::once(at)).collect()
+            }
             Self::ScoresRemove { members } => members.iter().collect(),
             Self::ScoresRemoveRange { range } => range.expressions(),
             Self::ListPop { limit, .. }
@@ -332,7 +382,12 @@ impl StructureOp {
             Self::ListPush { values, .. }
             | Self::MembersAdd { values }
             | Self::MembersRemove { values } => values.iter_mut().collect(),
-            Self::HashRemove { fields } => fields.iter_mut().collect(),
+            Self::HashRemove { fields }
+            | Self::HashTtl { fields }
+            | Self::HashPersist { fields } => fields.iter_mut().collect(),
+            Self::HashExpire { fields, at, .. } => {
+                fields.iter_mut().chain(std::iter::once(at)).collect()
+            }
             Self::ScoresRemove { members } => members.iter_mut().collect(),
             Self::ScoresRemoveRange { range } => range.expressions_mut(),
             Self::ListPop { limit, .. }

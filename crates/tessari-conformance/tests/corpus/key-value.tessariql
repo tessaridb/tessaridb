@@ -218,6 +218,20 @@ SCORES ADD cache:'rank' 'e' = 5, 'f' = 6;
 SCORES REMOVE cache:'rank' SCORE FROM 1 EXCLUSIVE TO NONE;
 --- expect: value 3
 
+--- case: a hash field is given an instant of its own, one answer per field named
+HASH SET cache:'fx' 'a' = 1, 'b' = 2;
+HASH EXPIRE cache:'fx' 'a', 'zz' AT 1h;
+--- expect: value [1, -2]
+
+--- case: a field with no instant has no time left, and a field not there is not there
+HASH TTL cache:'fx' 'b', 'zz';
+--- expect: value [NULL, NONE]
+
+--- case: an instant not in the future removes the field
+HASH EXPIRE cache:'fx' 'a' AT 0s;
+GET cache:'fx';
+--- expect: value { b: 2 }
+
 --- case: a container write on a key holding another kind is refused
 LIST PUSH cache:'cart' BACK 1;
 --- expect: error KeyHoldsAnotherKind

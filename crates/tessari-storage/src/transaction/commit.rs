@@ -185,6 +185,7 @@ impl Transaction<'_> {
             self.lifetimes
                 .insert(address.clone(), super::Lifetime::Carried(at));
         }
+        self.field_expiring.remove(&address);
         self.writes.insert(address, RecordValue::Present(payload));
     }
 
@@ -272,6 +273,7 @@ impl Transaction<'_> {
     pub fn delete(&mut self, address: RecordAddress) {
         self.expiring.remove(&address);
         self.lifetimes.remove(&address);
+        self.field_expiring.remove(&address);
         self.writes.insert(address, RecordValue::Tombstone);
     }
 
@@ -416,9 +418,15 @@ impl Transaction<'_> {
                 table: address.table,
                 id: address.id.clone(),
                 shard: placement.shard_of(address),
-                value: match self.expiring.get(address) {
-                    Some(at) => StampedValue::stamped(stamp, value.clone()).expiring(*at),
-                    None => StampedValue::stamped(stamp, value.clone()),
+                value: {
+                    let stamped = match self.expiring.get(address) {
+                        Some(at) => StampedValue::stamped(stamp, value.clone()).expiring(*at),
+                        None => StampedValue::stamped(stamp, value.clone()),
+                    };
+                    match self.field_expiring.get(address) {
+                        Some(fields) => stamped.with_field_expiry(fields.clone()),
+                        None => stamped,
+                    }
                 },
             });
         }

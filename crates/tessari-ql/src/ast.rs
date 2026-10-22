@@ -44,7 +44,8 @@ pub use statement::{
     StatementKind,
 };
 pub use structure::{
-    Container, ListEnd, Presence, RangeEnd, ScoreCompare, ScoreRange, StructureOp,
+    Container, FieldExpiryCondition, ListEnd, Presence, RangeEnd, ScoreCompare, ScoreRange,
+    StructureOp,
 };
 
 /// A parsed script: statements in the order they were written.

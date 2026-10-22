@@ -76,6 +76,11 @@ impl FormatVersion {
     /// Named for the reason [`Self::HOMED_LOG`] is.
     pub const SPLIT_TOPIC: Self = Self(9);
 
+    /// The first format whose hash fields may each stop being answered at an
+    /// instant of their own (ADR-0132). Named for the reason
+    /// [`Self::HOMED_LOG`] is.
+    pub const FIELD_EXPIRY: Self = Self(9);
+
     /// The first format whose stores keep retired entries of a plain index, so
     /// that a transaction behind the committed tail may still read through one
     /// (Q-S3-34). Named for the reason [`Self::HOMED_LOG`] is.

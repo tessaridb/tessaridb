@@ -33,6 +33,7 @@ impl<'a> Transaction<'a> {
             registered,
             writes: BTreeMap::new(),
             expiring: BTreeMap::new(),
+            field_expiring: std::collections::HashMap::new(),
             lifetimes: BTreeMap::new(),
             reading_at: std::sync::OnceLock::new(),
             floors: crate::owned::Owned::new(BTreeMap::new()),

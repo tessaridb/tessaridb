@@ -74,3 +74,83 @@ fn a_version_with_no_instant_is_visible_at_every_clock() {
     let value = StampedValue::new(RecordValue::Present(b"v".to_vec()));
     assert!(!value.is_expired_at(u64::MAX));
 }
+
+/// A hash `{a: 1, b: 2}` as the store holds its payload.
+fn hash_payload() -> Vec<u8> {
+    let mut fields = std::collections::BTreeMap::new();
+    fields.insert("a".to_owned(), tessari_types::Value::from(1_i64));
+    fields.insert("b".to_owned(), tessari_types::Value::from(2_i64));
+    crate::encode_payload(&tessari_types::Value::Object(fields))
+        .as_slice()
+        .to_vec()
+}
+
+fn fields_of(value: RecordValue) -> Vec<String> {
+    match value {
+        RecordValue::Present(payload) => match crate::decode_payload(&payload).unwrap() {
+            tessari_types::Value::Object(fields) => fields.into_keys().collect(),
+            other => vec![format!("not an object: {other:?}")],
+        },
+        RecordValue::Tombstone => Vec::new(),
+    }
+}
+
+#[test]
+fn a_field_instant_round_trips_beside_the_key_instant() {
+    let value = StampedValue::new(RecordValue::Present(hash_payload()))
+        .expiring(9_000)
+        .with_field_expiry(vec![("b".to_owned(), 300), ("a".to_owned(), 100)]);
+    let decoded = StampedValue::decode(value.encode().as_slice()).unwrap();
+    assert_eq!(
+        decoded.field_expiry(),
+        &[("a".to_owned(), 100), ("b".to_owned(), 300)]
+    );
+    assert_eq!(decoded.expires(), Some(9_000));
+    assert_eq!(decoded.value(), &RecordValue::Present(hash_payload()));
+    // Without any, the bytes are what they always were.
+    let plain = StampedValue::new(RecordValue::Present(hash_payload())).expiring(9_000);
+    assert_eq!(
+        plain.encode().as_slice(),
+        plain
+            .clone()
+            .with_field_expiry(Vec::new())
+            .encode()
+            .as_slice()
+    );
+}
+
+#[test]
+fn a_reader_does_not_see_a_field_past_its_instant() {
+    let value = StampedValue::new(RecordValue::Present(hash_payload()))
+        .with_field_expiry(vec![("a".to_owned(), 100)]);
+    assert_eq!(fields_of(value.clone().into_visible_at(99)), ["a", "b"]);
+    assert_eq!(fields_of(value.into_visible_at(100)), ["b"]);
+}
+
+#[test]
+fn a_hash_whose_every_field_passed_is_absent() {
+    let value = StampedValue::new(RecordValue::Present(hash_payload()))
+        .with_field_expiry(vec![("a".to_owned(), 100), ("b".to_owned(), 200)]);
+    assert_eq!(fields_of(value.clone().into_visible_at(150)), ["b"]);
+    assert_eq!(value.into_visible_at(200), RecordValue::Tombstone);
+}
+
+#[test]
+fn a_deletion_drops_field_instants_rather_than_writing_them() {
+    let value =
+        StampedValue::new(RecordValue::Tombstone).with_field_expiry(vec![("a".to_owned(), 100)]);
+    assert_eq!(value.encode().as_slice(), &[CODEC_VERSION, FLAG_TOMBSTONE]);
+}
+
+#[test]
+fn a_field_named_twice_keeps_its_last_instant() {
+    let value = StampedValue::new(RecordValue::Present(hash_payload())).with_field_expiry(vec![
+        ("a".to_owned(), 100),
+        ("b".to_owned(), 200),
+        ("a".to_owned(), 500),
+    ]);
+    assert_eq!(
+        value.field_expiry(),
+        &[("a".to_owned(), 500), ("b".to_owned(), 200)]
+    );
+}

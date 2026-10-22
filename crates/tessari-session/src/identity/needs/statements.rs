@@ -58,6 +58,8 @@ impl Needs {
                 condition: Some(condition),
                 ..
             } if holds_node_read(condition) => Self::OPERATE_STORE,
+            // `HASH TTL` reads its key and writes nothing (ADR-0132).
+            StatementKind::Structure { op, .. } if op.reads_only() => Self::READ,
             StatementKind::Let { .. }
             | StatementKind::Return { .. }
             | StatementKind::Throw { .. }

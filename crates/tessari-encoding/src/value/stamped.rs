@@ -23,6 +23,9 @@ pub struct StampedValue {
     /// The transaction across leaders this version was resolved from, while
     /// its record stands (ADR-0112 D5).
     provenance: Option<Provenance>,
+    /// The millisecond each of some of its hash's fields stops being answered
+    /// at, sorted by field (ADR-0132).
+    pub(super) field_expiry: Vec<(String, u64)>,
 }
 
 impl StampedValue {
@@ -39,6 +42,7 @@ impl StampedValue {
             stamp: CausalStamp::new(),
             expires: None,
             provenance: None,
+            field_expiry: Vec::new(),
         }
     }
 
@@ -50,6 +54,7 @@ impl StampedValue {
             stamp,
             expires: None,
             provenance: None,
+            field_expiry: Vec::new(),
         }
     }
 
@@ -101,7 +106,7 @@ impl StampedValue {
 pub(super) fn split_stamp(bytes: &[u8]) -> Result<(CausalStamp, u8, &[u8])> {
     let (flags, payload) = split_header(
         bytes,
-        FLAG_TOMBSTONE | FLAG_STAMP | FLAG_EXPIRES | FLAG_ACROSS,
+        FLAG_TOMBSTONE | FLAG_STAMP | FLAG_EXPIRES | FLAG_ACROSS | FLAG_FIELDS,
     )?;
     if flags & FLAG_STAMP == 0 {
         return Ok((CausalStamp::new(), flags, payload));
@@ -187,12 +192,22 @@ impl StoreValue for StampedValue {
         if provenance.is_some() {
             flags |= FLAG_ACROSS;
         }
+        // Field instants are dropped on a deletion for the reason the key's is.
+        let fields = if self.value.is_tombstone() {
+            Vec::new()
+        } else {
+            expiry::fields_written(&self.field_expiry)
+        };
+        if !fields.is_empty() {
+            flags |= FLAG_FIELDS;
+        }
         let payload = self.value.payload();
         let expires_len = if expires.is_some() { EXPIRES_LEN } else { 0 };
         let mut buffer = with_header(
             flags,
             stamp_len
                 .saturating_add(expires_len)
+                .saturating_add(fields.len())
                 .saturating_add(provenance.as_ref().map_or(0, Vec::len))
                 .saturating_add(payload.len()),
         );
@@ -210,6 +225,7 @@ impl StoreValue for StampedValue {
         if let Some(at) = expires {
             buffer.extend_from_slice(&at.to_be_bytes());
         }
+        buffer.extend_from_slice(&fields);
         // After the expiry and before the payload, the order every other
         // optional field keeps: fixed-width prefixes first, then the body.
         if let Some(provenance) = &provenance {
@@ -233,6 +249,14 @@ impl StoreValue for StampedValue {
             let (expires, rest) = expiry::split(bytes.len(), rest)?;
             (Some(expires), rest)
         };
+        let (field_expiry, rest) = if flags & FLAG_FIELDS == 0 {
+            (Vec::new(), rest)
+        } else {
+            if tombstone {
+                return Err(Error::ReservedFlags { flags });
+            }
+            expiry::split_fields(bytes.len(), rest)?
+        };
         let (provenance, payload) = if flags & FLAG_ACROSS == 0 {
             (None, rest)
         } else {
@@ -255,6 +279,7 @@ impl StoreValue for StampedValue {
             stamp,
             expires,
             provenance,
+            field_expiry,
         })
     }
 }

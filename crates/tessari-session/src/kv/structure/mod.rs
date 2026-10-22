@@ -17,8 +17,10 @@
 //! the member text — so the set's own order is the ranking, lowest first, and a
 //! set of plain members never holds such a pair because a member is never an
 //! array. A container a removal empties is deleted, so no key holds an empty
-//! one, and a write keeps the expiry the key had.
+//! one, and a write keeps the expiry the key had — and each of a hash's
+//! fields keeps its own until the field is overwritten or removed (ADR-0132).
 
+mod fields;
 mod hash;
 mod list;
 mod members;
@@ -40,6 +42,9 @@ pub(super) struct Held {
     pub(super) value: Value,
     /// The instant it expires, kept across the write.
     expires: Option<u64>,
+    /// The instants some of a hash's fields stop being answered at, kept
+    /// across the write for every field it leaves standing (ADR-0132).
+    pub(super) field_expiry: Vec<(String, u64)>,
 }
 
 impl Session<'_> {
@@ -78,10 +83,16 @@ impl Session<'_> {
             });
         }
         let expires = transaction.expires(&address).await?;
+        let field_expiry = if wanted == Container::Hash {
+            transaction.field_expiry(&address).await?
+        } else {
+            Vec::new()
+        };
         Ok(Held {
             address,
             value,
             expires,
+            field_expiry,
         })
     }
 
@@ -96,10 +107,21 @@ impl Session<'_> {
     ) -> Result<()> {
         match next {
             Some(value) => {
+                let standing: Vec<(String, u64)> = match &value {
+                    Value::Object(fields) => held
+                        .field_expiry
+                        .into_iter()
+                        .filter(|(field, _)| fields.contains_key(field))
+                        .collect(),
+                    _ => Vec::new(),
+                };
                 self.put_record(transaction, held.address.clone(), value, span)
                     .await?;
                 if let Some(at) = held.expires {
                     transaction.expire_pending(&held.address, at);
+                }
+                if !standing.is_empty() {
+                    transaction.expire_fields_pending(&held.address, standing);
                 }
                 Ok(())
             }
@@ -176,7 +198,7 @@ impl Session<'_> {
 }
 
 /// The kind a held value is, as a refusal names it.
-fn kind_of(value: &Value) -> &'static str {
+pub(super) fn kind_of(value: &Value) -> &'static str {
     match value {
         Value::Array(_) => Container::List.name(),
         Value::Set(members) if is_ranking(members) => Container::Scores.name(),

@@ -30,6 +30,7 @@ mod address;
 mod adjacency;
 mod commit;
 mod containment;
+mod fields;
 mod index;
 mod latest;
 mod lifecycle;
@@ -86,6 +87,9 @@ pub struct Transaction<'a> {
     /// instant is at or before this transaction's clock is buffered as a
     /// deletion (see [`Transaction::put_expiring`]).
     expiring: BTreeMap<RecordAddress, u64>,
+    /// The instants some of a buffered hash write's fields stop being answered
+    /// at, sorted by field (ADR-0132, `fields`).
+    field_expiring: std::collections::HashMap<RecordAddress, Vec<(String, u64)>>,
     /// What a write said about a record's expiry beyond the instant it carries
     /// (ADR-0122 A3), read at commit for a table that declares expiry: an
     /// instant cleared on purpose, or one a later plain write replaced.

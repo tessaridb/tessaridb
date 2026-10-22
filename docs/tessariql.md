@@ -6961,6 +6961,9 @@ HASH SET carts:'u1' 'apples' = 3, 'pears' = 1;
 HASH SET carts:'u1' 'plums' = 2 IF ABSENT;
 HASH REMOVE carts:'u1' 'pears';
 HASH INCR carts:'u1' 'apples' BY 2;
+HASH EXPIRE carts:'u1' 'plums' AT 30m IF NONE;
+HASH TTL carts:'u1' 'plums', 'apples';
+HASH PERSIST carts:'u1' 'plums';
 
 MEMBERS ADD tags:'post:7' 'rust', 'db';
 MEMBERS REMOVE tags:'post:7' 'db';
@@ -7002,6 +7005,21 @@ SCORES POP board:'top' HIGHEST LIMIT 3;
   leaves that side open. Each answers how many went.
 - A removal that empties a container **deletes the key**: no key holds an empty
   list, hash or set. A write keeps the expiry the key had, as `INCR` does.
+- A hash field may stop being answered at an instant of its own:
+  `HASH EXPIRE k f, … AT when [IF NONE | IF SOME | IF LATER | IF SOONER]`, where
+  `when` is a datetime or a duration from now, answers one number per field —
+  `-2` no such field, `0` the condition did not hold, `1` given the instant, `2`
+  removed there and then because the instant is not in the future. `IF NONE`
+  takes only a field with no instant and `IF SOME` only one that has one; for
+  `IF LATER` and `IF SOONER` a field with no instant is later than any.
+  `HASH TTL k f, …` answers per field the time left, `NULL` for a field that
+  never expires and `NONE` for no field — it is a read. `HASH PERSIST k f, …`
+  answers `-2`, `-1` for a field with no instant, or `1` for one cleared. A
+  field past its instant is left out of every read of the key, and a hash whose
+  every field has passed is no key at all. Overwriting a field with
+  `HASH SET`, or removing it, drops its instant; `HASH INCR` and the key's own
+  `EXPIRE` and `PERSIST` keep it; a whole-key `SET` replaces every one. Giving
+  a field an instant needs a store at format 9 (`ALTER STORE FINALIZE FORMAT`).
 - A statement on a key holding another kind is refused with
   **`KeyHoldsAnotherKind`**, naming both. `LIST SET` on no list is
   **`NoSuchList`** and past the end **`ListIndexOutOfRange`**; an index or a

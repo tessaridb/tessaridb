@@ -1055,8 +1055,9 @@ rewrote nothing.
 | `0x10` | `order` | a log record | it carries its writer's commit order |
 | `0x20` | `expires` | a record version | it carries the instant it expires at |
 | `0x40` | `across` | both | it belongs to a transaction across leaders (see the `flags` row above) |
+| `0x80` | `fields` | a record version | it carries an instant for some of its hash's fields (ADR-0132): after the expiry instant and before the provenance, a 4-byte count, then per field a 4-byte name length, the UTF-8 name and an 8-byte instant, all big-endian, sorted by name; never on a deletion |
 
-Bit 7 is reserved and must be zero.
+Every bit is now defined.
 
 ## 7a. The index value tag table
 
@@ -1186,7 +1187,7 @@ and is rewritten at open only where the row below says so.
 | `6` | a containment index's entries, key kind `0x44` (ADR-0116) | opened as is and keeps its stamp; a containment index is refused until the store is finalized (ADR-0118) |
 | `7` | a table may declare that its records expire — no key or value changes (the `expires` flag is §7.1's), so the surface digest is format 6's; what moves is the **write rule**: a build before it would clear a record's instant on a plain write and stamp no default (ADR-0122 A8) | opened as is and keeps its stamp; `DEFINE`/`ALTER … EXPIRE` is refused until the store is finalized |
 | `8` | a plain index keeps its removed entries as retired entries, key kinds `0x45` and `0x46` (Q-S3-34) | opened as is and keeps its stamp; no retired entry is written and a transaction behind the tail reads as before until the store is finalized |
-| `9` | a topic may be split into partitions (ADR-0131) — no key or value changes, so the surface digest is format 8's; what moves is the catalog: a build before it would append to a split topic itself, where no partition's reader sees the message | opened as is and keeps its stamp; `DEFINE TOPIC … PARTITIONS` is refused until the store is finalized |
+| `9` | a topic may be split into partitions (ADR-0131) — a catalog change: a build before it would append to a split topic itself, where no partition's reader sees the message — and a hash field may carry an instant of its own, flag `0x80` (ADR-0132), which a build before it refuses as a reserved bit | opened as is and keeps its stamp; `DEFINE TOPIC … PARTITIONS` and `HASH EXPIRE` are refused until the store is finalized |
 
 **The stamp is the format the store holds, and it lags this build** (ADR-0118,
 from `0.31.0-beta`). A build opens an older store and keeps its stamp, so the

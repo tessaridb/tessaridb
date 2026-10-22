@@ -16,7 +16,8 @@
 
 use super::Parser;
 use crate::ast::{
-    Expr, ListEnd, Presence, RangeEnd, ScoreCompare, ScoreRange, StatementKind, StructureOp,
+    Expr, FieldExpiryCondition, ListEnd, Presence, RangeEnd, ScoreCompare, ScoreRange,
+    StatementKind, StructureOp,
 };
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
@@ -167,8 +168,52 @@ impl Parser<'_> {
                     by: self.expression()?,
                 },
             )
+        } else if self.eat_word("expire") {
+            let target = self.record_target()?;
+            let fields = self.values()?;
+            self.expect_word("at", "`AT` and when the fields stop being answered")?;
+            let at = self.expression()?;
+            let condition = if self.eat_keyword(Keyword::If) {
+                Some(if self.eat_keyword(Keyword::None) {
+                    FieldExpiryCondition::None
+                } else if self.eat_word("some") {
+                    FieldExpiryCondition::Some
+                } else if self.eat_word("later") {
+                    FieldExpiryCondition::Later
+                } else if self.eat_word("sooner") {
+                    FieldExpiryCondition::Sooner
+                } else {
+                    return Err(self.error_here("`NONE`, `SOME`, `LATER` or `SOONER`"));
+                })
+            } else {
+                None
+            };
+            (
+                target,
+                StructureOp::HashExpire {
+                    fields,
+                    at,
+                    condition,
+                },
+            )
+        } else if self.eat_word("ttl") {
+            let target = self.record_target()?;
+            (
+                target,
+                StructureOp::HashTtl {
+                    fields: self.values()?,
+                },
+            )
+        } else if self.eat_word("persist") {
+            let target = self.record_target()?;
+            (
+                target,
+                StructureOp::HashPersist {
+                    fields: self.values()?,
+                },
+            )
         } else {
-            return Err(self.error_here("`SET`, `REMOVE` or `INCR`"));
+            return Err(self.error_here("`SET`, `REMOVE`, `INCR`, `EXPIRE`, `TTL` or `PERSIST`"));
         };
         Ok(StatementKind::Structure {
             target: op.0,

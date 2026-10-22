@@ -111,8 +111,11 @@ impl Session<'_> {
             // part of the version, so moving one is a write like any other and
             // reaches the log, a follower and a backup by the ordinary road.
             Instant::Future(at) => {
+                // The fields' own instants are the version's too, and stand.
+                let fields = transaction.field_expiry(&address).await?;
                 transaction.put(address.clone(), held);
                 transaction.expire_pending(&address, at);
+                transaction.expire_fields_pending(&address, fields);
             }
         }
         Ok(Outcome::Value(Value::Bool(true)))
@@ -131,10 +134,12 @@ impl Session<'_> {
         let Some(held) = transaction.get(&address).await? else {
             return Ok(Outcome::Value(Value::Bool(false)));
         };
+        let fields = transaction.field_expiry(&address).await?;
         transaction.put(address.clone(), held);
         // Said on purpose, which a table that declares expiry would otherwise
         // read as a plain write and keep the instant (ADR-0122 A3).
         transaction.persist_pending(&address);
+        transaction.expire_fields_pending(&address, fields);
         Ok(Outcome::Value(Value::Bool(true)))
     }
 
@@ -151,12 +156,7 @@ impl Session<'_> {
         let Some(at) = transaction.expires(&address).await? else {
             return Ok(Value::Null);
         };
-        let left = at.saturating_sub(transaction.clock());
-        let seconds = i64::try_from(left / 1_000).unwrap_or(i64::MAX);
-        let nanos = u32::try_from(left % 1_000)
-            .unwrap_or(0)
-            .saturating_mul(NANOS_PER_MILLI);
-        Ok(Duration::new(seconds, nanos).map_or(Value::Null, Value::Duration))
+        Ok(duration_left(at, transaction.clock()))
     }
 
     /// Resolve an `EXPIRE` operand against the transaction's clock.
@@ -168,6 +168,16 @@ impl Session<'_> {
         let value = self.evaluate(transaction, when).await?;
         instant_of(transaction.clock(), value, when.span)
     }
+}
+
+/// The time from `now` until `at`, both in milliseconds, as a duration.
+pub(crate) fn duration_left(at: u64, now: u64) -> Value {
+    let left = at.saturating_sub(now);
+    let seconds = i64::try_from(left / 1_000).unwrap_or(i64::MAX);
+    let nanos = u32::try_from(left % 1_000)
+        .unwrap_or(0)
+        .saturating_mul(NANOS_PER_MILLI);
+    Duration::new(seconds, nanos).map_or(Value::Null, Value::Duration)
 }
 
 /// Resolve an evaluated `EXPIRE` operand against the clock `now`.

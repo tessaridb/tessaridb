@@ -57,6 +57,8 @@ impl Effect {
         match kind {
             // What the drop it wraps is (ADR-0124 D1).
             StatementKind::DropIfExists(dropped) => Self::of(dropped),
+            // `HASH TTL` reads its key and writes nothing (ADR-0132).
+            StatementKind::Structure { op, .. } if op.reads_only() => Self::Read,
             // Reads, including the ones that look heavier than they are.
             // `BACKUP` streams the whole log and writes nothing to the store —
             // it is the largest read in the language, not a write.
