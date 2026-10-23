@@ -81,6 +81,7 @@ fn by(descending: bool) -> Vec<Order> {
             span: Span::new(0, 1),
         },
         descending,
+        nulls: None,
     }]
 }
 

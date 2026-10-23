@@ -101,6 +101,15 @@ pub(crate) fn in_select(select: &Select) -> Vec<&TableRef> {
     for key in &select.order {
         found.extend(in_expr(&key.key));
     }
+    for window in &select.windows {
+        for expr in window.expressions() {
+            found.extend(in_expr(expr));
+        }
+    }
+    // Every combined read is read, so each one's tables are reached too.
+    for next in &select.combined {
+        found.extend(in_select(&next.read));
+    }
     found
 }
 

@@ -69,12 +69,56 @@ impl<'a> Session<'a> {
                 *open = Some((store.begin().await?, span));
                 self.acknowledge_open = None;
                 self.across_open = false;
+                self.savepoints.clear();
+                Ok(Outcome::Done)
+            }
+            StatementKind::Savepoint { name } => {
+                let Some((transaction, _)) = open.as_ref() else {
+                    return Err(Error::SavepointOutsideATransaction { span });
+                };
+                self.savepoints
+                    .push((name.text.clone(), transaction.savepoint()));
+                Ok(Outcome::Done)
+            }
+            StatementKind::RollbackTo { name } => {
+                let Some((transaction, _)) = open.as_mut() else {
+                    return Err(Error::SavepointOutsideATransaction { span });
+                };
+                let at = self.savepoint_named(name)?;
+                if let Some((_, point)) = self.savepoints.get(at) {
+                    transaction.roll_back_to(point).map_err(|why| {
+                        Error::SavepointCrossesClaim {
+                            name: name.text.clone(),
+                            what: match why {
+                                tessari_storage::Unreturnable::Claim => {
+                                    "took a queue claim, which the claim register holds until \
+                                     the transaction ends"
+                                }
+                                tessari_storage::Unreturnable::Across => {
+                                    "handed work to other leaders"
+                                }
+                            },
+                            span,
+                        }
+                    })?;
+                }
+                // The savepoint stays, so it can be rolled back to again.
+                self.savepoints.truncate(at.saturating_add(1));
+                Ok(Outcome::Done)
+            }
+            StatementKind::ReleaseSavepoint { name } => {
+                if open.is_none() {
+                    return Err(Error::SavepointOutsideATransaction { span });
+                }
+                let at = self.savepoint_named(name)?;
+                self.savepoints.truncate(at);
                 Ok(Outcome::Done)
             }
             StatementKind::Commit => {
                 let Some((mut transaction, _)) = open.take() else {
                     return Err(Error::NoOpenTransaction { span });
                 };
+                self.savepoints.clear();
                 // The strongest level the transaction's writes or its `COMMIT`
                 // asked for (ADR-0106 D2).
                 let asked = statement.acknowledge.max(self.acknowledge_open.take());
@@ -95,6 +139,7 @@ impl<'a> Session<'a> {
                 };
                 self.acknowledge_open = None;
                 self.across_open = false;
+                self.savepoints.clear();
                 transaction.rollback();
                 Ok(Outcome::Done)
             }
@@ -107,6 +152,7 @@ impl<'a> Session<'a> {
                 };
                 self.acknowledge_open = None;
                 self.across_open = false;
+                self.savepoints.clear();
                 transaction.dry_run().await.map_err(advised)?;
                 Ok(Outcome::Done)
             }
@@ -330,5 +376,18 @@ fn answers_position(kind: &StatementKind) -> Option<&TableRef> {
             ..
         } => Some(&target.table),
         _ => None,
+    }
+}
+
+impl Session<'_> {
+    /// Where the newest savepoint of this name stands among those held.
+    fn savepoint_named(&self, name: &tessari_ql::Name) -> Result<usize> {
+        self.savepoints
+            .iter()
+            .rposition(|(held, _)| held == &name.text)
+            .ok_or_else(|| Error::NoSuchSavepoint {
+                name: name.text.clone(),
+                span: name.span,
+            })
     }
 }

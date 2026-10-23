@@ -43,6 +43,9 @@ impl Atomic<'_, '_> {
                 StatementKind::Begin
                     | StatementKind::Commit
                     | StatementKind::Cancel
+                    | StatementKind::Savepoint { .. }
+                    | StatementKind::RollbackTo { .. }
+                    | StatementKind::ReleaseSavepoint { .. }
                     | StatementKind::Verify
             )
         }) {

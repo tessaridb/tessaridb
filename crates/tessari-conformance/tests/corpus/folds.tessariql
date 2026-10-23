@@ -210,3 +210,23 @@ RETURN $spread = [{ positive: true }];
 --- case: a new fold still refuses a star it cannot fold over
 SELECT median(*) AS m FROM readings;
 --- expect: error StarIsOnlyForCount
+
+# Window functions (ADR-0134 D13): a value for each record from the records
+# around it, computed after the `WHERE` and before the read's order and bound.
+
+--- case: row_number counts each partition in its own order
+RETURN (SELECT row_number() OVER (PARTITION BY city ORDER BY price DESC) AS n FROM sales
+        WHERE city = 'lisbon' ORDER BY n LIMIT 1) = [{ n: 1 }];
+--- expect: value true
+
+--- case: a fold over a window keeps every record, each with the fold
+RETURN (SELECT count(*) OVER () AS every FROM sales LIMIT 1) = [{ every: 4 }];
+--- expect: value true
+
+--- case: a window beside a grouping is refused
+SELECT city, rank() OVER (ORDER BY city) AS r FROM sales GROUP BY city;
+--- expect: error Unsupported
+
+--- case: a window answers under the name AS gives it
+SELECT row_number() OVER () FROM sales;
+--- expect: error UnnamedProjection

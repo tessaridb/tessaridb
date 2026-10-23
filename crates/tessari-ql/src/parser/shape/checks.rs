@@ -96,7 +96,11 @@ pub(crate) fn check_grouping(projection: &Projection, group: &[Expr]) -> Result<
     for value in values {
         if !grouped_by(&value.value, group) {
             return Err(Error::UngroupedProjection {
-                name: value.name.text.clone(),
+                name: if value.name.text == super::HAVING_NAME {
+                    "HAVING".to_owned()
+                } else {
+                    value.name.text.clone()
+                },
                 span: value.value.span,
             });
         }

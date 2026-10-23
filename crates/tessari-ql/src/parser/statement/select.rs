@@ -6,7 +6,13 @@ use crate::ast::{Expr, JoinSide, Name, Projection, Select, Source};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
 
-use super::{NODE_SOURCE, side_of};
+use super::NODE_SOURCE;
+
+mod combine;
+mod join;
+mod named;
+
+use join::JoinKind;
 
 impl Parser<'_> {
     /// `..` or `..=`, when a span's bound follows.
@@ -70,17 +76,32 @@ impl Parser<'_> {
                 None => Source::Record(record),
             });
         }
+        let named = self.named_read(&table);
         let alias = self.alias()?;
+        if let Some(kind) = self.join_kind()? {
+            return self.join(named::side(table, alias, named), kind);
+        }
         // `ASOF` is contextual: it only means something directly before `JOIN`.
         let asof = self.eat_word("asof");
         if asof && self.peek_keyword() != Some(Keyword::Join) {
             return Err(self.error_here("`JOIN` after `ASOF`"));
         }
         if self.eat_keyword(Keyword::Join) {
-            return self.join(JoinSide::Table { table, alias }, asof);
+            let kind = if asof {
+                JoinKind::Asof
+            } else {
+                JoinKind::Inner
+            };
+            return self.join(named::side(table, alias, named), kind);
         }
         if alias.is_some() {
             return Err(self.aliased_without_a_join());
+        }
+        if let Some(read) = named {
+            return Ok(Source::Subquery {
+                read: Box::new(read),
+                condition: self.materialised_condition()?,
+            });
         }
         if self.eat_keyword(Keyword::Where) {
             return Ok(Source::Where {
@@ -133,15 +154,17 @@ impl Parser<'_> {
                 condition: self.materialised_condition()?,
             });
         };
-        if !self.eat_keyword(Keyword::Join) {
-            return Err(self.aliased_without_a_join());
-        }
+        let kind = match self.join_kind()? {
+            Some(kind) => kind,
+            None if self.eat_keyword(Keyword::Join) => JoinKind::Inner,
+            None => return Err(self.aliased_without_a_join()),
+        };
         self.join(
             JoinSide::Read {
                 read: Box::new(read),
                 alias,
             },
-            false,
+            kind,
         )
     }
 
@@ -164,7 +187,8 @@ impl Parser<'_> {
             return Err(self.error_here("`SELECT` — a source in parentheses is a read"));
         }
         let read = self.select_statement()?;
-        if read.limit.is_none() && read.limit_parameter.is_none() {
+        let unbounded = |one: &Select| one.limit.is_none() && one.limit_parameter.is_none();
+        if unbounded(&read) || read.combined.iter().any(|next| unbounded(&next.read)) {
             return Err(self.error_here(
                 "`LIMIT n` on the inner read — a materialised source states how much \
                  it may hold, so that a truncated answer is never mistaken for a whole one",
@@ -174,11 +198,12 @@ impl Parser<'_> {
         Ok(read)
     }
 
-    /// `SELECT <projection> FROM …`, resolving to exactly one access path.
-    pub(in crate::parser) fn select_statement(&mut self) -> Result<Select> {
+    /// `SELECT <projection> FROM …`, resolving to exactly one access path, and
+    /// combining with nothing.
+    pub(super) fn select_single(&mut self) -> Result<Select> {
         let start = self.span_here();
         self.advance();
-        let projection = self.projection()?;
+        let (mut projection, windows) = self.projection()?;
         // Beside the projection rather than among the clauses after `FROM`,
         // because it says what the star contributes and not what the read does.
         let omit = self.omit_paths(&projection)?;
@@ -203,6 +228,7 @@ impl Parser<'_> {
         // Straight after the grouping it completes: the windows it adds are
         // groups, and everything after this clause treats them as groups.
         let fill = self.fill()?;
+        let having = self.having(&mut projection, (!group.is_empty(), fill.is_some()))?;
         let (order, fusion) = self.order_by()?;
         // After the order, because the order is what it resumes: the anchor is
         // the last record of the page before, and "after" is a position in the
@@ -287,6 +313,7 @@ impl Parser<'_> {
         for key in &group {
             crate::parser::shape::no_several(key)?;
         }
+        self.check_windows(&windows, &projection, (&group, &from, fusion.as_ref()))?;
         for ordering in &order {
             crate::parser::shape::no_several(&ordering.key)?;
         }
@@ -341,6 +368,9 @@ impl Parser<'_> {
             fetch,
             split,
             group,
+            having,
+            combined: Vec::new(),
+            windows,
             fill,
             latest,
             order,
@@ -358,87 +388,6 @@ impl Parser<'_> {
             start_parameter,
             limit_parameter,
             span: start.to(self.span_behind()),
-        })
-    }
-
-    /// The rest of `FROM users JOIN orders ON users.id = orders.user`.
-    ///
-    /// # Both sides of `ON` are routes into the joined row
-    ///
-    /// Which is why they are written with the table in front: the row is
-    /// `{ users: { … }, orders: { … } }`, so `users.id` is the path it looks
-    /// like. They may be written either way round — the parser sorts out which
-    /// side is which — because a reader writing the condition is thinking about
-    /// the two fields and not about which table the statement named first.
-    ///
-    /// The root is then stripped, so what the executor holds is a route into a
-    /// *record* on each side. That is what lets the right side be probed through
-    /// an index, which reads records and knows nothing about a composite.
-    pub(super) fn join(&mut self, left: JoinSide, asof: bool) -> Result<Source> {
-        let right = self.join_side()?;
-        let on = self.span_here();
-        self.expect_keyword(Keyword::On, "`ON` and the two fields to match")?;
-        let first = self.field_path()?;
-        self.expect_punct(Punct::Equals, "`=` between the two sides of the join")?;
-        let second = self.field_path()?;
-
-        // The two **names**, not the two tables: `users AS a JOIN users AS b` is
-        // one table under two names and reads perfectly, while `users JOIN users`
-        // is two names that are one and has no row a reader could address.
-        if left.name() == right.name() {
-            return Err(Error::OneSidedJoin {
-                name: left.name().to_owned(),
-                span: on.to(self.span_behind()),
-            });
-        }
-        let sides = [&left, &right].map(|side| side.name().to_owned());
-        let first_side = side_of(&first, &sides)?;
-        let second_side = side_of(&second, &sides)?;
-        if first_side.0 == second_side.0 {
-            return Err(Error::OneSidedJoin {
-                name: sides[first_side.0].clone(),
-                span: on.to(self.span_behind()),
-            });
-        }
-        let (left_key, right_key) = if first_side.0 == 0 {
-            (first_side.1, second_side.1)
-        } else {
-            (second_side.1, first_side.1)
-        };
-
-        let condition = self
-            .eat_keyword(Keyword::Where)
-            .then(|| self.condition().map(Box::new))
-            .transpose()?;
-        Ok(Source::Join {
-            left: Box::new(left),
-            right: Box::new(right),
-            left_key,
-            right_key,
-            asof,
-            condition,
-        })
-    }
-
-    /// The side after `JOIN` — a table, or a read that must name itself.
-    pub(super) fn join_side(&mut self) -> Result<JoinSide> {
-        if self.peek() == Some(&Token::Punct(Punct::ParenOpen)) {
-            let read = self.parenthesised_read()?;
-            let Some(alias) = self.alias()? else {
-                return Err(self.error_here(
-                    "`AS <name>` after the read — a read has no name of its own, and a \
-                     row files each side under a name",
-                ));
-            };
-            return Ok(JoinSide::Read {
-                read: Box::new(read),
-                alias,
-            });
-        }
-        let table = self.table_ref()?;
-        Ok(JoinSide::Table {
-            table,
-            alias: self.alias()?,
         })
     }
 }

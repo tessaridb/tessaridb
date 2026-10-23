@@ -329,6 +329,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // there and be read as one.
         StatementKind::Insert {
             rows,
+            read,
             expire,
             partition,
             ..
@@ -337,6 +338,9 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
                 for value in row {
                     bind_expr(value, binding)?;
                 }
+            }
+            if let Some(read) = read {
+                bind_select(read, binding)?;
             }
             if let Some(partition) = partition {
                 bind_expr(partition, binding)?;
@@ -362,6 +366,16 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             if let Some(condition) = condition {
                 bind_expr(condition, binding)?;
             }
+            bind_edit(edit, binding)
+        }
+        StatementKind::UpdateWhere {
+            edit,
+            condition,
+            expire,
+            ..
+        } => {
+            bind_write_expiry(expire.as_mut(), binding)?;
+            bind_expr(condition, binding)?;
             bind_edit(edit, binding)
         }
         StatementKind::Upsert {
@@ -649,6 +663,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::GrantAuthority { .. }
         | StatementKind::RevokeAuthority { .. }
         | StatementKind::DropField { .. }
+        | StatementKind::Truncate { .. }
         | StatementKind::DropTable { .. }
         | StatementKind::DropIndex { .. }
         // Every one of these carries a catalog **name** and nothing else, and a
@@ -685,6 +700,9 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::Begin
         | StatementKind::Commit
         | StatementKind::Cancel
+        | StatementKind::Savepoint { .. }
+        | StatementKind::RollbackTo { .. }
+        | StatementKind::ReleaseSavepoint { .. }
         | StatementKind::Verify => Ok(()),
     }
 }
@@ -722,6 +740,23 @@ fn bind_join_side(side: &mut JoinSide, binding: &Binding<'_>) -> Result<()> {
     match side {
         JoinSide::Table { .. } => Ok(()),
         JoinSide::Read { read, .. } => bind_select(read, binding),
+        // The join so far binds as the outer join does: both sides, then `WHERE`.
+        JoinSide::Joined(join) => match join.as_mut() {
+            crate::ast::Source::Join {
+                left,
+                right,
+                condition,
+                ..
+            } => {
+                bind_join_side(left, binding)?;
+                bind_join_side(right, binding)?;
+                match condition {
+                    Some(condition) => bind_expr(condition, binding),
+                    None => Ok(()),
+                }
+            }
+            _ => Ok(()),
+        },
     }
 }
 

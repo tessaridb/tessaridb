@@ -31,13 +31,14 @@ use tessari_types::{Assertion, FieldKind, Path, RecordId};
 
 use crate::token::Span;
 pub use expr::{
-    Aggregate, ArithmeticOp, Expr, ExprKind, Field, GroupChange, GroupClauses, GroupMember, Hand,
-    Handing, Identity, RangeExpr, Retention, SetCondition, SpaceBound, TopicClauses, Written,
+    Aggregate, ArithmeticOp, COUNT_DISTINCT_MOST, Expr, ExprKind, Field, GroupChange, GroupClauses,
+    GroupMember, Hand, Handing, Identity, RangeExpr, Retention, SetCondition, SpaceBound,
+    TopicClauses, Written,
 };
 pub use select::{
-    Admitted, AnsweredBy, Approximation, Fill, FillMode, Fusion, Hop, JoinSide, Ordering,
-    ParameterSlot, PathTo, Projected, Projection, Select, Source, Staleness, Timeout, Using,
-    Version,
+    Admitted, AnsweredBy, Approximation, Combination, Fill, FillMode, Fusion, Hop, JoinSide,
+    Neighbour, Nulls, Ordering, Outer, ParameterSlot, PathTo, Projected, Projection, Select,
+    SetOperation, Source, Staleness, Timeout, Using, Version, WindowFunction, Windowed,
 };
 pub use statement::{
     BackupForm, RollupCompute, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator,
@@ -155,21 +156,23 @@ pub enum Answer {
     Position,
 }
 
-/// How much a conditional delete may remove.
+/// How many records a write over a set may change: `DELETE FROM … WHERE`,
+/// `DELETE FROM t:a..b` and `UPDATE t … WHERE`.
 ///
-/// Every `DELETE FROM … WHERE …` carries one, and there is no third variant for
-/// "unstated". A predicate wrong by one character is the ordinary way a table is
-/// emptied by accident, and the cheapest thing standing between that typo and
-/// the store is a clause the author had to write.
+/// Written as `LIMIT n` or `LIMIT ALL`, and optional (ADR-0134 D1): a statement
+/// with no `LIMIT` reaches every record its condition or span names, and the
+/// parser reads that as [`SetBound::All`] — there is no third variant for
+/// "unstated", because the two spellings mean the same thing.
 ///
-/// The bound is on what is **removed**, never on what is examined. A bound
-/// applied to candidates would make the same statement remove different records
+/// The bound is on what is **changed**, never on what is examined. A bound
+/// applied to candidates would make the same statement change different records
 /// on two runs, depending on which index answered it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeleteBound {
-    /// `LIMIT 100` — stop after this many records have been removed.
+pub enum SetBound {
+    /// `LIMIT 100` — stop after this many records have been changed.
     AtMost(u64),
-    /// `LIMIT ALL` — every record the condition holds for, however many that is.
+    /// `LIMIT ALL`, or no `LIMIT` — every record the condition holds for,
+    /// however many that is.
     All,
 }
 
@@ -230,8 +233,8 @@ pub struct Assignment {
 
 pub use info::InfoSubject;
 pub use tables::{
-    AutoSplit, ColumnDeclaration, Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, TableChange,
-    TableExpiry, WriteExpiry,
+    AutoSplit, ColumnDeclaration, Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, OnDelete,
+    Reference, TableChange, TableExpiry, WriteExpiry,
 };
 pub use tessari_types::BinaryOp;
 pub use users::{Credential, Password, UserChange, UserGrant};

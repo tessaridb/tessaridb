@@ -2156,6 +2156,93 @@ refused, writing neither the removal nor the replacement. The same holds for
 `REQUIRED`: a field cannot become required while a stored record leaves it empty,
 and the refusal names every record that does, not the first one it meets.
 
+**`USING` changes the stored values with the type.** Without it an `ALTER FIELD`
+to a type the records do not hold is refused; with it each record's value is
+rewritten by the expression, evaluated over that record, in the same
+transaction, and the new declaration then holds what was written:
+
+```tessariql
+ALTER TABLE orders ALTER FIELD total TYPE string USING type::string(total);
+```
+
+A record the expression answers `NONE` for loses the field. A value the
+expression gets wrong for the new type refuses the whole statement, so nothing
+is half converted.
+
+### A field that names a record of another table: `REFERENCES`
+
+```
+DEFINE FIELD owner ON orders TYPE record REFERENCES users ON DELETE CASCADE;
+```
+
+A `TYPE record` field may declare the table its values name, in its own
+database. A write whose value names a record that table does not hold is
+refused (`NoSuchReference`) — read in the writer's transaction, so a record and
+a reference to it written together are found together; `NONE` names nothing and
+is accepted. Deleting a record of the referenced table — by `DELETE`, a set
+delete, a span delete or an event — then does what the clause says:
+
+| `ON DELETE` | the records naming it |
+|---|---|
+| `REJECT` (unwritten) | the delete is refused while one exists (`StillReferenced`) |
+| `CASCADE` | are deleted too, their events run |
+| `UNSET` | keep, with the field removed, their events run |
+
+The reference is held by the table's identity, so renaming either table keeps
+it. A referenced table is not emptied by `TRUNCATE` or removed by `DROP TABLE`
+while the field stands (`ReferencedTable`); drop the field first. The target is
+a table or a collection that is not split and does not expire
+(`ReferenceRefused`), and `ALTER FIELD` keeps a reference the field holds.
+
+**What a delete costs.** A delete in a referenced table reads the referencing
+table to find what names the record — the same cost as a `WHERE` no index
+serves. **What it does not promise:** two transactions whose snapshots do not see
+each other — one writing a reference, one deleting its target — are kept apart
+when the delete commits first (the write is sent round again and refused), and
+can both commit when the write commits first; the check is made in each
+transaction's own snapshot, as every check here is.
+
+### Renaming a table or a field
+
+```tessariql
+ALTER TABLE orders RENAME TO purchases;
+ALTER TABLE purchases RENAME FIELD total TO amount;
+```
+
+**A table's rename moves its name and nothing else.** Its records, indexes,
+fields, grants, edges and consumers hold it by identity and go with it, and the
+old name is free afterwards. What holds a table by its **name** is text — a
+view's read, an event's statements — and a rename would leave that text naming
+nothing, so the rename is refused while a view or an event in the database names
+the table (`TableNamedByText`), naming the first. A bucket, a split topic, a
+queue or topic that deduplicates, and a graph's own node collection keep a
+companion found by the name, and are not renamed (`NotRenamed`). A view or an
+event in another database that names the table qualified is not checked.
+
+**A field's rename rewrites every record** that holds it, in one transaction,
+and moves its declaration — nested declarations under it included — to the new
+name. It is refused (`FieldNotRenamed`) while an index is over the field (drop
+it, rename, and define it again), while another field's `ASSERT` reads it, while
+a view or an event names the table, on a vault, for a field below the top level,
+and while a record already holds a value under the new name.
+
+### Emptying a table: `TRUNCATE`
+
+```tessariql
+TRUNCATE TABLE readings;
+TRUNCATE readings;
+```
+
+Every record goes, in one transaction, and the answer says how many. The
+table stays as it was declared — its fields, its indexes (now empty), its
+grants and its events — so the next write lands in the same table. **No event
+runs for the records it removes**: a table emptied is not each of its records
+deleted. On a split table it is refused on a node holding only part of it.
+
+A topic is trimmed with `TRIM`, a series keeps its floor, a space and a bucket
+remove by key and a view holds no records, so `TRUNCATE` refuses each of them
+(`TruncateNotOnThisKind`).
+
 ### Records that expire: `EXPIRE` on a table
 
 ```tessariql
@@ -2690,9 +2777,15 @@ Four things about it, each stated rather than discovered:
 
 - **A supplied value is left alone**, including `NULL`. A default that replaced
   `null` would make `null` unwritable on any field that has one.
-- **It does not reach backwards.** Rows written before the declaration keep
-  whatever they had; a retroactive default would be a bulk rewrite hiding inside
-  a `DEFINE`.
+- **A new field gives it to the rows already there.** `DEFINE FIELD … DEFAULT`
+  and `ALTER TABLE … ADD FIELD … DEFAULT` write the default into every record
+  that leaves the field out, in the declaration's own transaction — so
+  `REQUIRED DEFAULT 0` can be added to a table that holds records, and a large
+  table is one large commit. The fill is not a write of those records by a
+  caller: it runs no event and keeps each record's expiry. Changing the default
+  of a field that already exists (`ALTER FIELD`) reaches later writes only. A
+  vault holding records refuses a field with a default, and so does a node
+  holding part of a split table.
 - **It is a value-position expression**, so a bare name is a *table* and not the
   record's field. A default cannot read the record it is filling in, which would
   be a rule about evaluation order nobody would guess.
@@ -3671,6 +3764,8 @@ UPDATE users:1 SET visits = visits + 1, seen = time::now();
 UPDATE users:1 SET address.city = 'Lyon';
 UPDATE users:1 MERGE { address: { city: 'Lyon' } };
 UPDATE users:1 SET email = 'ada2@example.com', version = 2 WHERE version = 1;
+UPDATE users SET plan = 'pro' WHERE seats > 10;
+UPDATE users MERGE { flagged: true } WHERE last_seen < datetime '2026-01-01T00:00:00Z' LIMIT 500;
 UPSERT users:1 = { name: 'ada' };
 UPSERT users:1 SET visits = 1;
 DELETE users:1;
@@ -3909,10 +4004,12 @@ shape that is genuinely slow is a table given millions of named identities from
 `1` upwards and *then* asked to generate: one statement pays for all of them.
 That table wants `IDENTITY uuid`, which needs no counter.
 
-**`UPDATE`, `UPSERT`, `DELETE`, `SET` and reads still take an address.** Each of
-them is pointing at a record that already exists, where `users:1` is the honest
-shape; only the statement that brings a record into being can be the one that does
-not name it.
+**`UPSERT`, `DELETE`, `SET` and reads by identity still take an address.** Each
+of them is pointing at a record that already exists, where `users:1` is the
+honest shape; only the statement that brings a record into being can be the one
+that does not name it. `UPDATE` and `DELETE` have a second form over a set —
+`UPDATE users SET … WHERE …` and `DELETE FROM users WHERE …` — which names a
+condition instead of an identity (*Changing a set of records*, below).
 
 ### Several records at once, at identities the store produces
 
@@ -3953,6 +4050,20 @@ a field name belongs.
 The rest is the ordinary write path — the schema, the defaults, the indexes, the
 change feed and the grants all apply. A bucket refuses it, as it refuses every
 write by hand: the records of a bucket arrive through `PUT`.
+
+**The rows may come from a read** instead of from `VALUES`:
+
+```
+INSERT INTO archive (who, total) SELECT who, total FROM orders WHERE total > 100;
+```
+
+Each record the read answers becomes one row, its projected values given to
+the columns by position — `who` to `who`, `total` to `total`, whatever they are
+called. The read names one value per column and no `*`; a different count is
+refused as a mistyped row is. It is answered whole before the first row is
+written, so inserting into the table it reads never reads its own inserts, and
+the whole statement is one transaction like any insert. A read combined by
+`UNION` answers under the first read's names throughout.
 
 ### A write answering with what it wrote
 
@@ -4362,9 +4473,30 @@ danger of colliding, and every path, projection, `WHERE`, `ORDER BY` and
 also why the two sides of `ON` are written with the table in front: they are
 routes into the row, exactly as they look. They may be written either way round.
 
-**A bare `JOIN` is inner** — a row appears only where both sides match. Decided
-now rather than later, because it cannot be decided later: if it meant *outer*,
-adding `LEFT` afterwards would change what already-written statements answer.
+**A bare `JOIN` is inner** — a row appears only where both sides match, and
+`INNER JOIN` is the same read spelled out. **The outer joins keep what nothing
+matched**:
+
+```
+SELECT * FROM users LEFT JOIN orders ON users.name = orders.who;
+SELECT * FROM users RIGHT JOIN orders ON users.name = orders.who;
+SELECT * FROM users FULL JOIN orders ON users.name = orders.who;
+```
+
+- `LEFT JOIN` answers every user: one who ordered nothing is a row holding
+  `users` alone. `RIGHT JOIN` is the same read driven from the right, so every
+  order answers and the rows carry the orders' identities. `FULL JOIN` answers
+  the left join's rows and then each right record nothing matched, alone, under
+  its own identity. `OUTER` may follow the direction and changes nothing.
+- **The side that did not match is absent from the row, never `NULL`**:
+  `orders.total` there reads `NONE`, and `WHERE orders = NONE` finds the users
+  with no order.
+- **`WHERE` is asked of the joined rows**, after matching — so `LEFT JOIN … WHERE
+  orders.total > 5` keeps only rows whose order is over five, and a user with no
+  order has no `orders.total` to be over anything.
+- A full join reads the whole right side and refuses a node holding only part
+  of it. `ASOF JOIN` takes no outer word: it already keeps a left record nothing
+  matched.
 
 **The join matches exactly what `=` matches**, which across number kinds means
 `3` matches `3.0` — see [What a comparison means](#what-a-comparison-means),
@@ -4433,6 +4565,21 @@ make a row with one half. A name given where there is no join is refused too:
 `FROM users AS u` on its own has nothing to file under `u`, and accepting a name
 a reader cannot use would be the quieter choice and the wrong one.
 
+### Joining more than two
+
+Each further `JOIN` joins its side to the rows so far, and the row stays one
+object with every side under its name:
+
+```
+SELECT * FROM users JOIN orders ON users.name = orders.who
+JOIN items ON orders.sku = items.sku;
+```
+
+The row is `{ users: …, orders: …, items: … }`. Each `ON` matches the new side to
+a side already joined, by equality, as a two-sided join does; a `WHERE` reads
+the whole row after the last side. Any join of the chain may be `LEFT`, `RIGHT`
+or `FULL`, and a name may stand in it once. `ASOF JOIN` joins two sides only.
+
 ### Reading what another read answered
 
 A `FROM` may name a read instead of a table:
@@ -4452,9 +4599,9 @@ needs `AS`, because a read has no name of its own.
 walk and no bound to push into it, so every record it answers with is held at
 once. A source that could grow without limit is therefore refused, rather than
 cut at a number nobody wrote: a silently truncated source answers a different
-question from the one that was asked and looks exactly like a complete one. It
-is the second required `LIMIT` in the language; the first bounds a conditional
-delete, and both exist because the quiet answer is the dangerous one.
+question from the one that was asked and looks exactly like a complete one.
+A read that folds the whole table into one record (`SELECT max(n) AS most FROM
+t`) answers one record and needs none.
 
 **A `WHERE` after it asks about what the read produced.** `WHERE` belongs to the
 table position — `FROM t WHERE c` — so a grouped read and a traversal had
@@ -4471,6 +4618,83 @@ SELECT * FROM (SELECT * FROM users:1->follows->users LIMIT 100) WHERE city = 'lo
 condition inside that read could have named it. The condition here narrows
 records that are already in hand; there is no access path left for it to choose,
 which is exactly why it can ask a question the inner read could not.
+
+### Naming a read: `WITH`
+
+A read may be named once and used where a table stands — in a `FROM`, on a join
+side, and in a read inside the statement:
+
+```
+WITH paris AS (SELECT * FROM users WHERE city = 'paris' LIMIT 100),
+     big AS (SELECT * FROM orders WHERE total > 8 LIMIT 1000)
+SELECT paris.name AS name, big.total AS total
+FROM paris JOIN big ON paris.name = big.who;
+```
+
+Each name stands for its read in parentheses, so everything above holds of it:
+the read states its `LIMIT`, the answer says when that ceiling was reached, and a
+`WHERE` after the name narrows what the read produced. On a join side the name
+files the side under itself unless `AS` gives another, so a named read joins
+itself as `paris AS a JOIN paris AS b`. A later name may read an earlier one; a
+name may not read itself — a bounded walk is a traversal with `DEPTH` (§4a).
+
+The name belongs to the one statement: it shadows a table of the same name for
+that statement and is gone at the `;`. A qualified name — `crm.paris` — is always
+the table.
+
+### A read beside a comparison
+
+Compared with a single value, a read that projects **exactly one named value**
+answers with that value rather than with its records:
+
+```
+SELECT * FROM users WHERE name IN (SELECT who FROM orders LIMIT 100);
+SELECT * FROM users WHERE NOT (name IN (SELECT who FROM orders LIMIT 100));
+SELECT * FROM orders WHERE total = (SELECT max(total) AS most FROM orders);
+SELECT * FROM users WHERE age < (SELECT mean(age) AS middle FROM users);
+```
+
+- **`IN` and `CONTAINS`** meet each record's value: the first line keeps the
+  users somebody ordered for.
+- **`=`, `!=`, `<`, `<=`, `>`, `>=`, `LIKE` and `ILIKE`** meet the read's one
+  value. No record answering is `NONE`, so nothing compares equal to it; several
+  answering is refused (`SubqueryNotOneValue`) rather than compared with
+  whichever came first — narrow the read, fold it, or use `IN`.
+- **Anywhere else, and against an array or a document, a read is its records**,
+  as it always was: `RETURN (SELECT n FROM t LIMIT 10) = [{ n: 1 }]` compares the
+  answer as a whole.
+
+The inner read runs once for the statement, before any record is tested, so it
+cannot name the outer record.
+
+### Combining reads: `UNION`, `INTERSECT`, `EXCEPT`
+
+```
+SELECT city FROM customers UNION SELECT city FROM suppliers;
+SELECT city FROM customers UNION ALL SELECT city FROM suppliers;
+SELECT city FROM customers INTERSECT SELECT city FROM suppliers;
+SELECT city FROM customers EXCEPT SELECT city FROM suppliers;
+```
+
+- **`UNION`** answers every record of either read, each value once; **`UNION
+  ALL`** keeps them all. **`INTERSECT`** answers the first read's records whose
+  value the second also answers, and **`EXCEPT`** those it does not; both answer
+  each value once, and `ALL` follows `UNION` only.
+- Two records are the same when their values are equal by the store's own `=`,
+  so `3` and `3.0` are one. Each record keeps its own identity — under `UNION`,
+  the first one met.
+- They apply left to right: `a UNION b EXCEPT c` is `(a UNION b) EXCEPT c`.
+- **Each read keeps its own clauses.** A `LIMIT` or an `ORDER BY` written after
+  the last read is that read's. To order or bound the combined answer, read it
+  as a source, where each read states its own bound:
+
+```
+SELECT * FROM (SELECT city FROM customers LIMIT 100 UNION SELECT city FROM suppliers LIMIT 100)
+ORDER BY city LIMIT 10;
+```
+
+The reads need not answer the same shape — an answer here is records, not
+columns — and each is read under its own grants.
 
 ### Reading a range
 
@@ -4750,13 +4974,61 @@ Parentheses override, and **two comparisons cannot be written in a row**:
 `1 < age < 100` means "between" to a person and `(1 < age) < 100` to a parser, so
 a grammar that picked one would answer a question nobody asked.
 
+### Changing a set of records
+
+`UPDATE` takes an identity, or a table and a condition:
+
+```
+UPDATE readings:1 SET checked = true;
+UPDATE readings SET checked = true WHERE stale = true;
+UPDATE readings SET value = value * 2, checked = true WHERE at < datetime '2026-01-01T00:00:00Z' LIMIT 1000;
+UPDATE readings MERGE { reviewed: { by: 'ada' } } WHERE stale = true RETURN AFTER;
+```
+
+**The target says which form it is.** `readings:1` names one record and its
+`WHERE` is a compare-and-set that refuses when the record does not say what the
+condition asserts; `readings` names a kind, and its `WHERE` is a **filter** — a
+record the condition does not hold for is left alone, and a set nothing matches
+answers `0`. The answer is how many records changed, or, with `RETURN BEFORE` /
+`RETURN AFTER`, the records as they stood or as they became, each with its
+identity.
+
+**The `WHERE` is required and the bound is not.** `UPDATE readings SET x = 1;` is
+refused naming `WHERE`: the condition is the clause whose absence would change a
+whole table. `LIMIT n` changes at most that many matches, and `LIMIT ALL` — or no
+`LIMIT` at all — changes every match. The bound counts records **changed**, never
+records examined, for the reason the conditional delete's does (below).
+
+**`SET` and `MERGE` only.** `UPDATE readings = { … } WHERE …` is refused: a whole
+value over a set would replace every matched record with one object and drop every
+field it does not name on all of them.
+
+**Every rule a record update obeys holds for each record.** The edit runs through
+the same path — field types, `ASSERT`, `REQUIRED` and `DEFAULT`, the table's
+events (`$event` is `'UPDATE'` for each), expiry (a plain set write keeps each
+record's instant; `EXPIRE …` sets it on every match) — and the whole set is one
+transaction, so a refusal on the hundredth record leaves the first ninety-nine as
+they were. The records are found the way a read finds them, so an index serves
+the condition, and the whole matched set is held before the first edit: an edit
+that moves an indexed field is never met again by the walk that found it.
+
+**The condition reads what you may read; the edit writes the record as stored.**
+A field grant that hides a field hides it from the condition, as it does from a
+`SELECT`; the edit still keeps every hidden field, because it is applied to the
+stored record rather than to the view of it.
+
+**Refused on a vault** (`VaultUpdatedByCondition`): deciding which secrets to
+change would mean opening them; a vault's records change by identity. Refused on a
+bucket (write a file with `PUT`), and on a node holding only part of a split table,
+as a set delete is.
+
 ### Removing a range
 
 `DELETE` takes an identity; `DELETE FROM … WHERE` takes a condition:
 
 ```
 DELETE readings:1;
-DELETE FROM readings WHERE at < datetime '2026-01-01T00:00:00Z' LIMIT ALL;
+DELETE FROM readings WHERE at < datetime '2026-01-01T00:00:00Z';
 DELETE FROM readings WHERE at < datetime '2026-01-01T00:00:00Z' LIMIT 1000;
 ```
 
@@ -4768,8 +5040,8 @@ that removes rows should not be one word away from a typo.
 wants:
 
 ```
-DELETE FROM readings:1..1000 LIMIT ALL;
-DELETE FROM readings:$oldest..$cutoff LIMIT ALL;
+DELETE FROM readings:1..1000;
+DELETE FROM readings:$oldest..$cutoff;
 DELETE FROM readings:1..=1000 LIMIT 500;
 ```
 
@@ -4786,13 +5058,10 @@ condition decides. A span narrows nothing — it *is* the set the statement name
 — so there is nothing left to decide. Allowing both in one statement would put
 two rules in one place and make the answer depend on which the reader believed.
 
-**The bound is required too.** A conditional delete carries either `LIMIT n` or
-`LIMIT ALL`, and a statement carrying neither is refused before it runs. One of the
-two `LIMIT`s in the language that are not optional — the other bounds a
-materialised source — and the asymmetry against an ordinary read is deliberate:
-a read that omits a bound answers with more rows than the caller expected, while
-a delete that omits one empties a table. `LIMIT ALL` costs one
-word and is how a retention policy says the whole matched set is what it meant.
+**The bound is optional.** `LIMIT n` removes at most that many matches; `LIMIT
+ALL`, or no `LIMIT` at all, removes every match. Until `0.38.0` the bound was
+required; what guards a whole table is the condition, which stays required —
+`DELETE FROM readings;` is refused naming `WHERE`.
 
 `LIMIT n` bounds **what is removed**, never what is examined. The condition
 decides first and the bound applies to the records that satisfied it, so a
@@ -5069,6 +5338,7 @@ SELECT city, count(*) AS n FROM users GROUP BY city ORDER BY n DESC LIMIT 3;
 |---|---|
 | `count(*)` | how many records |
 | `count(<expr>)` | how many records where that is present and not `NULL` |
+| `count(DISTINCT <expr>)` | how many **distinct** present values, exactly, by `=` (so `3` and `3.0` are one); over nothing, `0` |
 | `sum(<expr>)` | the total; over nothing, `0` |
 | `mean(<expr>)` | the average; over nothing, `NONE` |
 | `min(<expr>)` / `max(<expr>)` | the smallest and largest, in the value system's order |
@@ -5086,6 +5356,9 @@ read, and every answer that used one carries a note:
 SELECT page, approx_distinct(visitor) AS users, approx_quantile(ms, 0.99) AS p99 FROM visits GROUP BY page;
 ```
 
+- **`count(DISTINCT x)`** is the exact answer and holds every distinct value of its group to give it: a group with
+  more than 1 000 000 is refused (`DistinctTooMany`) rather than grown without bound. `approx_distinct` is the fold
+  for when that is too many. `count(DISTINCT *)` is refused — `count(*)` already counts records.
 - **`approx_distinct`** keeps the exact set of values up to 1 024 of them. Past that it keeps a HyperLogLog of
   16 384 registers, with a standard error of about 0.8 %; measured over a million values, the answer stayed within
   2.5 %.
@@ -5168,8 +5441,21 @@ fold over.
 
 **A fold stands in a projection and nowhere else.** In a `WHERE`, an `ORDER BY`
 or a `GROUP BY` key it is refused, and the refusal says what it would be rather
-than reporting a stray token: a filter over *groups* is `HAVING`, which is a
-second filter position with its own scoping rule and is listed in §8.
+than reporting a stray token: a filter over *groups* is `HAVING`.
+
+**`HAVING` keeps the groups a condition holds for**:
+
+```
+SELECT who, count(*) AS n FROM orders GROUP BY who HAVING count(*) > 1;
+SELECT who, sum(total) AS spent FROM orders GROUP BY who HAVING spent < 12;
+SELECT city, count(*) AS n FROM users GROUP BY city HAVING city != 'paris' AND n > 2;
+```
+
+It follows `GROUP BY` and is read once per group, after the folds: it may hold
+folds of its own, name what the projection answers under, and read a group key
+by its name. Only `true` keeps a group, as only `true` keeps a record in a
+`WHERE`. Without a `GROUP BY` it is refused, and so is a `HAVING` beside `FILL`,
+which answers every window of its range by design.
 
 **Every fold but `count(*)` passes over absent and `NULL`**, so `count(*)` and
 `count(email)` are two questions worth having both of. **Sum over nothing is
@@ -5208,6 +5494,51 @@ rather than being broken by it: `array::len` counts one record's array and
 Only `count(` is a fold — a bare `count` is a route into the record, so a field
 named `count` stays readable.
 
+### A value from the records around one: `OVER`
+
+A window function answers, for each record, something about the records beside
+it — its place among them, a neighbour's value, a running total — and keeps every
+record, where a grouping would fold them into one:
+
+```
+SELECT day, amount,
+       row_number() OVER (PARTITION BY region ORDER BY day) AS n,
+       sum(amount) OVER (PARTITION BY region ORDER BY day) AS running,
+       lag(amount, 1, 0) OVER (PARTITION BY region ORDER BY day) AS before
+FROM sales;
+```
+
+`PARTITION BY` computes records with equal keys together, and without it every
+record is one partition. `ORDER BY` inside the parentheses is the order the
+partition is walked in, ties broken by identity as a read's own order is.
+
+| function | answers |
+|---|---|
+| `row_number()` | the record's position in its partition, from 1 |
+| `rank()` | the position of the first record holding the same order keys — ties share it and the next rank skips |
+| `dense_rank()` | as `rank()`, with no skip |
+| `lag(v [, n [, default]])` | `v` of the record `n` (a whole number, 1 unwritten) before this one, else `default` (`NONE` unwritten) |
+| `lead(v [, n [, default]])` | the same, after |
+| `first_value(v)` | `v` of the first record of the frame |
+| `last_value(v)` | `v` of the last record of the frame |
+| `count`, `sum`, `mean`, `min`, `max` | the fold over the frame, with the fold's own rules — `count(*)` counts records |
+
+**The frame** runs from the partition's first record to the current one when the
+window is ordered, and is the whole partition when it is not. So
+`sum(x) OVER (ORDER BY day)` is a running total and `sum(x) OVER ()` the total on
+every record; with an order, `last_value` is the current record's own value.
+Records tied on the order keys are in the frame one at a time, in identity order.
+
+**It is computed after the `WHERE` and before the read's own `ORDER BY`, `START`
+and `LIMIT`**, so a window's value is about every record the read kept, never
+about the page answered: `… ORDER BY n DESC LIMIT 1` answers the record whose `n`
+is largest. A read with a window therefore holds the records the `WHERE` kept —
+no bound reaches its source and no index ordering stops it early.
+
+A window is a whole projected value and answers under the name `AS` gives it; it
+may be ordered by that name. It is refused beside `GROUP BY` or a fold, whose rows
+are groups rather than records, and over a search or beside `ORDER BY FUSE`.
+
 ### Order, and how much of it
 
 ```
@@ -5240,6 +5571,20 @@ does not make: **`NONE` sorts below `NULL` sorts below every present value.** A
 comparison against a non-value has no answer, so `age < 18` is false for a
 record with no age; a *sort* has to put every row somewhere, and where is better
 stated than left to whichever row the scan happened to reach first.
+
+**`NULLS FIRST` and `NULLS LAST` move them**, `NONE` and `NULL` together and in
+that order, to the start or the end of a key's order:
+
+```
+SELECT * FROM tasks ORDER BY due NULLS LAST;
+SELECT * FROM tasks ORDER BY due DESC NULLS FIRST LIMIT 10;
+```
+
+Without either word the absences are lowest — first ascending, last descending —
+so `ORDER BY due NULLS FIRST` and `ORDER BY due DESC NULLS LAST` are the same
+order as writing neither. One that moves them is sorted rather than walked from an
+index or handed to a split table's leaders, because those yield the declared
+order.
 
 **Ties are broken by the record's identity**, which is unique — so the same query
 over the same data answers in the same order every time, whatever access path
@@ -8353,6 +8698,36 @@ CANCEL;
 
 A statement outside `BEGIN` is its own transaction.
 
+### Rolling back part of a transaction: `SAVEPOINT`
+
+```
+BEGIN;
+  CREATE orders:1 = { total: 10 };
+  SAVEPOINT priced;
+  UPDATE orders:1 SET total = 12;
+  ROLLBACK TO priced;
+  SAVEPOINT shipped;
+  UPDATE orders:1 SET shipped = true;
+  RELEASE SAVEPOINT shipped;
+COMMIT;
+```
+
+`SAVEPOINT name` marks a place inside the open transaction. `ROLLBACK TO name`
+(also `ROLLBACK TO SAVEPOINT name`) discards what the transaction did after it
+and keeps the savepoint, so it can be rolled back to again; every later
+savepoint goes. `RELEASE SAVEPOINT name` forgets the savepoint and every later
+one and keeps their work. A name given again marks a newer place, and the
+newest one of a name is the one meant. Savepoints exist only inside
+`BEGIN … COMMIT` (`SavepointOutsideATransaction`), and a name the transaction
+does not hold is `NoSuchSavepoint`.
+
+**Two things a rollback cannot give back**, and it refuses rather than undo
+half: a queue claim taken since the savepoint, which the store holds for the
+transaction until it ends, and work handed to other leaders —
+`SavepointCrossesClaim`, with nothing rolled back. A topic message appended
+since is a buffered write like any other and goes with the rollback: its
+position is decided at the commit.
+
 ### Trying a write without making it
 
 `VERIFY` is the third way to close a transaction. It runs every check a `COMMIT`
@@ -10529,7 +10904,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.37.1", "build": "0.37.1", "endpoints": ["db-1.internal:9000"],
+ "version": "0.38.0", "build": "0.38.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],
@@ -10778,6 +11153,12 @@ whose reasons had been false for several releases without anybody reading them:
 account changes — and **rate-limiting a sign-in**, which a node does per name
 with a doubling wait (`SignInThrottled`), its counts kept per store.
 
+Two left in `0.38.0`. **A set `UPDATE`**, disproved by `UPDATE readings SET
+checked = true WHERE stale = true` (§5, *Changing a set of records*), and the row
+that asked whether a set delete's bound should become optional — answered by the
+owner rather than built: `DELETE FROM readings WHERE stale = true` removes every
+match, the condition stays required, and `LIMIT ALL` still parses.
+
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
@@ -10806,10 +11187,10 @@ with a doubling wait (`SignInThrottled`), its counts kept per store.
 | a parameter inside a stored expression — a field's `DEFAULT` | a stored expression is evaluated on every write that omits the field, so it belongs to no call and there is nobody to bind it. Refused where it is declared rather than surprising a write months later |
 | a field grant on a **nested** route | a grant names a field of a table; `address.city` is a route into a value, and hiding one means rebuilding the object around it rather than dropping a key. Top-level only, so that a half-answer does not look like a whole one |
 | a field grant that limits **writing** | `FIELDS` narrows reading, and a write replaces a whole record — limiting which fields a write may set is a merge semantic the language does not have |
-| `LEFT`, `RIGHT` and `FULL` joins | a bare `JOIN` is inner, chosen so that these stay purely additive: an outer qualifier added later changes no statement already written |
 | a join on anything but an equality, or on more than one pair | `ON a.x = b.y` is what an index can serve and what a map can be keyed by; a join predicate that is neither is a nested loop with a filter, which is the shape the equality was chosen to avoid |
 | a join of more than two tables | the row is `{ left: …, right: … }`, so a third side is a shape decision (nest or flatten) and an order decision, and neither is worth taking before something needs it |
 | `FETCH` through something already fetched, and cycles | one level, so the work is bounded by the references the answer already holds — one request, whatever their number — and a cycle is impossible rather than handled |
+| a **recursive** `WITH` — a named read that reads itself | a bounded walk is a traversal with `DEPTH` or `PATH TO` (§4a), whose cost the statement states; a recursive read is a fixpoint with no bound written anywhere, and its termination would be a property of the data rather than of the statement. `WITH` names reads that do not refer to themselves (§5) |
 | a variable-length traversal (`->{1..3}`), a filter inside a traversal (`PATH TO` answers the shortest path, §4a) | a written-out chain is a fixed number of steps the reader can count. A bound turns the walk into a search with a termination rule, a frontier and an answer that may or may not include the shorter paths — a language surface to design once rather than a clause |
 | a traversal whose arrows change direction | `a->follows->users<-follows<-users` — "who follows somebody ada follows" — is a real question, and a useful one. It needs a rule for what each step's anchor *is* when the direction turns, and a chain where every arrow reads the same way is the one a reader can follow without one |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |
@@ -10821,10 +11202,8 @@ with a doubling wait (`SignInThrottled`), its counts kept per store.
 | a **multikey index over two multi-valued routes** | the entries would be one per pair of elements, paid on every write. Worth building when somebody has the query that needs it, so the cost is paid for a reason. §4 |
 | `[*]` on the right of a comparison, or twice in one route | the first is the same question written backwards, and a second spelling for one thing is what this language keeps refusing; the second composes two relations and needs a rule for what that means |
 | declaring a type on a path | `DEFINE FIELD address.city TYPE string` needs a rule for what declaring a leaf says about its parents, and `SCHEMAFULL` would have to mean "no undeclared path" rather than "no undeclared field" |
-| `HAVING` | a filter over groups is a second filter position with its own scoping rule — it sees folds where `WHERE` does not — and is worth its own milestone rather than an afterthought. A fold written in a `WHERE` is refused by name rather than as a stray token, so the message says which of the two the author wanted |
-| `DISTINCT` | it is `GROUP BY` over the projection with no fold, and one spelling for one thing. **Both positions it is asked for already have a spelling, and each is now pinned by a case rather than by this sentence:** the distinct set is `SELECT city FROM people GROUP BY city` (and `GROUP BY city, name` for the distinct pairs), and how many there are is that grouping counted — `SELECT count(*) AS cities FROM (SELECT city FROM people GROUP BY city LIMIT 100)`. The bound on the inner read is not friction added here; it is the rule every materialised source obeys (§5) |
+| `DISTINCT` | it is `GROUP BY` over the projection with no fold, and one spelling for one thing. **Both positions it is asked for already have a spelling, and each is now pinned by a case rather than by this sentence:** the distinct set is `SELECT city FROM people GROUP BY city` (and `GROUP BY city, name` for the distinct pairs), and how many there are is `SELECT count(DISTINCT city) AS cities FROM people` (§5, *One answer per group*) |
 | **a retention policy declared on an ordinary table** | **built for one table kind and still refused for the rest.** `DEFINE SERIES … RETAIN` declares a floor and the objection above is answered rather than waived: what is past the floor stops being *answered with* immediately, which is a read applying a rule and not a deletion nobody asked for, and the removal that follows is a pass with no schedule — so nothing deletes anything at three in the morning unless an operator ran it. On a table that declares no floor a policy is still `DELETE FROM … WHERE`, because a floor that every read must apply is a cost every read on every table would pay for a property most tables do not want. See [A table whose answer has a floor](#a-table-whose-answer-has-a-floor) |
-| an **unbounded** delete | inverted, and this row is what it inverted to. `LIMIT n` and `LIMIT ALL` are both built and the bound is *required*, so the question the row was avoiding — what a half-applied policy means — is answered by making the author say which they meant. What is still open is whether the bound should become optional with full removal as the default; it is a decision and not a gap |
 | filling a window that has no records | grouping answers with the groups the data has; filling a gap means knowing the range the caller meant, which the statement does not say |
 | a sub-second window | `time::bucket` takes a whole number of seconds; the nanosecond remainder is a different arithmetic and is refused rather than rounded |
 | a spilling aggregate | **narrowed by measurement, and by a smaller part of it than this row used to claim.** A fold holds one accumulator per group and not one value per record, so what a fold costs is set by how many groups there are and not by how many records went into them — every fold this store has is computable one value at a time. What is still built in memory is the **group map**, so grouping by a field with more distinct values than fit needs a spill, and so would a fold that cannot be computed incrementally, of which there is none. Note that this did not move a grouping read's peak: the fold frees each record as it folds it, so the peak is the source's materialised vector, exactly as it is for the two rows above |
@@ -10858,7 +11237,7 @@ with a doubling wait (`SignInThrottled`), its counts kept per store.
 | Every fold but `count(*)` passes over absent and null | **contract** |
 | A fold is an expression, so it composes | **contract** — one shape for a fold in the tree, and `mean(age) * 2` is arithmetic over the value it produced |
 | A fold's value is constant within its group | **contract** — computed once per group and substituted, so the composition is evaluated by the same code that evaluates any other arithmetic |
-| A fold stands in a projection and nowhere else | **contract** — a filter and an ordering are per record, and what a fold there would mean is `HAVING` |
+| A fold stands in a projection or a `HAVING` and nowhere else | **contract** — a `WHERE` and an ordering are per record, and a filter over folds is `HAVING` |
 | Sum over nothing is `0`; mean over nothing is `NONE` | **contract** |
 | A sort is the value system's order, with `NONE` below `NULL` below every value | **contract** — a sort must place every row, where a comparison may decline to |
 | Ties are broken by record identity | **contract** — what keeps an added index from reordering equal rows |

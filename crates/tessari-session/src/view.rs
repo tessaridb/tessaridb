@@ -117,6 +117,9 @@ impl Session<'_> {
         for ordering in &mut read.order {
             changed |= self.expand_expr(store, &mut ordering.key, chain).await?;
         }
+        for next in &mut read.combined {
+            changed |= Box::pin(self.expand_read(store, &mut next.read, chain)).await?;
+        }
         Ok(changed)
     }
 
@@ -176,6 +179,7 @@ impl Session<'_> {
                 left_key,
                 right_key,
                 asof,
+                outer,
                 mut condition,
             } => {
                 let mut changed = self.expand_join_side(store, &mut left, chain).await?;
@@ -190,6 +194,7 @@ impl Session<'_> {
                         left_key,
                         right_key,
                         asof,
+                        outer,
                         condition,
                     },
                     changed,
@@ -222,6 +227,15 @@ impl Session<'_> {
             // v LIMIT n) AS x JOIN …` is how a view joins, and it is written.
             JoinSide::Table { .. } => Ok(false),
             JoinSide::Read { read, .. } => self.expand_read(store, read, chain).await,
+            // The join so far: each of its sides, as the outer join's are.
+            JoinSide::Joined(join) => match join.as_mut() {
+                Source::Join { left, right, .. } => {
+                    let left = Box::pin(self.expand_join_side(store, left, chain)).await?;
+                    let right = Box::pin(self.expand_join_side(store, right, chain)).await?;
+                    Ok(left || right)
+                }
+                _ => Ok(false),
+            },
         }
     }
 

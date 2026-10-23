@@ -37,6 +37,20 @@ pub(super) fn erase_select(select: &mut Select) {
     if let Some(fusion) = &mut select.fusion {
         fusion.span = CANONICAL;
     }
+    if let Some(at) = &mut select.having {
+        *at = CANONICAL;
+    }
+    for window in &mut select.windows {
+        window.span = CANONICAL;
+        window.name.span = CANONICAL;
+        for expr in window.expressions_mut() {
+            erase_expr(expr);
+        }
+    }
+    for next in &mut select.combined {
+        next.span = CANONICAL;
+        erase_select(&mut next.read);
+    }
 }
 
 /// What a `FROM` names.
@@ -68,6 +82,7 @@ pub(super) fn erase_source(source: &mut Source) {
             left_key,
             right_key,
             asof: _,
+            outer: _,
             condition,
         } => {
             erase_join_side(left);
@@ -114,6 +129,7 @@ pub(super) fn erase_join_side(side: &mut JoinSide) {
             erase_select(read);
             erase_name(alias);
         }
+        JoinSide::Joined(join) => erase_source(join),
     }
 }
 

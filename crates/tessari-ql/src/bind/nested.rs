@@ -190,6 +190,14 @@ pub(crate) fn bind_select(select: &mut Select, binding: &Binding<'_>) -> Result<
     for ordering in &mut select.order {
         bind_expr(&mut ordering.key, binding)?;
     }
+    for window in &mut select.windows {
+        for expr in window.expressions_mut() {
+            bind_expr(expr, binding)?;
+        }
+    }
+    for next in &mut select.combined {
+        bind_select(&mut next.read, binding)?;
+    }
     Ok(())
 }
 

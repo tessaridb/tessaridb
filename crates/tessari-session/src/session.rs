@@ -128,6 +128,8 @@ pub struct Session<'a> {
     /// lets its `COMMIT` reach across leaders as though the `COMMIT` had said
     /// it (ADR-0112 D1).
     pub(crate) across_open: bool,
+    /// The savepoints the open transaction holds, oldest first (ADR-0134 D11).
+    pub(crate) savepoints: Vec<(String, tessari_storage::Savepoint)>,
     /// How many events deep this session runs: zero for a caller's session,
     /// one more for each event body a write ran (ADR-0110 D5).
     pub(crate) event_depth: u8,
@@ -175,6 +177,7 @@ impl<'a> Session<'a> {
             sink: crate::backup_to::Sink::none(),
             landed: false,
             acknowledge_open: None,
+            savepoints: Vec::new(),
             across_open: false,
             event_depth: 0,
             now: std::time::SystemTime::now(),

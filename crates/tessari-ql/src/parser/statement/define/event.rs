@@ -155,6 +155,7 @@ impl Parser<'_> {
                 | StatementKind::Delete { .. }
                 | StatementKind::DeleteEdge { .. }
                 | StatementKind::DeleteWhere { .. }
+                | StatementKind::UpdateWhere { .. }
                 | StatementKind::DeleteSpan { .. }
                 | StatementKind::Relate { .. }
                 | StatementKind::Set { .. }

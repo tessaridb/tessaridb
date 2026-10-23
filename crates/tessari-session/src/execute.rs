@@ -29,9 +29,14 @@ mod expiry;
 mod fields;
 mod format;
 mod partitions;
+mod references;
 mod relations;
+mod rename;
+mod rename_field;
+mod set_update;
 mod tables;
 mod topic_consumer;
+mod truncate;
 mod vault_custody;
 mod vaults;
 mod writes;
@@ -380,23 +385,40 @@ impl Session<'_> {
                 default,
                 analyzer,
                 assert,
+                references,
                 if_not_exists,
             } => {
-                self.define_field(
-                    transaction,
-                    name,
-                    table,
-                    kind.clone(),
-                    FieldShape {
-                        required: *required,
-                        secret: *secret,
-                        default: default.as_ref().map(|written| written.text.clone()),
-                        analyzer: analyzer.as_ref().map(|named| named.text.clone()),
-                        assert: assert.clone(),
-                    },
-                    *if_not_exists,
-                )
-                .await
+                let references = match references {
+                    Some(reference) => Some(
+                        self.resolved_reference(transaction, table, kind, reference)
+                            .await?,
+                    ),
+                    None => None,
+                };
+                let added = self
+                    .add_field(
+                        transaction,
+                        name,
+                        table,
+                        kind.clone(),
+                        FieldShape {
+                            required: *required,
+                            secret: *secret,
+                            default: default.as_ref().map(|written| written.text.clone()),
+                            analyzer: analyzer.as_ref().map(|named| named.text.clone()),
+                            assert: assert.clone(),
+                            references,
+                        },
+                        *if_not_exists,
+                    )
+                    .await?;
+                if references.is_some() {
+                    let (_, id) = self.resolve_table(transaction, table).await?;
+                    if let Some(field) = self.field_definition(transaction, id, name).await? {
+                        self.note_reference(transaction, &field, true).await?;
+                    }
+                }
+                Ok(added)
             }
             StatementKind::DefineAnalyzer {
                 name,
@@ -653,6 +675,9 @@ impl Session<'_> {
             StatementKind::DropField { name, table } => {
                 let (_, id) = self.resolve_table(transaction, table).await?;
                 let field = self.field_named(transaction, id, name).await?;
+                if let Some(held) = self.field_definition(transaction, id, name).await? {
+                    self.note_reference(transaction, &held, false).await?;
+                }
                 Catalog::new(transaction).drop_field(field).await?;
                 Ok(Outcome::Done)
             }
@@ -720,7 +745,13 @@ impl Session<'_> {
                     .await
             }
             StatementKind::DropTable { table } => {
+                self.not_referenced(transaction, table, "dropped").await?;
                 let (context, id) = self.resolve_table(transaction, table).await?;
+                // Its own references go with it, so the tables they named stop
+                // listing them.
+                for field in Catalog::new(transaction).declared_fields(id).await? {
+                    self.note_reference(transaction, &field, false).await?;
+                }
                 // A bucket's bytes live in a companion table `DEFINE BUCKET`
                 // created alongside it, and whose name carries a byte no
                 // identifier can hold — so nothing can drop it by naming it, and
@@ -834,31 +865,65 @@ impl Session<'_> {
                 default,
                 analyzer,
                 assert,
+                using,
             } => {
                 let (_, id) = self.resolve_table(transaction, table).await?;
                 let field = self.field_named(transaction, id, name).await?;
+                // A reference the field held stays with it (ADR-0134 D10).
+                let previous = self.field_definition(transaction, id, name).await?;
+                let references = previous.as_ref().and_then(|held| held.references);
+                if let Some(held) = &previous {
+                    self.note_reference(transaction, held, false).await?;
+                }
+                if references.is_some() && *kind != tessari_types::FieldKind::Record {
+                    return Err(Error::ReferenceRefused {
+                        why: "a field holding a reference to stay `TYPE record` — drop the field \
+                              to change what it holds"
+                            .to_owned(),
+                        span,
+                    });
+                }
                 Catalog::new(transaction).drop_field(field).await?;
-                self.define_field(
-                    transaction,
-                    name,
-                    table,
-                    kind.clone(),
-                    FieldShape {
-                        required: *required,
-                        secret: false,
-                        default: default.as_ref().map(|written| written.text.clone()),
-                        analyzer: analyzer.as_ref().map(|named| named.text.clone()),
-                        assert: assert.clone(),
-                    },
-                    false,
-                )
-                .await
+                let defined = self
+                    .define_field(
+                        transaction,
+                        name,
+                        table,
+                        kind.clone(),
+                        FieldShape {
+                            required: *required,
+                            secret: false,
+                            default: default.as_ref().map(|written| written.text.clone()),
+                            analyzer: analyzer.as_ref().map(|named| named.text.clone()),
+                            assert: assert.clone(),
+                            references,
+                        },
+                        false,
+                    )
+                    .await?;
+                if let Some(field) = self.field_definition(transaction, id, name).await? {
+                    self.note_reference(transaction, &field, true).await?;
+                }
+                // `USING` rewrites the stored values the new declaration then
+                // holds at the commit (ADR-0134 D9).
+                match using {
+                    Some(using) => self.convert_field(transaction, table, name, using).await,
+                    None => Ok(defined),
+                }
             }
             StatementKind::AlterTable { table, change } => {
                 let (_, id) = self.resolve_table(transaction, table).await?;
                 // ADR-0095: the definition is written here and the map reaches
                 // the registry when this commit lands, under the write gate.
                 match change {
+                    TableChange::Rename(to) => {
+                        return self.rename_table(transaction, table, to, span).await;
+                    }
+                    TableChange::RenameField { from, to } => {
+                        return self
+                            .rename_field(transaction, table, (from, to), span)
+                            .await;
+                    }
                     TableChange::Split(points) => {
                         let mut catalog = Catalog::new(transaction);
                         for point in points {
@@ -1045,6 +1110,7 @@ impl Session<'_> {
                 table,
                 columns,
                 rows,
+                read,
                 expire,
                 answer,
                 partition,
@@ -1052,11 +1118,17 @@ impl Session<'_> {
                 if *answer == Answer::Position {
                     self.must_be_a_topic(transaction, table).await?;
                 }
+                // `INSERT … SELECT`: the read is answered whole before the first
+                // row is written, so it never meets its own inserts (ADR-0134 D7).
+                let selected = match read {
+                    Some(read) => Some(self.selected_rows(transaction, read).await?),
+                    None => None,
+                };
                 self.insert(
                     transaction,
                     (table, partition.as_ref()),
                     columns,
-                    rows,
+                    selected.as_deref().unwrap_or(rows),
                     expire.as_ref(),
                     span,
                 )
@@ -1110,26 +1182,38 @@ impl Session<'_> {
                         });
                     }
                 }
-                let (payload, partial) = self
-                    .applied(transaction, edit, before.clone(), target.span)
+                let payload = self
+                    .edit_stored(
+                        transaction,
+                        &address,
+                        (edit, before.clone()),
+                        settled,
+                        (target.span, span),
+                    )
                     .await?;
-                // One rule rather than two: the result of either shape is a
-                // record being written, so `REQUIRED` + `DEFAULT` keeps meaning
-                // "this field always holds a value" even when a caller sets one
-                // to `none`.
-                let (payload, partial) = self
-                    .defaults_over(transaction, address.table, payload, partial)
-                    .await?;
-                self.put_record_sealing(
-                    transaction,
-                    address.clone(),
-                    payload.clone(),
-                    partial.as_ref(),
-                    span,
-                )
-                .await?;
-                expiry::settle_write_expiry(transaction, &address, settled);
                 Ok(answered(*answer, before, payload))
+            }
+            StatementKind::UpdateWhere {
+                table,
+                edit,
+                condition,
+                limit,
+                expire,
+                answer,
+            } => {
+                self.update_where(
+                    transaction,
+                    set_update::SetUpdate {
+                        table,
+                        edit,
+                        condition,
+                        limit: *limit,
+                        expire: expire.as_ref(),
+                        answer: *answer,
+                        span,
+                    },
+                )
+                .await
             }
             // Neither `CREATE`'s "it must be absent" nor `UPDATE`'s "it must be
             // present". A record that is not there starts as an empty object, so
@@ -1266,6 +1350,7 @@ impl Session<'_> {
                 self.delete_where(transaction, table, condition, (*limit, *answer))
                     .await
             }
+            StatementKind::Truncate { table } => self.truncate(transaction, table).await,
             StatementKind::DeleteSpan {
                 table,
                 lower,
@@ -1799,6 +1884,9 @@ impl Session<'_> {
             StatementKind::Begin
             | StatementKind::Commit
             | StatementKind::Cancel
+            | StatementKind::Savepoint { .. }
+            | StatementKind::RollbackTo { .. }
+            | StatementKind::ReleaseSavepoint { .. }
             | StatementKind::Verify
             | StatementKind::Use { .. } => Ok(Outcome::Done),
         }

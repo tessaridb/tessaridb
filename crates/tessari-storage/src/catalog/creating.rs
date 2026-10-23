@@ -223,6 +223,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             auto_split: None,
             events: Vec::new(),
             expire: None,
+            referenced_by: Vec::new(),
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

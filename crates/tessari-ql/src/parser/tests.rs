@@ -104,7 +104,10 @@ fn a_feature_the_store_has_is_not_reported_absent() {
 /// being absent, which is what §8 actually says.
 #[test]
 fn a_word_naming_an_absent_feature_still_names_it() {
-    assert_eq!(absent_feature("having"), Some("filtering groups"));
+    assert_eq!(
+        absent_feature("permissions"),
+        Some("a `PERMISSIONS` clause — field access is granted with `GRANT … FIELDS`")
+    );
     assert_eq!(
         absent_feature("OFFSET"),
         Some("a second spelling for `START`")

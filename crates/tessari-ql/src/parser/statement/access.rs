@@ -108,6 +108,21 @@ impl Parser<'_> {
                     table,
                 });
             }
+            // ADR-0134 D9. `rename` contextual, as every verb here but `ALTER`.
+            if self.eat_word("rename") {
+                let change = if self.eat_keyword(Keyword::Field) {
+                    let from = self.declared_field_name()?;
+                    self.expect_keyword(Keyword::To, "`TO` and the field's new name")?;
+                    TableChange::RenameField {
+                        from,
+                        to: self.declared_field_name()?,
+                    }
+                } else {
+                    self.expect_keyword(Keyword::To, "`TO` and the table's new name, or `FIELD`")?;
+                    TableChange::Rename(self.name()?)
+                };
+                return Ok(StatementKind::AlterTable { table, change });
+            }
             // ADR-0095. `split` and `at` contextual, as in `DEFINE TABLE`; a
             // point is a literal for the reason `split_points` gives.
             if self.eat_word("split") {

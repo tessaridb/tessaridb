@@ -100,7 +100,7 @@ pub(crate) fn scored(select: &Select) -> Option<Scored<'_>> {
     let [ordering] = select.order.as_slice() else {
         return None;
     };
-    if !ordering.descending {
+    if !ordering.descending || !ordering.in_declared_order() || !select.windows.is_empty() {
         return None;
     }
     let ExprKind::Call {
@@ -170,8 +170,10 @@ pub(crate) fn scored(select: &Select) -> Option<Scored<'_>> {
 /// `FETCH` is allowed through: it maps one record to one record.
 pub(crate) fn bound(select: &Select) -> Option<usize> {
     // A read keeping the newest record per key must see every record before
-    // it keeps any, so no walk that answers early and no bound may serve it.
-    if select.latest.is_some() {
+    // it keeps any, so no walk that answers early and no bound may serve it —
+    // and a window computes over every record the read keeps, for the same
+    // reason (ADR-0134 D13).
+    if select.latest.is_some() || !select.windows.is_empty() {
         return None;
     }
     if !select.group.is_empty() || !select.order.is_empty() {

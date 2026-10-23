@@ -3,7 +3,9 @@
 use super::Parser;
 use tessari_types::{FieldKind, Number};
 
-use crate::ast::{Approximation, ColumnDeclaration, Name, StatementKind, TableRef};
+use crate::ast::{
+    Approximation, ColumnDeclaration, Name, OnDelete, Reference, StatementKind, TableRef,
+};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
 
@@ -73,6 +75,21 @@ impl Parser<'_> {
     ) -> Result<StatementKind> {
         self.expect_keyword(Keyword::Type, "`TYPE` and what the field may hold")?;
         let kind = self.field_kind()?;
+        let references = self.references_clause()?;
+        if let (true, Some(reference)) = (replacing, &references) {
+            return Err(Error::Unsupported {
+                feature: "a reference declared by `ALTER FIELD` — declare it with `DEFINE FIELD`; \
+                          altering a field that holds one keeps it",
+                span: reference.span,
+            });
+        }
+        // `USING` rewrites the stored values into the new type, and only an
+        // `ALTER` has stored values to rewrite (ADR-0134 D9).
+        let using = if replacing && self.eat_word("using") {
+            Some(Box::new(self.condition()?))
+        } else {
+            None
+        };
         let marker = self.span_here();
         let FieldOptions {
             required,
@@ -102,6 +119,7 @@ impl Parser<'_> {
                 default,
                 analyzer,
                 assert,
+                using,
             });
         }
         Ok(StatementKind::DefineField {
@@ -113,8 +131,39 @@ impl Parser<'_> {
             default,
             analyzer,
             assert,
+            references,
             if_not_exists,
         })
+    }
+
+    /// `REFERENCES t [ON DELETE REJECT | CASCADE | UNSET]`, when it is there.
+    fn references_clause(&mut self) -> Result<Option<Reference>> {
+        let start = self.span_here();
+        if !self.eat_word("references") {
+            return Ok(None);
+        }
+        let table = self.name()?;
+        let on_delete = if self.eat_keyword(Keyword::On) {
+            if !self.eat_keyword(Keyword::Delete) {
+                return Err(self.error_here("`DELETE` after `ON`"));
+            }
+            if self.eat_word("reject") {
+                OnDelete::Reject
+            } else if self.eat_word("cascade") {
+                OnDelete::Cascade
+            } else if self.eat_word("unset") {
+                OnDelete::Unset
+            } else {
+                return Err(self.error_here("`REJECT`, `CASCADE` or `UNSET`"));
+            }
+        } else {
+            OnDelete::Reject
+        };
+        Ok(Some(Reference {
+            table,
+            on_delete,
+            span: start.to(self.span_behind()),
+        }))
     }
 
     /// Everything a field declaration says after its type.

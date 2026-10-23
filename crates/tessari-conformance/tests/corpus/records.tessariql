@@ -276,17 +276,39 @@ SELECT * FROM readings;
 DELETE FROM readings WHERE at < datetime '2020-01-01T00:00:00Z' LIMIT ALL;
 --- expect: ok
 
-# The bound is required. `LIMIT ALL` above is how a retention policy says it
-# means the whole matched set; the refusal below is what stands between a
-# mistyped predicate and an empty table. It is refused for being unbounded, not
-# for what it matches — so the condition here holds for every record left.
+# The bound is optional (0.38.0): with none, every match goes, which is what
+# `LIMIT ALL` above also says. What stands between a mistyped predicate and an
+# empty table is the condition, which stays required (below).
 
---- case: a conditional delete without a bound is refused
-DELETE FROM readings WHERE level >= 0;
+--- case: a conditional delete with no bound removes every match
+DELETE FROM readings WHERE level < 0;
+--- expect: ok
+
+--- case: nothing matched, so nothing went
+SELECT * FROM readings;
+--- expect: rows 2
+
+# An update over a set: the condition is a filter, and the answer is how many
+# records changed — two that match, then none.
+
+--- case: an update over a set changes every match and answers how many
+UPDATE readings SET checked = true WHERE level >= 0;
+--- expect: value 2
+
+--- case: an update over a set nothing matches answers zero
+UPDATE readings SET checked = false WHERE level < 0;
+--- expect: value 0
+
+--- case: an update over a set needs its condition
+UPDATE readings SET checked = false;
 --- expect: error UnexpectedToken
 
---- case: the refusal removed nothing
-SELECT * FROM readings;
+--- case: an update over a set takes no whole value
+UPDATE readings = { level: 0 } WHERE level >= 0;
+--- expect: error UnexpectedToken
+
+--- case: what the update changed is read back
+SELECT * FROM readings WHERE checked = true;
 --- expect: rows 2
 
 --- case: the single-record form still means what it always did

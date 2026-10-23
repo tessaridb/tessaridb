@@ -65,7 +65,17 @@ pub enum Aggregate {
     /// Numeric like `median`, which it estimates at any rank in space that does
     /// not grow with the group. Over nothing, `NONE`, by `mean`'s rule.
     ApproxQuantile,
+    /// `count(DISTINCT <expr>)` — exactly how many distinct present values there
+    /// are, by the store's own `=` (ADR-0134 D8).
+    ///
+    /// Exact means holding every value, so a group past
+    /// [`COUNT_DISTINCT_MOST`] distinct values is refused rather than grown
+    /// without bound; `approx_distinct` is the fold whose space does not grow.
+    CountDistinct,
 }
+
+/// The most distinct values `count(DISTINCT …)` holds for one group.
+pub const COUNT_DISTINCT_MOST: usize = 1_000_000;
 
 /// How much a fold holds while its group is still arriving.
 ///
@@ -107,6 +117,7 @@ impl Aggregate {
         Self::Collect,
         Self::ApproxDistinct,
         Self::ApproxQuantile,
+        Self::CountDistinct,
     ];
 
     /// How the fold is written.
@@ -127,6 +138,9 @@ impl Aggregate {
             Self::Collect => "collect",
             Self::ApproxDistinct => "approx_distinct",
             Self::ApproxQuantile => "approx_quantile",
+            // Written `count(DISTINCT x)`; this spelling names it in messages and
+            // cannot be read as a word, so `count` stays the plain count.
+            Self::CountDistinct => "count distinct",
         }
     }
 
@@ -148,9 +162,12 @@ impl Aggregate {
             | Self::Stddev
             | Self::ApproxDistinct
             | Self::ApproxQuantile => Retention::Constant,
-            Self::Median | Self::Increase | Self::Rate | Self::Delta | Self::Collect => {
-                Retention::WholeGroup
-            }
+            Self::Median
+            | Self::Increase
+            | Self::Rate
+            | Self::Delta
+            | Self::Collect
+            | Self::CountDistinct => Retention::WholeGroup,
         }
     }
 

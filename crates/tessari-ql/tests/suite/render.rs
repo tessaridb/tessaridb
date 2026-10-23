@@ -82,6 +82,13 @@ fn a_read_renders_back_to_itself() {
 }
 
 #[test]
+fn an_order_renders_where_it_puts_the_absences() {
+    // A view written with `NULLS` must read back with it, or its order changes.
+    let source = "SELECT * FROM tasks ORDER BY due DESC NULLS FIRST, name NULLS LAST;";
+    assert_eq!(render(&parsed(source)).unwrap(), source);
+}
+
+#[test]
 fn an_unrendered_statement_names_itself() {
     for (source, expected) in [
         ("BEGIN;", "BEGIN"),

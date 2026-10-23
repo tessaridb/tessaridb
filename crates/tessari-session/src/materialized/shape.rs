@@ -80,6 +80,12 @@ impl Understood {
         }
         expressions.extend(select.group.iter());
         expressions.extend(select.order.iter().map(|ordering| &ordering.key));
+        expressions.extend(
+            select
+                .windows
+                .iter()
+                .flat_map(tessari_ql::Windowed::expressions),
+        );
         if expressions.iter().any(|expr| beyond_the_record(expr)) {
             return Err(refuse(
                 "depend on anything but its records — the clock, a generator, a subquery or a key",
@@ -91,6 +97,10 @@ impl Understood {
             || select.split.is_some()
             || select.latest.is_some()
             || select.fill.is_some()
+            // A group a `HAVING` removes has no row to keep a group at a time.
+            || select.having.is_some()
+            // A window's value moves with every record of its partition.
+            || !select.windows.is_empty()
             || select.only.is_some();
         // A fold with no `GROUP BY` is one group every change reaches, so it
         // gains nothing from being kept a group at a time.

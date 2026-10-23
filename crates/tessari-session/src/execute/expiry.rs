@@ -204,7 +204,7 @@ pub(super) fn settle_write_expiry(
 }
 
 /// The word that declared a kind of table, for a refusal to name it by.
-fn kind_word(kind: &TableKind) -> &'static str {
+pub(super) fn kind_word(kind: &TableKind) -> &'static str {
     match kind {
         TableKind::Table => "table",
         TableKind::Collection => "collection",

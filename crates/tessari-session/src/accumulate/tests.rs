@@ -36,6 +36,7 @@ const EVERY: &[Aggregate] = &[
     Aggregate::Collect,
     Aggregate::ApproxDistinct,
     Aggregate::ApproxQuantile,
+    Aggregate::CountDistinct,
 ];
 
 /// A number as a value, spelled once.

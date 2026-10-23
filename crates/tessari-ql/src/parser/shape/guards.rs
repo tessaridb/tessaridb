@@ -1,7 +1,7 @@
 //! The clauses that bound or guard a read: USING, TIMEOUT, STALENESS, ANSWERED BY, VERSION, bounds and depth.
 
 use super::super::Parser;
-use crate::ast::{Admitted, AnsweredBy, DeleteBound, Hop, Staleness, Timeout, Using, Version};
+use crate::ast::{Admitted, AnsweredBy, Hop, SetBound, Staleness, Timeout, Using, Version};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Token};
 use tessari_types::Number;
@@ -212,27 +212,26 @@ impl Parser<'_> {
         }))
     }
 
-    /// The bound a delete over a **set** must carry: `LIMIT 100` or `LIMIT ALL`.
+    /// The bound a write over a **set** may carry: `LIMIT 100` or `LIMIT ALL`.
     ///
-    /// Required, unlike every other `LIMIT` in this grammar. A read that omits
-    /// one answers with more rows than the caller expected; a delete that omits
-    /// one removes a table. `LIMIT ALL` is the way to say the second on purpose,
-    /// and it costs one word — which is the entire mechanism.
-    pub(crate) fn delete_bound(&mut self) -> Result<DeleteBound> {
-        let expected =
-            "`LIMIT n` or `LIMIT ALL` — a delete over a set states how much it may remove";
+    /// Optional (ADR-0134 D1, owner 2026-10-23): with none the write reaches
+    /// every record its condition or span names, which `LIMIT ALL` also says.
+    /// What stays required is the condition itself — that is the clause whose
+    /// absence would change a whole table.
+    pub(crate) fn set_bound(&mut self) -> Result<SetBound> {
+        let expected = "`LIMIT n` or `LIMIT ALL` — how many records the write may change";
         if !self.eat_word("limit") {
-            return Err(self.error_here(expected));
+            return Ok(SetBound::All);
         }
         if self.eat_word("all") {
-            return Ok(DeleteBound::All);
+            return Ok(SetBound::All);
         }
         let Some(Token::Number(Number::Integer(count))) = self.peek() else {
             return Err(self.error_here(expected));
         };
         let count = u64::try_from(*count).map_err(|_| self.error_here(expected))?;
         self.advance();
-        Ok(DeleteBound::AtMost(count))
+        Ok(SetBound::AtMost(count))
     }
 
     /// `DEPTH 3` at the end of a walk, when it is there.

@@ -23,7 +23,18 @@ fn the_folds_that_hold_their_whole_group_are_exactly_the_ones_that_must() {
         .collect();
     // The counter folds order their samples by instant only once the group
     // has arrived, so they hold it (ADR-0088 §5).
-    assert_eq!(holding, ["median", "increase", "rate", "delta", "collect"]);
+    // An exact distinct count holds every distinct value (ADR-0134 D8).
+    assert_eq!(
+        holding,
+        [
+            "median",
+            "increase",
+            "rate",
+            "delta",
+            "collect",
+            "count distinct"
+        ]
+    );
 }
 
 /// Every fold is in `ALL`, and every spelling parses back to itself.

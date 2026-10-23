@@ -1,11 +1,12 @@
 //! Declaring fields, analyzers and the geometry column.
 
+use tessari_encoding::decode_payload;
 use tessari_ql::{FieldPath, Name, Span, TableRef};
 use tessari_storage::{
-    Catalog, FieldShape, GEO_FIELD, IndexShape, TableKind, TableShape, Transaction,
+    Catalog, FieldShape, GEO_FIELD, IndexShape, RecordAddress, TableKind, TableShape, Transaction,
 };
 
-use tessari_types::{Analyzer, FieldKind, Filter, IdentityKind, Path};
+use tessari_types::{Analyzer, FieldKind, Filter, IdentityKind, Path, Value};
 
 use crate::error::{Depended, Error, Result};
 use crate::outcome::Outcome;
@@ -67,6 +68,7 @@ impl Session<'_> {
                 default: None,
                 analyzer: None,
                 assert: None,
+                references: None,
             },
             if_not_exists,
         )
@@ -196,6 +198,104 @@ impl Session<'_> {
             .create_field(id, &name.text, kind, shape)
             .await?;
         Ok(Outcome::Done)
+    }
+
+    /// `DEFINE FIELD f ON t … DEFAULT v` and `ALTER TABLE t ADD FIELD …` — the
+    /// field, then its default written into the records already there
+    /// (ADR-0134 D2).
+    ///
+    /// A separate entry rather than a branch inside [`Session::define_field`],
+    /// because `ALTER FIELD` reaches that one too, and a default an existing
+    /// field changes reaches only later writes.
+    pub(super) async fn add_field(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        table: &TableRef,
+        kind: FieldKind,
+        shape: FieldShape,
+        if_not_exists: bool,
+    ) -> Result<Outcome> {
+        let (_, id) = self.resolve_table(transaction, table).await?;
+        if if_not_exists && self.field_named(transaction, id, name).await.is_ok() {
+            return Ok(Outcome::Done);
+        }
+        let default = shape.default.clone();
+        self.define_field(transaction, name, table, kind, shape, false)
+            .await?;
+        if let Some(written) = default {
+            self.fill_default(transaction, table, name, &written)
+                .await?;
+        }
+        Ok(Outcome::Done)
+    }
+
+    /// Every record of the table that leaves the field absent, given its
+    /// default, in the declaration's own transaction.
+    ///
+    /// # Why the commit can then hold `REQUIRED`
+    ///
+    /// The store's tightening pass judges the stored rows together with this
+    /// transaction's writes, so the filled records are what it reads: the
+    /// declaration and the values that satisfy it land together or neither does.
+    ///
+    /// # What it is not
+    ///
+    /// Not a caller's write of those records, so it runs no events and leaves
+    /// each record's expiry instant as it was; it replicates as the ordinary
+    /// writes it is. A `null` is a value somebody wrote and is kept. The default
+    /// is evaluated once per record, so `rand::uuid()` gives each its own.
+    ///
+    /// A node holding part of a split table refuses rather than filling the
+    /// records it happens to hold, and a vault holding records refuses because
+    /// its records are rewritten only by naming them.
+    async fn fill_default(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: &TableRef,
+        field: &Name,
+        written: &str,
+    ) -> Result<()> {
+        let (context, id) = self.resolve_table(transaction, table).await?;
+        self.refuse_reading_a_part(transaction, id, crate::evaluate::Part::Whole)
+            .await?;
+        let records = transaction
+            .sweep_table(context.namespace, context.database, id)
+            .await?;
+        if records.is_empty() {
+            return Ok(());
+        }
+        let vault = Catalog::new(transaction)
+            .table(id)
+            .await?
+            .is_some_and(|definition| definition.is_vault());
+        if vault {
+            return Err(Error::DefaultOverVault {
+                table: table.name.text.clone(),
+                field: field.text.clone(),
+                span: field.span,
+            });
+        }
+        let expression = tessari_ql::parse_expression(written)?;
+        for (record, bytes) in records {
+            let Value::Object(mut fields) = decode_payload(&bytes)? else {
+                continue;
+            };
+            if fields.get(&field.text).is_some_and(Value::is_present) {
+                continue;
+            }
+            let value = self.evaluate(transaction, &expression).await?;
+            fields.insert(field.text.clone(), value);
+            self.write_record(
+                transaction,
+                RecordAddress::new(context.namespace, context.database, id, record),
+                Value::Object(fields),
+                None,
+                field.span,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     pub(super) async fn define_analyzer(

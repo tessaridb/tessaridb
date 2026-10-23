@@ -74,7 +74,10 @@ pub(crate) fn nearest(select: &Select) -> Option<Nearest<'_>> {
     let [ordering] = select.order.as_slice() else {
         return None;
     };
-    if ordering.descending {
+    // An index walk yields the declared order, so a moved `NULLS` sorts instead.
+    // A window's values are computed over every record the read keeps, so an
+    // order served by stopping early would compute them over a prefix.
+    if ordering.descending || !ordering.in_declared_order() || !select.windows.is_empty() {
         return None;
     }
     let ExprKind::Call {
@@ -183,7 +186,10 @@ pub(crate) fn closest(select: &Select) -> Option<Closest<'_>> {
     let [ordering] = select.order.as_slice() else {
         return None;
     };
-    if ordering.descending {
+    // An index walk yields the declared order, so a moved `NULLS` sorts instead.
+    // A window's values are computed over every record the read keeps, so an
+    // order served by stopping early would compute them over a prefix.
+    if ordering.descending || !ordering.in_declared_order() || !select.windows.is_empty() {
         return None;
     }
     let ExprKind::Call {
@@ -328,6 +334,9 @@ pub(crate) fn ordered(select: &Select) -> Option<Bounded<'_>> {
     let [ordering] = select.order.as_slice() else {
         return None;
     };
+    if !ordering.in_declared_order() || !select.windows.is_empty() {
+        return None;
+    }
     let ExprKind::Path(field) = &ordering.key.kind else {
         return None;
     };

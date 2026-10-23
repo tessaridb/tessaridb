@@ -33,7 +33,10 @@ pub(crate) use stages::{
 
 mod asof;
 mod candidates;
+mod combine;
 pub(crate) use candidates::declared_for;
+pub(crate) use delete::Matched;
+use subquery::Side;
 mod delete;
 mod folded;
 mod fused;
@@ -57,6 +60,8 @@ mod scored;
 mod shape_rules;
 mod source;
 mod stages;
+mod subquery;
+mod window;
 
 /// How many of an index's leading values an index-served order compares.
 ///
@@ -211,7 +216,7 @@ impl Session<'_> {
                 arithmetic(*op, &held, &other, expr.span)
             }
             ExprKind::Binary { op, left, right } => {
-                let other = self.evaluate_child(transaction, right, scope).await?;
+                let right = self.operand(transaction, right, scope).await?;
                 // A route holding `[*]` denotes *the values it reaches* rather
                 // than a value, and what a comparison does with several values
                 // is the comparison's rule: it holds when **any** of them
@@ -230,6 +235,8 @@ impl Session<'_> {
                     };
                     let analyzer = scope.analyzer(&field.path);
                     let held = field.path.reach(record);
+                    // Each value reached is one value, whatever its kind.
+                    let other = right.against((*op, Side::Right), &Value::Null)?;
                     return Ok(Value::Bool(held.into_iter().any(|value| match *op {
                         BinaryOp::Matches => matches_terms(analyzer, value, &other),
                         BinaryOp::MatchesPrefix => matches_prefix_terms(analyzer, value, &other),
@@ -241,7 +248,9 @@ impl Session<'_> {
                         }
                     })));
                 }
-                let held = self.evaluate_child(transaction, left, scope).await?;
+                let operand = self.operand(transaction, left, scope).await?;
+                let other = right.against((*op, Side::Right), &operand.plain)?;
+                let held = operand.against((*op, Side::Left), &other)?;
                 // A term match is the one test that needs the *schema*: which
                 // analyzer turns this field's text into terms is a property of
                 // the field, so that both a scan and an index ask the same

@@ -58,6 +58,9 @@ impl Error {
             | Self::AcrossInDoubt { .. }
             | Self::NotAcknowledgedInTime { .. }
             | Self::ConditionNotMet { .. }
+            | Self::NoSuchReference { .. }
+            | Self::StillReferenced { .. }
+            | Self::ReferencedTable { .. }
             // The request assumed a record the store does not hold: re-read,
             // as for the compare-and-set beside it (ADR-0124 D7).
             | Self::NoSuchRecord { .. }
@@ -88,6 +91,8 @@ impl Error {
             | Self::Unbounded { .. }
             | Self::UnboundedCollection { .. }
             | Self::NotAlone { .. }
+            | Self::SubqueryNotOneValue { .. }
+            | Self::DistinctTooMany { .. }
             | Self::AnchorGone { .. }
             | Self::PathNotTaken { .. }
             | Self::IndexNotUsed { .. }
@@ -106,6 +111,9 @@ impl Error {
             | Self::NestedTransaction { .. }
             | Self::TransactionVerbInAtomic { .. }
             | Self::NoOpenTransaction { .. }
+            | Self::SavepointOutsideATransaction { .. }
+            | Self::NoSuchSavepoint { .. }
+            | Self::SavepointCrossesClaim { .. }
             | Self::VersionInsideTransaction { .. }
             | Self::UnclosedTransaction { .. }
             | Self::ViewIsNotATable { .. }
@@ -136,6 +144,9 @@ impl Error {
             | Self::NotAnEdgeTable { .. }
             | Self::EndpointsNotDeclared { .. }
             | Self::TableBelongsToGraph { .. }
+            | Self::NotRenamed { .. }
+            | Self::FieldNotRenamed { .. }
+            | Self::TableNamedByText { .. }
             | Self::EndpointOutsideGraph { .. }
             | Self::NoHistoricalTraversal { .. }
             | Self::PathWeight { .. }
@@ -158,6 +169,8 @@ impl Error {
             | Self::SecretNeedsVault { .. }
             | Self::VaultIsStrict { .. }
             | Self::ExpiryNotOnThisKind { .. }
+            | Self::TruncateNotOnThisKind { .. }
+            | Self::ReferenceRefused { .. }
             | Self::TableDoesNotExpire { .. }
             | Self::NotASecret { .. }
             | Self::NotCastable { .. }
@@ -180,6 +193,8 @@ impl Error {
             | Self::WeightOutOfRange { .. }
             | Self::NoSuchDistance { .. }
             | Self::VaultEditComputesFromTheRecord { .. }
+            | Self::VaultUpdatedByCondition { .. }
+            | Self::DefaultOverVault { .. }
             | Self::OutsideTheirTenancy { .. }
             | Self::NotAtThatReach { .. }
             | Self::UnknownUser { .. }

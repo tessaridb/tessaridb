@@ -45,6 +45,7 @@ mod leadership;
 mod params;
 mod position;
 mod qualified;
+mod renaming;
 mod replica;
 mod revocation;
 mod rows;
@@ -78,7 +79,7 @@ pub use definition::{
 };
 pub use edge_kind::EdgeKindDefinition;
 pub use failover::{FailoverDefinition, FailoverStamp};
-pub use field::{FieldDefinition, FieldShape};
+pub use field::{FieldDefinition, FieldReference, FieldShape, OnDelete};
 pub(crate) use format::finalized_in;
 pub use grant::GrantDefinition;
 pub use graph::GraphDefinition;

@@ -15,6 +15,7 @@ fn definition(kind: FieldKind) -> FieldDefinition {
         default: None,
         assert: None,
         analyzer: None,
+        references: None,
     }
 }
 

@@ -11,9 +11,12 @@
 
 mod checks;
 mod guards;
+mod having;
+
+pub use having::HAVING_NAME;
 
 use super::Parser;
-use crate::ast::{Expr, ExprKind, FieldPath, Fusion, Ordering, Projection, RecordTarget};
+use crate::ast::{Expr, ExprKind, FieldPath, Fusion, Nulls, Ordering, Projection, RecordTarget};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
 pub(crate) use checks::{
@@ -208,7 +211,24 @@ impl Parser<'_> {
             self.eat_word("asc");
             false
         };
-        Ok(Ordering { key, descending })
+        // `NULLS FIRST` / `NULLS LAST` places the absences; contextual, so a
+        // field called `nulls` is still one where a key stands.
+        let nulls = if self.eat_word("nulls") {
+            if self.eat_word("first") {
+                Some(Nulls::First)
+            } else if self.eat_word("last") {
+                Some(Nulls::Last)
+            } else {
+                return Err(self.error_here("`FIRST` or `LAST` after `NULLS`"));
+            }
+        } else {
+            None
+        };
+        Ok(Ordering {
+            key,
+            descending,
+            nulls,
+        })
     }
 
     /// `AFTER users:1042` after the order, when it is there.
@@ -253,7 +273,7 @@ impl Parser<'_> {
 }
 
 /// Whether this expression holds a fold anywhere inside it.
-fn holds_a_fold(expr: &Expr) -> bool {
+pub(super) fn holds_a_fold(expr: &Expr) -> bool {
     if matches!(expr.kind, ExprKind::Fold { .. }) {
         return true;
     }

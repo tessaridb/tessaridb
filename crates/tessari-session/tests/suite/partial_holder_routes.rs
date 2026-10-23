@@ -123,7 +123,7 @@ fn named(follower: &Store, heard: [u8; NODE_ID_LEN], read: &str) -> Option<Peer>
 /// is, G057 C2) — or where gathering is withheld: inside a transaction, under
 /// `VERSION`; and the read every `DELETE` and `UPDATE` makes before it writes — which,
 /// unrefused, removed only the records this node holds and reported success.
-const REFUSED: [&str; 9] = [
+const REFUSED: [&str; 10] = [
     "SELECT * FROM ledger;",
     "BEGIN; SELECT * FROM ledger; COMMIT;",
     "SELECT * FROM ledger VERSION 5;",
@@ -133,6 +133,7 @@ const REFUSED: [&str; 9] = [
     "DELETE FROM ledger:'a'..'z' LIMIT ALL;",
     "DELETE ledger:'a';",
     "UPDATE ledger:'a' SET total = 1;",
+    "UPDATE ledger SET total = 1 WHERE total > 0;",
 ];
 
 #[test]

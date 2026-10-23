@@ -113,6 +113,16 @@ impl Transaction<'_> {
         self.guarded.borrow_mut().insert(entry);
     }
 
+    /// Hold a record to this transaction's snapshot: the commit is refused with
+    /// [`crate::Error::Conflict`] — retriable — if it changed after the snapshot.
+    ///
+    /// A write naming a record through a `REFERENCES` field guards the record it
+    /// named, so a delete of it committing first sends the write round again,
+    /// where it finds the record gone (ADR-0134 D10).
+    pub fn guard_record(&self, address: &crate::RecordAddress) {
+        self.guarded.borrow_mut().insert(address.clone());
+    }
+
     /// Whether `address` names a record below its series table's floor.
     ///
     /// # Errors

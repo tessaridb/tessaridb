@@ -2,13 +2,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tessari_ql::{Expr, JoinSide, Select};
+use tessari_ql::{Expr, JoinSide, Outer, Select, Source};
 use tessari_storage::Transaction;
 use tessari_types::{RecordId, Value};
 
 use crate::budget::Deadline;
 use crate::condition::boolean;
 use crate::error::{Error, Result};
+use crate::noticed::Noticed;
 use crate::outcome::AccessPath;
 use crate::plan::Plan;
 use crate::search::Searched;
@@ -26,6 +27,8 @@ pub(super) struct JoinClause<'a> {
     pub(super) right: &'a JoinSide,
     pub(super) left_key: &'a tessari_ql::FieldPath,
     pub(super) right_key: &'a tessari_ql::FieldPath,
+    /// `LEFT` or `FULL`; `None` for the inner join (ADR-0134 D4).
+    pub(super) outer: Option<Outer>,
     pub(super) condition: Option<&'a Expr>,
 }
 
@@ -89,6 +92,7 @@ impl Session<'_> {
             right,
             left_key,
             right_key,
+            outer,
             condition,
         } = clause;
         let left_name = left.name().to_owned();
@@ -105,6 +109,9 @@ impl Session<'_> {
         // its own on the way through.
         let mut probed = None;
         let mut built: BTreeMap<Value, Vec<(RecordId, Value)>> = BTreeMap::new();
+        // A full join's right records, until one is matched.
+        let mut unmatched: Vec<(RecordId, Value)> = Vec::new();
+        let mut matched_right: BTreeSet<RecordId> = BTreeSet::new();
         // A far side on a split table this node holds only part of is gathered
         // once the near side has said which keys it needs (G057 C2).
         let mut far_gathered = None;
@@ -112,20 +119,31 @@ impl Session<'_> {
             JoinSide::Table { table, .. } => {
                 let (context, id) = self.resolve_table(transaction, table).await?;
                 let visible = self.visible_in(transaction, id).await?;
+                // A full join answers every right record, so it reads them all:
+                // never probed through an index, and refused on a node holding
+                // only part of them.
+                if outer == Some(Outer::Full) {
+                    self.refuse_reading_a_part(transaction, id, Part::Whole)
+                        .await?;
+                }
                 if self.missing(transaction, id, Part::Whole).await?.is_some() {
                     far_gathered = Some((context, id, visible));
                 } else {
-                    match ordered_index_on(transaction, id, right_key).await? {
+                    let index = match outer {
+                        Some(Outer::Full) => None,
+                        _ => ordered_index_on(transaction, id, right_key).await?,
+                    };
+                    match index {
                         Some(index) => probed = Some((index, visible, context, id)),
                         None => {
                             let found = transaction
                                 .scan_table(context.namespace, context.database, id)
                                 .await?;
-                            collect_by_key(
-                                &mut built,
-                                self.records_of(found, &visible)?,
-                                right_key,
-                            );
+                            let found = self.records_of(found, &visible)?;
+                            if outer == Some(Outer::Full) {
+                                unmatched.clone_from(&found);
+                            }
+                            collect_by_key(&mut built, found, right_key);
                         }
                     }
                 }
@@ -136,7 +154,27 @@ impl Session<'_> {
                 reporting
                     .collected
                     .extend(ceiling_reached(read, answered.records.len()));
+                if outer == Some(Outer::Full) {
+                    unmatched.clone_from(&answered.records);
+                }
                 collect_by_key(&mut built, answered.records, right_key);
+            }
+            JoinSide::Joined(join) => {
+                let (records, _) = Box::pin(self.joined(
+                    transaction,
+                    select,
+                    join,
+                    Reporting {
+                        collected: &mut *reporting.collected,
+                        noticed: reporting.noticed,
+                    },
+                    within,
+                ))
+                .await?;
+                if outer == Some(Outer::Full) {
+                    unmatched.clone_from(&records);
+                }
+                collect_by_key(&mut built, records, right_key);
             }
         }
 
@@ -166,6 +204,19 @@ impl Session<'_> {
                     .extend(ceiling_reached(read, answered.records.len()));
                 (answered.records, Searched::default())
             }
+            JoinSide::Joined(join) => {
+                Box::pin(self.joined(
+                    transaction,
+                    select,
+                    join,
+                    Reporting {
+                        collected: &mut *reporting.collected,
+                        noticed: reporting.noticed,
+                    },
+                    within,
+                ))
+                .await?
+            }
         };
 
         if let Some((context, id, visible)) = far_gathered {
@@ -191,15 +242,27 @@ impl Session<'_> {
 
         let mut rows = Vec::new();
         let mut left_kinds = BTreeSet::new();
+        let mut matched = false;
         for (id, record) in driving {
             // A left record with nothing at the key matches nothing: `NONE` is a
             // value and the right side would have to carry it to match, which is
-            // what an inner join means.
+            // what an inner join means. An outer join keeps it alone.
             let Some(key) = left_key.path.resolve(&record).cloned() else {
+                if outer.is_some() {
+                    let row = filed(left, &left_name, record, None);
+                    self.keep_joined(
+                        transaction,
+                        (id, row),
+                        condition,
+                        (&searched, reporting.noticed),
+                        &mut rows,
+                    )
+                    .await?;
+                }
                 continue;
             };
             left_kinds.insert(key.type_name());
-            let matches = match &probed {
+            let matches: Vec<(RecordId, Value)> = match &probed {
                 Some((index, visible, _, _)) => {
                     let offered = transaction
                         .records_by_index(index, core::slice::from_ref(&key))
@@ -211,34 +274,65 @@ impl Session<'_> {
                 }
                 None => built.get(&key).cloned().unwrap_or_default(),
             };
-            for (_, far) in matches {
-                let row = Value::Object(BTreeMap::from([
-                    (left_name.clone(), record.clone()),
-                    (right_name.clone(), far),
-                ]));
-                if let Some(condition) = condition {
-                    let held = self
-                        .evaluate_in(
-                            transaction,
-                            condition,
-                            Scope::searching(&row, &searched).noticing(reporting.noticed),
-                        )
-                        .await?;
-                    if !boolean(&held, condition.span)? {
-                        continue;
-                    }
+            if matches.is_empty() && outer.is_some() {
+                // Nothing on the right matched, so the row holds the left record
+                // alone — its right side is absent, `NONE`, never `NULL`.
+                let row = filed(left, &left_name, record, None);
+                self.keep_joined(
+                    transaction,
+                    (id, row),
+                    condition,
+                    (&searched, reporting.noticed),
+                    &mut rows,
+                )
+                .await?;
+                continue;
+            }
+            for (far_id, far) in matches {
+                matched = true;
+                if outer == Some(Outer::Full) {
+                    matched_right.insert(far_id);
                 }
+                let row = filed(
+                    left,
+                    &left_name,
+                    record.clone(),
+                    Some((right, &right_name, far)),
+                );
                 // The left record's id. A row is not a record, and two rows from
                 // one left record carry one id — stated in `Source::Join` rather
                 // than left to be discovered.
-                rows.push((id.clone(), row));
+                self.keep_joined(
+                    transaction,
+                    (id.clone(), row),
+                    condition,
+                    (&searched, reporting.noticed),
+                    &mut rows,
+                )
+                .await?;
             }
+        }
+        // A full join then answers each right record nothing matched, alone in
+        // its row under its own identity.
+        for (far_id, far) in unmatched {
+            if matched_right.contains(&far_id) {
+                continue;
+            }
+            let row = filed(right, &right_name, far, None);
+            self.keep_joined(
+                transaction,
+                (far_id, row),
+                condition,
+                (&searched, reporting.noticed),
+                &mut rows,
+            )
+            .await?;
         }
         // Only here, and only on the answer that was about to lie. A join that
         // produced a row matched a value, and two values that are equal are of
         // one kind, so the sets overlap and this cannot fire; a join that
         // produced nothing is the one whose emptiness needs explaining.
-        if rows.is_empty() {
+        if !matched {
             let right_kinds = match &probed {
                 // The index path never read the right side, so learning what it
                 // holds costs a scan. It is paid once, after an empty answer,
@@ -282,5 +376,96 @@ impl Session<'_> {
             ..Plan::new(AccessPath::Join)
         };
         Ok((rows, plan, searched))
+    }
+
+    /// The rows of the join written so far, as a side of the next one
+    /// (ADR-0134 D14).
+    async fn joined(
+        &self,
+        transaction: &mut Transaction<'_>,
+        select: &Select,
+        join: &Source,
+        reporting: Reporting<'_>,
+        within: Option<Deadline>,
+    ) -> Result<(Vec<(RecordId, Value)>, Searched)> {
+        let Source::Join {
+            left,
+            right,
+            left_key,
+            right_key,
+            outer,
+            condition,
+            ..
+        } = join
+        else {
+            return Ok((Vec::new(), Searched::default()));
+        };
+        let (rows, _, searched) = self
+            .join(
+                transaction,
+                select,
+                JoinClause {
+                    left,
+                    right,
+                    left_key,
+                    right_key,
+                    outer: *outer,
+                    condition: condition.as_deref(),
+                },
+                reporting,
+                within,
+            )
+            .await?;
+        Ok((rows, searched))
+    }
+
+    /// A joined row kept when the read's `WHERE` holds for it, or has none.
+    async fn keep_joined(
+        &self,
+        transaction: &mut Transaction<'_>,
+        (id, row): (RecordId, Value),
+        condition: Option<&Expr>,
+        (searched, noticed): (&Searched, &Noticed),
+        rows: &mut Vec<(RecordId, Value)>,
+    ) -> Result<()> {
+        if let Some(condition) = condition {
+            let held = self
+                .evaluate_in(
+                    transaction,
+                    condition,
+                    Scope::searching(&row, searched).noticing(noticed),
+                )
+                .await?;
+            if !boolean(&held, condition.span)? {
+                return Ok(());
+            }
+        }
+        rows.push((id, row));
+        Ok(())
+    }
+}
+
+/// One row: each side's record filed under its name, or — for the join so far
+/// — the sides it already holds, so the row stays one flat object.
+fn filed(
+    side: &JoinSide,
+    name: &str,
+    record: Value,
+    other: Option<(&JoinSide, &str, Value)>,
+) -> Value {
+    let mut row = BTreeMap::new();
+    file(&mut row, side, name, record);
+    if let Some((side, name, record)) = other {
+        file(&mut row, side, name, record);
+    }
+    Value::Object(row)
+}
+
+fn file(row: &mut BTreeMap<String, Value>, side: &JoinSide, name: &str, record: Value) {
+    match (side, record) {
+        (JoinSide::Joined(_), Value::Object(held)) => row.extend(held),
+        (_, record) => {
+            row.insert(name.to_owned(), record);
+        }
     }
 }

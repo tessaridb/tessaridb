@@ -188,6 +188,12 @@ pub enum Source {
         /// `ASOF JOIN`: each left record is paired with the newest right record
         /// at or before its time, and kept when there is none (ADR-0088 §4).
         asof: bool,
+        /// `LEFT JOIN` or `FULL JOIN` (ADR-0134 D4); `None` is the inner join.
+        ///
+        /// `RIGHT JOIN` is read as a `LEFT JOIN` with its sides exchanged, so
+        /// the side that drives is always the left one here and the row's
+        /// identity is always the left record's.
+        outer: Option<Outer>,
         /// What each joined row must satisfy, when a `WHERE` was written.
         ///
         /// Over the **composite**, so it reads `users.name` and `orders.total`
@@ -226,6 +232,16 @@ pub enum Source {
     },
 }
 
+/// Which records an outer join keeps when nothing matched them (ADR-0134 D4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outer {
+    /// Every left record, alone in its row when nothing on the right matched.
+    Left,
+    /// Every left record as `Left` does, then every right record nothing
+    /// matched, alone in its row under its own identity.
+    Full,
+}
+
 /// One side of a join — what it reads, and the name the row files it under.
 ///
 /// The name is not decoration. A row is `{ <left>: …, <right>: … }`, so the two
@@ -257,18 +273,41 @@ pub enum JoinSide {
         /// The name the row files it under.
         alias: Name,
     },
+    /// The join written so far, as the left side of the next one:
+    /// `a JOIN b ON … JOIN c ON …` joins `c` to the rows of `a JOIN b`
+    /// (ADR-0134 D14). Always a [`Source::Join`]; its rows bring every side
+    /// they hold under its own name, so the row stays one object.
+    Joined(Box<Source>),
 }
 
 impl JoinSide {
-    /// The name this side answers under in the row.
+    /// The name this side answers under in the row; for a join so far, the
+    /// names of its sides joined by `, `, which no single side can be called.
     #[must_use]
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> String {
         match self {
             Self::Table {
                 alias: Some(alias), ..
             }
-            | Self::Read { alias, .. } => &alias.text,
-            Self::Table { table, alias: None } => &table.name.text,
+            | Self::Read { alias, .. } => alias.text.clone(),
+            Self::Table { table, alias: None } => table.name.text.clone(),
+            Self::Joined(_) => self.names().join(", "),
+        }
+    }
+
+    /// Every name this side files records under in the row.
+    #[must_use]
+    pub fn names(&self) -> Vec<String> {
+        match self {
+            Self::Joined(join) => match join.as_ref() {
+                Source::Join { left, right, .. } => {
+                    let mut names = left.names();
+                    names.extend(right.names());
+                    names
+                }
+                _ => Vec::new(),
+            },
+            _ => vec![self.name()],
         }
     }
 }

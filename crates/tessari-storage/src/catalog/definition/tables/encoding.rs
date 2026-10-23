@@ -63,6 +63,17 @@ impl TableDefinition {
         if let Some(expire) = self.expire {
             fields.insert(FIELD_EXPIRE.to_owned(), expire.to_value());
         }
+        if !self.referenced_by.is_empty() {
+            fields.insert(
+                FIELD_REFERENCED_BY.to_owned(),
+                Value::Array(
+                    self.referenced_by
+                        .iter()
+                        .map(|field| number(field.get()))
+                        .collect(),
+                ),
+            );
+        }
         if !self.events.is_empty() {
             fields.insert(
                 FIELD_EVENTS.to_owned(),
@@ -269,6 +280,33 @@ impl TableDefinition {
                 .get(FIELD_EXPIRE)
                 .map(super::super::TableExpiry::from_value)
                 .transpose()?,
+            referenced_by: match fields.get(FIELD_REFERENCED_BY) {
+                None => Vec::new(),
+                Some(Value::Array(held)) => held
+                    .iter()
+                    .map(|one| match one {
+                        Value::Number(tessari_types::Number::Integer(id)) => u32::try_from(*id)
+                            .map(tessari_types::FieldId::new)
+                            .map_err(|_| Error::CatalogMalformed {
+                                entity: "table",
+                                field: FIELD_REFERENCED_BY,
+                                found: "number",
+                            }),
+                        other => Err(Error::CatalogMalformed {
+                            entity: "table",
+                            field: FIELD_REFERENCED_BY,
+                            found: other.type_name(),
+                        }),
+                    })
+                    .collect::<Result<_>>()?,
+                Some(other) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: "table",
+                        field: FIELD_REFERENCED_BY,
+                        found: other.type_name(),
+                    });
+                }
+            },
             events: match fields.get(FIELD_EVENTS) {
                 None => Vec::new(),
                 Some(Value::Array(held)) => held

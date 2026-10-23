@@ -91,15 +91,15 @@ pub use catalog::{
     AnalyzerDefinition, Authority, AutoSplit, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
     ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition,
     EdgeOrder, EngineField, EngineMember, EventDeclaration, Eviction, FailoverDefinition,
-    FailoverStamp, Feed, FieldDefinition, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition,
-    Greeter, GroupDeclaration, GroupMemberState, GroupState, Held, InFlight, IndexDefinition,
-    IndexShape, JoinTicket, Kind, LeadershipDefinition, Mapped, NamespaceDefinition, OnFailure,
-    Partitioning, PublicAppend, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL,
-    QueueDeclaration, RECORD_LEVEL, Reach, ReplicaDefinition, Role, RollupCompute,
-    RollupDeclaration, RollupFold, SYSTEM_DATABASE, SYSTEM_NAMESPACE, SearchCosts,
-    SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration, SpaceLimit, StoredKind,
-    TableDefinition, TableExpiry, TableKind, TableShape, TopicDeclaration, UNIT_WEIGHT,
-    UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
+    FailoverStamp, Feed, FieldDefinition, FieldReference, FieldShape, GEO_FIELD, GrantDefinition,
+    GraphDefinition, Greeter, GroupDeclaration, GroupMemberState, GroupState, Held, InFlight,
+    IndexDefinition, IndexShape, JoinTicket, Kind, LeadershipDefinition, Mapped,
+    NamespaceDefinition, OnDelete, OnFailure, Partitioning, PublicAppend, QUEUE_ATTEMPTS,
+    QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach,
+    ReplicaDefinition, Role, RollupCompute, RollupDeclaration, RollupFold, SYSTEM_DATABASE,
+    SYSTEM_NAMESPACE, SearchCosts, SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration,
+    SpaceLimit, StoredKind, TableDefinition, TableExpiry, TableKind, TableShape, TopicDeclaration,
+    UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
     VectorDistance, Verb, ViewDeclaration, WordSet, WordSetKind, another_node_may_write, governing,
     names_a_peer, the_row_a_greeting_binds,
 };
@@ -155,7 +155,8 @@ pub use tessari_encoding::{
 pub use tessari_kv::ErrorCategory;
 pub use transaction::{
     AcrossPart, Committed, Expansion, FieldedPostings, Neighbour, PlacesNearest, RecordAddress,
-    RecordWalk, Region, SearchCounts, StoredRecord, TopicTrim, Transaction, Window, back_off,
+    RecordWalk, Region, Savepoint, SearchCounts, StoredRecord, TopicTrim, Transaction,
+    Unreturnable, Window, back_off,
 };
 pub use vault::{OpenVault, SealState};
 pub use views::ViewState;

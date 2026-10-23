@@ -275,6 +275,11 @@ impl Parser<'_> {
                 expire,
             });
         }
+        // `UPDATE readings SET …` with no identity reaches the records a
+        // condition names rather than one record (ADR-0134 D1).
+        if matches!(verb, Keyword::Update) && !self.at_punct(Punct::Colon) {
+            return self.update_where(table);
+        }
         let target = self.record_target_after(table)?;
         // `SET` is a key-value verb elsewhere and a clause here, which is the
         // trick this grammar already plays with `ORDER`, `FETCH` and `VECTOR`:

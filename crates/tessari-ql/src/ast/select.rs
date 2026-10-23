@@ -1,11 +1,13 @@
 //! A read: what it selects, from where, in what order, and under which guards.
 
 mod source;
+mod window;
 
 use super::{Direction, Expr, FieldPath, Identity, Name, RecordTarget, TableRef};
 use crate::token::Span;
-pub use source::{Fill, FillMode, Hop, JoinSide, PathTo, Source};
+pub use source::{Fill, FillMode, Hop, JoinSide, Outer, PathTo, Source};
 use tessari_types::{Duration, Number};
+pub use window::{Neighbour, WindowFunction, Windowed};
 
 /// A read of records.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +109,23 @@ pub struct Select {
     /// the record — the same reading `WHERE` and `ORDER BY` give it — so
     /// `GROUP BY city` means what it always did.
     pub group: Vec<Expr>,
+    /// Where `HAVING` was written (ADR-0134 D5).
+    ///
+    /// Its condition is not held here: it is the projection's last value, under
+    /// [`crate::HAVING_NAME`], so every path that folds the projection folds the
+    /// condition's folds the same way. The read keeps the rows it holds for and
+    /// answers without it.
+    pub having: Option<Span>,
+    /// `UNION [ALL]`, `INTERSECT` and `EXCEPT` with the reads after this one,
+    /// applied left to right (ADR-0134 D6).
+    ///
+    /// Each read keeps its own clauses — a `LIMIT` written after the last one is
+    /// that read's — and the combined answer is ordered by reading it as a
+    /// source. Empty is a read that combines with nothing.
+    pub combined: Vec<Combination>,
+    /// The window functions the projection holds, each answering under its name
+    /// beside the projected values (ADR-0134 D13). Empty is a read with none.
+    pub windows: Vec<Windowed>,
     /// `FILL <mode> FROM <start> TO <end>` after a windowed `GROUP BY` — one row
     /// per window of the stated range (ADR-0088 §2).
     pub fill: Option<Fill>,
@@ -408,6 +427,38 @@ pub struct Ordering {
     pub key: Expr,
     /// Whether the order is reversed.
     pub descending: bool,
+    /// Where `NULLS FIRST` or `NULLS LAST` puts the absences; `None` when the
+    /// statement said neither, so they keep the declared order (ADR-0134 D8).
+    pub nulls: Option<Nulls>,
+}
+
+/// Where an order puts `NONE` and `NULL`, said out loud.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Nulls {
+    /// Before every present value.
+    First,
+    /// After every present value.
+    Last,
+}
+
+impl Ordering {
+    /// Whether the absences come before the present values — the declared
+    /// order puts them lowest, so first ascending and last descending.
+    #[must_use]
+    pub fn absences_first(&self) -> bool {
+        match self.nulls {
+            Some(Nulls::First) => true,
+            Some(Nulls::Last) => false,
+            None => !self.descending,
+        }
+    }
+
+    /// Whether this key orders exactly as the declared order does, which is
+    /// what an index walk or a leader's own sort yields.
+    #[must_use]
+    pub fn in_declared_order(&self) -> bool {
+        self.absences_first() != self.descending
+    }
 }
 
 /// Which values a read answers with.
@@ -463,6 +514,33 @@ impl Projection {
             Self::Values { values, .. } => values,
         }
     }
+}
+
+/// One read combined with the answer before it (ADR-0134 D6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Combination {
+    /// How the two answers combine.
+    pub operation: SetOperation,
+    /// `UNION ALL`: duplicates are kept rather than removed.
+    pub all: bool,
+    /// The read combined.
+    pub read: Box<Select>,
+    /// Where the word is.
+    pub span: Span,
+}
+
+/// How a read's answer combines with the one before it.
+///
+/// Records are the same when their values are equal by the store's own `=`, so
+/// `3` and `3.0` are one; each record keeps its own identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetOperation {
+    /// Every record of either, each value once unless `ALL`.
+    Union,
+    /// The records of the first whose value the second also answers.
+    Intersect,
+    /// The records of the first whose value the second does not answer.
+    Except,
 }
 
 /// One projected value, and the name it answers under.

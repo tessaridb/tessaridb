@@ -142,6 +142,7 @@ impl Session<'_> {
                     default: column.default.as_ref().map(|written| written.text.clone()),
                     analyzer: column.analyzer.as_ref().map(|named| named.text.clone()),
                     assert: column.assert.clone(),
+                    references: None,
                 },
                 if_not_exists,
             )
@@ -252,6 +253,7 @@ impl Session<'_> {
                 default: None,
                 analyzer: None,
                 assert: None,
+                references: None,
             },
             if_not_exists,
         )
