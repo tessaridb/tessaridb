@@ -138,6 +138,29 @@ fn a_renamed_field_moves_in_every_record_and_in_the_declaration() {
 }
 
 #[test]
+fn a_required_field_is_renamed_over_the_records_holding_it() {
+    // The record's rewrite is checked against the table as the commit leaves
+    // it, where the requirement has moved to the new name with the field.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run_now(
+            "DEFINE TABLE people (name string REQUIRED);\n\
+             CREATE people:1 = { name: 'ada' };\n\
+             ALTER TABLE people RENAME FIELD name TO called;",
+        )
+        .unwrap();
+
+    let held = rows(&mut session, "SELECT called FROM people:1;");
+    assert_eq!(
+        format!("{held:?}"),
+        r#"[Object({"called": String("ada")})]"#
+    );
+    let missing = refused(&mut session, "CREATE people:2 = {};");
+    assert!(missing.contains("called"), "{missing}");
+}
+
+#[test]
 fn a_field_an_index_is_over_is_not_renamed() {
     let store = store();
     let mut session = ready(&store);
