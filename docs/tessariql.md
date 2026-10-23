@@ -9693,9 +9693,10 @@ listed here as one that does not, rather than left to be found out.
 |---|---|
 | `schemafull` | `ALTER TABLE t SET SCHEMAFULL` · `… SET SCHEMALESS` |
 | a field's presence | `ALTER TABLE t ADD FIELD n …` · `… DROP FIELD n` |
-| a field's `type`, `required`, `default`, `analyzer`, `assert` | `ALTER TABLE t ALTER FIELD n …`, which replaces the whole declaration |
+| a field's `type`, `required`, `default`, `analyzer`, `assert`, `references` | `ALTER TABLE t ALTER FIELD n …`, which replaces the whole declaration (`USING` rewrites the stored values with a type) |
+| a field's name | `ALTER TABLE t RENAME FIELD n TO m` |
 | an index's presence, projected fields or kind | `DROP INDEX i ON t` then `DEFINE INDEX …` |
-| `table` — the name | nothing |
+| `table` — the name | `ALTER TABLE t RENAME TO u` |
 | `edge`, `bucket`, `collection` — the declaring word | nothing |
 
 There is no `ALTER INDEX` because an index has nothing an alteration could
@@ -9703,11 +9704,12 @@ change in place: the fields it projects and the kind it is are what its entries
 are keyed by, so changing either rewrites every entry. Dropping and re-declaring
 says that plainly, and the table's records are untouched throughout.
 
-The last two rows are not oversights. `edge`, `bucket` and `collection` say what
+The last row is not an oversight. `edge`, `bucket` and `collection` say what
 a record **is** rather than what may be written to it, so changing one would
-reinterpret every row already stored; and a table's name is what its grants, its
-indexes and every reference to it are keyed by. Both are made by declaring the
-thing you meant and moving the records, which the language already says.
+reinterpret every row already stored; it is made by declaring the thing you
+meant and moving the records, which the language already says. A name is
+different: grants, indexes and references hold a table by its identity, so a
+rename moves only the name (§4, *Renaming a table or a field*).
 
 `ALTER TABLE … SET SCHEMAFULL` binds writes from that commit onwards and does
 not revisit the records already there (§4). `ALTER TABLE … ALTER FIELD` is the
@@ -10904,7 +10906,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.38.0", "build": "0.38.0", "endpoints": ["db-1.internal:9000"],
+ "version": "0.38.1", "build": "0.38.1", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],
@@ -11288,7 +11290,7 @@ match, the condition stays required, and `LIMIT ALL` still parses.
 | An assertion is a closed vocabulary and what falls outside it is refused where it is written | **contract** — validation must stay a pure function of the record, and "happens to be pure" is not a property to re-establish forever |
 | `$value` is the only parameter an assertion may name | **contract** — a declaration belongs to no call, and the store is what binds this one |
 | `ASSERT` and `WHERE` compare by the same function | **contract** — two implementations would eventually make a write one node refuses and another accepts |
-| A default fills only what a write leaves out, and never reaches backwards | **contract** |
+| A default fills only what a write leaves out; a NEW field's default fills the records already there, in the declaration's transaction | **contract** |
 | A default is a value-position expression, checked when it is declared | **contract** |
 | A filter is a condition, and a condition is a boolean | **contract** |
 | Numeric kinds promote int → decimal → float | **contract** |

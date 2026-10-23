@@ -23,6 +23,14 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.38.1 — 2026-10-23
+
+### Fixed
+
+- **`ALTER TABLE t RENAME FIELD a TO b` over a `REQUIRED` field** no longer refuses every record that holds it
+  (`MissingRequiredField` naming the old name); the requirement moves with the field. 0.38.0 was tagged but
+  never published as an image; 0.38.1 is the release carrying it.
+
 ## 0.38.0 — 2026-10-23
 
 ### Added

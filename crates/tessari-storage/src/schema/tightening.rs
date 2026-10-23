@@ -121,6 +121,13 @@ pub(crate) async fn build_schema(
                 partition.clone_from(&declared.partition);
             }
             Some(CatalogChange::FieldDefined(declared)) if declared.table == table => {
+                // A rename keeps the field's id and moves its name, so the name
+                // the state below holds it under declares nothing any more.
+                if let Some(before) = Catalog::new(view).field(declared.id).await?
+                    && before.name != declared.name
+                {
+                    fields.remove(&before.name);
+                }
                 fields.insert(
                     declared.name,
                     Declared {
