@@ -136,6 +136,14 @@ DEFINE FIELD tier ON ledgers TYPE int DEFAULT 'gold';
 DEFINE FIELD nickname ON ledgers TYPE string REQUIRED;
 --- expect: error RecordsRefused
 
+--- case: requiring a field with a default over those rows fills them first
+DEFINE FIELD nickname ON ledgers TYPE string REQUIRED DEFAULT 'none';
+--- expect: ok
+
+--- case: and the rows already there hold the default
+SELECT * FROM ledgers WHERE nickname = 'none';
+--- expect: rows 2
+
 # `ASSERT` — what a value must satisfy beyond its type. Checked by the store on
 # its apply path, so what the catalog holds is the lowered constraint rather than
 # the sentence that described it, and a replica reaches the same verdict from the

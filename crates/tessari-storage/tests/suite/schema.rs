@@ -91,6 +91,7 @@ impl Fixture {
                     default: None,
                     analyzer: None,
                     assert: None,
+                    references: None,
                 },
             )
             .now()?;

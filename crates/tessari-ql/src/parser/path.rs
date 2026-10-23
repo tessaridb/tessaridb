@@ -8,7 +8,7 @@
 use tessari_types::{Number, Path, Step};
 
 use super::Parser;
-use crate::ast::{ExprKind, FieldPath, Name, Projected, Projection};
+use crate::ast::{ExprKind, FieldPath, Name, Projected, Projection, Windowed};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Spanned, Token};
 
@@ -88,9 +88,10 @@ impl Parser<'_> {
     /// A bare `*` keeps its own variant rather than becoming an empty list with
     /// the star set, because that read copies nothing — the records reach the
     /// answer as they were decoded — and it is the commonest read there is.
-    pub(super) fn projection(&mut self) -> Result<Projection> {
+    pub(super) fn projection(&mut self) -> Result<(Projection, Vec<Windowed>)> {
         let mut everything = None;
         let mut values: Vec<Projected> = Vec::new();
+        let mut windows: Vec<Windowed> = Vec::new();
         loop {
             let at = self.span_here();
             if self.eat_punct(Punct::Star) {
@@ -104,26 +105,35 @@ impl Parser<'_> {
                 }
                 everything = Some(at);
             } else {
-                let next = self.projected()?;
+                let (name, next) = match self.projected()? {
+                    Ok(next) => (next.name.clone(), Ok(next)),
+                    Err(window) => (window.name.clone(), Err(window)),
+                };
                 // Two projections answering under one name would write one field
                 // twice into a name-ordered object and keep whichever came last.
-                // Knowable from the statement alone, so it is refused here.
-                if let Some(clash) = values.iter().find(|held| held.name.text == next.name.text) {
+                // Knowable from the statement alone, so it is refused here — a
+                // window's name included, since it answers beside them.
+                if values.iter().any(|held| held.name.text == name.text)
+                    || windows.iter().any(|held| held.name.text == name.text)
+                {
                     return Err(Error::DuplicateProjection {
-                        name: clash.name.text.clone(),
-                        span: next.name.span,
+                        name: name.text,
+                        span: name.span,
                     });
                 }
-                values.push(next);
+                match next {
+                    Ok(next) => values.push(next),
+                    Err(window) => windows.push(window),
+                }
             }
             if !self.eat_punct(Punct::Comma) {
                 break;
             }
         }
         if values.is_empty() && everything.is_some() {
-            return Ok(Projection::All);
+            return Ok((Projection::All, windows));
         }
-        Ok(Projection::Values { everything, values })
+        Ok((Projection::Values { everything, values }, windows))
     }
 
     /// One projected value, and the name it answers under.
@@ -140,11 +150,20 @@ impl Parser<'_> {
     /// grammar that produced it. Anything that is not a bare route has no name
     /// of its own and needs `AS`, for the same reason a position does: every
     /// invented spelling is a convention learned from a surprise.
-    fn projected(&mut self) -> Result<Projected> {
+    ///
+    /// A window function answers here too, as the `Err` side: it is not a value
+    /// of one record, so it is held beside the projection (ADR-0134 D13).
+    fn projected(&mut self) -> Result<core::result::Result<Projected, Windowed>> {
+        if self.window_function_here() {
+            return Ok(Err(self.window_of_its_own()?));
+        }
         let value = self.condition()?;
+        if self.peek_word("over") {
+            return Ok(Err(self.window_of_a_fold(value)?));
+        }
         if self.eat_keyword(Keyword::As) {
             let name = self.name()?;
-            return Ok(Projected { value, name });
+            return Ok(Ok(Projected { value, name }));
         }
         // Only a bare route names itself. Anything computed — a fold, an
         // arithmetic, a call — has no name of its own, for the same reason a
@@ -164,10 +183,10 @@ impl Parser<'_> {
             }
         };
         let span = value.span;
-        Ok(Projected {
+        Ok(Ok(Projected {
             value,
             name: Name { text, span },
-        })
+        }))
     }
 
     /// A bare name, which is never a keyword.

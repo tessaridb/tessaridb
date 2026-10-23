@@ -9,10 +9,6 @@ DEFINE COLLECTION users;
 CREATE users:1 = { name: 'ada', email: 'ada@example.com' };
 --- expect: ok
 
---- case: a join qualifier
-SELECT * FROM users LEFT JOIN orders ON users.name = orders.who;
---- expect: error Unsupported
-
 --- case: a join whose ON names a third table
 SELECT * FROM users JOIN orders ON users.name = customers.who;
 --- expect: error NotASideOfTheJoin

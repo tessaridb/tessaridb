@@ -171,6 +171,36 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// `count(DISTINCT …)` met more distinct values in one group than it holds
+    /// (ADR-0134 D8).
+    #[error(
+        "`count(DISTINCT …)` holds at most {most} distinct values for one group and met more (at {span}); \
+         `approx_distinct` estimates in space that does not grow"
+    )]
+    DistinctTooMany {
+        /// The most it holds.
+        most: usize,
+        /// Where the fold is.
+        span: tessari_ql::Span,
+    },
+
+    /// A subquery compared as one value answered with several records
+    /// (ADR-0134 D3).
+    ///
+    /// `n = (SELECT n FROM t WHERE …)` means the one `n` there is; comparing
+    /// with the first of several would answer a question about whichever record
+    /// a walk happened to reach first.
+    #[error(
+        "this subquery is compared as one value and {found} records answered (at {span}); \
+         narrow it, fold it (`max`, `min`, `count`), or compare with `IN`"
+    )]
+    SubqueryNotOneValue {
+        /// How many answered.
+        found: usize,
+        /// Where the subquery is.
+        span: tessari_ql::Span,
+    },
+
     /// An `AFTER` anchor names a record that is not there, on a read that needs
     /// its key.
     ///
@@ -533,6 +563,92 @@ pub enum Error {
     )]
     TransactionVerbInAtomic {
         /// Where the verb is.
+        span: Span,
+    },
+
+    /// `SAVEPOINT`, `ROLLBACK TO` or `RELEASE SAVEPOINT` with no transaction
+    /// open (ADR-0134 D11).
+    #[error(
+        "a savepoint marks a place inside `BEGIN … COMMIT`, and no transaction is open (at {span})"
+    )]
+    SavepointOutsideATransaction {
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// `ROLLBACK TO` or `RELEASE SAVEPOINT` naming no savepoint this transaction
+    /// holds — never taken, released, or gone with a rollback to an earlier one.
+    #[error("this transaction holds no savepoint `{name}` (at {span})")]
+    NoSuchSavepoint {
+        /// The name written.
+        name: String,
+        /// Where it is.
+        span: Span,
+    },
+
+    /// `ROLLBACK TO` over work that cannot be given back by restoring the
+    /// transaction's buffer, so nothing was rolled back (ADR-0134 D11).
+    #[error(
+        "the work since savepoint `{name}` {what}, which rolling back cannot give back — \
+         nothing was rolled back (at {span})"
+    )]
+    SavepointCrossesClaim {
+        /// The savepoint.
+        name: String,
+        /// What the work did.
+        what: &'static str,
+        /// Where `ROLLBACK TO` is.
+        span: Span,
+    },
+
+    /// A `REFERENCES` clause the catalog cannot hold (ADR-0134 D10).
+    #[error("expected {why} (at {span})")]
+    ReferenceRefused {
+        /// What a reference needs.
+        why: String,
+        /// Where the clause is.
+        span: Span,
+    },
+
+    /// A write's `REFERENCES` field names a record its table does not hold.
+    #[error("`{field}` references `{table}`, and {named} is not a record it holds (at {span})")]
+    NoSuchReference {
+        /// The field.
+        field: String,
+        /// The table it references.
+        table: String,
+        /// The record value written.
+        named: String,
+        /// Where the write is.
+        span: Span,
+    },
+
+    /// A delete of a record a `REFERENCES … ON DELETE REJECT` field names.
+    #[error(
+        "{record} is named by `{by}`, which rejects its delete — delete what names it first, \
+         or declare the reference `ON DELETE CASCADE` or `UNSET` (at {span})"
+    )]
+    StillReferenced {
+        /// The record whose delete was refused.
+        record: String,
+        /// The referencing table and field, `table.field`.
+        by: String,
+        /// Where the delete is.
+        span: Span,
+    },
+
+    /// `TRUNCATE` or `DROP TABLE` of a table a field elsewhere references.
+    #[error(
+        "`{table}` is referenced by `{by}`, so it is not {verb} — drop that field first (at {span})"
+    )]
+    ReferencedTable {
+        /// The table.
+        table: String,
+        /// The referencing table and field, `table.field`.
+        by: String,
+        /// What was asked: `emptied` or `dropped`.
+        verb: &'static str,
+        /// Where the table is named.
         span: Span,
     },
 
@@ -1641,6 +1757,64 @@ pub enum Error {
         span: Span,
     },
 
+    /// `ALTER TABLE … RENAME TO` on a table something else is found by the name
+    /// of (ADR-0134 D9).
+    #[error("`{table}` cannot be renamed: {why} (at {span})")]
+    NotRenamed {
+        /// The table named.
+        table: String,
+        /// What is found by its name.
+        why: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// `ALTER TABLE … RENAME FIELD` on a field something reads by its old name
+    /// and would not move with it (ADR-0134 D9).
+    #[error("field `{field}` cannot be renamed: {why} (at {span})")]
+    FieldNotRenamed {
+        /// The field named.
+        field: String,
+        /// What stands in the way.
+        why: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A rename of a table that a view or an event names by text (ADR-0134 D9).
+    ///
+    /// Refused rather than done, because the rename would succeed and the view
+    /// or event would fail at its next run, naming a table that is not there.
+    #[error(
+        "`{table}` is named by {by}{} and a rename would leave them naming nothing (at {span}) — redefine them, or drop them first",
+        if *more > 0 { format!(" and {more} more") } else { String::new() }
+    )]
+    TableNamedByText {
+        /// The table named.
+        table: String,
+        /// The first view or event naming it.
+        by: String,
+        /// How many more do.
+        more: usize,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// `TRUNCATE` named a kind whose records are emptied some other way
+    /// (ADR-0134 D9): a topic is trimmed, a series keeps its floor, a space and
+    /// a bucket remove by key, and a view holds no records of its own.
+    #[error(
+        "{kind} `{table}` cannot be truncated; only a table, a collection, an edge table, a vector or geo store, a queue or a vault can (at {span})"
+    )]
+    TruncateNotOnThisKind {
+        /// The table named.
+        table: String,
+        /// What kind it is, as its declaring word says.
+        kind: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A declaration asked a kind of table other than a table or a collection
     /// to expire its records (ADR-0122 A1).
     ///
@@ -2197,6 +2371,41 @@ pub enum Error {
     )]
     VaultEditComputesFromTheRecord {
         /// Where the statement is.
+        span: Span,
+    },
+
+    /// An update over a set aimed at a vault (ADR-0134 D1).
+    ///
+    /// A set update decides which records to change by reading them, and a
+    /// vault's fields are sealed: deciding would mean opening every secret the
+    /// condition names, with nothing recording that it happened. A vault's
+    /// record is changed by naming it, which is the one shape that never reads
+    /// a secret to choose it.
+    #[error(
+        "{table} is a vault — change its records one at a time, `UPDATE {table}:<id> …` (at {span})"
+    )]
+    VaultUpdatedByCondition {
+        /// The vault as written.
+        table: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A field with a default declared on a vault that already holds records
+    /// (ADR-0134 D2).
+    ///
+    /// Filling the default rewrites every record, and a vault record is
+    /// rewritten only by naming it: a whole-table rewrite would reseal every
+    /// record under a fresh key and take each recipient's wrap with it.
+    #[error(
+        "{table} is a vault holding records — declare {field} without a `DEFAULT`, then write it record by record (at {span})"
+    )]
+    DefaultOverVault {
+        /// The vault as written.
+        table: String,
+        /// The field being declared.
+        field: String,
+        /// Where the field is named.
         span: Span,
     },
 

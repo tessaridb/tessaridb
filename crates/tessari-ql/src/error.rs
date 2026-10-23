@@ -688,7 +688,8 @@ pub enum Error {
     /// rule — it sees folds where `WHERE` does not — and this language does not
     /// have one yet.
     #[error(
-        "a fold filters groups rather than records; `WHERE` sees one record at a time (at {span})"
+        "a fold filters groups rather than records; `WHERE` sees one record at a time — \
+         write the condition after `GROUP BY … HAVING` (at {span})"
     )]
     FoldInAFilter {
         /// Where the fold is.

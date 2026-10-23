@@ -21,6 +21,10 @@ use super::definition::{field_id, field_name, flag, number, object};
 use super::{Catalog, Level, id_key, qualify, system};
 use crate::error::{Error, Result};
 
+mod reference;
+
+pub use reference::{FieldReference, OnDelete};
+
 const FIELD_ID: &str = "id";
 const FIELD_NAME: &str = "name";
 const FIELD_NAMESPACE: &str = "namespace";
@@ -32,6 +36,7 @@ const FIELD_SECRET: &str = "secret";
 const FIELD_DEFAULT: &str = "default";
 const FIELD_ANALYZER: &str = "analyzer";
 const FIELD_ASSERT: &str = "assert";
+const FIELD_REFERENCES: &str = "references";
 
 const ENTITY: &str = "field";
 
@@ -61,6 +66,9 @@ pub struct FieldShape {
     /// **store** on its apply path, where nothing can parse TessariQL and where a
     /// replica has to reach the same verdict from the record alone.
     pub assert: Option<Assertion>,
+    /// The table its record values name, and what a delete there does
+    /// (ADR-0134 D10).
+    pub references: Option<FieldReference>,
 }
 
 /// A declared field on a table.
@@ -122,6 +130,9 @@ pub struct FieldDefinition {
     /// verdict from the record alone — so what is stored is the constraint
     /// itself rather than the sentence that described it.
     pub assert: Option<Assertion>,
+    /// The table its record values name, and what a delete there does
+    /// (ADR-0134 D10).
+    pub references: Option<FieldReference>,
 }
 
 impl FieldDefinition {
@@ -158,6 +169,12 @@ impl FieldDefinition {
                 self.assert
                     .as_ref()
                     .map_or(Value::None, Assertion::to_value),
+            ),
+            (
+                FIELD_REFERENCES.to_owned(),
+                self.references
+                    .as_ref()
+                    .map_or(Value::None, FieldReference::to_value),
             ),
         ]))
     }
@@ -201,6 +218,7 @@ impl FieldDefinition {
             default: optional_text(fields, FIELD_DEFAULT)?,
             analyzer: optional_text(fields, FIELD_ANALYZER)?,
             assert: optional_assertion(fields)?,
+            references: FieldReference::from_field(fields.get(FIELD_REFERENCES))?,
         })
     }
 }
@@ -284,6 +302,7 @@ impl Catalog<'_, '_> {
             default: shape.default,
             analyzer: shape.analyzer,
             assert: shape.assert,
+            references: shape.references,
         };
         self.write(system::FIELDS, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

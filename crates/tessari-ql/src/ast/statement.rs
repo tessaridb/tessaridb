@@ -1,11 +1,10 @@
 //! Every statement the language has, as one enum.
 
 use super::{
-    Answer, ColumnDeclaration, ConsumerSource, CreateTarget, Credential, DeleteBound, EdgeClause,
-    Edit, Expr, FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name,
-    NamespaceChange, OnFailure, RangeExpr, ReachRef, RecordTarget, Select, SetCondition,
-    SpaceBound, TableChange, TableExpiry, TableRef, TopicClauses, TrimBound, UserChange, UserGrant,
-    WriteExpiry, Written,
+    Answer, ColumnDeclaration, ConsumerSource, CreateTarget, Credential, EdgeClause, Edit, Expr,
+    FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name, NamespaceChange, OnFailure,
+    RangeExpr, ReachRef, RecordTarget, Select, SetBound, SetCondition, SpaceBound, TableChange,
+    TableExpiry, TableRef, TopicClauses, TrimBound, UserChange, UserGrant, WriteExpiry, Written,
 };
 use crate::token::Span;
 use tessari_types::{
@@ -546,6 +545,8 @@ pub enum StatementKind {
         /// closed constraint rather than an expression, so nothing below the
         /// language has to evaluate TessariQL to enforce a schema.
         assert: Option<Assertion>,
+        /// `REFERENCES t [ON DELETE …]` after `TYPE record` (ADR-0134 D10).
+        references: Option<super::Reference>,
         /// Whether re-declaring an existing name is accepted.
         if_not_exists: bool,
     },
@@ -1550,6 +1551,10 @@ pub enum StatementKind {
         analyzer: Option<Name>,
         /// What a value must satisfy.
         assert: Option<Assertion>,
+        /// `USING <expr>` — each record's new value, evaluated over the record
+        /// before the new type is checked (ADR-0134 D9); `None` keeps every
+        /// stored value as it is.
+        using: Option<Box<Expr>>,
     },
     /// `ALTER REPLICA b LEADS SHARD prod.shop.orders 2` · `… LEADS NONE` ·
     /// `… AT '…'` · `… ROLES …` · `… CLIENTS AT '…'` · `… HTTP AT '…'`
@@ -1675,6 +1680,10 @@ pub enum StatementKind {
         /// statement the author mistyped, and finding out at the write means
         /// finding out after some of the batch is already decided.
         rows: Vec<Vec<Expr>>,
+        /// `INSERT INTO t (a, b) SELECT x, y FROM …` — the read whose records
+        /// are the rows, each projected value to the column at its position
+        /// (ADR-0134 D7). `rows` is empty when this is written.
+        read: Option<Box<Select>>,
         /// `EXPIRE 30m` / `EXPIRE NONE` after the value: when the record stops
         /// being answered, or that it never does (ADR-0122 A2). Taken only by a
         /// table that declares expiry; absent keeps the instant the record has.
@@ -1934,14 +1943,48 @@ pub enum StatementKind {
         table: TableRef,
         /// What a record must satisfy to be removed.
         condition: Box<Expr>,
-        /// How much this statement may remove.
-        ///
-        /// Not an `Option`. A bound that could be absent would let the
-        /// unbounded form exist in the tree, and the whole point of the clause
-        /// is that removing a table has to be *said*.
-        limit: DeleteBound,
+        /// How much this statement may remove — every match when no `LIMIT`
+        /// was written (ADR-0134 D1).
+        limit: SetBound,
         /// `RETURN BEFORE` answers the records removed, as they stood; no
         /// clause answers how many.
+        answer: Answer,
+    },
+    /// `TRUNCATE TABLE readings` — every record removed, the definition kept
+    /// (ADR-0134 D9).
+    ///
+    /// Not `DELETE FROM … WHERE true` spelled short: no event runs for the
+    /// records it removes, as a table emptied is not a record deleted, and the
+    /// indexes, grants and events stay declared.
+    Truncate {
+        /// The table emptied.
+        table: TableRef,
+    },
+    /// `UPDATE readings SET checked = true WHERE stale = true` — every record a
+    /// condition holds for, changed by one edit (ADR-0134 D1).
+    ///
+    /// Separate from [`StatementKind::Update`] for the reason
+    /// [`StatementKind::DeleteWhere`] is separate from `Delete`: the two answer
+    /// different questions. The record form names one record and its `WHERE` is
+    /// a compare-and-set that refuses; this form names a kind and its `WHERE` is
+    /// a filter, so a record the condition does not hold for is left alone and a
+    /// set nothing matches answers `0`. The target is what tells them apart —
+    /// `readings:1` against `readings` — which is the first thing a reader sees.
+    UpdateWhere {
+        /// The table whose records change.
+        table: TableRef,
+        /// How each matched record changes. Never [`Edit::Whole`]: replacing
+        /// every matched record with one object drops every field it does not
+        /// name on all of them, so the parser refuses it.
+        edit: Edit,
+        /// What a record must satisfy to change, tested against it as stored.
+        condition: Box<Expr>,
+        /// How many records it may change.
+        limit: SetBound,
+        /// `EXPIRE 30m` / `EXPIRE NONE`, applied to every record it changes.
+        expire: Option<WriteExpiry>,
+        /// `RETURN BEFORE` / `RETURN AFTER` answer the records changed; with
+        /// neither the statement answers how many.
         answer: Answer,
     },
     /// `DELETE FROM events:1000..2000 LIMIT ALL` — every record in a span of
@@ -1962,8 +2005,8 @@ pub enum StatementKind {
     /// it would put the two rules in one statement and make the answer depend on
     /// which of them the reader believed.
     ///
-    /// The bound is required for [`Self::DeleteWhere`]'s reason: removing an
-    /// unbounded set has to be said.
+    /// The bound is optional for [`Self::DeleteWhere`]'s reason: with none the
+    /// whole span goes, which is what the span already says.
     DeleteSpan {
         /// The table being cleared out.
         table: TableRef,
@@ -1976,7 +2019,7 @@ pub enum StatementKind {
         /// Where the span sits, for a refusal about a bound.
         span: Span,
         /// How much this statement may remove.
-        limit: DeleteBound,
+        limit: SetBound,
         /// `RETURN BEFORE` answers the records removed, as `DELETE FROM … WHERE`
         /// does.
         answer: Answer,
@@ -2131,6 +2174,24 @@ pub enum StatementKind {
     Commit,
     /// `CANCEL`
     Cancel,
+    /// `SAVEPOINT name` — a place inside the open transaction its work can be
+    /// rolled back to (ADR-0134 D11).
+    Savepoint {
+        /// The name `ROLLBACK TO` and `RELEASE SAVEPOINT` use.
+        name: Name,
+    },
+    /// `ROLLBACK TO [SAVEPOINT] name` — the work since the savepoint discarded,
+    /// the savepoint kept and every later one gone.
+    RollbackTo {
+        /// The savepoint.
+        name: Name,
+    },
+    /// `RELEASE SAVEPOINT name` — the savepoint and every later one forgotten,
+    /// their work kept.
+    ReleaseSavepoint {
+        /// The savepoint.
+        name: Name,
+    },
     /// `VERIFY` — run every check a `COMMIT` runs, then discard the work.
     ///
     /// A third thing to do with an open transaction, and therefore a third word

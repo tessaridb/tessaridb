@@ -14,6 +14,20 @@ use tessari_types::Number;
 /// Clause order is the parser's, which is also application order — the grammar
 /// keeps the two the same on purpose, so there is nothing to choose here.
 pub(crate) fn write_select(out: &mut String, select: &Select) -> Result<()> {
+    // Both are carried in a shape the text does not have — `HAVING` as a
+    // projected value, a combination beside the read — so neither is written.
+    if select.having.is_some() {
+        return Err(unrenderable("a read with `HAVING`", select.span));
+    }
+    if !select.windows.is_empty() {
+        return Err(unrenderable("a read with a window function", select.span));
+    }
+    if !select.combined.is_empty() {
+        return Err(unrenderable(
+            "reads combined by `UNION`, `INTERSECT` or `EXCEPT`",
+            select.span,
+        ));
+    }
     out.push_str("SELECT ");
     write_projection(out, &select.projection)?;
     if let Some((first, rest)) = select.omit.split_first() {

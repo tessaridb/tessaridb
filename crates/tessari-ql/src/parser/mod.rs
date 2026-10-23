@@ -20,9 +20,12 @@ mod group;
 mod key_value;
 mod path;
 mod shape;
+
+pub use shape::HAVING_NAME;
 mod statement;
 mod structure;
 mod topic;
+mod window;
 
 use std::collections::BTreeSet;
 
@@ -79,6 +82,7 @@ pub fn parse(source: &str) -> Result<Script> {
         reading_paths: false,
         depth: 0,
         dropping_if_exists: false,
+        named_reads: Vec::new(),
     }
     .script()
 }
@@ -104,6 +108,7 @@ pub fn parse_expression(source: &str) -> Result<Expr> {
         reading_paths: false,
         depth: 0,
         dropping_if_exists: false,
+        named_reads: Vec::new(),
     };
     let expression = parser.expression()?;
     if parser.peek().is_some() {
@@ -131,6 +136,7 @@ pub fn parse_condition(source: &str) -> Result<Expr> {
         reading_paths: false,
         depth: 0,
         dropping_if_exists: false,
+        named_reads: Vec::new(),
     };
     let condition = parser.condition()?;
     if parser.peek().is_some() {
@@ -159,6 +165,7 @@ pub fn parse_read(source: &str) -> Result<Select> {
         reading_paths: false,
         depth: 0,
         dropping_if_exists: false,
+        named_reads: Vec::new(),
     };
     if parser.peek_keyword() != Some(Keyword::Select) {
         return Err(parser.error_here("`SELECT` — a view is a read"));
@@ -188,6 +195,9 @@ struct Parser<'a> {
     depth: usize,
     /// Whether the `DROP` being read said `IF EXISTS` (ADR-0124 D1).
     dropping_if_exists: bool,
+    /// The reads the statement's `WITH` named, in the order it named them, so
+    /// a name in a `FROM` or a join side stands for its read (ADR-0134 D12).
+    named_reads: Vec<(String, crate::ast::Select)>,
 }
 
 /// How many expressions deep a statement may nest.
@@ -494,11 +504,6 @@ impl Parser<'_> {
 /// Lifted out of the function body so the tests below can walk it. A list whose
 /// entries nothing checks is how this one came to hold two false ones.
 const ABSENT: &[(&str, &str)] = &[
-    // `JOIN` is built. `INNER` and `LEFT` are not: a bare `JOIN` is inner, and
-    // `LEFT` is the additive change that default was chosen to leave room for.
-    ("inner", "a join qualifier — a bare `JOIN` is already inner"),
-    ("left", "an outer join"),
-    ("having", "filtering groups"),
     // The **spelling** is what is absent, not the feature. `START 5 LIMIT 2`
     // parses; an entry saying "limiting a result" told an author a built thing
     // was missing, which is the same failure `search` had and the reason this

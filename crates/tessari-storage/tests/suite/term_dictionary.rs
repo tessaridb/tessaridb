@@ -129,6 +129,7 @@ impl Fixture {
                     default: None,
                     analyzer: Some("plain".to_owned()),
                     assert: None,
+                    references: None,
                 },
             )
             .now()

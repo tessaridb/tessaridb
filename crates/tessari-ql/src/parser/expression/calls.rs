@@ -38,6 +38,22 @@ impl Parser<'_> {
         }
         self.advance();
         self.advance();
+        // `count(DISTINCT x)`: the distinct values, counted exactly. A field
+        // named `distinct` alone, `count(distinct)`, is still counted.
+        let fold = if fold == Aggregate::Count
+            && self.peek_word("distinct")
+            && !self.follows_with(1, &Token::Punct(Punct::ParenClose))
+            && self.eat_word("distinct")
+        {
+            if self.peek() == Some(&Token::Punct(Punct::Star)) {
+                return Err(self.error_here(
+                    "the value whose distinct values are counted — `count(*)` counts records",
+                ));
+            }
+            Aggregate::CountDistinct
+        } else {
+            fold
+        };
         // `count(*)` folds over the records themselves; every other fold, and
         // `count(<expr>)`, folds over a value in each of them.
         let over = if self.eat_punct(Punct::Star) {

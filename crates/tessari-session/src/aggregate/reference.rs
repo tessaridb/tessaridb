@@ -31,7 +31,8 @@ pub(crate) fn fold(aggregate: Aggregate, values: &[Value], span: Span) -> Result
         | Aggregate::Rate
         | Aggregate::Delta
         | Aggregate::ApproxDistinct
-        | Aggregate::ApproxQuantile => {
+        | Aggregate::ApproxQuantile
+        | Aggregate::CountDistinct => {
             let mut running = crate::accumulate::Accumulator::for_aggregate(aggregate, span);
             for value in values {
                 running.offer(value)?;

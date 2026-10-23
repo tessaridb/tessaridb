@@ -1972,27 +1972,6 @@ fn a_required_field_with_a_default_always_holds_a_value() {
 }
 
 #[test]
-fn a_default_does_not_reach_backwards_over_rows_already_written() {
-    // A default is about the moment of writing. A retroactive one would be a
-    // bulk rewrite hiding inside a `DEFINE`.
-    let store = store();
-    let mut session = ready(&store);
-    session
-        .run_now("DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { body: 'first' };")
-        .unwrap();
-    session
-        .run_now("DEFINE FIELD state ON notes TYPE string DEFAULT 'open';")
-        .unwrap();
-
-    let found = session.run_now("SELECT * FROM notes:1;").unwrap();
-    let record = &found[0].records().unwrap()[0].1;
-    let Value::Object(fields) = record else {
-        panic!("not an object");
-    };
-    assert!(!fields.contains_key("state"), "{fields:?}");
-}
-
-#[test]
 fn a_default_is_checked_when_it_is_declared_and_not_when_it_first_bites() {
     let store = store();
     let mut session = ready(&store);

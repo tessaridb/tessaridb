@@ -198,6 +198,11 @@ pub(crate) fn described_field(field: &FieldDefinition) -> Value {
         // holds the lowered form and this is it.
         described.insert("assert".to_owned(), assert.to_value());
     }
+    if let Some(reference) = &field.references {
+        // By the table's id, as an edge table's endpoints are: the id is what
+        // the reference holds, and a rename moves the name and not the id.
+        described.insert("references".to_owned(), reference.to_value());
+    }
     Value::Object(described)
 }
 

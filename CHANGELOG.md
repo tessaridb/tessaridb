@@ -23,6 +23,63 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.38.0 — unreleased
+
+### Added
+
+- **`UPDATE` over a set.** `UPDATE readings SET checked = true WHERE stale = true` and `UPDATE readings MERGE { … }
+  WHERE …` change every record the condition holds for, in one transaction, and answer how many (`0` when nothing
+  matches); `LIMIT n` changes at most that many, and `RETURN BEFORE` / `RETURN AFTER` answer the records. The record
+  form `UPDATE readings:1 … WHERE` keeps its compare-and-set. Refused on a vault (`VaultUpdatedByCondition`).
+- **`LEFT`, `RIGHT` and `FULL JOIN`** (with `OUTER` accepted) keep the records nothing matched, alone in their row, the
+  other side absent; `INNER JOIN` is the bare `JOIN` spelled out. `WHERE` is asked of the joined rows.
+- **`GROUP BY … HAVING`** keeps the groups a condition holds for; it may hold folds, name projected values and read
+  group keys.
+- **A subquery beside a comparison reads as its values.** `x IN (SELECT y FROM …)` compares with each record's `y`;
+  `n = (SELECT max(n) AS m FROM …)` and the orderings compare with the one value (`NONE` when none answered, refused
+  `SubqueryNotOneValue` when several did). Against an array or a document a subquery still compares its records.
+- **`UNION [ALL]`, `INTERSECT` and `EXCEPT`** combine reads left to right, by the store's own equality; each read keeps
+  its own clauses, and the combined answer is ordered or bounded by reading it as a source.
+- **`INSERT INTO t (a, b) SELECT x, y FROM …`** writes one record per record read, values to columns by position, in one
+  transaction; the read never meets its own inserts.
+- **`count(DISTINCT x)`** counts each present value once, exactly, by the store's own equality; a group holding more
+  than 1 000 000 distinct values is refused (`DistinctTooMany`).
+- **`ORDER BY … NULLS FIRST` / `NULLS LAST`** puts `NONE` and `NULL` at the start or the end of a key's order.
+- **`TRUNCATE [TABLE] t`** removes every record in one transaction and keeps the definition, its indexes, grants and
+  events; no event runs for the records removed. Refused on a topic, series, space, bucket or view
+  (`TruncateNotOnThisKind`).
+- **`ALTER TABLE t RENAME TO u`** moves a table to a new name, keeping its records, indexes, grants and consumers;
+  refused while a view or event names it by text (`TableNamedByText`).
+- **`ALTER TABLE t RENAME FIELD a TO b`** rewrites every record and moves the declaration; refused while an index or
+  another field's `ASSERT` reads the field, or a view or event names the table (`FieldNotRenamed`).
+- **`ALTER FIELD f TYPE x USING <expr>`** rewrites each record's value with the expression before the new type is held.
+- **A join of more than two sources.** `a JOIN b ON … JOIN c ON …` joins each side to the rows so far, every side in
+  the row under its name.
+- **`WITH name AS (<read>) <read>`** names a read for one statement; the name stands where a table stands — `FROM`, a
+  join side, a read inside — with the `LIMIT` a materialised source states. A later name may read an earlier one.
+- **Window functions.** `row_number()`, `rank()`, `dense_rank()`, `lag`, `lead`, `first_value`, `last_value` and the
+  folds `count`, `sum`, `mean`, `min`, `max` take `OVER ([PARTITION BY …] [ORDER BY …])` and answer for each record,
+  computed after the `WHERE` and before the read's order and bound; refused beside `GROUP BY`.
+- **`SAVEPOINT name`, `ROLLBACK TO name` and `RELEASE SAVEPOINT name`** inside `BEGIN … COMMIT` roll back part of a
+  transaction; a rollback over a queue claim or work handed to other leaders is refused (`SavepointCrossesClaim`).
+- **`DEFINE FIELD f ON t TYPE record REFERENCES u [ON DELETE REJECT | CASCADE | UNSET]`** — a write must name a
+  record `u` holds (`NoSuchReference`); a delete in `u` is refused, cascades or unsets the field; `TRUNCATE` and
+  `DROP TABLE` of `u` are refused while the field stands (`ReferencedTable`).
+- **1686 conformance cases** define the language and run in the build.
+
+### Changed
+
+- **`LIMIT` is optional on `DELETE FROM … WHERE` and `DELETE FROM t:a..b`.** With none, every match is removed;
+  `LIMIT ALL` still parses. The `WHERE` stays required.
+- **A new field's `DEFAULT` reaches the records already there.** `DEFINE FIELD … DEFAULT v` and `ALTER TABLE … ADD
+  FIELD … DEFAULT v` write `v` into every record that leaves the field out, in the same transaction, so `REQUIRED
+  DEFAULT` can be added to a populated table. No event runs; `ALTER FIELD` still changes later writes only. Refused on
+  a vault holding records (`DefaultOverVault`).
+
+### Fixed
+
+- **The console's Data list names a topic as a topic** rather than as a schemaless table.
+
 ## 0.37.1 — 2026-10-22
 
 ### Fixed

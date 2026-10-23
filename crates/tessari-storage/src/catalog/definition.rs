@@ -109,6 +109,7 @@ const FIELD_SPREAD: &str = "spread";
 const FIELD_AUTO_SPLIT: &str = "auto_split";
 const FIELD_EXPIRE: &str = "expire";
 const FIELD_EVENTS: &str = "events";
+const FIELD_REFERENCED_BY: &str = "referenced_by";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]

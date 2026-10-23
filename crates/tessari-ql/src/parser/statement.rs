@@ -152,7 +152,7 @@ impl Parser<'_> {
                             lower: record.id,
                             upper,
                             inclusive,
-                            limit: self.delete_bound()?,
+                            limit: self.set_bound()?,
                             answer: self.answer(Keyword::Delete)?,
                         }
                     } else {
@@ -163,7 +163,7 @@ impl Parser<'_> {
                         StatementKind::DeleteWhere {
                             table,
                             condition: Box::new(condition),
-                            limit: self.delete_bound()?,
+                            limit: self.set_bound()?,
                             answer: self.answer(Keyword::Delete)?,
                         }
                     }
@@ -277,6 +277,15 @@ impl Parser<'_> {
             // `trim` for the same reason: a text column called `trim` is ordinary.
             _ if self.eat_word("trim") => self.trim_statement()?,
             _ if self.eat_word("hand") => self.hand_statement()?,
+            // `with` for the same reason; what follows it is the named reads.
+            _ if self.eat_word("with") => self.with_statement()?,
+            // `truncate` for the same reason; `TABLE` after it is optional.
+            _ if self.eat_word("truncate") => {
+                self.eat_keyword(Keyword::Table);
+                StatementKind::Truncate {
+                    table: self.table_ref()?,
+                }
+            }
             // `expire` and `persist` for the same reason as `claim`: a cache's
             // own tables are where an `expire` column lives (G035).
             _ if self.eat_word("expire") => self.expire_statement()?,
@@ -287,6 +296,24 @@ impl Parser<'_> {
             _ if self.eat_word("hash") => self.hash_statement()?,
             _ if self.eat_word("members") => self.members_statement()?,
             _ if self.eat_word("scores") => self.scores_statement()?,
+            // Savepoints (ADR-0134 D11), contextual for the reason `claim` is;
+            // `RELEASE SAVEPOINT` before the queue's `RELEASE`, which it shares a
+            // word with.
+            _ if self.peek_word("release") && self.follows_word(1, "savepoint") => {
+                self.advance();
+                self.advance();
+                StatementKind::ReleaseSavepoint { name: self.name()? }
+            }
+            _ if self.eat_word("savepoint") => StatementKind::Savepoint { name: self.name()? },
+            _ if self.eat_word("rollback") => {
+                if !self.eat_keyword(Keyword::To) {
+                    return Err(self.error_here(
+                        "`TO` and a savepoint — the whole transaction is discarded with `CANCEL`",
+                    ));
+                }
+                self.eat_word("savepoint");
+                StatementKind::RollbackTo { name: self.name()? }
+            }
             _ if self.eat_word("release") => self.release_statement(start)?,
             _ if self.eat_word("reveal") => self.reveal_statement(start)?,
             _ if self.eat_word("add") => self.add_recipient_statement(start)?,

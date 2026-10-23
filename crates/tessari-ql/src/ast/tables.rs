@@ -127,6 +127,17 @@ pub enum TableChange {
     /// `DROP EXPIRE` — no default is stamped and no new expiry is written, and
     /// the instants records already carry stand (ADR-0122 A6).
     DropExpire,
+    /// `RENAME TO u` — the table answers to a new name and keeps its id, so its
+    /// records, indexes and grants move with it (ADR-0134 D9).
+    Rename(Name),
+    /// `RENAME FIELD a TO b` — every record's `a` becomes `b`, with its
+    /// declaration and the indexes over it, in one transaction (ADR-0134 D9).
+    RenameField {
+        /// The field as it is named now.
+        from: Name,
+        /// The name it takes.
+        to: Name,
+    },
 }
 
 /// What a table's expiry declaration says (ADR-0122 A1): that its records may
@@ -187,4 +198,28 @@ pub enum WriteExpiry {
     At(Expr),
     /// `EXPIRE NONE` — the record never expires.
     Never(Span),
+}
+
+/// `REFERENCES t [ON DELETE REJECT | CASCADE | UNSET]` after a field's `TYPE
+/// record` (ADR-0134 D10): the table its record values name, in the field's own
+/// database, and what deleting one of that table's records does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reference {
+    /// The table referenced.
+    pub table: Name,
+    /// What a delete there does; `REJECT` unwritten.
+    pub on_delete: OnDelete,
+    /// Where the clause was written.
+    pub span: Span,
+}
+
+/// What deleting a referenced record does to the records naming it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnDelete {
+    /// The delete is refused while a record names it.
+    Reject,
+    /// The records naming it are deleted too.
+    Cascade,
+    /// The field is set to `NONE` in the records naming it.
+    Unset,
 }

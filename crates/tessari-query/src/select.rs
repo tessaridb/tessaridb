@@ -102,6 +102,7 @@ impl<State> Select<State> {
             Ok(route) => self.order.push(Ordering {
                 key: expr(ExprKind::Path(route)),
                 descending,
+                nulls: None,
             }),
             Err(error) => self.remember(error),
         }
@@ -244,6 +245,9 @@ impl Select<Sourced> {
             // builder assembles.
             split: None,
             group: Vec::new(),
+            having: None,
+            combined: Vec::new(),
+            windows: Vec::new(),
             fill: None,
             latest: None,
             order: self.order,

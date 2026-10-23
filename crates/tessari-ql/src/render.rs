@@ -169,11 +169,13 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::Create { .. } => Err(unrenderable("CREATE", span)),
         StatementKind::Insert { .. } => Err(unrenderable("INSERT", span)),
         StatementKind::Update { .. } => Err(unrenderable("UPDATE", span)),
+        StatementKind::UpdateWhere { .. } => Err(unrenderable("UPDATE over a set", span)),
         StatementKind::Upsert { .. } => Err(unrenderable("UPSERT", span)),
         StatementKind::Throw { .. } => Err(unrenderable("THROW", span)),
         StatementKind::Delete { .. } => Err(unrenderable("DELETE", span)),
         StatementKind::DeleteEdge { .. } => Err(unrenderable("DELETE of an edge", span)),
         StatementKind::DeleteWhere { .. } => Err(unrenderable("DELETE FROM", span)),
+        StatementKind::Truncate { .. } => Err(unrenderable("TRUNCATE", span)),
         StatementKind::DeleteSpan { .. } => Err(unrenderable("DELETE FROM a span", span)),
         StatementKind::Get { .. } => Err(unrenderable("GET", span)),
         StatementKind::Set { .. } => Err(unrenderable("SET", span)),
@@ -190,6 +192,9 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::Begin => Err(unrenderable("BEGIN", span)),
         StatementKind::Commit => Err(unrenderable("COMMIT", span)),
         StatementKind::Cancel => Err(unrenderable("CANCEL", span)),
+        StatementKind::Savepoint { .. }
+        | StatementKind::RollbackTo { .. }
+        | StatementKind::ReleaseSavepoint { .. } => Err(unrenderable("a savepoint", span)),
         StatementKind::Verify => Err(unrenderable("VERIFY", span)),
     }
 }
@@ -205,6 +210,11 @@ fn write_ordering(out: &mut String, ordering: &Ordering) -> Result<()> {
     write_expr(out, &ordering.key)?;
     if ordering.descending {
         out.push_str(" DESC");
+    }
+    match ordering.nulls {
+        Some(crate::ast::Nulls::First) => out.push_str(" NULLS FIRST"),
+        Some(crate::ast::Nulls::Last) => out.push_str(" NULLS LAST"),
+        None => {}
     }
     Ok(())
 }

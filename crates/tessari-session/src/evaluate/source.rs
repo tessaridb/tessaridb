@@ -414,6 +414,7 @@ impl Session<'_> {
                 left_key,
                 right_key,
                 asof: true,
+                outer: _,
                 condition,
             } => {
                 let (found, plan, searched) = self
@@ -434,6 +435,7 @@ impl Session<'_> {
                 left_key,
                 right_key,
                 asof: false,
+                outer,
                 condition,
             } => {
                 let (found, plan, searched) = self
@@ -445,6 +447,7 @@ impl Session<'_> {
                             right,
                             left_key,
                             right_key,
+                            outer: *outer,
                             condition: condition.as_deref(),
                         },
                         reporting,

@@ -139,6 +139,7 @@ fn erase_statement(statement: &mut Statement) {
             table,
             analyzer,
             default,
+            using,
             ..
         } => {
             erase_name(name);
@@ -146,6 +147,9 @@ fn erase_statement(statement: &mut Statement) {
             erase_optional_name(analyzer.as_mut());
             if let Some(default) = default {
                 erase_written(default);
+            }
+            if let Some(using) = using {
+                erase_expr(using);
             }
         }
         // An event's condition and body are text, as a view's read is.
@@ -187,10 +191,15 @@ fn erase_statement(statement: &mut Statement) {
             table,
             analyzer,
             default,
+            references,
             ..
         } => {
             erase_name(name);
             erase_table(table);
+            if let Some(reference) = references {
+                erase_name(&mut reference.table);
+                reference.span = CANONICAL;
+            }
             erase_optional_name(analyzer.as_mut());
             if let Some(default) = default {
                 erase_written(default);
@@ -443,11 +452,15 @@ fn erase_statement(statement: &mut Statement) {
             table,
             columns,
             rows,
+            read,
             expire,
             // An answer carries no span.
             answer: _,
             partition,
         } => {
+            if let Some(read) = read {
+                erase_select(read);
+            }
             erase_write_expiry(expire.as_mut());
             erase_table(table);
             if let Some(partition) = partition {
@@ -531,6 +544,26 @@ fn erase_statement(statement: &mut Statement) {
                 }
             }
         }
+        StatementKind::UpdateWhere {
+            table,
+            edit,
+            condition,
+            expire,
+            ..
+        } => {
+            erase_write_expiry(expire.as_mut());
+            erase_table(table);
+            erase_expr(condition);
+            match edit {
+                Edit::Whole(value) | Edit::Merge(value) => erase_expr(value),
+                Edit::Fields(assignments) => {
+                    for assignment in assignments {
+                        erase_path(&mut assignment.route);
+                        erase_expr(&mut assignment.value);
+                    }
+                }
+            }
+        }
         StatementKind::Delete { target, .. }
         | StatementKind::Get { target }
         | StatementKind::Del {
@@ -552,6 +585,7 @@ fn erase_statement(statement: &mut Statement) {
             erase_table(table);
             erase_expr(condition);
         }
+        StatementKind::Truncate { table } => erase_table(table),
         StatementKind::DeleteSpan { table, span, .. } => {
             erase_table(table);
             *span = CANONICAL;
@@ -727,6 +761,9 @@ fn erase_statement(statement: &mut Statement) {
             erase_optional_name(vault.as_mut());
             *span = CANONICAL;
         }
+        StatementKind::Savepoint { name }
+        | StatementKind::RollbackTo { name }
+        | StatementKind::ReleaseSavepoint { name } => erase_name(name),
         StatementKind::Backup { .. }
         | StatementKind::Restore { .. }
         | StatementKind::Begin

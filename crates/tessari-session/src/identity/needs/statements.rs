@@ -130,6 +130,9 @@ impl Needs {
             | StatementKind::Begin
             | StatementKind::Commit
             | StatementKind::Cancel
+            | StatementKind::Savepoint { .. }
+            | StatementKind::RollbackTo { .. }
+            | StatementKind::ReleaseSavepoint { .. }
             | StatementKind::Verify => Self::NOTHING,
             // Governing: deciding what somebody else may do, which is the same
             // kind of act as declaring them.
@@ -406,6 +409,8 @@ impl Needs {
             | StatementKind::AddRecipient { .. }
             | StatementKind::RemoveRecipient { .. }
             | StatementKind::DeleteWhere { .. }
+            // A set update selects by reading, as the set delete does.
+            | StatementKind::UpdateWhere { .. }
             // `DELETE FROM t:a..b` reads no record — it removes by position —
             // and is still in this class, because the class is measured on what
             // the answer discloses rather than on what the statement reads. It
@@ -415,6 +420,9 @@ impl Needs {
             // is the same argument the addressed `CREATE` above is classified
             // by.
             | StatementKind::DeleteSpan { .. }
+            // `TRUNCATE` answers how many records the table held, by the same
+            // argument as the span delete above.
+            | StatementKind::Truncate { .. }
             // A claim writes the hold **and** answers with the record, so it
             // discloses everything a `SELECT` of the same records would. The
             // class is measured on what the answer discloses, which is the same

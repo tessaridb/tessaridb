@@ -192,6 +192,7 @@ impl<'a> Session<'a> {
             sink: crate::backup_to::Sink::none(),
             landed: false,
             acknowledge_open: None,
+            savepoints: Vec::new(),
             across_open: false,
             event_depth: 0,
             now: self.now,

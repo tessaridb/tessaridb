@@ -5,7 +5,7 @@ mod aggregate;
 use super::{BinaryOp, FieldPath, Name, RecordTarget, Select, TableRef};
 use crate::function::Function;
 use crate::token::Span;
-pub use aggregate::{Aggregate, Retention};
+pub use aggregate::{Aggregate, COUNT_DISTINCT_MOST, Retention};
 use tessari_types::{Duration, RecordId, Value};
 
 /// An operator producing a number from two numbers.

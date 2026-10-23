@@ -267,6 +267,7 @@ pub(crate) fn streams(select: &Select) -> bool {
         && !select.order.is_empty()
         && select.fusion.is_none()
         && select.latest.is_none()
+        && select.windows.is_empty()
         && !groups(select)
 }
 
@@ -310,6 +311,7 @@ pub(crate) fn held_bound(select: &Select) -> Option<usize> {
         || !select.fetch.is_empty()
         || select.split.is_some()
         || select.latest.is_some()
+        || !select.windows.is_empty()
         || groups(select)
     {
         return None;
@@ -397,6 +399,7 @@ pub(crate) fn travelling_order(
         || !select.fetch.is_empty()
         || select.split.is_some()
         || select.latest.is_some()
+        || !select.windows.is_empty()
         || groups(select)
     {
         return None;
@@ -411,6 +414,10 @@ pub(crate) fn travelling_order(
         .collect();
     let mut keys = Vec::with_capacity(select.order.len());
     for ordering in &select.order {
+        // A leader sorts in the declared order; a moved `NULLS` is sorted here.
+        if !ordering.in_declared_order() {
+            return None;
+        }
         let mut read = std::collections::BTreeSet::new();
         crate::plan::roots_read(&ordering.key, &mut read);
         if read.iter().any(|root| produced.contains(root.as_str())) {
@@ -439,3 +446,6 @@ fn names_its_own_field(projected: &tessari_ql::Projected) -> bool {
             if path.path.steps().is_empty() && path.path.root() == projected.name.text
     )
 }
+
+#[cfg(test)]
+mod tests;

@@ -217,6 +217,8 @@ pub async fn leading(
             Ok(tessari_ql::Ordering {
                 key: tessari_ql::bound_condition(&key.key, &key.parameters)?,
                 descending: key.descending,
+                // Only an order in the declared form is pushed.
+                nulls: None,
             })
         })
         .collect::<Result<Vec<_>>>()?;

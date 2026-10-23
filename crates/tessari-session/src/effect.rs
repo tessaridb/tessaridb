@@ -119,6 +119,9 @@ impl Effect {
             | StatementKind::Begin
             | StatementKind::Commit
             | StatementKind::Cancel
+            | StatementKind::Savepoint { .. }
+            | StatementKind::RollbackTo { .. }
+            | StatementKind::ReleaseSavepoint { .. }
             // A rehearsal writes nothing, and saying otherwise would make a
             // read-only node refuse to tell a caller whether a write would be
             // accepted — which is exactly the question worth asking there.
@@ -267,7 +270,9 @@ impl Effect {
             | StatementKind::Upsert { .. }
             | StatementKind::Delete { .. }
             | StatementKind::DeleteWhere { .. }
+            | StatementKind::UpdateWhere { .. }
             | StatementKind::DeleteSpan { .. }
+            | StatementKind::Truncate { .. }
             // A claim writes the hold it hands out, and a release clears one.
             // Both change records, so both are writes however much the first one
             // also reads.

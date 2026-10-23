@@ -1,7 +1,11 @@
 //! Deleting what a condition or a span selects.
 
-use tessari_ql::{Answer, DeleteBound, Expr, TableRef};
+use tessari_ql::{Answer, Expr, SetBound, TableRef};
 use tessari_storage::{RecordAddress, Transaction};
+use tessari_types::TableId;
+
+use crate::context::Context;
+use crate::search::Searched;
 
 use crate::condition::boolean;
 use crate::error::Result;
@@ -33,8 +37,7 @@ impl Session<'_> {
     /// **What that costs is worth stating**: the whole matched set is held and
     /// committed at once, so a retention statement that matches a very large
     /// table is a very large commit. `LIMIT n` is how a caller keeps that commit
-    /// to a size they chose; `LIMIT ALL` is how they say the whole table is what
-    /// they meant.
+    /// to a size they chose; with no `LIMIT`, or `LIMIT ALL`, every match goes.
     ///
     /// # The bound counts survivors, not candidates
     ///
@@ -48,12 +51,65 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         table: &TableRef,
         condition: &Expr,
-        (limit, answer): (DeleteBound, Answer),
+        (limit, answer): (SetBound, Answer),
     ) -> Result<Outcome> {
         let ceiling = match limit {
-            DeleteBound::AtMost(count) => count,
-            DeleteBound::All => u64::MAX,
+            SetBound::AtMost(count) => count,
+            SetBound::All => u64::MAX,
         };
+        let Matched {
+            context,
+            table: id,
+            plan,
+            searched,
+            candidates,
+        } = self.matched(transaction, table, condition).await?;
+
+        let mut removed = Removed::new(answer);
+        for (record_id, record) in candidates {
+            if removed.count >= ceiling {
+                break;
+            }
+            // Tested against the whole condition, exactly as a read is: the
+            // index narrowed, and the condition decides. A delete that trusted
+            // the narrowing would remove records the statement did not name.
+            let held = self
+                .evaluate_in(
+                    transaction,
+                    condition,
+                    Scope::searching(&record, &searched).identified(&record_id),
+                )
+                .await?;
+            if !boolean(&held, condition.span)? {
+                continue;
+            }
+            removed.add(&record_id, record);
+            self.delete_record(
+                transaction,
+                RecordAddress::new(context.namespace, context.database, id, record_id),
+                condition.span,
+            )
+            .await?;
+        }
+        Ok(removed.outcome(plan))
+    }
+
+    /// The records a set write's condition may hold for, found the way a read
+    /// finds them and held whole before the first one is changed.
+    ///
+    /// Shared by `DELETE FROM … WHERE` and `UPDATE t … WHERE` (ADR-0134 D1), so
+    /// the two cannot come to disagree about which records a condition reaches.
+    /// Held whole for a second reason the update adds: an edit that moves an
+    /// indexed field would otherwise be met again by a walk still reading that
+    /// index, and change the same record twice. The caller still re-tests each
+    /// candidate against the whole condition — an index narrows, the condition
+    /// decides.
+    pub(crate) async fn matched(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: &TableRef,
+        condition: &Expr,
+    ) -> Result<Matched> {
         let (context, id) = self.resolve_table(transaction, table).await?;
         // A node holding part of a split table would find only its own part's
         // records, remove them, and report the count as the statement's (G051
@@ -116,33 +172,13 @@ impl Session<'_> {
                 }
             };
 
-        let mut removed = Removed::new(answer);
-        for (record_id, record) in candidates {
-            if removed.count >= ceiling {
-                break;
-            }
-            // Tested against the whole condition, exactly as a read is: the
-            // index narrowed, and the condition decides. A delete that trusted
-            // the narrowing would remove records the statement did not name.
-            let held = self
-                .evaluate_in(
-                    transaction,
-                    condition,
-                    Scope::searching(&record, &searched).identified(&record_id),
-                )
-                .await?;
-            if !boolean(&held, condition.span)? {
-                continue;
-            }
-            removed.add(&record_id, record);
-            self.delete_record(
-                transaction,
-                RecordAddress::new(context.namespace, context.database, id, record_id),
-                condition.span,
-            )
-            .await?;
-        }
-        Ok(removed.outcome(plan))
+        Ok(Matched {
+            context,
+            table: id,
+            plan,
+            searched,
+            candidates,
+        })
     }
 
     /// Every record in a span of identities, removed.
@@ -172,11 +208,11 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         table: &TableRef,
         span: IdentitySpan<'_>,
-        (limit, answer): (DeleteBound, Answer),
+        (limit, answer): (SetBound, Answer),
     ) -> Result<Outcome> {
         let ceiling = match limit {
-            DeleteBound::AtMost(count) => count,
-            DeleteBound::All => u64::MAX,
+            SetBound::AtMost(count) => count,
+            SetBound::All => u64::MAX,
         };
         let (context, id) = self.resolve_table(transaction, table).await?;
         let lower = span.lower.fixed(span.at)?;
@@ -267,4 +303,19 @@ impl Removed {
             None => Outcome::Removed { count: self.count },
         }
     }
+}
+
+/// What [`Session::matched`] found for a set write: where, how, and the
+/// candidates still to be re-tested against the condition.
+pub(crate) struct Matched {
+    /// The tenancy the table resolved in.
+    pub(crate) context: Context,
+    /// The table the records belong to.
+    pub(crate) table: TableId,
+    /// How the candidates were reached, for an answer that carries records.
+    pub(crate) plan: Plan,
+    /// The searched context the condition is re-tested in.
+    pub(crate) searched: Searched,
+    /// Every record the read reached, as this session may see it.
+    pub(crate) candidates: Vec<(tessari_types::RecordId, tessari_types::Value)>,
 }

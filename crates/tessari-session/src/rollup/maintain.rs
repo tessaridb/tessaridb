@@ -442,6 +442,7 @@ impl Session<'_> {
         // (ADR-0110).
         let events = self.events_before(transaction, &address).await?;
         let evented = events.as_ref().map(|_| address.clone());
+        let released = address.clone();
         match self.rollups_before(transaction, &address, span).await? {
             None => transaction.delete(address),
             Some(held) => {
@@ -450,6 +451,10 @@ impl Session<'_> {
                     .await?;
             }
         }
+        // After the record is gone from this transaction, so a cascade that
+        // comes back round to it finds nothing to delete (ADR-0134 D10).
+        self.references_released(transaction, &released, span)
+            .await?;
         if let (Some(pending), Some(at)) = (events, evented) {
             self.events_after(transaction, &at, pending, None).await?;
         }

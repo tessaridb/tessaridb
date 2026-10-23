@@ -128,3 +128,28 @@ BACKUP STATE TO 'state.tessarisnap';
 --- case: and so is a restore
 RESTORE SCRIPT FROM 'part.tessariql';
 --- expect: error NoBackupFolder
+
+# Savepoints (ADR-0134 D11): a place inside a transaction its work can be
+# rolled back to.
+
+--- case: rolling back to a savepoint keeps the work before it
+DEFINE COLLECTION drafts;
+BEGIN;
+CREATE drafts:1 = { n: 1 };
+SAVEPOINT kept;
+CREATE drafts:2 = { n: 2 };
+ROLLBACK TO kept;
+COMMIT;
+SELECT * FROM drafts;
+--- expect: rows 1
+
+--- case: a savepoint belongs to an open transaction
+SAVEPOINT nowhere;
+--- expect: error SavepointOutsideATransaction
+
+--- case: and a released one cannot be rolled back to
+BEGIN;
+SAVEPOINT once;
+RELEASE SAVEPOINT once;
+ROLLBACK TO once;
+--- expect: error NoSuchSavepoint

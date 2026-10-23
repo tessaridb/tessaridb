@@ -138,6 +138,9 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::Begin
         | StatementKind::Commit
         | StatementKind::Cancel
+        | StatementKind::Savepoint { .. }
+        | StatementKind::RollbackTo { .. }
+        | StatementKind::ReleaseSavepoint { .. }
         | StatementKind::Verify
         // A backup names **no** table because it reaches every one. That is the
         // opposite of what an empty answer means everywhere else here, so the
@@ -258,11 +261,33 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
 
         // The condition is walked for the same reason a read's is: a subquery
         // inside it reaches a table this statement does not name.
+        StatementKind::Truncate { table } => vec![table],
         StatementKind::DeleteWhere {
             table, condition, ..
         } => {
             let mut found = vec![table];
             found.extend(in_expr(condition));
+            found
+        }
+
+        // The condition and every expression of the edit are walked, for the
+        // reason the record update's edit is: any of them may hold a read.
+        StatementKind::UpdateWhere {
+            table,
+            edit,
+            condition,
+            ..
+        } => {
+            let mut found = vec![table];
+            found.extend(in_expr(condition));
+            match edit {
+                Edit::Whole(value) | Edit::Merge(value) => found.extend(in_expr(value)),
+                Edit::Fields(assignments) => {
+                    for assignment in assignments {
+                        found.extend(in_expr(&assignment.value));
+                    }
+                }
+            }
             found
         }
 
@@ -344,12 +369,18 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // `salaries`, and a grant loop that saw only `audit` would let it
         // through. The column list is **not** walked — those are field names, and
         // a grant is a permission on a table.
-        StatementKind::Insert { table, rows, .. } => {
+        StatementKind::Insert {
+            table, rows, read, ..
+        } => {
             let mut found = vec![table];
             for row in rows {
                 for value in row {
                     found.extend(in_expr(value));
                 }
+            }
+            // `INSERT … SELECT` reads its source, so its tables are reached too.
+            if let Some(read) = read {
+                found.extend(in_select(read));
             }
             found
         }
@@ -480,5 +511,6 @@ fn in_join_side(side: &JoinSide) -> Vec<&TableRef> {
     match side {
         JoinSide::Table { table, .. } => vec![table],
         JoinSide::Read { read, .. } => in_select(read),
+        JoinSide::Joined(join) => nested::in_source(join),
     }
 }

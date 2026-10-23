@@ -1,15 +1,15 @@
-//! A conditional delete has to say how much it may remove.
+//! What a conditional delete's bound counts, and that the bound is optional.
 //!
-//! `DELETE FROM t WHERE …` used to accept no bound at all, which made emptying a
-//! table one mistyped character away from a retention policy. The clause is now
-//! required: `LIMIT n` removes at most that many, `LIMIT ALL` removes every
-//! record the condition holds for and says so on the statement.
+//! `DELETE FROM t WHERE …` takes an optional bound (ADR-0134 D1, owner
+//! 2026-10-23): with none it removes every record the condition holds for,
+//! `LIMIT n` removes at most that many, and `LIMIT ALL` says the first on the
+//! statement. The condition itself stays required.
 //!
-//! The property that needed pinning is not that the bound exists — it is **what
-//! the bound counts**. It counts records *removed*, not records *examined*. A
-//! bound applied to candidates would let the same statement over the same data
-//! remove a different set depending on which index answered it, and the index is
-//! not something the author of the statement chose.
+//! The property that needed pinning is **what the bound counts**. It counts
+//! records *removed*, not records *examined*. A bound applied to candidates
+//! would let the same statement over the same data remove a different set
+//! depending on which index answered it, and the index is not something the
+//! author of the statement chose.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
@@ -61,21 +61,41 @@ fn rows(session: &mut Session<'_>, statement: &str) -> usize {
 }
 
 #[test]
-fn an_unbounded_conditional_delete_is_refused() {
+fn a_conditional_delete_with_no_bound_removes_every_match() {
     let store = store();
     let mut session = ready(&store);
 
-    let refused = session.run_now("DELETE FROM readings WHERE stale = true;");
+    let outcome = session
+        .run_now("DELETE FROM readings WHERE stale = true;")
+        .unwrap();
 
-    assert!(
-        refused.is_err(),
-        "an unbounded conditional delete must not run: {refused:?}"
-    );
-    assert_eq!(
-        rows(&mut session, "SELECT * FROM readings;"),
-        6,
-        "a refused statement removes nothing"
-    );
+    assert_eq!(removed(outcome.last().expect("an outcome")), 4);
+    assert_eq!(rows(&mut session, "SELECT * FROM readings;"), 2);
+}
+
+#[test]
+fn a_conditional_delete_still_needs_its_condition() {
+    let store = store();
+    let mut session = ready(&store);
+
+    let refused = session
+        .run_now("DELETE FROM readings;")
+        .unwrap_err()
+        .to_string();
+
+    assert!(refused.contains("`WHERE`"), "{refused}");
+    assert_eq!(rows(&mut session, "SELECT * FROM readings;"), 6);
+}
+
+#[test]
+fn a_span_delete_with_no_bound_removes_the_span() {
+    let store = store();
+    let mut session = ready(&store);
+
+    let outcome = session.run_now("DELETE FROM readings:2..=4;").unwrap();
+
+    assert_eq!(removed(outcome.last().expect("an outcome")), 3);
+    assert_eq!(rows(&mut session, "SELECT * FROM readings;"), 3);
 }
 
 #[test]
@@ -170,18 +190,14 @@ fn the_single_record_form_needs_no_bound() {
 }
 
 #[test]
-fn a_condition_nothing_satisfies_still_needs_its_bound() {
+fn a_condition_nothing_satisfies_removes_nothing_and_is_not_an_error() {
     let store = store();
     let mut session = ready(&store);
 
-    // The requirement is a property of the statement, not of the data — a
-    // grammar that let a delete through because it happened to match nothing
-    // would be checking after the fact.
-    assert!(
-        session
-            .run_now("DELETE FROM readings WHERE value > 100;")
-            .is_err()
-    );
+    let outcome = session
+        .run_now("DELETE FROM readings WHERE value > 100;")
+        .unwrap();
+    assert_eq!(removed(outcome.last().expect("an outcome")), 0);
 
     let outcome = session
         .run_now("DELETE FROM readings WHERE value > 100 LIMIT ALL;")

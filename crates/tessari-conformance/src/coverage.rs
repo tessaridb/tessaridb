@@ -139,11 +139,13 @@ forms! {
     Insert => "INSERT",
     Select => "SELECT",
     Update => "UPDATE",
+    UpdateWhere => "UPDATE over a set",
     Upsert => "UPSERT",
     Throw => "THROW",
     Delete => "DELETE",
     DeleteWhere => "DELETE FROM",
     DeleteSpan => "DELETE FROM a span",
+    Truncate => "TRUNCATE",
     Get => "GET",
     Set => "SET",
     Del => "DEL",
@@ -163,6 +165,9 @@ forms! {
     Begin => "BEGIN",
     Commit => "COMMIT",
     Cancel => "CANCEL",
+    Savepoint => "SAVEPOINT",
+    RollbackTo => "ROLLBACK TO",
+    ReleaseSavepoint => "RELEASE SAVEPOINT",
     Verify => "VERIFY",
 }
 
@@ -326,11 +331,13 @@ mod tests {
              INSERT INTO t (a) VALUES (1);\
              SELECT * FROM t;\
              UPDATE t:1 = 1;\
+             UPDATE t SET a = 2 WHERE a = 1;\
              UPSERT t:1 = 1;\
              THROW 'no';\
              DELETE t:1;\
              DELETE FROM t WHERE a = 1 LIMIT ALL;\
              DELETE FROM t:1..2 LIMIT ALL;\
+             TRUNCATE TABLE t;\
              DEFINE QUEUE q TIMEOUT 30s ATTEMPTS 5;\
              CLAIM 2 FROM q;\
              CLAIM q:7;\
@@ -372,6 +379,9 @@ mod tests {
              BEGIN;\
              COMMIT;\
              CANCEL;\
+             SAVEPOINT a;\
+             ROLLBACK TO a;\
+             RELEASE SAVEPOINT a;\
              VERIFY;",
         )
         .unwrap();

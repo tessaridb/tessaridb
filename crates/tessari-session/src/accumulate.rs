@@ -78,11 +78,11 @@ mod sketch;
 use rust_decimal::Decimal;
 #[cfg(test)]
 use tessari_ql::Retention;
-use tessari_ql::{Aggregate, ExprKind, Span};
+use tessari_ql::{Aggregate, COUNT_DISTINCT_MOST, ExprKind, Span};
 use tessari_types::{Number, Value};
 
 use crate::aggregate::{approximate, present};
-use crate::error::Result;
+use crate::error::{Error, Result};
 pub(crate) use arithmetic::{Moments, add_exact, add_float, failed, middle, summable};
 pub(crate) use exact::ExactSum;
 pub(crate) use sketch::estimated;
@@ -178,6 +178,14 @@ pub(crate) enum Accumulator {
         /// The sketch so far.
         sketch: distinct::Distinct,
     },
+    /// `count(DISTINCT …)`: every distinct present value, by the store's `=`
+    /// (ADR-0134 D8), up to [`tessari_ql::COUNT_DISTINCT_MOST`].
+    Unique {
+        /// The values so far.
+        held: std::collections::BTreeSet<Value>,
+        /// Where to point a refusal.
+        span: Span,
+    },
     /// `approx_quantile`'s sketch and the rank it answers at (ADR-0122 C3).
     Quantile {
         /// The sketch so far.
@@ -247,6 +255,10 @@ impl Accumulator {
                 span,
             },
             Aggregate::Collect => Self::Every { held: Vec::new() },
+            Aggregate::CountDistinct => Self::Unique {
+                held: std::collections::BTreeSet::new(),
+                span,
+            },
             Aggregate::ApproxDistinct => Self::Distinct {
                 sketch: distinct::Distinct::default(),
             },
@@ -375,6 +387,15 @@ impl Accumulator {
                     held.push(value.clone());
                 }
             }
+            Self::Unique { held, span } => {
+                if present(value) && held.insert(value.clone()) && held.len() > COUNT_DISTINCT_MOST
+                {
+                    return Err(Error::DistinctTooMany {
+                        most: COUNT_DISTINCT_MOST,
+                        span: *span,
+                    });
+                }
+            }
             Self::Distinct { sketch } => {
                 if present(value) {
                     sketch.offer(value);
@@ -492,6 +513,9 @@ impl Accumulator {
             // reason `sum` answers zero: an answer every caller has to write
             // `?? []` after is the wrong answer.
             Self::Every { held } => Ok(Value::Array(held.clone())),
+            Self::Unique { held, .. } => Ok(Value::Number(Number::Integer(
+                i64::try_from(held.len()).unwrap_or(i64::MAX),
+            ))),
             Self::Counter {
                 fold,
                 held,
@@ -530,6 +554,7 @@ impl Accumulator {
             Self::Extreme { held, .. } => usize::from(held.is_some()),
             Self::Middle { held, runs, .. } => held.len().saturating_add(runs.len()),
             Self::Every { held } => held.len(),
+            Self::Unique { held, .. } => held.len(),
             Self::Counter { held, parts, .. } => held.len().saturating_add(parts.len()),
         }
     }

@@ -94,6 +94,8 @@ impl Session<'_> {
         let mut payload = payload;
         crate::queue::hold_engine_fields(transaction, &address, &mut payload, span).await?;
         crate::series::hold_event_time(transaction, &address, &payload, span).await?;
+        self.references_hold(transaction, &address, &payload, span)
+            .await?;
         // A table with events runs them after the write, in this same
         // transaction (ADR-0110); one without pays the definition read.
         let events = self.events_before(transaction, &address).await?;
@@ -429,6 +431,42 @@ impl Session<'_> {
     /// choose the identity and cannot choose the next one, so this is not the
     /// existence oracle that keeps `CREATE` at `read` + `write`. `INSERT` needs
     /// `write` alone — see `identity::Needs::of`.
+    /// The rows an `INSERT … SELECT` writes: each record's projected values,
+    /// in the order the read names them, as the values a `VALUES` row holds.
+    pub(super) async fn selected_rows(
+        &self,
+        transaction: &mut Transaction<'_>,
+        read: &tessari_ql::Select,
+    ) -> Result<Vec<Vec<tessari_ql::Expr>>> {
+        let names: Vec<&str> = read
+            .projection
+            .written()
+            .iter()
+            .map(|value| value.name.text.as_str())
+            .filter(|name| *name != tessari_ql::HAVING_NAME)
+            .collect();
+        let answered = self.read(transaction, read, None, None).await?;
+        Ok(answered
+            .records
+            .into_iter()
+            .map(|(_, record)| {
+                let mut fields = match record {
+                    Value::Object(fields) => fields,
+                    _ => std::collections::BTreeMap::new(),
+                };
+                names
+                    .iter()
+                    .map(|name| tessari_ql::Expr {
+                        kind: tessari_ql::ExprKind::Literal(
+                            fields.remove(*name).unwrap_or(Value::None),
+                        ),
+                        span: read.span,
+                    })
+                    .collect()
+            })
+            .collect())
+    }
+
     pub(super) async fn insert(
         &self,
         transaction: &mut Transaction<'_>,

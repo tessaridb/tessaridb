@@ -166,3 +166,108 @@ SELECT * FROM users AS u JOIN (SELECT * FROM orders LIMIT 10) ON u.name = o.who;
 --- case: the outer statement orders and bounds what the inner one answered
 SELECT * FROM (SELECT * FROM orders LIMIT 100) ORDER BY total DESC LIMIT 1;
 --- expect: rows 1
+
+# A subquery beside a comparison (ADR-0134 D3): its values for `IN`, its one
+# value for `=` and the orderings.
+
+--- case: a value compared IN a subquery meets the subquery's values
+SELECT * FROM users WHERE name IN (SELECT who FROM orders LIMIT 100);
+--- expect: rows 4
+
+--- case: a subquery compared as one value is its one value
+SELECT * FROM orders WHERE total = (SELECT max(total) AS most FROM orders);
+--- expect: rows 1
+
+--- case: and a subquery compared as one value that answers several is refused
+SELECT * FROM orders WHERE total = (SELECT total FROM orders LIMIT 10);
+--- expect: error SubqueryNotOneValue
+
+# Outer joins (ADR-0134 D4): a record nothing matched keeps its row, alone.
+
+--- case: the inner join pairs five
+SELECT * FROM users INNER JOIN orders ON users.name = orders.who;
+--- expect: rows 5
+
+--- case: a left join keeps the four users nobody ordered for
+SELECT * FROM users LEFT JOIN orders ON users.name = orders.who;
+--- expect: rows 9
+
+--- case: a right join keeps the order for nobody
+SELECT * FROM users RIGHT OUTER JOIN orders ON users.name = orders.who;
+--- expect: rows 6
+
+--- case: a full join keeps both
+SELECT * FROM users FULL JOIN orders ON users.name = orders.who;
+--- expect: rows 10
+
+--- case: and an unmatched side is absent, so a condition on it finds the lone rows
+SELECT * FROM users LEFT JOIN orders ON users.name = orders.who WHERE orders = NONE;
+--- expect: rows 4
+
+# `HAVING` (ADR-0134 D5): a condition over each group.
+
+--- case: having keeps the groups its fold holds for
+SELECT who, count(*) AS n FROM orders GROUP BY who HAVING count(*) > 1;
+--- expect: rows 1
+
+--- case: and it may name what the projection answers under
+SELECT who, count(*) AS n FROM orders GROUP BY who HAVING n = 1;
+--- expect: rows 4
+
+--- case: having without a group by is refused
+SELECT count(*) AS n FROM orders HAVING n > 1;
+--- expect: error UnexpectedToken
+
+# Combining reads (ADR-0134 D6) and inserting what a read answers (D7).
+
+--- case: union answers each value once
+SELECT who FROM orders UNION SELECT name AS who FROM users;
+--- expect: rows 9
+
+--- case: union all keeps every record
+SELECT who FROM orders UNION ALL SELECT name AS who FROM users;
+--- expect: rows 14
+
+--- case: intersect answers what both answer
+SELECT who FROM orders INTERSECT SELECT name AS who FROM users;
+--- expect: rows 4
+
+--- case: except answers what only the first answers
+SELECT who FROM orders EXCEPT SELECT name AS who FROM users;
+--- expect: rows 1
+
+--- case: all follows union only
+SELECT who FROM orders EXCEPT ALL SELECT name AS who FROM users;
+--- expect: error UnexpectedToken
+
+--- case: insert takes its rows from a read, by position
+INSERT INTO users (name) SELECT who FROM orders WHERE who = 'nobody';
+--- expect: ok
+
+--- case: and the read must name one value per column
+INSERT INTO users (name, city) SELECT who FROM orders;
+--- expect: error InsertRowArity
+
+# Joins of more than two sources (ADR-0134 D14): each `JOIN` joins the rows so far.
+
+--- case: a third side joins the rows of the first two
+DEFINE COLLECTION cities;
+CREATE cities:1 = { name: 'london', country: 'uk' };
+SELECT * FROM users JOIN orders ON users.name = orders.who JOIN cities ON users.city = cities.name;
+--- expect: rows 2
+
+# Named reads (ADR-0134 D12): `WITH name AS (<read>)` stands for its read.
+
+--- case: a named read stands where a table stands
+WITH buyers AS (SELECT * FROM orders WHERE who != 'nobody' LIMIT 100)
+SELECT * FROM buyers;
+--- expect: rows 5
+
+--- case: a named read joins under its name
+WITH buyers AS (SELECT * FROM orders WHERE who != 'nobody' LIMIT 100)
+SELECT * FROM users JOIN buyers ON users.name = buyers.who;
+--- expect: rows 5
+
+--- case: and states its ceiling like any materialised source
+WITH buyers AS (SELECT * FROM orders) SELECT * FROM buyers;
+--- expect: error UnexpectedToken

@@ -154,6 +154,7 @@ fn every_definition_round_trips_through_its_value() {
             when: Some("$after.v > 1".to_owned()),
             body: "CREATE log = { v: $after.v }".to_owned(),
         }],
+        referenced_by: Vec::new(),
     };
     assert_eq!(
         TableDefinition::from_value(&table.to_value()).unwrap(),

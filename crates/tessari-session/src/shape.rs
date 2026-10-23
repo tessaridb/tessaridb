@@ -36,16 +36,34 @@ type Keyed = (Vec<Value>, RecordId, Value);
 /// unbounded sort that each carried their own comparison would be two orders
 /// that agree until somebody edits one of them, and the symptom would be a
 /// statement answering differently with a `LIMIT` than without.
-fn ranked(
+pub(crate) fn ranked(
     left: (&[Value], &RecordId),
     right: (&[Value], &RecordId),
     order: &[Ordering],
 ) -> core::cmp::Ordering {
+    by_keys(left.0, right.0, order).then_with(|| left.1.cmp(right.1))
+}
+
+/// Which of two sets of keys the order puts first, before the identity breaks a
+/// tie — so `Equal` here is two records holding the same place, which is what a
+/// window's `rank` asks (ADR-0134 D13).
+pub(crate) fn by_keys(left: &[Value], right: &[Value], order: &[Ordering]) -> core::cmp::Ordering {
     for (position, key) in order.iter().enumerate() {
-        let Some((held, other)) = left.0.get(position).zip(right.0.get(position)) else {
+        let Some((held, other)) = left.get(position).zip(right.get(position)) else {
             continue;
         };
-        let ordered = if key.descending {
+        let moved = !key.in_declared_order();
+        let ordered = if moved && absent(held) != absent(other) {
+            // `NULLS FIRST` / `NULLS LAST` moved the absences to the other end.
+            if absent(held) == key.absences_first() {
+                core::cmp::Ordering::Less
+            } else {
+                core::cmp::Ordering::Greater
+            }
+        } else if moved && absent(held) {
+            // Moved together, they keep their own order: `NONE`, then `NULL`.
+            held.cmp(other)
+        } else if key.descending {
             other.cmp(held)
         } else {
             held.cmp(other)
@@ -54,7 +72,12 @@ fn ranked(
             return ordered;
         }
     }
-    left.1.cmp(right.1)
+    core::cmp::Ordering::Equal
+}
+
+/// Whether a key is one of the two absences an order may place.
+const fn absent(value: &Value) -> bool {
+    matches!(value, Value::None | Value::Null)
 }
 
 /// The records an order puts first, without holding the ones it does not.

@@ -30,22 +30,23 @@ mod token;
 
 pub use ast::{
     Admitted, Aggregate, Answer, AnsweredBy, Approximation, ArithmeticOp, Assignment, AutoSplit,
-    BackupForm, ColumnDeclaration, ConsumerSource, Container, CreateTarget, Credential,
-    DeleteBound, Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field,
-    FieldExpiryCondition, FieldMapping, FieldPath, Fill, FillMode, Fusion, GroupChange,
-    GroupClauses, GroupMember, Hand, Handing, Hop, Identity, InfoSubject, JoinSide, ListEnd, Name,
-    NamespaceChange, OnFailure, Ordering, ParameterSlot, Password, PathTo, Presence, Projected,
-    Projection, RangeEnd, RangeExpr, ReachRef, RecordTarget, ReplicaChange, Retention,
-    RollupCompute, ScoreCompare, ScoreRange, Script, SearchAsk, SearchCosts, SearchField,
-    SearchMember, SearchOperator, Select, SetCondition, Source, SpaceBound, Statement,
-    StatementKind, StructureOp, TableChange, TableExpiry, TableRef, Timeout, TopicClauses,
-    TrimBound, UserChange, UserGrant, Using, Version, WriteExpiry, Written,
+    BackupForm, COUNT_DISTINCT_MOST, ColumnDeclaration, Combination, ConsumerSource, Container,
+    CreateTarget, Credential, Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr,
+    ExprKind, Field, FieldExpiryCondition, FieldMapping, FieldPath, Fill, FillMode, Fusion,
+    GroupChange, GroupClauses, GroupMember, Hand, Handing, Hop, Identity, InfoSubject, JoinSide,
+    ListEnd, Name, NamespaceChange, Neighbour, Nulls, OnDelete, OnFailure, Ordering, Outer,
+    ParameterSlot, Password, PathTo, Presence, Projected, Projection, RangeEnd, RangeExpr,
+    ReachRef, RecordTarget, Reference, ReplicaChange, Retention, RollupCompute, ScoreCompare,
+    ScoreRange, Script, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator, Select,
+    SetBound, SetCondition, SetOperation, Source, SpaceBound, Statement, StatementKind,
+    StructureOp, TableChange, TableExpiry, TableRef, Timeout, TopicClauses, TrimBound, UserChange,
+    UserGrant, Using, Version, WindowFunction, Windowed, WriteExpiry, Written,
 };
 pub use bind::{Parameters, bind_expression, bind_read};
 pub use error::{Error, Result};
 pub use function::{Function, Purity};
 pub use lexer::tokenize;
-pub use parser::{parse, parse_condition, parse_expression, parse_read};
+pub use parser::{HAVING_NAME, parse, parse_condition, parse_expression, parse_read};
 pub use portable::{bound_condition, portable};
 pub use render::render;
 pub use tessari_types::BinaryOp;

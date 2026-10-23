@@ -132,6 +132,7 @@ impl<'a> Session<'a> {
             sink: crate::backup_to::Sink::none(),
             landed: false,
             acknowledge_open: None,
+            savepoints: Vec::new(),
             across_open: false,
             event_depth: self.event_depth.saturating_add(1),
             // The writer's statement is still running: its condition and its

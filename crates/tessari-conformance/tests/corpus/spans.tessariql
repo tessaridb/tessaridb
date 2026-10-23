@@ -129,6 +129,11 @@ DELETE FROM readings:90..99 LIMIT ALL;
 SELECT * FROM readings;
 --- expect: rows 2
 
---- case: a span delete without a bound is refused, as a conditional one is
-DELETE FROM readings:1..9;
---- expect: error UnexpectedToken
+--- case: a span delete with no bound removes the whole span, as a conditional one does
+DELETE FROM readings:90..99;
+--- expect: ok
+
+--- case: and over a span that holds records, every one of them
+DELETE FROM readings:0..1000;
+SELECT * FROM readings;
+--- expect: rows 0

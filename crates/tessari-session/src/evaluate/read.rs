@@ -28,7 +28,7 @@ impl Session<'_> {
     /// answer without touching the record is a covering read, which is a
     /// planner's decision about how to run the statement rather than a change to
     /// what the statement says.
-    pub(crate) async fn read(
+    pub(crate) async fn read_one(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
@@ -310,6 +310,15 @@ impl Session<'_> {
         if let Some(latest) = &select.latest {
             records = Self::newest_per_key(records, latest);
         }
+        // Over the records the read keeps, before anything orders or bounds
+        // them: a window's value is about every record the statement asked
+        // about (ADR-0134 D13).
+        let windows = if select.windows.is_empty() {
+            Vec::new()
+        } else {
+            self.windowed(transaction, &select.windows, &records, &noticed)
+                .await?
+        };
         if select.fusion.is_some() {
             return self
                 .fused_answer(
@@ -352,7 +361,10 @@ impl Session<'_> {
                 notes.push(Note::Filled { windows: filled });
             }
             notes.extend(estimated);
-            rows
+            match select.having {
+                Some(_) => crate::aggregate::kept_by_having(rows),
+                None => rows,
+            }
         } else if let Some(wanted) = self.shaped(transaction, select).await? {
             let mut projected = Vec::with_capacity(records.len());
             for (id, record) in records {
@@ -365,6 +377,7 @@ impl Session<'_> {
         } else {
             records
         };
+        let records = super::window::answering(records, &select.windows, windows);
         // Ordering comes after projection so that a key may name what the caller
         // can see: `SELECT address.city AS home … ORDER BY home` reads the name
         // the answer carries rather than the route it came from. A route still

@@ -283,3 +283,47 @@ EXPLAIN SELECT * FROM tally WHERE kind = 'a';
 --- case: analyzing a table nobody declared is refused
 ANALYZE TABLE ghost;
 --- expect: error Unknown
+
+# `TRUNCATE` (ADR-0134 D9): every record removed, the definition kept.
+
+--- case: truncate empties a table and keeps its indexes
+TRUNCATE TABLE tally;
+--- expect: ok
+
+--- case: and the table it emptied still answers, with nothing
+RETURN (SELECT * FROM tally WHERE kind = 'a' LIMIT 10 USING INDEX by_kind);
+--- expect: value []
+
+--- case: a topic is trimmed, not truncated
+DEFINE TOPIC tallied;
+TRUNCATE tallied;
+--- expect: error TruncateNotOnThisKind
+
+# Renames and a type change that rewrites the values (ADR-0134 D9).
+
+--- case: a renamed table keeps its records under the new name
+DEFINE COLLECTION memos;
+CREATE memos:1 = { title: 'a', words: 120 };
+ALTER TABLE memos RENAME TO notes_kept;
+RETURN (SELECT title FROM notes_kept LIMIT 10);
+--- expect: value [{ title: 'a' }]
+
+--- case: and the old name is gone
+SELECT * FROM memos;
+--- expect: error Unknown
+
+--- case: a renamed field moves in every record
+ALTER TABLE notes_kept RENAME FIELD title TO heading;
+RETURN (SELECT heading FROM notes_kept LIMIT 10);
+--- expect: value [{ heading: 'a' }]
+
+--- case: a type change rewrites each value with USING
+DEFINE FIELD words ON notes_kept TYPE int;
+ALTER TABLE notes_kept ALTER FIELD words TYPE string USING type::string(words);
+RETURN (SELECT words FROM notes_kept LIMIT 10);
+--- expect: value [{ words: '120' }]
+
+--- case: a field an index is over is not renamed
+DEFINE INDEX by_kept_heading ON notes_kept FIELDS heading;
+ALTER TABLE notes_kept RENAME FIELD heading TO title;
+--- expect: error FieldNotRenamed

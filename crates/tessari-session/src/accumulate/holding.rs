@@ -98,6 +98,7 @@ impl Accumulator {
             | Self::Quantile { .. } => 0,
             Self::Middle { held, runs, .. } => held.len().saturating_add(runs.len()),
             Self::Every { held } => held.len(),
+            Self::Unique { held, .. } => held.len(),
             Self::Counter { held, parts, .. } => parts
                 .iter()
                 .map(|part| match part {

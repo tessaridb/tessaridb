@@ -135,6 +135,18 @@ SELECT * FROM people ORDER BY age DESC LIMIT 2;
 SELECT * FROM people ORDER BY age DESC LIMIT 5;
 --- expect: rows 5
 
+--- case: NULLS LAST puts the absences after the values, NONE before NULL
+RETURN (SELECT name FROM people WHERE name != 'alan' ORDER BY age NULLS LAST LIMIT 10);
+--- expect: value [{ name: 'ada' }, { name: 'grace' }, { name: 'barbara' }, { name: 'edsger' }]
+
+--- case: and NULLS FIRST before a descending order, even with an index to walk
+RETURN (SELECT name FROM people WHERE name != 'alan' ORDER BY age DESC NULLS FIRST LIMIT 2);
+--- expect: value [{ name: 'barbara' }, { name: 'edsger' }]
+
+--- case: NULLS takes FIRST or LAST
+SELECT * FROM people ORDER BY age NULLS;
+--- expect: error UnexpectedToken
+
 --- case: the words that shape a read are not reserved names
 DEFINE COLLECTION order;
 CREATE order:1 = { limit: 10, by: 'ada', start: 1 };
@@ -164,6 +176,15 @@ SELECT city, name FROM people GROUP BY city, name;
 --- case: and how many distinct there are is that grouping counted
 SELECT count(*) AS cities FROM (SELECT city FROM people GROUP BY city LIMIT 100);
 --- expect: rows 1
+
+--- case: or count(DISTINCT …), which counts each present value once, exactly
+# Five ages written, of which `NULL` and the absent one count for nothing.
+RETURN (SELECT count(DISTINCT city) AS cities, count(DISTINCT age) AS ages FROM ONLY people);
+--- expect: value { ages: 3, cities: 2 }
+
+--- case: and it counts values, never records
+SELECT count(DISTINCT *) AS n FROM people;
+--- expect: error UnexpectedToken
 
 --- case: the folds pass over what holds nothing
 DEFINE COLLECTION scores;

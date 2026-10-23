@@ -1,7 +1,10 @@
 //! Inserts, answers and the edit an UPDATE or UPSERT carries.
 
 use super::super::Parser;
-use crate::ast::{Answer, Assignment, Edit, Expr, RecordTarget, StatementKind, WriteExpiry};
+use crate::ast::{
+    Answer, Assignment, Edit, Expr, Projection, RecordTarget, Select, StatementKind, TableRef,
+    WriteExpiry,
+};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct};
 
@@ -47,12 +50,16 @@ impl Parser<'_> {
         }
         self.expect_punct(Punct::ParenClose, "`)` after the field list")?;
 
-        if !self.eat_word("values") {
-            return Err(self.error_here("`VALUES` and at least one row"));
-        }
+        let read = if self.peek_keyword() == Some(Keyword::Select) {
+            Some(Box::new(self.insert_read(columns.len())?))
+        } else if self.eat_word("values") {
+            None
+        } else {
+            return Err(self.error_here("`VALUES` and at least one row, or `SELECT` and a read"));
+        };
 
         let mut rows: Vec<Vec<Expr>> = Vec::new();
-        loop {
+        while read.is_none() {
             let opened = self.span_here();
             self.expect_punct(Punct::ParenOpen, "`(` and a row of values")?;
             let mut row = Vec::new();
@@ -96,6 +103,7 @@ impl Parser<'_> {
             table,
             columns,
             rows,
+            read,
             expire,
             answer,
             partition,
@@ -164,6 +172,46 @@ impl Parser<'_> {
         }
     }
 
+    /// `UPDATE readings SET checked = true WHERE stale = true [LIMIT n]` — the
+    /// set form, read from just after the table (ADR-0134 D1).
+    ///
+    /// `SET` and `MERGE` only: a whole value would replace every matched record
+    /// with one object and drop every field it does not name on all of them,
+    /// which no set write means. The `WHERE` is required, as a set delete's is —
+    /// it is the clause whose absence would change the whole table.
+    pub(crate) fn update_where(&mut self, table: TableRef) -> Result<StatementKind> {
+        let edit = if self.eat_keyword(Keyword::Set) {
+            let mut assignments = vec![self.assignment()?];
+            while self.eat_punct(Punct::Comma) {
+                assignments.push(self.assignment()?);
+            }
+            Edit::Fields(assignments)
+        } else if self.eat_keyword(Keyword::Merge) {
+            Edit::Merge(self.expression()?)
+        } else {
+            return Err(self.error_here(
+                "`:` and one record's identity, or `SET` or `MERGE` and a `WHERE` — a whole value would replace every matched record",
+            ));
+        };
+        self.expect_keyword(
+            Keyword::Where,
+            "`WHERE` and which records to change, or `:` and one record's identity",
+        )?;
+        let condition = self.condition()?;
+        crate::parser::shape::no_fold(&condition)?;
+        crate::parser::shape::check_several(&condition)?;
+        let limit = self.set_bound()?;
+        let expire = self.write_expiry()?;
+        Ok(StatementKind::UpdateWhere {
+            table,
+            edit,
+            condition: Box::new(condition),
+            limit,
+            expire,
+            answer: self.answer(Keyword::Update)?,
+        })
+    }
+
     /// `WHERE <condition>` after an edit — the compare-and-set clause.
     ///
     /// `UPDATE` only. `UPSERT` asserts nothing about the record it writes, so a
@@ -205,5 +253,62 @@ impl Parser<'_> {
             route,
             value: self.condition()?,
         })
+    }
+}
+
+impl Parser<'_> {
+    /// The read an `INSERT … SELECT` takes its rows from (ADR-0134 D7).
+    ///
+    /// Its projection names the values, one per column in the same order, and
+    /// no `*`: a record's fields have no position to map a column to.
+    fn insert_read(&mut self, columns: usize) -> Result<Select> {
+        let opened = self.span_here();
+        let read = self.select_statement()?;
+        let reads = std::iter::once(&read).chain(read.combined.iter().map(|next| &*next.read));
+        let names = |one: &Select| -> Vec<String> {
+            one.projection
+                .written()
+                .iter()
+                .map(|value| value.name.text.clone())
+                .filter(|name| name != crate::HAVING_NAME)
+                .collect()
+        };
+        let first = names(&read);
+        for one in reads {
+            // The rows are matched to the columns by the first read's names,
+            // so a combined read answers under those names throughout.
+            if names(one) != first {
+                return Err(Error::UnexpectedToken {
+                    expected: "reads answering under the same names, so each row's values reach \
+                               the same columns",
+                    found: "a combined read naming other values".to_owned(),
+                    span: opened,
+                });
+            }
+            let Projection::Values {
+                everything: None,
+                values,
+            } = &one.projection
+            else {
+                return Err(Error::UnexpectedToken {
+                    expected: "the values each row supplies, named one per column — not `*`",
+                    found: "`*`".to_owned(),
+                    span: opened,
+                });
+            };
+            let found = values
+                .iter()
+                .filter(|value| value.name.text != crate::HAVING_NAME)
+                .count();
+            if found != columns {
+                return Err(Error::InsertRowArity {
+                    row: 1,
+                    found,
+                    expected: columns,
+                    span: opened,
+                });
+            }
+        }
+        Ok(read)
     }
 }

@@ -71,3 +71,27 @@ SELECT fetch FROM posts:6 FETCH author;
 --- case: json::encode writes a reference by its table's name, as the HTTP surface does
 RETURN json::encode({ author: users:1 });
 --- expect: value '{"author":"users:1"}'
+
+# A field that REFERENCES a table (ADR-0134 D10): its record values must name
+# records that table holds, and a delete there rejects, cascades or unsets.
+
+--- case: a reference field over a record type
+DEFINE COLLECTION owners;
+DEFINE COLLECTION pets;
+DEFINE FIELD owner ON pets TYPE record REFERENCES owners ON DELETE CASCADE;
+CREATE owners:1 = { name: 'ada' };
+CREATE pets:1 = { owner: owners:1 };
+--- expect: ok
+
+--- case: a value naming a record the table does not hold is refused
+CREATE pets:2 = { owner: owners:9 };
+--- expect: error NoSuchReference
+
+--- case: a referenced table is not emptied while the reference stands
+TRUNCATE owners;
+--- expect: error ReferencedTable
+
+--- case: and a delete there cascades to the records naming it
+DELETE owners:1;
+SELECT * FROM pets;
+--- expect: rows 0
