@@ -23,6 +23,16 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.38.2 — 2026-10-24
+
+### Fixed
+
+- **A committed write is readable at once.** Under concurrent load a transaction could commit while an earlier
+  write was still being applied by the storage engine, and the next statement, on the same connection or another,
+  could read the state from before it: a conditional `UPDATE … WHERE` contested by many writers could then succeed
+  for more than one of them, and a `USE NAMESPACE` right after its `DEFINE NAMESPACE` could be refused. The
+  storage engine is now TessariKV `0.1.1`, whose writes return only once they are visible.
+
 ## 0.38.1 — 2026-10-23
 
 ### Fixed
