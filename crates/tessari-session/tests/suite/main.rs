@@ -11,6 +11,7 @@
 
 use tessari_session::Now;
 mod a_catalog_record_is_not_a_users_row;
+mod account_lock;
 mod acknowledge;
 mod across;
 mod across_indexes;

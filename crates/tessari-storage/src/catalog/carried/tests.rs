@@ -212,6 +212,7 @@ fn every_system_table_has_a_recorded_replication_class() {
         role: None,
         authorities: crate::catalog::Held::default(),
         secret: "$argon2id$".to_owned(),
+        locked: false,
     };
     assert_eq!(
         class(system::USERS, RecordId::Int(2), Some(namespaced.to_value())),

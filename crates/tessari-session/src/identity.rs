@@ -286,6 +286,7 @@ impl Session<'_> {
                     user.role = Some(role);
                 }
             }
+            UserChange::Locked(locked) => user.locked = *locked,
         }
         Catalog::new(transaction).update_user(&user);
         Ok(Outcome::Done)

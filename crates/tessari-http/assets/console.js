@@ -2240,6 +2240,12 @@ Shown once. The node keeps only its digest.`);
   function alterationSays(name, what, role2) {
     const today = lookup(name);
     const standing = today === null ? " This panel has not been told what " + name + " reaches — press List to find out." : " Today " + name + " is " + today.role + " in " + today.reach + ", and that is unchanged.";
+    if (what === "lock") {
+      return "Locks " + name + ". Their password and grants are kept, but every sign-in is refused and any session they are holding ends at its next statement. Unlock gives back exactly what was there." + standing;
+    }
+    if (what === "unlock") {
+      return "Unlocks " + name + ". They sign in again with the password they already have and reach what they reached before." + standing;
+    }
     if (what === "password") {
       return "Sets a new password for " + name + ". The one they have stops working and any session they are holding ends, so they sign in again with the new one." + standing;
     }
@@ -2343,8 +2349,12 @@ Shown once. The node keeps only its digest.`);
     if (name === "") {
       return null;
     }
-    if (value("change-what") === "password") {
+    const changing = value("change-what");
+    if (changing === "password") {
       return "ALTER USER " + name + " SET PASSWORD " + quoted(value("change-password")) + ";";
+    }
+    if (changing === "lock" || changing === "unlock") {
+      return "ALTER USER " + name + (changing === "lock" ? " SET LOCKED;" : " SET UNLOCKED;");
     }
     const named = changedRole();
     return named === "" ? null : "ALTER USER " + name + " SET ROLE " + named + ";";
@@ -2358,6 +2368,7 @@ Shown once. The node keeps only its digest.`);
   function changeWhy() {
     return trimmed("change-why");
   }
+  var changeKind = (changing) => changing === "password" || changing === "lock" || changing === "unlock" ? changing : "role";
   function shapeTheChange() {
     const changing = value("change-what");
     hide("change-password-field", changing !== "password");
@@ -2365,11 +2376,7 @@ Shown once. The node keeps only its digest.`);
     hide("change-role-other-field", changing !== "role" || value("change-role") !== "other");
     write(
       "change-preview",
-      alteration() === null ? changeMissing() : alterationSays(
-        trimmed("change-name"),
-        value("change-what") === "password" ? "password" : "role",
-        changedRole()
-      )
+      alteration() === null ? changeMissing() : alterationSays(trimmed("change-name"), changeKind(changing), changedRole())
     );
   }
   function removal2() {
@@ -3491,9 +3498,15 @@ Shown once. The node keeps only its digest.`);
     setValue("change-password", "");
     setValue("change-why", "");
     shapeTheChange();
-    write("change-dialog-title", kind3 === "password" ? `New password for ${name}` : `Role of ${name}`);
+    write("change-dialog-title", CHANGE_TITLES[kind3](name));
     openDialog("change-dialog");
   }
+  var CHANGE_TITLES = {
+    password: (name) => `New password for ${name}`,
+    role: (name) => `Role of ${name}`,
+    lock: (name) => `Lock ${name}`,
+    unlock: (name) => `Unlock ${name}`
+  };
   async function showUser(name) {
     showing = name;
     write("user-dialog-title", name);
@@ -4755,6 +4768,7 @@ ${JSON.stringify(held6, null, 2)}`;
   var ACTIONS = [
     { kind: "password", label: "Password…" },
     { kind: "role", label: "Role…" },
+    { kind: "lock", label: "Lock…" },
     { kind: "grant", label: "Give…" },
     { kind: "remove", label: "Remove…" }
   ];
@@ -4791,11 +4805,12 @@ ${JSON.stringify(held6, null, 2)}`;
       opener.textContent = name;
       opener.addEventListener("click", () => act("detail", name));
       row.insertCell().appendChild(opener);
-      row.insertCell().textContent = said2(one2);
+      row.insertCell().textContent = said2(one2) + (one2.locked === true ? " · locked" : "");
       row.insertCell().textContent = reach2(one2);
       const actions = row.insertCell();
       actions.className = "actions";
-      for (const action of ACTIONS) {
+      for (const listed2 of ACTIONS) {
+        const action = listed2.kind === "lock" && one2.locked === true ? { kind: "unlock", label: "Unlock…" } : listed2;
         const pressed = made("button", action.kind === "remove" ? "quiet small danger" : "quiet small");
         pressed.type = "button";
         pressed.textContent = action.label;

@@ -78,6 +78,10 @@ pub enum UserChange {
     /// `SET ROLE editor` — what the user may do, within the tenancy they
     /// already hold. The tenancy itself does not move.
     Role(Name),
+    /// `SET LOCKED` / `SET UNLOCKED` — whether the user may act at all. The
+    /// password, the role and the grants are kept, so unlocking gives back
+    /// exactly what locking took away.
+    Locked(bool),
 }
 
 /// What a `DEFINE USER` says the user may do.

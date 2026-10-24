@@ -12,6 +12,7 @@ import { facts } from "./draw.js";
 import { offer, type Reach } from "./grants.js";
 import { told } from "./session.js";
 import { shapeTheChange, shapeTheRemoval } from "./user-forms.js";
+import type { Alteration } from "./user-says.js";
 
 /** The account the dialog is showing, so a grant applied elsewhere can redraw it. */
 let showing: string | null = null;
@@ -94,7 +95,7 @@ function drawHoldings(name: string, list: readonly Held[]): void {
 }
 
 /** What may be done to one account, each from its own row. */
-export type Act = "detail" | "password" | "role" | "grant" | "remove";
+export type Act = "detail" | "password" | "role" | "lock" | "unlock" | "grant" | "remove";
 
 /**
  * Open the dialog for one action on one account.
@@ -128,9 +129,17 @@ export function act(kind: Act, name: string): void {
   setValue("change-password", "");
   setValue("change-why", "");
   shapeTheChange();
-  write("change-dialog-title", kind === "password" ? `New password for ${name}` : `Role of ${name}`);
+  write("change-dialog-title", CHANGE_TITLES[kind](name));
   openDialog("change-dialog");
 }
+
+/** The heading of the change dialog for each change it makes. */
+const CHANGE_TITLES: Record<Alteration, (name: string) => string> = {
+  password: (name) => `New password for ${name}`,
+  role: (name) => `Role of ${name}`,
+  lock: (name) => `Lock ${name}`,
+  unlock: (name) => `Unlock ${name}`,
+};
 
 /** Open the account's dialog and read it from the node. */
 export async function showUser(name: string): Promise<void> {

@@ -79,6 +79,13 @@ impl<'a> Session<'a> {
             self.missed(name).await;
             return Err(Error::SignInRefused);
         }
+        // After the hash, so a locked account costs what any sign-in costs, and in the words a wrong password gets: a
+        // refusal naming the lock would tell a guesser the password was right. Not counted as a miss, because nothing
+        // was guessed wrong.
+        if user.locked {
+            tracing::warn!(user = %name, "sign-in refused: the user is locked");
+            return Err(Error::SignInRefused);
+        }
         tracing::info!(user = %name, "signed in");
         self.store.attempts().succeeded(name);
         if let Some(budget) = &self.budget {
@@ -134,7 +141,8 @@ impl<'a> Session<'a> {
             .into_iter()
             .find(|user| user.id == id);
         transaction.rollback();
-        let Some(user) = found else {
+        // A locked declarer is acted as by nobody, as a deleted one is; unlocking resumes the consumer.
+        let Some(user) = found.filter(|user| !user.locked) else {
             return Err(Error::UnknownUser { id });
         };
         self.identity = Identity::Signed(Box::new(user));
@@ -256,7 +264,8 @@ impl<'a> Session<'a> {
             .into_iter()
             .find(|user| user.id == id);
         transaction.rollback();
-        let Some(mut user) = found else {
+        // A locked user is not known to a session until unlocked, as a removed one is not at all.
+        let Some(mut user) = found.filter(|user| !user.locked) else {
             return Err(Error::Unknown {
                 entity: "user",
                 name,

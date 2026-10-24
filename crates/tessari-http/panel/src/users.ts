@@ -36,6 +36,7 @@ interface Listed {
   readonly role?: string;
   readonly namespace?: string;
   readonly database?: string;
+  readonly locked?: boolean;
 }
 
 /**
@@ -54,6 +55,7 @@ let everybody: readonly Listed[] = [];
 const ACTIONS: readonly { readonly kind: Act; readonly label: string }[] = [
   { kind: "password", label: "Password…" },
   { kind: "role", label: "Role…" },
+  { kind: "lock", label: "Lock…" },
   { kind: "grant", label: "Give…" },
   { kind: "remove", label: "Remove…" },
 ];
@@ -113,11 +115,16 @@ function listing(rows: readonly Listed[]): HTMLTableElement {
     opener.textContent = name;
     opener.addEventListener("click", () => act("detail", name));
     row.insertCell().appendChild(opener);
-    row.insertCell().textContent = said(one);
+    row.insertCell().textContent = said(one) + (one.locked === true ? " · locked" : "");
     row.insertCell().textContent = reach(one);
     const actions = row.insertCell();
     actions.className = "actions";
-    for (const action of ACTIONS) {
+    for (const listed of ACTIONS) {
+      // A locked account is offered the way back rather than a second lock.
+      const action =
+        listed.kind === "lock" && one.locked === true
+          ? { kind: "unlock" as const, label: "Unlock…" }
+          : listed;
       const pressed = made("button", action.kind === "remove" ? "quiet small danger" : "quiet small");
       pressed.type = "button";
       pressed.textContent = action.label;
