@@ -23,6 +23,15 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.38.4 — 2026-10-25
+
+### Added
+
+- **`ALTER USER … SET LOCKED` and `SET UNLOCKED`.** A locked user cannot sign in, a session already open as them
+  is refused on its next statement, their tokens stop working and a consumer they declared stops writing; the
+  password, role and grants are kept, so unlocking restores them. `INFO FOR USER` and `INFO FOR USERS` report
+  `locked`, and a script backup carries the lock.
+
 ## 0.38.3 — 2026-10-25
 
 ### Fixed
