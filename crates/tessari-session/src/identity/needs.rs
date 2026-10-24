@@ -2,7 +2,7 @@
 
 mod statements;
 
-use tessari_ql::{CreateTarget, Expr, ExprKind, InfoSubject, StatementKind};
+use tessari_ql::{CreateTarget, Expr, ExprKind, Function, InfoSubject, StatementKind};
 use tessari_storage::{Kind, UserDefinition};
 
 /// What a statement demands: a set of authority kinds, and where they are held.
@@ -227,5 +227,65 @@ pub(crate) fn holds_node_read(expr: &Expr) -> bool {
         | ExprKind::Record(_)
         | ExprKind::Get(_)
         | ExprKind::Ttl(_) => false,
+    }
+}
+
+/// Whether an expression is answered from its literals, parameters and the
+/// session alone, reading no record, table, key, index or catalog.
+///
+/// A value statement made only of those demands nothing, as `USE` does (see
+/// [`Needs::of`]): every client follows a redirect by asking
+/// `session::context()` first (protocol §3.12), so demanding `read` for it left
+/// every identity without that kind — a provisioning account, a write-only
+/// ingest — unable ever to follow one. The walk is the conservative half of the
+/// question: a record or a range of them, a table, a field of a record, a key's
+/// value or lifetime, a subquery or a fold reads the store, and so do the search
+/// functions, which read an index, and `json::encode`, which reads the catalog.
+pub(crate) fn reads_nothing(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Literal(_) | ExprKind::Parameter(_) => true,
+        ExprKind::Not(inner) | ExprKind::Negate(inner) | ExprKind::Route { value: inner, .. } => {
+            reads_nothing(inner)
+        }
+        ExprKind::If {
+            condition,
+            then,
+            otherwise,
+        } => {
+            reads_nothing(condition)
+                && reads_nothing(then)
+                && otherwise.as_deref().is_none_or(reads_nothing)
+        }
+        ExprKind::Coalesce(left, right)
+        | ExprKind::And(left, right)
+        | ExprKind::Or(left, right)
+        | ExprKind::Arithmetic { left, right, .. }
+        | ExprKind::Binary { left, right, .. } => reads_nothing(left) && reads_nothing(right),
+        ExprKind::Call {
+            function,
+            arguments,
+            ..
+        } => {
+            !matches!(
+                function,
+                Function::SearchScore
+                    | Function::SearchExplain
+                    | Function::SearchHighlight
+                    | Function::SearchRanks
+                    | Function::SearchTable
+                    | Function::SearchSnippet
+                    | Function::JsonEncode
+            ) && arguments.iter().all(reads_nothing)
+        }
+        ExprKind::Array(items) | ExprKind::Set(items) => items.iter().all(reads_nothing),
+        ExprKind::Object(fields) => fields.iter().all(|field| reads_nothing(&field.value)),
+        ExprKind::Path(_)
+        | ExprKind::Table(_)
+        | ExprKind::Record(_)
+        | ExprKind::Get(_)
+        | ExprKind::Ttl(_)
+        | ExprKind::Range(_)
+        | ExprKind::Select(_)
+        | ExprKind::Fold { .. } => false,
     }
 }
