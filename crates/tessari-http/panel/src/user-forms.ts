@@ -12,7 +12,7 @@
 //! who cannot read it is guessing.
 
 import { at, disable, hide, trimmed, value, write } from "./dom.js";
-import { alterationSays, definitionSays, removalSays } from "./user-says.js";
+import { type Alteration, alterationSays, definitionSays, removalSays } from "./user-says.js";
 
 /** Text into a TessariQL string literal, escaped the way the language escapes. */
 export function quoted(text: string): string {
@@ -143,8 +143,12 @@ export function alteration(): string | null {
   if (name === "") {
     return null;
   }
-  if (value("change-what") === "password") {
+  const changing = value("change-what");
+  if (changing === "password") {
     return "ALTER USER " + name + " SET PASSWORD " + quoted(value("change-password")) + ";";
+  }
+  if (changing === "lock" || changing === "unlock") {
+    return "ALTER USER " + name + (changing === "lock" ? " SET LOCKED;" : " SET UNLOCKED;");
   }
   const named = changedRole();
   return named === "" ? null : "ALTER USER " + name + " SET ROLE " + named + ";";
@@ -170,6 +174,10 @@ export function changeWhy(): string {
 }
 
 
+/** The change the form is set to, in the words the preview is written for. */
+const changeKind = (changing: string): Alteration =>
+  changing === "password" || changing === "lock" || changing === "unlock" ? changing : "role";
+
 /** Show the fields this change needs, and what running it will do. */
 export function shapeTheChange(): void {
   const changing = value("change-what");
@@ -180,11 +188,7 @@ export function shapeTheChange(): void {
     "change-preview",
     alteration() === null
       ? changeMissing()
-      : alterationSays(
-          trimmed("change-name"),
-          value("change-what") === "password" ? "password" : "role",
-          changedRole(),
-        ),
+      : alterationSays(trimmed("change-name"), changeKind(changing), changedRole()),
   );
 }
 

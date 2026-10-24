@@ -432,6 +432,8 @@ ALTER TABLE notes SET SCHEMALESS;
 
 ALTER USER grace SET ROLE editor;
 ALTER USER grace SET PASSWORD 'a longer one';
+ALTER USER grace SET LOCKED;
+ALTER USER grace SET UNLOCKED;
 
 ALTER NAMESPACE prod REPLICATION FACTOR 2;
 ALTER NAMESPACE prod REPLICATION NONE;
@@ -462,7 +464,13 @@ DROP TOPIC CONSUMER events_in;
 
 **`ALTER USER` is how a user changes after it exists**, and it changes one thing
 per statement: `SET ROLE` moves what the user may do, `SET PASSWORD` replaces the
-credential. Two statements rather than one with two optional halves, because a
+credential, `SET LOCKED` keeps the user from acting and `SET UNLOCKED` lets them
+act again. A locked user keeps the password, the role and the grants: signing in
+is refused in the words a wrong password gets, a session already open is
+forgotten on its next statement, a token stops working, and a consumer the user
+declared stops writing — and unlocking gives every one of those back. A node older
+than 0.38.4 does not know the lock, so every node of a cluster is upgraded before
+one is relied on. Two statements rather than one with two optional halves, because a
 statement that changed only what it named would make *leave the role alone* and
 *reset the role* the same sentence — the reason `ALTER FIELD` replaces a
 declaration whole is the reason this one does not.

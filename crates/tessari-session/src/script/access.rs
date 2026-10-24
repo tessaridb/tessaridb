@@ -172,6 +172,9 @@ async fn declare(
         at_own.join(", "),
         user.secret
     );
+    if user.locked {
+        let _ = writeln!(written, "ALTER USER {} SET LOCKED;", user.name);
+    }
     for held in user.authorities.iter().filter(|held| held.reach != own) {
         let target = match held.reach {
             Reach::Store => "STORE".to_owned(),

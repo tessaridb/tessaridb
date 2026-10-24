@@ -33,6 +33,9 @@ export function definitionSays(name: string, role: string, space: string): strin
   );
 }
 
+/** The changes the change dialog makes. */
+export type Alteration = "password" | "role" | "lock" | "unlock";
+
 /**
  * What this change will do to the person it is about.
  *
@@ -42,12 +45,30 @@ export function definitionSays(name: string, role: string, space: string): strin
  * the same as a demotion is asserted by the probe in the suite, not by this
  * sentence — the pane says what is proven elsewhere and invents nothing.
  */
-export function alterationSays(name: string, what: "password" | "role", role: string): string {
+export function alterationSays(name: string, what: Alteration, role: string): string {
   const today = lookup(name);
   const standing =
     today === null
       ? " This panel has not been told what " + name + " reaches — press List to find out."
       : " Today " + name + " is " + today.role + " in " + today.reach + ", and that is unchanged.";
+  if (what === "lock") {
+    return (
+      "Locks " +
+      name +
+      ". Their password and grants are kept, but every sign-in is refused and any session " +
+      "they are holding ends at its next statement. Unlock gives back exactly what was there." +
+      standing
+    );
+  }
+  if (what === "unlock") {
+    return (
+      "Unlocks " +
+      name +
+      ". They sign in again with the password they already have and reach what they reached " +
+      "before." +
+      standing
+    );
+  }
   if (what === "password") {
     return (
       "Sets a new password for " +

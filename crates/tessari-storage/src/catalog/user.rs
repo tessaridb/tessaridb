@@ -36,6 +36,7 @@ const FIELD_NAMESPACE: &str = "namespace";
 const FIELD_DATABASE: &str = "database";
 const FIELD_ROLE: &str = "role";
 const FIELD_SECRET: &str = "secret";
+const FIELD_LOCKED: &str = "locked";
 
 const ENTITY: &str = "user";
 
@@ -147,6 +148,9 @@ pub struct UserDefinition {
     pub authorities: Held,
     /// The password hash, opaque to this layer.
     pub secret: String,
+    /// Whether the user is kept from acting: no sign-in, no token, no open session, nothing acting as them. Written
+    /// only when set, so every record written before the field existed reads as unlocked.
+    pub locked: bool,
 }
 
 impl UserDefinition {
@@ -168,6 +172,9 @@ impl UserDefinition {
             fields.insert(FIELD_DATABASE.to_owned(), number(database.get()));
         }
         fields.insert(FIELD_AUTHORITIES.to_owned(), self.authorities.to_value());
+        if self.locked {
+            fields.insert(FIELD_LOCKED.to_owned(), Value::Bool(true));
+        }
         Value::Object(fields)
     }
 
@@ -216,6 +223,13 @@ impl UserDefinition {
         let Some(reach) = Reach::of(namespace, database) else {
             return Err(malformed(FIELD_NAMESPACE, "a database with no namespace"));
         };
+        // Absent is unlocked; anything but a boolean is corruption, and guessing either way would let somebody in or
+        // keep somebody out that nobody chose to.
+        let locked = match fields.get(FIELD_LOCKED) {
+            None => false,
+            Some(Value::Bool(locked)) => *locked,
+            Some(other) => return Err(malformed(FIELD_LOCKED, other.type_name())),
+        };
         Ok(Self {
             id: field_id(fields, FIELD_ID, ENTITY)?,
             name: field_name(fields, ENTITY)?,
@@ -224,6 +238,7 @@ impl UserDefinition {
             role,
             authorities: held_of(fields, role, reach)?,
             secret: secret.clone(),
+            locked,
         })
     }
 }
@@ -269,6 +284,7 @@ impl Catalog<'_, '_> {
             role: authorities.role_within(reach),
             authorities: authorities.clone(),
             secret: secret.to_owned(),
+            locked: false,
         };
         self.write(system::USERS, id, &definition.to_value());
         self.claim_name(&qualified, id);

@@ -369,8 +369,11 @@ impl<'a> Session<'a> {
         };
         transaction.rollback();
         if signed.is_some() {
-            self.identity =
-                found.map_or(Identity::Anonymous, |user| Identity::Signed(Box::new(user)));
+            // A locked user is forgotten as a dropped one is, so the next statement meets the ordinary rule for
+            // nobody; the record is kept, and unlocking lets them sign in again.
+            self.identity = found
+                .filter(|user| !user.locked)
+                .map_or(Identity::Anonymous, |user| Identity::Signed(Box::new(user)));
         }
         Ok(open)
     }

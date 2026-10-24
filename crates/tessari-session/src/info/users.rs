@@ -14,6 +14,7 @@ pub(crate) fn described_user(user: &UserDefinition) -> BTreeMap<String, Value> {
     if let Some(role) = user.role {
         described.insert("role".to_owned(), Value::from(role.name()));
     }
+    described.insert("locked".to_owned(), Value::Bool(user.locked));
     described
 }
 

@@ -119,6 +119,8 @@ const changeDialog = (): Node =>
         choose("change-what", [
           { value: "password", label: "password" },
           { value: "role", label: "role" },
+          { value: "lock", label: "lock" },
+          { value: "unlock", label: "unlock" },
         ]),
         { id: "change-what-field", hidden: true },
       ),

@@ -623,6 +623,38 @@ fn a_consumer_records_who_declared_it_and_writes_with_their_authority() {
 }
 
 #[test]
+fn locking_the_declarer_stops_the_consumer_and_unlocking_resumes_it() {
+    // The reversible half of the deletion below: a locked declarer keeps their account and grants, and a consumer
+    // acting as them is refused until the lock is lifted.
+    let backend = backend();
+    let store = shaped(&backend);
+    peopled(&store);
+    signed_in(&store, "nina").run_now(DECLARE).unwrap();
+    let mut root = Session::new(&store);
+    root.sign_in("root", PASSWORD).now().unwrap();
+    let report = reported(
+        root.run_now("USE NAMESPACE prod; USE DATABASE shop; INFO FOR KAFKA CONSUMER orders_in;")
+            .unwrap(),
+    );
+    let declared = group(&report, "declared");
+    let Some(Value::Number(tessari_types::Number::Integer(id))) = declared.get("declarer") else {
+        panic!("the declaration does not record who made it: {declared:?}");
+    };
+    let id = u32::try_from(*id).unwrap();
+
+    root.run_now("ALTER USER nina SET LOCKED;").unwrap();
+    assert!(
+        Session::new(&store).acting_as(id).now().is_err(),
+        "a consumer acted as a locked declarer"
+    );
+    root.run_now("ALTER USER nina SET UNLOCKED;").unwrap();
+    Session::new(&store)
+        .acting_as(id)
+        .now()
+        .expect("unlocking resumes the consumer");
+}
+
+#[test]
 fn deleting_the_declarer_stops_the_consumer_rather_than_freeing_it() {
     // The behaviour this closure was chosen for, and it is new: a consumer whose
     // declarer no longer exists cannot write. That is a fresh way for ingestion

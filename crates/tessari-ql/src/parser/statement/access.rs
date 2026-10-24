@@ -202,7 +202,9 @@ impl Parser<'_> {
                 self.advance();
                 UserChange::Role(self.name()?)
             }
-            _ => return Err(self.error_here("`PASSWORD` or `ROLE`")),
+            _ if self.eat_word("locked") => UserChange::Locked(true),
+            _ if self.eat_word("unlocked") => UserChange::Locked(false),
+            _ => return Err(self.error_here("`PASSWORD`, `ROLE`, `LOCKED` or `UNLOCKED`")),
         };
         Ok(StatementKind::AlterUser { name, change })
     }
