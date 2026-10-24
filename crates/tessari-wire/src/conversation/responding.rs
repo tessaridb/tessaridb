@@ -97,9 +97,33 @@ pub(crate) async fn respond(
             Err(why) => refusal(RefusalClass::Unavailable, why),
         };
     }
-    // No peer link, so nothing to carry it over: the write is refused, naming
-    // where the writable peer takes writes. The caller's password stays here
-    // (ADR-0108 D1, R-10) — it used to be relayed to that address in clear.
+    // A redirect is an **instruction** and leaves as its own frame rather than
+    // as a refusal carrying a hint (`redirect.rs`), gated on what the client
+    // said at the greeting: a client built before tag 13 cannot name the frame,
+    // and the refusal it has always received is the better answer for it.
+    //
+    // And gated on nothing having landed (ADR-0101 D3): the client follows by
+    // sending this whole script again, so a script that already committed part
+    // of itself gets the refusal rather than an invitation to commit it twice.
+    //
+    // Asked before the refusal below, because a write nothing carried — no
+    // peer link, or a statement that never travels — is one of them when a
+    // recorded leadership says where it is written.
+    if theirs >= frame::REDIRECTS
+        && !session.landed()
+        && let Some(sent) = redirected(db, &ran).await
+    {
+        return Answer {
+            kind: frame::Kind::Elsewhere,
+            body: sent.encode(),
+            redirect: Some(sent.settlement == redirect::Settlement::Settled),
+            snapshot: None,
+        };
+    }
+    // Nothing to carry it over and nowhere recorded to send it: the write is
+    // refused, naming where the writable peer takes writes. The caller's
+    // password stays here (ADR-0108 D1, R-10) — it used to be relayed to that
+    // address in clear.
     if matches!(ran, Err(tessaridb::Error::NotWritable { .. })) {
         return refusal(
             RefusalClass::Unavailable,
@@ -114,25 +138,6 @@ pub(crate) async fn respond(
                 Err(why) => why.to_string(),
             },
         );
-    }
-    // A redirect is an **instruction** and leaves as its own frame rather than
-    // as a refusal carrying a hint (`redirect.rs`), gated on what the client
-    // said at the greeting: a client built before tag 13 cannot name the frame,
-    // and the refusal it has always received is the better answer for it.
-    //
-    // And gated on nothing having landed (ADR-0101 D3): the client follows by
-    // sending this whole script again, so a script that already committed part
-    // of itself gets the refusal rather than an invitation to commit it twice.
-    if theirs >= frame::REDIRECTS
-        && !session.landed()
-        && let Some(sent) = redirected(db, &ran).await
-    {
-        return Answer {
-            kind: frame::Kind::Elsewhere,
-            body: sent.encode(),
-            redirect: Some(sent.settlement == redirect::Settlement::Settled),
-            snapshot: None,
-        };
     }
     let mut answer = render(db, &ran, theirs).await;
     // Parts precede only an answer: a refusal ends the request without them,

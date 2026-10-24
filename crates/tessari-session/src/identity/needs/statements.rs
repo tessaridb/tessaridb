@@ -58,6 +58,16 @@ impl Needs {
                 condition: Some(condition),
                 ..
             } if holds_node_read(condition) => Self::OPERATE_STORE,
+            // A value computed from literals, parameters and the session reads
+            // nothing a grant governs, so it demands what `USE` demands. Without
+            // this an identity holding no `read` could not ask
+            // `session::context()`, which is how every client follows a redirect
+            // (protocol §3.12). Anything that reads the store keeps `read` below.
+            StatementKind::Let { value, .. } | StatementKind::Return { value }
+                if reads_nothing(value) =>
+            {
+                Self::NOTHING
+            }
             // `HASH TTL` reads its key and writes nothing (ADR-0132).
             StatementKind::Structure { op, .. } if op.reads_only() => Self::READ,
             StatementKind::Let { .. }

@@ -23,6 +23,26 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.38.3 — 2026-10-25
+
+### Fixed
+
+- **A cluster restarted whole elects a leader that can write.** After every node restarted together, a node could
+  win a leadership numbered below the one its own log was written under. The catalog never records such a
+  leadership, so no node accepted writes again. A node now stands above every leadership its store line's log
+  already holds, as a placed range already did.
+- **A write a node may not carry is sent to the leader.** A user, grant or other authority statement sent to a
+  clustered node that does not lead was refused with the leader's address in words. A client that follows
+  redirects now receives one, naming the leader's client address and the epoch it leads under; an older client
+  receives the refusal it always did.
+- **A redirect can be followed by an account that may not read.** `LET` and `RETURN` demanded the `read` authority
+  whatever their value, so an account holding only `manage` and `govern`, or a write-only one, was refused even
+  `RETURN 1;`, and with it the `RETURN session::context();` every client sends to follow a redirect: its writes sent to
+  a node that does not lead were refused rather than followed. A `LET` or `RETURN` whose value reads nothing from the
+  store — literals, parameters, the session, functions of those — now demands nothing, as `USE` does; one reading a
+  record, a table, a key, an index or a subquery still demands `read`, and a closed store still refuses a caller who
+  has not signed in.
+
 ## 0.38.2 — 2026-10-24
 
 ### Fixed

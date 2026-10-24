@@ -424,3 +424,88 @@ fn a_refusal_carries_its_class_to_a_client_that_can_read_one_and_only_its_words_
         );
     }
 }
+
+/// A clustered node that does not write, whose catalog records the store line
+/// as led by another member at epoch 7 — the member's client door named apart
+/// from its peer door.
+fn a_follower_of_a_recorded_leader() -> String {
+    let db = Db::in_memory().now().expect("an in-memory store");
+    db.session()
+        .run_now("DEFINE NODE ROLES serving;")
+        .expect("the role that stops this node writing");
+    let mut transaction = db.store().begin().now().expect("a transaction");
+    let mut catalog = tessari_storage::Catalog::new(&mut transaction);
+    catalog
+        .create_replica_with(tessari_storage::ReplicaDefinition {
+            name: "two".to_owned(),
+            endpoint: "two.peer:9000".to_owned(),
+            roles: Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING),
+            node: Some([3; NODE_ID_LEN]),
+            replicates: Some(tessari_storage::Reach::Store),
+            leads: None,
+            clients: Some("two.example:9080".to_owned()),
+            http: None,
+            kafka: None,
+            fingerprint: None,
+            join: None,
+            releasing: false,
+            preferred: false,
+            region: None,
+        })
+        .now()
+        .expect("the leader's row");
+    catalog
+        .record_leadership(
+            tessari_storage::Reach::Store,
+            [3; NODE_ID_LEN],
+            Epoch::new(7),
+        )
+        .expect("the recorded leadership");
+    transaction.commit().now().expect("the catalog");
+
+    let node = Node::bind(Arc::new(db), "127.0.0.1:0").expect("a loopback port");
+    let address = node.address().expect("the port it took");
+    drop(std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
+    }));
+    address
+}
+
+#[test]
+fn a_write_that_may_not_travel_is_sent_to_the_store_lines_leader() {
+    // An authority statement is never carried over the peer link, so the node
+    // that may not write it must say where it is written — as the frame a
+    // client follows, naming the leader's client door and the epoch it leads
+    // under, and not as words naming an address nothing can act on.
+    let address = a_follower_of_a_recorded_leader();
+    let mut stream = TcpStream::connect(&address).expect("the node this test started");
+    greet_as(&mut stream, frame::REDIRECTS);
+    let (tag, body) = ask(
+        &mut stream,
+        "DEFINE USER ada ROLE viewer PASSWORD 'correct horse';",
+    );
+    assert_eq!(
+        tag,
+        frame::Kind::Elsewhere.tag(),
+        "refused: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let sent = crate::redirect::Elsewhere::decode(&body).expect("a redirect");
+    assert_eq!(sent.endpoint, "two.example:9080");
+    assert_eq!(sent.node, [3; NODE_ID_LEN]);
+    assert_eq!(sent.epoch, Epoch::new(7));
+    assert_eq!(sent.settlement, crate::redirect::Settlement::Settled);
+
+    // A client that cannot name the frame keeps the refusal it always had.
+    let mut older = TcpStream::connect(&address).expect("the node this test started");
+    greet_as(&mut older, 0);
+    let (tag, _) = ask(
+        &mut older,
+        "DEFINE USER ada ROLE viewer PASSWORD 'correct horse';",
+    );
+    assert_eq!(tag, frame::Kind::Refusal.tag());
+}

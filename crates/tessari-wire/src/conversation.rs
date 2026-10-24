@@ -263,6 +263,9 @@ async fn redirected(
     db: &Db,
     ran: &tessaridb::Result<Vec<tessaridb::Outcome>>,
 ) -> Option<redirect::Elsewhere> {
+    if let Err(refused @ tessaridb::Error::NotWritable { .. }) = ran {
+        return written_elsewhere(db, refused).await;
+    }
     let (endpoint, node, epoch, settlement) = match ran {
         Err(tessaridb::Error::ReadIsElsewhere {
             endpoint,
@@ -305,5 +308,29 @@ async fn redirected(
         node: *node,
         epoch: *epoch,
         settlement,
+    })
+}
+
+/// A write this node may not take and nothing carried, sent to the node that
+/// would have been asked to answer it (the store line's leader) — a leadership,
+/// so `Settled`.
+///
+/// Only a **recorded** leadership names one: without its epoch a receiver has
+/// nothing to judge the redirect against, and the refusal naming the writable
+/// row stays the answer, as it does when no member row says where that node is.
+async fn written_elsewhere(db: &Db, refused: &tessaridb::Error) -> Option<redirect::Elsewhere> {
+    let node = db.answers_instead(refused).await?;
+    let leadership = db
+        .leader_of(tessaridb::Reach::Store)
+        .await
+        .ok()
+        .flatten()
+        .filter(|held| held.node == node)?;
+    let row = db.member(&node).await.ok().flatten()?;
+    Some(redirect::Elsewhere {
+        endpoint: row.clients.unwrap_or(row.endpoint),
+        node,
+        epoch: leadership.epoch,
+        settlement: redirect::Settlement::Settled,
     })
 }

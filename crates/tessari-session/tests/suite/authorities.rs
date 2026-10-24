@@ -1129,3 +1129,55 @@ fn an_open_store_hands_out_its_log_because_an_open_store_hands_out_everything() 
         "an open store has no identity to refuse, here as everywhere else"
     );
 }
+
+#[test]
+fn a_statement_that_reads_nothing_from_the_store_needs_no_authority_to_read() {
+    // Every client follows a redirect by asking `session::context()` first
+    // (protocol §3.12), so a value statement that demanded `read` left every
+    // identity without it — a provisioning account, a write-only ingest —
+    // unable ever to follow one. A value computed from literals, parameters and
+    // the session reads no record, so it demands what `USE` demands: nothing.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run_now(
+            "DEFINE USER provisioner AUTHORITIES manage, govern PASSWORD 'correct horse battery';\n\
+             DEFINE USER ingest ON prod.shop AUTHORITIES write PASSWORD 'correct horse battery';",
+        )
+        .unwrap();
+    // Demanding nothing is not admitting a stranger: a closed store still asks
+    // who is there before it answers anything.
+    let anonymous = refused(&mut Session::new(&store), "RETURN session::context();");
+    assert!(anonymous.contains("sign"), "{anonymous}");
+    for (user, mut session) in [
+        ("provisioner", signed_in(&store, "provisioner")),
+        ("ingest", working(&store, "ingest")),
+    ] {
+        for statement in [
+            "RETURN session::context();",
+            "RETURN 1 + 1;",
+            "LET $x = 2; RETURN $x * 3;",
+            "RETURN IF 2 > 1 THEN 'many' ELSE 'few' END;",
+        ] {
+            session
+                .run_now(statement)
+                .unwrap_or_else(|refusal| panic!("{user}: {statement}: {refusal}"));
+        }
+        // Reading the store through a value is still reading.
+        session
+            .run_now("USE NAMESPACE prod; USE DATABASE shop;")
+            .unwrap();
+        for statement in [
+            "RETURN (SELECT * FROM orders);",
+            "RETURN array::len((SELECT * FROM orders));",
+            "RETURN orders:1;",
+            "LET $all = (SELECT * FROM orders);",
+        ] {
+            let refusal = refused(&mut session, statement);
+            assert!(
+                refusal.contains("may not read"),
+                "{user}: {statement} reads the store and must demand the read: {refusal}"
+            );
+        }
+    }
+}

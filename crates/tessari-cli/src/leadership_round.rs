@@ -47,17 +47,7 @@ pub(crate) async fn stand_for_leadership(
     let mut on_a_line: Option<OnALine> = None;
     // When this node last handed its range to a preferred candidate (G053 SG5b).
     let mut yielded: Option<Yielded> = None;
-    let mut renewing = tessari_wire::Renewing::holding(tessari_wire::Leadership {
-        length: tessari_storage::LEASE_TTL,
-        epoch: tessari_types::Epoch::ZERO,
-        // A lease taken a whole TTL ago is spent, so the first pass stands. If
-        // the subtraction cannot be represented — a process started before the
-        // clock had a lease's worth of history behind it — the node waits out
-        // one lease before its first round, which is the safe direction.
-        from: started
-            .checked_sub(tessari_storage::LEASE_TTL)
-            .unwrap_or(started),
-    });
+    let mut renewing = store_line_cursor(&db, started).await;
     // The campaign cadence the installed failover policy states, re-read every
     // pass (G053 SG2c): a pass that returns before it reaches the catalog keeps
     // the last one it read.
@@ -588,11 +578,69 @@ async fn hands_to_the_preferred(
     true
 }
 
+/// The store line's cursor at start, standing above every leadership the
+/// line's logs already hold — as a placed range's does (DB-15).
+///
+/// A voter's memory of what it granted lives in the process, so a whole cluster
+/// restarted together grants from nothing. A candidate counting from nothing
+/// too wins an epoch below the one its own log was written under: a leadership
+/// the catalog refuses to record, and no node writes again (Q-ENG-D3). A log
+/// that cannot be read stands from nothing, as every node did before, and says
+/// so.
+async fn store_line_cursor(db: &Db, started: std::time::Instant) -> tessari_wire::Renewing {
+    let written = match db
+        .store()
+        .newest_leadership_in(tessari_types::Reach::Store)
+        .await
+    {
+        Ok(written) => written,
+        Err(why) => {
+            tracing::warn!(error = %why, "this node cannot say which leadership the store line's logs reach");
+            tessari_types::Epoch::ZERO
+        }
+    };
+    tessari_wire::Renewing::holding(tessari_wire::Leadership {
+        length: tessari_storage::LEASE_TTL,
+        epoch: tessari_types::Epoch::ZERO,
+        // A lease taken a whole TTL ago is spent, so the first pass stands. If
+        // the subtraction cannot be represented — a process started before the
+        // clock had a lease's worth of history behind it — the node waits out
+        // one lease before its first round, which is the safe direction.
+        from: started
+            .checked_sub(tessari_storage::LEASE_TTL)
+            .unwrap_or(started),
+    })
+    .above(written)
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::soonest_in_the_tick;
+    use tessari_session::Now;
+    use tessari_storage::{LEASE_TTL, Lease};
+    use tessari_types::Epoch;
+    use tessaridb::Db;
+
+    use super::{soonest_in_the_tick, store_line_cursor};
+
+    #[test]
+    fn a_node_restarted_over_a_written_log_stands_above_the_leadership_it_holds() {
+        // A whole cluster restarted: every voter forgot what it granted, and a
+        // candidate counting from nothing wins an epoch below the one its own
+        // log was written under — a leadership the catalog can never record,
+        // so no node writes again (Q-ENG-D3).
+        let db = Db::in_memory().now().expect("an in-memory store");
+        db.store()
+            .hold(Epoch::new(190), Lease::taken(LEASE_TTL))
+            .now();
+        tessari_session::RunNow::run_now(&mut db.session(), "DEFINE NAMESPACE led")
+            .expect("a write under leadership 190");
+        let started = Instant::now();
+        let cursor = store_line_cursor(&db, started).now();
+        let (_, next) = cursor.due(started).expect("a spent lease stands");
+        assert_eq!(next, Epoch::new(191));
+    }
 
     const TICK: Duration = Duration::from_millis(100);
 
