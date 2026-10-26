@@ -23,7 +23,7 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
-## 0.39.0 — unreleased
+## 0.39.0 — 2026-10-26
 
 ### Added
 
