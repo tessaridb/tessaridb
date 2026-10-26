@@ -135,6 +135,18 @@ impl Function {
         ObjectEntries => "object::entries",
         ObjectHas => "object::has",
         ObjectMerge => "object::merge",
+        ObjectGet => "object::get",
+        ArrayAt => "array::at",
+        SetLen => "set::len",
+        SetUnion => "set::union",
+        SetIntersect => "set::intersect",
+        SetDifference => "set::difference",
+        ScoresScore => "scores::score",
+        ScoresRank => "scores::rank",
+        ScoresRange => "scores::range",
+        ScoresBetween => "scores::between",
+        ScoresUnion => "scores::union",
+        ScoresIntersect => "scores::intersect",
         SessionContext => "session::context",
     }
 
@@ -169,6 +181,11 @@ impl Function {
     /// **not** in the list — an area is not an ordering a bounded read is built
     /// on in the same way, and an absent shape having no area is a claim this
     /// store cannot make.
+    ///
+    /// [`Function::ScoresBetween`] answers for an absent BOUND, which leaves that
+    /// side of the range open — the language has no infinite score to write
+    /// instead. An absent ranking still answers `none`; the session checks that
+    /// itself, since the general rule is not applied to this function.
     #[must_use]
     pub const fn answers_for_absence(self) -> bool {
         matches!(
@@ -181,6 +198,7 @@ impl Function {
                 | Self::SearchExplain
                 | Self::SearchHighlight
                 | Self::GeoDistance
+                | Self::ScoresBetween
         )
     }
 

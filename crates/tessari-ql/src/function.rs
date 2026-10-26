@@ -424,6 +424,38 @@ pub enum Function {
     ObjectHas,
     /// `object::merge(a, b)` — both objects' fields, `b` winning a collision.
     ObjectMerge,
+    /// `object::get(o, name)` — the field a name held in a value names.
+    ///
+    /// `o.field` takes a written name and is part of the stored path type, so a
+    /// name arriving as a parameter could not be asked for (ADR-0135 D2).
+    ObjectGet,
+    /// `array::at(items, i)` — the element at a position held in a value, a
+    /// negative one counted from the back as `LIST SET AT` counts it.
+    ArrayAt,
+    /// `set::len(s)` — how many elements; a ranking counts its members.
+    SetLen,
+    /// `set::union(a, b)` — every member of either set of members.
+    SetUnion,
+    /// `set::intersect(a, b)` — the members in both.
+    SetIntersect,
+    /// `set::difference(a, b)` — the members of `a` that are not in `b`.
+    SetDifference,
+    /// `scores::score(r, member)` — a ranked member's score.
+    ScoresScore,
+    /// `scores::rank(r, member)` — a member's place from the lowest score, from 0.
+    ScoresRank,
+    /// `scores::range(r, start, stop)` — the members at those places, both kept,
+    /// either counted from the highest when negative.
+    ScoresRange,
+    /// `scores::between(r, low, high)` — the members whose score is in the
+    /// bounds, both kept; an absent bound leaves that side open.
+    ScoresBetween,
+    /// `scores::union(a, b)` — a ranking of every member of either, scores
+    /// added where a member is in both.
+    ScoresUnion,
+    /// `scores::intersect(a, b)` — a ranking of the members in both, their
+    /// scores added.
+    ScoresIntersect,
     /// `session::context()` — `{ node, namespace, database }`: the node this
     /// session is talking to and the tenancy the session has selected, `null`
     /// where nothing is. What a client following a redirect checks on arrival

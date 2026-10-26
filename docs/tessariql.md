@@ -5970,8 +5970,10 @@ SELECT object::merge(address, $overrides) AS resolved FROM users;
 | Group | Functions |
 |---|---|
 | `string` | `len` (characters, not bytes) · `lower` · `upper` · `trim` · `trim_start` · `trim_end` · `reverse` · `concat(a, b)` · `split(text, separator)` · `slice(text, start, count)` · `replace(text, from, to)` · `starts_with(text, prefix)` · `ends_with(text, suffix)` · `contains(text, needle)` · `index_of(text, needle)` — the [collections](#collections) |
-| `array` | `len` · `first` · `last` · `distinct` · `sort` · `reverse` · `flatten` · `min` · `max` · `sum` · `join(items, separator)` · `slice(items, start, count)` · `concat(a, b)` · `append(items, value)` · `index_of(items, value)` — the [collections](#collections) |
-| `object` | `keys` · `values` · `len` · `entries` · `has(o, name)` · `merge(a, b)` — the [collections](#collections) |
+| `array` | `len` · `first` · `last` · `distinct` · `sort` · `reverse` · `flatten` · `min` · `max` · `sum` · `join(items, separator)` · `slice(items, start, count)` · `concat(a, b)` · `append(items, value)` · `index_of(items, value)` · `at(items, i)` — the [collections](#collections) |
+| `object` | `keys` · `values` · `len` · `entries` · `has(o, name)` · `merge(a, b)` · `get(o, name)` — the [collections](#collections) |
+| `set` | `len` · `union(a, b)` · `intersect(a, b)` · `difference(a, b)` — [reading a container](#reading-a-container) |
+| `scores` | `score(r, member)` · `rank(r, member)` · `range(r, start, stop)` · `between(r, low, high)` · `union(a, b)` · `intersect(a, b)` — [reading a container](#reading-a-container) |
 | `math` | `abs` · `floor` · `ceil` · `round` (half away from zero) · `trunc` (toward zero) · `sign` · `sqrt` · `ln` · `exp` · `pow(base, exponent)` · `min(a, b)` · `max(a, b)` |
 | `time` | `now()` · `bucket(instant, width)` — the start of the window an instant is in · `year` · `month` · `day` · `hour` · `minute` · `second` · `unix` · `from_unix(seconds)` — the [calendar](#the-calendar) |
 | `type` | `of(value)` — the type's name, as §3 spells it · `bool` · `int` · `float` · `string` · `datetime` · `uuid` — the [casts](#casts) |
@@ -7387,6 +7389,66 @@ SCORES POP board:'top' HIGHEST LIMIT 3;
 - The container is one value under its key, so a write re-encodes all of it:
   these statements fit the containers a cache keeps, not ones of millions of
   elements.
+
+### Reading a container
+
+A read is a function over `GET k`, so it composes like any value — in a
+`RETURN`, a `LET`, a projection, or the value of a `SET` in the same
+transaction. The container is one value, so the read costs what the `GET` costs
+and the function decides what of it comes back.
+
+```
+LET $i = 2;
+RETURN array::at(GET queue:'jobs', $i);
+RETURN array::at(GET queue:'jobs', -1);
+RETURN array::slice(GET queue:'jobs', 0, 10);
+LET $f = 'apples';
+RETURN object::get(GET carts:'u1', $f);
+
+RETURN set::len(GET tags:'post:7');
+RETURN set::union(GET tags:'post:7', GET tags:'post:8');
+RETURN set::intersect(GET tags:'post:7', GET tags:'post:8');
+RETURN set::difference(GET tags:'post:7', GET tags:'post:8' ?? set []);
+SET tags:'both' = set::intersect(GET tags:'post:7', GET tags:'post:8');
+
+RETURN scores::score(GET board:'top', 'ada');
+RETURN scores::rank(GET board:'top', 'ada');
+RETURN scores::range(GET board:'top', -3, -1);
+RETURN scores::between(GET board:'top', 5, NONE);
+SET board:'week' = scores::union(GET board:'mon', GET board:'tue');
+RETURN scores::intersect(GET board:'mon', GET board:'tue');
+```
+
+| Written | Answers |
+|---|---|
+| `array::at(items, i)` | the element at `i`, a negative `i` counted from the back (`-1` the last); `NONE` outside the list |
+| `object::get(o, name)` | the field a name held in a value names; `NONE` when it is not there |
+| `set::len(s)` | how many elements — a ranking counts its members |
+| `set::union(a, b)` · `set::intersect(a, b)` · `set::difference(a, b)` | a set of members: every member of either, those in both, those of `a` not in `b` |
+| `scores::score(r, member)` | the member's score, `NONE` when it is not ranked |
+| `scores::rank(r, member)` | its place from the lowest score, from `0`; `NONE` when not ranked |
+| `scores::range(r, start, stop)` | the members at places `start` to `stop`, both included, either counted from the highest when negative — `[[member, score], …]` lowest first |
+| `scores::between(r, low, high)` | the members whose score is from `low` to `high`, both included — `[[member, score], …]`; a bound that is `NONE` leaves that side open |
+| `scores::union(a, b)` · `scores::intersect(a, b)` | a ranking: every member of either (or those in both), the scores added where a member is in both |
+
+- `o.field` and `items[2]` take a written name and position; `object::get` and
+  `array::at` are the spellings for one held in a parameter.
+- The reads of a ranking answer `[member, score]` pairs, as `SCORES POP` does.
+  `scores::union` and `scores::intersect` answer a ranking in the form a key
+  holds it, `[score, member]` pairs, so `SET` of their answer leaves a key the
+  `SCORES` statements read; the `set::` combinations likewise answer a set of
+  members.
+- An absent key is `NONE`, and a function of `NONE` is `NONE` —
+  `set::union(GET a, GET b ?? set [])` is the spelling for "`b` may be absent".
+  `scores::between` is the exception for its bounds only: an absent bound is
+  open, because the language has no infinite score to write instead.
+- A `set::` combination refuses a ranking and a `scores::` read refuses a set
+  of members, each with **`WrongArgument`**: combining `[score, member]` pairs as
+  plain members would put one member in twice under two scores. `set::len`
+  counts either.
+- A container statement deletes a key it empties; a `SET` of an empty answer
+  stores an empty set. Write the combination only when it is not empty, or
+  `DELETE` the key instead.
 
 ### Composition
 

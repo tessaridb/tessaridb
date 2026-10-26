@@ -9,6 +9,7 @@
 //! three arguments it meant.
 
 mod arguments;
+mod containers;
 mod numbers;
 mod time;
 use tessari_ql::{Aggregate, Function, Span};
@@ -218,6 +219,19 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
                 held.insert(name.clone(), value.clone());
             }
             Ok(Value::Object(held))
+        }
+        Function::ArrayAt => containers::element(function, arguments, span),
+        Function::ObjectGet => containers::field(function, arguments, span),
+        Function::SetLen => containers::set_len(function, arguments, span),
+        Function::SetUnion | Function::SetIntersect | Function::SetDifference => {
+            containers::combined(function, arguments, span)
+        }
+        Function::ScoresScore => containers::score(function, arguments, span),
+        Function::ScoresRank => containers::rank(function, arguments, span),
+        Function::ScoresRange => containers::range(function, arguments, span),
+        Function::ScoresBetween => containers::between(function, arguments, span),
+        Function::ScoresUnion | Function::ScoresIntersect => {
+            containers::ranked(function, arguments, span)
         }
         Function::StringConcat => {
             let mut joined = String::new();

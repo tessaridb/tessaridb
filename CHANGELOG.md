@@ -23,6 +23,18 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.39.0 — unreleased
+
+### Added
+
+- **Reading a space's containers in the language.** Twelve functions over `GET k`: `array::at` and `object::get`
+  take a position or a field name held in a value; `set::len`, `set::union`, `set::intersect` and
+  `set::difference` count and combine sets of members; `scores::score`, `scores::rank`, `scores::range`,
+  `scores::between`, `scores::union` and `scores::intersect` read and combine rankings. A combination's answer can
+  be written back with `SET`, so `SET k = set::intersect(GET a, GET b)` stores a set of members and
+  `SET k = scores::union(GET a, GET b)` a ranking.
+- **1696 conformance cases** define the language and run in the build.
+
 ## 0.38.4 — 2026-10-25
 
 ### Added
