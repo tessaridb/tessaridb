@@ -17,4 +17,5 @@ mod walk;
 
 pub(crate) use atomic::{CONFLICT_DEADLINE, retried_on_conflict};
 pub(crate) use space::{declared_space, space_clause};
+pub(crate) use structure::{is_ranking, span_of};
 pub(crate) use walk::Walk;

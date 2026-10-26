@@ -290,6 +290,18 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::ObjectEntries
         | Function::ObjectHas
         | Function::ObjectMerge
+        | Function::ObjectGet
+        | Function::ArrayAt
+        | Function::SetLen
+        | Function::SetUnion
+        | Function::SetIntersect
+        | Function::SetDifference
+        | Function::ScoresScore
+        | Function::ScoresRank
+        | Function::ScoresRange
+        | Function::ScoresBetween
+        | Function::ScoresUnion
+        | Function::ScoresIntersect
         | Function::SessionContext
         | Function::SearchHighlight => None,
     }

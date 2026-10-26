@@ -26,6 +26,8 @@ mod list;
 mod members;
 mod scores;
 
+pub(crate) use scores::span_of;
+
 use tessari_ql::{Container, Expr, RecordTarget, Span, StructureOp};
 use tessari_storage::{RecordAddress, Transaction};
 use tessari_types::{Number, Value};
@@ -212,7 +214,7 @@ pub(super) fn kind_of(value: &Value) -> &'static str {
 
 /// Whether a set is members and their scores: not empty, every element a
 /// `[float, text]` pair.
-pub(super) fn is_ranking(members: &std::collections::BTreeSet<Value>) -> bool {
+pub(crate) fn is_ranking(members: &std::collections::BTreeSet<Value>) -> bool {
     !members.is_empty() && members.iter().all(|member| {
         matches!(
             member,

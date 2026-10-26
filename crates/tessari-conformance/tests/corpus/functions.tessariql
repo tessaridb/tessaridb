@@ -483,3 +483,43 @@ RETURN string::concat('a', 'b', 'c', 'd') = 'abcd';
 --- case: and still needs two, because one string is already itself
 RETURN string::concat('a');
 --- expect: error WrongArity
+
+--- case: array::at takes a position held in a value, a negative one from the back
+RETURN [array::at(['a', 'b', 'c'], 1), array::at(['a', 'b', 'c'], -1), array::at(['a', 'b', 'c'], 3)] = ['b', 'c', NONE];
+--- expect: value true
+
+--- case: object::get takes a field name held in a value
+RETURN [object::get({ a: 1, b: 2 }, 'b'), object::get({ a: 1 }, 'z')] = [2, NONE];
+--- expect: value true
+
+--- case: set::len counts a set, a ranking by its members
+RETURN [set::len(set ['x', 'y']), set::len(set [[1.0, 'ann'], [2.0, 'bob']])] = [2, 2];
+--- expect: value true
+
+--- case: set::union, set::intersect and set::difference combine sets of members
+RETURN [set::union(set ['x', 'y'], set ['y', 'z']), set::intersect(set ['x', 'y'], set ['y', 'z']), set::difference(set ['x', 'y'], set ['y', 'z'])] = [set ['x', 'y', 'z'], set ['y'], set ['x']];
+--- expect: value true
+
+--- case: a set of members is wanted, and a ranking is not one
+RETURN set::union(set ['x'], set [[1.0, 'ann']]);
+--- expect: error WrongArgument
+
+--- case: scores::score and scores::rank find a member in a ranking
+RETURN [scores::score(set [[1.0, 'bob'], [3.0, 'ann']], 'ann'), scores::rank(set [[1.0, 'bob'], [3.0, 'ann']], 'ann'), scores::rank(set [[1.0, 'bob']], 'eve')] = [3.0, 1, NONE];
+--- expect: value true
+
+--- case: scores::range answers members at places, counted from the highest when negative
+RETURN scores::range(set [[1.0, 'bob'], [2.0, 'cid'], [3.0, 'ann']], -2, -1) = [['cid', 2.0], ['ann', 3.0]];
+--- expect: value true
+
+--- case: scores::between answers members by score, an absent bound open
+RETURN [scores::between(set [[1.0, 'bob'], [2.0, 'cid'], [3.0, 'ann']], 2, NONE), scores::between(NONE, 0, 1)] = [[['cid', 2.0], ['ann', 3.0]], NONE];
+--- expect: value true
+
+--- case: scores::union and scores::intersect add scores and answer a ranking
+RETURN [scores::union(set [[1.0, 'a'], [2.0, 'b']], set [[5.0, 'b']]), scores::intersect(set [[1.0, 'a'], [2.0, 'b']], set [[5.0, 'b']])] = [set [[1.0, 'a'], [7.0, 'b']], set [[7.0, 'b']]];
+--- expect: value true
+
+--- case: a ranking is wanted, and a set of members is not one
+RETURN scores::score(set ['x'], 'x');
+--- expect: error WrongArgument

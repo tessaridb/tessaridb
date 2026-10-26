@@ -261,7 +261,7 @@ fn finite(value: &Value, span: Span) -> Result<f64> {
 /// The positions from `start` to `stop` of a ranking `length` long, both
 /// kept, either counted from the highest when negative; `None` when that
 /// names nothing.
-fn span_of(length: usize, start: i64, stop: i64) -> Option<(usize, usize)> {
+pub(crate) fn span_of(length: usize, start: i64, stop: i64) -> Option<(usize, usize)> {
     let length = i64::try_from(length).ok()?;
     let from_top = |index: i64| {
         if index < 0 {

@@ -102,6 +102,7 @@ impl Function {
             | Self::ArrayMax
             | Self::ArraySum
             | Self::ObjectEntries
+            | Self::SetLen
             | Self::CryptoSha512 => 1,
             Self::StringConcat
             | Self::StringSplit
@@ -133,8 +134,22 @@ impl Function {
             | Self::ObjectHas
             | Self::ObjectMerge
             | Self::GeoCell
-            | Self::GeoDistance => 2,
-            Self::ArraySlice | Self::StringSlice | Self::StringLines | Self::StringReplace => 3,
+            | Self::GeoDistance
+            | Self::ObjectGet
+            | Self::ArrayAt
+            | Self::SetUnion
+            | Self::SetIntersect
+            | Self::SetDifference
+            | Self::ScoresScore
+            | Self::ScoresRank
+            | Self::ScoresUnion
+            | Self::ScoresIntersect => 2,
+            Self::ArraySlice
+            | Self::StringSlice
+            | Self::StringLines
+            | Self::StringReplace
+            | Self::ScoresRange
+            | Self::ScoresBetween => 3,
         }
     }
 
@@ -266,6 +281,18 @@ impl Function {
             | Self::ObjectEntries
             | Self::ObjectHas
             | Self::ObjectMerge
+            | Self::ObjectGet
+            | Self::ArrayAt
+            | Self::SetLen
+            | Self::SetUnion
+            | Self::SetIntersect
+            | Self::SetDifference
+            | Self::ScoresScore
+            | Self::ScoresRank
+            | Self::ScoresRange
+            | Self::ScoresBetween
+            | Self::ScoresUnion
+            | Self::ScoresIntersect
             | Self::CryptoSha512 => Purity::Pure,
         }
     }
