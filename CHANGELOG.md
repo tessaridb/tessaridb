@@ -23,6 +23,16 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.39.1 — 2026-10-28
+
+### Changed
+
+- **The storage engine is TessariKV `0.1.2`.** Scans and range reads cost the same however many table files a table
+  has; reads beside many range deletes no longer slow down, and the space a range delete frees is reclaimed by
+  compaction; a failed compaction is retried instead of stopping writes until the node restarts; the log a flush
+  has made redundant is released at once. The on-disk format is unchanged: a store written by `0.39.1` opens under
+  `0.39.0`.
+
 ## 0.39.0 — 2026-10-26
 
 ### Added
