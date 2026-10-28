@@ -4363,9 +4363,12 @@ ${bytes.toLocaleString("en")} bytes`;
     if (typeof answered2.seals_at === "string") {
       lines.push(`seals at ${new Date(answered2.seals_at).toLocaleString()}`);
     }
-    if (typeof answered2.unseal_for === "string") lines.push(`an unseal lasts ${answered2.unseal_for}`);
+    const keyed = answered2.custody === "key";
+    if (typeof answered2.unseal_for === "string" && !keyed) lines.push(`an unseal lasts ${answered2.unseal_for}`);
     if (typeof answered2.custody === "string") {
-      lines.push(answered2.custody === "own" ? "opens with its own passphrase" : "opens with the store's passphrase");
+      lines.push(
+        keyed ? "opens with a key its caller presents with each request" : answered2.custody === "own" ? "opens with its own passphrase" : "opens with the store's passphrase"
+      );
     }
     if (answered2.initialised === true) lines.push("this unseal set the store's first passphrase");
     return lines.join("\n");
