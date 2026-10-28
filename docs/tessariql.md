@@ -1379,10 +1379,14 @@ record id and the written value bound rather than written into the text.
 A vault may instead be keyed by a 256-bit key its caller holds and presents with
 every request that opens it. Its key is wrapped under a key derived from the
 presented one, so neither the store's passphrase, nor any authority in the store,
-nor a holder of every backup opens it. Nothing in the node keeps the presented
-key: it opens the vault for the one request that carried it and is wiped when the
-request ends, so there is no unseal, no seal and no period, and a request carrying
-no key finds the vault sealed. `INFO FOR VAULT team` answers `custody: 'key'`.
+nor a holder of every backup opens it. The node keeps the presented key in no
+state of its own: the key opens the vault for the one request that carried it,
+and the copies the node makes on its way in — the frame it arrived in, the
+request, the vault key it unwrapped — are wiped when the request ends. Bytes the
+key left on a thread's stack while the request ran are not wiped and stay until
+that stack is reused, which is the running-node exclusion every vault carries.
+There is no unseal, no seal and no period, and a request carrying no key finds
+the vault sealed. `INFO FOR VAULT team` answers `custody: 'key'`.
 
 Such a vault is declared and re-keyed only over the wire protocol's vault frame
 (minor 7): the declare-keyed act carries the vault and its key, the change-key act

@@ -101,6 +101,9 @@ pub struct Request {
     pub keys: Vec<PresentedVaultKey>,
 }
 
+/// The fewest bytes one presented key takes: three empty names and the key.
+const MIN_KEY_ENTRY: usize = 4 * 3 + crate::vault::KEY_BYTES;
+
 /// One key a request presents, and the vault it opens (ADR-0136).
 #[derive(Clone, PartialEq, Eq)]
 pub struct PresentedVaultKey {
@@ -240,6 +243,11 @@ impl Request {
         let mut keys = Vec::new();
         if at.saturating_add(1) < body.len() {
             let (count, mut next) = take_u32(body, at.saturating_add(1))?;
+            // Reserved once, and never past what the body can hold, so no push
+            // moves the keys and leaves a copy in a freed allocation; a count
+            // from a stranger allocates nothing it cannot back with bytes.
+            let fits = body.len().saturating_sub(next) / MIN_KEY_ENTRY;
+            keys.reserve_exact(usize::try_from(count).unwrap_or(usize::MAX).min(fits));
             for _ in 0..count {
                 let (namespace, after) = take_text(body, next)?;
                 let (database, after) = take_text(body, after)?;

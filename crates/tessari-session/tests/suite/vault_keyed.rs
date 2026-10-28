@@ -208,3 +208,67 @@ fn info_answers_key_custody_and_sealed() {
     assert_eq!(report.get("custody"), Some(&Value::from("key")));
     assert_eq!(report.get("state"), Some(&Value::from("sealed")));
 }
+
+#[test]
+fn a_keyed_write_commits_with_a_table_and_an_edge_or_not_at_all() {
+    // DB-V5: the product writes a record's metadata, its sharing edge and its
+    // sealed body in one transaction, under a presented key.
+    let store = store();
+    let mut session = keyed(&store);
+    session
+        .run_now(
+            "DEFINE COLLECTION members; DEFINE COLLECTION items; DEFINE TABLE shared_with EDGE;",
+        )
+        .unwrap();
+    let together = "BEGIN;
+         CREATE members:'ada' = { name: 'ada' };
+         CREATE items:'gitlab' = { kind: 'login' };
+         RELATE items:'gitlab'->shared_with->members:'ada';
+         CREATE team:'gitlab' = { token: 'gitlab-secret-5e1f' };
+         COMMIT;";
+    run_presenting(&mut session, &[key_for("team", KEY)], together).unwrap();
+    let opened = run_presenting(
+        &mut session,
+        &[key_for("team", KEY)],
+        "REVEAL token FROM team:'gitlab';",
+    )
+    .unwrap();
+    assert_eq!(revealed(opened), Value::from("gitlab-secret-5e1f"));
+    let edges = session
+        .run_now("SELECT * FROM items:'gitlab'->shared_with->members;")
+        .unwrap();
+    assert!(
+        format!("{edges:?}").contains("ada"),
+        "the edge did not commit: {edges:?}"
+    );
+
+    // The same shape that fails at its last statement leaves nothing behind.
+    let refused = run_presenting(
+        &mut session,
+        &[key_for("team", KEY)],
+        "BEGIN;
+         CREATE items:'gitea' = { kind: 'login' };
+         RELATE items:'gitea'->shared_with->members:'ada';
+         CREATE team:'gitea' = { token: 'gitea-secret-6f20' };
+         THROW 'stop';
+         COMMIT;",
+    );
+    assert!(refused.is_err(), "the thrown transaction committed");
+    let left = session.run_now("SELECT * FROM items:'gitea';").unwrap();
+    assert!(
+        !format!("{left:?}").contains("gitea"),
+        "the table write survived: {left:?}"
+    );
+    // A record that is not there narrows the read to nothing rather than
+    // refusing it, so the absence is the answer `NONE`.
+    let gone = run_presenting(
+        &mut session,
+        &[key_for("team", KEY)],
+        "REVEAL token FROM team:'gitea';",
+    )
+    .unwrap();
+    assert!(
+        matches!(gone.last(), Some(Outcome::Value(Value::None))),
+        "the vault write survived the refused transaction: {gone:?}"
+    );
+}

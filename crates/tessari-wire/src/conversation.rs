@@ -41,7 +41,7 @@ use tessari_session::Detached;
 use tessari_types::RefusalClass;
 use tessaridb::Db;
 use tessaridb::feed::Commits;
-use tokio::io::{BufReader, BufWriter as AsyncBufWriter};
+use tokio::io::BufWriter as AsyncBufWriter;
 
 use crate::error::{Error, Result};
 use crate::message::Request;
@@ -93,7 +93,10 @@ pub(crate) async fn converse<C: Carried>(
     stream: C,
 ) -> Result<()> {
     let (read_half, write_half) = stream.halves();
-    let mut reader = BufReader::new(read_half);
+    // Not buffered: a frame is read as an exact header and an exact body, and a
+    // read-ahead buffer would keep copies of a request's keys and password that
+    // nothing can wipe (ADR-0136). The body itself is wiped once decoded.
+    let mut reader = read_half;
     let mut writer = AsyncBufWriter::new(write_half);
     // A client that connects and sends nothing would otherwise hold its place at
     // the door for the life of the process. The deadline covers the greeting
@@ -107,16 +110,19 @@ pub(crate) async fn converse<C: Carried>(
 
     let mut session = session;
     loop {
-        let Some((kind, body)) = frame_async::read(&mut reader).await? else {
+        let Some((kind, mut body)) = frame_async::read(&mut reader).await? else {
             break;
         };
+        let decoded = decode_and_wipe(kind, &mut body);
         if kind == frame::Kind::Subscribe {
             // The connection stops being a conversation and becomes a feed; see
             // `push.rs` for why one connection does one job. Moved to the feed
             // count so a shutdown's drain does not wait for it.
             busy.became_a_feed();
             tracing::info!("connection became a subscription");
-            let asked = Follow::decode(&body)?;
+            let Decoded::Follow(asked) = decoded? else {
+                return Err(Error::Malformed);
+            };
             let fed = feed(talk, session, reader, writer, asked, theirs).await;
             drop((busy, place));
             return fed;
@@ -125,7 +131,9 @@ pub(crate) async fn converse<C: Carried>(
             // On the bridge like every store call; the unseal's Argon2id
             // derivation hands its worker's other tasks on before it starts
             // (`tessari_vault::off_the_worker`), so it stalls no other connection.
-            let asked = crate::VaultAsk::decode(&body)?;
+            let Decoded::Vault(asked) = decoded? else {
+                return Err(Error::Malformed);
+            };
             let db = Arc::clone(&talk.db);
             let bridged = talk
                 .bridge
@@ -163,7 +171,9 @@ pub(crate) async fn converse<C: Carried>(
             // understand, and continuing would be guessing at what it meant.
             return Err(Error::UnknownFrame { tag: kind.tag() });
         }
-        let request = Request::decode(&body)?;
+        let Decoded::Request(request) = decoded? else {
+            return Err(Error::Malformed);
+        };
         let db = Arc::clone(&talk.db);
         let bridged = talk
             .bridge
@@ -333,4 +343,65 @@ async fn written_elsewhere(db: &Db, refused: &tessaridb::Error) -> Option<redire
         epoch: leadership.epoch,
         settlement: redirect::Settlement::Settled,
     })
+}
+
+/// A client frame, read into its type.
+enum Decoded {
+    Request(Request),
+    Vault(crate::VaultAsk),
+    Follow(Follow),
+    Other,
+}
+
+/// Decode `body` as `kind` and wipe it, decoded or not: a Request's password and
+/// keys, and a Vault frame's passphrase or key, then live only in the types that
+/// wipe themselves (ADR-0136).
+fn decode_and_wipe(kind: frame::Kind, body: &mut Vec<u8>) -> Result<Decoded> {
+    let decoded = match kind {
+        frame::Kind::Request => Request::decode(body).map(Decoded::Request),
+        frame::Kind::Vault => crate::VaultAsk::decode(body).map(Decoded::Vault),
+        frame::Kind::Subscribe => Follow::decode(body).map(Decoded::Follow),
+        _ => Ok(Decoded::Other),
+    };
+    // The slice, not the Vec: the Vec form also empties it, and the bytes are
+    // what must go. The writes are volatile, so dropping `body` afterwards
+    // cannot make them dead stores.
+    zeroize::Zeroize::zeroize(body.as_mut_slice());
+    decoded
+}
+
+#[cfg(test)]
+mod wiping {
+    use super::{Decoded, decode_and_wipe, frame};
+    use crate::message::Request;
+
+    #[test]
+    fn a_decoded_frame_body_holds_none_of_what_it_carried() {
+        let mut body = Request {
+            script: "RETURN 1;".to_owned(),
+            credentials: Some(("ada".to_owned(), "a long password 3f9a".to_owned())),
+            parameters: tessari_session::Parameters::new(),
+            stream: false,
+            keys: vec![crate::PresentedVaultKey {
+                place: crate::VaultPlace {
+                    namespace: "prod".to_owned(),
+                    database: "work".to_owned(),
+                    vault: "team".to_owned(),
+                },
+                key: [0x5a; 32],
+            }],
+        }
+        .encode();
+        let decoded = decode_and_wipe(frame::Kind::Request, &mut body);
+        assert!(matches!(decoded, Ok(Decoded::Request(_))));
+        assert!(!body.is_empty(), "the body was emptied rather than wiped");
+        assert!(
+            body.iter().all(|byte| *byte == 0),
+            "the body kept bytes: {body:?}"
+        );
+        // A body that does not decode is wiped too.
+        let mut broken = vec![0x5a_u8; 12];
+        assert!(decode_and_wipe(frame::Kind::Request, &mut broken).is_err());
+        assert_eq!(broken, vec![0_u8; 12]);
+    }
 }
