@@ -2090,6 +2090,28 @@ pub enum Error {
         span: Span,
     },
 
+    /// A passphrase act named a vault in keyed custody (ADR-0136), which has no passphrase and no unseal: its key
+    /// arrives with each request.
+    #[error(
+        "vault {vault} opens with a key presented with each request: it has no passphrase to unseal, seal or \
+         change (at {span})"
+    )]
+    VaultOpensWithAKey {
+        /// The vault as written.
+        vault: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A key was presented for, or a key change asked of, a vault that is not in keyed custody (ADR-0136).
+    #[error("vault {vault} is not opened by a presented key (at {span})")]
+    VaultNotKeyed {
+        /// The vault as written.
+        vault: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A score was asked for where there is no collection to measure against.
     ///
     /// Not answered with zero, and not answered against whatever records

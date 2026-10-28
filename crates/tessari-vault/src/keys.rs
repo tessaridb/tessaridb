@@ -82,7 +82,7 @@ impl Root {
     /// unsealed by the act of initialising it — and needs the root record to
     /// persist. The master key is never derivable from the record alone.
     pub fn create(passphrase: &str) -> Result<(Self, SecretBytes)> {
-        Self::create_at(passphrase, Anchor::Store)
+        Self::create_at(Unlock::Passphrase(passphrase), Anchor::Store)
     }
 
     /// Recover the master key from this record and a passphrase.
@@ -91,7 +91,7 @@ impl Root {
     /// other failed authentication produces, so a caller learns only that it did
     /// not work.
     pub fn unlock(&self, passphrase: &str) -> Result<SecretBytes> {
-        self.unlock_at(passphrase, Anchor::Store)
+        self.unlock_at(Unlock::Passphrase(passphrase), Anchor::Store)
     }
 
     /// The same master key under a new passphrase — a rekey (ADR-0092 D3).
@@ -111,7 +111,11 @@ impl Root {
     /// [`Error::WrongKey`] when `current` does not open this record, and the
     /// derivation's own failures otherwise.
     pub fn rewrap(&self, current: &str, new: &str) -> Result<Self> {
-        self.rewrap_at(current, new, Anchor::Store)
+        self.rewrap_at(
+            Unlock::Passphrase(current),
+            Unlock::Passphrase(new),
+            Anchor::Store,
+        )
     }
 
     /// A vault's own root: a fresh vault key under its own passphrase
@@ -123,7 +127,7 @@ impl Root {
     /// key it wraps is the vault key itself: there is no master key above it,
     /// which is the whole point of a vault the store's passphrase cannot open.
     pub fn create_for_vault(passphrase: &str, scope: &[u8]) -> Result<(Self, SecretBytes)> {
-        Self::create_at(passphrase, Anchor::Vault(scope))
+        Self::create_at(Unlock::Passphrase(passphrase), Anchor::Vault(scope))
     }
 
     /// Recover a vault key from its own root and passphrase.
@@ -133,7 +137,7 @@ impl Root {
     /// [`Error::WrongKey`] for a wrong passphrase and for a root that belongs to
     /// another vault, which are the same answer on purpose.
     pub fn unlock_vault(&self, passphrase: &str, scope: &[u8]) -> Result<SecretBytes> {
-        self.unlock_at(passphrase, Anchor::Vault(scope))
+        self.unlock_at(Unlock::Passphrase(passphrase), Anchor::Vault(scope))
     }
 
     /// The same vault key under a new passphrase, as [`Self::rewrap`] is for the
@@ -143,36 +147,80 @@ impl Root {
     ///
     /// [`Error::WrongKey`] when `current` does not open this record.
     pub fn rewrap_vault(&self, current: &str, new: &str, scope: &[u8]) -> Result<Self> {
-        self.rewrap_at(current, new, Anchor::Vault(scope))
+        self.rewrap_at(
+            Unlock::Passphrase(current),
+            Unlock::Passphrase(new),
+            Anchor::Vault(scope),
+        )
     }
 
-    fn create_at(passphrase: &str, anchor: Anchor<'_>) -> Result<(Self, SecretBytes)> {
+    /// A vault's root under a key its caller presents with each request — keyed custody (ADR-0136).
+    ///
+    /// The same record shape as a passphrase root, but the wrapping key comes from HKDF rather than Argon2id: the
+    /// presented key has full entropy, so a memory-hard derivation would cost every request and buy nothing
+    /// (RFC 5869). The info string differs from every other derivation here, so a keyed root never opens as a
+    /// passphrase root, nor the reverse.
+    ///
+    /// # Errors
+    ///
+    /// The entropy source's and the envelope's own failures.
+    pub fn create_for_keyed_vault(
+        presented: &SecretBytes,
+        scope: &[u8],
+    ) -> Result<(Self, SecretBytes)> {
+        Self::create_at(Unlock::Key(presented), Anchor::Vault(scope))
+    }
+
+    /// Recover a vault key from its keyed root and the presented key.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WrongKey`] for a wrong key and for a root that belongs to another vault, the same answer on purpose.
+    pub fn unlock_keyed_vault(&self, presented: &SecretBytes, scope: &[u8]) -> Result<SecretBytes> {
+        self.unlock_at(Unlock::Key(presented), Anchor::Vault(scope))
+    }
+
+    /// The same vault key under a new presented key, as [`Self::rewrap_vault`] is for a passphrase.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WrongKey`] when `current` does not open this record.
+    pub fn rewrap_keyed_vault(
+        &self,
+        current: &SecretBytes,
+        new: &SecretBytes,
+        scope: &[u8],
+    ) -> Result<Self> {
+        self.rewrap_at(Unlock::Key(current), Unlock::Key(new), Anchor::Vault(scope))
+    }
+
+    fn create_at(unlock: Unlock<'_>, anchor: Anchor<'_>) -> Result<(Self, SecretBytes)> {
         let key = SecretBytes::generate()?;
         let key_id = KeyId::generate()?;
-        let root = Self::wrap_at(passphrase, anchor, key_id, &key)?;
+        let root = Self::wrap_at(unlock, anchor, key_id, &key)?;
         Ok((root, key))
     }
 
-    fn unlock_at(&self, passphrase: &str, anchor: Anchor<'_>) -> Result<SecretBytes> {
-        let unseal = derive(passphrase, &self.salt)?;
+    fn unlock_at(&self, unlock: Unlock<'_>, anchor: Anchor<'_>) -> Result<SecretBytes> {
+        let unseal = unlock.derive(&self.salt)?;
         envelope::open_key(&unseal, &anchor.binding(&self.salt), &self.wrapped)
     }
 
-    fn rewrap_at(&self, current: &str, new: &str, anchor: Anchor<'_>) -> Result<Self> {
+    fn rewrap_at(&self, current: Unlock<'_>, new: Unlock<'_>, anchor: Anchor<'_>) -> Result<Self> {
         let key = self.unlock_at(current, anchor)?;
         Self::wrap_at(new, anchor, self.key_id, &key)
     }
 
-    /// Wrap `key` under a key derived from `passphrase` with a fresh salt.
+    /// Wrap `key` under a key derived from `unlock` with a fresh salt.
     fn wrap_at(
-        passphrase: &str,
+        unlock: Unlock<'_>,
         anchor: Anchor<'_>,
         key_id: KeyId,
         key: &SecretBytes,
     ) -> Result<Self> {
         let mut salt = [0_u8; SALT_BYTES];
         getrandom::fill(&mut salt).map_err(|_| Error::Entropy)?;
-        let unseal = derive(passphrase, &salt)?;
+        let unseal = unlock.derive(&salt)?;
         let wrapped = envelope::seal(&unseal, key_id, &anchor.binding(&salt), key.expose())?;
         Ok(Self {
             salt,
@@ -180,6 +228,39 @@ impl Root {
             wrapped,
         })
     }
+}
+
+/// What opens a root record: a passphrase a person types, or a key a caller presents.
+#[derive(Clone, Copy)]
+enum Unlock<'a> {
+    Passphrase(&'a str),
+    Key(&'a SecretBytes),
+}
+
+impl Unlock<'_> {
+    /// The key that wraps the root's key, from this and the root's salt.
+    fn derive(self, salt: &[u8]) -> Result<SecretBytes> {
+        match self {
+            Self::Passphrase(passphrase) => derive(passphrase, salt),
+            Self::Key(presented) => derive_from_key(presented, salt),
+        }
+    }
+}
+
+/// The info string of the keyed-custody derivation; no other derivation in this crate uses it.
+const KEYED_CUSTODY_INFO: &[u8] = b"tessaridb vault keyed custody";
+
+/// HKDF-SHA256 over a presented key with the root's salt (RFC 5869).
+fn derive_from_key(presented: &SecretBytes, salt: &[u8]) -> Result<SecretBytes> {
+    let prk = ring::hkdf::Salt::new(ring::hkdf::HKDF_SHA256, salt).extract(presented.expose());
+    let mut out = [0_u8; KEY_BYTES];
+    let filled = prk
+        .expand(&[KEYED_CUSTODY_INFO], ring::hkdf::HKDF_SHA256)
+        .and_then(|okm| okm.fill(&mut out))
+        .map_err(|_| Error::Derivation);
+    let held = filled.map(|()| SecretBytes::adopt(out));
+    out.zeroize();
+    held
 }
 
 /// What a root record is bound to: the store's (its own salt, at the master
@@ -348,6 +429,79 @@ mod vault_root {
         );
         assert!(matches!(
             moved.unlock_vault("team pass", TEAM),
+            Err(Error::WrongKey)
+        ));
+        assert_eq!(moved.key_id, root.key_id);
+        assert_ne!(moved.salt, root.salt);
+    }
+}
+
+#[cfg(test)]
+mod keyed_root {
+    use super::Root;
+    use crate::error::Error;
+    use crate::secret::SecretBytes;
+
+    const TEAM: &[u8] = b"1:1:team";
+
+    fn key(byte: u8) -> SecretBytes {
+        SecretBytes::adopt([byte; crate::secret::KEY_BYTES])
+    }
+
+    #[test]
+    fn a_keyed_root_opens_its_vault_with_the_presented_key_only() {
+        let (root, vault_key) = Root::create_for_keyed_vault(&key(7), TEAM).expect("a root");
+        assert_eq!(
+            root.unlock_keyed_vault(&key(7), TEAM)
+                .expect("opens")
+                .expose(),
+            vault_key.expose()
+        );
+        assert!(matches!(
+            root.unlock_keyed_vault(&key(8), TEAM),
+            Err(Error::WrongKey)
+        ));
+        // Lifted onto another vault's declaration, it opens nothing.
+        assert!(matches!(
+            root.unlock_keyed_vault(&key(7), b"1:1:other"),
+            Err(Error::WrongKey)
+        ));
+    }
+
+    #[test]
+    fn a_keyed_root_is_not_a_passphrase_root() {
+        let (root, _) = Root::create_for_keyed_vault(&key(7), TEAM).expect("a root");
+        let as_text = "07".repeat(crate::secret::KEY_BYTES);
+        assert!(matches!(
+            root.unlock_vault(&as_text, TEAM),
+            Err(Error::WrongKey)
+        ));
+        let (own, _) = Root::create_for_vault("team pass", TEAM).expect("a root");
+        assert!(matches!(
+            own.unlock_keyed_vault(&key(7), TEAM),
+            Err(Error::WrongKey)
+        ));
+    }
+
+    #[test]
+    fn a_rewrapped_keyed_root_opens_the_same_key_with_the_new_key_only() {
+        let (root, vault_key) = Root::create_for_keyed_vault(&key(1), TEAM).expect("a root");
+        let moved = root
+            .rewrap_keyed_vault(&key(1), &key(2), TEAM)
+            .expect("rewrapped");
+        assert_eq!(
+            moved
+                .unlock_keyed_vault(&key(2), TEAM)
+                .expect("opens")
+                .expose(),
+            vault_key.expose()
+        );
+        assert!(matches!(
+            moved.unlock_keyed_vault(&key(1), TEAM),
+            Err(Error::WrongKey)
+        ));
+        assert!(matches!(
+            root.rewrap_keyed_vault(&key(9), &key(2), TEAM),
             Err(Error::WrongKey)
         ));
         assert_eq!(moved.key_id, root.key_id);

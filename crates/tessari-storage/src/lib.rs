@@ -138,9 +138,10 @@ pub use running::{Progress, Running};
 pub use sampled_shards::{SampledShard, SampledTable};
 pub use schema::{Violation, violations};
 pub use sealing::{
-    KEYS_FIELD, VAULT_RECIPIENT, add_recipient, initialise_root, mint_own_vault_key,
-    mint_vault_key, open_data_key, open_field, recipients, remove_recipient, reseal_named,
-    rewrap_own_vault, seal_secrets, unseal_own_vault, vault_key_scope,
+    KEYS_FIELD, VAULT_RECIPIENT, add_recipient, initialise_root, mint_keyed_vault_key,
+    mint_own_vault_key, mint_vault_key, open_data_key, open_field, recipients, remove_recipient,
+    reseal_named, rewrap_keyed_vault, rewrap_own_vault, seal_secrets, unseal_own_vault,
+    vault_key_scope,
 };
 pub use state::{StateReader, TopicEntry, TopicHead};
 pub use statistics::{estimate_equality, estimate_range};
@@ -158,5 +159,6 @@ pub use transaction::{
     RecordWalk, Region, Savepoint, SearchCounts, StoredRecord, TopicTrim, Transaction,
     Unreturnable, Window, back_off,
 };
+pub use vault::presented::{Presented, presenting};
 pub use vault::{OpenVault, SealState};
 pub use views::ViewState;

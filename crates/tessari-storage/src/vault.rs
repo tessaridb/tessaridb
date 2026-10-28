@@ -31,6 +31,7 @@
 //! pass drops it so it does not sit in memory until the next use asks.
 
 mod own;
+pub(crate) mod presented;
 
 use std::sync::RwLock;
 use std::time::{Duration, Instant, SystemTime};

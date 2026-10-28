@@ -40,7 +40,7 @@ pub use ast::{
     ScoreRange, Script, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator, Select,
     SetBound, SetCondition, SetOperation, Source, SpaceBound, Statement, StatementKind,
     StructureOp, TableChange, TableExpiry, TableRef, Timeout, TopicClauses, TrimBound, UserChange,
-    UserGrant, Using, Version, WindowFunction, Windowed, WriteExpiry, Written,
+    UserGrant, Using, VaultKey, Version, WindowFunction, Windowed, WriteExpiry, Written,
 };
 pub use bind::{Parameters, bind_expression, bind_read};
 pub use error::{Error, Result};

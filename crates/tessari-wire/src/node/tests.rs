@@ -126,6 +126,7 @@ fn tag_answering(address: String, minor: u8, script: &str) -> u8 {
         credentials: None,
         parameters: Parameters::new(),
         stream: false,
+        keys: Vec::new(),
     }
     .encode();
     let length = u32::try_from(body.len()).expect("a script smaller than four gibibytes");
@@ -148,6 +149,7 @@ fn ask(stream: &mut TcpStream, script: &str) -> (u8, Vec<u8>) {
         credentials: None,
         parameters: Parameters::new(),
         stream: false,
+        keys: Vec::new(),
     }
     .encode();
     let length = u32::try_from(body.len()).expect("a short script");
@@ -172,6 +174,7 @@ fn ask_as(stream: &mut TcpStream, script: &str, credentials: Option<(&str, &str)
         credentials: credentials.map(|(name, password)| (name.to_owned(), password.to_owned())),
         parameters: Parameters::new(),
         stream: false,
+        keys: Vec::new(),
     }
     .encode();
     frame::write(stream, frame::Kind::Request, &body).expect("the request");
@@ -218,6 +221,7 @@ fn a_node_on_one_worker_answers_while_a_slow_statement_runs() {
         credentials: Some(("root".to_owned(), PASSWORD.to_owned())),
         parameters: Parameters::new(),
         stream: false,
+        keys: Vec::new(),
     }
     .encode();
     frame::write(&mut slow, frame::Kind::Request, &body).expect("the sign-in");

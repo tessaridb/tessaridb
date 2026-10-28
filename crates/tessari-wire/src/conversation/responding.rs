@@ -47,7 +47,37 @@ pub(crate) async fn respond(
     } else {
         None
     };
-    let ran = session.run_with(&request.script, &request.parameters).await;
+    // Keys for keyed vaults (ADR-0136): each checked against its vault before the script runs, then held for this
+    // request alone and cleared when it ends. A node never sends keys anywhere — a request carrying them is never
+    // carried to another node below.
+    let presented = if request.keys.is_empty() {
+        None
+    } else {
+        let asked: Vec<tessaridb::PresentedKey> = request
+            .keys
+            .iter()
+            .map(|presented| tessaridb::PresentedKey {
+                namespace: presented.place.namespace.clone(),
+                database: presented.place.database.clone(),
+                vault: presented.place.vault.clone(),
+                key: presented.key,
+            })
+            .collect();
+        match session.presented_keys(&asked).await {
+            Ok(presented) => Some(presented),
+            Err(refused) => return refused_as(&refused, theirs),
+        }
+    };
+    let ran = match presented {
+        Some(presented) => {
+            tessaridb::presenting(
+                presented,
+                session.run_with(&request.script, &request.parameters),
+            )
+            .await
+        }
+        None => session.run_with(&request.script, &request.parameters).await,
+    };
     // Cleared whatever the script did, so a sink it never took cannot catch the
     // next request's snapshot.
     let streamed = spool.filter(|_| session.snapshot_was_written());
@@ -59,6 +89,7 @@ pub(crate) async fn respond(
         && !session.landed()
         && (matches!(refused, tessaridb::Error::NotWritable { .. }) || theirs < frame::REDIRECTS)
         && tessaridb::travels(&request.script)
+        && request.keys.is_empty()
         && let Some(coordinator) = db.coordinator()
         && let Some(to) = db.answers_instead(refused).await
     {
@@ -274,6 +305,27 @@ pub(crate) async fn respond_vault(
                 .declare_vault(&place.namespace, &place.database, &place.vault, passphrase)
                 .await;
             return status_answer(declared, theirs);
+        }
+        crate::VaultCall::DeclareKeyed { place, key } => {
+            let declared = session
+                .declare_keyed_vault(&place.namespace, &place.database, &place.vault, *key)
+                .await;
+            return status_answer(declared, theirs);
+        }
+        crate::VaultCall::ChangeKey { current, new } => {
+            let Some(place) = asked.place.as_ref() else {
+                return refused_as(&tessaridb::Error::NoVaultRoot, theirs);
+            };
+            let changed = session
+                .change_vault_key(
+                    &place.namespace,
+                    &place.database,
+                    &place.vault,
+                    *current,
+                    *new,
+                )
+                .await;
+            return status_answer(changed, theirs);
         }
     };
     let target = asked

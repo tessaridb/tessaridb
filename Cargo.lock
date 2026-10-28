@@ -1909,6 +1909,7 @@ dependencies = [
  "rust_decimal",
  "tessari-types",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]
@@ -1982,6 +1983,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

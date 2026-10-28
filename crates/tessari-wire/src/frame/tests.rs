@@ -48,7 +48,7 @@ fn a_shard_home_crosses_the_wire_and_the_older_three_keep_nine_bytes() {
 /// constant makes a protocol change fail in this crate until somebody has
 /// been to `spec/protocol-v1.md` §2.3 and §3.1 and changed the document a
 /// third-party client is written against.
-const SPECIFIED_GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 6];
+const SPECIFIED_GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 7];
 
 /// A peer: what it will say, and what it hears.
 ///
@@ -93,7 +93,7 @@ fn the_greeting_this_node_sends_is_the_six_bytes_the_specification_names() {
         peer.heard, SPECIFIED_GREETING,
         "what this node puts on the wire is not what the specification says"
     );
-    assert_eq!(minor, 6, "the peer's minor is kept, not discarded");
+    assert_eq!(minor, 7, "the peer's minor is kept, not discarded");
 }
 
 #[test]
@@ -123,8 +123,8 @@ fn a_differing_minor_is_not_a_refusal() {
     // The half the specification says must be tolerated: the two sides agree
     // about frames and about every value, and the newer one merely knows
     // more outcome kinds, which the older steps over by their lengths.
-    let mut peer = Peer::saying(&[b'T', b'E', b'S', b'S', 1, 7]);
-    assert_eq!(greet(&mut peer).expect("tolerated"), 7);
+    let mut peer = Peer::saying(&[b'T', b'E', b'S', b'S', 1, 8]);
+    assert_eq!(greet(&mut peer).expect("tolerated"), 8);
 }
 
 #[test]

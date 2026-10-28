@@ -41,6 +41,7 @@ impl Session<'_> {
         name: &Name,
         if_not_exists: bool,
         passphrase: Option<&str>,
+        key: Option<&tessari_ql::VaultKey>,
         span: Span,
     ) -> Result<Outcome> {
         // The scope is computed by the storage layer's own function, not
@@ -48,12 +49,16 @@ impl Session<'_> {
         // stored definition, and two implementations of one binding produce a
         // vault that accepts every write and opens nothing, with both halves
         // looking correct in isolation.
-        let custody = match passphrase {
-            Some(passphrase) => {
+        let custody = match (key, passphrase) {
+            (Some(key), _) => {
+                self.keyed_vault_custody(transaction, name, key, span)
+                    .await?
+            }
+            (None, Some(passphrase)) => {
                 self.own_vault_custody(transaction, name, passphrase, span)
                     .await?
             }
-            None => {
+            (None, None) => {
                 let context = self.context(transaction, None, span).await?;
                 VaultCustody::Store(tessari_storage::mint_vault_key(
                     self.store,

@@ -178,6 +178,8 @@ impl Error {
             | Self::NotSummable { .. }
             | Self::ManyWritablePeers { .. }
             | Self::VaultUsesStorePassphrase { .. }
+            | Self::VaultOpensWithAKey { .. }
+            | Self::VaultNotKeyed { .. }
             | Self::NoSearchIndex { .. }
             | Self::PrefixTooShort { .. }
             | Self::MalformedSlop { .. }

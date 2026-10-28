@@ -1473,12 +1473,14 @@ impl Session<'_> {
                 name,
                 if_not_exists,
                 passphrase,
+                key,
             } => {
                 self.define_vault(
                     transaction,
                     name,
                     *if_not_exists,
                     passphrase.as_deref(),
+                    key.as_ref(),
                     span,
                 )
                 .await
@@ -1772,8 +1774,18 @@ impl Session<'_> {
             } => self.unseal_vault(transaction, passphrase, *span).await,
             StatementKind::ChangeVaultPassphrase {
                 vault: Some(vault),
+                key: Some((current, new)),
+                span,
+                ..
+            } => {
+                self.rewrap_vault_key(transaction, vault, current, new, *span)
+                    .await
+            }
+            StatementKind::ChangeVaultPassphrase {
+                vault: Some(vault),
                 current,
                 new,
+                key: None,
                 span,
             } => {
                 self.change_named_vault_passphrase(transaction, vault, current, new, *span)
@@ -1784,6 +1796,7 @@ impl Session<'_> {
                 current,
                 new,
                 span,
+                ..
             } => {
                 self.change_passphrase(transaction, current, new, *span)
                     .await

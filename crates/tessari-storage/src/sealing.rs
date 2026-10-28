@@ -44,8 +44,9 @@ use crate::error::{Error, Result};
 use crate::store::Store;
 use crate::transaction::{RecordAddress, Transaction};
 pub use vault_keys::{
-    add_recipient, mint_own_vault_key, mint_vault_key, open_data_key, open_field, recipients,
-    remove_recipient, rewrap_own_vault, unseal_own_vault,
+    add_recipient, mint_keyed_vault_key, mint_own_vault_key, mint_vault_key, open_data_key,
+    open_field, recipients, remove_recipient, rewrap_keyed_vault, rewrap_own_vault,
+    unseal_own_vault,
 };
 
 /// The reserved entry holding a record's wrapped data keys.

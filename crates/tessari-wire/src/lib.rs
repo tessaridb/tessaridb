@@ -163,7 +163,9 @@ pub use crate::keys::{PeerKeys, Removed, Revoked};
 pub use crate::link::{Answered, Ask, Credential, Met, Peers, call, call_within};
 #[cfg(feature = "server")]
 pub use crate::message::names_for;
-pub use crate::message::{Answer, Correction, Exact, Names, Remark, Request, Suggested, spell};
+pub use crate::message::{
+    Answer, Correction, Exact, Names, PresentedVaultKey, Remark, Request, Suggested, spell,
+};
 #[cfg(feature = "server")]
 pub use crate::node::Node;
 #[cfg(feature = "server")]

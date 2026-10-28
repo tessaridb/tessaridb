@@ -360,3 +360,178 @@ fn a_closed_store_refuses_every_vault_act_to_nobody_and_every_change_to_a_viewer
         );
     }
 }
+
+// A vault keyed by a key its caller presents (ADR-0136): declared and re-keyed
+// by the vault frame, opened only by a request that carries the key, and the
+// key itself never in anything that comes back.
+
+const KEY: [u8; 32] = [0x5a; 32];
+const NEXT_KEY: [u8; 32] = [0x6b; 32];
+const KEYED_SECRET: &str = "keyed-over-the-wire-2c8e";
+
+fn team() -> tessari_wire::VaultPlace {
+    tessari_wire::VaultPlace {
+        namespace: "prod".to_owned(),
+        database: "work".to_owned(),
+        vault: "team".to_owned(),
+    }
+}
+
+fn presented(key: [u8; 32]) -> Vec<tessari_wire::PresentedVaultKey> {
+    vec![tessari_wire::PresentedVaultKey { place: team(), key }]
+}
+
+fn presenting(
+    client: &mut Client,
+    script: &str,
+    key: [u8; 32],
+) -> tessari_wire::Result<Vec<tessari_wire::Answer>> {
+    client.run_presenting(
+        &format!("{TENANCY} {script}"),
+        None,
+        &tessaridb::Parameters::new(),
+        &presented(key),
+    )
+}
+
+/// Whether `rendered` carries the key's bytes in any of the forms a log would.
+fn carries(rendered: &str, key: [u8; 32]) -> bool {
+    let hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+    rendered.contains(&hex) || rendered.contains(&format!("{:?}", &key[..4]))
+}
+
+#[test]
+fn a_keyed_vault_opens_over_the_wire_only_in_a_request_that_carries_its_key() {
+    use tessari_wire::VaultCall;
+    let (_node, address) = serving(Db::in_memory().now().unwrap());
+    let mut client = Client::connect(&address).unwrap();
+    client
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE work;",
+            None,
+        )
+        .unwrap();
+    let declared = client
+        .vault(
+            &VaultCall::DeclareKeyed {
+                place: team(),
+                key: KEY,
+            },
+            Some(&team()),
+            None,
+        )
+        .unwrap();
+    assert!(!carries(&format!("{declared:?}"), KEY), "{declared:?}");
+    client
+        .run(
+            &format!("{TENANCY} DEFINE FIELD token ON team TYPE string SECRET;"),
+            None,
+        )
+        .unwrap();
+    presenting(
+        &mut client,
+        &format!("CREATE team:'github' = {{ token: '{KEYED_SECRET}' }};"),
+        KEY,
+    )
+    .unwrap();
+
+    let opened = presenting(&mut client, "REVEAL token FROM team:'github';", KEY).unwrap();
+    assert!(
+        format!("{opened:?}").contains(KEYED_SECRET),
+        "the key did not open the vault: {opened:?}"
+    );
+
+    // The next request carries nothing, and nothing was kept from the last.
+    let sealed = everything(
+        &mut client,
+        &format!("{TENANCY} REVEAL token FROM team:'github';"),
+    );
+    assert!(sealed.contains("the vault is sealed"), "{sealed}");
+    assert!(!sealed.contains(KEYED_SECRET), "{sealed}");
+
+    let wrong = presenting(&mut client, "REVEAL token FROM team:'github';", NEXT_KEY)
+        .expect_err("a wrong key opened the vault");
+    let wrong = format!("{wrong} :: {wrong:?}");
+    assert!(wrong.contains("the key is wrong"), "{wrong}");
+    assert!(!wrong.contains(KEYED_SECRET), "{wrong}");
+    assert!(
+        !carries(&wrong, NEXT_KEY),
+        "the refusal carried the key: {wrong}"
+    );
+
+    // Re-keyed by the frame: the same secret under the new key, nothing under the old.
+    let changed = client
+        .vault(
+            &VaultCall::ChangeKey {
+                current: KEY,
+                new: NEXT_KEY,
+            },
+            Some(&team()),
+            None,
+        )
+        .unwrap();
+    let changed = format!("{changed:?}");
+    assert!(
+        !carries(&changed, KEY) && !carries(&changed, NEXT_KEY),
+        "{changed}"
+    );
+    let reopened = presenting(&mut client, "REVEAL token FROM team:'github';", NEXT_KEY).unwrap();
+    assert!(
+        format!("{reopened:?}").contains(KEYED_SECRET),
+        "{reopened:?}"
+    );
+    assert!(
+        presenting(&mut client, "REVEAL token FROM team:'github';", KEY).is_err(),
+        "the old key still opened the vault"
+    );
+}
+
+/// A node below minor 7 would read past the keys and run the script without
+/// them, so the client refuses to send keys or a keyed act there at all.
+#[test]
+fn keys_are_never_sent_to_a_node_below_minor_seven() {
+    use std::io::{Read, Write};
+    use tessari_wire::VaultCall;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let older = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut greeting = [0_u8; 6];
+        socket.read_exact(&mut greeting).unwrap();
+        socket.write_all(b"TESS").unwrap();
+        socket.write_all(&[1, 6]).unwrap();
+        // Nothing more will come from this side, so a client that sent its keys
+        // anyway reads the end of the stream rather than waiting for an answer.
+        socket.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut rest = Vec::new();
+        drop(socket.read_to_end(&mut rest));
+        rest
+    });
+    let mut client = Client::connect(&address).unwrap();
+    let too_old = |refused: Option<tessari_wire::Error>| {
+        matches!(
+            refused,
+            Some(tessari_wire::Error::NodeTooOld {
+                found: 6,
+                needed: 7
+            })
+        )
+    };
+    let refused = presenting(&mut client, "RETURN 1;", KEY).err();
+    assert!(too_old(refused), "keys were offered to an older node");
+    for act in [
+        VaultCall::DeclareKeyed {
+            place: team(),
+            key: KEY,
+        },
+        VaultCall::ChangeKey {
+            current: KEY,
+            new: NEXT_KEY,
+        },
+    ] {
+        let refused = client.vault(&act, Some(&team()), None).err();
+        assert!(too_old(refused), "{act:?} was offered to an older node");
+    }
+    drop(client);
+    assert!(older.join().unwrap().is_empty(), "something was sent");
+}

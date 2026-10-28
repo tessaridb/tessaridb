@@ -187,6 +187,14 @@ impl OpenVault {
                 self.seal_if_due()?;
                 Err(Error::Vault(tessari_vault::Error::Sealed))
             }
+            // Keyed custody (ADR-0136): the key is the request's, opened for this one call and dropped with it.
+            VaultCustody::Keyed(root) => super::presented::with_presented(scope, |presented| {
+                let vault_key = root
+                    .unlock_keyed_vault(presented, scope)
+                    .map_err(Error::Vault)?;
+                act(&vault_key)
+            })
+            .unwrap_or(Err(Error::Vault(tessari_vault::Error::Sealed))),
         }
     }
 }
