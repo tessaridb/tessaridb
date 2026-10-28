@@ -245,3 +245,37 @@ pub(crate) fn key_set_of<'a>(
         }),
     }
 }
+
+/// Mint a vault key under a key the caller presents (keyed custody, ADR-0136).
+///
+/// Nothing is held afterwards: the key that opens it arrives with each request and leaves with it.
+///
+/// # Errors
+///
+/// Returns [`Error::Vault`] when the entropy source fails.
+pub fn mint_keyed_vault_key(
+    namespace: NamespaceId,
+    database: DatabaseId,
+    name: &str,
+    presented: &SecretBytes,
+) -> Result<Root> {
+    let scope = vault_key_scope(namespace, database, name);
+    let (root, _key) = Root::create_for_keyed_vault(presented, &scope).map_err(Error::Vault)?;
+    Ok(root)
+}
+
+/// The same vault key under a new presented key — a rekey of one keyed vault.
+///
+/// # Errors
+///
+/// Returns [`Error::Vault`] carrying `WrongKey` when `current` does not open it.
+pub fn rewrap_keyed_vault(
+    definition: &TableDefinition,
+    root: &Root,
+    current: &SecretBytes,
+    new: &SecretBytes,
+) -> Result<Root> {
+    let scope = vault_key_scope(definition.namespace, definition.database, &definition.name);
+    root.rewrap_keyed_vault(current, new, &scope)
+        .map_err(Error::Vault)
+}

@@ -1,5 +1,11 @@
 use super::*;
 
+/// The field saying which custody a root record belongs to, written only for a keyed vault.
+const FIELD_CUSTODY: &str = "custody";
+
+/// The value of [`FIELD_CUSTODY`] for a keyed vault.
+const KEYED_WORD: &str = "key";
+
 /// The key a vault's records are sealed under, sealed itself.
 ///
 /// On the kind rather than beside it, for the reason [`EdgeDeclaration`] rides
@@ -27,6 +33,9 @@ pub enum VaultCustody {
     /// vault's scope. No master key is above it, so neither the store's
     /// passphrase nor store-wide authority opens it.
     Own(Root),
+    /// Sealed under a key derived from a key the caller presents with each request (ADR-0136). Nothing in this
+    /// process holds it between requests, so no unseal, period or passphrase applies.
+    Keyed(Root),
 }
 
 impl VaultCustody {
@@ -35,16 +44,17 @@ impl VaultCustody {
     pub const fn key_id(&self) -> KeyId {
         match self {
             Self::Store(wrapped) => wrapped.key_id,
-            Self::Own(root) => root.key_id,
+            Self::Own(root) | Self::Keyed(root) => root.key_id,
         }
     }
 
-    /// The word `INFO` answers with: `'store'` or `'own'`.
+    /// The word `INFO` answers with: `'store'`, `'own'` or `'key'`.
     #[must_use]
     pub const fn word(&self) -> &'static str {
         match self {
             Self::Store(_) => "store",
             Self::Own(_) => "own",
+            Self::Keyed(_) => "key",
         }
     }
 }
@@ -63,6 +73,15 @@ impl VaultDeclaration {
             // a salt beside the key id and the wrapped key — so the salt's
             // presence is what says which custody this is.
             VaultCustody::Own(root) => return VaultRoot(root.clone()).to_value(),
+            // A keyed root is a root record plus the word saying what opens it. A build that predates the word
+            // reads it as a passphrase root, and a passphrase opens nothing there — the safe direction.
+            VaultCustody::Keyed(root) => {
+                let mut value = VaultRoot(root.clone()).to_value();
+                if let Value::Object(fields) = &mut value {
+                    fields.insert(FIELD_CUSTODY.to_owned(), Value::from(KEYED_WORD));
+                }
+                return value;
+            }
             VaultCustody::Store(key) => key,
         };
         Value::Object(BTreeMap::from([
@@ -87,9 +106,19 @@ impl VaultDeclaration {
         const ENTITY: &str = "vault";
         let fields = object(value, ENTITY)?;
         if fields.contains_key(FIELD_SALT) {
-            return Ok(Self {
-                custody: VaultCustody::Own(VaultRoot::from_value(value)?.0),
-            });
+            let root = VaultRoot::from_value(value)?.0;
+            let custody = match fields.get(FIELD_CUSTODY) {
+                None => VaultCustody::Own(root),
+                Some(Value::String(word)) if word == KEYED_WORD => VaultCustody::Keyed(root),
+                Some(_) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: ENTITY,
+                        field: FIELD_CUSTODY,
+                        found: "a custody this build does not know",
+                    });
+                }
+            };
+            return Ok(Self { custody });
         }
         let Some(Value::Bytes(key_id)) = fields.get(FIELD_KEY_ID) else {
             return Err(Error::CatalogMalformed {

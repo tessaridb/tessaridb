@@ -178,6 +178,16 @@ impl Client {
                 needed: frame::DECLARE,
             });
         }
+        if matches!(
+            call,
+            crate::VaultCall::DeclareKeyed { .. } | crate::VaultCall::ChangeKey { .. }
+        ) && self.minor < frame::KEYED
+        {
+            return Err(Error::NodeTooOld {
+                found: self.minor,
+                needed: frame::KEYED,
+            });
+        }
         let asked = crate::VaultAsk {
             call: call.clone(),
             credentials: credentials.map(|(name, password)| (name.to_owned(), password.to_owned())),
@@ -226,8 +236,46 @@ impl Client {
             credentials: credentials.map(|(name, password)| (name.to_owned(), password.to_owned())),
             parameters: parameters.clone(),
             stream: false,
+            keys: Vec::new(),
         };
         self.exchange(&request, None)
+    }
+
+    /// Run a script presenting `keys` to the keyed vaults it opens (ADR-0136): the node holds them for this request
+    /// only.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NodeTooOld`] before anything is sent to a node below minor 7; [`Error::Redirected`] when a node other
+    /// than this one must answer — a request carrying keys is never carried over the peer link; otherwise as
+    /// [`Self::run_with`].
+    pub fn run_presenting(
+        &mut self,
+        script: &str,
+        credentials: Option<(&str, &str)>,
+        parameters: &Parameters,
+        keys: &[crate::PresentedVaultKey],
+    ) -> Result<Vec<Answer>> {
+        if self.minor < frame::KEYED {
+            return Err(Error::NodeTooOld {
+                found: self.minor,
+                needed: frame::KEYED,
+            });
+        }
+        let request = Request {
+            script: script.to_owned(),
+            credentials: credentials.map(|(name, password)| (name.to_owned(), password.to_owned())),
+            parameters: parameters.clone(),
+            stream: false,
+            keys: keys.to_vec(),
+        };
+        match self.exchange(&request, None)? {
+            Served::Answers(answers) => Ok(answers),
+            Served::Elsewhere(elsewhere) => Err(Error::Redirected {
+                endpoint: elsewhere.endpoint,
+                node: elsewhere.node,
+            }),
+        }
     }
 
     /// Run a script, writing the snapshot it takes into `sink` as it arrives
@@ -260,6 +308,7 @@ impl Client {
             credentials: credentials.map(|(name, password)| (name.to_owned(), password.to_owned())),
             parameters: parameters.clone(),
             stream: true,
+            keys: Vec::new(),
         };
         match self.exchange(&request, Some(sink))? {
             Served::Answers(answers) => Ok(answers),

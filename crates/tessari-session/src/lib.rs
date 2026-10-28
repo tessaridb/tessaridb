@@ -110,4 +110,4 @@ pub use run_now::RunNow;
 #[cfg(feature = "test-support")]
 pub use tessari_storage::{Now, now};
 pub use ticket::Ticket;
-pub use vault_surface::{VaultAct, VaultTarget};
+pub use vault_surface::{PresentedKey, VaultAct, VaultTarget};

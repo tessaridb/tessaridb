@@ -42,7 +42,7 @@ pub use select::{
 };
 pub use statement::{
     BackupForm, RollupCompute, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator,
-    StatementKind,
+    StatementKind, VaultKey,
 };
 pub use structure::{
     Container, FieldExpiryCondition, ListEnd, Presence, RangeEnd, ScoreCompare, ScoreRange,

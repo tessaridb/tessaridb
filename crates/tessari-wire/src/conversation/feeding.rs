@@ -9,7 +9,7 @@ use tessari_serve::Bridged;
 use tessari_session::Detached;
 use tessaridb::Sequence;
 use tessaridb::feed::{self, Feed, Following, Round};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, BufReader, BufWriter as AsyncBufWriter};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, BufWriter as AsyncBufWriter};
 
 /// Push changes down this connection until it ends — as a task, not a thread.
 ///
@@ -23,7 +23,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, BufReader, BufWriter as Asy
 pub(crate) async fn feed<R, W>(
     talk: Conversation,
     session: Detached,
-    mut reader: BufReader<R>,
+    mut reader: R,
     mut writer: AsyncBufWriter<W>,
     asked: Follow,
     theirs: u8,

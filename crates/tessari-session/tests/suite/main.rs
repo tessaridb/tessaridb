@@ -178,6 +178,7 @@ mod using;
 mod vault_audit;
 mod vault_custody;
 mod vault_exfiltration;
+mod vault_keyed;
 mod vault_language;
 mod vault_reach_and_open;
 mod vault_recipients;

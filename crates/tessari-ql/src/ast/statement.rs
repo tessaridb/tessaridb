@@ -471,6 +471,9 @@ pub enum StatementKind {
         /// passphrase never opens it. A literal, for
         /// [`StatementKind::UnsealVault`]'s reason.
         passphrase: Option<String>,
+        /// A key the caller presents (ADR-0136): the vault's key is wrapped under it and opens only in a request that
+        /// presents it again. No grammar spells one; the vault surface builds this from a frame field.
+        key: Option<VaultKey>,
     },
     /// `DEFINE INDEX by_email ON users FIELDS email UNIQUE`
     DefineIndex {
@@ -1814,6 +1817,9 @@ pub enum StatementKind {
         current: String,
         /// The passphrase that will open it afterwards.
         new: String,
+        /// For a vault in key custody (ADR-0136): the key that opens it now and the key that will, in place of the
+        /// two passphrases. Never parsed — the vault surface alone builds it, so a key is never statement text.
+        key: Option<(VaultKey, VaultKey)>,
         /// Where the statement sits, so a refusal can point at it without
         /// quoting what stands there.
         span: Span,
@@ -2297,4 +2303,37 @@ pub struct RollupCompute {
     pub rank: Option<tessari_types::Number>,
     /// The name the value answers under.
     pub name: Name,
+}
+
+/// A 256-bit key presented for a vault in keyed custody (ADR-0136).
+///
+/// Built only by the vault surface from a frame field — no statement text spells one — and never printed. Cleared
+/// when dropped.
+#[derive(Clone, PartialEq, Eq)]
+pub struct VaultKey([u8; 32]);
+
+impl VaultKey {
+    /// Hold a key that arrived as a field.
+    #[must_use]
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// The key's bytes, for the one caller that derives with them.
+    #[must_use]
+    pub const fn expose(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl Drop for VaultKey {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for VaultKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
 }

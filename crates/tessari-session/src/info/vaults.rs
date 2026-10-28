@@ -40,6 +40,11 @@ impl Session<'_> {
                 custody,
             ),
             Some(custody @ VaultCustody::Store(_)) => (self.info_seal(transaction).await?, custody),
+            // Nothing is held between requests, so a keyed vault is always sealed to anybody asking.
+            Some(custody @ VaultCustody::Keyed(_)) => (
+                self.seal_report(Some(tessari_storage::SealState::Sealed)),
+                custody,
+            ),
             None => {
                 return Err(Error::Unknown {
                     entity: "vault",

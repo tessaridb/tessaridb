@@ -33,6 +33,98 @@ impl Session<'_> {
         Ok(VaultCustody::Own(root))
     }
 
+    /// The key of a vault declared over the vault surface with a presented key (ADR-0136): a vault key wrapped under
+    /// that key, held nowhere afterwards.
+    pub(super) async fn keyed_vault_custody(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        key: &tessari_ql::VaultKey,
+        span: Span,
+    ) -> Result<VaultCustody> {
+        let context = self.context(transaction, None, span).await?;
+        let presented = tessari_vault::SecretBytes::adopt(*key.expose());
+        let root = tessari_storage::mint_keyed_vault_key(
+            context.namespace,
+            context.database,
+            &name.text,
+            &presented,
+        )?;
+        Ok(VaultCustody::Keyed(root))
+    }
+
+    /// Re-wrap a keyed vault's key under a new presented key, under that vault's throttle, rewriting its declaration
+    /// in this transaction (ADR-0136).
+    pub(super) async fn rewrap_vault_key(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        current: &tessari_ql::VaultKey,
+        new: &tessari_ql::VaultKey,
+        span: Span,
+    ) -> Result<Outcome> {
+        let (id, definition, root) = self.keyed_vault(transaction, name, span).await?;
+        let current = tessari_vault::SecretBytes::adopt(*current.expose());
+        let new = tessari_vault::SecretBytes::adopt(*new.expose());
+        let moved = guessed(self.store, &root, || {
+            tessari_storage::rewrap_keyed_vault(&definition, &root.0, &current, &new)
+        })?;
+        Catalog::new(transaction)
+            .set_vault(
+                id,
+                VaultDeclaration {
+                    custody: VaultCustody::Keyed(moved),
+                },
+            )
+            .await?;
+        tracing::info!("a vault key was changed");
+        Ok(Outcome::Done)
+    }
+
+    /// Check a key presented for `name` against that vault's root, under its throttle, and answer the scope it opens
+    /// (ADR-0136). Run before any statement of the request, so a wrong key is refused before anything is read.
+    pub(crate) async fn check_presented(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        key: &tessari_vault::SecretBytes,
+        span: Span,
+    ) -> Result<Vec<u8>> {
+        let (_, definition, root) = self.keyed_vault(transaction, name, span).await?;
+        let scope = tessari_storage::vault_key_scope(
+            definition.namespace,
+            definition.database,
+            &definition.name,
+        );
+        guessed(self.store, &root, || {
+            root.0
+                .unlock_keyed_vault(key, &scope)
+                .map(drop)
+                .map_err(tessari_storage::Error::Vault)
+        })?;
+        Ok(scope)
+    }
+
+    /// A vault by name in keyed custody, or the refusal saying it is not one.
+    async fn keyed_vault(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<(TableId, TableDefinition, VaultRoot)> {
+        let (id, definition) = self.named_vault(transaction, name, span).await?;
+        match definition.vault_custody() {
+            Some(VaultCustody::Keyed(root)) => {
+                let root = VaultRoot(root.clone());
+                Ok((id, definition, root))
+            }
+            _ => Err(Error::VaultNotKeyed {
+                vault: name.text.clone(),
+                span,
+            }),
+        }
+    }
+
     /// `UNSEAL VAULT team WITH '…'`
     pub(super) async fn unseal_named_vault(
         &self,
@@ -129,6 +221,10 @@ impl Session<'_> {
                 let root = VaultRoot(root.clone());
                 Ok((id, definition, root))
             }
+            Some(VaultCustody::Keyed(_)) => Err(Error::VaultOpensWithAKey {
+                vault: name.text.clone(),
+                span,
+            }),
             _ => Err(Error::VaultUsesStorePassphrase {
                 vault: name.text.clone(),
                 span,

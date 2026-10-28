@@ -6,10 +6,14 @@
 //! u8      target: 0 = the store, 1 = one vault (ADR-0093 D6)
 //!         if 1: text namespace, text database, text vault
 //! u8      act: 1 status, 2 unseal, 3 seal, 4 change passphrase,
-//!         5 declare a vault in its own custody (minor 6; target 1 only)
+//!         5 declare a vault in its own custody (minor 6; target 1 only),
+//!         6 declare a vault in keyed custody (minor 7; target 1 only),
+//!         7 change a keyed vault's key (minor 7; target 1 only)
 //!         if 2: text passphrase
 //!         if 4: text current passphrase, text new passphrase
 //!         if 5: text passphrase
+//!         if 6: 32 bytes key
+//!         if 7: 32 bytes current key, 32 bytes new key
 //! ```
 //!
 //! The passphrase is a field of the frame and never a script: text in a script
@@ -47,7 +51,25 @@ pub enum VaultCall {
         /// The passphrase its key will be wrapped under.
         passphrase: String,
     },
+    /// Declare a vault in keyed custody (ADR-0136): its key is wrapped under `key`, which the caller presents with
+    /// every request that opens it.
+    DeclareKeyed {
+        /// The vault to declare.
+        place: VaultPlace,
+        /// The key its key will be wrapped under.
+        key: [u8; KEY_BYTES],
+    },
+    /// Re-wrap a keyed vault's key under a new key (ADR-0136).
+    ChangeKey {
+        /// The key that opens it now.
+        current: [u8; KEY_BYTES],
+        /// The key that will open it afterwards.
+        new: [u8; KEY_BYTES],
+    },
 }
+
+/// How many bytes a presented vault key is.
+pub const KEY_BYTES: usize = 32;
 
 /// A node wipes a passphrase when the call is dropped (G061, R-06).
 #[cfg(feature = "server")]
@@ -58,6 +80,11 @@ impl Drop for VaultCall {
                 zeroize::Zeroize::zeroize(passphrase);
             }
             Self::Change { current, new } => {
+                zeroize::Zeroize::zeroize(current);
+                zeroize::Zeroize::zeroize(new);
+            }
+            Self::DeclareKeyed { key, .. } => zeroize::Zeroize::zeroize(key),
+            Self::ChangeKey { current, new } => {
                 zeroize::Zeroize::zeroize(current);
                 zeroize::Zeroize::zeroize(new);
             }
@@ -75,6 +102,8 @@ impl std::fmt::Debug for VaultCall {
             Self::Seal => "Seal",
             Self::Change { .. } => "Change(..)",
             Self::Declare { .. } => "Declare(..)",
+            Self::DeclareKeyed { .. } => "DeclareKeyed(..)",
+            Self::ChangeKey { .. } => "ChangeKey(..)",
         })
     }
 }
@@ -144,7 +173,7 @@ impl VaultAsk {
             None => body.push(0),
         }
         let place = match &self.call {
-            VaultCall::Declare { place, .. } => Some(place),
+            VaultCall::Declare { place, .. } | VaultCall::DeclareKeyed { place, .. } => Some(place),
             _ => self.place.as_ref(),
         };
         match place {
@@ -171,6 +200,15 @@ impl VaultAsk {
             VaultCall::Declare { passphrase, .. } => {
                 body.push(5);
                 put_text(&mut body, passphrase);
+            }
+            VaultCall::DeclareKeyed { key, .. } => {
+                body.push(6);
+                body.extend_from_slice(key);
+            }
+            VaultCall::ChangeKey { current, new } => {
+                body.push(7);
+                body.extend_from_slice(current);
+                body.extend_from_slice(new);
             }
         }
         body
@@ -231,6 +269,19 @@ impl VaultAsk {
                 let (passphrase, at) = take_text(body, at)?;
                 (VaultCall::Declare { place, passphrase }, at)
             }
+            6 => {
+                let place = place.take().ok_or(Error::Malformed)?;
+                let (key, at) = take_key(body, at)?;
+                (VaultCall::DeclareKeyed { place, key }, at)
+            }
+            7 => {
+                if place.is_none() {
+                    return Err(Error::Malformed);
+                }
+                let (current, at) = take_key(body, at)?;
+                let (new, at) = take_key(body, at)?;
+                (VaultCall::ChangeKey { current, new }, at)
+            }
             _ => return Err(Error::Malformed),
         };
         if at != body.len() {
@@ -244,9 +295,68 @@ impl VaultAsk {
     }
 }
 
+/// A presented key's bytes at `at`, and the position after them.
+pub(crate) fn take_key(body: &[u8], at: usize) -> Result<([u8; KEY_BYTES], usize)> {
+    let end = at.checked_add(KEY_BYTES).ok_or(Error::Malformed)?;
+    let bytes = body.get(at..end).ok_or(Error::Malformed)?;
+    let key = <[u8; KEY_BYTES]>::try_from(bytes).map_err(|_| Error::Malformed)?;
+    Ok((key, end))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{VaultAsk, VaultCall, VaultPlace};
+
+    fn unhex(hex: &str) -> Vec<u8> {
+        hex.as_bytes()
+            .chunks(2)
+            .map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).expect("ascii"), 16).expect("hex")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_keyed_acts_are_the_bodies_the_protocol_corpus_names() {
+        // `frames-v1.json` `keyed` (protocol §3.14 from minor 7), copied.
+        let team = VaultPlace {
+            namespace: "prod".to_owned(),
+            database: "work".to_owned(),
+            vault: "team".to_owned(),
+        };
+        let target = "00010000000470726f6400000004776f726b000000047465616d";
+        let declare = VaultAsk {
+            call: VaultCall::DeclareKeyed {
+                place: team.clone(),
+                key: [0x5a; 32],
+            },
+            credentials: None,
+            // A declaration carries its vault in the act, as act 5 does.
+            place: None,
+        };
+        let change = VaultAsk {
+            call: VaultCall::ChangeKey {
+                current: [0x5a; 32],
+                new: [0x6b; 32],
+            },
+            credentials: None,
+            place: Some(team),
+        };
+        for (asked, hex) in [
+            (&declare, format!("{target}06{}", "5a".repeat(32))),
+            (
+                &change,
+                format!("{target}07{}{}", "5a".repeat(32), "6b".repeat(32)),
+            ),
+        ] {
+            let body = unhex(&hex);
+            assert_eq!(asked.encode(), body);
+            assert_eq!(&VaultAsk::decode(&body).expect("a vault act"), asked);
+        }
+        // declare-keyed-on-the-store and change-key-missing-the-new-key
+        assert!(VaultAsk::decode(&unhex(&format!("000006{}", "5a".repeat(32)))).is_err());
+        assert!(VaultAsk::decode(&unhex(&format!("{target}07{}", "5a".repeat(32)))).is_err());
+    }
 
     #[test]
     fn a_vault_target_sits_between_the_credentials_and_the_act() {
@@ -369,6 +479,58 @@ mod tests {
         assert!(
             VaultAsk::decode(&[0, 0, 9]).is_err(),
             "an unknown act was read"
+        );
+    }
+
+    #[test]
+    fn the_keyed_acts_round_trip_and_need_a_vault() {
+        let place = VaultPlace {
+            namespace: "shop".to_owned(),
+            database: "live".to_owned(),
+            vault: "team".to_owned(),
+        };
+        for asked in [
+            VaultAsk {
+                call: VaultCall::DeclareKeyed {
+                    place: place.clone(),
+                    key: [7; 32],
+                },
+                credentials: None,
+                place: None,
+            },
+            VaultAsk {
+                call: VaultCall::ChangeKey {
+                    current: [1; 32],
+                    new: [2; 32],
+                },
+                credentials: Some(("ada".to_owned(), "pw".to_owned())),
+                place: Some(place.clone()),
+            },
+        ] {
+            let body = asked.encode();
+            let back = VaultAsk::decode(&body).expect("decodes");
+            assert_eq!(back.call, asked.call);
+            assert!(
+                VaultAsk::decode(&body[..body.len() - 1]).is_err(),
+                "a short key was read"
+            );
+        }
+        let mut store_wide = vec![0, 0, 7];
+        store_wide.extend_from_slice(&[1; 64]);
+        assert!(
+            VaultAsk::decode(&store_wide).is_err(),
+            "a store-wide key change was read"
+        );
+        let formatted = format!(
+            "{:?}",
+            VaultCall::DeclareKeyed {
+                place,
+                key: [0x41; 32]
+            }
+        );
+        assert!(
+            !formatted.contains("65"),
+            "the key was printed: {formatted}"
         );
     }
 }

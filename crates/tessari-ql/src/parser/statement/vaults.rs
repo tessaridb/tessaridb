@@ -133,6 +133,7 @@ impl Parser<'_> {
             vault,
             current,
             new,
+            key: None,
             span: start.to(self.span_behind()),
         })
     }
@@ -190,6 +191,7 @@ impl Parser<'_> {
             name,
             if_not_exists,
             passphrase,
+            key: None,
         })
     }
 }

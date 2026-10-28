@@ -93,6 +93,41 @@ pub struct Request {
     /// One byte after the parameters, written only when set: a node below
     /// minor 5 reads past it, so a client sends it only to a node at or above.
     pub stream: bool,
+    /// Keys for vaults in keyed custody, held for this request only (ADR-0136).
+    ///
+    /// After the stream byte, written only when there is one: the stream byte is then written either way, followed
+    /// by a count and each key's vault and 32 bytes. A node below minor 7 stops reading at the stream byte, so a
+    /// client sends keys only to a node at or above it.
+    pub keys: Vec<PresentedVaultKey>,
+}
+
+/// The fewest bytes one presented key takes: three empty names and the key.
+const MIN_KEY_ENTRY: usize = 4 * 3 + crate::vault::KEY_BYTES;
+
+/// One key a request presents, and the vault it opens (ADR-0136).
+#[derive(Clone, PartialEq, Eq)]
+pub struct PresentedVaultKey {
+    /// The vault.
+    pub place: crate::VaultPlace,
+    /// The key.
+    pub key: [u8; crate::vault::KEY_BYTES],
+}
+
+/// A node wipes a presented key when the request is dropped.
+#[cfg(feature = "server")]
+impl Drop for PresentedVaultKey {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.key);
+    }
+}
+
+/// Written by hand: the vault is shown, the key never.
+impl std::fmt::Debug for PresentedVaultKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PresentedVaultKey")
+            .field("place", &self.place)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A node wipes the password a request carried when the request is dropped, so
@@ -126,6 +161,7 @@ impl std::fmt::Debug for Request {
                     .map_or("nobody", |(name, _)| name.as_str()),
             )
             .field("parameters", &self.parameters.keys())
+            .field("keys", &self.keys)
             .finish_non_exhaustive()
     }
 }
@@ -152,8 +188,20 @@ impl Request {
             put_text(&mut body, name);
             put_bytes(&mut body, encode_payload(value).as_slice());
         }
-        if self.stream {
-            body.push(1);
+        if self.stream || !self.keys.is_empty() {
+            body.push(u8::from(self.stream));
+        }
+        if !self.keys.is_empty() {
+            put_u32(
+                &mut body,
+                u32::try_from(self.keys.len()).unwrap_or(u32::MAX),
+            );
+            for presented in &self.keys {
+                put_text(&mut body, &presented.place.namespace);
+                put_text(&mut body, &presented.place.database);
+                put_text(&mut body, &presented.place.vault);
+                body.extend_from_slice(&presented.key);
+            }
         }
         body
     }
@@ -192,11 +240,39 @@ impl Request {
             Some(1) => true,
             Some(_) => return Err(Error::Malformed),
         };
+        let mut keys = Vec::new();
+        if at.saturating_add(1) < body.len() {
+            let (count, mut next) = take_u32(body, at.saturating_add(1))?;
+            // Reserved once, and never past what the body can hold, so no push
+            // moves the keys and leaves a copy in a freed allocation; a count
+            // from a stranger allocates nothing it cannot back with bytes.
+            let fits = body.len().saturating_sub(next) / MIN_KEY_ENTRY;
+            keys.reserve_exact(usize::try_from(count).unwrap_or(usize::MAX).min(fits));
+            for _ in 0..count {
+                let (namespace, after) = take_text(body, next)?;
+                let (database, after) = take_text(body, after)?;
+                let (vault, after) = take_text(body, after)?;
+                let (key, after) = crate::vault::take_key(body, after)?;
+                keys.push(PresentedVaultKey {
+                    place: crate::VaultPlace {
+                        namespace,
+                        database,
+                        vault,
+                    },
+                    key,
+                });
+                next = after;
+            }
+            if next != body.len() {
+                return Err(Error::Malformed);
+            }
+        }
         Ok(Self {
             script,
             credentials,
             parameters,
             stream,
+            keys,
         })
     }
 }

@@ -20,6 +20,7 @@ fn a_request_round_trips_with_and_without_credentials() {
             credentials,
             parameters: Parameters::new(),
             stream: false,
+            keys: Vec::new(),
         };
         let read = Request::decode(&held.encode()).expect("a request");
         assert_eq!(read, held);
@@ -39,6 +40,7 @@ fn a_request_asking_to_stream_is_the_body_the_protocol_corpus_names() {
             credentials: None,
             parameters: Parameters::new(),
             stream,
+            keys: Vec::new(),
         };
         let body = held.encode();
         let written: String = body.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -51,6 +53,7 @@ fn a_request_asking_to_stream_is_the_body_the_protocol_corpus_names() {
         credentials: None,
         parameters: Parameters::new(),
         stream: false,
+        keys: Vec::new(),
     }
     .encode();
     two.push(2);
@@ -66,6 +69,7 @@ fn a_request_does_not_print_the_password_it_carries() {
         credentials: Some(("ada".to_owned(), "a long one".to_owned())),
         parameters: Parameters::new(),
         stream: false,
+        keys: Vec::new(),
     };
     let printed = format!("{held:?}");
     assert!(!printed.contains("a long one"), "{printed}");
@@ -81,6 +85,7 @@ fn a_request_body_that_promises_more_than_it_holds_is_refused() {
         credentials: Some(("ada".to_owned(), "x".to_owned())),
         parameters,
         stream: false,
+        keys: Vec::new(),
     };
     let body = held.encode();
     for cut in 0..body.len() {
@@ -444,4 +449,77 @@ fn the_only_flag_survives_the_wire_and_does_not_desynchronise_a_stream() {
     let (second, end) = decode_outcome(&stream, after).expect("the second");
     assert_eq!(end, stream.len());
     assert!(matches!(second, Answer::Records { only: true, .. }));
+}
+
+fn unhex(hex: &str) -> Vec<u8> {
+    hex.as_bytes()
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).expect("ascii"), 16).expect("hex"))
+        .collect()
+}
+
+fn presented(namespace: &str, database: &str, vault: &str, byte: u8) -> crate::PresentedVaultKey {
+    crate::PresentedVaultKey {
+        place: crate::VaultPlace {
+            namespace: namespace.to_owned(),
+            database: database.to_owned(),
+            vault: vault.to_owned(),
+        },
+        key: [byte; 32],
+    }
+}
+
+#[test]
+fn a_request_carrying_keys_is_the_body_the_protocol_corpus_names() {
+    // `frames-v1.json` `keyed` (protocol §3.4 from minor 7), copied: the stream
+    // byte is written whenever keys follow, then the count and each key.
+    let one = "0000002052455645414c20746f6b656e2046524f4d207465616d3a27676974687562273b0000000000000000\
+               00010000000470726f6400000004776f726b000000047465616d5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\
+               5a5a5a5a5a5a5a5a5a5a5a5a5a5a";
+    let two = "0000000d4241434b55502053544154453b000000000001000000020000000470726f6400000004776f726b00\
+               0000047465616d5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a0000000470\
+               726f64000000036f707300000005696e6672616b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b\
+               6b6b6b6b6b6b6b";
+    for (hex, held) in [
+        (
+            one,
+            Request {
+                script: "REVEAL token FROM team:'github';".to_owned(),
+                credentials: None,
+                parameters: Parameters::new(),
+                stream: false,
+                keys: vec![presented("prod", "work", "team", 0x5a)],
+            },
+        ),
+        (
+            two,
+            Request {
+                script: "BACKUP STATE;".to_owned(),
+                credentials: None,
+                parameters: Parameters::new(),
+                stream: true,
+                keys: vec![
+                    presented("prod", "work", "team", 0x5a),
+                    presented("prod", "ops", "infra", 0x6b),
+                ],
+            },
+        ),
+    ] {
+        let body = unhex(&hex.replace(' ', ""));
+        assert_eq!(held.encode(), body, "{}", held.script);
+        assert_eq!(Request::decode(&body).expect("a request"), held);
+    }
+    // a-key-cut-short and a-byte-after-the-last-key
+    let whole = Request {
+        script: "RETURN 1;".to_owned(),
+        credentials: None,
+        parameters: Parameters::new(),
+        stream: false,
+        keys: vec![presented("prod", "work", "team", 0x5a)],
+    }
+    .encode();
+    assert!(Request::decode(&whole[..whole.len() - 1]).is_err());
+    let mut after = whole;
+    after.push(0);
+    assert!(Request::decode(&after).is_err());
 }

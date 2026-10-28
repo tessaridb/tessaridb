@@ -14,7 +14,8 @@
 
 use std::collections::BTreeMap;
 
-use tessari_ql::{InfoSubject, Name, Script, Span, Statement, StatementKind};
+use tessari_ql::{InfoSubject, Name, Script, Span, Statement, StatementKind, VaultKey};
+use tessari_storage::Presented;
 use tessari_types::Value;
 
 use crate::error::Result;
@@ -40,6 +41,34 @@ pub enum VaultAct<'a> {
         /// The passphrase that will open it afterwards.
         new: &'a str,
     },
+}
+
+/// One key a request presents for a vault in keyed custody (ADR-0136). Cleared when dropped.
+pub struct PresentedKey {
+    /// The namespace the vault lives in.
+    pub namespace: String,
+    /// The database it lives in.
+    pub database: String,
+    /// The vault's name.
+    pub vault: String,
+    /// The key.
+    pub key: [u8; 32],
+}
+
+impl Drop for PresentedKey {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.key);
+    }
+}
+
+impl std::fmt::Debug for PresentedKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PresentedKey({}.{}.{})",
+            self.namespace, self.database, self.vault
+        )
+    }
 }
 
 /// What an act is about: the store's own key, or one vault's (ADR-0093 D6).
@@ -121,6 +150,7 @@ impl Session<'_> {
                 },
                 if_not_exists: false,
                 passphrase: Some(passphrase.to_owned()),
+                key: None,
             })
             .await
         {
@@ -129,6 +159,123 @@ impl Session<'_> {
         };
         (self.namespace, self.database) = held;
         declared
+    }
+
+    /// Declare `vault` in `namespace`.`database` in keyed custody (ADR-0136): its key is wrapped under `key`, which
+    /// the caller presents again with every request that opens it. Answers as `INFO FOR SEAL OF` does.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `DEFINE VAULT` is refused with.
+    pub async fn declare_keyed_vault(
+        &mut self,
+        namespace: &str,
+        database: &str,
+        vault: &str,
+        key: [u8; 32],
+    ) -> Result<Value> {
+        let held = (
+            self.namespace.replace(namespace.to_owned()),
+            self.database.replace(database.to_owned()),
+        );
+        let span = Span::new(0, 0);
+        let declared = match self
+            .built(StatementKind::DefineVault {
+                name: Name {
+                    text: vault.to_owned(),
+                    span,
+                },
+                if_not_exists: false,
+                passphrase: None,
+                key: Some(VaultKey::new(key)),
+            })
+            .await
+        {
+            Ok(_) => self.vault_act(Some(vault), VaultAct::Status).await,
+            Err(refused) => Err(refused),
+        };
+        (self.namespace, self.database) = held;
+        declared
+    }
+
+    /// Re-wrap a keyed vault's key under `new`, proving `current` (ADR-0136).
+    ///
+    /// # Errors
+    ///
+    /// `VaultNotKeyed`, a wrong `current`, the throttle, the authority `CHANGE` needs.
+    pub async fn change_vault_key(
+        &mut self,
+        namespace: &str,
+        database: &str,
+        vault: &str,
+        current: [u8; 32],
+        new: [u8; 32],
+    ) -> Result<Value> {
+        let held = (
+            self.namespace.replace(namespace.to_owned()),
+            self.database.replace(database.to_owned()),
+        );
+        let span = Span::new(0, 0);
+        let changed = match self
+            .built(StatementKind::ChangeVaultPassphrase {
+                vault: Some(Name {
+                    text: vault.to_owned(),
+                    span,
+                }),
+                current: String::new(),
+                new: String::new(),
+                key: Some((VaultKey::new(current), VaultKey::new(new))),
+                span,
+            })
+            .await
+        {
+            Ok(_) => self.vault_act(Some(vault), VaultAct::Status).await,
+            Err(refused) => Err(refused),
+        };
+        (self.namespace, self.database) = held;
+        changed
+    }
+
+    /// Check every key a request presents and gather them for [`tessari_storage::presenting`] (ADR-0136).
+    ///
+    /// Each key must open its vault's root — a wrong one is refused here, under that vault's throttle, before any
+    /// statement of the request runs — and each vault must be in keyed custody. The session's `USE` is left as it
+    /// was.
+    ///
+    /// # Errors
+    ///
+    /// `Unknown` for a vault that is not there, `VaultNotKeyed`, `WrongKey`, the throttle, a tenancy refusal.
+    pub async fn presented_keys(&mut self, keys: &[PresentedKey]) -> Result<Presented> {
+        let mut presented = Presented::none();
+        for asked in keys {
+            let held = (
+                self.namespace.replace(asked.namespace.clone()),
+                self.database.replace(asked.database.clone()),
+            );
+            let key = tessari_vault::SecretBytes::adopt(asked.key);
+            let checked = self.checked_key(&asked.vault, &key).await;
+            (self.namespace, self.database) = held;
+            presented.insert(checked?, key);
+        }
+        Ok(presented)
+    }
+
+    async fn checked_key(
+        &mut self,
+        vault: &str,
+        key: &tessari_vault::SecretBytes,
+    ) -> Result<Vec<u8>> {
+        let span = Span::new(0, 0);
+        let name = Name {
+            text: vault.to_owned(),
+            span,
+        };
+        let mut transaction = self.store.begin().await?;
+        let checked = self
+            .check_presented(&mut transaction, &name, key, span)
+            .await;
+        transaction.rollback();
+        checked
     }
 
     async fn vault_act(&mut self, vault: Option<&str>, act: VaultAct<'_>) -> Result<Value> {
@@ -152,6 +299,7 @@ impl Session<'_> {
                 vault: vault.clone(),
                 current: current.to_owned(),
                 new: new.to_owned(),
+                key: None,
                 span,
             }),
         };

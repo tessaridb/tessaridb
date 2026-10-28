@@ -23,6 +23,21 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.39.3 — 2026-10-29
+
+### Added
+
+- **A vault opened by a presented key.** A vault in key custody opens only for a request that carries its 256-bit
+  key; the node keeps the key for that request and no longer, so neither the store's passphrase nor any authority
+  in the store opens it. It is declared and re-keyed over the wire protocol's vault frame, and a request carries its
+  keys beside the script (protocol minor 7). `INFO FOR VAULT` answers `custody: 'key'`; new refusals
+  `VaultOpensWithAKey` and `VaultNotKeyed`. The console shows a keyed vault's custody.
+
+### Changed
+
+- **A client frame's body is wiped once it is decoded**, so a password, a passphrase or a presented key does not stay
+  in the node's heap after the request. Bytes left on a thread stack are not wiped.
+
 ## 0.39.2 — 2026-10-28
 
 ### Changed

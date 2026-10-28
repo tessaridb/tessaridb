@@ -25,6 +25,7 @@ tessari-serve.workspace = true
 tessari-storage.workspace = true
 tessari-types.workspace = true
 tessari-vault.workspace = true
+zeroize.workspace = true
 rust_decimal.workspace = true
 tracing.workspace = true
 thiserror.workspace = true

@@ -82,7 +82,7 @@ pub(crate) const MAJOR: u8 = 1;
 /// sends is worse than the gap**: a peer that believed this build could redirect
 /// would have been believing something false. This build sends one, so the minor
 /// moves with the sender and not with the frame.
-pub(crate) const MINOR: u8 = 6;
+pub(crate) const MINOR: u8 = 7;
 
 /// The minor at which a peer can be sent a [`Kind::Elsewhere`] frame.
 ///
@@ -122,6 +122,15 @@ pub(crate) const DECLARE: u8 = 6;
 
 /// This build's node declares the vaults this build's client asks for.
 const _: () = assert!(MINOR >= DECLARE);
+
+/// The minor at which a node reads presented vault keys on a request and the keyed vault acts 6 and 7 (ADR-0136).
+///
+/// Asked by the client before it sends either: a node below it ignores a request's keys and refuses the acts as
+/// malformed.
+pub(crate) const KEYED: u8 = 7;
+
+/// This build's node reads the keys this build's client sends.
+const _: () = assert!(MINOR >= KEYED);
 
 /// The minor at which a client is sent a refusal's class (ADR-0117 D3).
 ///

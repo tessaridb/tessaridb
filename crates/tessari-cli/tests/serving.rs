@@ -6945,6 +6945,7 @@ fn ask_as_an_old_client(address: &str, script: &str, who: Option<(&str, &str)>) 
         credentials: who.map(|(name, password)| (name.to_owned(), password.to_owned())),
         parameters: tessari_ql::Parameters::new(),
         stream: false,
+        keys: Vec::new(),
     }
     .encode();
     let mut frame = vec![1_u8];

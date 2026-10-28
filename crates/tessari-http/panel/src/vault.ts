@@ -26,9 +26,17 @@ function shown(body: unknown): string {
   if (typeof answered.seals_at === "string") {
     lines.push(`seals at ${new Date(answered.seals_at).toLocaleString()}`);
   }
-  if (typeof answered.unseal_for === "string") lines.push(`an unseal lasts ${answered.unseal_for}`);
+  // A keyed vault is never unsealed, so the node's unseal period says nothing about it (ADR-0136 D3).
+  const keyed = answered.custody === "key";
+  if (typeof answered.unseal_for === "string" && !keyed) lines.push(`an unseal lasts ${answered.unseal_for}`);
   if (typeof answered.custody === "string") {
-    lines.push(answered.custody === "own" ? "opens with its own passphrase" : "opens with the store's passphrase");
+    lines.push(
+      keyed
+        ? "opens with a key its caller presents with each request"
+        : answered.custody === "own"
+          ? "opens with its own passphrase"
+          : "opens with the store's passphrase",
+    );
   }
   if (answered.initialised === true) lines.push("this unseal set the store's first passphrase");
   return lines.join("\n");
