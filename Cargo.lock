@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-backup"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "tempfile",
  "tessari-encoding",
@@ -1724,7 +1724,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-bench"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "tessari-backup",
  "tessari-encoding",
@@ -1739,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-cli"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "futures-util",
  "libc",
@@ -1772,7 +1772,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-conformance"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "tempfile",
  "tessari-kv",
@@ -1785,11 +1785,11 @@ dependencies = [
 
 [[package]]
 name = "tessari-constants"
-version = "0.39.1"
+version = "0.39.2"
 
 [[package]]
 name = "tessari-encoding"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "proptest",
  "rust_decimal",
@@ -1801,7 +1801,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-geo"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "proptest",
  "tessari-types",
@@ -1810,7 +1810,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-http"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "axum",
  "dashmap",
@@ -1839,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-ingest"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "rdkafka",
  "tessari-kv",
@@ -1852,7 +1852,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-kafka"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "crc32c",
  "dashmap",
@@ -1878,14 +1878,14 @@ dependencies = [
 
 [[package]]
 name = "tessari-kv"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "tessari-lsm"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "dashmap",
  "tempfile",
@@ -1904,7 +1904,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-ql"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "rust_decimal",
  "tessari-types",
@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-query"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "tessari-ql",
  "tessari-types",
@@ -1922,7 +1922,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-resp"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "dashmap",
  "rustls",
@@ -1942,7 +1942,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-serve"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "futures-util",
  "rcgen",
@@ -1956,7 +1956,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-session"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "argon2",
  "dashmap",
@@ -1986,7 +1986,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-storage"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "dashmap",
  "futures-util",
@@ -2006,7 +2006,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-types"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "rust_decimal",
  "serde",
@@ -2015,7 +2015,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-vault"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -2029,7 +2029,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-wire"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "dashmap",
  "getrandom 0.4.3",
@@ -2058,7 +2058,7 @@ dependencies = [
 
 [[package]]
 name = "tessaridb"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "tempfile",
  "tessari-encoding",
@@ -2073,9 +2073,9 @@ dependencies = [
 
 [[package]]
 name = "tessarikv"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52007407274f841ced9523375522044cf25896af15b57f9771493c47c95c4ab7"
+checksum = "9925bb1a65e36bb5c084f08b830c6b9bbbf74f00b48ab1641bba6a8826d766c3"
 dependencies = [
  "arc-swap",
  "papaya",
@@ -2090,15 +2090,15 @@ dependencies = [
 
 [[package]]
 name = "tessarikv-constants"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8df58c003b9e507228022094387fef9bb831e7f50356e355792d5940a2e092cc"
+checksum = "5536852b4dc002d57ab4d3401252fa803c5329a47624649a56ab91e0abc3c7c9"
 
 [[package]]
 name = "tessarikv-format"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79e47b05ce2a77b748360a229d6317629e141a81dba9a5e80b9e60d3acbcc77d"
+checksum = "5a906666c84420a366e65a53bd353ca27bde1cdf943707ebe8447ad39f1ce516"
 dependencies = [
  "aes-gcm",
  "chacha20poly1305",
@@ -2118,9 +2118,9 @@ dependencies = [
 
 [[package]]
 name = "tessarikv-sync"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da0fb873f74c70eaa910ae5a252d233e409037ed92fcf88a37cf8e7ce0db3471"
+checksum = "371d4496b90be6e6f34b1608777aff65a6af448f8a210d074c7255ef0b24ae0b"
 dependencies = [
  "crossbeam-utils",
  "loom",
@@ -2129,9 +2129,9 @@ dependencies = [
 
 [[package]]
 name = "tessarikv-types"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a761a97086a1f48ccd09a36ca42733d50427abcf71d5cf1b8a065bc5e1eef39"
+checksum = "1499566fe06c08c21b1ef0f34b89f2e90bf109fa733d3d78236abe01c75197bb"
 dependencies = [
  "tessarikv-constants",
  "thiserror",

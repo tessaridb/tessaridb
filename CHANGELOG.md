@@ -23,6 +23,16 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.39.2 — 2026-10-28
+
+### Changed
+
+- **The storage engine is TessariKV `0.2.0`.** Synced commits from several connections share one disk flush on
+  macOS and Windows, so a durable write under concurrency costs less; a read that misses the block cache costs less
+  and no longer contends with other readers of the same file; scans read each level's files in place. Upgrading is
+  one-way: the first `0.39.2` open stamps the storage files with a newer format that `0.39.1` refuses, so take a
+  snapshot before upgrading and restore it to go back. Stores written by earlier releases open unchanged.
+
 ## 0.39.1 — 2026-10-28
 
 ### Changed
