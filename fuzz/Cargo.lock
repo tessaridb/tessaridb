@@ -1185,7 +1185,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-backup"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "tessari-encoding",
  "tessari-storage",
@@ -1195,11 +1195,11 @@ dependencies = [
 
 [[package]]
 name = "tessari-constants"
-version = "0.39.1"
+version = "0.39.2"
 
 [[package]]
 name = "tessari-encoding"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "rust_decimal",
  "tessari-geo",
@@ -1210,7 +1210,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-geo"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "tessari-types",
  "thiserror",
@@ -1218,14 +1218,14 @@ dependencies = [
 
 [[package]]
 name = "tessari-kv"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "tessari-lsm"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "dashmap",
  "tessari-kv",
@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-ql"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "rust_decimal",
  "tessari-types",
@@ -1248,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-serve"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "futures-util",
  "rustls",
@@ -1260,7 +1260,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-session"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "argon2",
  "dashmap",
@@ -1285,7 +1285,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-storage"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "dashmap",
  "futures-util",
@@ -1304,7 +1304,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-types"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "rust_decimal",
  "serde",
@@ -1313,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-vault"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-wire"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "dashmap",
  "getrandom 0.4.3",
@@ -1351,8 +1351,9 @@ dependencies = [
 
 [[package]]
 name = "tessaridb"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
+ "tessari-encoding",
  "tessari-kv",
  "tessari-lsm",
  "tessari-ql",
@@ -1376,9 +1377,9 @@ dependencies = [
 
 [[package]]
 name = "tessarikv"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7183fa958a86f5b48ebff998e0fb1234fa89726d58776cef87e1032680c4aca9"
+checksum = "9925bb1a65e36bb5c084f08b830c6b9bbbf74f00b48ab1641bba6a8826d766c3"
 dependencies = [
  "arc-swap",
  "papaya",
@@ -1393,15 +1394,15 @@ dependencies = [
 
 [[package]]
 name = "tessarikv-constants"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80d11ee9917cd381930b2a942fdc967dcd866a77f72f89c3700a3890adf74fb1"
+checksum = "5536852b4dc002d57ab4d3401252fa803c5329a47624649a56ab91e0abc3c7c9"
 
 [[package]]
 name = "tessarikv-format"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db8066ffa693b4be464202e36b7385fc6dc74eced1204b59f70f08a6ea71f6a1"
+checksum = "5a906666c84420a366e65a53bd353ca27bde1cdf943707ebe8447ad39f1ce516"
 dependencies = [
  "aes-gcm",
  "chacha20poly1305",
@@ -1421,9 +1422,9 @@ dependencies = [
 
 [[package]]
 name = "tessarikv-sync"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc032341528d4715de38a0f690cc398009e673b4a99902d3126ffb52c9ada89d"
+checksum = "371d4496b90be6e6f34b1608777aff65a6af448f8a210d074c7255ef0b24ae0b"
 dependencies = [
  "crossbeam-utils",
  "loom",
@@ -1432,9 +1433,9 @@ dependencies = [
 
 [[package]]
 name = "tessarikv-types"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc0c98932d662ff6bbb06b4d6982e1c38e990e1f9398db011bef885d4eb5fbd2"
+checksum = "1499566fe06c08c21b1ef0f34b89f2e90bf109fa733d3d78236abe01c75197bb"
 dependencies = [
  "tessarikv-constants",
  "thiserror",
