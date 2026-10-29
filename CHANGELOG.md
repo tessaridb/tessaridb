@@ -23,6 +23,23 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.39.4 — 2026-10-29
+
+### Added
+
+- **`PUT … START` and `READ … START … LIMIT` take parameters**, as a read of rows does: `READ media:$path START $from
+  LIMIT $take`, `PUT media:$path START $at = $part`. A value that is not a whole number is refused
+  `CountNotAWholeNumber`.
+
+### Fixed
+
+- **A present read is no longer refused because another connection committed while it ran.** A traversal, `PATH TO`
+  or a read asserting `USING INDEX` whose snapshot a concurrent commit passed was refused as a read of the past. Run
+  alone, such a statement now runs again on a fresh snapshot; inside `BEGIN` it is refused `ReadFellBehind`, in the
+  `retry` class, so running the transaction again answers. A `VERSION` traversal is still `NoHistoricalTraversal`.
+- **A unique equality is chosen over an index whose statistic read zero.** A statistic taken before any row held the
+  value no longer outranks the one record a unique index can hold at most.
+
 ## 0.39.3 — 2026-10-29
 
 ### Added

@@ -285,7 +285,7 @@ impl Rows {
     ///
     /// An estimate never promises fewer than one record. A statistic taken
     /// before any row held the value reads zero, and ranked as zero it beat the
-    /// exact one of a unique equality — a guess outranking a proof (DB-V14).
+    /// exact one of a unique equality: a guess outranking a proof (DB-V14).
     const fn number(self) -> Option<(u64, bool)> {
         match self {
             Self::AtMost(held) | Self::Counted(held) => Some((held, true)),
