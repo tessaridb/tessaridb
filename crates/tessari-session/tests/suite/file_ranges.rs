@@ -19,9 +19,9 @@ use tessari_session::Now;
 use tessari_session::RunNow;
 
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_session::{Outcome, Session};
+use tessari_session::{Outcome, Parameters, Session};
 use tessari_storage::Store;
-use tessari_types::Value;
+use tessari_types::{Number, Value};
 
 /// The chunk size the file module uses, so the tests can straddle a boundary
 /// deliberately rather than by luck.
@@ -258,4 +258,61 @@ fn a_ranged_read_of_a_file_that_is_not_there_is_still_none() {
         .run_now("READ media:'/missing.bin' START 10 LIMIT 10;")
         .unwrap();
     assert!(matches!(outcomes.last(), Some(Outcome::Value(Value::None))));
+}
+
+fn whole(count: i64) -> Value {
+    Value::Number(Number::Integer(count))
+}
+
+#[test]
+fn bound_offsets_and_lengths_mean_what_written_ones_mean() {
+    // Q-VA-26: a caller binds every value, and an offset is a value; a ranged
+    // write that took only a literal had to be built as text.
+    let store = store();
+    let mut session = ready(&store);
+    let held = seeded(4096);
+    write_whole(&mut session, &held);
+    let mut supplied = Parameters::new();
+    supplied.insert("at".to_owned(), whole(100));
+    supplied.insert(
+        "part".to_owned(),
+        Value::Bytes(vec![0xde, 0xad, 0xbe, 0xef]),
+    );
+    session
+        .run_with_now("PUT media:'/big.bin' START $at = $part;", &supplied)
+        .unwrap();
+    let mut expected = held.clone();
+    expected[100..104].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+    assert_eq!(read(&mut session, "READ media:'/big.bin';"), expected);
+
+    let mut range = Parameters::new();
+    range.insert("from".to_owned(), whole(98));
+    range.insert("take".to_owned(), whole(8));
+    let outcomes = session
+        .run_with_now("READ media:'/big.bin' START $from LIMIT $take;", &range)
+        .unwrap();
+    let Some(Outcome::Value(Value::Bytes(part))) = outcomes.last() else {
+        panic!("{outcomes:?}");
+    };
+    assert_eq!(part, &expected[98..106]);
+}
+
+#[test]
+fn a_bound_offset_that_is_not_a_whole_number_is_refused_and_writes_nothing() {
+    let store = store();
+    let mut session = ready(&store);
+    let held = seeded(64);
+    write_whole(&mut session, &held);
+    let mut supplied = Parameters::new();
+    supplied.insert("at".to_owned(), whole(-1));
+    let refusal = session
+        .run_with_now("PUT media:'/big.bin' START $at = 0x00;", &supplied)
+        .unwrap_err();
+    assert!(
+        refusal
+            .to_string()
+            .contains("a count there is a whole number"),
+        "{refusal}"
+    );
+    assert_eq!(read(&mut session, "READ media:'/big.bin';"), held);
 }

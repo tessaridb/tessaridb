@@ -7545,6 +7545,10 @@ READ media:'/big.bin' START 1048576 LIMIT 4096;
 PUT media:'/big.bin' START 1048576 = 0x00ff00ff;
 ```
 
+Both bounds take a parameter, as they do on a read of rows: `READ media:$path
+START $from LIMIT $take` and `PUT media:$path START $at = $part`, refused
+`CountNotAWholeNumber` for a value that is not a whole number.
+
 Only the chunks a range touches are read, so asking for a kilobyte of a large
 file costs a kilobyte's worth of chunks. A range beginning past the end answers
 **empty** rather than failing — the rule a `START` past the last row already

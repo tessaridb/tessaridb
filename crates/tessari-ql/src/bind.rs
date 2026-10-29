@@ -318,7 +318,17 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
                 None => Ok(()),
             }
         }
-        StatementKind::Put { target, value, .. } | StatementKind::Expire { target, at: value } => {
+        StatementKind::Put {
+            target,
+            start,
+            start_parameter,
+            value,
+        } => {
+            nested::bind_count(start_parameter, start, false, binding)?;
+            bind_target(target, binding)?;
+            bind_expr(value, binding)
+        }
+        StatementKind::Expire { target, at: value } => {
             bind_target(target, binding)?;
             bind_expr(value, binding)
         }
@@ -435,8 +445,18 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // A release names one record, and a record's identity may be a
         // parameter wherever a record's identity may be one.
         // A targeted claim names one record for the same reason a release does.
-        | StatementKind::ClaimRecord { target, .. }
-        | StatementKind::Read { target, .. } => bind_target(target, binding),
+        | StatementKind::ClaimRecord { target, .. } => bind_target(target, binding),
+        StatementKind::Read {
+            target,
+            start,
+            limit,
+            start_parameter,
+            limit_parameter,
+        } => {
+            nested::bind_count(start_parameter, start, false, binding)?;
+            nested::bind_count(limit_parameter, limit, false, binding)?;
+            bind_target(target, binding)
+        }
         StatementKind::Del {
             target,
             expected: Some(expected),

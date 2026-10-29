@@ -2101,6 +2101,8 @@ pub enum StatementKind {
         /// at an offset lands in **one** commit, the same as a whole-file one,
         /// so there is no moment at which a reader sees half of it.
         start: Option<u64>,
+        /// `START $n`, until binding writes the number into `start` (Q-VA-26).
+        start_parameter: Option<crate::ast::ParameterSlot>,
         /// Its bytes.
         value: Expr,
     },
@@ -2112,6 +2114,10 @@ pub enum StatementKind {
         start: Option<u64>,
         /// How many bytes to answer with; absent reads to the end.
         limit: Option<u64>,
+        /// `START $n`, until binding writes the number into `start` (Q-VA-26).
+        start_parameter: Option<crate::ast::ParameterSlot>,
+        /// `LIMIT $n`, until binding writes the number into `limit`.
+        limit_parameter: Option<crate::ast::ParameterSlot>,
     },
     /// `KEYS FROM sessions [RANGE 'a'..'m' | PREFIX 'user:'] [AFTER k] [LIMIT n]`
     Keys {
