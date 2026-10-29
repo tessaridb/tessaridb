@@ -135,6 +135,9 @@ pub struct Transaction<'a> {
     /// claim takes one.
     claim_token: AtomicU64,
     claiming: Owned<Vec<RecordAddress>>,
+    /// Whether this transaction was opened at a version somebody named
+    /// (`Store::begin_at`), rather than at the newest one (DB-V15).
+    past: bool,
 }
 
 /// What a write said about a record's expiry that its buffered value does not

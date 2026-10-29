@@ -212,7 +212,24 @@ impl<'a> Session<'a> {
                     let mut attempt = 0_u32;
                     loop {
                         let mut transaction = store.begin().await?;
-                        let outcome = self.execute(&mut transaction, other, span).await?;
+                        let outcome = match self.execute(&mut transaction, other, span).await {
+                            Ok(outcome) => outcome,
+                            Err(refusal) => {
+                                // A statement running alone has committed
+                                // nothing, so a read another commit passed is
+                                // run again on a fresh snapshot, as the caller
+                                // would (DB-V15).
+                                if started.elapsed() < crate::kv::CONFLICT_DEADLINE
+                                    && fell_behind(&refusal, &transaction).await?
+                                {
+                                    transaction.rollback();
+                                    attempt = attempt.saturating_add(1);
+                                    back_off(attempt).await;
+                                    continue;
+                                }
+                                return Err(refusal);
+                            }
+                        };
                         if statement.across
                             && let Some(parts) = Self::across_parts(&transaction).await?
                         {
@@ -358,6 +375,19 @@ impl<'a> Session<'a> {
 }
 
 /// The topic a `RETURN POSITION` append writes, if the statement is one.
+/// Whether a lone statement was refused only because another commit landed
+/// after its snapshot: a walk refused for it, or a `USING` assertion an index
+/// failed because the transaction had fallen behind the tail (DB-V15).
+async fn fell_behind(refusal: &Error, transaction: &Transaction<'_>) -> Result<bool> {
+    Ok(match refusal {
+        Error::ReadFellBehind { .. } => true,
+        Error::IndexNotUsed { .. } | Error::PathNotTaken { .. } => {
+            !transaction.indexes_are_current().await?
+        }
+        _ => false,
+    })
+}
+
 fn answers_position(kind: &StatementKind) -> Option<&TableRef> {
     match kind {
         StatementKind::Insert {

@@ -1130,6 +1130,27 @@ pub enum Error {
         span: Span,
     },
 
+    /// A present read reached an index another connection's commit had moved
+    /// past its snapshot, where the index is the only way to answer (DB-V15).
+    ///
+    /// The same position as a read of the past, for a different reason: this
+    /// read asked about now, and a commit landed between its snapshot and its
+    /// walk. Run alone, the statement is run again on a fresh snapshot before
+    /// anybody sees this; inside `BEGIN` it cannot be run again alone, so the
+    /// transaction is refused in the `retry` class, and running it again is
+    /// what answers.
+    #[error(
+        "this read began before another commit and reached edges{} that are \
+         indexed at the present; run the transaction again (at {span})",
+        if table.is_empty() { String::new() } else { format!(" in {table}") }
+    )]
+    ReadFellBehind {
+        /// The first edge table the read met, when one was named.
+        table: String,
+        /// Where the read was written.
+        span: Span,
+    },
+
     /// A graph traversal met an edge table where a transaction across leaders
     /// is part-way on this node (Q-919).
     ///

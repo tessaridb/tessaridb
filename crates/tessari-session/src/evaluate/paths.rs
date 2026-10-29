@@ -130,10 +130,11 @@ impl Session<'_> {
         path: &PathTo,
     ) -> Result<Answered> {
         if !transaction.indexes_are_current().await? {
-            return Err(Error::NoHistoricalTraversal {
-                table: hop.edges.name.text.clone(),
-                span: from.span,
-            });
+            return Err(super::graph::behind_the_tail(
+                transaction,
+                hop.edges.name.text.clone(),
+                from.span,
+            ));
         }
         let (origin, start) = self.address(transaction, from).await?;
         let (_, end) = self.address(transaction, &path.to).await?;

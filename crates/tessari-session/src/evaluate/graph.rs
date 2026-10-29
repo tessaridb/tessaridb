@@ -65,12 +65,12 @@ impl Session<'_> {
         // sees — so an answer assembled from today's edges over yesterday's
         // records would be believed.
         if !transaction.indexes_are_current().await? {
-            return Err(Error::NoHistoricalTraversal {
-                table: hops
-                    .first()
+            return Err(behind_the_tail(
+                transaction,
+                hops.first()
                     .map_or_else(String::new, |hop| hop.edges.name.text.clone()),
-                span: from.span,
-            });
+                from.span,
+            ));
         }
         let (origin, start) = self.address(transaction, from).await?;
         let anchors = vec![RecordRef::new(start.table, start.id.clone())];
@@ -230,6 +230,10 @@ impl Session<'_> {
             )
             .await?
         else {
+            // The lookup asks again whether the indexes are current, so a
+            // commit landing since `edges_settled` answered also comes here,
+            // and is refused for what it is (DB-V15).
+            edges_settled(transaction, edge_table, &hop.edges).await?;
             // An edge table always has both, so reaching here means the
             // catalog and the flag disagree — which is corruption, not a
             // slow path.
@@ -407,6 +411,21 @@ pub(super) async fn edges_settled(
     Err(if transaction.indexes_are_current().await? {
         Error::AcrossSettling { table, span }
     } else {
-        Error::NoHistoricalTraversal { table, span }
+        behind_the_tail(transaction, table, span)
     })
+}
+
+/// The refusal for a walk whose snapshot is behind the tail: a read of the
+/// past stays there however often it runs, and a present read another commit
+/// passed answers once it runs again (DB-V15).
+pub(super) fn behind_the_tail(
+    transaction: &Transaction<'_>,
+    table: String,
+    span: tessari_ql::Span,
+) -> Error {
+    if transaction.reads_the_past() {
+        Error::NoHistoricalTraversal { table, span }
+    } else {
+        Error::ReadFellBehind { table, span }
+    }
 }
