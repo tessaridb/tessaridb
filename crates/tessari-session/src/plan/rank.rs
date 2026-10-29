@@ -255,4 +255,25 @@ mod tests {
             "by_terms"
         );
     }
+
+    #[test]
+    fn an_estimate_of_nothing_does_not_outrank_a_unique_equality() {
+        // A statistic taken before any row held the value reads zero, and zero
+        // is a guess: the unique equality's one is a proof (DB-V14).
+        assert_eq!(
+            winner(vec![
+                candidate("by_author", Shape::Equality, Rows::About(0)),
+                candidate("by_id", Shape::Equality, Rows::AtMost(1)),
+            ]),
+            "by_id"
+        );
+        // An estimate still wins where it promises fewer than a ceiling does.
+        assert_eq!(
+            winner(vec![
+                candidate("wide", Shape::Equality, Rows::AtMost(40)),
+                candidate("narrow", Shape::Equality, Rows::About(3)),
+            ]),
+            "narrow"
+        );
+    }
 }

@@ -307,3 +307,37 @@ fn an_estimate_on_a_field_the_caller_cannot_read_is_withheld() {
     assert_eq!(hidden.get("index"), Some(&Value::from("by_salary")));
     assert_eq!(estimate(&hidden), None, "{hidden:?}");
 }
+
+#[test]
+fn a_statistic_taken_before_a_value_existed_does_not_outrank_a_unique_equality() {
+    // DB-V14: the statistic read the composite as holding nothing for the second
+    // company, and that zero outranked the unique index that holds one at most.
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE vault; USE DATABASE vault;\n\
+             DEFINE COLLECTION records;\n\
+             DEFINE INDEX by_id ON records FIELDS record_id UNIQUE;\n\
+             DEFINE INDEX by_author ON records FIELDS company, author;\n\
+             CREATE records:1 = { record_id: 'r1', company: 'c0', author: 'a' };",
+        )
+        .unwrap();
+    session.run_now("ANALYZE TABLE records;").unwrap();
+    session
+        .run_now("CREATE records:2 = { record_id: 'r2', company: 'c1', author: 'b' };")
+        .unwrap();
+    let outcomes = session
+        .run_now("EXPLAIN SELECT * FROM records WHERE record_id = 'r2' AND company = 'c1';")
+        .unwrap();
+    let Some(Outcome::Value(Value::Object(plan))) = outcomes.last() else {
+        panic!("{outcomes:?}");
+    };
+    assert_eq!(plan.get("index"), Some(&Value::from("by_id")), "{plan:?}");
+    let found = ids(
+        &mut session,
+        "SELECT * FROM records WHERE record_id = 'r2' AND company = 'c1' USING INDEX by_id;",
+    );
+    assert_eq!(found, vec![RecordId::Int(2)]);
+}
