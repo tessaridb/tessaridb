@@ -172,10 +172,11 @@ fn a_unique_index_is_still_withheld_behind_the_tail() {
             .await
         })
         .now();
+    // Refused, never answered from the index; named for what answers it — the
+    // transaction run again — rather than as a fault in the statement (DB-V15).
     match read {
-        Err(Error::IndexNotUsed { expected, took, .. }) => {
-            assert_eq!(expected, "by_code");
-            assert_eq!(took, "no index");
+        Err(refusal @ Error::ReadFellBehind { .. }) => {
+            assert_eq!(refusal.class(), tessari_types::RefusalClass::Retry);
         }
         other => panic!("a unique index answered behind the tail: {other:?}"),
     }
