@@ -424,3 +424,66 @@ fn membership_is_judged_by_its_members_and_not_by_the_collection() {
         assert_eq!(crossed(&notes), noted, "{read}: {notes:?}");
     }
 }
+
+/// A strict table declares its fields, so a read naming one it does not declare
+/// reads `none` from every record and answers nothing, raising nothing: the
+/// same mistake a strict write refuses. `id` is the common case: a record's id
+/// is its address and not a field.
+#[test]
+fn a_read_naming_a_field_a_strict_table_does_not_declare_says_so() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run_now(
+            "DEFINE TABLE accounts (name string);\n\
+             DEFINE TABLE loose (name string) SCHEMALESS;\n\
+             CREATE accounts:1 = { name: 'ada' };\n\
+             CREATE loose:1 = { name: 'ada', extra: 1 };\n\
+             CREATE events:1 = { name: 'ada' };",
+        )
+        .unwrap();
+    let undeclared = |table: &str, fields: &[&str]| Note::UndeclaredField {
+        table: table.to_owned(),
+        fields: fields.iter().map(|field| (*field).to_owned()).collect(),
+    };
+    let cases = [
+        (
+            "SELECT * FROM accounts WHERE id = accounts:1;",
+            vec![],
+            vec![undeclared("accounts", &["id"])],
+        ),
+        (
+            "SELECT * FROM accounts WHERE nmae = 'ada' OR name = 'x';",
+            vec![],
+            vec![undeclared("accounts", &["nmae"])],
+        ),
+        (
+            "SELECT id, name FROM accounts;",
+            vec![1],
+            vec![undeclared("accounts", &["id"])],
+        ),
+        (
+            "SELECT * FROM accounts WHERE name = 'ada';",
+            vec![1],
+            vec![],
+        ),
+        ("SELECT * FROM loose WHERE extra = 1;", vec![1], vec![]),
+        ("SELECT * FROM events WHERE nmae = 'ada';", vec![], vec![]),
+    ];
+    for (read, expected, noted) in cases {
+        let (ids, notes, _) = answered(&mut session, read);
+        assert_eq!(
+            ids,
+            expected.into_iter().map(RecordId::Int).collect::<Vec<_>>(),
+            "{read}"
+        );
+        assert_eq!(notes, noted, "{read}");
+    }
+    let note = undeclared("accounts", &["id"]);
+    assert_eq!(note.kind(), "undeclared-field");
+    assert!(
+        note.message().contains("`accounts:<id>`") && note.message().contains("`id`"),
+        "{}",
+        note.message()
+    );
+}

@@ -61,6 +61,7 @@ mod shape_rules;
 mod source;
 mod stages;
 mod subquery;
+mod undeclared;
 mod window;
 
 /// How many of an index's leading values an index-served order compares.
