@@ -45,7 +45,25 @@ impl<'a> Transaction<'a> {
             retired_reads: std::sync::atomic::AtomicBool::new(false),
             claim_token: std::sync::atomic::AtomicU64::new(0),
             claiming: crate::owned::Owned::new(Vec::new()),
+            past: false,
         }
+    }
+
+    /// This transaction, opened at a version somebody named.
+    pub(crate) const fn at_a_named_version(mut self) -> Self {
+        self.past = true;
+        self
+    }
+
+    /// Whether this transaction reads a version somebody named, as `VERSION`
+    /// does, rather than the newest one it began at (DB-V15).
+    ///
+    /// The two fall behind the tail for different reasons and are answered
+    /// differently: a read of the past stays behind it however often it runs,
+    /// while a present read another commit passed answers once it runs again.
+    #[must_use]
+    pub const fn reads_the_past(&self) -> bool {
+        self.past
     }
 
     /// This transaction's token in the claim register, issued on first use.

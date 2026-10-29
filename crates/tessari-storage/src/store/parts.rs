@@ -254,7 +254,7 @@ impl Store {
                 tail: tail.get(),
             });
         }
-        Ok(Transaction::new(self, at))
+        Ok(Transaction::new(self, at).at_a_named_version())
     }
 
     /// The oldest sequence any live reader can still need.

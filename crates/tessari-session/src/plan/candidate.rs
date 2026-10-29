@@ -282,10 +282,14 @@ impl Rows {
     }
 
     /// The number this knows, and whether it is exact.
+    ///
+    /// An estimate never promises fewer than one record. A statistic taken
+    /// before any row held the value reads zero, and ranked as zero it beat the
+    /// exact one of a unique equality: a guess outranking a proof (DB-V14).
     const fn number(self) -> Option<(u64, bool)> {
         match self {
             Self::AtMost(held) | Self::Counted(held) => Some((held, true)),
-            Self::About(held) => Some((held, false)),
+            Self::About(held) => Some((if held == 0 { 1 } else { held }, false)),
             Self::Unknown => None,
         }
     }

@@ -60,6 +60,7 @@ pub(crate) fn kind_name(error: &Error) -> &'static str {
         Error::EndpointsNotDeclared { .. } => "EndpointsNotDeclared",
         Error::EndpointOutsideGraph { .. } => "EndpointOutsideGraph",
         Error::NoHistoricalTraversal { .. } => "NoHistoricalTraversal",
+        Error::ReadFellBehind { .. } => "ReadFellBehind",
         Error::AcrossSettling { .. } => "AcrossSettling",
         Error::PathWeight { .. } => "PathWeight",
         Error::EventExists { .. } => "EventExists",

@@ -1813,6 +1813,7 @@ impl Session<'_> {
                 target,
                 start,
                 value,
+                ..
             } => {
                 let bytes = match self.evaluate(transaction, value).await? {
                     Value::Bytes(bytes) => bytes,
@@ -1835,6 +1836,7 @@ impl Session<'_> {
                 target,
                 start,
                 limit,
+                ..
             } => self.read_file(transaction, target, *start, *limit).await,
             StatementKind::Restore { from } => self.restore(from).await,
             StatementKind::Backup { from, form, to, of } => match to {

@@ -203,11 +203,12 @@ impl Parser<'_> {
                 // Before the `=`, because it qualifies the target rather than
                 // the value: `PUT media:'/x' START 1024 = 0x…` writes those
                 // bytes at that offset.
-                let start = self.bound("start")?;
+                let (start, start_parameter) = self.bound_count("start")?;
                 self.expect_punct(Punct::Equals, "`=` and the file's bytes")?;
                 StatementKind::Put {
                     target,
                     start,
+                    start_parameter,
                     value: self.expression()?,
                 }
             }
@@ -222,12 +223,14 @@ impl Parser<'_> {
                 let target = self.record_target()?;
                 // The same two words a bounded read of rows uses, meaning the
                 // same two things over bytes: skip this many, take this many.
-                let start = self.bound("start")?;
-                let limit = self.bound("limit")?;
+                let (start, start_parameter) = self.bound_count("start")?;
+                let (limit, limit_parameter) = self.bound_count("limit")?;
                 StatementKind::Read {
                     target,
                     start,
                     limit,
+                    start_parameter,
+                    limit_parameter,
                 }
             }
             Some(Keyword::Backup) => self.backup_statement()?,

@@ -48,7 +48,9 @@ impl Error {
             | Self::WiderThanYou { .. }
             | Self::MayNotTravel { .. } => RefusalClass::Forbidden,
             Self::ReadIsElsewhere { .. } => RefusalClass::Elsewhere,
-            Self::ShardMapMoved { .. } | Self::AcrossSettling { .. } => RefusalClass::Retry,
+            Self::ShardMapMoved { .. }
+            | Self::AcrossSettling { .. }
+            | Self::ReadFellBehind { .. } => RefusalClass::Retry,
             Self::RecordExists { .. }
             | Self::StillDepended { .. }
             | Self::BackupExists { .. }
