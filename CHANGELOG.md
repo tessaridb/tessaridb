@@ -23,6 +23,19 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.39.6 — 2026-10-29
+
+0.39.5 and 0.39.6 open each other's stores.
+
+### Fixed
+
+- **An `UPDATE` or `UPSERT` of a space key keeps the key's expiry.** It dropped it, so an expiring key
+  edited with `SET a = …`, `MERGE` or `= { … }` silently never expired. A space's own `SET` still replaces the
+  version and clears the expiry unless it restates `EXPIRE`.
+- **A read of a strict table that names a field the table does not declare says so.** It answered as though
+  nothing matched, so `WHERE id = t:1` (a record's id is its address, not a field) or a misspelt field read as an
+  empty answer. The answer is unchanged and now carries the note `undeclared-field` naming the fields.
+
 ## 0.39.5 — 2026-10-29
 
 Supersedes 0.39.4, which is withdrawn: use 0.39.5. 0.39.3 and 0.39.5 open each other's stores.

@@ -164,6 +164,9 @@ impl Session<'_> {
         if let Some(latest) = &select.latest {
             self.check_latest(transaction, select, latest).await?;
         }
+        if let Some(note) = self.undeclared_read(transaction, select).await? {
+            notes.push(note);
+        }
         // A search ranks its records itself and projects them with what it
         // ranked them by; only a grouped read takes them through the stages
         // below, as an already-held source (ADR-0105 D6).

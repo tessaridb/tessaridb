@@ -177,6 +177,16 @@ impl Session<'_> {
         let (payload, partial) = self
             .defaults_over(transaction, address.table, payload, partial)
             .await?;
+        // A space key keeps the instant it had: an edit changes the value and
+        // not how long the key lives, as `INCR` does. The space's own `SET` is
+        // the write that replaces the version, expiry and all. A table needs no
+        // such step, because its declared lifetime already keeps the instant.
+        let kept = match settled {
+            None if self.is_space(transaction, address).await? => {
+                transaction.expires(address).await?
+            }
+            _ => None,
+        };
         self.put_record_sealing(
             transaction,
             address.clone(),
@@ -186,6 +196,24 @@ impl Session<'_> {
         )
         .await?;
         expiry::settle_write_expiry(transaction, address, settled);
+        if let Some(at) = kept {
+            transaction.expire_pending(address, at);
+        }
         Ok(payload)
+    }
+}
+
+impl Session<'_> {
+    /// Whether `address` is a key of a space.
+    async fn is_space(
+        &self,
+        transaction: &mut Transaction<'_>,
+        address: &RecordAddress,
+    ) -> Result<bool> {
+        let definition = Catalog::new(transaction).table(address.table).await?;
+        Ok(
+            definition
+                .is_some_and(|held| matches!(held.kind, tessari_storage::TableKind::Space(_))),
+        )
     }
 }

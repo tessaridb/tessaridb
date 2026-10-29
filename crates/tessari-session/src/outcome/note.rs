@@ -173,6 +173,19 @@ pub enum Note {
         /// past which the ranks in them are no longer within the bound.
         collapsed: Option<bool>,
     },
+    /// A strict table was read for a field it does not declare.
+    ///
+    /// A strict table refuses a write carrying a field nobody declared, so no
+    /// record holds one: the read finds `none` on every record and answers as
+    /// though nothing matched. The answer is right for the statement written,
+    /// and the statement is almost never the one meant: a misspelling, or a
+    /// record's `id`, which is its address and not a field.
+    UndeclaredField {
+        /// The table.
+        table: String,
+        /// The names it does not declare, in the order the store sorts them.
+        fields: Vec<String>,
+    },
 }
 
 impl Note {
@@ -192,6 +205,7 @@ impl Note {
             Self::Path { .. } => "path",
             Self::NeedsRebuild { .. } => "needs-rebuild",
             Self::Estimated { .. } => "estimated",
+            Self::UndeclaredField { .. } => "undeclared-field",
         }
     }
 
@@ -288,6 +302,26 @@ impl Note {
                 format!(
                     "`{fold}` is an estimate by {method}, within a relative error of {bound} \
                      of {what}{caveat}"
+                )
+            }
+            Self::UndeclaredField { table, fields } => {
+                let named = fields
+                    .iter()
+                    .map(|field| format!("`{field}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let address = if fields.iter().any(|field| field == "id") {
+                    format!(
+                        "; a record's id is its address and not a field: read one as \
+                         `{table}:<id>`, a span as `{table}:<from>..<to>`"
+                    )
+                } else {
+                    String::new()
+                };
+                format!(
+                    "`{table}` declares no field {named} and refuses a record carrying one, \
+                     so this read found {} on no record{address}",
+                    if fields.len() == 1 { "it" } else { "them" },
                 )
             }
             Self::Gathered { table, shards } => format!(

@@ -1261,21 +1261,17 @@ impl Session<'_> {
                     Some(held) => decode_payload(&held)?,
                     None => Value::Object(std::collections::BTreeMap::new()),
                 };
-                let (payload, partial) = self
-                    .applied(transaction, edit, existing, target.span)
+                // The same tail every update takes, so an upsert over a space
+                // key keeps its expiry exactly as an update does.
+                let payload = self
+                    .edit_stored(
+                        transaction,
+                        &address,
+                        (edit, existing),
+                        settled,
+                        (target.span, span),
+                    )
                     .await?;
-                let (payload, partial) = self
-                    .defaults_over(transaction, address.table, payload, partial)
-                    .await?;
-                self.put_record_sealing(
-                    transaction,
-                    address.clone(),
-                    payload.clone(),
-                    partial.as_ref(),
-                    span,
-                )
-                .await?;
-                expiry::settle_write_expiry(transaction, &address, settled);
                 Ok(answered(*answer, before, payload))
             }
             // A key-value write replaces whatever was there, which is why it is
