@@ -8,11 +8,12 @@
 //! it cannot be read at an earlier version, in the class that says repeating it
 //! cannot succeed.
 //!
-//! Two answers now, by who can act on it. A statement running alone has
-//! committed nothing, so the store runs it again on a fresh snapshot, as it
-//! already does for a lone atomic key-value write. A statement inside `BEGIN`
-//! cannot be run again alone, so it is refused in the `retry` class and the
-//! caller runs the transaction again. A `VERSION` read keeps its refusal.
+//! Now it is refused `ReadFellBehind`, in the `retry` class, alone or inside
+//! `BEGIN`, and so is a `USING` assertion that failed only because the read had
+//! fallen behind: running the statement or its transaction again answers. The
+//! store does not run it again itself: the retry is the caller's (0.39.4 ran it
+//! again in the node, and is withdrawn).
+//! A `VERSION` read keeps its refusal.
 
 use std::sync::Arc;
 use tessari_session::Now;
@@ -135,18 +136,22 @@ fn a_traversal_at_a_version_keeps_the_historical_refusal() {
     assert_eq!(refusal.class(), RefusalClass::Invalid);
 }
 
-/// Lone present reads beside writers on other connections: every one answers,
-/// because a statement that committed nothing is run again on a fresh snapshot.
+/// Lone present reads beside writers on other connections: a read refused only
+/// because a commit passed it is refused in the `retry` class, so the caller
+/// runs it again — never as a fault in the statement.
 #[test]
-fn lone_present_reads_beside_concurrent_commits_all_answer() {
+fn lone_present_reads_beside_concurrent_commits_are_refused_only_as_retry() {
     let refused = race(&[
         "SELECT * FROM users:1->follows->users;",
         "SELECT * FROM users WHERE handle = 'ada' USING INDEX by_handle;",
     ]);
-    assert!(
-        refused.is_empty(),
-        "{} present reads refused, first: {:?}",
-        refused.len(),
-        refused.first()
-    );
+    // The control arm: the race happened, or the loop below asserts nothing.
+    assert!(!refused.is_empty(), "no read fell behind; raise ROUNDS");
+    for (class, text) in &refused {
+        assert_eq!(*class, RefusalClass::Retry, "{text}");
+        assert!(
+            text.contains("another commit"),
+            "the refusal says why: {text}"
+        );
+    }
 }

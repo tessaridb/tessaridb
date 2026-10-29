@@ -23,7 +23,18 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
-## 0.39.4 — 2026-10-29
+## 0.39.5 — 2026-10-29
+
+Supersedes 0.39.4, which is withdrawn: use 0.39.5. 0.39.3 and 0.39.5 open each other's stores.
+
+### Fixed
+
+- **A read that fell behind is refused for the caller to run again, and is no longer run again inside the node.**
+  0.39.4 ran a lone statement again when another connection's commit passed its snapshot. Now a traversal,
+  `PATH TO` or a `USING` assertion that failed only for that reason is refused `ReadFellBehind`, in the `retry`
+  class, alone or inside `BEGIN`; running the statement or its transaction again answers.
+
+## 0.39.4 — 2026-10-29 (withdrawn)
 
 ### Added
 
@@ -35,8 +46,8 @@ compares carries no pre-release suffix.
 
 - **A present read is no longer refused because another connection committed while it ran.** A traversal, `PATH TO`
   or a read asserting `USING INDEX` whose snapshot a concurrent commit passed was refused as a read of the past. Run
-  alone, such a statement now runs again on a fresh snapshot; inside `BEGIN` it is refused `ReadFellBehind`, in the
-  `retry` class, so running the transaction again answers. A `VERSION` traversal is still `NoHistoricalTraversal`.
+  alone, such a statement ran again on a fresh snapshot (removed in 0.39.5); inside `BEGIN` it is refused
+  `ReadFellBehind`, in the `retry` class, so running the transaction again answers. A `VERSION` traversal is still `NoHistoricalTraversal`.
 - **A unique equality is chosen over an index whose statistic read zero.** A statistic taken before any row held the
   value no longer outranks the one record a unique index can hold at most.
 

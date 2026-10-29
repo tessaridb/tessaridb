@@ -201,7 +201,10 @@ impl<'a> Session<'a> {
                     let gather = self.gather.take();
                     let outcome = self.execute(transaction, other, span).await;
                     self.gather = gather;
-                    outcome
+                    match outcome {
+                        Ok(outcome) => Ok(outcome),
+                        Err(refusal) => Err(fell_behind(refusal, transaction).await?),
+                    }
                 }
                 (None, None) => {
                     // A lone atomic key-value write is run again on a conflict,
@@ -214,21 +217,7 @@ impl<'a> Session<'a> {
                         let mut transaction = store.begin().await?;
                         let outcome = match self.execute(&mut transaction, other, span).await {
                             Ok(outcome) => outcome,
-                            Err(refusal) => {
-                                // A statement running alone has committed
-                                // nothing, so a read another commit passed is
-                                // run again on a fresh snapshot, as the caller
-                                // would (DB-V15).
-                                if started.elapsed() < crate::kv::CONFLICT_DEADLINE
-                                    && fell_behind(&refusal, &transaction).await?
-                                {
-                                    transaction.rollback();
-                                    attempt = attempt.saturating_add(1);
-                                    back_off(attempt).await;
-                                    continue;
-                                }
-                                return Err(refusal);
-                            }
+                            Err(refusal) => return Err(fell_behind(refusal, &transaction).await?),
                         };
                         if statement.across
                             && let Some(parts) = Self::across_parts(&transaction).await?
@@ -375,16 +364,24 @@ impl<'a> Session<'a> {
 }
 
 /// The topic a `RETURN POSITION` append writes, if the statement is one.
-/// Whether a lone statement was refused only because another commit landed
-/// after its snapshot: a walk refused for it, or a `USING` assertion an index
-/// failed because the transaction had fallen behind the tail (DB-V15).
-async fn fell_behind(refusal: &Error, transaction: &Transaction<'_>) -> Result<bool> {
+/// A refusal a read met only because another commit landed after its
+/// snapshot, named for what answers it: running the read again (DB-V15).
+///
+/// A walk refused for it is already named so; a `USING` assertion an index
+/// failed because the transaction had fallen behind the tail is renamed here,
+/// so the caller sees the `retry` class rather than a fault in the statement.
+/// The store does not run it again itself: the retry is the caller's.
+async fn fell_behind(refusal: Error, transaction: &Transaction<'_>) -> Result<Error> {
     Ok(match refusal {
-        Error::ReadFellBehind { .. } => true,
-        Error::IndexNotUsed { .. } | Error::PathNotTaken { .. } => {
-            !transaction.indexes_are_current().await?
+        Error::IndexNotUsed { span, .. } | Error::PathNotTaken { span, .. }
+            if !transaction.reads_the_past() && !transaction.indexes_are_current().await? =>
+        {
+            Error::ReadFellBehind {
+                table: String::new(),
+                span,
+            }
         }
-        _ => false,
+        other => other,
     })
 }
 
