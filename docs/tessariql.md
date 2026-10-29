@@ -7210,8 +7210,9 @@ RETURN TTL sessions:'abc';
   key stops being answered at that instant — by `GET`, `KEYS`, `SELECT` and a
   read an index serves alike, on the memory backend and the disk one.
 - A `SET` replaces the whole version, so a `SET` without `EXPIRE` **clears** an
-  expiry the key had. A `SET` whose `EXPIRE` is not in the future is refused and
-  writes nothing.
+  expiry the key had. An `UPDATE` or `UPSERT` of the key (`SET a = …`, `MERGE`
+  or `= { … }`) edits the value and **keeps** the expiry, as `INCR` does. A
+  `SET` whose `EXPIRE` is not in the future is refused and writes nothing.
 - `EXPIRE NULL` writes a key that never expires — `NULL` is what `TTL` answers
   for one — so `SET b = GET a EXPIRE TTL a` copies a key with its expiry, whether
   it has one or not. `TTL` of a missing key is `NONE`, which stays refused.

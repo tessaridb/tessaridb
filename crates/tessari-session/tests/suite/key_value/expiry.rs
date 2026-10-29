@@ -98,6 +98,42 @@ fn a_plain_set_clears_an_expiry_the_key_had() {
 }
 
 #[test]
+fn an_update_upsert_or_merge_keeps_the_expiry_the_key_had() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        run(&mut session, "SET cache:'u' = { a: 1 } EXPIRE 1h;");
+        // An edit changes the value and not how long the key lives, as INCR does.
+        for (edit, after) in [
+            ("UPDATE cache:'u' SET a = 2;", "a = 2"),
+            ("UPDATE cache:'u' MERGE { b: 1 };", "b = 1"),
+            ("UPDATE cache:'u' = { c: 1 };", "c = 1"),
+            ("UPSERT cache:'u' MERGE { e: 1 };", "e = 1"),
+            ("UPSERT cache:'u' SET f = 1;", "f = 1"),
+        ] {
+            run(&mut session, edit);
+            assert!(
+                matches!(
+                    value(&mut session, "RETURN TTL cache:'u';"),
+                    Value::Duration(_)
+                ),
+                "{}: {edit} left the key without its expiry",
+                backend.name
+            );
+            let (field, held) = after.split_once(" = ").expect("a field and a value");
+            assert_eq!(
+                value(&mut session, &format!("RETURN (GET cache:'u').{field};")),
+                Value::from(held.parse::<i64>().expect("a number")),
+                "{}: {edit}",
+                backend.name
+            );
+        }
+        // The control: a plain SET replaces the version, expiry and all.
+        run(&mut session, "SET cache:'u' = { d: 1 };");
+        assert_eq!(value(&mut session, "RETURN TTL cache:'u';"), Value::Null);
+    });
+}
+
+#[test]
 fn expire_sets_an_expiry_and_answers_whether_the_key_was_there() {
     on_each_backend(|backend| {
         let mut session = opened(&backend.store);
