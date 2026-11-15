@@ -273,6 +273,21 @@ impl Session<'_> {
                     .collect(),
             ),
         );
+        // Each feed the same way (FEAT-S1).
+        report.insert(
+            "feeds".to_owned(),
+            Value::Array(
+                definition
+                    .feeds
+                    .iter()
+                    .map(|feed| {
+                        let mut statement = String::new();
+                        describe::write_feed(&mut statement, &definition.name, feed);
+                        Value::from(statement.trim_end())
+                    })
+                    .collect(),
+            ),
+        );
         let (key, held) = match describe::declaration(&definition, &fields, &indexes) {
             // A narrowed view gets no script. The report above is already the
             // subset this caller may read, and that is a truthful *description*;
@@ -287,6 +302,9 @@ impl Session<'_> {
             Ok(mut script) => {
                 for event in &definition.events {
                     describe::write_event(&mut script, &definition.name, event);
+                }
+                for feed in &definition.feeds {
+                    describe::write_feed(&mut script, &definition.name, feed);
                 }
                 ("definition", script)
             }

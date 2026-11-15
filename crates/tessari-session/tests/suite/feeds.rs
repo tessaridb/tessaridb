@@ -332,6 +332,71 @@ fn dropping_a_feed_nobody_defined_refuses_naming_it() {
 }
 
 #[test]
+fn info_for_table_lists_feeds_as_their_defining_statements() {
+    let store = store();
+    let mut session = inside(&store);
+    session
+        .run_now(
+            "DEFINE TOPIC order_events;              DEFINE FEED orders_feed ON orders INTO order_events FOR UPDATE, DELETE IMAGE KEYS              WHEN $after.v > 1 WITH INITIAL SCAN;",
+        )
+        .unwrap();
+    let outcomes = session.run_now("INFO FOR TABLE orders;").unwrap();
+    let Some(tessari_session::Outcome::Value(Value::Object(info))) = outcomes.last() else {
+        panic!("INFO FOR TABLE: {:?}", outcomes.last());
+    };
+    let feeds = match info.get("feeds") {
+        Some(Value::Array(listed)) => listed,
+        other => panic!("feeds is not a list: {other:?}"),
+    };
+    assert_eq!(feeds.len(), 1);
+    let stated = format!("{:?}", feeds[0]);
+    for expected in [
+        "DEFINE FEED orders_feed ON orders INTO order_events",
+        "FOR UPDATE, DELETE",
+        "IMAGE KEYS",
+        "WHEN $after.v > 1",
+        "WITH INITIAL SCAN",
+    ] {
+        assert!(
+            stated.contains(expected),
+            "stated {stated:?} lacks {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn a_state_script_carries_feeds_and_replays_their_topic_once() {
+    let store = store();
+    let mut session = inside(&store);
+    session
+        .run_now(
+            "DEFINE TOPIC order_events; DEFINE FEED orders_feed ON orders INTO order_events; \
+             CREATE orders:1 = { v: 1 }; CREATE orders:2 = { v: 2 };",
+        )
+        .unwrap();
+    let answered = session.run_now("BACKUP SCRIPT;").unwrap();
+    let Some(tessari_session::Outcome::Value(Value::String(script))) = answered.last() else {
+        panic!("BACKUP SCRIPT: {:?}", outcomes_last(&answered));
+    };
+    assert!(script.contains("DEFINE FEED orders_feed ON orders INTO order_events"));
+    // The feed's definition rides after the data: replaying the records must
+    // not capture them again.
+    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
+    Session::new(&restored).run_now(script).unwrap();
+    let mut session = inside(&restored);
+    assert_eq!(messages(&mut session, "order_events").len(), 2);
+    // The restored feed is live: a new write is captured.
+    session.run_now("CREATE orders:3 = { v: 3 };").unwrap();
+    assert_eq!(messages(&mut session, "order_events").len(), 3);
+}
+
+fn outcomes_last(outcomes: &[tessari_session::Outcome]) -> &tessari_session::Outcome {
+    outcomes.last().expect("an outcome")
+}
+
+#[test]
 fn when_filters_the_captured_writes() {
     let store = store();
     let mut session = inside(&store);
