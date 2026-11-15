@@ -3780,6 +3780,7 @@ Defining or dropping one needs the authority to define in the database.
 DEFINE TABLE events (seq int, kind string) STORE COLUMN;
 DEFINE TABLE events (seq int, kind string) STORE COLUMN PARTITIONS 4 BY kind;
 DEFINE TABLE events (seq int, kind string) STORE ROW;
+DEFINE SERIES readings RETAIN 30d TIME at STORE COLUMN PARTITIONS 4 BY sensor;
 ```
 
 A table stores its records as versioned rows; saying `STORE COLUMN` beside the
@@ -3807,23 +3808,31 @@ key folds each partition's lanes and merges the partials.
   whose definition lists its columns, the key must be one of them —
   `PartitionKeyUndeclared` refuses a key nobody declares, because it would
   route every row to partition 0, a single-lane table wearing the clause.
-- **Only plain record tables take a storage kind.** `STORE COLUMN` on an
-  edge table, a queue, a series or any other kind refuses
-  `StorageKindOnKind`.
+- **Only record-shaped kinds take a storage kind: a plain table and a
+  series.** `STORE COLUMN` on an edge table, a queue, a topic, a space or any
+  other kind refuses `StorageKindOnKind`. On a series the clause keeps a
+  columnar projection of the points the same way — the series read shapes
+  (windows, `FILL`, `LATEST BY`, `ASOF JOIN`, counter folds) answer exactly
+  what the row series answers.
 
 The stated limits of a columnar table at this milestone, each honest rather
 than implicit:
 
-1. Series, collections and the other kinds are row-kind; `STORE COLUMN` is a
-   plain-table clause (the refusal above).
+1. Collections, buckets and the other non-record kinds are row-kind; topics,
+   queues and spaces never take the clause — they hold no record rows for a
+   projection to serve.
 2. **Feeds refuse on a columnar table** (`FeedOnColumnar`) — the feed captures
    from the row authority, which a columnar table fully retains, so the
    composition is designed, but it is not built yet; the refusal is named so a
    later release lifts it with tests.
 3. A single-row `UPDATE` costs a chunk copy-on-write; columnar is not free for
-   OLTP-shaped writes, and the store does not pretend otherwise.
+   OLTP-shaped writes, and the store does not pretend otherwise. Measured at
+   one shape (100 000 rows, one commit, debug build): the columnar write costs
+   2.11× the row write — the tax is published, not hidden.
 4. Reads of versions and point `GET`s are always row-path — exact, never
-   pruned.
+   pruned. Series reads are row-path at this milestone too: the projection
+   holds the points, the row serves the reads; pruning series reads is the
+   designed follow-up once the schemaless gate lifts.
 5. Projection vacuum — reclaiming a deleted record's chunk space — rides the
    store's existing version reclamation; no separate merge job ships yet.
 
