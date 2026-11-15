@@ -97,7 +97,9 @@ fn one_left_record_matching_twice_answers_twice_under_one_identity() {
 #[test]
 fn an_index_on_the_right_key_changes_the_path_and_not_the_answer() {
     // The rule this whole store is built to keep, at the newest place it has to
-    // hold. The statements are identical; only the index between them differs.
+    // hold. The statements are identical; only the index between them differs —
+    // and, since the probe-or-build choice landed, which shape runs is the
+    // counts' decision, not the index's existence alone.
     let store = store();
     let mut session = ready(&store);
     let (scanned, plan) = answered(&mut session, JOINED);
@@ -107,14 +109,46 @@ fn an_index_on_the_right_key_changes_the_path_and_not_the_answer() {
     session
         .run_now("DEFINE INDEX by_who ON orders FIELDS who;")
         .unwrap();
-    let (indexed, plan) = answered(&mut session, JOINED);
+    // Three orders against two users: building the map costs one scan of three,
+    // probing costs two users two units each — the counts build.
+    let (built, plan) = answered(&mut session, JOINED);
+    assert_eq!(plan.access, AccessPath::Join);
+    assert_eq!(
+        plan.index, None,
+        "three orders against two users builds the map"
+    );
+    assert_eq!(scanned, built, "the choice changed the answer");
+
+    // Five orders against the same two users: probing now pays, and the answer
+    // is still the one the map gave.
+    session
+        .run_now(
+            "CREATE orders:4 = { who: 'ada', total: 2 };\n             CREATE orders:5 = { who: 'grace', total: 5 };",
+        )
+        .unwrap();
+    let (probed, plan) = answered(&mut session, JOINED);
     assert_eq!(plan.access, AccessPath::Join);
     assert_eq!(
         plan.index.as_deref(),
         Some("by_who"),
-        "the index was not used"
+        "five orders against two users probes the index"
     );
-    assert_eq!(scanned, indexed, "the index changed the answer");
+    assert_eq!(
+        built.len() + 2,
+        probed.len(),
+        "the two new orders each matched"
+    );
+    let built_names: std::collections::BTreeSet<_> =
+        built.iter().map(|(_, row)| row.to_string()).collect();
+    let grown: std::collections::BTreeSet<_> = probed
+        .iter()
+        .filter(|(_, row)| built_names.contains(&row.to_string()))
+        .map(|(_, row)| row.to_string())
+        .collect();
+    assert_eq!(
+        grown, built_names,
+        "every row the map gave, the probe gives"
+    );
 }
 
 #[test]
@@ -140,11 +174,24 @@ fn the_join_agrees_with_the_operator_it_is_spelled_with() {
     assert_eq!(same.len(), 1, "`= 3` did not match the float either");
 
     // Through the index too, whose encoding normalises for its own reasons.
+    // The probe-or-build choice needs the counts on the probe's side: seven
+    // orders against three users, the new ones matching nothing.
+    session
+        .run_now(
+            "CREATE orders:5 = { who: 'nobody', qty: 1 };\n\
+             CREATE orders:6 = { who: 'nobody', qty: 2 };\n\
+             CREATE orders:7 = { who: 'nobody', qty: 4 };",
+        )
+        .unwrap();
     session
         .run_now("DEFINE INDEX by_qty ON orders FIELDS qty;")
         .unwrap();
     let (indexed, plan) = answered(&mut session, across);
-    assert_eq!(plan.index.as_deref(), Some("by_qty"));
+    assert_eq!(
+        plan.index.as_deref(),
+        Some("by_qty"),
+        "seven orders against three users probes the index"
+    );
     assert_eq!(rows, indexed);
 }
 

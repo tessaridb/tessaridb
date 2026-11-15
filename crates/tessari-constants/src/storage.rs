@@ -333,3 +333,21 @@ pub const MAX_CLAIM_RECORDS: u64 = 500;
 /// It is the same order as a broker's per-topic practice and well above what a
 /// group of consumers divides.
 pub const TOPIC_MAX_PARTITIONS: u64 = 1_024;
+
+/// The factor by which the probed side must exceed the driving side for an
+/// index probe to pay against building the map, as a numerator over
+/// [`PLANNER_JOIN_PROBE_DEN`].
+///
+/// Unit: none — a ratio of row counts.
+///
+/// Probing the right side's key index costs one entry walk and one record
+/// fetch **per driving record**; building the map costs one scan of the right
+/// side, a record fetch per record it holds. With the model's unit costs —
+/// an entry walk what a record fetch costs — probing pays when the right
+/// side holds more than twice what the driving side walks, and building pays
+/// at or below that. Without an estimate of the driving side (its source is
+/// a read or a join, not a table) the rule says nothing and an index that
+/// exists is probed, as it always was.
+pub const PLANNER_JOIN_PROBE_NUM: u64 = 2;
+/// The denominator of [`PLANNER_JOIN_PROBE_NUM`].
+pub const PLANNER_JOIN_PROBE_DEN: u64 = 1;

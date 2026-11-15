@@ -116,6 +116,13 @@ pub struct Plan {
     /// merge  — so a plan says `partition-local group by over n
     /// lanes + final merge` in the one number it can know without running.
     pub lanes: Option<u64>,
+    /// The driving side's row count a join's probe-or-build choice weighed —
+    /// the "why" beside the shape word's "which". Paid by every plan this
+    /// struct rides on, which is the price `lanes` already set for a word
+    /// only some reads speak.
+    pub left_rows: Option<u64>,
+    /// The right side's row count the same choice weighed.
+    pub right_rows: Option<u64>,
     /// How many entry changes the table or index has taken since the
     /// statistic behind `expected` was walked — present only when the
     /// estimate came from statistics, so a reader sees the freshness of
@@ -145,6 +152,8 @@ impl Plan {
             statistics_age: None,
             shards: None,
             lanes: None,
+            left_rows: None,
+            right_rows: None,
             exact: access.exactness(),
         }
     }
@@ -269,6 +278,17 @@ impl Plan {
                 plan.insert(
                     "statistics_age".to_owned(),
                     Value::Number(Number::Integer(i64::try_from(age).unwrap_or(i64::MAX))),
+                );
+            }
+        }
+        for (key, held) in [
+            ("left_rows", self.left_rows),
+            ("right_rows", self.right_rows),
+        ] {
+            if let Some(held) = held {
+                plan.insert(
+                    key.to_owned(),
+                    Value::Number(Number::Integer(i64::try_from(held).unwrap_or(i64::MAX))),
                 );
             }
         }

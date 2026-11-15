@@ -4637,6 +4637,32 @@ of the second case is that the right side is held in memory. Which one ran is
 reported as the access path. There is no cap on the answer and there will not be
 one: a cap would let the presence of an index change *what a statement answers*.
 
+**The probe-or-build choice is the counts', not the index's** (from the release
+after `0.40.0`). Where both sides' row counts are known, the planner weighs
+them: probing the right's key index costs an entry walk and a record fetch per
+*left* record, building the map costs one scan of the *right* — so with the
+model's unit costs probing pays only when the right side holds more than
+`PLANNER_JOIN_PROBE_NUM` over `PLANNER_JOIN_PROBE_DEN` times the left. Below
+that the index is not probed even though it exists; the map is built and the
+answer is the one the operator names, either way. A `FULL` join never probes —
+it must read every right record to answer the unmatched ones — and where the
+left side is a read or a join rather than a table, no count exists and the
+index-presence rule of the last paragraph decides. The plan says which ran and
+on what numbers:
+
+```
+EXPLAIN SELECT * FROM users JOIN orders ON users.name = orders.who;
+-- { access: 'join', shape: 'probe', index: 'by_who', left_rows: 60000,
+--   right_rows: 150000, … }
+```
+
+`shape` is `probe` or `build`; `left_rows` and `right_rows` are the counts the
+choice weighed. **The search a join is chosen in is bounded**: the statement's
+shape fixes the nesting, and each join node costs the planner exactly one
+probe-or-build decision over the two sides' counts — no ordering of the tables
+is generated or compared, so the plan search cannot grow with the data or the
+number of tables.
+
 **The row's identity is the left record's.** A left record matching two right
 records answers as two rows carrying one id, because this store's answers are
 keyed by record and a row is not a record. A shape for rows is a change to the

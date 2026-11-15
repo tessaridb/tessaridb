@@ -101,6 +101,7 @@ mod index_kinds_do_not_leak;
 mod info;
 mod inserts;
 mod instants;
+mod join_choice;
 mod join_keys;
 mod join_sources;
 mod joins;

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_ql::{Expr, JoinSide, Outer, Select, Source};
-use tessari_storage::Transaction;
+use tessari_storage::{Catalog, Transaction};
 use tessari_types::{RecordId, Value};
 
 use crate::budget::Deadline;
@@ -15,10 +15,7 @@ use crate::plan::Plan;
 use crate::search::Searched;
 use crate::session::Session;
 
-use super::{
-    Joined, Part, Reporting, Scope, ceiling_reached, collect_by_key, listed, ordered_index_on,
-    shown,
-};
+use super::{Joined, Part, Reporting, Scope, ceiling_reached, collect_by_key, listed, shown};
 
 /// The join clause a read names: its two sides, the key each is matched on,
 /// and the condition the matched pairs must also meet.
@@ -107,7 +104,20 @@ impl Session<'_> {
         // Each side is redacted by its own grant — a join is two reads and
         // neither borrows the other's permission. A side that is a read applied
         // its own on the way through.
+        // The driving side's row count, when the left side is a table and the
+        // catalog can say: what the probe-or-build choice weighs the right
+        // side's count against. A left side that is a read or a join has no
+        // count, and the choice says nothing — an index that exists is probed,
+        // as it always was.
+        let driving_count = match left {
+            JoinSide::Table { table, .. } => {
+                let (_, id) = self.resolve_table(transaction, table).await?;
+                Catalog::new(transaction).record_count(id).await?
+            }
+            _ => None,
+        };
         let mut probed = None;
+        let mut right_count = None;
         let mut built: BTreeMap<Value, Vec<(RecordId, Value)>> = BTreeMap::new();
         // A full join's right records, until one is matched.
         let mut unmatched: Vec<(RecordId, Value)> = Vec::new();
@@ -119,6 +129,7 @@ impl Session<'_> {
             JoinSide::Table { table, .. } => {
                 let (context, id) = self.resolve_table(transaction, table).await?;
                 let visible = self.visible_in(transaction, id).await?;
+                right_count = Catalog::new(transaction).record_count(id).await?;
                 // A full join answers every right record, so it reads them all:
                 // never probed through an index, and refused on a node holding
                 // only part of them.
@@ -129,13 +140,13 @@ impl Session<'_> {
                 if self.missing(transaction, id, Part::Whole).await?.is_some() {
                     far_gathered = Some((context, id, visible));
                 } else {
-                    let index = match outer {
-                        Some(Outer::Full) => None,
-                        _ => ordered_index_on(transaction, id, right_key).await?,
-                    };
-                    match index {
-                        Some(index) => probed = Some((index, visible, context, id)),
-                        None => {
+                    match super::join_serving(transaction, id, right_key, driving_count, outer)
+                        .await?
+                    {
+                        super::JoinServing::Probe(index) => {
+                            probed = Some((index, visible, context, id));
+                        }
+                        super::JoinServing::Build => {
                             let found = transaction
                                 .scan_table(context.namespace, context.database, id)
                                 .await?;
@@ -372,7 +383,10 @@ impl Session<'_> {
         // and a map of the whole right table — and `EXPLAIN` names it from the
         // same `ordered_index_on`.
         let plan = Plan {
-            index: probed.map(|(index, ..)| index.name),
+            index: probed.as_ref().map(|(index, ..)| index.name.clone()),
+            shape: Some(if probed.is_some() { "probe" } else { "build" }),
+            left_rows: driving_count,
+            right_rows: right_count,
             ..Plan::new(AccessPath::Join)
         };
         Ok((rows, plan, searched))
