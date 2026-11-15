@@ -94,6 +94,36 @@ fn image_without_a_mode_is_refused_where_written() {
     assert!(parse("DEFINE FEED f ON orders INTO order_events IMAGE;").is_err());
 }
 
+fn first(source: &str) -> StatementKind {
+    let script = parse(source).unwrap_or_else(|error| panic!("{source}\n  failed: {error}"));
+    match script.statements.into_iter().next() {
+        Some(statement) => statement.kind,
+        None => panic!("{source} parsed empty"),
+    }
+}
+
+#[test]
+fn drop_feed_parses() {
+    match first("DROP FEED orders_feed ON orders;") {
+        StatementKind::DropFeed { name, table } => {
+            assert_eq!(name.text, "orders_feed");
+            assert_eq!(table.name.text, "orders");
+        }
+        other => panic!("parsed as {other:?}"),
+    }
+}
+
+#[test]
+fn drop_feed_if_exists_parses() {
+    match first("DROP FEED IF EXISTS orders_feed ON orders;") {
+        StatementKind::DropIfExists(inner) => match *inner {
+            StatementKind::DropFeed { name, .. } => assert_eq!(name.text, "orders_feed"),
+            other => panic!("wrapped {other:?}"),
+        },
+        other => panic!("parsed as {other:?}"),
+    }
+}
+
 #[test]
 fn missing_into_is_refused_naming_it() {
     let error = parse("DEFINE FEED f ON orders;").unwrap_err();

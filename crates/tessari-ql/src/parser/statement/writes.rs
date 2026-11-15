@@ -235,6 +235,15 @@ impl Parser<'_> {
                     table: self.table_ref()?,
                 })
             }
+            // Contextual, as `event` is: `feed` is an ordinary table name.
+            _ if self.eat_word("feed") => {
+                let name = self.dropped_name()?;
+                self.expect_keyword(Keyword::On, "`ON` and the table the feed is defined on")?;
+                Ok(StatementKind::DropFeed {
+                    name,
+                    table: self.table_ref()?,
+                })
+            }
             // Declined rather than missing, and it says so. `DEFINE NODE` writes
             // this process's own configuration outside the transaction, so its
             // inverse is an edit to a config file rather than a statement — and

@@ -1375,6 +1375,14 @@ pub enum StatementKind {
         /// refused.
         if_not_exists: bool,
     },
+    /// `DROP FEED [IF EXISTS] <name> ON <table>` — stops the declared capture
+    /// and frees its topic for hand appends (FEAT-S1).
+    DropFeed {
+        /// The feed's name.
+        name: Name,
+        /// The table it is defined on.
+        table: TableRef,
+    },
     /// `DEFINE PARAM [IF NOT EXISTS | OR REPLACE] $name VALUE <expr>` — a
     /// database's named value, read wherever a parameter is (ADR-0124 D2).
     DefineParam {

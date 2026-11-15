@@ -245,6 +245,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         StatementKind::DefineIndex { table, .. }
         | StatementKind::DefineEvent { table, .. }
         | StatementKind::DefineFeed { table, .. }
+        | StatementKind::DropFeed { table, .. }
         | StatementKind::DropEvent { table, .. }
         | StatementKind::DefineField { table, .. }
         | StatementKind::DropField { table, .. }

@@ -295,6 +295,43 @@ fn the_capture_runs_with_the_writers_authority() {
 }
 
 #[test]
+fn a_dropped_feed_stops_capturing_and_frees_its_topic() {
+    let store = store();
+    let mut session = inside(&store);
+    session
+        .run_now("DEFINE TOPIC order_events; DEFINE FEED orders_feed ON orders INTO order_events;")
+        .unwrap();
+    session.run_now("DROP FEED orders_feed ON orders;").unwrap();
+    session.run_now("CREATE orders:1 = { v: 1 };").unwrap();
+    assert!(messages(&mut session, "order_events").is_empty());
+    // The topic is the feed's no longer: a caller may append to it again.
+    session
+        .run_now("CREATE order_events = { note: 'by hand' };")
+        .unwrap();
+    assert_eq!(messages(&mut session, "order_events").len(), 1);
+}
+
+#[test]
+fn drop_feed_if_exists_accepts_a_missing_feed() {
+    let store = store();
+    let mut session = inside(&store);
+    session
+        .run_now("DROP FEED IF EXISTS nobody ON orders;")
+        .unwrap();
+}
+
+#[test]
+fn dropping_a_feed_nobody_defined_refuses_naming_it() {
+    let store = store();
+    let mut session = inside(&store);
+    let refused = session.run_now("DROP FEED nobody ON orders;");
+    assert!(
+        format!("{:?}", refused).contains("Unknown"),
+        "the refusal names the missing feed: {refused:?}"
+    );
+}
+
+#[test]
 fn when_filters_the_captured_writes() {
     let store = store();
     let mut session = inside(&store);

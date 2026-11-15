@@ -95,6 +95,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         // body, so the session renders a definition from the catalog rather
         // than the tree.
         StatementKind::DefineFeed { .. } => Err(unrenderable("DEFINE FEED", span)),
+        StatementKind::DropFeed { .. } => Err(unrenderable("DROP FEED", span)),
         StatementKind::DropIfExists(_) => Err(unrenderable("DROP … IF EXISTS", span)),
         StatementKind::DefineParam { .. } => Err(unrenderable("DEFINE PARAM", span)),
         StatementKind::DropParam { .. } => Err(unrenderable("DROP PARAM", span)),

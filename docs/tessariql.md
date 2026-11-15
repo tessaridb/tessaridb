@@ -2082,7 +2082,7 @@ Every catalog object this language can declare can be undeclared, except one:
 | `DEFINE TOPIC CONSUMER` | `DROP TOPIC CONSUMER` |
 | `DEFINE QUEUE` | `DROP QUEUE` |
 | `DEFINE EVENT` | `DROP EVENT` |
-| `DEFINE FEED` | **nothing — see below** |
+| `DEFINE FEED` | `DROP FEED` |
 | `DEFINE PARAM` | `DROP PARAM` |
 | `DEFINE NODE` | **nothing — see below** |
 
@@ -8792,6 +8792,7 @@ DEFINE FEED orders_feed ON orders INTO order_events;
 DEFINE FEED deletes_only ON orders INTO delete_events FOR DELETE;
 DEFINE FEED big_only ON orders INTO big_events WHEN $after.total > 1000;
 DEFINE FEED keyed ON orders INTO key_events IMAGE KEYS;
+DROP FEED keyed ON orders;
 ```
 
 A feed is the outbox pattern of §6f declared instead of hand-written: **every
@@ -8842,6 +8843,14 @@ created and deleted inside the one transaction.
 
 Tables, collections and edge tables carry feeds; the kinds an event refuses
 refuse a feed too. `IF NOT EXISTS` keeps an existing feed of the name.
+
+**Dropping one.** `DROP FEED orders_feed ON orders` removes the capture and
+frees the topic in the same commit: the table's writes land nothing, and a
+caller's `CREATE` or `INSERT` into the topic is accepted again — it is a feed's
+only while a feed claims it. `DROP FEED IF EXISTS` answers `ok` when no feed of
+the name stands on the table, the drop half of a re-runnable migration. A feed
+whose `FOR`, `WHEN` or `IMAGE` should change is dropped and defined again; the
+combination is the migration path until an `ALTER` spelling exists.
 
 ## 7. Transactions
 

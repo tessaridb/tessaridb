@@ -159,6 +159,7 @@ impl Effect {
             | StatementKind::DefineEvent { .. }
             | StatementKind::DropEvent { .. }
             | StatementKind::DefineFeed { .. }
+            | StatementKind::DropFeed { .. }
             | StatementKind::DefineField { .. }
             | StatementKind::DefineAnalyzer { .. }
             | StatementKind::DropTable { .. }

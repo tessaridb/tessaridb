@@ -1711,6 +1711,9 @@ impl Session<'_> {
                 )
                 .await
             }
+            StatementKind::DropFeed { name, table } => {
+                self.drop_feed(transaction, name, table, span).await
+            }
             StatementKind::Claim {
                 table,
                 count,

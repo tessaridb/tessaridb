@@ -641,6 +641,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // A feed's WHEN is bound per captured write, on the event machinery's
         // names, never to the caller's — the same rule as the event's.
         | StatementKind::DefineFeed { .. }
+        | StatementKind::DropFeed { .. }
         | StatementKind::DropIfExists(_)
         // `UNSEAL` takes a string literal and never a parameter, so there is
         // nothing here to substitute into. That is the grammar's decision and

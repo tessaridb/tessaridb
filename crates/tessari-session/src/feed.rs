@@ -166,6 +166,57 @@ impl<'a> Session<'a> {
         Ok(Outcome::Done)
     }
 
+    /// `DROP FEED` (FEAT-S1): removes the capture and frees its topic for
+    /// hand appends, in one catalog write each way.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Unknown`] naming the feed when the table has none by that
+    /// name, and whatever resolving the table refuses.
+    pub(crate) async fn drop_feed(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        table: &TableRef,
+        span: Span,
+    ) -> Result<Outcome> {
+        let (_, id) = self.resolve_any_table(transaction, table).await?;
+        let Some(definition) = Catalog::new(transaction).table(id).await? else {
+            return Err(Error::Unknown {
+                entity: "table",
+                name: table.name.text.clone(),
+                span: table.span,
+            });
+        };
+        transaction.guard_table_entry(id);
+        let Some(held) = definition
+            .feeds
+            .iter()
+            .find(|held| held.name == name.text)
+            .cloned()
+        else {
+            return Err(Error::Unknown {
+                entity: "feed",
+                name: name.text.clone(),
+                span,
+            });
+        };
+        let mut feeds = definition.feeds;
+        feeds.retain(|held| held.name != name.text);
+        Catalog::new(transaction).set_feeds(id, feeds).await?;
+        // The topic is the feed's no longer: a caller may append to it again.
+        // Resolved in the table's database, where the define resolved it.
+        if let Some(topic) = Catalog::new(transaction)
+            .table_id(definition.namespace, definition.database, &held.topic)
+            .await?
+        {
+            Catalog::new(transaction)
+                .set_topic_owner(topic, None)
+                .await?;
+        }
+        Ok(Outcome::Done)
+    }
+
     /// Drain the transaction's feed captures into their topics, in the same
     /// commit as the writes they describe (FEAT-S1).
     ///

@@ -373,6 +373,7 @@ impl Needs {
             | StatementKind::DefineEvent { .. }
             | StatementKind::DropEvent { .. }
             | StatementKind::DefineFeed { .. }
+            | StatementKind::DropFeed { .. }
             | StatementKind::RebuildIndex { .. }
             | StatementKind::CheckTable { .. }
             | StatementKind::AnalyzeTable { .. }

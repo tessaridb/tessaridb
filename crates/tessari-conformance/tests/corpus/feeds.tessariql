@@ -68,6 +68,24 @@ CREATE filtered:2 = { v: 30 };
 READ FROM big_events;
 --- expect: rows 1
 
+--- case: a dropped feed stops capturing and frees its topic
+DEFINE COLLECTION dropping;
+DEFINE TOPIC drop_events;
+DEFINE FEED drop_me ON dropping INTO drop_events;
+DROP FEED drop_me ON dropping;
+CREATE dropping:1 = { v: 1 };
+READ FROM drop_events;
+--- expect: rows 0
+
+--- case: the freed topic takes hand appends again
+CREATE drop_events = { note: 'by hand' };
+READ FROM drop_events;
+--- expect: rows 1
+
+--- case: dropping a feed that is not there refuses naming it
+DROP FEED nobody ON dropping;
+--- expect: error Unknown
+
 --- case: a hand append to a feed's topic is refused naming the feed
 CREATE order_events = { forged: true };
 --- expect: error TopicOwnedByFeed

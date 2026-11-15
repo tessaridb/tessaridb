@@ -767,6 +767,7 @@ fn erase_statement(statement: &mut Statement) {
         StatementKind::Backup { .. }
         | StatementKind::Restore { .. }
         | StatementKind::DefineFeed { .. }
+        | StatementKind::DropFeed { .. }
         | StatementKind::Begin
         | StatementKind::Commit
         | StatementKind::Cancel
