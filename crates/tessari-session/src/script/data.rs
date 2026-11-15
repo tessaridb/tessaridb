@@ -66,7 +66,7 @@ pub(super) async fn declared(
     }
     // Feeds ride after the data on the events' rule, and stronger: a feed
     // defined before the records are written again would capture every one of
-    // them and the rebuilt topic would hold each message twice (FEAT-S1).
+    // them and the rebuilt topic would hold each message twice.
     for feed in &table.feeds {
         crate::describe::write_feed(&mut after, &table.name, feed);
     }

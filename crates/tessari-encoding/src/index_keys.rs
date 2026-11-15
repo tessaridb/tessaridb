@@ -24,6 +24,7 @@
 //! and an operator is looking at bytes.
 
 mod containment;
+mod field_statistics;
 mod posting;
 mod quantized;
 mod retired;
@@ -41,6 +42,9 @@ use crate::order::{KeyReader, KeyWriter};
 use crate::record_id;
 use crate::value::{StoreValue, split_header, with_header};
 pub use containment::ContainmentKey;
+pub use field_statistics::{
+    FieldAddress, FieldChanges, FieldChangesKey, FieldStatistics, FieldStatisticsKey,
+};
 use posting::take_values;
 pub use posting::{Located, Posting};
 pub use quantized::{QuantizedVector, StoredVector};

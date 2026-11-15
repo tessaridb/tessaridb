@@ -85,7 +85,7 @@ use tessari_encoding::{
 use tessari_kv::WriteBatch;
 use tessari_types::{Analyzer, DatabaseId, NamespaceId, Sequence, TableId, Value};
 
-use crate::catalog::{Catalog, IndexDefinition, defined_index};
+use crate::catalog::{Catalog, IndexDefinition, TableKind, defined_index};
 use crate::error::Result;
 use crate::graph;
 use crate::store::Store;
@@ -278,13 +278,37 @@ pub(crate) async fn maintain_from(
     // How many records each value index was rewritten for, for its change
     // counter — what tells a planner statistic it has gone stale.
     let mut changed: BTreeMap<IndexAddress, u64> = BTreeMap::new();
-
+    // How many records each table gained or lost, for its fields' statistics.
+    // Only tables that declare fields are counted: a counter nothing will ever
+    // read is a write the path does not need, and an in-memory space writes
+    // nothing beneath it — both refused by the same check. The answer is read
+    // once per table, beside the index definitions below.
+    let mut tables_changed: BTreeMap<(NamespaceId, DatabaseId, TableId), u64> = BTreeMap::new();
+    let mut counted_table: BTreeMap<(NamespaceId, DatabaseId, TableId), bool> = BTreeMap::new();
     // Every mutation's indexes and prior value are read before any is applied,
     // because a unique value one mutation gives up may be taken by a mutation
     // that sorts before it, and the claim has to know that it is free.
     let mut held = Vec::with_capacity(record.mutations().len());
     for mutation in record.mutations() {
         let at = (mutation.namespace, mutation.database, mutation.table);
+        let is_record = match counted_table.get(&at) {
+            Some(found) => *found,
+            None => {
+                let catalog = Catalog::new(&mut view);
+                let found = match catalog.table(mutation.table).await? {
+                    Some(definition) if definition.kind == TableKind::Table => {
+                        !catalog.declared_fields(mutation.table).await?.is_empty()
+                    }
+                    _ => false,
+                };
+                counted_table.insert(at, found);
+                found
+            }
+        };
+        if is_record {
+            let counted = tables_changed.entry(at).or_insert(0);
+            *counted = counted.saturating_add(1);
+        }
         let definitions = match by_table.get(&at) {
             Some(found) => found.clone(),
             None => {
@@ -377,6 +401,7 @@ pub(crate) async fn maintain_from(
         }
     }
     let batch = crate::statistics::count_changes(store, batch, &changed).await?;
+    let batch = crate::field_statistics::count_field_changes(store, batch, &tables_changed).await?;
     settle(store, batch, &pending).await
 }
 

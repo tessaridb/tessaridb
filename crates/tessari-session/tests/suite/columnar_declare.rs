@@ -1,4 +1,4 @@
-//! SG5 — the declaration surface (G082): `DEFINE TABLE … STORE COLUMN
+//! SG5 — the declaration surface : `DEFINE TABLE … STORE COLUMN
 //! [PARTITIONS n BY field]` defines a columnar table through the statement
 //! path, INFO/BACKUP SCRIPT render the words, and the named refusals hold
 //! (C1: immutability; C7: the stated limits that refuse at v1).

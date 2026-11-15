@@ -114,7 +114,7 @@ pub(crate) fn declaration(
 /// Written out again they refuse on re-execution — the name is already taken —
 /// so a declaration that wrote them did not re-create the table it described.
 /// That was true of `INFO FOR TABLE` on every edge table until a state script,
-/// which runs the declarations it writes, found it (G047).
+/// which runs the declarations it writes, found it .
 pub(crate) fn made_by_the_edge_word(definition: &TableDefinition, name: &str) -> bool {
     matches!(definition.kind, TableKind::Edge(_))
         && [EDGE_OUT, EDGE_IN]
@@ -208,7 +208,7 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         if let Some(ceiling) = declared.attempts {
             let _ = write!(script, " ATTEMPTS {ceiling}");
         }
-        // The two orderings a claim follows (G055 C8), written when declared.
+        // The two orderings a claim follows , written when declared.
         if let Some(field) = &declared.priority {
             let _ = write!(script, " PRIORITY BY {field}");
         }
@@ -235,7 +235,7 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
     // series naming records any other way is a definition this word cannot
     // restore, and saying so is better than writing a statement that would
     // recreate it wrongly.
-    // A space is written back with its own word and its limit (G036). It holds
+    // A space is written back with its own word and its limit . It holds
     // single values, so a schema flag or an edge pair is something the word
     // cannot say, exactly as for a series.
     if let TableKind::Space(declared) = &definition.kind {
@@ -251,7 +251,7 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         );
         return Ok(());
     }
-    // A topic the same way, with its clauses (G037).
+    // A topic the same way, with its clauses .
     if let TableKind::Topic(declared) = &definition.kind {
         if definition.schemafull || definition.is_edge() {
             return Err(Unwritable::at(format!(
@@ -434,7 +434,7 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
     } else {
         " SCHEMALESS"
     });
-    // G082: the storage kind is written always, on the same rule the
+    // The storage kind is written always, on the same rule the
     // strictness flag is — a declaration leaning on a default is one whose
     // meaning changes when the default moves, and changes silently, in a
     // script somebody kept. `STORE ROW` is the default's word, so existing
@@ -442,7 +442,7 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
     // what it means after the default moves again. An edge table is the
     // exception, and it is the catalog's rule, not this arm's taste: a
     // storage kind rides only on a plain record table, so the word on an
-    // edge table would restore as a refusal (worksheet §3).
+    // edge table would restore as a refusal (the design record).
     if definition.kind == TableKind::Table {
         script.push_str(" STORE ");
         script.push_str(definition.storage_kind_word());

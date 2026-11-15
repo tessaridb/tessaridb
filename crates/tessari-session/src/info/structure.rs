@@ -14,8 +14,8 @@ use crate::error::{Error, Result};
 use crate::session::Session;
 
 use super::{
-    by_name, described_field, described_index, described_sample, nameable, readable_field,
-    readable_index, refining, reported, shape_of,
+    by_name, described_field, described_field_statistics, described_index, described_sample,
+    nameable, readable_field, readable_index, refining, reported, shape_of,
 };
 
 impl Session<'_> {
@@ -258,6 +258,18 @@ impl Session<'_> {
             "indexes".to_owned(),
             Value::Array(indexes.iter().map(described_index).collect()),
         );
+        // Held field statistics, counts only — a counted value is never
+        // printed, and a field the caller may not read is filtered with the
+        // fields above for the same reason (G083 C1).
+        let mut statistics = Vec::new();
+        for field in &fields {
+            if let Some((held, now)) = transaction.held_field_statistics(field).await? {
+                statistics.push(described_field_statistics(&field.name, &held, now));
+            }
+        }
+        if !statistics.is_empty() {
+            report.insert("statistics".to_owned(), Value::Array(statistics));
+        }
         // Each event as the statement that defines it (ADR-0110 D1).
         report.insert(
             "events".to_owned(),
@@ -273,7 +285,7 @@ impl Session<'_> {
                     .collect(),
             ),
         );
-        // Each feed the same way (FEAT-S1).
+        // Each feed the same way.
         report.insert(
             "feeds".to_owned(),
             Value::Array(

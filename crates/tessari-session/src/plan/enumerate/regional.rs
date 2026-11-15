@@ -76,6 +76,7 @@ impl Session<'_> {
                     rows: Rows::Unknown,
                     // Cells are coarser than boxes and boxes are coarser than
                     // shapes, so this read is candidates by construction.
+                    age: None,
                     answers: None,
                 });
             }

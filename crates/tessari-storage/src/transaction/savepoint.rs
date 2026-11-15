@@ -27,7 +27,7 @@ pub struct Savepoint {
     lifetimes: BTreeMap<RecordAddress, Lifetime>,
     trims: HashMap<(NamespaceId, DatabaseId, TableId), u64>,
     /// What the feed capture held, restored with the writes it mirrors
-    /// (FEAT-S1): a rollback undoes the capture of a record it undoes the
+    ///: a rollback undoes the capture of a record it undoes the
     /// write of.
     feed_captures: BTreeMap<RecordAddress, Option<Vec<u8>>>,
     claims: usize,

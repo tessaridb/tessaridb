@@ -983,7 +983,7 @@ pub enum Error {
     /// `DEFINE FEED` onto a partitioned topic whose `BY` field a schema-full
     /// table cannot hold: no record of it can carry the key the partitioner
     /// routes by, so per-key order the split promises would be a round robin
-    /// (FEAT-S1 D9).
+    ///.
     #[error(
         "topic {topic} partitions by {field}, which table {table} does not declare; the feed would route by turn (at {span})"
     )]
@@ -1200,7 +1200,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// A weighted path met an edge whose weight is not a cost (G055 W6).
+    /// A weighted path met an edge whose weight is not a cost .
     ///
     /// A weight that is absent drops the edge — absence narrows — but one that is
     /// not a number, or is below zero, is a mistake in the data the path would
@@ -1218,7 +1218,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// `PATH TO` over an edge table rather than a declared edge kind (G055 W6).
+    /// `PATH TO` over an edge table rather than a declared edge kind .
     ///
     /// A path search walks backwards as well as forwards, which is the adjacency
     /// a declared graph keeps beside each node in both directions; an edge table
@@ -1233,7 +1233,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// A read needs records this node does not hold (G031 S3.3, ADR-0081).
+    /// A read needs records this node does not hold .
     ///
     /// The node was served part of what its catalog describes — one shard of a
     /// split table, or one shard of a database whose other tables it therefore
@@ -1243,8 +1243,7 @@ pub enum Error {
     /// table at all.
     ///
     /// When this node knows a peer holding the whole table it names it, and a
-    /// surface that can redirect turns the refusal into one (G051 C4,
-    /// ADR-0101) — to a client that greeted minor 0 it stays this refusal.
+    /// surface that can redirect turns the refusal into one  — to a client that greeted minor 0 it stays this refusal.
     #[error(
         "this node does not hold all of `{table}`{} — read it on a node that holds \
          the whole table{}, or name a span of identities inside what this one holds",
@@ -1270,7 +1269,7 @@ pub enum Error {
         holder: Option<crate::Peer>,
     },
 
-    /// A shard this node lacks could not be fetched from its leader (G033).
+    /// A shard this node lacks could not be fetched from its leader .
     ///
     /// The whole read is refused, because an answer missing one shard's records
     /// is a partial answer that looks whole.
@@ -1303,11 +1302,11 @@ pub enum Error {
         /// The shard asked for.
         shard: u32,
         /// A peer holding the whole table that this node has heard serving, when
-        /// it knows one — the node a surface redirects the read to (G051 SG3).
+        /// it knows one — the node a surface redirects the read to .
         holder: Option<crate::Peer>,
     },
 
-    /// A gathered read would hold more records than a node holds in memory (G033).
+    /// A gathered read would hold more records than a node holds in memory .
     #[error(
         "reading `{table}` here would gather more than {most} records, and this build \
          refuses rather than shorten the answer — read a span of identities inside the \
@@ -1408,7 +1407,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// An expiry a key-value write cannot take (G035): not a duration or a
+    /// An expiry a key-value write cannot take : not a duration or a
     /// datetime, a `SET … EXPIRE` that is not in the future, or an instant
     /// past what a millisecond clock can hold.
     #[error("{reason} (at {span})")]
@@ -1495,7 +1494,7 @@ pub enum Error {
     },
 
     /// A `LOCAL MAJORITY` write on a node whose own row names no region
-    /// (G057 C3), refused before it commits.
+    /// , refused before it commits.
     ///
     /// A local majority is a majority of the voters in this node's region;
     /// with no region there is no such set, and reading it as the whole cluster
@@ -1808,9 +1807,7 @@ pub enum Error {
     },
 
     /// `ALTER TABLE … STORE ROW|COLUMN` — the storage kind is chosen at define
-    /// time and immutable afterwards (G082 C1, the owner's FEAT-M2 rule: a
-    /// column table is declared at definition; the storage kind is immutable
-    /// after define, and DROP+DEFINE is the migration).
+    /// time and immutable afterwards .
     ///
     /// The statement **parses** — a generated script fails here, by name,
     /// rather than at the parser — and refuses at execution.
@@ -1825,7 +1822,7 @@ pub enum Error {
     },
 
     /// `PARTITIONS n BY field` on a schemafull table that declares no such
-    /// field (G082 SG5, D-SG5-5). A key nobody declares routes every row to
+    /// field . A key nobody declares routes every row to
     /// partition zero — a silently single-lane table wearing the clause —
     /// refused before anything is created. A schemaless table accepts any
     /// key: its families are created on first sight.
@@ -2369,7 +2366,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// A feed of this name is already defined on the table (FEAT-S1).
+    /// A feed of this name is already defined on the table.
     #[error("a feed named `{feed}` is already defined on `{table}` (at {span})")]
     FeedExists {
         /// The feed.
@@ -2381,7 +2378,7 @@ pub enum Error {
     },
 
     /// A feed's capture refused, so the write it describes is refused
-    /// (FEAT-S1). The cause is the refusal the capture met, unchanged.
+    ///. The cause is the refusal the capture met, unchanged.
     #[error("feed `{feed}` on `{table}` refused the write: {cause}")]
     FeedFailed {
         /// The feed whose capture refused.
@@ -2392,7 +2389,7 @@ pub enum Error {
         cause: Box<Error>,
     },
 
-    /// A feed on a table kind that cannot carry one (FEAT-S1) — the kinds an
+    /// A feed on a table kind that cannot carry one — the kinds an
     /// event can be on, a feed being the same declaration shape.
     #[error(
         "`{table}` is a {kind}, and only tables, collections and edge tables carry feeds (at {span})"
@@ -2406,7 +2403,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// A feed on a columnar table (G082 C7): the composition of feed capture
+    /// A feed on a columnar table : the composition of feed capture
     /// and projection maintenance is designed — the feed captures from the
     /// row authority, which columnar tables fully retain — but v1 does not
     /// ship the combination. Named so a later wave lifts it with tests.
@@ -2418,7 +2415,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// A hand append to a topic a feed owns (FEAT-S1): only the feed's
+    /// A hand append to a topic a feed owns: only the feed's
     /// capture writes it, so a consumer is never fed a message nobody's
     /// writes produced.
     #[error("`{topic}` belongs to feed `{feed}` and only its capture appends to it (at {span})")]
@@ -2431,7 +2428,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// A feed declared onto a topic that drops repeated keys (FEAT-S1): a
+    /// A feed declared onto a topic that drops repeated keys: a
     /// dropped capture is a loss the feed's premise forbids, so the
     /// combination is refused where it is written.
     #[error(
@@ -2987,7 +2984,7 @@ pub enum Error {
     },
 
     /// A statement that only a topic answers, aimed at another kind of table
-    /// (G037).
+    /// .
     #[error("{table} is not a topic (at {span}) — define it with `DEFINE TOPIC`")]
     NotATopic {
         /// The table as written.
@@ -3007,7 +3004,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// A group of that name already reads the topic (G042).
+    /// A group of that name already reads the topic .
     #[error(
         "{topic} already has a group named '{group}' (at {span}) — `IF NOT EXISTS` accepts \
          it as it stands, and `DROP GROUP` removes it"
@@ -3021,7 +3018,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// No group of that name reads the topic (G042).
+    /// No group of that name reads the topic .
     #[error("{topic} has no group named '{group}' (at {span}) — declare one with `DEFINE GROUP`")]
     NoSuchGroup {
         /// The group.
@@ -3033,7 +3030,7 @@ pub enum Error {
     },
 
     /// `ACK` or `NACK` for a reader that is not a group, so nothing is held to
-    /// settle (G042).
+    /// settle .
     ///
     /// Refused rather than answered with a zero: a reader acknowledging by hand
     /// under a name that commits its reads would be told its acknowledgements
@@ -3069,7 +3066,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// `AFTER` on a read by a group member (G042).
+    /// `AFTER` on a read by a group member .
     #[error(
         "'{group}' is a group, and a member cannot skip the group's work with `AFTER` \
          (at {span}) — `ALTER GROUP … START AT n` moves the whole group"
@@ -3081,7 +3078,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// A group whose dead letter is the topic it reads (G042).
+    /// A group whose dead letter is the topic it reads .
     #[error(
         "{topic} cannot be its own group's dead letter (at {span}) — a message given up \
          on would be handed out again"
@@ -3152,7 +3149,7 @@ pub enum Error {
     },
 
     /// A position or a count on `READ FROM` that is not a whole number at or
-    /// above zero (G037).
+    /// above zero .
     #[error("{reason} (at {span})")]
     InvalidPosition {
         /// Why the value cannot be taken.
@@ -3274,7 +3271,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// A container write on a key holding another kind (G079 C6).
+    /// A container write on a key holding another kind .
     #[error("{key} holds a {holds}, not a {wanted} (at {span})")]
     KeyHoldsAnotherKind {
         /// The key.
@@ -3287,7 +3284,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// `LIST SET` on a key holding no list (G079 C6).
+    /// `LIST SET` on a key holding no list .
     #[error("no list {key} to set an element of (at {span})")]
     NoSuchList {
         /// The key.
@@ -3296,7 +3293,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// `LIST SET` at an index the list does not have (G079 C6).
+    /// `LIST SET` at an index the list does not have .
     #[error("index {index} is outside the list {key}, which holds {length} (at {span})")]
     ListIndexOutOfRange {
         /// The key.
@@ -3310,7 +3307,7 @@ pub enum Error {
     },
 
     /// An index or a limit that is not a whole number of the right sign
-    /// (G079 C6).
+    /// .
     #[error("a {what} is a whole number, and this is not one (at {span})")]
     NotAWholeNumber {
         /// What the number was for.
@@ -3319,7 +3316,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// A hash field or a ranked member that is not text (G079 C6): an object's
+    /// A hash field or a ranked member that is not text : an object's
     /// names are text.
     #[error("a {what} is named by text, and this is {found} (at {span})")]
     NameNotText {
@@ -3331,7 +3328,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// A member of a set that is itself a container, or nothing (G079 C6).
+    /// A member of a set that is itself a container, or nothing .
     #[error("a member is a single value, and this is {found} (at {span})")]
     MemberIsAContainer {
         /// The kind supplied.
@@ -3340,7 +3337,7 @@ pub enum Error {
         span: Span,
     },
 
-    /// A score that is not a finite number (G079 C6).
+    /// A score that is not a finite number .
     #[error("a score is a finite number, and this is {found} (at {span})")]
     ScoreNotANumber {
         /// What was supplied.

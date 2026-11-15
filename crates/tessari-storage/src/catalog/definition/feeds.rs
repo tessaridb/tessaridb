@@ -1,5 +1,5 @@
 //! A feed a table carries: the declared capture of its writes into a topic
-//! (FEAT-S1).
+//!.
 
 use std::collections::BTreeMap;
 

@@ -1,5 +1,5 @@
 //! The initial scan: existing rows of a fed table, carried into the topic
-//! by a background job the feed owns (FEAT-S1 D8).
+//! by a background job the feed owns.
 //!
 //! # The snapshot is the define commit's
 //!
@@ -234,7 +234,7 @@ impl<'a> Session<'a> {
             ("at".to_owned(), Value::Datetime(self.now_datetime())),
         ]);
         // A partitioned topic's envelope carries the field it routes by
-        // (FEAT-S1 D9): metadata, not image — present even in IMAGE KEYS
+        //: metadata, not image — present even in IMAGE KEYS
         // mode. The scan reads as the engine, so the field is the record's.
         if let Some(TableKind::Topic(tessari_storage::TopicDeclaration {
             partitions: Some(partitioning),
@@ -264,7 +264,7 @@ impl<'a> Session<'a> {
                 cause: Box::new(cause),
             })?;
         // A split topic's message lands in the partition its key chooses
-        // (FEAT-S1 D9), exactly as the live capture's does.
+        //, exactly as the live capture's does.
         let home = self
             .partition_for(topic_definition.as_ref(), &payload, Span::new(0, 0))?
             .unwrap_or(topic);

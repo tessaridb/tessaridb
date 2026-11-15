@@ -126,11 +126,11 @@ async fn held_statistics(store: &Store, address: IndexAddress) -> Result<Option<
     }
 }
 
-/// Whether a statistic taken at `at` changes still describes an index that has
-/// seen `now`.
-fn still_fresh(statistics: &IndexStatistics, now: u64) -> bool {
-    let since = now.saturating_sub(statistics.changes);
-    since <= (statistics.entries / 10).max(STATISTICS_STALE_FLOOR_CHANGES)
+/// Whether a statistic taken at `changes` on a summary of `entries` still
+/// describes a thing that has seen `now` changes.
+pub(crate) fn still_fresh(changes: u64, entries: u64, now: u64) -> bool {
+    let since = now.saturating_sub(changes);
+    since <= (entries / 10).max(STATISTICS_STALE_FLOOR_CHANGES)
 }
 
 impl Transaction<'_> {
@@ -219,7 +219,9 @@ impl Transaction<'_> {
     }
 
     /// One index's statistic, when there is one and it still describes the
-    /// index.
+    /// index, with the statistic's age in entry changes — how much the index
+    /// has changed since the walk that took it, which is what a plan reports
+    /// beside the estimate so a reader sees its freshness.
     ///
     /// `None` both when nothing was ever taken and when more has changed since
     /// than the statistic can absorb — the two cases a planner treats alike,
@@ -232,7 +234,7 @@ impl Transaction<'_> {
     pub async fn fresh_statistics(
         &self,
         index: &IndexDefinition,
-    ) -> Result<Option<IndexStatistics>> {
+    ) -> Result<Option<(IndexStatistics, u64)>> {
         if !kept(index) {
             return Ok(None);
         }
@@ -241,7 +243,11 @@ impl Transaction<'_> {
             return Ok(None);
         };
         let now = changes_of(self.store(), address).await?;
-        Ok(still_fresh(&statistics, now).then_some(statistics))
+        let fresh = still_fresh(statistics.changes, statistics.entries, now);
+        Ok(fresh.then(|| {
+            let age = now.saturating_sub(statistics.changes);
+            (statistics, age)
+        }))
     }
 }
 

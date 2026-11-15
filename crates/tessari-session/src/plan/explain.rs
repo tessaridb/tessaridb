@@ -95,8 +95,7 @@ impl Session<'_> {
                 self.refuse_reading_a_vault(transaction, gated, table)
                     .await?;
                 // A grouped read of a partitioned columnar table folds
-                // partition-locally when the read's gate qualifies it (G082
-                // SG4) — the same gate, so the plan reported is the plan
+                // partition-locally when the read's gate qualifies it  — the same gate, so the plan reported is the plan
                 // taken.
                 if crate::reduce::reduce_of(select).is_some()
                     && let Some((_, plan)) =
@@ -245,7 +244,7 @@ impl Session<'_> {
                     });
                 }
                 // A nearest-first read under a condition: the spatial walk,
-                // asked here first because the read asks it first (G058 C1).
+                // asked here first because the read asks it first .
                 // Whether it settles within its cap is the read's own question.
                 if let Some(place) = closest(select)
                     && let Some((index, _)) = self
@@ -328,19 +327,46 @@ impl Session<'_> {
             // probe per left record and a map of the whole right table — and it
             // is asked here through the same function the join asks.
             Source::Join {
-                right, right_key, ..
+                left,
+                right,
+                right_key,
+                outer,
+                ..
             } => {
                 let JoinSide::Table { table, .. } = right.as_ref() else {
                     return Ok(Plan::new(AccessPath::Join));
                 };
                 let (_, id) = self.resolve_readable_table(transaction, table).await?;
                 self.refuse_reading_a_vault(transaction, id, table).await?;
-                Ok(Plan {
-                    index: crate::evaluate::ordered_index_on(transaction, id, right_key)
-                        .await?
-                        .map(|index| index.name),
-                    ..Plan::new(AccessPath::Join)
-                })
+                // The same decision the read takes, asked through the same
+                // function — so the plan and the answer cannot choose
+                // differently (the read re-asks; the counts cannot move
+                // between two statements of one snapshot).
+                let driving = match left.as_ref() {
+                    JoinSide::Table { table, .. } => {
+                        let (_, left_id) = self.resolve_table(transaction, table).await?;
+                        Catalog::new(transaction).record_count(left_id).await?
+                    }
+                    _ => None,
+                };
+                let right_rows = Catalog::new(transaction).record_count(id).await?;
+                match crate::evaluate::join_serving(transaction, id, right_key, driving, *outer)
+                    .await?
+                {
+                    crate::evaluate::JoinServing::Probe(index) => Ok(Plan {
+                        index: Some(index.name),
+                        shape: Some("probe"),
+                        left_rows: driving,
+                        right_rows,
+                        ..Plan::new(AccessPath::Join)
+                    }),
+                    crate::evaluate::JoinServing::Build => Ok(Plan {
+                        shape: Some("build"),
+                        left_rows: driving,
+                        right_rows,
+                        ..Plan::new(AccessPath::Join)
+                    }),
+                }
             }
             // The inner read has a plan of its own and this one does not
             // describe it: a nested plan is its own feature, and one field for

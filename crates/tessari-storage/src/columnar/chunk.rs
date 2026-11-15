@@ -1,5 +1,5 @@
 //! A column chunk: the unit one field's projection is written, read and
-//! copy-on-write rewritten in (worksheet §4).
+//! copy-on-write rewritten in (the design record).
 //!
 //! # The payload layout
 //!
@@ -10,7 +10,7 @@
 //!                        0x02: min/max statistics are present
 //!                        0x04: a bloom filter is present
 //!                        0x08: range statistics are disabled (a NaN sat
-//!                              the column — worksheet §4.3)
+//!                              the column — the design record)
 //! [null_count:u32]       rows whose slot is null
 //! [validity bitmap]      (count + 7) / 8 bytes, iff null_count > 0; a set
 //!                        bit marks a null slot
@@ -63,7 +63,7 @@ use super::codec::{self, Cursor};
 /// How many low bits of a chunk seq hold the local sequence within one
 /// partition's lane: `seq = partition << PARTITION_BITS | local`. A lane
 /// seals at [`ROWS_PER_CHUNK`] rows, so 20 bits is a 128× ceiling — and the
-/// §6.6 key grammar is unchanged, which is the point (D-SG4-1).
+/// §6.6 key grammar is unchanged, which is the point .
 pub(crate) const PARTITION_BITS: u32 = 20;
 
 /// Rows a chunk seals at — the §4.1 prediction, re-measured in C8.
@@ -121,7 +121,7 @@ pub(crate) struct ChunkStats {
     pub(crate) bloom: Option<BloomBits>,
     /// Whether a NaN disabled range statistics for this chunk. The scan
     /// consults min/max presence, not this flag; the flag records *why* a
-    /// valued chunk carries no range (worksheet §4.3), for the report the
+    /// valued chunk carries no range (the design record), for the report the
     /// answer grows later — kept per the spec, read by no production path
     /// yet.
     #[allow(dead_code)]
@@ -153,7 +153,7 @@ pub(crate) struct ColumnChunk {
 /// Whether a slot is null.
 ///
 /// Both of the store's absences map here: `Null` (the field holds nothing)
-/// and `None` (a schemaless record that does not mention the field — D-SG2-2
+/// and `None` (a schemaless record that does not mention the field — the design record
 /// projects every field the table has seen, so the projection covers the
 /// record with a null slot). Decoded chunks answer `Null` for both, and the
 /// row path is the authority on the distinction.

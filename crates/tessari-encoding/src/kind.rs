@@ -47,6 +47,12 @@ pub enum KeyKind {
     IndexStatistics,
     /// How many entries one value index has gained or lost on this node.
     IndexChanges,
+    /// What one declared field of one table held when it was last walked
+    /// for the planner.
+    FieldStatistics,
+    /// How many writes one table has gained or lost on this node, counted
+    /// for its fields' statistics.
+    FieldChanges,
     /// When one record version stops being answered: the instant, then the
     /// record, so "everything that has expired" is one scan from the start
     /// (G035).
@@ -188,6 +194,8 @@ impl KeyKind {
         Self::SearchTerm,
         Self::IndexStatistics,
         Self::IndexChanges,
+        Self::FieldStatistics,
+        Self::FieldChanges,
         Self::ExpiryIndex,
         Self::ModifiedOrder,
         Self::TopicOffset,
@@ -248,6 +256,8 @@ impl KeyKind {
             Self::SearchTerm => 0x19,
             Self::IndexStatistics => 0x40,
             Self::IndexChanges => 0x41,
+            Self::FieldStatistics => 0x47,
+            Self::FieldChanges => 0x48,
             Self::ExpiryIndex => 0x1a,
             Self::ModifiedOrder => 0x1b,
             Self::TopicOffset => 0x1c,
@@ -302,6 +312,8 @@ impl KeyKind {
             | Self::SearchTerm
             | Self::IndexStatistics
             | Self::IndexChanges
+            | Self::FieldStatistics
+            | Self::FieldChanges
             | Self::ExpiryIndex
             | Self::ModifiedOrder
             | Self::TopicOffset
@@ -359,6 +371,8 @@ impl KeyKind {
             Self::SearchTerm => "search-term",
             Self::IndexStatistics => "index-statistics",
             Self::IndexChanges => "index-changes",
+            Self::FieldStatistics => "field-statistics",
+            Self::FieldChanges => "field-changes",
             Self::ExpiryIndex => "expiry-index",
             Self::ModifiedOrder => "modified-order",
             Self::TopicOffset => "topic-offset",
@@ -465,6 +479,8 @@ mod tests {
             (KeyKind::SearchTerm, 0x19),
             (KeyKind::IndexStatistics, 0x40),
             (KeyKind::IndexChanges, 0x41),
+            (KeyKind::FieldStatistics, 0x47),
+            (KeyKind::FieldChanges, 0x48),
             (KeyKind::ExpiryIndex, 0x1a),
             (KeyKind::ModifiedOrder, 0x1b),
             (KeyKind::TopicOffset, 0x1c),

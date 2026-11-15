@@ -1,4 +1,4 @@
-//! Feeds: the declared capture of a table's writes into a topic (FEAT-S1).
+//! Feeds: the declared capture of a table's writes into a topic.
 //!
 //! # Where they run
 //!
@@ -59,7 +59,7 @@ pub(crate) struct DeclaredFeed<'s> {
 pub(crate) use super::event::kind_word;
 
 impl<'a> Session<'a> {
-    /// `DEFINE FEED` (FEAT-S1).
+    /// `DEFINE FEED`.
     ///
     /// # Errors
     ///
@@ -90,7 +90,7 @@ impl<'a> Session<'a> {
                 span: declared.table.span,
             });
         }
-        // G082 C7: the feed captures from the row authority, which a columnar
+        // The feed captures from the row authority, which a columnar
         // table fully retains, so the combination is designed — but the
         // projection's write-batch work and the capture's are not composed
         // in v1, and the refusal is named so a later wave lifts it with tests.
@@ -199,10 +199,9 @@ impl<'a> Session<'a> {
             .await?;
         // The initial scan's job state lands in the same commit, so the
         // row's key version is the define commit's sequence — the snapshot
-        // the scan anchors at, with no second write to carry it (FEAT-S1 D8).
+        // the scan anchors at, with no second write to carry it.
         // The row names system table 31, a format-10 surface: a store the
-        // build finalized to 9 cannot hold the job (FEAT-S1, the shape of
-        // partitioned topics' gate).
+        // build finalized to 9 cannot hold the job.
         if declared.initial_scan {
             self.refuse_a_format_the_store_does_not_hold(
                 "a feed's initial scan",
@@ -218,7 +217,7 @@ impl<'a> Session<'a> {
         Ok(Outcome::Done)
     }
 
-    /// `DROP FEED` (FEAT-S1): removes the capture and frees its topic for
+    /// `DROP FEED`: removes the capture and frees its topic for
     /// hand appends, in one catalog write each way.
     ///
     /// # Errors
@@ -272,7 +271,7 @@ impl<'a> Session<'a> {
     }
 
     /// Drain the transaction's feed captures into their topics, in the same
-    /// commit as the writes they describe (FEAT-S1).
+    /// commit as the writes they describe.
     ///
     /// Called by the session's commit paths — an explicit `COMMIT`, a lone
     /// statement's own transaction, and `VERIFY`'s rehearsal — after every
@@ -444,7 +443,7 @@ impl<'a> Session<'a> {
             ("at".to_owned(), Value::Datetime(self.now_datetime())),
         ]);
         // A partitioned topic's envelope carries the field it routes by
-        // (FEAT-S1 D9): metadata, not image — present even in IMAGE KEYS
+        //: metadata, not image — present even in IMAGE KEYS
         // mode, from the images the writer may read. A field a grant hides
         // is absent, and the message routes by turn like any its key cannot
         // place.
@@ -478,7 +477,7 @@ impl<'a> Session<'a> {
 
         // The append is authorized exactly as the writer's own CREATE on the
         // topic would be: a writer who may write the table but not append the
-        // topic has the write refused, carrying the refusal (FEAT-S1 D7).
+        // topic has the write refused, carrying the refusal.
         let topic_ref = TableRef {
             database: None,
             name: Name {
@@ -518,7 +517,7 @@ impl<'a> Session<'a> {
                 cause: Box::new(cause),
             })?;
         // A split topic's message lands in the partition its key chooses
-        // (FEAT-S1 D9): the envelope carries the partition field when the
+        //: the envelope carries the partition field when the
         // record does, and the key decides otherwise.
         let home = self
             .partition_for(topic_definition.as_ref(), &payload, Span::new(0, 0))?

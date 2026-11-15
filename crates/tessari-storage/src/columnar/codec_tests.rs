@@ -112,8 +112,11 @@ fn selection_picks_dictionary_on_low_cardinality_strings() {
 fn selection_picks_run_length_on_a_constant_string_column() {
     // Delta does not apply to strings, so the constant column's winner is
     // run length: one distinct value, one run — against dictionary paying a
-    // code per row and plain paying a value per row.
-    let values = strings(&["stable", "stable", "stable", "stable"]);
+    // code per row and plain paying a value per row. The column is sized like
+    // the other selection tests: on a handful of values the decode-time
+    // guard reads nanosecond noise, and a throughput claim a noise-level
+    // measurement cannot support is not a claim this test should make.
+    let values = strings(&["stable"; 256]);
     assert_eq!(choose(&values).0, Encoding::RunLength);
 }
 

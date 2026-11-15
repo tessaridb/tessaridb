@@ -72,27 +72,27 @@ impl FormatVersion {
     /// topic, where no partition's reader would ever see the message.
     ///
     /// Moved to 10 when a declared feed's initial scan began keeping its job
-    /// in system table 31 (FEAT-S1 D8): an older build would not misread the
+    /// in system table 31: an older build would not misread the
     /// row — it never looks at the table — but the row's key names a system
     /// table the older build's key grammar cannot place, and every surface
     /// unit that names a system table moves with it, so the store states the
     /// shape it is.
     ///
-    /// Moved to 11 when a table could be declared `STORE COLUMN` (G082,
+    /// Moved to 11 when a table could be declared `STORE COLUMN` (ADR-0137,
     /// ADR-0137): the projection's keys — chunks, record maps and open-chunk
     /// pointers — ride the record keyspace under tags an older build reads
     /// as nothing it knows, and every surface unit that names a key position
     /// moves with them. The catalog field that names the storage kind is not
     /// surface (a catalog definition's fields are not), but the keys its
     /// tables write are, so the store a columnar table lives in states 11.
-    pub const CURRENT: Self = Self(11);
+    pub const CURRENT: Self = Self(12);
 
-    /// The first format whose tables may be declared columnar (G082,
+    /// The first format whose tables may be declared columnar (ADR-0137,
     /// ADR-0137). Named for the reason [`Self::HOMED_LOG`] is.
     pub const COLUMNAR: Self = Self(11);
 
     /// The first format whose declared feeds keep an initial scan's job in
-    /// system table 31 (FEAT-S1 D8). Named for the reason [`Self::HOMED_LOG`]
+    /// system table 31. Named for the reason [`Self::HOMED_LOG`]
     /// is.
     pub const FEED_SCAN: Self = Self(10);
 
@@ -166,6 +166,7 @@ impl FormatVersion {
             9 => (0, 37),
             10 => (0, 40),
             11 => (0, 41),
+            12 => (0, 41),
             _ => return None,
         };
         Some(crate::NodeVersion {

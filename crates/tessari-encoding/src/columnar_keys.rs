@@ -4,7 +4,7 @@
 //! All three ride the record keyspace, after the table prefix, where a
 //! record id would sit — distinguished by tags that share no value with a
 //! record id discriminant (`0x01`..`0x04`), so one prefix scan never meets
-//! two shapes (SG1 worksheet §4.2):
+//! two shapes (SG1 the design record):
 //!
 //! ```text
 //! <0x01> <namespace:u32> <database:u32> <table:u32>
@@ -16,14 +16,14 @@
 //!                                       stable identity, renames do not re-key
 //!           | 'N' <name:variable>       a schemaless field: the name is the
 //!                                       identity, and schemaless fields have
-//!                                       no rename surface to break it (D-SG2-8)
+//!                                       no rename surface to break it
 //! ```
 //!
 //! The version suffix is the complement of the sequence, exactly as on a
 //! record key: versions of one chunk sort newest-first and a read at a
 //! snapshot is a seek followed by taking the first entry. A rewritten chunk
 //! is a new version of its key — snapshot reads see the layout as of the
-//! snapshot (ADR-0137, worksheet §4.2).
+//! snapshot (ADR-0137, the design record).
 //!
 //! # The values under these keys are headerless
 //!
@@ -65,12 +65,12 @@ const TAG_FIELD_NAME: u8 = b'N';
 pub enum ColumnFamily {
     /// A declared field, keyed by the catalog's stable field id — the name
     /// resolves at the catalog, the id rides on disk, and a rename does not
-    /// re-key the chunks (worksheet §4.2).
+    /// re-key the chunks (the design record).
     Id(FieldId),
-    /// A schemaless field, keyed by its name. D-SG2-8: a schemaless field
+    /// A schemaless field, keyed by its name. the design record: a schemaless field
     /// has no catalog identity to spend and no rename surface to survive,
     /// so the name is the stable identity, and a new name starts its own
-    /// chunk family on first sight (worksheet §9, D-SG2-2).
+    /// chunk family on first sight (the design record, the design record).
     Name(String),
 }
 
@@ -333,7 +333,7 @@ impl StoreKey for MapKey {
 }
 
 /// The pointer naming a family's open chunk: the seq appends land in until
-/// the chunk seals (D-SG2-1).
+/// the chunk seals .
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PointerKey {
     /// The namespace the table belongs to.

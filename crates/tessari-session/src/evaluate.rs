@@ -21,7 +21,7 @@ use crate::search::{
 };
 use crate::session::Session;
 
-pub(crate) use keys::{collect_by_key, key_bound, listed, ordered_index_on};
+pub(crate) use keys::{JoinServing, collect_by_key, join_serving, key_bound, listed};
 pub(crate) use scope::{Reporting, Scope, Testing};
 pub(crate) use shape_rules::{
     alone, asserted, ceiling_reached, groups, held_bound, node_row, omit_within, omits, opened,

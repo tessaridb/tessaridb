@@ -126,6 +126,7 @@ mod tests {
             // whether it answers, so every candidate this builder makes is the
             // ordinary kind.
             answers: None,
+            age: None,
         }
     }
 

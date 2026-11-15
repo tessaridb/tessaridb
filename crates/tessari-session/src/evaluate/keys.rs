@@ -70,6 +70,8 @@ pub(crate) fn listed(kinds: &BTreeSet<&'static str>) -> String {
     }
 }
 
+use tessari_constants::{PLANNER_JOIN_PROBE_DEN, PLANNER_JOIN_PROBE_NUM};
+
 pub(crate) async fn ordered_index_on(
     transaction: &mut Transaction<'_>,
     table: TableId,
@@ -165,4 +167,55 @@ impl Session<'_> {
             records.into_iter().map(|(_, value)| value).collect(),
         ))
     }
+}
+
+/// How the right side of a join is served: probed through its key index one
+/// driving record at a time, or read once into the ordered map the driving
+/// side probes in memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum JoinServing {
+    /// One seek per driving record through this index.
+    Probe(tessari_storage::IndexDefinition),
+    /// One scan of the right side into the map.
+    Build,
+}
+
+/// Whether the right side of a join is probed or built, chosen on the two
+/// sides' row counts where both are known.
+///
+/// The rule, from the documented cost model: probing costs the driving side's
+/// count times an entry walk plus a record fetch; building costs the right
+/// side's count times a record fetch. Probing pays when the right side is
+/// more than [`PLANNER_JOIN_PROBE_NUM`] over [`PLANNER_JOIN_PROBE_DEN`] times
+/// the driving side. Where the driving side's count is unknown — its source
+/// is a read or a join — the rule says nothing, and an index that exists is
+/// probed exactly as before this choice existed. A full join never probes:
+/// it must read every right record to answer the unmatched ones.
+pub(crate) async fn join_serving(
+    transaction: &mut Transaction<'_>,
+    table: TableId,
+    key: &tessari_ql::FieldPath,
+    driving: Option<u64>,
+    outer: Option<tessari_ql::Outer>,
+) -> Result<JoinServing> {
+    let Some(index) = ordered_index_on(transaction, table, key).await? else {
+        return Ok(JoinServing::Build);
+    };
+    let Some(driving) = driving else {
+        return Ok(JoinServing::Probe(index));
+    };
+    if outer == Some(tessari_ql::Outer::Full) {
+        return Ok(JoinServing::Build);
+    }
+    let records = Catalog::new(transaction)
+        .record_count(table)
+        .await?
+        .unwrap_or(0);
+    let probe_cost = driving.saturating_mul(PLANNER_JOIN_PROBE_NUM);
+    let build_cost = records.saturating_mul(PLANNER_JOIN_PROBE_DEN);
+    Ok(if probe_cost < build_cost {
+        JoinServing::Probe(index)
+    } else {
+        JoinServing::Build
+    })
 }

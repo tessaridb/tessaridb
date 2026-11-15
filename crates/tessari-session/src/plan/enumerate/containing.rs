@@ -41,6 +41,7 @@ impl Session<'_> {
                     // How many records hold every pair is not knowable without
                     // walking them, which is the read itself.
                     rows: Rows::Unknown,
+                    age: None,
                     answers: None,
                 });
             }

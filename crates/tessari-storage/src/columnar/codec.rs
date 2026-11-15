@@ -8,7 +8,7 @@
 //! on ratio AND decode throughput together, measured on the chunk's own rows
 //! (the chunk is the sample unit).
 //!
-//! # The selection rule (D-SG2-4's initial thresholds, recorded here)
+//! # The selection rule (the design record's initial thresholds, recorded here)
 //!
 //! Every candidate whose applicability test passes on the full value run is
 //! encoded and then decoded once, and its decode time is measured. A
@@ -147,7 +147,7 @@ pub(crate) fn choose(values: &[Value]) -> (Encoding, Vec<u8>) {
 
     // Throughput guard: anything decoding more than twice as slowly as the
     // fastest candidate is dropped before the ratio comparison. The 2× is
-    // D-SG2-4's initial threshold, recorded in the module docs.
+    // the design record's initial threshold, recorded in the module docs.
     if let Some(fastest) = candidates.iter().map(|c| c.decoded_nanos).min() {
         let ceiling = fastest.saturating_mul(2);
         candidates.retain(|c| c.decoded_nanos <= ceiling);

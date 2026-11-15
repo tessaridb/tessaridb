@@ -20,7 +20,7 @@
 //!
 //! No invented cost. A number this store cannot know is a number it will not
 //! print, and a plan carrying a made-up estimate is how somebody comes to trust
-//! one. The one estimate a plan does carry (G055 W3) is read from statistics
+//! one. The one estimate a plan does carry  is read from statistics
 //! the index's own entries produced, or counted from them, and it is printed
 //! with which of the two it was. The candidate-to-result ratio — the number
 //! that says whether an index is actually *working* — needs the read to have
@@ -113,9 +113,21 @@ pub struct Plan {
     /// (ADR-0096 D3) — so a read naming one partition says it reads one shard.
     pub shards: Option<Box<[u32]>>,
     /// How many partition lanes a group-by folded locally before its final
-    /// merge (G082 SG4) — so a plan says `partition-local group by over n
+    /// merge  — so a plan says `partition-local group by over n
     /// lanes + final merge` in the one number it can know without running.
     pub lanes: Option<u64>,
+    /// The driving side's row count a join's probe-or-build choice weighed —
+    /// the "why" beside the shape word's "which". Paid by every plan this
+    /// struct rides on, which is the price `lanes` already set for a word
+    /// only some reads speak.
+    pub left_rows: Option<u64>,
+    /// The right side's row count the same choice weighed.
+    pub right_rows: Option<u64>,
+    /// How many entry changes the table or index has taken since the
+    /// statistic behind `expected` was walked — present only when the
+    /// estimate came from statistics, so a reader sees the freshness of
+    /// the one number in the plan that may be wrong.
+    pub statistics_age: Option<u64>,
     /// Whether the records are provably the ones the question names.
     ///
     /// Derived from [`Self::access`] rather than set here, so that `EXPLAIN` and
@@ -137,8 +149,11 @@ impl Plan {
             columns: None,
             cells: None,
             expected: None,
+            statistics_age: None,
             shards: None,
             lanes: None,
+            left_rows: None,
+            right_rows: None,
             exact: access.exactness(),
         }
     }
@@ -182,6 +197,7 @@ impl Plan {
         match self.expected {
             Some(Expected::Estimated(_) | Expected::Counted(_)) if hidden => Self {
                 expected: None,
+                statistics_age: None,
                 ..self
             },
             _ => self,
@@ -256,6 +272,25 @@ impl Plan {
                 Value::Number(Number::Integer(i64::try_from(rows).unwrap_or(i64::MAX))),
             );
             plan.insert("estimated_by".to_owned(), Value::from(by));
+            if by == "statistics"
+                && let Some(age) = self.statistics_age
+            {
+                plan.insert(
+                    "statistics_age".to_owned(),
+                    Value::Number(Number::Integer(i64::try_from(age).unwrap_or(i64::MAX))),
+                );
+            }
+        }
+        for (key, held) in [
+            ("left_rows", self.left_rows),
+            ("right_rows", self.right_rows),
+        ] {
+            if let Some(held) = held {
+                plan.insert(
+                    key.to_owned(),
+                    Value::Number(Number::Integer(i64::try_from(held).unwrap_or(i64::MAX))),
+                );
+            }
         }
         if let Some(lanes) = self.lanes {
             plan.insert(

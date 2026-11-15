@@ -1,7 +1,7 @@
-//! The columnar seam (G082 SG3): when a scan fallback qualifies, the read
+//! The columnar seam : when a scan fallback qualifies, the read
 //! runs through the projection instead of the row walk.
 //!
-//! # The gate is the whole safety story (worksheet §6.1)
+//! # The gate is the whole safety story (the design record)
 //!
 //! The columnar path answers through an auxiliary structure, so it is taken
 //! only where every doubt has been retired in the row path's favour, and a
@@ -55,7 +55,7 @@ use super::{Scope, Testing};
 
 /// A read the columnar gate qualified: the predicates it runs with and the
 /// partition lane it pins to, when the condition fixes the partition key to
-/// one constant (worksheet §6.3 — a read naming one partition reads one
+/// one constant (the design record — a read naming one partition reads one
 /// lane).
 pub(crate) struct ColumnarPlan {
     /// The per-family predicates the scan prunes on.
@@ -141,7 +141,7 @@ impl Session<'_> {
                 value: value.clone(),
             });
             // An equality on the partition key names one lane: the scan
-            // reads that lane alone (worksheet §6.3). The constant rides
+            // reads that lane alone (the design record). The constant rides
             // the predicates too — the row authority re-evaluates it, as
             // it does everything the scan narrows on.
             if op == BinaryOp::Equal
@@ -239,8 +239,7 @@ impl Session<'_> {
 }
 
 impl Session<'_> {
-    /// The groups a qualifying grouped read folds partition-locally (G082
-    /// SG4, worksheet §6.3): a `GROUP BY` on the partition key, with only
+    /// The groups a qualifying grouped read folds partition-locally : a `GROUP BY` on the partition key, with only
     /// mergeable folds over declared fields, folds per lane over the
     /// projection; the final merge combines the lanes' partials — or `None`
     /// for every other grouped read, which prepares its source as before.
@@ -333,9 +332,9 @@ impl Session<'_> {
                 let mut object = std::collections::BTreeMap::new();
                 // The row authority decides whenever the projection is
                 // silent or ambiguous about the key: no row covers a null
-                // OR absent key (D-SG2-10 — two different facts, grouped
+                // OR absent key (the design record — two different facts, grouped
                 // differently), and a null key row is how a delete or an
-                // update-to-null records the value's departure (D-SG3-8) —
+                // update-to-null records the value's departure  —
                 // which may be a tombstone the lane must not count at all.
                 let needs_authority = key_rows
                     .get(&record_id)

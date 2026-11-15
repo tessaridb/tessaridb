@@ -20,16 +20,16 @@ use tessari_types::{
 mod encoding;
 
 /// How a plain record table stores its records beside its row: the storage
-/// kind, chosen at `DEFINE` and immutable after (worksheet §2; the owner,
-/// 2026-11-15 — a column table is declared at definition and the kind does
-/// not convert).
+/// kind, chosen at `DEFINE` and immutable after — a column table is declared
+/// at definition and the kind does not convert; DROP and DEFINE is the
+/// migration.
 ///
 /// Rides on the definition beside [`TableKind`] rather than inside it,
 /// because a kind encodes which *rules* a table plays by while the storage
 /// kind changes the *layout*: an update on a columnar table is still an
 /// update, a where still filters. `TableKind` stays untouched, which is what
 /// lets a kind that holds records adopt the attribute later without a
-/// migration of the mechanism (Q-G082-2).
+/// migration of the mechanism.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageKind {
     /// The versioned row is the only layout — the default every table that
@@ -41,11 +41,11 @@ pub enum StorageKind {
     Column,
 }
 
-/// Hash partitioning of a columnar table (G082 SG4): the projection keeps
+/// Hash partitioning of a columnar table : the projection keeps
 /// one chunk lane per partition, and a row's lane is chosen by the murmur2
 /// hash of the partition field's value. `count` is a definition-time
 /// constant — raising it is a redefine (DROP+DEFINE), the same immutability
-/// rule the storage kind carries (worksheet §6.3).
+/// rule the storage kind carries (the design record).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HashPartitioning {
     /// How many lanes the projection keeps; must be at least one.
@@ -101,7 +101,7 @@ pub struct TableDefinition {
     /// in the catalog refused the other four — only the grammar did, because
     /// each was reached by a different statement. That put the invariant in the
     /// parser and left the type able to describe a table that is both a bucket
-    /// and an edge (G021 node D, criterion C1).
+    /// and an edge .
     pub kind: TableKind,
     /// What the table names a record with when the caller does not.
     ///
@@ -125,7 +125,7 @@ pub struct TableDefinition {
     /// every respect that matters — selected from, inserted into, indexed,
     /// granted on — and differs by exactly this one fact (Q-314).
     pub graph: Option<GraphId>,
-    /// What the table does with a write it cannot order (G027 S3.2).
+    /// What the table does with a write it cannot order .
     ///
     /// `None` is **never stated** and reads as [`ConflictPolicy::Refuse`], which
     /// is what ADR-0075 has every table do and what every table that existed
@@ -139,7 +139,7 @@ pub struct TableDefinition {
     /// seeing each other. A counter can tolerate a dropped update beside a
     /// ledger row in the same namespace that cannot (Q-633).
     pub conflict: Option<ConflictPolicy>,
-    /// Where the table's shards begin, when it is split (G031, ADR-0080).
+    /// Where the table's shards begin, when it is split .
     ///
     /// `None` is a table that is not split, which is every table that existed
     /// before the clause did — written only when present, so no stored entry is
@@ -160,7 +160,7 @@ pub struct TableDefinition {
     /// order; written only when there is one, so an entry without events is
     /// the bytes it always was.
     pub events: Vec<super::EventDeclaration>,
-    /// The declared captures of this table's writes into topics (FEAT-S1), in
+    /// The declared captures of this table's writes into topics, in
     /// name order; written only when there is one, so an entry without feeds
     /// is the bytes it always was.
     pub feeds: Vec<super::FeedDeclaration>,
@@ -175,11 +175,11 @@ pub struct TableDefinition {
     /// written only when `STORE COLUMN` declared it, so every entry without
     /// the field is the row-store table it always was. Immutable after define:
     /// the grammar exposes no `ALTER` for it, and `DROP` + `DEFINE` is the
-    /// migration (worksheet §2, C1).
+    /// migration (the design record, C1).
     pub storage_kind: Option<StorageKind>,
     /// The hash partitioning the projection keeps, when the definition named
     /// one; `None` is the single-lane layout SG2 built. Immutable after
-    /// define, as the storage kind is (worksheet §6.3).
+    /// define, as the storage kind is (the design record).
     pub partitions: Option<HashPartitioning>,
 }
 
@@ -192,8 +192,7 @@ impl TableDefinition {
 
     /// The `STORE` clause word for this definition: `None` decodes to the
     /// row layout, so the word is `ROW` for every table that predates the
-    /// clause as much as for one that said it (G082; describe writes the
-    /// word always, on the same rule as the strictness flag).
+    /// clause as much as for one that said it .
     #[must_use]
     pub const fn storage_kind_word(&self) -> &'static str {
         match self.storage_kind {

@@ -46,7 +46,7 @@ impl Session<'_> {
         match prepared {
             Prepared::Held(found, plan) => {
                 hand_over(found, transaction, consumer).await?;
-                Ok(plan)
+                Ok(*plan)
             }
             Prepared::Table(context, id) => {
                 // First: an index leading on the key answers one seek per value.

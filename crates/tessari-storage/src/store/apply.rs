@@ -275,7 +275,7 @@ impl Store {
         // records and none of the chunks — a restored store, or a follower
         // promoted to leader, would answer every analytical read through the
         // row walk with nothing to prune against. Found by the backup suite
-        // the week the projection landed (G082 SG3).
+        // the week the projection landed .
         let batch = crate::columnar::maintain(self, record, batch, version).await?;
         // Derived here as well as in the commit, because that is the whole
         // reason it is derived from the record: a follower that skipped this
@@ -298,7 +298,7 @@ impl Store {
         // The catalog's id counters, in the commit path's order (engine Q-959).
         let batch = crate::catalog::maintain_allocators(self, record, batch, version).await?;
         // And the expiry index, so a follower promoted to leader can remove what
-        // has expired without having written any of it (G035).
+        // has expired without having written any of it .
         let batch = crate::lapse::maintain(self, record, batch).await?;
         let batch = crate::bounded::maintain(self, record, batch, version).await?;
         let batch = crate::topic::maintain(self, record, batch).await?;

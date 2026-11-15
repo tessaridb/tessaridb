@@ -206,6 +206,38 @@ pub(crate) fn described_field(field: &FieldDefinition) -> Value {
     Value::Object(described)
 }
 
+/// One field's held statistics: counts only, never a counted value, and the
+/// table's change counter now so the reader sees the statistic's age (G083 C1).
+pub(crate) fn described_field_statistics(
+    field: &str,
+    statistics: &tessari_storage::FieldStatistics,
+    now: u64,
+) -> Value {
+    let count = |held: u64| {
+        Value::Number(tessari_types::Number::Integer(
+            i64::try_from(held).unwrap_or(i64::MAX),
+        ))
+    };
+    Value::Object(BTreeMap::from([
+        ("field".to_owned(), Value::from(field)),
+        ("entries".to_owned(), count(statistics.entries)),
+        ("nulls".to_owned(), count(statistics.nulls)),
+        ("distinct".to_owned(), count(statistics.distinct)),
+        (
+            "common".to_owned(),
+            count(u64::try_from(statistics.common.len()).unwrap_or(u64::MAX)),
+        ),
+        (
+            "buckets".to_owned(),
+            count(u64::try_from(statistics.bounds.len().saturating_sub(1)).unwrap_or(u64::MAX)),
+        ),
+        (
+            "age".to_owned(),
+            count(now.saturating_sub(statistics.changes)),
+        ),
+    ]))
+}
+
 /// One declared index.
 pub(crate) fn described_index(index: &IndexDefinition) -> Value {
     let mut described = BTreeMap::from([

@@ -92,7 +92,7 @@ const FIELD_NOT_BEFORE: &str = "not_before";
 const FIELD_DEDUPLICATE: &str = "deduplicate";
 const FIELD_DEAD_LETTER: &str = "dead_letter";
 const FIELD_SERIES: &str = "series";
-/// The storage kind a table declared, when it declared one (G082).
+/// The storage kind a table declared, when it declared one.
 const FIELD_STORAGE_KIND: &str = "storage_kind";
 const FIELD_PARTITIONS: &str = "partitions";
 /// A space's declaration: present (possibly empty) exactly when the table is one.

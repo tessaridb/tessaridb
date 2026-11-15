@@ -99,7 +99,7 @@ impl Parser<'_> {
         } else {
             None
         };
-        // G082 SG7: the storage layout, in the clause order `DEFINE TABLE`
+        //: the storage layout, in the clause order `DEFINE TABLE`
         // speaks (STORE, then PARTITIONS) — the clause is the same word the
         // record-table grammar reads, and a series routes its points through
         // the projection the same way a record table routes its rows.

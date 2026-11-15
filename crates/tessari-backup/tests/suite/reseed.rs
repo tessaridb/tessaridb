@@ -90,6 +90,8 @@ fn a_follower_that_fell_behind_answers_what_its_leader_answers_after_a_copy() {
                             | SPATIAL_REFINEMENT
                             | INDEX_STATISTICS
                             | INDEX_CHANGES
+                            | FIELD_STATISTICS
+                            | FIELD_CHANGES
                             | RETIRED_INDEX)
                     )
                 )
@@ -113,6 +115,8 @@ const VECTOR_RECALL: u8 = 0x17;
 const SPATIAL_REFINEMENT: u8 = 0x18;
 const INDEX_STATISTICS: u8 = 0x40;
 const INDEX_CHANGES: u8 = 0x41;
+const FIELD_STATISTICS: u8 = 0x47;
+const FIELD_CHANGES: u8 = 0x48;
 const RETIRED_INDEX: u8 = 0x45;
 
 /// The leader's index keyspace as a fresh copy derives it — what a follower that

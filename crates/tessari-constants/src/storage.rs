@@ -210,6 +210,44 @@ pub const RANGE_SCAN_BATCH_ENTRIES: usize = 1024;
 /// would mean re-tuning a buffer silently re-planned every query in the store.
 pub const PLANNER_SCAN_FLOOR_RECORDS: u64 = 1024;
 
+/// The fraction of a table an index may produce and still be served, as a
+/// numerator over [`PLANNER_SERVE_FRACTION_DEN`].
+///
+/// Unit: none — a ratio.
+///
+/// The worth guard serves an index only when it produces at most this
+/// fraction of the table: an index read walks entries *and* fetches records,
+/// so one returning most of a table has added a walk to a read it did not
+/// shorten — measured at **2.1× slower than no index at all**. One half is
+/// the threshold and is stated as one, not derived from a cost model the
+/// engine does not calibrate: the costs it would multiply (an entry walk, a
+/// record fetch) are named in the planner's documented model, and this
+/// fraction is where that model's ratio lands for this engine.
+pub const PLANNER_SERVE_FRACTION_NUM: u64 = 1;
+/// The denominator of [`PLANNER_SERVE_FRACTION_NUM`].
+pub const PLANNER_SERVE_FRACTION_DEN: u64 = 2;
+
+/// The estimate band inside which the scan guard counts instead of trusting,
+/// as numerators over their denominators.
+///
+/// Unit: none — ratios against the serve threshold.
+///
+/// An estimate well inside either side of the threshold decides alone; the
+/// error an estimate can carry could put a value inside the band on either
+/// side, so there the guard pays the probe it exists to avoid. Three quarters
+/// serve, three halves decline — the band is deliberately asymmetric, because
+/// declining a good index costs a probe and serving a bad one costs a read of
+/// half the table.
+pub const PLANNER_ESTIMATE_SERVE_NUM: u64 = 3;
+/// The denominator of [`PLANNER_ESTIMATE_SERVE_NUM`].
+pub const PLANNER_ESTIMATE_SERVE_DEN: u64 = 4;
+/// The decline half of the estimate band: an estimate at least this many
+/// threshold-fractions over the serve threshold is declined on the estimate
+/// alone.
+pub const PLANNER_ESTIMATE_DECLINE_NUM: u64 = 3;
+/// The denominator of [`PLANNER_ESTIMATE_DECLINE_NUM`].
+pub const PLANNER_ESTIMATE_DECLINE_DEN: u64 = 2;
+
 /// How many of an index's most common values its statistics keep.
 ///
 /// Unit: values.
@@ -295,3 +333,21 @@ pub const MAX_CLAIM_RECORDS: u64 = 500;
 /// It is the same order as a broker's per-topic practice and well above what a
 /// group of consumers divides.
 pub const TOPIC_MAX_PARTITIONS: u64 = 1_024;
+
+/// The factor by which the probed side must exceed the driving side for an
+/// index probe to pay against building the map, as a numerator over
+/// [`PLANNER_JOIN_PROBE_DEN`].
+///
+/// Unit: none — a ratio of row counts.
+///
+/// Probing the right side's key index costs one entry walk and one record
+/// fetch **per driving record**; building the map costs one scan of the right
+/// side, a record fetch per record it holds. With the model's unit costs —
+/// an entry walk what a record fetch costs — probing pays when the right
+/// side holds more than twice what the driving side walks, and building pays
+/// at or below that. Without an estimate of the driving side (its source is
+/// a read or a join, not a table) the rule says nothing and an index that
+/// exists is probed, as it always was.
+pub const PLANNER_JOIN_PROBE_NUM: u64 = 2;
+/// The denominator of [`PLANNER_JOIN_PROBE_NUM`].
+pub const PLANNER_JOIN_PROBE_DEN: u64 = 1;

@@ -124,7 +124,7 @@ impl<'a> Session<'a> {
                 let asked = statement.acknowledge.max(self.acknowledge_open.take());
                 let across = statement.across || std::mem::take(&mut self.across_open);
                 // The captured writes' messages land in this commit or it
-                // refuses (FEAT-S1).
+                // refuses.
                 self.flush_feeds(&mut transaction).await?;
                 if across && let Some(parts) = Self::across_parts(&transaction).await? {
                     self.drive_across(store, transaction, parts, span).await?;
@@ -157,7 +157,7 @@ impl<'a> Session<'a> {
                 self.across_open = false;
                 self.savepoints.clear();
                 // The rehearsal runs the feed capture's checks too, and then
-                // discards the messages with the rest (FEAT-S1).
+                // discards the messages with the rest.
                 self.flush_feeds(&mut transaction).await?;
                 transaction.dry_run().await.map_err(advised)?;
                 Ok(Outcome::Done)
@@ -170,7 +170,7 @@ impl<'a> Session<'a> {
             // The scan anchors at the define commit's sequence; a write
             // sharing that commit — this transaction's own — cannot be told
             // from a pre-existing row, so the scan would double a key the
-            // live capture already carried (FEAT-S1 D8).
+            // live capture already carried.
             StatementKind::DefineFeed {
                 initial_scan: true, ..
             } if open.is_some() => Err(Error::FeedScanInTransaction { span }),
@@ -233,7 +233,7 @@ impl<'a> Session<'a> {
                             Err(refusal) => return Err(fell_behind(refusal, &transaction).await?),
                         };
                         // The captured writes' messages land in this commit
-                        // or it refuses (FEAT-S1).
+                        // or it refuses.
                         self.flush_feeds(&mut transaction).await?;
                         if statement.across
                             && let Some(parts) = Self::across_parts(&transaction).await?

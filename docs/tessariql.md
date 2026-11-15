@@ -4637,6 +4637,31 @@ of the second case is that the right side is held in memory. Which one ran is
 reported as the access path. There is no cap on the answer and there will not be
 one: a cap would let the presence of an index change *what a statement answers*.
 
+**The probe-or-build choice is the counts', not the index's** (from `0.41.0`). Where both sides' row counts are known, the planner weighs
+them: probing the right's key index costs an entry walk and a record fetch per
+*left* record, building the map costs one scan of the *right* — so with the
+model's unit costs probing pays only when the right side holds more than
+`PLANNER_JOIN_PROBE_NUM` over `PLANNER_JOIN_PROBE_DEN` times the left. Below
+that the index is not probed even though it exists; the map is built and the
+answer is the one the operator names, either way. A `FULL` join never probes —
+it must read every right record to answer the unmatched ones — and where the
+left side is a read or a join rather than a table, no count exists and the
+index-presence rule of the last paragraph decides. The plan says which ran and
+on what numbers:
+
+```
+EXPLAIN SELECT * FROM users JOIN orders ON users.name = orders.who;
+-- { access: 'join', shape: 'probe', index: 'by_who', left_rows: 60000,
+--   right_rows: 150000, … }
+```
+
+`shape` is `probe` or `build`; `left_rows` and `right_rows` are the counts the
+choice weighed. **The search a join is chosen in is bounded**: the statement's
+shape fixes the nesting, and each join node costs the planner exactly one
+probe-or-build decision over the two sides' counts — no ordering of the tables
+is generated or compared, so the plan search cannot grow with the data or the
+number of tables.
+
 **The row's identity is the left record's.** A left record matching two right
 records answers as two rows carrying one id, because this store's answers are
 keyed by record and a row is not a record. A shape for rows is a change to the
@@ -4931,13 +4956,17 @@ whichever index holds fewer of its records, not whichever was written first.
 
 ```tessariql
 EXPLAIN SELECT * FROM users WHERE city = 'tromsø';
--- { access: 'index', index: 'by_city', estimate: 3, estimated_by: 'statistics', … }
+-- { access: 'index', index: 'by_city', estimate: 3, estimated_by: 'statistics',
+--   statistics_age: 0, … }
 ```
 
 `estimated_by` is `statistics` for a number read from the summary, or `probe`
 for a count of the index's entries taken to decide whether it beats the table
-(below). The estimate is left out when the index reads a field the caller may not
-see, because how many records hold a value is a fact about that value.
+(below). `statistics_age` rides an estimate that came from statistics: how many
+entries the index has gained or lost since the walk that took the summary, so
+the one number in the plan that may be wrong says how fresh it is. The estimate
+is left out when the index reads a field the caller may not see, because how
+many records hold a value is a fact about that value.
 
 **A statistic is set aside once its index has changed past it.** Every node counts
 the entries each value index gains and loses; a statistic is used while the
@@ -4972,6 +5001,25 @@ Nothing about this changes on a small table. Below about a thousand records a
 scan is a single request to the storage, both paths are cheap, and the comparison
 is switched off — so a table you have just created plans the way you would expect
 from the indexes you declared on it.
+
+**The cost model, stated.** The comparison above is a ratio between two costs
+the store can name: an index read costs an entry walk plus a record fetch for
+each record it names, and a scan costs a record fetch per record. The serve
+threshold is the fraction `PLANNER_SERVE_FRACTION_NUM` over
+`PLANNER_SERVE_FRACTION_DEN` — one half — and the band around it is
+`PLANNER_ESTIMATE_SERVE_NUM` over `PLANNER_ESTIMATE_SERVE_DEN` (three quarters,
+serve on the estimate alone) against `PLANNER_ESTIMATE_DECLINE_NUM` over
+`PLANNER_ESTIMATE_DECLINE_DEN` (three halves, decline on the estimate alone).
+The constants are stated with their units and rationale where they live, and
+they are **stated, not calibrated**: the engine does not yet measure what an
+entry walk costs against a record fetch, so the fractions are the documented
+judgements of the model rather than fitted values — a calibration the benchmark
+harness owes, recorded here so the number is never mistaken for one. What the
+model already guarantees is the discipline around the numbers: every estimate
+travels with `estimated_by` and `statistics_age`, a stale statistic is set aside
+rather than trusted, and a missing measurement never overrules the ranking —
+estimates will be wrong, and the model is built to bound what their being wrong
+can cost, not to chase accuracy.
 
 Where the store has no count, or the candidate is a shape the counting walk
 cannot follow — a `LIKE 'a%'` prefix, a `MATCHES` expansion, a geometric region —
@@ -11167,7 +11215,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.40.0", "build": "0.40.0", "endpoints": ["db-1.internal:9000"],
+ "version": "0.41.0", "build": "0.41.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

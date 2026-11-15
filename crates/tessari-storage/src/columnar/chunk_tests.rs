@@ -88,7 +88,7 @@ fn a_zero_null_chunk_takes_the_branch_free_path() {
 #[test]
 fn none_maps_to_a_null_slot() {
     // A schemaless record that does not mention the field is covered by a
-    // null slot (D-SG2-2); the decoded chunk answers `Null` for it, and the
+    // null slot ; the decoded chunk answers `Null` for it, and the
     // row path stays the authority on the distinction.
     let ids = sequential_ids(2);
     let values = vec![Value::None, int(1)];
@@ -191,7 +191,7 @@ fn an_absurd_row_count_is_refused_before_it_allocates() {
 
 // --- SG3 T3.1: footer statistics (min/max under the declared order, an
 // equality bloom, the NaN rule) are written with every chunk and verified
-// on read. See the SG3 plan §2 and the worksheet §4.3/§4.4.
+// on read. See the SG3 plan §2 and the the design record/§4.4.
 
 fn float(value: f64) -> Value {
     Value::Number(Number::float(value))

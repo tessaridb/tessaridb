@@ -231,7 +231,7 @@ pub(crate) fn quoted(text: &str) -> Option<String> {
 /// `DEFINE EVENT …;` for one of a table's events, as it was written
 /// (ADR-0110). A body of more than one statement is written in braces; `FOR`
 /// is written only when the event runs for fewer than all three writes.
-/// `DEFINE FEED …;` for one of a table's feeds, as it was written (FEAT-S1).
+/// `DEFINE FEED …;` for one of a table's feeds, as it was written.
 pub(crate) fn write_feed(
     script: &mut String,
     table: &str,

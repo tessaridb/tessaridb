@@ -278,7 +278,7 @@ ANALYZE TABLE tally;
 
 --- case: and a plan read afterwards carries the estimate and says where it came from
 EXPLAIN SELECT * FROM tally WHERE kind = 'a';
---- expect: value { access: 'index', columns: 1, estimate: 2, estimated_by: 'statistics', exact: true, index: 'by_kind', shape: 'equality', table: 'tally' }
+--- expect: value { access: 'index', columns: 1, estimate: 2, estimated_by: 'statistics', statistics_age: 0, exact: true, index: 'by_kind', shape: 'equality', table: 'tally' }
 
 --- case: analyzing a table nobody declared is refused
 ANALYZE TABLE ghost;

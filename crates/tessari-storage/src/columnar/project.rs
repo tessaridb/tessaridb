@@ -1,4 +1,4 @@
-//! The columnar projection's commit-batch derivation (worksheet §5).
+//! The columnar projection's commit-batch derivation (the design record).
 //!
 //! One link in `Settle::derived`'s chain, beside `crate::index`: the log
 //! record a commit carried is replayed against the committed state, and the
@@ -12,15 +12,15 @@
 //! - **Create / insert** — the record's value per family appends to the
 //!   family's open chunk; the `'M'` map entry records which chunk holds the
 //!   row. A schemafull record's absent fields land as null slots; a
-//!   schemaless record projects the keys it carries (D-SG2-2, refined by
-//!   D-SG2-10: a record covers the families it has values for).
+//!   schemaless record projects the keys it carries (the design record, refined by
+//!   the design record: a record covers the families it has values for).
 //! - **Update** — a field whose value changed is a row replaced in the open
 //!   chunk, or, when the row sits in a sealed chunk, a copy-on-write rewrite
 //!   of that chunk (the value removed) and an append to the open one (§5.2).
 //!   A field whose value is unchanged writes nothing.
 //! - **Delete** — nothing. The row tombstone is the authority for visibility
 //!   and a scan re-evaluates it (§5.2, §5.4); rewriting the chunk would be
-//!   the vacuum §5.4 defers (D-SG2-9). The `'M'` entry stays: it points at
+//!   the vacuum §5.4 defers . The `'M'` entry stays: it points at
 //!   rows a scan will filter, and costs nothing a vacuum would not already
 //!   reclaim.
 //!
@@ -53,7 +53,7 @@ use super::writer::{ChunkWriter, remove_row};
 /// partitioning. The hash is the murmur2 both consumers share, over the
 /// payload encoding of the partition field's value — the normal form
 /// comparison reduces to, so equal values route equal. A null or absent
-/// value routes to partition 0 (D-SG4-3: analytics narrows, it does not
+/// value routes to partition 0 (the design record: analytics narrows, it does not
 /// fail); a field the table does not declare is a defective definition and
 /// refuses the write.
 fn partition_of(
@@ -223,7 +223,7 @@ async fn project_table(
         let partition = partition_of(definition, new.as_ref().or(old.as_ref()))?;
         // The families this record touches: every declared family for a
         // schemafull table; every key the old or new object carries for a
-        // schemaless one (D-SG2-10 — a record covers the families it has
+        // schemaless one (the design record — a record covers the families it has
         // values for, and a key's disappearance is a null slot in place).
         let touched: Vec<(String, ColumnFamily)> = if !declared.is_empty() {
             declared.clone()
@@ -254,7 +254,7 @@ async fn project_table(
             // as null slots (the module's own contract), because the
             // projection must hold a row for every record of the family —
             // a null slot is how a lane fold or a decode learns the record
-            // EXISTS with a null here (D-SG2-10: absent and null are two
+            // EXISTS with a null here (the design record: absent and null are two
             // different facts, and conflating them under `old == new` left
             // a written-null record with no key-family row at all — the
             // C6 differential found the vanishing: a `count(*)` grouped by
@@ -370,7 +370,7 @@ fn decode_object(payload: &[u8]) -> Result<Option<BTreeMap<String, RecordValueTy
 
 /// Load one lane's writer from the committed state: the family's pointer
 /// names every lane's open chunk seq, and the named lane's newest chunk
-/// version becomes the rows appends continue (D-SG2-1). The lanes map is the
+/// version becomes the rows appends continue . The lanes map is the
 /// caller's, seeded from the pointer when its lane is first touched, so one
 /// pointer read serves the commit.
 #[allow(clippy::too_many_arguments)]

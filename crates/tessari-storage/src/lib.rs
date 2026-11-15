@@ -43,6 +43,7 @@ mod expiry;
 mod failover;
 mod feed;
 mod feed_scan;
+mod field_statistics;
 mod followers;
 mod format_stamp;
 mod gate;
@@ -121,6 +122,7 @@ pub use expiry::Expired;
 pub use lapse::Lapsed;
 pub use log_holds::LogHold;
 pub use retention::{Retention, RetentionSource};
+pub use tessari_encoding::FieldStatistics;
 pub use topic::{Message, Messages};
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.

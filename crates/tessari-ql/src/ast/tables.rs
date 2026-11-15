@@ -89,7 +89,7 @@ pub struct EdgeEndpoints {
 }
 
 /// The layout a table's records are projected into: `STORE ROW` (the default)
-/// or `STORE COLUMN` (G082). A property of the definition chosen at define
+/// or `STORE COLUMN` . A property of the definition chosen at define
 /// time, immutable afterwards — `ALTER TABLE … STORE …` parses and refuses,
 /// because the migration between layouts is DROP and DEFINE, not a clause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,8 +166,7 @@ pub enum TableChange {
         to: Name,
     },
     /// `STORE ROW` / `STORE COLUMN` — parses, and refuses: the storage kind
-    /// is chosen at define time and immutable afterwards (G082 C1; the
-    /// migration between layouts is DROP and DEFINE, not a clause).
+    /// is chosen at define time and immutable afterwards .
     Store(StoreKind),
 }
 

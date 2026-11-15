@@ -69,7 +69,11 @@
 //! overrules the ranking — it is a veto backed by a measurement, not a second
 //! opinion.
 
-use tessari_constants::PLANNER_SCAN_FLOOR_RECORDS;
+use tessari_constants::{
+    PLANNER_ESTIMATE_DECLINE_DEN, PLANNER_ESTIMATE_DECLINE_NUM, PLANNER_ESTIMATE_SERVE_DEN,
+    PLANNER_ESTIMATE_SERVE_NUM, PLANNER_SCAN_FLOOR_RECORDS, PLANNER_SERVE_FRACTION_DEN,
+    PLANNER_SERVE_FRACTION_NUM,
+};
 use tessari_storage::{Catalog, Transaction};
 use tessari_types::TableId;
 
@@ -105,7 +109,7 @@ pub(crate) async fn worth_serving(
     if records < PLANNER_SCAN_FLOOR_RECORDS {
         return Ok(Some(chosen.rows));
     }
-    let cap = records / 2;
+    let cap = (records / PLANNER_SERVE_FRACTION_DEN) * PLANNER_SERVE_FRACTION_NUM;
     let probed = match (chosen.rows, &chosen.served) {
         // Already counted, and counted for free — a unique equality or a term's
         // document frequency. Nothing to probe.
@@ -113,10 +117,10 @@ pub(crate) async fn worth_serving(
             return Ok((held <= cap).then_some(chosen.rows));
         }
         // An estimate clearly on one side of the threshold decides alone.
-        (Rows::About(held), _) if held <= (cap / 4).saturating_mul(3) => {
+        (Rows::About(held), _) if held <= serve_bound(cap) => {
             return Ok(Some(chosen.rows));
         }
-        (Rows::About(held), _) if held >= cap.saturating_add(cap / 2) => return Ok(None),
+        (Rows::About(held), _) if held >= decline_bound(cap) => return Ok(None),
         (Rows::About(_) | Rows::Unknown, Served::Equality(values)) => {
             transaction
                 .count_in_range(&chosen.index, values, None, None, cap)
@@ -143,4 +147,42 @@ pub(crate) async fn worth_serving(
     };
     // The probe giving up is the answer: more than half the table.
     Ok(probed.map(Rows::Counted))
+}
+
+/// The estimate that serves without a probe: the serve threshold scaled by
+/// the serve band. The division comes first, deliberately: truncating the
+/// threshold before scaling is the arithmetic this store shipped, and the
+/// parameterisation keeps it bit for bit.
+fn serve_bound(cap: u64) -> u64 {
+    cap.checked_div(PLANNER_ESTIMATE_SERVE_DEN)
+        .unwrap_or(0)
+        .saturating_mul(PLANNER_ESTIMATE_SERVE_NUM)
+}
+
+/// The estimate that declines without a probe: the serve threshold scaled by
+/// the decline band, floored — `cap + cap / 2` and `cap * 3 / 2` agree on
+/// integers, and the wider form carries any numerator over denominator.
+fn decline_bound(cap: u64) -> u64 {
+    let scaled = u128::from(cap).saturating_mul(u128::from(PLANNER_ESTIMATE_DECLINE_NUM));
+    let over = scaled.checked_div(u128::from(PLANNER_ESTIMATE_DECLINE_DEN));
+    u64::try_from(over.unwrap_or(u128::MAX)).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod band_tests {
+    use super::{decline_bound, serve_bound};
+
+    /// The parameterisation must reproduce the arithmetic it replaced, bit for
+    /// bit: the serve band truncates the threshold before scaling, and the
+    /// decline band floors the scaled threshold — including the odd thresholds
+    /// where truncating first is observable.
+    #[test]
+    fn the_bands_reproduce_the_legacy_arithmetic_everywhere() {
+        for cap in [0, 1, 2, 3, 5, 6, 7, 100, 101, 1_024, u64::MAX - 1] {
+            let legacy_serve = (cap / 4).saturating_mul(3);
+            let legacy_decline = cap.saturating_add(cap / 2);
+            assert_eq!(serve_bound(cap), legacy_serve, "serve at {cap}");
+            assert_eq!(decline_bound(cap), legacy_decline, "decline at {cap}");
+        }
+    }
 }

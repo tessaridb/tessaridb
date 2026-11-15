@@ -65,7 +65,7 @@ pub enum StatementKind {
         /// which trains an operator to decline without thinking — the
         /// inherited default the ADR exists to abolish, wearing a costume.
         replication: Option<Replication>,
-        /// How many writers it admits, when the statement said (G027 S2.1).
+        /// How many writers it admits, when the statement said .
         ///
         /// `None` is a namespace that **said nothing**, and that reads as
         /// single-leader wherever it is asked — which is what this engine has
@@ -118,7 +118,7 @@ pub enum StatementKind {
         /// is never selected from and its entries are not records.
         graph: Option<Name>,
         /// Where the table's shards begin: `DEFINE TABLE orders IDENTITY uuid
-        /// SPLIT AT 'g', 'p'` is three shards (G031, ADR-0080).
+        /// SPLIT AT 'g', 'p'` is three shards .
         ///
         /// In the order the statement wrote them. Empty is one shard — a table
         /// that says nothing is not split. Whether the points are in key order is
@@ -134,7 +134,7 @@ pub enum StatementKind {
         /// SPREAD` (ADR-0113 D1).
         spread: bool,
         /// What the table does with a write it cannot order, when the statement
-        /// said: `DEFINE TABLE ledger (…) LAST WRITER WINS` (G027 S3.2).
+        /// said: `DEFINE TABLE ledger (…) LAST WRITER WINS` .
         ///
         /// `None` is a table that **said nothing**, which reads as a refusal
         /// wherever it is asked — what ADR-0075 has every table do. It is kept
@@ -151,12 +151,12 @@ pub enum StatementKind {
         /// behaves exactly as every table did before the clause existed.
         expire: Option<TableExpiry>,
         /// The layout the records are projected into: `DEFINE TABLE events (…)
-        /// STORE COLUMN` (G082). `None` is a table that said nothing, which
+        /// STORE COLUMN` . `None` is a table that said nothing, which
         /// reads as [`StoreKind::Row`] — the default since the first table.
         store: Option<StoreKind>,
         /// `PARTITIONS 4 BY kind` — how many hash partitions the columnar
         /// projection routes rows across, and the field whose value picks one
-        /// (G082 SG4; murmur2 over the value's encoding, null/absent → 0).
+        /// .
         /// Only valid beside `STORE COLUMN`; the catalog refuses the other
         /// combinations by name.
         partitions: Option<(u64, String)>,
@@ -211,11 +211,11 @@ pub enum StatementKind {
         if_not_exists: bool,
         /// `IN MEMORY` — the space's keys live in node memory only (ADR-0130).
         memory: bool,
-        /// `MAX n [EVICT NONE]` — the most keys the space holds (G036).
+        /// `MAX n [EVICT NONE]` — the most keys the space holds .
         limit: Option<SpaceBound>,
     },
     /// `DEFINE TOPIC events RETAIN 7d MAX BYTES 4096 PUBLIC RATE 100 PER 1m` —
-    /// an append-only order of messages (G037).
+    /// an append-only order of messages .
     DefineTopic {
         /// The name to create.
         name: Name,
@@ -225,7 +225,7 @@ pub enum StatementKind {
         clauses: TopicClauses,
     },
     /// `READ FROM events FOR CONSUMER 'billing' AFTER 41 LIMIT 100` — the
-    /// messages of a topic after a position (G037), or `SINCE` an instant.
+    /// messages of a topic after a position , or `SINCE` an instant.
     ReadTopic {
         /// The topic.
         topic: TableRef,
@@ -248,7 +248,7 @@ pub enum StatementKind {
     },
     /// `DEFINE GROUP 'billing' ON TOPIC events ACK DEADLINE 30s DELIVERIES 5
     /// IN FLIGHT 10 DEAD LETTER TO events_dead` — readers under one name who
-    /// share a topic's messages and acknowledge each one (G042, ADR-0086).
+    /// share a topic's messages and acknowledge each one .
     DefineGroup {
         /// The name its readers read under, as `FOR CONSUMER` spells it.
         name: String,
@@ -786,7 +786,7 @@ pub enum StatementKind {
         /// Its HTTP base (`HTTP AT`), when said — the `Location` a `307` names.
         http: Option<String>,
         /// Where a Kafka client reaches it (`KAFKA AT`), when said — the broker
-        /// Metadata names for what it leads (G079 W5d).
+        /// Metadata names for what it leads .
         kafka: Option<String>,
         /// What that peer is for, as the words a statement wrote.
         ///
@@ -816,13 +816,13 @@ pub enum StatementKind {
         /// only. `None` is the row as it has always been.
         leads: Option<ReachRef>,
         /// `PREFERRED` after the placement: the candidate a non-preferred
-        /// leader of that range hands it to once caught up (G053 SG5b).
+        /// leader of that range hands it to once caught up .
         preferred: bool,
         /// The one certificate allowed to bind this row (`FINGERPRINT`), its
         /// SHA-256 as 64 lowercase hexadecimal digits (ADR-0108 D9).
         fingerprint: Option<String>,
         /// The region the peer stands in (`REGION 'eu'`), when said — what a
-        /// `LOCAL MAJORITY` counts its voters by (G057 C3).
+        /// `LOCAL MAJORITY` counts its voters by .
         region: Option<String>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
@@ -1202,7 +1202,7 @@ pub enum StatementKind {
         /// simply unrepresentable.
         graph: Option<Name>,
         /// `PRIORITY BY f`: a claim takes the greatest `f` first, ties in
-        /// arrival order, records without a number in `f` last (G055 C8).
+        /// arrival order, records without a number in `f` last .
         priority: Option<Name>,
         /// `NOT BEFORE f`: a record whose `f` holds a datetime after now is not
         /// handed out yet — delayed delivery, the delay a value in the record.
@@ -1244,12 +1244,11 @@ pub enum StatementKind {
         /// arrival time.
         time: Option<Name>,
         /// The layout the points are projected into: `DEFINE SERIES readings
-        /// RETAIN 30d STORE COLUMN` (G082 SG7 — a series holds points a
-        /// columnar projection can serve). `None` is a series that said
+        /// RETAIN 30d STORE COLUMN` . `None` is a series that said
         /// nothing, which reads as [`StoreKind::Row`].
         store: Option<StoreKind>,
         /// `PARTITIONS 4 BY sensor` — the hash partitioning of the columnar
-        /// projection (G082 SG4), beside `STORE COLUMN`. Immutable after
+        /// projection , beside `STORE COLUMN`. Immutable after
         /// define, as the storage kind is.
         partitions: Option<(u64, String)>,
         /// Whether re-defining an existing name is accepted.
@@ -1396,7 +1395,7 @@ pub enum StatementKind {
         if_not_exists: bool,
     },
     /// `DROP FEED [IF EXISTS] <name> ON <table>` — stops the declared capture
-    /// and frees its topic for hand appends (FEAT-S1).
+    /// and frees its topic for hand appends.
     DropFeed {
         /// The feed's name.
         name: Name,
@@ -2095,13 +2094,13 @@ pub enum StatementKind {
         /// When the key stops being answered: a duration from now or a
         /// datetime. Absent means the key never expires — and a `SET` without
         /// it clears an expiry the key had, since a write replaces the whole
-        /// version (G035).
+        /// version .
         expire: Option<Expr>,
-        /// Write only when this holds, and answer whether it wrote (G035).
+        /// Write only when this holds, and answer whether it wrote .
         condition: Option<SetCondition>,
     },
     /// `INCR counters:'hits' [BY 5]` — add to a number and answer the result
-    /// (G035). A missing key counts from zero; an expiry the key had is kept.
+    /// . A missing key counts from zero; an expiry the key had is kept.
     Incr {
         /// The key.
         target: RecordTarget,
@@ -2110,7 +2109,7 @@ pub enum StatementKind {
     },
     /// `LIST PUSH queue:'jobs' BACK 'a'`, `HASH SET …`, `MEMBERS ADD …`,
     /// `SCORES ADD …` — change the container a key holds in one statement
-    /// (G079 C6).
+    /// .
     Structure {
         /// The key.
         target: RecordTarget,
@@ -2118,7 +2117,7 @@ pub enum StatementKind {
         op: super::StructureOp,
     },
     /// `EXPIRE sessions:'abc' 30s` — give an existing key an expiry, or move
-    /// the one it has (G035). A duration that is zero or negative, or a datetime
+    /// the one it has . A duration that is zero or negative, or a datetime
     /// already passed, removes the key.
     Expire {
         /// The key.
@@ -2126,14 +2125,14 @@ pub enum StatementKind {
         /// A duration from now, or a datetime.
         at: Expr,
     },
-    /// `PERSIST sessions:'abc'` — the key stops expiring (G035).
+    /// `PERSIST sessions:'abc'` — the key stops expiring .
     Persist {
         /// The key.
         target: RecordTarget,
     },
     /// `DEL sessions:'abc'`, or `DEL sessions:'abc' IF = 'v'`, which removes
     /// the key only while it holds that value and answers whether it did — the
-    /// delete beside `SET … IF =` (G079 C6).
+    /// delete beside `SET … IF =` .
     Del {
         /// The key to remove.
         target: RecordTarget,
@@ -2177,12 +2176,12 @@ pub enum StatementKind {
         /// The range of keys, when the statement bounds it.
         range: Option<RangeExpr>,
         /// The text every listed key begins with, when the statement says
-        /// (G035). Exclusive with `range`: both name the stretch to walk.
+        /// . Exclusive with `range`: both name the stretch to walk.
         prefix: Option<Expr>,
         /// List only the keys after this one — the last key of the previous
-        /// page (G035).
+        /// page .
         after: Option<Expr>,
-        /// At most this many keys (G035).
+        /// At most this many keys .
         limit: Option<u64>,
     },
     /// `LET $recent = SELECT id FROM notes ORDER BY at DESC LIMIT 5`

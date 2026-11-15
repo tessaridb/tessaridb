@@ -341,3 +341,46 @@ fn a_statistic_taken_before_a_value_existed_does_not_outrank_a_unique_equality()
     );
     assert_eq!(found, vec![RecordId::Int(2)]);
 }
+
+#[test]
+fn explain_reports_the_statistics_age_beside_the_estimate() {
+    let store = store();
+    let mut session = ready(&store, 2_000);
+    session.run_now("ANALYZE TABLE people;").unwrap();
+    let fresh = explained(&mut session, "band = 3");
+    assert_eq!(
+        estimate(&fresh).map(|(_, by)| by),
+        Some("statistics".to_owned()),
+        "{fresh:?}"
+    );
+    assert_eq!(
+        fresh.get("statistics_age"),
+        Some(&Value::Number(Number::Integer(0))),
+        "a walk just taken has no changes against it: {fresh:?}"
+    );
+    // Five hundred entries change — inside the staleness rule, so the same
+    // statistic still serves, older by exactly what the index took.
+    let mut script = String::new();
+    for n in 0..500 {
+        script.push_str(&format!("UPDATE people:{n} SET band = {};\n", (n + 1) % 10));
+    }
+    session.run_now(&script).unwrap();
+    let aged = explained(&mut session, "band = 3");
+    assert_eq!(
+        aged.get("statistics_age"),
+        Some(&Value::Number(Number::Integer(500))),
+        "the age is the changes since the walk: {aged:?}"
+    );
+}
+
+#[test]
+fn explain_omits_the_statistics_age_without_statistics() {
+    let store = store();
+    let mut session = ready(&store, 2_000);
+    let plan = explained(&mut session, "band = 3");
+    assert!(
+        !plan.contains_key("statistics_age"),
+        "no statistic, no age — the key rides the estimate, not the plan: {plan:?}"
+    );
+    assert_eq!(estimate(&plan).map(|(_, by)| by), Some("probe".to_owned()));
+}

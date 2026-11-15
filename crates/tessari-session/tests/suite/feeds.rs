@@ -1,5 +1,5 @@
 //! `DEFINE FEED` — the declared capture of a table's writes into a topic
-//! (FEAT-S1, plan `.bgv/projects/tessaridb/plans/2026-11-15/123001`).
+//!.
 //!
 //! The properties under test are the ones a hand-written outbox cannot state:
 //! one message per record per transaction carrying the final image (net
@@ -658,7 +658,7 @@ fn partition_messages(
 
 #[test]
 fn the_capture_redacts_what_the_writer_may_not_read() {
-    // The images are what the writer may read (FEAT-S1): a write-only writer
+    // The images are what the writer may read: a write-only writer
     // feeds messages whose fields they could not see are absent — the feed
     // is not a way to copy what a grant hides. The scan's images are the
     // record as the engine holds it, pinned separately below.
@@ -739,7 +739,7 @@ fn the_scans_images_are_the_record_the_engine_holds() {
 
 #[test]
 fn a_partitioned_feed_routes_by_the_partition_field_and_carries_it_as_metadata() {
-    // FEAT-S1 D9: on a PARTITIONS n BY f topic the envelope always carries
+    // On a PARTITIONS n BY f topic the envelope always carries
     // f — even in IMAGE KEYS mode, where it is metadata, not image — and the
     // message lands in the partition f chooses, so per-key order is the
     // partition's order.

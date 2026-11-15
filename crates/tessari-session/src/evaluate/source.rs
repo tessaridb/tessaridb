@@ -147,7 +147,7 @@ impl Session<'_> {
                 let (records, plan) = self
                     .search_records(transaction, select, reporting.noticed)
                     .await?;
-                Ok((Prepared::Held(records, plan), Searched::default()))
+                Ok((Prepared::Held(records, Box::new(plan)), Searched::default()))
             }
             // Resolved from `meta` rather than read from a table, because that
             // is where it is: the identity is deliberately outside the log
@@ -156,10 +156,10 @@ impl Session<'_> {
             Source::Node => Ok((
                 Prepared::Held(
                     vec![node_row(self.store).await?],
-                    Plan {
+                    Box::new(Plan {
                         source: Some("node"),
                         ..Plan::new(AccessPath::Record)
-                    },
+                    }),
                 ),
                 Searched::default(),
             )),
@@ -183,7 +183,9 @@ impl Session<'_> {
                     return Ok((
                         Prepared::Held(
                             self.records_of(found, &visible)?,
-                            Plan::new(AccessPath::Record).on(target.table.name.text.as_str()),
+                            Box::new(
+                                Plan::new(AccessPath::Record).on(target.table.name.text.as_str()),
+                            ),
                         ),
                         Searched::default(),
                     ));
@@ -204,7 +206,7 @@ impl Session<'_> {
                 Ok((
                     Prepared::Held(
                         found,
-                        Plan::new(AccessPath::Record).on(target.table.name.text.as_str()),
+                        Box::new(Plan::new(AccessPath::Record).on(target.table.name.text.as_str())),
                     ),
                     searched,
                 ))
@@ -232,7 +234,7 @@ impl Session<'_> {
                     return Ok((
                         Prepared::Held(
                             self.records_of(found, &visible)?,
-                            Plan::new(AccessPath::Scan).on(table.name.text.as_str()),
+                            Box::new(Plan::new(AccessPath::Scan).on(table.name.text.as_str())),
                         ),
                         searched,
                     ));
@@ -267,7 +269,7 @@ impl Session<'_> {
                 {
                     reporting.collected.push(note);
                     return Ok((
-                        Prepared::Held(self.records_of(found, &visible)?, plan),
+                        Prepared::Held(self.records_of(found, &visible)?, Box::new(plan)),
                         Searched::default(),
                     ));
                 }
@@ -283,7 +285,7 @@ impl Session<'_> {
                     )
                     .await?;
                 Ok((
-                    Prepared::Held(self.records_of(found, &visible)?, plan),
+                    Prepared::Held(self.records_of(found, &visible)?, Box::new(plan)),
                     searched,
                 ))
             }
@@ -302,7 +304,7 @@ impl Session<'_> {
                         .await?;
                     reporting.collected.extend(note);
                     return Ok((
-                        Prepared::Held(found, Plan::new(AccessPath::Graph)),
+                        Prepared::Held(found, Box::new(Plan::new(AccessPath::Graph))),
                         Searched::default(),
                     ));
                 }
@@ -310,7 +312,7 @@ impl Session<'_> {
                     .traverse(transaction, from, *direction, hops, *depth)
                     .await?;
                 Ok((
-                    Prepared::Held(found, Plan::new(AccessPath::Graph)),
+                    Prepared::Held(found, Box::new(Plan::new(AccessPath::Graph))),
                     Searched::default(),
                 ))
             }
@@ -387,7 +389,7 @@ impl Session<'_> {
                     let kept = self
                         .kept(transaction, condition, found, &searched, reporting)
                         .await?;
-                    return Ok((Prepared::Held(kept, plan), searched));
+                    return Ok((Prepared::Held(kept, Box::new(plan)), searched));
                 }
                 if let Some((lower, upper)) = &region {
                     let found = transaction
@@ -404,7 +406,7 @@ impl Session<'_> {
                     let kept = self
                         .kept(transaction, condition, found, &searched, reporting)
                         .await?;
-                    return Ok((Prepared::Held(kept, plan), searched));
+                    return Ok((Prepared::Held(kept, Box::new(plan)), searched));
                 }
                 Ok((Prepared::Filtered(context, id, condition), searched))
             }
@@ -427,7 +429,7 @@ impl Session<'_> {
                         reporting,
                     )
                     .await?;
-                Ok((Prepared::Held(found, plan), searched))
+                Ok((Prepared::Held(found, Box::new(plan)), searched))
             }
             Source::Join {
                 left,
@@ -454,7 +456,7 @@ impl Session<'_> {
                         within,
                     )
                     .await?;
-                Ok((Prepared::Held(found, plan), searched))
+                Ok((Prepared::Held(found, Box::new(plan)), searched))
             }
             // The inner read answers first and the outer statement reads what it
             // answered. The path reported is `materialised` and not the inner
@@ -494,7 +496,7 @@ impl Session<'_> {
                     .extend(ceiling.and_then(|ceiling| ceiling.nearing(inner.records.len())));
                 let (found, plan) = (inner.records, Plan::new(AccessPath::Materialised));
                 let Some(condition) = condition else {
-                    return Ok((Prepared::Held(found, plan), Searched::default()));
+                    return Ok((Prepared::Held(found, Box::new(plan)), Searched::default()));
                 };
                 // Narrowed here rather than by an access path: the records are
                 // already in hand, so there is nothing left for an index to
@@ -517,7 +519,7 @@ impl Session<'_> {
                         kept.push((id, record));
                     }
                 }
-                Ok((Prepared::Held(kept, plan), searched))
+                Ok((Prepared::Held(kept, Box::new(plan)), searched))
             }
         }
     }

@@ -1,4 +1,4 @@
-//! The columnar scan's session seam (G082 SG3): a qualifying fallback read
+//! The columnar scan's session seam : a qualifying fallback read
 //! on a column-store table answers through the projection, reports the
 //! pruning figures, and answers exactly what the row walk would.
 //!

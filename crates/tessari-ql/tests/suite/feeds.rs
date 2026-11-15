@@ -1,5 +1,5 @@
 //! `DEFINE FEED` — the declared capture of a table's writes into a topic
-//! (FEAT-S1, plan `.bgv/projects/tessaridb/plans/2026-11-15/123001`).
+//!.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 

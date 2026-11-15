@@ -188,5 +188,5 @@ pub(crate) enum Prepared<'a> {
     /// reading them: one record by identity, a traversal, a join. Each is a
     /// barrier in its own right — a join builds a map of one side — so producing
     /// lazily would move the materialisation rather than remove it.
-    Held(Vec<(RecordId, Value)>, Plan),
+    Held(Vec<(RecordId, Value)>, Box<Plan>),
 }

@@ -3,7 +3,7 @@
 //!
 //! This is the decode half the columnar scan will ride in SG3; here it proves
 //! the chunk is a faithful projection of the row — the exactness contract's
-//! unit level (worksheet §6.4: the differential mirror compares what the
+//! unit level (the design record: the differential mirror compares what the
 //! chunks hold against what the row path answers, and the two must be
 //! identical).
 //!
