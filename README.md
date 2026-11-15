@@ -68,6 +68,7 @@ committed bytes, under one snapshot, in one language.
 | object storage | buckets of files, in the same transaction as their records |
 | somewhere for secrets | a vault — fields sealed before they are stored |
 | a time-series store, an audit trail | series with a retention floor, `VERSION`, the change feed |
+| an analytical column store | `STORE COLUMN` — a columnar projection of a table or series, pruned by per-chunk statistics |
 
 **Not the fastest at any one of those jobs; enough at all of them.** A system
 built for one job will beat a general store at it, and nothing here claims
