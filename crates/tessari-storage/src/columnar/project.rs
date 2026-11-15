@@ -249,7 +249,18 @@ async fn project_table(
                 .as_ref()
                 .and_then(|object| object.get(&name).cloned())
                 .unwrap_or(RecordValueType::Null);
-            if old_value == new_value {
+            // A new record covers every declared family even when the value
+            // it carries is null: a schemafull record's absent fields land
+            // as null slots (the module's own contract), because the
+            // projection must hold a row for every record of the family —
+            // a null slot is how a lane fold or a decode learns the record
+            // EXISTS with a null here (D-SG2-10: absent and null are two
+            // different facts, and conflating them under `old == new` left
+            // a written-null record with no key-family row at all — the
+            // C6 differential found the vanishing: a `count(*)` grouped by
+            // the partition key dropped every null-key row). Only a record
+            // that already held this family skips an unchanged value.
+            if old.is_some() && old_value == new_value {
                 continue;
             }
             let writer = match writers.entry((family.clone(), partition)) {
