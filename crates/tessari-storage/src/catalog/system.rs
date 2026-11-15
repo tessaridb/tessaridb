@@ -209,7 +209,7 @@ pub const KAFKA_QUARANTINE: TableId = TableId::new(29);
 /// applying the log derives the same instants without reading a clock.
 pub const TOPIC_CLOCKS: TableId = TableId::new(30);
 
-/// Where each declared feed's initial scan has reached (FEAT-S1 D8).
+/// Where each declared feed's initial scan has reached.
 ///
 /// One row per (table, feed) carrying `WITH INITIAL SCAN`: the snapshot
 /// sequence the scan emits against, the resume position, and whether the

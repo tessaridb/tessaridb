@@ -17,7 +17,7 @@ impl<'a> Session<'a> {
     /// Before a caller writes or deletes `address`: the table's events, and the
     /// record as it stands, when the table has any (ADR-0110 D10); the feed
     /// capture and the feed-ownership refusal, when the table has feeds
-    /// (FEAT-S1) — the one definition read this funnel already makes.
+    /// — the one definition read this funnel already makes.
     ///
     /// # Errors
     ///
@@ -33,7 +33,7 @@ impl<'a> Session<'a> {
             return Ok(None);
         };
         // A feed's topic takes no hand append: only the feed's capture writes
-        // it (FEAT-S1). Asked here, at the head of both write funnels, so a
+        // it. Asked here, at the head of both write funnels, so a
         // caller is refused before anything lands.
         if let TableKind::Topic(declared) = &definition.kind
             && let Some(owner) = &declared.owned_by

@@ -386,7 +386,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     }
 
     /// Replace a table's feed declarations, keeping everything else about it
-    /// (FEAT-S1).
+    ///.
     pub async fn set_feeds(&mut self, id: TableId, feeds: Vec<FeedDeclaration>) -> Result<bool> {
         let Some(mut definition) = self.table(id).await? else {
             return Ok(false);
@@ -396,7 +396,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         Ok(true)
     }
 
-    /// Name the feed that owns a topic, or clear the owner (FEAT-S1) — one
+    /// Name the feed that owns a topic, or clear the owner — one
     /// catalog write either way, so no commit sees the topic between states.
     pub async fn set_topic_owner(&mut self, id: TableId, owner: Option<String>) -> Result<bool> {
         let Some(mut definition) = self.table(id).await? else {

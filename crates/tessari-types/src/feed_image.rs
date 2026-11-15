@@ -1,4 +1,4 @@
-//! Which image of a record a feed's message carries (FEAT-S1).
+//! Which image of a record a feed's message carries.
 //!
 //! Kept beside [`WriteKind`] because a feed declaration stores it the way an
 //! event declaration stores its write kinds, and the catalog layer below the

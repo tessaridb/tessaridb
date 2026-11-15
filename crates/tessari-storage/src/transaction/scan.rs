@@ -169,7 +169,7 @@ impl Transaction<'_> {
         .await
     }
 
-    /// The columnar projection's pruning scan (G082 SG3): candidates for a
+    /// The columnar projection's pruning scan: candidates for a
     /// set of simple predicates, with the report the answer notes carry.
     ///
     /// Only valid while the caller has established that this transaction is
@@ -212,7 +212,7 @@ impl Transaction<'_> {
     }
 
     /// One family's decoded rows in one partition lane — the
-    /// partition-local group-by's raw read (G082 SG4).
+    /// partition-local group-by's raw read.
     pub async fn columnar_lane(
         &self,
         namespace: NamespaceId,

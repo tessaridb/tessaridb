@@ -1,4 +1,4 @@
-//! The chunk footer's equality bloom filter (SG3 T3.1, worksheet §4.3).
+//! The chunk footer's equality bloom filter (SG3 T3.1, the design record).
 //!
 //! A bloom answers membership with no false negatives and a declared
 //! false-positive rate; at v1 it is sized for **1 % fpr at 10 bits per
@@ -16,7 +16,7 @@
 //! local implementation detail: murmur2, the workspace's other hash, lives
 //! in `tessari-session` above this layer and matters where Kafka-compatible
 //! routing does — a bloom's distribution requirements are met by any
-//! decent 64-bit hash (SG3 plan D-SG3-1).
+//! decent 64-bit hash (SG3 plan the design record).
 
 use super::codec::Cursor;
 

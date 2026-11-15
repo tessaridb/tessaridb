@@ -1,7 +1,7 @@
-//! C3 — the measured evidence for the columnar path (G082 SG3 T3.3):
+//! C3 — the measured evidence for the columnar path :
 //! selective aggregates over 1 048 576 rows, answered through the columnar
 //! scan, equal to the row mirror's answers, with the pruning figures the
-//! worksheet §6.2 asks the evidence to carry.
+//! the design record asks the evidence to carry.
 //!
 //! The timings print rather than assert: a timing assertion would be a
 //! flake wearing a criterion. What is asserted is exactness (both paths

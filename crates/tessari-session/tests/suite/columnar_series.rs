@@ -1,4 +1,4 @@
-//! SG7 — series tables are columnar-capable (G082): `DEFINE SERIES … STORE
+//! SG7 — series tables are columnar-capable : `DEFINE SERIES … STORE
 //! COLUMN [PARTITIONS n BY f]` holds the same points its row mirror holds,
 //! and every series read shape — window folds, FILL, LATEST BY, ASOF JOIN,
 //! counter folds, simple predicates — answers exactly what the row series
@@ -117,7 +117,7 @@ fn window_folds_and_fill_answer_equal() {
         "SELECT count(*) AS n, time::bucket(at, 6h) AS w FROM {t} GROUP BY time::bucket(at, 6h);",
     );
     assert_eq!(events, mirror, "the window fold diverged");
-    // Series reads are row-path at v1: the gate's schemaless rule (D-SG3)
+    // Series reads are row-path at v1: the gate's schemaless rule
     // routes them to the walk — the projection holds the points, the row
     // serves the reads, and the answers are exact by authority.
     assert_ne!(
@@ -165,7 +165,7 @@ fn a_pinned_series_read_answers_exactly_through_the_row() {
     let (_keep, mut session) = fixture();
     // The pinned lane and the simple condition are exactly the shape the
     // record-table seam prunes on — on a series the gate's schemaless rule
-    // (D-SG3) keeps the read on the row path at v1, and the row authority
+    // keeps the read on the row path at v1, and the row authority
     // answers it exactly. The projection the clause maintains is what a
     // later gate lift serves.
     let (events, mirror, access) = both(

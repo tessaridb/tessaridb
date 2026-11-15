@@ -183,7 +183,7 @@ impl Session<'_> {
         let merging = self.rollup_merging(transaction, select).await?;
         let leaders = if merging.is_none() {
             // A grouped read of a partitioned columnar table folds
-            // partition-locally when the gate qualifies it (G082 SG4); what
+            // partition-locally when the gate qualifies it; what
             // it declines, the leaders' fold below or the records path
             // answers, in that order.
             match self.prepare_columnar_grouped(transaction, select).await? {

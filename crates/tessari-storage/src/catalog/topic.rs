@@ -47,7 +47,7 @@ pub struct TopicDeclaration {
     /// The partitions this topic is split into; `None` for a topic that holds
     /// its messages itself (ADR-0131).
     pub partitions: Option<Partitioning>,
-    /// The feed that owns this topic, when one does (FEAT-S1): hand appends
+    /// The feed that owns this topic, when one does: hand appends
     /// are refused, and only the feed's capture writes it. Written only when
     /// present, so a topic without an owner is the object it always was.
     pub owned_by: Option<String>,

@@ -273,7 +273,7 @@ impl Session<'_> {
                     .collect(),
             ),
         );
-        // Each feed the same way (FEAT-S1).
+        // Each feed the same way.
         report.insert(
             "feeds".to_owned(),
             Value::Array(

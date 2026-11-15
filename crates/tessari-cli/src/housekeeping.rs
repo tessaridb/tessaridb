@@ -118,7 +118,7 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
                 Err(why) => tracing::warn!(error = %why, "this node cannot reclaim retired index entries"),
             }
             // A feed's initial scan: existing rows carried into its topic in
-            // bounded batches (FEAT-S1 D8). A feed this node may not write is
+            // bounded batches. A feed this node may not write is
             // refused at its commit before anything changes, which is the
             // design rather than a fault, so that refusal stays quiet like
             // the views' — the node that leads the range scans.

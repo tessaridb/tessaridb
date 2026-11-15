@@ -1,5 +1,5 @@
 //! The open-chunk writer: one per (table, family), holding the chunk appends
-//! land in until it seals (worksheet §5.1, D-SG2-1).
+//! land in until it seals (the design record, the design record).
 //!
 //! A writer is loaded from the committed state — the `'P'` pointer names its
 //! open chunk seq, and that chunk's newest version decodes into the rows

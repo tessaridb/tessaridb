@@ -4,7 +4,7 @@
 //! These run inside the crate because the read surface is internal until the
 //! declaration grammar lands (SG5); the assertions compare what the chunks
 //! hold against what the row path answers — the differential mirror at unit
-//! scale (worksheet §6.4). The store is used single-threaded through the
+//! scale (the design record). The store is used single-threaded through the
 //! `.now()` harness; the projection itself runs inside the commit's write
 //! gate, so sequential tests exercise the same path a racing one would.
 #![allow(clippy::panic, clippy::unwrap_used)]
@@ -268,7 +268,7 @@ fn deletes_leave_the_projection_for_the_tombstone_to_filter() {
         .map(|(_, family)| family.clone())
         .expect("the seq field is declared");
 
-    // D-SG2-9: no chunk rewrite on delete. The tombstone is the authority;
+    // the design record: no chunk rewrite on delete. The tombstone is the authority;
     // the projection still holds the values, and the scan (SG3) filters.
     let chunks = family_chunks(&store, ns, db, table, &seq_family)
         .now()
@@ -438,7 +438,7 @@ fn the_kind_guard_refuses_a_storage_kind_on_a_kind_that_is_not_records() {
     drop(transaction);
 }
 
-/// C2's measurement (worksheet §4.1): the encoded column chunks against the
+/// C2's measurement (the design record): the encoded column chunks against the
 /// row payloads for the same records, per family and overall. The assertion
 /// is a real inequality — the dictionary-heavy fixture must come out smaller
 /// — and the numbers print for the plan's evidence table.

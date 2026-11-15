@@ -1,13 +1,12 @@
 //! The 32-bit murmur2 hash the Kafka clients' default partitioner applies to
 //! a record's key — the hash `PARTITIONS n BY` routes by, on topics since
-//! G079 and on columnar tables since G082 (the storage layer's projection
+//! topics and, on columnar tables, the storage layer's projection
 //! and the session's write funnel must hash identically, which is why this
 //! lives in the encoding crate both consume rather than beside either).
 //!
 //! Seed `0x9747b28c`, four bytes at a time little-endian, the tail folded in
 //! from its last byte down. The topic partition tests hold the known
-//! vectors (G079 pinned the fixture bytes against the Kafka partitioner's
-//! own output).
+//! vectors .
 
 /// The murmur2 hash of `data`, as the reference partitioner computes it.
 #[must_use]

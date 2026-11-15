@@ -78,7 +78,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         Ok(definition)
     }
 
-    /// Set how many writers a namespace admits (G027 S2.1).
+    /// Set how many writers a namespace admits .
     ///
     /// The sibling of [`Self::set_replication`] and deliberately the same shape,
     /// so the class cannot acquire a second write path the count does not have.
@@ -192,9 +192,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         let shards = shard::declared_for(name, &shape)?;
         // A storage kind rides only on a plain record table or a series at
         // v1: kinds whose semantics are not record-shaped refuse the clause
-        // (worksheet §3, §10 — `StorageKindOnKind`; topics, queues and spaces
+        // (the design record, §10 — `StorageKindOnKind`; topics, queues and spaces
         // have no projection rules for a layout, a series holds points a
-        // projection can serve, G082 SG7).
+        // projection can serve,).
         if shape.storage_kind.is_some()
             && !matches!(shape.kind, TableKind::Table | TableKind::Series(_))
         {
@@ -203,7 +203,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             });
         }
         // Hash partitioning rides only a columnar table, and the
-        // count is a constant of at least one (worksheet §6.3 — the named
+        // count is a constant of at least one (the design record — the named
         // refusals the grammar surfaces in SG5).
         if let Some(partitioning) = &shape.partitions {
             if shape.storage_kind != Some(crate::catalog::StorageKind::Column) {

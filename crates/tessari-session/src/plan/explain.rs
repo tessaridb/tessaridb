@@ -95,8 +95,7 @@ impl Session<'_> {
                 self.refuse_reading_a_vault(transaction, gated, table)
                     .await?;
                 // A grouped read of a partitioned columnar table folds
-                // partition-locally when the read's gate qualifies it (G082
-                // SG4) — the same gate, so the plan reported is the plan
+                // partition-locally when the read's gate qualifies it  — the same gate, so the plan reported is the plan
                 // taken.
                 if crate::reduce::reduce_of(select).is_some()
                     && let Some((_, plan)) =
@@ -245,7 +244,7 @@ impl Session<'_> {
                     });
                 }
                 // A nearest-first read under a condition: the spatial walk,
-                // asked here first because the read asks it first (G058 C1).
+                // asked here first because the read asks it first .
                 // Whether it settles within its cap is the read's own question.
                 if let Some(place) = closest(select)
                     && let Some((index, _)) = self

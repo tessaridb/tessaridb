@@ -90,7 +90,7 @@ impl TableDefinition {
         // optional fields above keep: a table the word never reached stays
         // byte-for-byte what it was. Row is never written — absence reads as
         // it, which is the contract every table that existed before the
-        // clause keeps (G082, worksheet §2).
+        // clause keeps (ADR-0137).
         if let Some(StorageKind::Column) = self.storage_kind {
             fields.insert(FIELD_STORAGE_KIND.to_owned(), Value::from("column"));
         }

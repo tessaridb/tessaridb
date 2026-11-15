@@ -1,4 +1,4 @@
-//! SG4 — hash partitioning at the statement level (G082): a GROUP BY on the
+//! SG4 — hash partitioning at the statement level : a GROUP BY on the
 //! partition key folds partition-locally until a final merge (C5), and a
 //! multi-row INSERT lands across every partition its rows route to in one
 //! commit — all or nothing (C4).

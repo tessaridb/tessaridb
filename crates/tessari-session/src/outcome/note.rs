@@ -99,7 +99,7 @@ pub enum Note {
         /// The ceiling it is approaching, past which the read is refused.
         most: u64,
     },
-    /// Part of the answer was fetched from other nodes (G033, ADR-0083).
+    /// Part of the answer was fetched from other nodes .
     ///
     /// This node holds some of a split table's shards, and the others were read
     /// from their leaders, each when it was asked. The answer is complete —
@@ -112,7 +112,7 @@ pub enum Note {
         shards: Vec<u32>,
     },
     /// Messages of a topic passed their retention before this read reached
-    /// them (G037).
+    /// them .
     ///
     /// Positions are dense, so the count is exact: a reader told nothing would
     /// carry on from the first message still held and never learn that it had
@@ -123,7 +123,7 @@ pub enum Note {
         /// How many positions the read passed over.
         missed: u64,
     },
-    /// The answer is a shortest path, and this is what it costs (G055 W6).
+    /// The answer is a shortest path, and this is what it costs .
     ///
     /// The records are the path, start to end; the note says how many steps
     /// it took and what they cost — the sum of the weights a weighted path
@@ -141,7 +141,7 @@ pub enum Note {
         windows: u64,
     },
     /// A search index this read met holds terms this build's tokenizer may not
-    /// make (G058 C3, Q-911): it recorded another generation, or none.
+    /// make : it recorded another generation, or none.
     ///
     /// A field's index is then not answered from — the read scans, which is
     /// exact — and a search's member, which no scan stands in for, is read and
@@ -173,7 +173,7 @@ pub enum Note {
         /// past which the ranks in them are no longer within the bound.
         collapsed: Option<bool>,
     },
-    /// The columnar scan's pruning figures (worksheet §6.2): what the head
+    /// The columnar scan's pruning figures (the design record): what the head
     /// statistics cleared without a decode, and what the survivors cost.
     ///
     /// These exist only after the read — a plan cannot know them without

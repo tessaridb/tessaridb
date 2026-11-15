@@ -124,7 +124,7 @@ impl Parser<'_> {
                     // `STORE` keyword (ADR-0118 reserved it for
                     // `ALTER STORE FINALIZE FORMAT`), so this arm eats the
                     // keyword where its neighbours eat a contextual word;
-                    // `ROW` and `COLUMN` stay contextual idents (G082).
+                    // `ROW` and `COLUMN` stay contextual idents .
                     } else if store.is_none() && self.eat_keyword(Keyword::Store) {
                         store = Some(if self.eat_word("row") {
                             crate::ast::StoreKind::Row
@@ -136,7 +136,7 @@ impl Parser<'_> {
                             ));
                         });
                     // `PARTITIONS n BY field` — the hash partitioning of a
-                    // columnar projection (G082 SG4). `BY` is required here,
+                    // columnar projection . `BY` is required here,
                     // unlike on a topic where a missing key reads as round
                     // robin: a columnar table's lanes are keyed or refused,
                     // never implicit.

@@ -367,7 +367,7 @@ impl Transaction<'_> {
         // And the columnar projection of a STORE COLUMN table, derived in the
         // same place and for the same reason: its chunks ride the commit's
         // batch, so a follower replaying the record rebuilds the same layout
-        // (ADR-0137, worksheet §5.1 — the projection has no writer of its own).
+        // (ADR-0137 — the projection has no writer of its own).
         let batch = crate::columnar::maintain(self.store, carried, batch, commit_version).await?;
         // Adjacency is derived in the same place and for the same reason: a
         // replica reaches its state by replaying this record, so entries the

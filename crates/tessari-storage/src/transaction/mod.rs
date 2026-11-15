@@ -103,7 +103,7 @@ pub struct Transaction<'a> {
     /// admits a topic message's deletion (W8c).
     trims: std::collections::HashMap<(NamespaceId, DatabaseId, TableId), u64>,
     /// The pre-transaction image of every record a fed table's write touched,
-    /// captured once per record (FEAT-S1): the first write of a record in this
+    /// captured once per record: the first write of a record in this
     /// transaction stores what stood there at the snapshot, and the commit's
     /// feed flush reads it back to label the net effect. Owned by this one
     /// transaction's task, like `guarded`, so an ordinary map.
@@ -159,7 +159,7 @@ pub(crate) enum Lifetime {
 
 impl Transaction<'_> {
     /// Record what stood at `address` when this transaction began, the first
-    /// time a fed table's write touches it (FEAT-S1). Later writes of the same
+    /// time a fed table's write touches it. Later writes of the same
     /// record in this transaction leave the capture alone — the net-effect
     /// label is decided against the snapshot, not against an intermediate
     /// buffered value.
@@ -167,7 +167,7 @@ impl Transaction<'_> {
         self.feed_captures.entry(address).or_insert(old);
     }
 
-    /// What the transaction captured for its feed flush, taken whole (FEAT-S1).
+    /// What the transaction captured for its feed flush, taken whole.
     pub fn take_feed_captures(&mut self) -> BTreeMap<RecordAddress, Option<Vec<u8>>> {
         std::mem::take(&mut self.feed_captures)
     }

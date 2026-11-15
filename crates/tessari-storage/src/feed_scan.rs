@@ -1,4 +1,4 @@
-//! Where a declared feed's initial scan has reached (FEAT-S1 D8).
+//! Where a declared feed's initial scan has reached.
 //!
 //! One system row per (table, feed) carrying `WITH INITIAL SCAN`, written by
 //! the defining commit itself. That placement is the load-bearing decision:
@@ -130,7 +130,7 @@ fn scan_id(table: TableId, feed: &str) -> RecordId {
     RecordId::Bytes(raw)
 }
 
-/// The records one batch of an initial scan emits (FEAT-S1 D8).
+/// The records one batch of an initial scan emits.
 ///
 /// A batch is bounded by keys examined, not records emitted: most of a
 /// table's rows may postdate the snapshot, and the walk must bound what it

@@ -154,7 +154,7 @@ pub(crate) fn identity_kind(
 /// keeps. A word this build does not recognise is refused for the reason
 /// [`identity_kind`] refuses one: a table stored under a layout this build
 /// cannot read is not a table this build may answer for as though it were a
-/// row store (G082).
+/// row store.
 pub(crate) fn storage_kind(
     fields: &BTreeMap<String, Value>,
     entity: &'static str,

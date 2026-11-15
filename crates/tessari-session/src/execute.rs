@@ -192,7 +192,7 @@ impl Session<'_> {
                     self.refuse_an_expiry_it_cannot_carry(&name.text, &kind, name.span)
                         .await?;
                 }
-                // D-SG5-5: when the statement itself declares columns, the
+                // the design record: when the statement itself declares columns, the
                 // partition key must be one of them, refused before anything
                 // is created, because a key nobody declares routes every row
                 // to partition zero — a silently single-lane table wearing
@@ -203,7 +203,7 @@ impl Session<'_> {
                 // which refuses a record carrying a field the table does not
                 // declare, so a key no declaration ever names can never be
                 // written. A schemaless table accepts any key outright: its
-                // families are created on first sight (D-SG2-2).
+                // families are created on first sight .
                 if let Some((_, key)) = partitions
                     && *schemafull
                     && !columns.is_empty()
@@ -276,7 +276,7 @@ impl Session<'_> {
                 .await
             }
             // A topic declares no fields either; what it declares is how long it
-            // keeps a message, how large one may be, and who may append (G037).
+            // keeps a message, how large one may be, and who may append .
             StatementKind::DefineTopic {
                 name,
                 if_not_exists,
@@ -957,7 +957,7 @@ impl Session<'_> {
                     TableChange::Rename(to) => {
                         return self.rename_table(transaction, table, to, span).await;
                     }
-                    // G082 C1: the storage kind is chosen at define time and
+                    // The storage kind is chosen at define time and
                     // immutable afterwards. The statement parses — a script
                     // that generates it fails here, by name, rather than at
                     // the parser — and refuses, because the migration between
@@ -1064,7 +1064,7 @@ impl Session<'_> {
                 let (_, id) = self.resolve_table(transaction, table).await?;
                 let mut index = self.index_named(transaction, id, name).await?;
                 // The rebuilt entries are this build's terms, so the definition
-                // says so (G058 C3).
+                // says so .
                 if index.holds_terms() {
                     index.tokenizer = Some(tessari_types::TOKENIZER_GENERATION);
                 }
@@ -1194,7 +1194,7 @@ impl Session<'_> {
                 let settled = self
                     .resolve_write_expiry(transaction, address.table, expire.as_ref())
                     .await?;
-                // A record in a shard this node lacks is not absent (G051 C4).
+                // A record in a shard this node lacks is not absent .
                 self.refuse_reading_a_part(
                     transaction,
                     address.table,
@@ -1356,7 +1356,7 @@ impl Session<'_> {
                 self.clear_file(transaction, target).await?;
                 let (_, address) = self.address(transaction, target).await?;
                 // Deleting a record held elsewhere would remove nothing and
-                // answer as though it had (G051 C4).
+                // answer as though it had .
                 self.refuse_reading_a_part(
                     transaction,
                     address.table,

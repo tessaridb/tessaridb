@@ -123,7 +123,7 @@ impl Parser<'_> {
                 };
                 return Ok(StatementKind::AlterTable { table, change });
             }
-            // G082 C1. `STORE ROW|COLUMN` — the clause head is the reserved
+            //`STORE ROW|COLUMN` — the clause head is the reserved
             // `STORE` keyword; the statement parses so scripts that generate
             // it do not break, and refuses at execution, because the storage
             // kind is immutable: DROP and DEFINE is the migration.
@@ -311,7 +311,7 @@ impl Parser<'_> {
         }
     }
 
-    /// `prod.shop.orders 2`, once `SHARD` has been read (G031).
+    /// `prod.shop.orders 2`, once `SHARD` has been read .
     ///
     /// Fully qualified and never resolved against the session's `USE`: a
     /// subscription is a statement about the cluster, and a shard named relative

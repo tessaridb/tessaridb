@@ -1,14 +1,14 @@
-//! SG6 — the differential equivalence suite (G082 C6): a columnar table and
+//! SG6 — the differential equivalence suite : a columnar table and
 //! its row mirror hold the same logical data, and every read shape the
 //! language has answers EXACTLY what the row store would. Zero mismatches is
 //! the bar; a mismatch is a defect in the projection or the gate, never an
-//! expectation update (the differential oracle rule, worksheet §6.4).
+//! expectation update (the differential oracle rule, the design record).
 //!
 //! # What the matrix covers
 //!
 //! Folds (count/sum/min/max/avg), GROUP BY on the partition key and off it,
 //! filters (equality with the lane pin, range with chunk pruning, `!=` on the
-//! row path by D-SG3-7), ORDER BY with a bound, point GETs, a window over the
+//! row path by the design record), ORDER BY with a bound, point GETs, a window over the
 //! mirror's ordering (row-path for a columnar table, still exact), string
 //! folds across the codec choices, and the hostile corners: nulls every
 //! seventh row, updates crossing lanes, deletes (tombstone and delete-null
@@ -206,7 +206,7 @@ fn folds_group_by_and_filters_answer_equal_to_the_mirror() {
     );
 
     // A range folds through the pruning scan; `!=` routes to the walk by
-    // D-SG3-7 — both must answer equal.
+    // the design record — both must answer equal.
     let (events, mirror, access) = both(
         &mut session,
         "events",
@@ -222,7 +222,7 @@ fn folds_group_by_and_filters_answer_equal_to_the_mirror() {
         "SELECT count(*) AS n FROM {t} WHERE kind != 'kind-9';",
     );
     assert_eq!(events, mirror, "the != fold diverged");
-    assert_ne!(access, AccessPath::Columnar, "!= never prunes (D-SG3-7)");
+    assert_ne!(access, AccessPath::Columnar, "!= never prunes ");
 
     // String folds across the codec cascade.
     let (events, mirror, _) = both(

@@ -1,12 +1,12 @@
 //! The pruning scan (SG3 T3.2): chunks examined against their head
 //! statistics, survivors decoded, the predicate re-evaluated per row.
 //!
-//! # Filter-and-refine, never believe (worksheet §6.1, OLAP skill M3)
+//! # Filter-and-refine, never believe (the design record, OLAP skill M3)
 //!
 //! A chunk the statistics say cannot match is **skipped**; every other chunk
 //! is decoded and its rows are tested against the real predicate. The hits
 //! are **candidates, not results**: a tombstoned record's row still sits in
-//! its chunk (D-SG2-9 — delete writes no chunk rewrite), a bloom says
+//! its chunk (the design record — delete writes no chunk rewrite), a bloom says
 //! "maybe" by design, and the projection describes only what a commit
 //! wrote. The caller above this scan owns the row authority: it re-checks
 //! each candidate against the record at its own snapshot before anything
@@ -79,7 +79,7 @@ pub struct ColumnarPredicate {
     pub value: Value,
 }
 
-/// What the scan did — the worksheet §6.2 counters the answer reports.
+/// What the scan did — the the design record counters the answer reports.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ColumnarScanReport {
     /// Chunks whose statistics were consulted (per family, summed).
@@ -118,7 +118,7 @@ pub async fn columnar_scan(
 
 /// The pruning scan over one partition's lane, when the caller pins one —
 /// a predicate the session gate proved fixes the partition key to one
-/// constant routes here (worksheet §6.3: a partition's data is one prefix,
+/// constant routes here (the design record: a partition's data is one prefix,
 /// and a read naming one partition reads one lane).
 ///
 /// # Errors
@@ -167,7 +167,7 @@ pub async fn columnar_scan_partitioned(
 
 /// Every decoded row of one family's one lane, in local chunk order:
 /// `(record id, value)` pairs, null slots omitted (a null or absent value
-/// holds no row, D-SG2-10). This is the partition-local group-by's raw
+/// holds no row, the design record). This is the partition-local group-by's raw
 /// read: the caller unions the ids across the families it folds, so a
 /// record whose key is null — which routed here but holds no key-family
 /// row — is not lost.

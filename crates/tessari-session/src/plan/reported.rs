@@ -20,7 +20,7 @@
 //!
 //! No invented cost. A number this store cannot know is a number it will not
 //! print, and a plan carrying a made-up estimate is how somebody comes to trust
-//! one. The one estimate a plan does carry (G055 W3) is read from statistics
+//! one. The one estimate a plan does carry  is read from statistics
 //! the index's own entries produced, or counted from them, and it is printed
 //! with which of the two it was. The candidate-to-result ratio — the number
 //! that says whether an index is actually *working* — needs the read to have
@@ -113,7 +113,7 @@ pub struct Plan {
     /// (ADR-0096 D3) — so a read naming one partition says it reads one shard.
     pub shards: Option<Box<[u32]>>,
     /// How many partition lanes a group-by folded locally before its final
-    /// merge (G082 SG4) — so a plan says `partition-local group by over n
+    /// merge  — so a plan says `partition-local group by over n
     /// lanes + final merge` in the one number it can know without running.
     pub lanes: Option<u64>,
     /// Whether the records are provably the ones the question names.
