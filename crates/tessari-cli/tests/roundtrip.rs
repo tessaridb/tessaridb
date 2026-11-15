@@ -161,6 +161,7 @@ const RELEASED: &[&str] = &[
 /// back as the build that wrote them answered — made by the same `generate.sh`.
 const RELEASED_ON_TESSARIKV: &[&str] = &[
     "0.36.0", "0.36.1", "0.36.2", "0.37.0", "0.37.1", "0.38.4", "0.39.0", "0.39.1", "0.39.2",
+    "0.40.0",
 ];
 
 /// The binary this crate builds, which is the one an operator upgrades to.

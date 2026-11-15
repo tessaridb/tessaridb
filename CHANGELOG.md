@@ -23,6 +23,39 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.41.0 — 2026-11-16
+
+A store written by 0.40.0 or any earlier release opens under 0.41.0; a 0.41.0 store
+is refused by every earlier build, until `ALTER STORE FINALIZE FORMAT` raises it
+for good. New stores are written at format 12.
+
+### Added
+
+- **Per-column table statistics.** `ANALYZE TABLE` now summarises every declared
+  field of the table beside its indexes — how many records hold it, how many of
+  those are null, how many distinct values, the common values and equi-depth
+  buckets — kept on the node, refreshed by the serving node as they go stale, and
+  surfaced through `INFO FOR TABLE` as counts and an age. Nothing travels in the
+  log or a backup; a statistic that has drifted is set aside and the planner
+  counts, as it did before statistics existed.
+- **The cost model, stated.** The scan guard's thresholds are named constants
+  with their units and rationale, and a plan that carries an estimate from
+  statistics now says how fresh it is: `statistics_age` rides the estimate in
+  `EXPLAIN`.
+- **Joins choose on the counts.** Where both sides' row counts are known, a join
+  weighs probing the right side's key index per left record against scanning it
+  once into the map — the counts, not the index's existence, decide. The plan
+  says which ran and on what numbers: `shape` is `probe` or `build`, with
+  `left_rows` and `right_rows`. A `FULL` join never probes, and the statement's
+  shape bounds the plan search to one decision per join node.
+
+### The stated limits
+
+The unit costs are stated, not calibrated: the fractions are documented judgements
+the benchmark harness owes a measurement. The choice is made between the two join
+shapes that exist; no join-order search is generated. Schemaless fields are not
+summarised — declared fields only.
+
 ## 0.40.0 — 2026-11-16
 
 A store written by 0.39.6 or any earlier release opens under 0.40.0; a 0.40.0

@@ -4637,8 +4637,7 @@ of the second case is that the right side is held in memory. Which one ran is
 reported as the access path. There is no cap on the answer and there will not be
 one: a cap would let the presence of an index change *what a statement answers*.
 
-**The probe-or-build choice is the counts', not the index's** (from the release
-after `0.40.0`). Where both sides' row counts are known, the planner weighs
+**The probe-or-build choice is the counts', not the index's** (from `0.41.0`). Where both sides' row counts are known, the planner weighs
 them: probing the right's key index costs an entry walk and a record fetch per
 *left* record, building the map costs one scan of the *right* — so with the
 model's unit costs probing pays only when the right side holds more than
@@ -11216,7 +11215,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.40.0", "build": "0.40.0", "endpoints": ["db-1.internal:9000"],
+ "version": "0.41.0", "build": "0.41.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],
