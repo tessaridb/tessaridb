@@ -23,6 +23,31 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.40.0 — 2026-11-16
+
+A store written by 0.39.6 or any earlier release opens under 0.40.0; a 0.40.0
+store is refused by every earlier build, until `ALTER STORE FINALIZE FORMAT`
+raises it for good.
+
+### Added
+
+- **Columnar tables.** `DEFINE TABLE … STORE COLUMN` keeps a columnar projection of the table's
+  rows beside their row authority, written inside the record's own commit batch. Analytical reads
+  skip chunks the per-chunk statistics rule out — a selective aggregate over a million rows answers
+  in 75 ms against the row walk's 2.7 s — and a `GROUP BY` on the partition key folds each
+  partition's lanes and merges the partials. `STORE COLUMN PARTITIONS n BY field` hash-partitions
+  the projection; `STORE ROW` is the default and the word `INFO FOR TABLE` renders. The kind is
+  immutable after define: `DROP` and `DEFINE` is the migration.
+- **Columnar series.** `DEFINE SERIES … STORE COLUMN` keeps the projection for time-series points
+  too; windows, `FILL`, `LATEST BY`, `ASOF JOIN` and the counter folds answer exactly what the row
+  series answers.
+
+### The stated limits
+
+A columnar table does not carry feeds yet (`FeedOnColumnar` refuses, named). Single-row updates
+cost a chunk copy-on-write — measured at one shape, the columnar write costs 2.11× the row write,
+and the store publishes the tax rather than hiding it. Version and point reads are always row-path.
+
 ## 0.39.6 — 2026-10-29
 
 0.39.5 and 0.39.6 open each other's stores.

@@ -9751,7 +9751,7 @@ The kinds include:
 | `path` | the answer is a shortest path, and this is how many steps it took and what they cost (§4a, *The shortest path*) |
 | `needs-rebuild` | a search index this read met may hold an earlier tokenizer's terms: a field's index was not answered from (the read scanned) and a search's member was read and can miss records; the message names the statement that rebuilds it (§4, *Which tokenizer built an index*) |
 | `estimated` | an `approx_distinct` or `approx_quantile` answered: `fold`, `method` (`hll-14` or `ddsketch`), the declared `bound`, and whether a quantile sketch `collapsed` (§5, *One answer per group*) |
-| `undeclared-field` | a read of a strict table named a field the table does not declare — a misspelling, or `id`, which is a record's address and not a field — so it found that field on no record; the message names the fields (from engine `0.39.6`) |
+| `undeclared-field` | a read of a strict table named a field the table does not declare — a misspelling, or `id`, which is a record's address and not a field — so it found that field on no record; the message names the fields (from engine `0.40.0`) |
 
 **`fell-back` fires on an index that declined, never on a table that has none.**
 A bounded ordered read over an unindexed table is the most ordinary read in the
@@ -11167,7 +11167,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.39.6", "build": "0.39.6", "endpoints": ["db-1.internal:9000"],
+ "version": "0.40.0", "build": "0.40.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],
