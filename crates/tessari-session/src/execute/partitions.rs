@@ -1,6 +1,7 @@
 //! `DEFINE TOPIC … PARTITIONS n [BY field]`: a parent holding no message and n
 //! child topics, declared in one transaction (ADR-0131).
 
+use tessari_encoding::murmur2;
 use tessari_ql::{Name, Span, TopicClauses};
 use tessari_storage::{
     Catalog, Partitioning, TableDefinition, TableKind, TableShape, TopicDeclaration, Transaction,
@@ -165,41 +166,9 @@ impl Session<'_> {
     }
 }
 
-/// The 32-bit murmur2 hash the Kafka clients' default partitioner applies to a
-/// record's key: seed `0x9747b28c`, four bytes at a time little-endian, the
-/// tail folded in from its last byte down.
-fn murmur2(data: &[u8]) -> u32 {
-    const M: u32 = 0x5bd1_e995;
-    const R: u32 = 24;
-    let length = u32::try_from(data.len()).unwrap_or(u32::MAX);
-    let mut hash = 0x9747_b28c ^ length;
-    let (chunks, tail) = data.as_chunks::<4>();
-    for chunk in chunks {
-        let mut k = u32::from_le_bytes(*chunk);
-        k = k.wrapping_mul(M);
-        k ^= k >> R;
-        k = k.wrapping_mul(M);
-        hash = hash.wrapping_mul(M) ^ k;
-    }
-    let folded = match *tail {
-        [first, second, third] => {
-            Some(u32::from(third) << 16 | u32::from(second) << 8 | u32::from(first))
-        }
-        [first, second] => Some(u32::from(second) << 8 | u32::from(first)),
-        [first] => Some(u32::from(first)),
-        _ => None,
-    };
-    if let Some(folded) = folded {
-        hash = (hash ^ folded).wrapping_mul(M);
-    }
-    hash ^= hash >> 13;
-    hash = hash.wrapping_mul(M);
-    hash ^ (hash >> 15)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::murmur2;
+    use tessari_encoding::murmur2;
 
     /// The vectors the Kafka clients' own partitioner answers (kafka-python
     /// `murmur2`, unsigned; "21" and "foobar" are its published test vectors).

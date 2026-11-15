@@ -257,6 +257,11 @@ impl StateReader<'_> {
             let last = page.len() < PAGE;
             for (key, value) in page {
                 self.after = Some(key.clone());
+                // Columnar family keys ride the record keyspace; the state
+                // read is about records and walks past them.
+                if !RecordKey::is_record_key(key.as_slice()) {
+                    continue;
+                }
                 let stored = RecordKey::decode(key.as_slice())?;
                 let prefix = RecordKey::versions_prefix(
                     stored.namespace,

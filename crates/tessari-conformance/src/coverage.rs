@@ -73,6 +73,8 @@ forms! {
     DropView => "DROP VIEW",
     DefineEvent => "DEFINE EVENT",
     DropEvent => "DROP EVENT",
+    DefineFeed => "DEFINE FEED",
+    DropFeed => "DROP FEED",
     DropIfExists => "DROP IF EXISTS",
     DefineParam => "DEFINE PARAM",
     DropParam => "DROP PARAM",
@@ -353,6 +355,9 @@ mod tests {
              DEFINE EVENT e ON t THEN CREATE t = { v: 1 };\
              DROP EVENT e ON t;\
              DROP EVENT IF EXISTS e ON t;\
+             DEFINE TOPIC feed_events;\
+             DEFINE FEED f ON t INTO feed_events;\
+             DROP FEED f ON t;\
              DEFINE PARAM $p VALUE 1;\
              DROP PARAM $p;\
              GET s:1;\

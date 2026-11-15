@@ -19,6 +19,7 @@ fn every_shape_round_trips() {
                 by: Some("user".to_owned()),
                 children: vec![TableId::new(7), TableId::new(8)],
             }),
+            owned_by: None,
         },
         TopicDeclaration {
             retain: None,
@@ -27,6 +28,7 @@ fn every_shape_round_trips() {
             public: None,
             deduplicate: None,
             partitions: None,
+            owned_by: None,
         },
         TopicDeclaration {
             partitions: Some(Partitioning {

@@ -145,7 +145,7 @@ impl Session<'_> {
         }
         Ok(Outcome::Records {
             records: answered,
-            plan: Plan::new(AccessPath::Scan).on(&hand.topic.name.text),
+            plan: Box::new(Plan::new(AccessPath::Scan).on(&hand.topic.name.text)),
             notes,
             suggestion: None,
             only: false,

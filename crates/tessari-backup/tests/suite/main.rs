@@ -13,6 +13,7 @@ use tessari_storage::Now;
 mod across;
 mod bootstrap;
 mod catch_up;
+mod columnar;
 mod from_a_running_node;
 mod gap;
 mod produced_identity;

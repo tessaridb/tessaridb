@@ -106,7 +106,7 @@ fn every_outcome_shape_round_trips() {
         Outcome::Removed { count: 12_043 },
         Outcome::Records {
             records: vec![(RecordId::Int(7), Value::from("ada"))],
-            plan: Plan::new(AccessPath::Index),
+            plan: Box::new(Plan::new(AccessPath::Index)),
             notes: Vec::new(),
             suggestion: None,
             only: false,
@@ -159,7 +159,7 @@ fn a_reference_arrives_with_the_name_a_client_cannot_look_up() {
             RecordId::Int(1),
             Value::Record(RecordRef::new(table, RecordId::Int(7))),
         )],
-        plan: Plan::new(AccessPath::Record),
+        plan: Box::new(Plan::new(AccessPath::Record)),
         notes: Vec::new(),
         suggestion: None,
         only: false,
@@ -203,7 +203,7 @@ fn several_outcomes_read_back_in_order_from_one_body() {
 fn noted() -> Outcome {
     Outcome::Records {
         records: vec![(RecordId::Int(7), Value::from("ada"))],
-        plan: Plan::new(AccessPath::Scan),
+        plan: Box::new(Plan::new(AccessPath::Scan)),
         notes: vec![tessari_session::Note::Approximate],
         suggestion: None,
         only: false,
@@ -238,7 +238,7 @@ fn a_newer_node_does_not_break_an_older_client() {
     let plain = encode_outcome(
         &Outcome::Records {
             records: vec![(RecordId::Int(7), Value::from("ada"))],
-            plan: Plan::new(AccessPath::Scan),
+            plan: Box::new(Plan::new(AccessPath::Scan)),
             notes: Vec::new(),
             suggestion: None,
             only: false,
@@ -268,7 +268,7 @@ fn an_older_node_does_not_break_a_newer_client() {
     let full = encode_outcome(
         &Outcome::Records {
             records: vec![(RecordId::Int(7), Value::from("ada"))],
-            plan: Plan::new(AccessPath::Scan),
+            plan: Box::new(Plan::new(AccessPath::Scan)),
             notes: Vec::new(),
             suggestion: None,
             only: false,
@@ -345,7 +345,7 @@ fn a_suggestion_crosses_the_wire_as_three_states_and_not_two() {
         let encoded = encode_outcome(
             &Outcome::Records {
                 records: vec![(RecordId::Int(7), Value::from("ada"))],
-                plan: Plan::new(AccessPath::Scan),
+                plan: Box::new(Plan::new(AccessPath::Scan)),
                 notes: Vec::new(),
                 suggestion,
                 only: false,
@@ -396,7 +396,7 @@ fn a_node_that_says_nothing_is_not_a_node_that_says_exact() {
         let encoded = encode_outcome(
             &Outcome::Records {
                 records: vec![(RecordId::Int(7), Value::from("ada"))],
-                plan: Plan::new(access),
+                plan: Box::new(Plan::new(access)),
                 notes: Vec::new(),
                 suggestion: None,
                 only: false,
@@ -426,7 +426,7 @@ fn the_only_flag_survives_the_wire_and_does_not_desynchronise_a_stream() {
     let alone = encode_outcome(
         &Outcome::Records {
             records: vec![(RecordId::Int(7), Value::from("ada"))],
-            plan: Plan::new(AccessPath::Record),
+            plan: Box::new(Plan::new(AccessPath::Record)),
             notes: Vec::new(),
             suggestion: None,
             only: true,

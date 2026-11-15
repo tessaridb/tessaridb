@@ -47,6 +47,15 @@ pub(crate) fn put(writer: &mut KeyWriter, id: &RecordId) {
     }
 }
 
+/// Whether the byte opens a record id — the four discriminants this
+/// encoding writes. The columnar families (`keys.rs` §6.6) share the record
+/// key prefix and diverge with their own tags, which are never these; a
+/// whole-prefix scan uses this to tell the occupants apart.
+#[must_use]
+pub const fn is_record_start(byte: u8) -> bool {
+    matches!(byte, INT | TEXT | UUID | BYTES)
+}
+
 /// Read a record id back out of a key.
 pub(crate) fn take(reader: &mut KeyReader<'_>) -> Result<RecordId> {
     let offset = reader.position();

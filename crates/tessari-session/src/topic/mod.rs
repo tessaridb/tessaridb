@@ -33,6 +33,7 @@ pub(crate) fn declared_topic(clauses: &TopicClauses) -> TopicDeclaration {
         public: clauses.public.map(|(rate, per)| PublicAppend { rate, per }),
         deduplicate: clauses.deduplicate.clone(),
         partitions: None,
+        owned_by: None,
     }
 }
 

@@ -969,6 +969,35 @@ pub enum Error {
         span: Span,
     },
 
+    /// `DEFINE FEED … WITH INITIAL SCAN` inside `BEGIN … COMMIT`: a write
+    /// sharing the define's commit cannot be told from a pre-existing row,
+    /// so the scan would double a key the live capture already carried.
+    #[error(
+        "`WITH INITIAL SCAN` anchors at its defining commit, so it runs as its own statement, outside `BEGIN … COMMIT` (at {span})"
+    )]
+    FeedScanInTransaction {
+        /// Where the statement was written.
+        span: Span,
+    },
+
+    /// `DEFINE FEED` onto a partitioned topic whose `BY` field a schema-full
+    /// table cannot hold: no record of it can carry the key the partitioner
+    /// routes by, so per-key order the split promises would be a round robin
+    /// (FEAT-S1 D9).
+    #[error(
+        "topic {topic} partitions by {field}, which table {table} does not declare; the feed would route by turn (at {span})"
+    )]
+    FeedPartitionFieldMissing {
+        /// The field the topic partitions by.
+        field: String,
+        /// The table the feed captures.
+        table: String,
+        /// The topic the feed appends to.
+        topic: String,
+        /// Where the statement was written.
+        span: Span,
+    },
+
     /// Two keys of one window whose rows would share an identity.
     #[error(
         "two keys of one rollup window share a row identity; the write is refused rather than merged (at {span})"
@@ -1778,6 +1807,38 @@ pub enum Error {
         span: Span,
     },
 
+    /// `ALTER TABLE … STORE ROW|COLUMN` — the storage kind is chosen at define
+    /// time and immutable afterwards (G082 C1, the owner's FEAT-M2 rule: a
+    /// column table is declared at definition; the storage kind is immutable
+    /// after define, and DROP+DEFINE is the migration).
+    ///
+    /// The statement **parses** — a generated script fails here, by name,
+    /// rather than at the parser — and refuses at execution.
+    #[error(
+        "`{table}`: the storage kind is chosen at define time and cannot be changed — DROP and DEFINE the table to move it between layouts (at {span})"
+    )]
+    StorageKindImmutable {
+        /// The table named.
+        table: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// `PARTITIONS n BY field` on a schemafull table that declares no such
+    /// field (G082 SG5, D-SG5-5). A key nobody declares routes every row to
+    /// partition zero — a silently single-lane table wearing the clause —
+    /// refused before anything is created. A schemaless table accepts any
+    /// key: its families are created on first sight.
+    #[error("`{table}`: the partition key `{field}` is not a declared field (at {span})")]
+    PartitionKeyUndeclared {
+        /// The table named.
+        table: String,
+        /// The field the clause named.
+        field: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// `ALTER TABLE … RENAME TO` on a table something else is found by the name
     /// of (ADR-0134 D9).
     #[error("`{table}` cannot be renamed: {why} (at {span})")]
@@ -2304,6 +2365,81 @@ pub enum Error {
         table: String,
         /// Its kind.
         kind: &'static str,
+        /// Where it was named.
+        span: Span,
+    },
+
+    /// A feed of this name is already defined on the table (FEAT-S1).
+    #[error("a feed named `{feed}` is already defined on `{table}` (at {span})")]
+    FeedExists {
+        /// The feed.
+        feed: String,
+        /// The table.
+        table: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A feed's capture refused, so the write it describes is refused
+    /// (FEAT-S1). The cause is the refusal the capture met, unchanged.
+    #[error("feed `{feed}` on `{table}` refused the write: {cause}")]
+    FeedFailed {
+        /// The feed whose capture refused.
+        feed: String,
+        /// The table it is defined on.
+        table: String,
+        /// What the capture refused with.
+        cause: Box<Error>,
+    },
+
+    /// A feed on a table kind that cannot carry one (FEAT-S1) — the kinds an
+    /// event can be on, a feed being the same declaration shape.
+    #[error(
+        "`{table}` is a {kind}, and only tables, collections and edge tables carry feeds (at {span})"
+    )]
+    FeedOnKind {
+        /// The table.
+        table: String,
+        /// Its kind.
+        kind: &'static str,
+        /// Where it was named.
+        span: Span,
+    },
+
+    /// A feed on a columnar table (G082 C7): the composition of feed capture
+    /// and projection maintenance is designed — the feed captures from the
+    /// row authority, which columnar tables fully retain — but v1 does not
+    /// ship the combination. Named so a later wave lifts it with tests.
+    #[error("`{table}` stores COLUMN: feeds on a columnar table are not built yet (at {span})")]
+    FeedOnColumnar {
+        /// The table.
+        table: String,
+        /// Where it was named.
+        span: Span,
+    },
+
+    /// A hand append to a topic a feed owns (FEAT-S1): only the feed's
+    /// capture writes it, so a consumer is never fed a message nobody's
+    /// writes produced.
+    #[error("`{topic}` belongs to feed `{feed}` and only its capture appends to it (at {span})")]
+    TopicOwnedByFeed {
+        /// The topic.
+        topic: String,
+        /// The feed that owns it.
+        feed: String,
+        /// Where it was named.
+        span: Span,
+    },
+
+    /// A feed declared onto a topic that drops repeated keys (FEAT-S1): a
+    /// dropped capture is a loss the feed's premise forbids, so the
+    /// combination is refused where it is written.
+    #[error(
+        "`{topic}` deduplicates published keys, and a feed's capture must never be dropped (at {span})"
+    )]
+    FeedTopicDeduplicated {
+        /// The topic.
+        topic: String,
         /// Where it was named.
         span: Span,
     },

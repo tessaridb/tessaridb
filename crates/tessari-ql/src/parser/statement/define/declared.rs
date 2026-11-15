@@ -99,10 +99,39 @@ impl Parser<'_> {
         } else {
             None
         };
+        // G082 SG7: the storage layout, in the clause order `DEFINE TABLE`
+        // speaks (STORE, then PARTITIONS) — the clause is the same word the
+        // record-table grammar reads, and a series routes its points through
+        // the projection the same way a record table routes its rows.
+        let mut store: Option<crate::ast::StoreKind> = None;
+        let mut partitions: Option<(u64, String)> = None;
+        loop {
+            if store.is_none() && self.eat_keyword(Keyword::Store) {
+                store = Some(if self.eat_word("row") {
+                    crate::ast::StoreKind::Row
+                } else if self.eat_word("column") {
+                    crate::ast::StoreKind::Column
+                } else {
+                    return Err(self.error_here(
+                        "`ROW` or `COLUMN` after `STORE` — the layout the points are kept in",
+                    ));
+                });
+            } else if partitions.is_none() && self.eat_word("partitions") {
+                let count = self.positive_count(
+                    "a whole number from 1 to 1048576 — the lanes the projection routes across",
+                )?;
+                self.expect_word("by", "`BY` and the field a point's lane is picked by")?;
+                partitions = Some((count, self.name()?.text));
+            } else {
+                break;
+            }
+        }
         Ok(StatementKind::DefineSeries {
             name,
             retain,
             time,
+            store,
+            partitions,
             if_not_exists,
         })
     }

@@ -19,7 +19,7 @@
 //! cannot see into a table the writer can.
 
 mod fire;
-mod parsed;
+pub(crate) mod parsed;
 
 use tessari_ql::{Name, Span, TableRef};
 use tessari_storage::{Catalog, EventDeclaration, TableKind, Transaction};
@@ -52,7 +52,7 @@ pub(crate) struct Declared<'s> {
 }
 
 /// The word a refused kind is named by.
-const fn kind_word(kind: &TableKind) -> Option<&'static str> {
+pub(crate) const fn kind_word(kind: &TableKind) -> Option<&'static str> {
     match kind {
         TableKind::Table | TableKind::Collection | TableKind::Edge(_) => None,
         TableKind::Bucket(_) => Some("bucket"),

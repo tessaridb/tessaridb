@@ -35,12 +35,14 @@ mod catalog;
 mod catalog_rows_tests;
 mod claiming;
 mod collections;
+mod columnar;
 mod covering;
 mod decisions;
 mod error;
 mod expiry;
 mod failover;
 mod feed;
+mod feed_scan;
 mod followers;
 mod format_stamp;
 mod gate;
@@ -91,17 +93,17 @@ pub use catalog::{
     AnalyzerDefinition, Authority, AutoSplit, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
     ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition,
     EdgeOrder, EngineField, EngineMember, EventDeclaration, Eviction, FailoverDefinition,
-    FailoverStamp, Feed, FieldDefinition, FieldReference, FieldShape, GEO_FIELD, GrantDefinition,
-    GraphDefinition, Greeter, GroupDeclaration, GroupMemberState, GroupState, Held, InFlight,
-    IndexDefinition, IndexShape, JoinTicket, Kind, LeadershipDefinition, Mapped,
-    NamespaceDefinition, OnDelete, OnFailure, Partitioning, PublicAppend, QUEUE_ATTEMPTS,
-    QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach,
-    ReplicaDefinition, Role, RollupCompute, RollupDeclaration, RollupFold, SYSTEM_DATABASE,
-    SYSTEM_NAMESPACE, SearchCosts, SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration,
-    SpaceLimit, StoredKind, TableDefinition, TableExpiry, TableKind, TableShape, TopicDeclaration,
-    UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
-    VectorDistance, Verb, ViewDeclaration, WordSet, WordSetKind, another_node_may_write, governing,
-    names_a_peer, the_row_a_greeting_binds,
+    FailoverStamp, Feed, FeedDeclaration, FieldDefinition, FieldReference, FieldShape, GEO_FIELD,
+    GrantDefinition, GraphDefinition, Greeter, GroupDeclaration, GroupMemberState, GroupState,
+    HashPartitioning, Held, InFlight, IndexDefinition, IndexShape, JoinTicket, Kind,
+    LeadershipDefinition, Mapped, NamespaceDefinition, OnDelete, OnFailure, Partitioning,
+    PublicAppend, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
+    RECORD_LEVEL, Reach, ReplicaDefinition, Role, RollupCompute, RollupDeclaration, RollupFold,
+    SYSTEM_DATABASE, SYSTEM_NAMESPACE, SearchCosts, SeriesDeclaration, ShardMap, ShardSpan,
+    SpaceDeclaration, SpaceLimit, StorageKind, StoredKind, TableDefinition, TableExpiry, TableKind,
+    TableShape, TopicDeclaration, UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody,
+    VaultDeclaration, VectorDeclaration, VectorDistance, Verb, ViewDeclaration, WordSet,
+    WordSetKind, another_node_may_write, governing, names_a_peer, the_row_a_greeting_binds,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
@@ -109,6 +111,10 @@ pub use catalog::VaultRoot;
 /// The system tables, by id and name — part of the written format (`docs/key-grammar.md` §9).
 pub use catalog::system::ALL as SYSTEM_TABLES;
 pub use collections::{Collection, Collections, Currency, Upstream, UpstreamReport};
+pub use columnar::{
+    ColumnarCompare, ColumnarPredicate, ColumnarScanReport, columnar_lane, columnar_scan,
+    columnar_scan_partitioned,
+};
 pub use covering::MEASURED_RELATION;
 pub use decisions::{Deciding, Decisions};
 pub use expiry::Expired;
@@ -126,6 +132,7 @@ pub use audit::{
 pub use error::{ConflictWith, Error, Result};
 pub use failover::Failover;
 pub use feed::{Change, ChangeKind, Changes, History, Merged, Subject, Subscription, Watch};
+pub use feed_scan::{FeedScanState, ScannedBatch};
 pub use followers::FollowerLag;
 pub use graph::{Admit, Graph as VectorGraph, Matched, filtered_ceiling, vector_of};
 pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};

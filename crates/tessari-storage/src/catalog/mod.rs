@@ -71,11 +71,12 @@ pub use consumer::{ConsumerDefinition, Feed, Mapped, OnFailure};
 pub(crate) use decoded::DecodedTables;
 pub use definition::{
     AutoSplit, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, DatabaseDefinition, EdgeDeclaration,
-    EdgeOrder, EngineField, EngineMember, EventDeclaration, GEO_FIELD, IndexDefinition, IndexShape,
-    NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
-    RECORD_LEVEL, RollupCompute, RollupDeclaration, RollupFold, SearchCosts, SeriesDeclaration,
-    StoredKind, TableDefinition, TableExpiry, TableKind, TableShape, UNIT_WEIGHT, VECTOR_FIELD,
-    VaultCustody, VaultDeclaration, VectorDeclaration, VectorDistance, ViewDeclaration,
+    EdgeOrder, EngineField, EngineMember, EventDeclaration, FeedDeclaration, GEO_FIELD,
+    HashPartitioning, IndexDefinition, IndexShape, NamespaceDefinition, QUEUE_ATTEMPTS,
+    QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, RollupCompute,
+    RollupDeclaration, RollupFold, SearchCosts, SeriesDeclaration, StorageKind, StoredKind,
+    TableDefinition, TableExpiry, TableKind, TableShape, UNIT_WEIGHT, VECTOR_FIELD, VaultCustody,
+    VaultDeclaration, VectorDeclaration, VectorDistance, ViewDeclaration,
 };
 pub use edge_kind::EdgeKindDefinition;
 pub use failover::{FailoverDefinition, FailoverStamp};
@@ -380,6 +381,32 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             return Ok(false);
         };
         definition.events = events;
+        self.write(system::TABLES, id.get(), &definition.to_value());
+        Ok(true)
+    }
+
+    /// Replace a table's feed declarations, keeping everything else about it
+    /// (FEAT-S1).
+    pub async fn set_feeds(&mut self, id: TableId, feeds: Vec<FeedDeclaration>) -> Result<bool> {
+        let Some(mut definition) = self.table(id).await? else {
+            return Ok(false);
+        };
+        definition.feeds = feeds;
+        self.write(system::TABLES, id.get(), &definition.to_value());
+        Ok(true)
+    }
+
+    /// Name the feed that owns a topic, or clear the owner (FEAT-S1) — one
+    /// catalog write either way, so no commit sees the topic between states.
+    pub async fn set_topic_owner(&mut self, id: TableId, owner: Option<String>) -> Result<bool> {
+        let Some(mut definition) = self.table(id).await? else {
+            return Ok(false);
+        };
+        let TableKind::Topic(mut declared) = definition.kind else {
+            return Ok(false);
+        };
+        declared.owned_by = owner;
+        definition.kind = TableKind::Topic(declared);
         self.write(system::TABLES, id.get(), &definition.to_value());
         Ok(true)
     }

@@ -9,7 +9,7 @@
 
 use crate::kind::KeyKind;
 use crate::value::{CODEC_VERSION, FLAGS, FormatVersion};
-use crate::{index_value, payload, record_id};
+use crate::{columnar_keys, index_value, payload, record_id};
 
 /// Which table of the format a value belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -20,6 +20,8 @@ pub enum Family {
     Keyspace,
     /// The discriminant in front of a record id.
     RecordId,
+    /// A position tag of the columnar projection's keys.
+    Columnar,
     /// The leading byte of an index value, in cross-type order.
     IndexValue,
     /// The leading byte of a stored payload.
@@ -76,6 +78,7 @@ pub fn units() -> Vec<FormatUnit> {
             ]
         })
         .chain(bytes(Family::RecordId, record_id::SURFACE))
+        .chain(bytes(Family::Columnar, columnar_keys::SURFACE))
         .chain(bytes(Family::IndexValue, index_value::SURFACE))
         .chain(bytes(Family::Payload, payload::TAGS))
         .chain(bytes(Family::NumberKind, payload::NUMBER_KINDS))

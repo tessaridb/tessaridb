@@ -131,6 +131,10 @@ impl OnFailure {
     }
 }
 
+/// Which image of a record a feed's message carries — owned by
+/// `tessari-types`, re-exported here where the grammar names it.
+pub use tessari_types::FeedImage;
+
 /// What a write answers with.
 ///
 /// Absent by default, because a write's answer is its effect and a store that
@@ -234,7 +238,7 @@ pub struct Assignment {
 pub use info::InfoSubject;
 pub use tables::{
     AutoSplit, ColumnDeclaration, Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, OnDelete,
-    Reference, TableChange, TableExpiry, WriteExpiry,
+    Reference, StoreKind, TableChange, TableExpiry, WriteExpiry,
 };
 pub use tessari_types::BinaryOp;
 pub use users::{Credential, Password, UserChange, UserGrant};

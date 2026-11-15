@@ -372,6 +372,8 @@ impl Needs {
             // (ADR-0110 D6).
             | StatementKind::DefineEvent { .. }
             | StatementKind::DropEvent { .. }
+            | StatementKind::DefineFeed { .. }
+            | StatementKind::DropFeed { .. }
             | StatementKind::RebuildIndex { .. }
             | StatementKind::CheckTable { .. }
             | StatementKind::AnalyzeTable { .. }

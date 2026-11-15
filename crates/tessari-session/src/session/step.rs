@@ -123,6 +123,9 @@ impl<'a> Session<'a> {
                 // asked for (ADR-0106 D2).
                 let asked = statement.acknowledge.max(self.acknowledge_open.take());
                 let across = statement.across || std::mem::take(&mut self.across_open);
+                // The captured writes' messages land in this commit or it
+                // refuses (FEAT-S1).
+                self.flush_feeds(&mut transaction).await?;
                 if across && let Some(parts) = Self::across_parts(&transaction).await? {
                     self.drive_across(store, transaction, parts, span).await?;
                     return Ok(Outcome::Done);
@@ -147,12 +150,15 @@ impl<'a> Session<'a> {
             // that left the transaction open would invite a second one against a
             // snapshot the first had already answered for.
             StatementKind::Verify => {
-                let Some((transaction, _)) = open.take() else {
+                let Some((mut transaction, _)) = open.take() else {
                     return Err(Error::NoOpenTransaction { span });
                 };
                 self.acknowledge_open = None;
                 self.across_open = false;
                 self.savepoints.clear();
+                // The rehearsal runs the feed capture's checks too, and then
+                // discards the messages with the rest (FEAT-S1).
+                self.flush_feeds(&mut transaction).await?;
                 transaction.dry_run().await.map_err(advised)?;
                 Ok(Outcome::Done)
             }
@@ -161,6 +167,13 @@ impl<'a> Session<'a> {
             StatementKind::DefineRollup { .. } if open.is_some() => {
                 Err(Error::RollupInTransaction { span })
             }
+            // The scan anchors at the define commit's sequence; a write
+            // sharing that commit — this transaction's own — cannot be told
+            // from a pre-existing row, so the scan would double a key the
+            // live capture already carried (FEAT-S1 D8).
+            StatementKind::DefineFeed {
+                initial_scan: true, ..
+            } if open.is_some() => Err(Error::FeedScanInTransaction { span }),
             // It runs its script in a transaction of its own, which an enclosing
             // one would hold back or silently split from.
             StatementKind::Restore { .. } if open.is_some() => Err(Error::RestoreRefused {
@@ -219,6 +232,9 @@ impl<'a> Session<'a> {
                             Ok(outcome) => outcome,
                             Err(refusal) => return Err(fell_behind(refusal, &transaction).await?),
                         };
+                        // The captured writes' messages land in this commit
+                        // or it refuses (FEAT-S1).
+                        self.flush_feeds(&mut transaction).await?;
                         if statement.across
                             && let Some(parts) = Self::across_parts(&transaction).await?
                         {

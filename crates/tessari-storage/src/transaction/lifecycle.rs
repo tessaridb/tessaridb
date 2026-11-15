@@ -36,6 +36,7 @@ impl<'a> Transaction<'a> {
             field_expiring: std::collections::HashMap::new(),
             lifetimes: BTreeMap::new(),
             trims: std::collections::HashMap::new(),
+            feed_captures: BTreeMap::new(),
             reading_at: std::sync::OnceLock::new(),
             floors: crate::owned::Owned::new(BTreeMap::new()),
             guarded: crate::owned::Owned::new(std::collections::BTreeSet::new()),

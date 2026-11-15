@@ -47,6 +47,10 @@ pub struct TopicDeclaration {
     /// The partitions this topic is split into; `None` for a topic that holds
     /// its messages itself (ADR-0131).
     pub partitions: Option<Partitioning>,
+    /// The feed that owns this topic, when one does (FEAT-S1): hand appends
+    /// are refused, and only the feed's capture writes it. Written only when
+    /// present, so a topic without an owner is the object it always was.
+    pub owned_by: Option<String>,
 }
 
 /// A topic split into partitions, each a topic of its own (ADR-0131).
@@ -72,6 +76,7 @@ const FIELD_DEDUPLICATE: &str = "deduplicate";
 const FIELD_DEDUPLICATE_ON: &str = "deduplicate_on";
 const FIELD_PARTITIONS: &str = "partitions";
 const FIELD_PARTITIONS_BY: &str = "partitions_by";
+const FIELD_OWNED_BY: &str = "owned_by";
 
 fn positive(fields: &BTreeMap<String, Value>, field: &'static str) -> Result<Option<u64>> {
     match fields.get(field) {
@@ -134,6 +139,9 @@ impl TopicDeclaration {
                 fields.insert(FIELD_PARTITIONS_BY.to_owned(), Value::from(by.as_str()));
             }
         }
+        if let Some(owner) = &self.owned_by {
+            fields.insert(FIELD_OWNED_BY.to_owned(), Value::from(owner.as_str()));
+        }
         Value::Object(fields)
     }
 
@@ -179,6 +187,17 @@ impl TopicDeclaration {
                 }
             },
             partitions: partitioning(fields)?,
+            owned_by: match fields.get(FIELD_OWNED_BY) {
+                None => None,
+                Some(Value::String(owner)) => Some(owner.clone()),
+                Some(other) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: ENTITY,
+                        field: FIELD_OWNED_BY,
+                        found: other.type_name(),
+                    });
+                }
+            },
         })
     }
 }

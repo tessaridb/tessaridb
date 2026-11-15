@@ -231,6 +231,33 @@ pub(crate) fn quoted(text: &str) -> Option<String> {
 /// `DEFINE EVENT …;` for one of a table's events, as it was written
 /// (ADR-0110). A body of more than one statement is written in braces; `FOR`
 /// is written only when the event runs for fewer than all three writes.
+/// `DEFINE FEED …;` for one of a table's feeds, as it was written (FEAT-S1).
+pub(crate) fn write_feed(
+    script: &mut String,
+    table: &str,
+    feed: &tessari_storage::FeedDeclaration,
+) {
+    let _ = write!(
+        script,
+        "DEFINE FEED {} ON {table} INTO {}",
+        feed.name, feed.topic
+    );
+    if feed.on.len() < tessari_types::WriteKind::ALL.len() {
+        let words: Vec<&str> = feed.on.iter().map(|kind| kind.word()).collect();
+        let _ = write!(script, " FOR {}", words.join(", "));
+    }
+    if feed.image == tessari_types::FeedImage::Keys {
+        let _ = write!(script, " IMAGE KEYS");
+    }
+    if let Some(when) = &feed.when {
+        let _ = write!(script, " WHEN {when}");
+    }
+    if feed.initial_scan {
+        let _ = write!(script, " WITH INITIAL SCAN");
+    }
+    let _ = writeln!(script, ";");
+}
+
 pub(crate) fn write_event(
     script: &mut String,
     table: &str,

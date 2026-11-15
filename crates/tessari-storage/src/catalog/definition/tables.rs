@@ -4,12 +4,12 @@ use super::ShardMap;
 use super::{
     EdgeDeclaration, FIELD_AUTO_SPLIT, FIELD_BUCKET, FIELD_CEILING, FIELD_COLLECTION,
     FIELD_CONFLICT, FIELD_DATABASE, FIELD_EDGE, FIELD_ENDPOINTS, FIELD_EVENTS, FIELD_EXPIRE,
-    FIELD_GEO, FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY, FIELD_NAME, FIELD_NAMESPACE, FIELD_PARTITION,
-    FIELD_QUEUE, FIELD_REFERENCED_BY, FIELD_SCHEMAFULL, FIELD_SERIES, FIELD_SHARDS, FIELD_SPACE,
-    FIELD_SPREAD, FIELD_TOPIC, FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW, QueueDeclaration,
-    SeriesDeclaration, StoredKind, TableKind, VaultCustody, VaultDeclaration, VectorDeclaration,
-    ViewDeclaration, byte_count, ceiling, field_id, field_name, flag, identity_kind, number,
-    object,
+    FIELD_FEEDS, FIELD_GEO, FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY, FIELD_NAME, FIELD_NAMESPACE,
+    FIELD_PARTITION, FIELD_QUEUE, FIELD_REFERENCED_BY, FIELD_SCHEMAFULL, FIELD_SERIES,
+    FIELD_SHARDS, FIELD_SPACE, FIELD_SPREAD, FIELD_STORAGE_KIND, FIELD_TOPIC, FIELD_VAULT,
+    FIELD_VECTOR, FIELD_VIEW, QueueDeclaration, SeriesDeclaration, StoredKind, TableKind,
+    VaultCustody, VaultDeclaration, VectorDeclaration, ViewDeclaration, byte_count, ceiling,
+    field_id, field_name, flag, identity_kind, number, object, storage_kind,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -18,6 +18,63 @@ use tessari_types::{
 };
 
 mod encoding;
+
+/// How a plain record table stores its records beside its row: the storage
+/// kind, chosen at `DEFINE` and immutable after (worksheet §2; the owner,
+/// 2026-11-15 — a column table is declared at definition and the kind does
+/// not convert).
+///
+/// Rides on the definition beside [`TableKind`] rather than inside it,
+/// because a kind encodes which *rules* a table plays by while the storage
+/// kind changes the *layout*: an update on a columnar table is still an
+/// update, a where still filters. `TableKind` stays untouched, which is what
+/// lets a kind that holds records adopt the attribute later without a
+/// migration of the mechanism (Q-G082-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageKind {
+    /// The versioned row is the only layout — the default every table that
+    /// existed before the clause decodes to.
+    Row,
+    /// Beside each versioned row, the write path projects every field's
+    /// values into per-column chunks inside the record's own commit batch
+    /// (ADR-0137). The row stays the canonical, versioned value.
+    Column,
+}
+
+/// Hash partitioning of a columnar table (G082 SG4): the projection keeps
+/// one chunk lane per partition, and a row's lane is chosen by the murmur2
+/// hash of the partition field's value. `count` is a definition-time
+/// constant — raising it is a redefine (DROP+DEFINE), the same immutability
+/// rule the storage kind carries (worksheet §6.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HashPartitioning {
+    /// How many lanes the projection keeps; must be at least one.
+    pub count: u32,
+    /// The declared field whose value routes a row, by name — resolved per
+    /// write against the table's declared fields.
+    pub by: String,
+}
+
+impl StorageKind {
+    /// The word the definition carries, and [`Self::parse`] its inverse.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Row => "row",
+            Self::Column => "column",
+        }
+    }
+
+    /// The word a definition carries, when this build knows it.
+    #[must_use]
+    pub fn parse(word: &str) -> Option<Self> {
+        match word {
+            "row" => Some(Self::Row),
+            "column" => Some(Self::Column),
+            _ => None,
+        }
+    }
+}
 
 /// A table within a database.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +160,10 @@ pub struct TableDefinition {
     /// order; written only when there is one, so an entry without events is
     /// the bytes it always was.
     pub events: Vec<super::EventDeclaration>,
+    /// The declared captures of this table's writes into topics (FEAT-S1), in
+    /// name order; written only when there is one, so an entry without feeds
+    /// is the bytes it always was.
+    pub feeds: Vec<super::FeedDeclaration>,
     /// Whether the table's records expire, and the lifetime a new one gets
     /// (ADR-0122 A1); written only when declared.
     pub expire: Option<super::TableExpiry>,
@@ -110,6 +171,16 @@ pub struct TableDefinition {
     /// (ADR-0134 D10), so a delete here asks only them; written only when there
     /// is one.
     pub referenced_by: Vec<tessari_types::FieldId>,
+    /// How the table stores its records beside its row, when it named one;
+    /// written only when `STORE COLUMN` declared it, so every entry without
+    /// the field is the row-store table it always was. Immutable after define:
+    /// the grammar exposes no `ALTER` for it, and `DROP` + `DEFINE` is the
+    /// migration (worksheet §2, C1).
+    pub storage_kind: Option<StorageKind>,
+    /// The hash partitioning the projection keeps, when the definition named
+    /// one; `None` is the single-lane layout SG2 built. Immutable after
+    /// define, as the storage kind is (worksheet §6.3).
+    pub partitions: Option<HashPartitioning>,
 }
 
 impl TableDefinition {
@@ -117,6 +188,18 @@ impl TableDefinition {
     #[must_use]
     pub fn is_edge(&self) -> bool {
         matches!(self.kind, TableKind::Edge(_))
+    }
+
+    /// The `STORE` clause word for this definition: `None` decodes to the
+    /// row layout, so the word is `ROW` for every table that predates the
+    /// clause as much as for one that said it (G082; describe writes the
+    /// word always, on the same rule as the strictness flag).
+    #[must_use]
+    pub const fn storage_kind_word(&self) -> &'static str {
+        match self.storage_kind {
+            Some(StorageKind::Column) => "COLUMN",
+            Some(StorageKind::Row) | None => "ROW",
+        }
     }
 
     /// Whether the table holds files.
@@ -265,4 +348,10 @@ pub struct TableShape {
     /// so new records spread over the table's shards (`IDENTITY uuid SPREAD`,
     /// ADR-0113 D1).
     pub spread: bool,
+    /// The storage kind the definition named, when it named one; `None` is
+    /// the row store, which is every table the word could not have reached.
+    pub storage_kind: Option<StorageKind>,
+    /// The hash partitioning the definition named, when it named one; `None`
+    /// is the single-lane projection.
+    pub partitions: Option<HashPartitioning>,
 }

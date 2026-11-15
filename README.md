@@ -10,10 +10,10 @@ Eleven engines. One transaction. One binary. A real-time multi-model database,
 written in Rust, for AI applications and the products built around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.39.6-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.40.0-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.98%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-1696%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-1713%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/tessaridb/tessaridb-protocol) ·
@@ -22,8 +22,8 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is pre-1.0 — `0.39.6`.** It is released and tested, published as
-> a container image (`tessaridb/tessaridb:0.39.6`; the image tracks the
+> **TessariDB is pre-1.0 — `0.40.0`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.40.0`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
 > What a pre-1.0 release does not promise yet is permanence of the language and the wire:
@@ -68,6 +68,7 @@ committed bytes, under one snapshot, in one language.
 | object storage | buckets of files, in the same transaction as their records |
 | somewhere for secrets | a vault — fields sealed before they are stored |
 | a time-series store, an audit trail | series with a retention floor, `VERSION`, the change feed |
+| an analytical column store | `STORE COLUMN` — a columnar projection of a table or series, pruned by per-chunk statistics |
 
 **Not the fastest at any one of those jobs; enough at all of them.** A system
 built for one job will beat a general store at it, and nothing here claims
@@ -207,7 +208,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.39.6` · not published to crates.io.** What
+**Stage: active development · `0.40.0` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 

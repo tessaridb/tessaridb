@@ -337,7 +337,7 @@ impl Session<'_> {
             .collect();
         Ok(Outcome::Records {
             records,
-            plan: Plan::new(AccessPath::Scan).on(&topic.name.text),
+            plan: Box::new(Plan::new(AccessPath::Scan).on(&topic.name.text)),
             notes,
             suggestion: None,
             only: false,

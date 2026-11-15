@@ -215,6 +215,11 @@ impl Transaction<'_> {
     ) -> Result<Vec<(RecordId, RecordValue)>> {
         let mut taken = Vec::with_capacity(batch.len());
         for (key, value) in batch {
+            // A columnar table's chunk, map and pointer keys share the
+            // record prefix; a walk of the table meets them and walks past.
+            if !RecordKey::is_record_key(key.as_slice()) {
+                continue;
+            }
             let decoded = RecordKey::decode(key.as_slice())?;
             if decoded.version > self.snapshot || resolved.as_ref() == Some(&decoded.id) {
                 continue;

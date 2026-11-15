@@ -245,6 +245,22 @@ impl StoreValue for RecordValue {
     }
 }
 
+/// A raw stored value is its own stored form.
+///
+/// This is the [`StoreValue`] the columnar projection's keys use: chunk
+/// payloads, map entries and open-chunk pointers carry no record-version
+/// envelope (the columnar subsystem owns their interior — see
+/// `columnar_keys`), so their bytes pass through unchanged.
+impl StoreValue for Value {
+    fn encode(&self) -> Value {
+        self.clone()
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        Ok(Value::from(bytes))
+    }
+}
+
 mod across;
 mod expiry;
 

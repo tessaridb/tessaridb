@@ -30,6 +30,7 @@
 
 mod adjacency;
 mod causal;
+mod columnar_keys;
 mod error;
 mod expiry_key;
 mod index_keys;
@@ -38,6 +39,7 @@ mod keys;
 mod kind;
 mod log_id;
 mod modified_key;
+mod murmur2;
 mod node;
 mod order;
 mod payload;
@@ -50,6 +52,7 @@ mod value;
 
 pub use adjacency::{AdjacencyKey, Direction, EdgeProperties};
 pub use causal::{CausalOrder, CausalStamp, CausalVersions};
+pub use columnar_keys::{ChunkKey, ColumnFamily, MapKey, PointerKey};
 pub use error::{Error, Result};
 pub use expiry_key::{ExpiryKey, ExpiryMark};
 pub use index_keys::{
@@ -68,6 +71,7 @@ pub use keys::{
 pub use kind::KeyKind;
 pub use log_id::{LogId, Writer};
 pub use modified_key::ModifiedKey;
+pub use murmur2::murmur2;
 pub use node::{BUILD_VERSION, Membership, NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};
 pub use order::{KeyReader, KeyWriter};
 pub use payload::{decode as decode_payload, encode as encode_payload};

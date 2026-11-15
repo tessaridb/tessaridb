@@ -218,6 +218,20 @@ impl RecordKey {
         writer.finish()
     }
 
+    /// Whether `bytes` hold a record key, as against one of the columnar
+    /// family keys that share the record table prefix (`docs/key-grammar.md`
+    /// §6.6). Whole-prefix iterations — a table walk, a state read, a
+    /// reclaim — meet both occupants; a read of one exact key never asks,
+    /// because a versions-prefix range cannot collide with the families.
+    /// The check is a peek, not a decode: a corrupt key still fails loudly
+    /// when the iteration decodes it for real.
+    #[must_use]
+    pub fn is_record_key(bytes: &[u8]) -> bool {
+        bytes
+            .get(TABLE_PREFIX_LEN)
+            .is_some_and(|byte| record_id::is_record_start(*byte))
+    }
+
     /// The prefix shared by every version of one record.
     ///
     /// Bounding a scan with this is what keeps a snapshot read inside the record

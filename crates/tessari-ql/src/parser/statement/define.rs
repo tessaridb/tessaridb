@@ -2,6 +2,7 @@
 
 mod declared;
 mod event;
+mod feed;
 mod param;
 mod search;
 use super::Parser;
@@ -71,6 +72,8 @@ impl Parser<'_> {
                 let mut partition: Option<Name> = None;
                 let mut spread = false;
                 let mut expire: Option<TableExpiry> = None;
+                let mut store: Option<crate::ast::StoreKind> = None;
+                let mut partitions: Option<(u64, String)> = None;
                 loop {
                     if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
                         strictness = Some(true);
@@ -117,6 +120,32 @@ impl Parser<'_> {
                     // (ADR-0122 A1).
                     } else if expire.is_none() && self.eat_word("expire") {
                         expire = Some(self.table_expiry()?);
+                    // `STORE ROW|COLUMN` — the clause head is the reserved
+                    // `STORE` keyword (ADR-0118 reserved it for
+                    // `ALTER STORE FINALIZE FORMAT`), so this arm eats the
+                    // keyword where its neighbours eat a contextual word;
+                    // `ROW` and `COLUMN` stay contextual idents (G082).
+                    } else if store.is_none() && self.eat_keyword(Keyword::Store) {
+                        store = Some(if self.eat_word("row") {
+                            crate::ast::StoreKind::Row
+                        } else if self.eat_word("column") {
+                            crate::ast::StoreKind::Column
+                        } else {
+                            return Err(self.error_here(
+                                "`ROW` or `COLUMN` after `STORE` — the layout the records are kept in",
+                            ));
+                        });
+                    // `PARTITIONS n BY field` — the hash partitioning of a
+                    // columnar projection (G082 SG4). `BY` is required here,
+                    // unlike on a topic where a missing key reads as round
+                    // robin: a columnar table's lanes are keyed or refused,
+                    // never implicit.
+                    } else if partitions.is_none() && self.eat_word("partitions") {
+                        let count = self.positive_count(
+                            "a whole number from 1 to 1048576 — the lanes the projection routes across",
+                        )?;
+                        self.expect_word("by", "`BY` and the field a record's lane is picked by")?;
+                        partitions = Some((count, self.name()?.text));
                     } else {
                         break;
                     }
@@ -153,6 +182,8 @@ impl Parser<'_> {
                     spread,
                     conflict,
                     expire,
+                    store,
+                    partitions,
                     if_not_exists,
                 })
             }
@@ -311,6 +342,8 @@ impl Parser<'_> {
             _ if self.eat_word("view") => self.define_view(),
             // Contextual, as `view` is: `event` is an ordinary table name.
             _ if self.eat_word("event") => self.define_event(),
+            // Contextual, as `event` is: `feed` is an ordinary table name.
+            _ if self.eat_word("feed") => self.define_feed(),
             // Contextual, as `event` is.
             _ if self.eat_word("param") => self.define_param(),
             _ => Err(self.error_here(

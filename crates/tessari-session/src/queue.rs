@@ -226,7 +226,7 @@ impl Session<'_> {
 
         Ok(Outcome::Records {
             records: taken,
-            plan,
+            plan: Box::new(plan),
             notes: Vec::new(),
             suggestion: None,
             only: false,
@@ -309,7 +309,7 @@ impl Session<'_> {
         // that a claim cannot count one record twice.
         Ok(Outcome::Records {
             records: vec![(record, payload)],
-            plan: Plan::new(AccessPath::Record).on(&target.table.name.text),
+            plan: Box::new(Plan::new(AccessPath::Record).on(&target.table.name.text)),
             notes: Vec::new(),
             suggestion: None,
             only: false,
@@ -488,7 +488,7 @@ impl Session<'_> {
 
         Ok(Outcome::Records {
             records: freed,
-            plan: Plan::new(AccessPath::Scan).on(&table.name.text),
+            plan: Box::new(Plan::new(AccessPath::Scan).on(&table.name.text)),
             notes: Vec::new(),
             suggestion: None,
             only: false,

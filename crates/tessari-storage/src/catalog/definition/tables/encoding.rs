@@ -1,3 +1,4 @@
+use super::super::FIELD_PARTITIONS;
 use super::*;
 
 impl TableDefinition {
@@ -81,6 +82,43 @@ impl TableDefinition {
                     self.events
                         .iter()
                         .map(super::super::EventDeclaration::to_value)
+                        .collect(),
+                ),
+            );
+        }
+        // Written only when the definition named one, for the reason the
+        // optional fields above keep: a table the word never reached stays
+        // byte-for-byte what it was. Row is never written — absence reads as
+        // it, which is the contract every table that existed before the
+        // clause keeps (G082, worksheet §2).
+        if let Some(StorageKind::Column) = self.storage_kind {
+            fields.insert(FIELD_STORAGE_KIND.to_owned(), Value::from("column"));
+        }
+        // Written only when the definition named one: a table the clause
+        // never reached keeps the single-lane projection, as the row-store
+        // contract above keeps every table the word never reached (worksheet
+        // §6.3).
+        if let Some(partitioning) = &self.partitions {
+            fields.insert(
+                FIELD_PARTITIONS.to_owned(),
+                Value::Object(BTreeMap::from([
+                    (
+                        "count".to_owned(),
+                        Value::Number(tessari_types::Number::Integer(i64::from(
+                            partitioning.count,
+                        ))),
+                    ),
+                    ("by".to_owned(), Value::from(partitioning.by.as_str())),
+                ])),
+            );
+        }
+        if !self.feeds.is_empty() {
+            fields.insert(
+                FIELD_FEEDS.to_owned(),
+                Value::Array(
+                    self.feeds
+                        .iter()
+                        .map(super::super::FeedDeclaration::to_value)
                         .collect(),
                 ),
             );
@@ -232,6 +270,8 @@ impl TableDefinition {
                 ceiling: ceiling(fields)?,
             })?,
             identity: identity_kind(fields, "table")?,
+            storage_kind: storage_kind(fields, "table")?,
+            partitions: super::super::reading::hash_partitioning(fields, "table")?,
             graph: match fields.get(FIELD_GRAPH) {
                 Some(_) => Some(GraphId::new(field_id(fields, FIELD_GRAPH, "table")?)),
                 None => None,
@@ -317,6 +357,20 @@ impl TableDefinition {
                     return Err(Error::CatalogMalformed {
                         entity: "table",
                         field: FIELD_EVENTS,
+                        found: other.type_name(),
+                    });
+                }
+            },
+            feeds: match fields.get(FIELD_FEEDS) {
+                None => Vec::new(),
+                Some(Value::Array(held)) => held
+                    .iter()
+                    .map(super::super::FeedDeclaration::from_value)
+                    .collect::<Result<_>>()?,
+                Some(other) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: "table",
+                        field: FIELD_FEEDS,
                         found: other.type_name(),
                     });
                 }

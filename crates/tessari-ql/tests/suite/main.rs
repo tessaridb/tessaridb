@@ -11,6 +11,7 @@
 mod assertion;
 mod consumers;
 mod creates;
+mod feeds;
 mod fusion;
 mod geometry_literal;
 mod identity;

@@ -26,6 +26,10 @@ pub struct Savepoint {
     field_expiring: HashMap<RecordAddress, Vec<(String, u64)>>,
     lifetimes: BTreeMap<RecordAddress, Lifetime>,
     trims: HashMap<(NamespaceId, DatabaseId, TableId), u64>,
+    /// What the feed capture held, restored with the writes it mirrors
+    /// (FEAT-S1): a rollback undoes the capture of a record it undoes the
+    /// write of.
+    feed_captures: BTreeMap<RecordAddress, Option<Vec<u8>>>,
     claims: usize,
     across: bool,
 }
@@ -49,6 +53,7 @@ impl Transaction<'_> {
             field_expiring: self.field_expiring.clone(),
             lifetimes: self.lifetimes.clone(),
             trims: self.trims.clone(),
+            feed_captures: self.feed_captures.clone(),
             claims: self.claiming.borrow().len(),
             across: self.across.is_some(),
         }
@@ -73,6 +78,7 @@ impl Transaction<'_> {
         self.field_expiring.clone_from(&savepoint.field_expiring);
         self.lifetimes.clone_from(&savepoint.lifetimes);
         self.trims.clone_from(&savepoint.trims);
+        self.feed_captures.clone_from(&savepoint.feed_captures);
         Ok(())
     }
 }

@@ -2107,3 +2107,100 @@ fn quantized_belongs_to_a_vector_index_alone() {
         "{refused}"
     );
 }
+
+#[test]
+fn store_column_and_partitions_parse_on_define_table() {
+    let StatementKind::DefineTable {
+        store, partitions, ..
+    } = one("DEFINE TABLE events (kind string, seq int) STORE COLUMN;")
+    else {
+        panic!("expected a table definition");
+    };
+    assert_eq!(store, Some(tessari_ql::StoreKind::Column));
+    assert_eq!(partitions, None);
+
+    let StatementKind::DefineTable {
+        store, partitions, ..
+    } = one("DEFINE TABLE events (kind string, seq int) STORE COLUMN PARTITIONS 4 BY kind;")
+    else {
+        panic!("expected a table definition");
+    };
+    assert_eq!(store, Some(tessari_ql::StoreKind::Column));
+    assert_eq!(partitions, Some((4, "kind".to_owned())));
+
+    // The default's word parses to the same statement as the silent default.
+    let StatementKind::DefineTable { store, .. } =
+        one("DEFINE TABLE events (kind string) STORE ROW;")
+    else {
+        panic!("expected a table definition");
+    };
+    assert_eq!(store, Some(tessari_ql::StoreKind::Row));
+    let StatementKind::DefineTable { store, .. } = one("DEFINE TABLE events (kind string);") else {
+        panic!("expected a table definition");
+    };
+    assert_eq!(store, None, "a silence is not a stated ROW");
+}
+
+#[test]
+fn store_and_partitions_each_appear_at_most_once() {
+    let Err(refused) =
+        tessari_ql::parse("DEFINE TABLE events (kind string) STORE COLUMN STORE ROW;")
+    else {
+        panic!("a second STORE was accepted");
+    };
+    assert!(
+        refused.to_string().contains("STORE"),
+        "the refusal names the word: {refused}"
+    );
+    let Err(refused) = tessari_ql::parse(
+        "DEFINE TABLE events (kind string) STORE COLUMN PARTITIONS 4 BY kind PARTITIONS 8 BY kind;",
+    ) else {
+        panic!("a second PARTITIONS was accepted");
+    };
+    assert!(
+        refused.to_string().contains("PARTITIONS"),
+        "the refusal names the word: {refused}"
+    );
+}
+
+#[test]
+fn partitions_on_a_table_requires_by_field() {
+    // A topic's `PARTITIONS 3` without BY reads as round robin; a columnar
+    // table's lanes are keyed or refused, never implicit.
+    let Err(refused) =
+        tessari_ql::parse("DEFINE TABLE events (kind string) STORE COLUMN PARTITIONS 4;")
+    else {
+        panic!("PARTITIONS without BY on a table was accepted");
+    };
+    assert!(
+        refused.to_string().contains("BY"),
+        "the refusal names the missing word: {refused}"
+    );
+    let Err(refused) = tessari_ql::parse("DEFINE TABLE events (kind string) STORE FOLDER;") else {
+        panic!("STORE without ROW or COLUMN was accepted");
+    };
+    assert!(
+        refused.to_string().contains("ROW") && refused.to_string().contains("COLUMN"),
+        "the refusal names the choices: {refused}"
+    );
+}
+
+#[test]
+fn alter_table_store_parses_as_the_immutable_change() {
+    let StatementKind::AlterTable { table, change } = one("ALTER TABLE events STORE COLUMN;")
+    else {
+        panic!("expected an alter table");
+    };
+    assert_eq!(table.name.text, "events");
+    assert!(matches!(
+        change,
+        tessari_ql::TableChange::Store(tessari_ql::StoreKind::Column)
+    ));
+    let StatementKind::AlterTable { change, .. } = one("ALTER TABLE events STORE ROW;") else {
+        panic!("expected an alter table");
+    };
+    assert!(matches!(
+        change,
+        tessari_ql::TableChange::Store(tessari_ql::StoreKind::Row)
+    ));
+}

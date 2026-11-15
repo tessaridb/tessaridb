@@ -36,7 +36,7 @@
 mod parts;
 use std::fmt::Write as _;
 
-pub(crate) use parts::{write_event, write_field, write_index, write_split};
+pub(crate) use parts::{write_event, write_feed, write_field, write_index, write_split};
 use tessari_storage::{
     EDGE_IN, EDGE_OUT, FieldDefinition, GEO_FIELD, IndexDefinition, TableDefinition, TableKind,
     VECTOR_FIELD,
@@ -288,9 +288,16 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
             .time
             .as_ref()
             .map_or_else(String::new, |field| format!(" TIME {field}"));
+        let layout = format!(" STORE {}", definition.storage_kind_word())
+            + &definition
+                .partitions
+                .as_ref()
+                .map_or_else(String::new, |partitioning| {
+                    format!(" PARTITIONS {} BY {}", partitioning.count, partitioning.by)
+                });
         let _ = writeln!(
             script,
-            "DEFINE SERIES {name} RETAIN {}{time};",
+            "DEFINE SERIES {name} RETAIN {}{time}{layout};",
             declared.retain.to_literal()
         );
         return Ok(());
@@ -427,6 +434,26 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
     } else {
         " SCHEMALESS"
     });
+    // G082: the storage kind is written always, on the same rule the
+    // strictness flag is — a declaration leaning on a default is one whose
+    // meaning changes when the default moves, and changes silently, in a
+    // script somebody kept. `STORE ROW` is the default's word, so existing
+    // row tables render it from here on, and a stored script keeps saying
+    // what it means after the default moves again. An edge table is the
+    // exception, and it is the catalog's rule, not this arm's taste: a
+    // storage kind rides only on a plain record table, so the word on an
+    // edge table would restore as a refusal (worksheet §3).
+    if definition.kind == TableKind::Table {
+        script.push_str(" STORE ");
+        script.push_str(definition.storage_kind_word());
+        if let Some(partitioning) = &definition.partitions {
+            let _ = write!(
+                script,
+                " PARTITIONS {} BY {}",
+                partitioning.count, partitioning.by
+            );
+        }
+    }
     write_identity(script, definition);
     write_conflict(script, definition);
     write_split(script, definition);

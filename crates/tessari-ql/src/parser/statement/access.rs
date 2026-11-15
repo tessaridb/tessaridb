@@ -4,8 +4,8 @@ use super::Parser;
 use tessari_types::Number;
 
 use crate::ast::{
-    AutoSplit, Credential, Name, NamespaceChange, Password, ReachRef, StatementKind, TableChange,
-    UserChange, UserGrant,
+    AutoSplit, Credential, Name, NamespaceChange, Password, ReachRef, StatementKind, StoreKind,
+    TableChange, UserChange, UserGrant,
 };
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
@@ -120,6 +120,22 @@ impl Parser<'_> {
                 } else {
                     self.expect_keyword(Keyword::To, "`TO` and the table's new name, or `FIELD`")?;
                     TableChange::Rename(self.name()?)
+                };
+                return Ok(StatementKind::AlterTable { table, change });
+            }
+            // G082 C1. `STORE ROW|COLUMN` — the clause head is the reserved
+            // `STORE` keyword; the statement parses so scripts that generate
+            // it do not break, and refuses at execution, because the storage
+            // kind is immutable: DROP and DEFINE is the migration.
+            if self.eat_keyword(Keyword::Store) {
+                let change = if self.eat_word("row") {
+                    TableChange::Store(StoreKind::Row)
+                } else if self.eat_word("column") {
+                    TableChange::Store(StoreKind::Column)
+                } else {
+                    return Err(self.error_here(
+                        "`ROW` or `COLUMN` after `STORE` — the layout the records are kept in",
+                    ));
                 };
                 return Ok(StatementKind::AlterTable { table, change });
             }

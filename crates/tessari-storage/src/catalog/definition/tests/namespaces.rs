@@ -148,6 +148,7 @@ fn every_definition_round_trips_through_its_value() {
         expire: None,
         // Not the default either, for the identity's reason: an empty list
         // round trips through a field that was never written.
+        feeds: Vec::new(),
         events: vec![super::super::EventDeclaration {
             name: "audit".to_owned(),
             on: vec![tessari_types::WriteKind::Update],
@@ -155,6 +156,8 @@ fn every_definition_round_trips_through_its_value() {
             body: "CREATE log = { v: $after.v }".to_owned(),
         }],
         referenced_by: Vec::new(),
+        storage_kind: None,
+        partitions: None,
     };
     assert_eq!(
         TableDefinition::from_value(&table.to_value()).unwrap(),

@@ -209,6 +209,15 @@ pub const KAFKA_QUARANTINE: TableId = TableId::new(29);
 /// applying the log derives the same instants without reading a clock.
 pub const TOPIC_CLOCKS: TableId = TableId::new(30);
 
+/// Where each declared feed's initial scan has reached (FEAT-S1 D8).
+///
+/// One row per (table, feed) carrying `WITH INITIAL SCAN`: the snapshot
+/// sequence the scan emits against, the resume position, and whether the
+/// table is exhausted. The row is written by the defining commit itself, so
+/// its key version IS the define commit's sequence — the snapshot the scan
+/// must anchor at, with no second write to carry it.
+pub const FEED_SCAN_STATES: TableId = TableId::new(31);
+
 /// Every system table and its name, in id order — part of the on-disk format,
 /// because a row's key carries the table id (`docs/key-grammar.md` §9).
 pub const ALL: &[(TableId, &str)] = &[
@@ -242,6 +251,7 @@ pub const ALL: &[(TableId, &str)] = &[
     (ROLLUP_STATES, "ROLLUP_STATES"),
     (KAFKA_QUARANTINE, "KAFKA_QUARANTINE"),
     (TOPIC_CLOCKS, "TOPIC_CLOCKS"),
+    (FEED_SCAN_STATES, "FEED_SCAN_STATES"),
 ];
 
 /// The one record [`VAULT_ROOT`] holds.

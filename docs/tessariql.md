@@ -2082,6 +2082,7 @@ Every catalog object this language can declare can be undeclared, except one:
 | `DEFINE TOPIC CONSUMER` | `DROP TOPIC CONSUMER` |
 | `DEFINE QUEUE` | `DROP QUEUE` |
 | `DEFINE EVENT` | `DROP EVENT` |
+| `DEFINE FEED` | `DROP FEED` |
 | `DEFINE PARAM` | `DROP PARAM` |
 | `DEFINE NODE` | **nothing — see below** |
 
@@ -3772,6 +3773,68 @@ value `OR REPLACE` last stored, on its next run.
 Defining or dropping one needs the authority to define in the database.
 `DEFINE PARAM` of a name already held is refused `ParamExists` unless it says
 `OR REPLACE` or `IF NOT EXISTS`, and the two together are refused.
+
+## 4b. Choosing the layout: `STORE COLUMN`
+
+```
+DEFINE TABLE events (seq int, kind string) STORE COLUMN;
+DEFINE TABLE events (seq int, kind string) STORE COLUMN PARTITIONS 4 BY kind;
+DEFINE TABLE events (seq int, kind string) STORE ROW;
+DEFINE SERIES readings RETAIN 30d TIME at STORE COLUMN PARTITIONS 4 BY sensor;
+```
+
+A table stores its records as versioned rows; saying `STORE COLUMN` beside the
+definition adds a **columnar projection** of the same records, written inside
+the record's own commit batch — every chunk of the projection lands in the same
+atomic write as the rows it projects, and a statement that refuses refuses
+both. The row stays the authority: a read served through the projection names
+candidates, and the row at the snapshot confirms each one, so a columnar table
+answers exactly what the row store answers and the plan says which path it
+took. Analytical reads — folds and filters over many rows — skip chunks the
+projection's per-chunk statistics rule out, and a `GROUP BY` on the partition
+key folds each partition's lanes and merges the partials.
+
+- **`STORE ROW` is the default, and the word `INFO FOR TABLE` and
+  `BACKUP SCRIPT` render.** A script that never says the word reads back with
+  it said, on the rule that a declaration leaning on a default changes meaning
+  silently when the default moves.
+- **The kind is immutable after define.** `ALTER TABLE … STORE …` parses and
+  refuses `StorageKindImmutable`: the migration between layouts is `DROP` and
+  `DEFINE`, not a clause.
+- **`PARTITIONS n BY field`** routes each row's projection to one of `n`
+  lanes by the murmur2 hash of the key field's value; a row whose key is
+  `null` or absent routes to partition 0. The partition count and key are
+  definition-time constants, immutable as the kind is. On a schemafull table
+  whose definition lists its columns, the key must be one of them —
+  `PartitionKeyUndeclared` refuses a key nobody declares, because it would
+  route every row to partition 0, a single-lane table wearing the clause.
+- **Only record-shaped kinds take a storage kind: a plain table and a
+  series.** `STORE COLUMN` on an edge table, a queue, a topic, a space or any
+  other kind refuses `StorageKindOnKind`. On a series the clause keeps a
+  columnar projection of the points the same way — the series read shapes
+  (windows, `FILL`, `LATEST BY`, `ASOF JOIN`, counter folds) answer exactly
+  what the row series answers.
+
+The stated limits of a columnar table at this milestone, each honest rather
+than implicit:
+
+1. Collections, buckets and the other non-record kinds are row-kind; topics,
+   queues and spaces never take the clause — they hold no record rows for a
+   projection to serve.
+2. **Feeds refuse on a columnar table** (`FeedOnColumnar`) — the feed captures
+   from the row authority, which a columnar table fully retains, so the
+   composition is designed, but it is not built yet; the refusal is named so a
+   later release lifts it with tests.
+3. A single-row `UPDATE` costs a chunk copy-on-write; columnar is not free for
+   OLTP-shaped writes, and the store does not pretend otherwise. Measured at
+   one shape (100 000 rows, one commit, debug build): the columnar write costs
+   2.11× the row write — the tax is published, not hidden.
+4. Reads of versions and point `GET`s are always row-path — exact, never
+   pruned. Series reads are row-path at this milestone too: the projection
+   holds the points, the row serves the reads; pruning series reads is the
+   designed follow-up once the schemaless gate lifts.
+5. Projection vacuum — reclaiming a deleted record's chunk space — rides the
+   store's existing version reclamation; no separate merge job ships yet.
 
 ## 5. Record statements
 
@@ -8783,6 +8846,99 @@ were written again would run for each of them and apply its effects a second tim
 over the effects the script already carries. A snapshot, the log, a follower and a
 restore apply commits whose effects are already in them, and run nothing.
 
+## 6g. A declared feed of a table's writes
+
+```tessariql
+DEFINE TOPIC order_events;
+DEFINE FEED orders_feed ON orders INTO order_events;
+DEFINE FEED deletes_only ON orders INTO delete_events FOR DELETE;
+DEFINE FEED big_only ON orders INTO big_events WHEN $after.total > 1000;
+DEFINE FEED keyed ON orders INTO key_events IMAGE KEYS;
+DEFINE FEED everything ON orders INTO all_events WITH INITIAL SCAN;
+DROP FEED keyed ON orders;
+```
+
+A feed is the outbox pattern of §6f declared instead of hand-written: **every
+write of a table's records lands in a topic**, as a message carrying the
+operation, the record's key and — unless `IMAGE KEYS` says otherwise — the
+images. Where the hand-written event body appends one message per *statement*
+that writes a record, the feed speaks for the *transaction*: a record written
+several times inside one `BEGIN … COMMIT` appears **once**, as the net effect —
+a record that was not there and now is answers `CREATE` with what it became, a
+record that was there and is gone answers `DELETE` with what it was, and a
+record that was not there and is not there lands nothing, even when it was
+created and deleted inside the one transaction.
+
+- **One commit.** The message and the writes it describes land together or not
+  at all: the capture refuses the commit exactly as an event's body refuses the
+  write, as `feed orders_feed on orders refused the write: …` carrying the
+  refusal. A `CANCEL` discards both; a `VERIFY` rehearsal runs the capture's
+  checks and then discards the messages with the rest.
+- **As whom.** The append is authorized exactly as the writer's own `CREATE` on
+  the topic would be. A writer who may write `orders` and not append
+  `order_events` has the write refused — the capture is part of the write, not
+  a loophole in its authority. And the images are what the writer may read: a
+  writer who may write a table and not read it feeds messages carrying no
+  image at all — the topic is not a way to copy what a grant hides somewhere
+  the writer can read. A field a field-grant hides is absent from an image
+  the writer may otherwise read.
+- **Which writes.** `FOR CREATE, UPDATE, DELETE` narrows the capture to those
+  kinds, as an event's `FOR` does. `WHEN $after.total > 1000` narrows it to the
+  records the condition holds for, bound to the same four names an event binds:
+  `$event`, `$before`, `$after` and `$id`. `IMAGE KEYS` drops the images and
+  keeps the key and the operation — the shape for a consumer that only needs to
+  know *that* and *which*.
+- **The topic is the feed's.** `INTO` names a topic that becomes the feed's
+  alone: a hand `CREATE` or `INSERT` into it is refused, naming the feed, so a
+  consumer is never fed a message nobody's writes produced. One topic belongs
+  to at most one feed; a feed's name is unique on its table. A topic that
+  declares `DEDUPLICATE` refuses a feed onto it, because a capture the window
+  drops is a loss the feature exists to forbid. The topic and the table must
+  live in one database — the capture appends in the writer's transaction, and a
+  transaction is one database's.
+- **What a message is.** `{ key, op, before?, after?, at }`: the record's
+  identity, the operation, the images `IMAGE` admits, and `at`, the instant the
+  write ran. The topic's own order is the ordering contract: positions are
+  dense and decided at the commit, and a message a reader can see is past every
+  message it describes. On a topic declared `PARTITIONS n BY f` the envelope
+  carries `f` from the record and the message lands in the partition it
+  chooses, so per-key order is the partition's order. A schema-full table that
+  does not declare the routing field refuses a feed onto the topic: no record
+  of it could ever carry the key, and the order the split promises would be a
+  round robin. The position is the
+  message's identity — resume with `FOR CONSUMER` or a group (§6e) and the
+  store's own machinery gives exactly once for what a consumer writes into it.
+
+Tables, collections and edge tables carry feeds; the kinds an event refuses
+refuse a feed too. `IF NOT EXISTS` keeps an existing feed of the name.
+
+**Dropping one.** `DROP FEED orders_feed ON orders` removes the capture and
+frees the topic in the same commit: the table's writes land nothing, and a
+caller's `CREATE` or `INSERT` into the topic is accepted again — it is a feed's
+only while a feed claims it. `DROP FEED IF EXISTS` answers `ok` when no feed of
+the name stands on the table, the drop half of a re-runnable migration. A feed
+whose `FOR`, `WHEN` or `IMAGE` should change is dropped and defined again; the
+combination is the migration path until an `ALTER` spelling exists.
+
+**Existing rows: `WITH INITIAL SCAN`.** A feed defined with `WITH INITIAL SCAN`
+does not only capture what is written from then on — a background job the feed
+owns scans the rows that already stand and appends one `CREATE` message per row
+to the topic, so a consumer starting at the topic's beginning sees the table's
+present, not just its future. The scan anchors at the defining commit: a row
+that has not changed since the define is scanned, a row written or changed
+after it is skipped — its live message already carries it — and the two
+together give exactly one message per key, with no gap and no duplicate. The
+job advances in bounded batches on the node's housekeeping cadence and records
+where it has reached beside the feed itself, so a restart resumes mid-scan
+without a second message for any key. `WHEN` and `IMAGE` apply to scanned rows
+as they do to captured writes; scanned images are the record as the engine
+holds it, where a captured image is redacted to what the writing caller may
+read. `WITH INITIAL SCAN` runs as its own statement — it is refused inside
+`BEGIN … COMMIT`, because a write sharing the define's commit could not be
+told from a pre-existing row and the scan would double a key the capture
+already carried. `DROP FEED` ends the job with the feed; defining the feed
+again starts a fresh scan.
+
 ## 7. Transactions
 
 ```
@@ -9595,7 +9751,7 @@ The kinds include:
 | `path` | the answer is a shortest path, and this is how many steps it took and what they cost (§4a, *The shortest path*) |
 | `needs-rebuild` | a search index this read met may hold an earlier tokenizer's terms: a field's index was not answered from (the read scanned) and a search's member was read and can miss records; the message names the statement that rebuilds it (§4, *Which tokenizer built an index*) |
 | `estimated` | an `approx_distinct` or `approx_quantile` answered: `fold`, `method` (`hll-14` or `ddsketch`), the declared `bound`, and whether a quantile sketch `collapsed` (§5, *One answer per group*) |
-| `undeclared-field` | a read of a strict table named a field the table does not declare — a misspelling, or `id`, which is a record's address and not a field — so it found that field on no record; the message names the fields (from engine `0.39.6`) |
+| `undeclared-field` | a read of a strict table named a field the table does not declare — a misspelling, or `id`, which is a record's address and not a field — so it found that field on no record; the message names the fields (from engine `0.40.0`) |
 
 **`fell-back` fires on an index that declined, never on a table that has none.**
 A bounded ordered read over an unindexed table is the most ordinary read in the
@@ -11011,7 +11167,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.39.6", "build": "0.39.6", "endpoints": ["db-1.internal:9000"],
+ "version": "0.40.0", "build": "0.40.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

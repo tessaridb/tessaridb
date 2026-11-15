@@ -3,8 +3,9 @@
 use super::{
     Answer, ColumnDeclaration, ConsumerSource, CreateTarget, Credential, EdgeClause, Edit, Expr,
     FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name, NamespaceChange, OnFailure,
-    RangeExpr, ReachRef, RecordTarget, Select, SetBound, SetCondition, SpaceBound, TableChange,
-    TableExpiry, TableRef, TopicClauses, TrimBound, UserChange, UserGrant, WriteExpiry, Written,
+    RangeExpr, ReachRef, RecordTarget, Select, SetBound, SetCondition, SpaceBound, StoreKind,
+    TableChange, TableExpiry, TableRef, TopicClauses, TrimBound, UserChange, UserGrant,
+    WriteExpiry, Written,
 };
 use crate::token::Span;
 use tessari_types::{
@@ -149,6 +150,16 @@ pub enum StatementKind {
         /// AFTER 7d` (ADR-0122 A1). `None` is a table that said nothing, and
         /// behaves exactly as every table did before the clause existed.
         expire: Option<TableExpiry>,
+        /// The layout the records are projected into: `DEFINE TABLE events (…)
+        /// STORE COLUMN` (G082). `None` is a table that said nothing, which
+        /// reads as [`StoreKind::Row`] — the default since the first table.
+        store: Option<StoreKind>,
+        /// `PARTITIONS 4 BY kind` — how many hash partitions the columnar
+        /// projection routes rows across, and the field whose value picks one
+        /// (G082 SG4; murmur2 over the value's encoding, null/absent → 0).
+        /// Only valid beside `STORE COLUMN`; the catalog refuses the other
+        /// combinations by name.
+        partitions: Option<(u64, String)>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -1232,6 +1243,15 @@ pub enum StatementKind {
         /// happened rather than when it arrived (ADR-0088 §1). `None` keeps
         /// arrival time.
         time: Option<Name>,
+        /// The layout the points are projected into: `DEFINE SERIES readings
+        /// RETAIN 30d STORE COLUMN` (G082 SG7 — a series holds points a
+        /// columnar projection can serve). `None` is a series that said
+        /// nothing, which reads as [`StoreKind::Row`].
+        store: Option<StoreKind>,
+        /// `PARTITIONS 4 BY sensor` — the hash partitioning of the columnar
+        /// projection (G082 SG4), beside `STORE COLUMN`. Immutable after
+        /// define, as the storage kind is.
+        partitions: Option<(u64, String)>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -1351,6 +1371,37 @@ pub enum StatementKind {
         /// each was written: database params, checked when the event is defined
         /// (ADR-0124 D2).
         params: Vec<(String, Span)>,
+    },
+    /// `DEFINE FEED [IF NOT EXISTS] <name> ON <table> INTO <topic>
+    /// [FOR CREATE, UPDATE, DELETE] [IMAGE KEYS | FULL] [WHEN <cond>]
+    /// [WITH INITIAL SCAN]` — the declared capture of a table's writes into a
+    /// topic, compiled onto the event machinery.
+    DefineFeed {
+        /// The feed's name, unique on its table.
+        name: Name,
+        /// The table whose writes it captures.
+        table: TableRef,
+        /// The topic the messages land in; the feed owns it.
+        topic: TableRef,
+        /// The writes it captures — all three when `FOR` is not written.
+        on: Vec<tessari_types::WriteKind>,
+        /// Which image the messages carry.
+        image: crate::ast::FeedImage,
+        /// `WHEN`, as written: a write is captured only where it holds.
+        when: Option<String>,
+        /// Whether existing rows are scanned into the topic on the define.
+        initial_scan: bool,
+        /// Whether re-defining an existing name is accepted rather than
+        /// refused.
+        if_not_exists: bool,
+    },
+    /// `DROP FEED [IF EXISTS] <name> ON <table>` — stops the declared capture
+    /// and frees its topic for hand appends (FEAT-S1).
+    DropFeed {
+        /// The feed's name.
+        name: Name,
+        /// The table it is defined on.
+        table: TableRef,
     },
     /// `DEFINE PARAM [IF NOT EXISTS | OR REPLACE] $name VALUE <expr>` — a
     /// database's named value, read wherever a parameter is (ADR-0124 D2).

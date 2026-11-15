@@ -1021,6 +1021,39 @@ version's provenance (§7), so it sits where every read already walks versions
 and no read consults a second keyspace. Its resolution replaces it with the
 final version.
 
+### 6.6 The columnar projection's keys — keyspace `data`
+
+A table declared `STORE COLUMN` keeps, beside its records, an auxiliary
+per-column projection written inside the record's own commit batch (ADR-0137;
+the row stays the canonical, versioned value). These keys ride the record
+keyspace after the table prefix, where a record id would sit, under tags that
+share no value with a record-id discriminant (`0x01`-`0x04`), so one prefix
+scan never meets two shapes:
+
+```text
+<0x01> <namespace:u32> <database:u32> <table:u32>
+    'C' <family> <chunk-seq:u64> <!version:u64>   one version of one chunk
+    'M' <record-id> <!version:u64>                one record's chunk map
+    'P' <family> <!version:u64>                   the family's open chunk seq
+
+family := 'I' <field-id:u32>     a declared field: the catalog's stable
+                                 identity — the name resolves at the catalog,
+                                 the id rides on disk, a rename does not re-key
+        | 'N' <name:variable>    a schemaless field: the name is the identity,
+                                 and schemaless fields have no rename surface
+```
+
+The version suffix is the complement of the sequence, exactly as on a record
+key: versions of one chunk sort newest-first, a read at a snapshot is a seek
+followed by taking the first entry, and a rewritten chunk is a new version of
+its key, so a snapshot read sees the layout as of the snapshot. Chunks of one
+family sort in append order under one prefix, which is the span a columnar
+scan reads. The values under these keys carry no record-version envelope: a
+chunk is rewritten whole — copy-on-write at chunk granularity — and its newest
+version at a snapshot is the only one a reader asks for; the projection owns
+their interior.
+
+
 ## 7. Value layout
 
 Every stored value begins with a codec version. The first byte is format
@@ -1181,6 +1214,7 @@ already written carries it. A new table takes the next id; none is reused.
 | `28` | `ROLLUP_STATES` | the exact state of each rollup key's float sums for its last-written window |
 | `29` | `KAFKA_QUARANTINE` | the messages each Kafka consumer quarantined, by partition and offset |
 | `30` | `TOPIC_CLOCKS` | each topic's clock: the instant its newest message was appended, never lower than the one before (row `ns/db/table`, ADR-0133) |
+| `31` | `FEED_SCAN_STATES` | where each declared feed's initial scan has reached: its snapshot sequence, resume position, and whether the table is exhausted (row `table id + feed name`, FEAT-S1) |
 
 ## 10. Format versions
 
@@ -1201,6 +1235,8 @@ and is rewritten at open only where the row below says so.
 | `7` | a table may declare that its records expire — no key or value changes (the `expires` flag is §7.1's), so the surface digest is format 6's; what moves is the **write rule**: a build before it would clear a record's instant on a plain write and stamp no default (ADR-0122 A8) | opened as is and keeps its stamp; `DEFINE`/`ALTER … EXPIRE` is refused until the store is finalized |
 | `8` | a plain index keeps its removed entries as retired entries, key kinds `0x45` and `0x46` (Q-S3-34) | opened as is and keeps its stamp; no retired entry is written and a transaction behind the tail reads as before until the store is finalized |
 | `9` | a topic may be split into partitions (ADR-0131) — a catalog change: a build before it would append to a split topic itself, where no partition's reader sees the message — and a hash field may carry an instant of its own, flag `0x80` (ADR-0132), which a build before it refuses as a reserved bit; and a topic keeps each message's append instant in its `0x1c` entry and its clock in system table `30` (ADR-0133) | opened as is and keeps its stamp; `DEFINE TOPIC … PARTITIONS` and `HASH EXPIRE` are refused, and a topic keeps no append instant, until the store is finalized |
+| `10` | a declared feed's initial scan keeps its job in system table `31` (FEAT-S1 D8) — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `31` | opened as is and keeps its stamp; `DEFINE FEED … WITH INITIAL SCAN` is refused (`FormatNotFinalized`) until the store is finalized |
+| `11` | a table may be declared `STORE COLUMN` (G082, ADR-0137) — the columnar projection's keys (§6.6) ride the record keyspace under tags a build before it reads as nothing it knows; the storage-kind field on a table definition is not surface, but the keys its tables write are | opened as is and keeps its stamp; a columnar definition is refused (`FormatNotFinalized`) until the store is finalized |
 
 **The stamp is the format the store holds, and it lags this build** (ADR-0118,
 from `0.31.0-beta`). A build opens an older store and keeps its stamp, so the

@@ -264,6 +264,10 @@ pub(crate) const fn path_tag(path: AccessPath) -> u8 {
         AccessPath::Join => 6,
         AccessPath::Materialised => 7,
         AccessPath::Span => 8,
+        // Appended, so every tag this protocol has already issued keeps its
+        // byte: a reader that predates the columnar path maps it to the scan,
+        // which understates the cost but does not misstate the answer.
+        AccessPath::Columnar => 9,
     }
 }
 
@@ -281,6 +285,7 @@ pub(crate) const fn path_name(tag: u8) -> &'static str {
         6 => "join",
         7 => "materialised",
         8 => "span",
+        9 => "columnar",
         _ => "scan",
     }
 }

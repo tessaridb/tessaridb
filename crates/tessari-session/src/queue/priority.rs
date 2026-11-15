@@ -248,7 +248,7 @@ impl Session<'_> {
         };
         Ok(crate::outcome::Outcome::Records {
             records: taken,
-            plan,
+            plan: Box::new(plan),
             notes: Vec::new(),
             suggestion: None,
             only: false,

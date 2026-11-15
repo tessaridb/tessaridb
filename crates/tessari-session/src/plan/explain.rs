@@ -94,6 +94,16 @@ impl Session<'_> {
                 let (_, gated) = self.resolve_readable_table(transaction, table).await?;
                 self.refuse_reading_a_vault(transaction, gated, table)
                     .await?;
+                // A grouped read of a partitioned columnar table folds
+                // partition-locally when the read's gate qualifies it (G082
+                // SG4) — the same gate, so the plan reported is the plan
+                // taken.
+                if crate::reduce::reduce_of(select).is_some()
+                    && let Some((_, plan)) =
+                        self.prepare_columnar_grouped(transaction, select).await?
+                {
+                    return Ok(plan);
+                }
                 // A read with no condition has nothing for an index to narrow —
                 // except the one shape an index answers differently from a scan,
                 // which says so by name rather than hiding inside "index".
@@ -294,7 +304,18 @@ impl Session<'_> {
                         .await?
                     {
                         Some(sides) => super::union_plan(&sides, Some(named)),
-                        None => Plan::new(AccessPath::Scan).on(named),
+                        // The same gate the read asks, so the plan reported
+                        // is the plan taken: a qualifying column store table
+                        // answers through the projection.
+                        None => {
+                            match self
+                                .columnar_qualifies(transaction, context, id, condition)
+                                .await?
+                            {
+                                Some(_) => Plan::new(AccessPath::Columnar).on(named),
+                                None => Plan::new(AccessPath::Scan).on(named),
+                            }
+                        }
                     },
                 )
             }

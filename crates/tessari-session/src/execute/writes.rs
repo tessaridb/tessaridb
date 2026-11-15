@@ -98,7 +98,7 @@ impl Session<'_> {
             .await?;
         // A table with events runs them after the write, in this same
         // transaction (ADR-0110); one without pays the definition read.
-        let events = self.events_before(transaction, &address).await?;
+        let events = self.events_before(transaction, &address, span).await?;
         let evented = events.as_ref().map(|_| address.clone());
         // A series with rollups keeps them in this same transaction (ADR-0088
         // §6); every other table pays one registry lookup for asking.

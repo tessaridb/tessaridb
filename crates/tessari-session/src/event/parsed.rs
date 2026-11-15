@@ -49,7 +49,7 @@ pub(super) fn body(text: &str) -> Result<Script> {
 /// # Errors
 ///
 /// The parse failure of a condition that does not parse.
-pub(super) fn condition(text: &str) -> Result<Expr> {
+pub(crate) fn condition(text: &str) -> Result<Expr> {
     Ok(parsed(&CONDITIONS, text, tessari_ql::parse_expression)?
         .as_ref()
         .clone())

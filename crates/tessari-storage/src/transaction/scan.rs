@@ -169,6 +169,62 @@ impl Transaction<'_> {
         .await
     }
 
+    /// The columnar projection's pruning scan (G082 SG3): candidates for a
+    /// set of simple predicates, with the report the answer notes carry.
+    ///
+    /// Only valid while the caller has established that this transaction is
+    /// at the tail for the table and holds no writes on it — the projection
+    /// describes committed state, and the session seam's gate makes those
+    /// two refusals before ever calling here.
+    pub async fn columnar_scan(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        predicates: &[crate::ColumnarPredicate],
+        prune: bool,
+    ) -> Result<(Vec<RecordId>, crate::ColumnarScanReport)> {
+        crate::columnar::columnar_scan(self.store(), namespace, database, table, predicates, prune)
+            .await
+    }
+
+    /// The pruning scan pinned to one partition's lane, when the caller's
+    /// predicate names one — [`columnar_scan`]'s shape with the lane pin.
+    pub async fn columnar_scan_partitioned(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        predicates: &[crate::ColumnarPredicate],
+        prune: bool,
+        pin: Option<u64>,
+    ) -> Result<(Vec<RecordId>, crate::ColumnarScanReport)> {
+        crate::columnar::columnar_scan_partitioned(
+            self.store(),
+            namespace,
+            database,
+            table,
+            predicates,
+            prune,
+            pin,
+        )
+        .await
+    }
+
+    /// One family's decoded rows in one partition lane — the
+    /// partition-local group-by's raw read (G082 SG4).
+    pub async fn columnar_lane(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        family: &tessari_encoding::ColumnFamily,
+        partition: u64,
+    ) -> Result<Vec<(RecordId, tessari_types::Value)>> {
+        crate::columnar::columnar_lane(self.store(), namespace, database, table, family, partition)
+            .await
+    }
+
     /// Every live record of one table, handed over as the walk finds them.
     ///
     /// The streaming twin of [`Self::scan_table`], and one difference is the

@@ -142,7 +142,7 @@ impl Session<'_> {
         Ok(match update.answer {
             Answer::Before | Answer::After => Outcome::Records {
                 records: answered,
-                plan,
+                plan: Box::new(plan),
                 notes: Vec::new(),
                 suggestion: None,
                 only: false,

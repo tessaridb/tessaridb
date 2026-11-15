@@ -69,7 +69,10 @@ fn view(id: u32, read: &str) -> TableDefinition {
         auto_split: None,
         expire: None,
         events: Vec::new(),
+        feeds: Vec::new(),
         referenced_by: Vec::new(),
+        storage_kind: None,
+        partitions: None,
     }
 }
 

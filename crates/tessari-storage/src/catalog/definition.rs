@@ -15,6 +15,7 @@ mod declarations;
 mod engine;
 mod events;
 mod expiry;
+mod feeds;
 mod indexes;
 mod kinds;
 mod reading;
@@ -36,13 +37,14 @@ pub use declarations::{
 pub use engine::{EngineField, EngineMember, UNIT_WEIGHT};
 pub use events::EventDeclaration;
 pub use expiry::TableExpiry;
+pub use feeds::FeedDeclaration;
 pub use indexes::{IndexDefinition, IndexShape, SearchCosts, VectorDistance};
 pub use kinds::{StoredKind, TableKind};
 pub(crate) use reading::{
-    ceiling, count_of, field_id, field_name, flag, id_of, identity_kind, object,
+    ceiling, count_of, field_id, field_name, flag, id_of, identity_kind, object, storage_kind,
 };
 pub use rollups::{RollupCompute, RollupDeclaration, RollupFold};
-pub use tables::{TableDefinition, TableShape};
+pub use tables::{HashPartitioning, StorageKind, TableDefinition, TableShape};
 
 const FIELD_ID: &str = "id";
 const FIELD_NAME: &str = "name";
@@ -90,6 +92,9 @@ const FIELD_NOT_BEFORE: &str = "not_before";
 const FIELD_DEDUPLICATE: &str = "deduplicate";
 const FIELD_DEAD_LETTER: &str = "dead_letter";
 const FIELD_SERIES: &str = "series";
+/// The storage kind a table declared, when it declared one (G082).
+const FIELD_STORAGE_KIND: &str = "storage_kind";
+const FIELD_PARTITIONS: &str = "partitions";
 /// A space's declaration: present (possibly empty) exactly when the table is one.
 const FIELD_SPACE: &str = "space";
 /// A topic's declaration: present (possibly empty) exactly when the table is one.
@@ -109,6 +114,7 @@ const FIELD_SPREAD: &str = "spread";
 const FIELD_AUTO_SPLIT: &str = "auto_split";
 const FIELD_EXPIRE: &str = "expire";
 const FIELD_EVENTS: &str = "events";
+const FIELD_FEEDS: &str = "feeds";
 const FIELD_REFERENCED_BY: &str = "referenced_by";
 
 /// A namespace: the outermost tenancy level.

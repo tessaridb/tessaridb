@@ -135,7 +135,7 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 28] = [
+const CROSS_CUTTING: [&str; 29] = [
     // A fused order combines the orders of several engines — full-text, vector,
     // geographic — by rank, and is the work of none of them: filing it under one
     // would make that engine look like the owner of the other two's answers.
@@ -218,6 +218,10 @@ const CROSS_CUTTING: [&str; 28] = [
     // question asked of two of them.
     "plans",
     "refusals",
+    // A declared feed of a table's writes belongs to every engine a table
+    // can be, and to topics beside them: the capture is the table's, the
+    // order it lands in is the topic's.
+    "feeds",
     // Opening an array into a row per element belongs to no engine either: the
     // records a walk or a nearest-neighbour read hands over split the same way
     // a scan's do.

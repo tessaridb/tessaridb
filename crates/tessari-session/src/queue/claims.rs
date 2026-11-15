@@ -62,7 +62,7 @@ pub(crate) fn mark_claimant(fields: &mut BTreeMap<String, Value>, claimant: Opti
 pub(crate) fn nothing_claimed(table: &str) -> Outcome {
     Outcome::Records {
         records: Vec::new(),
-        plan: Plan::new(AccessPath::Record).on(table),
+        plan: Box::new(Plan::new(AccessPath::Record).on(table)),
         notes: Vec::new(),
         suggestion: None,
         only: false,

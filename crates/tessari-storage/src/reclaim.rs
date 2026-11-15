@@ -93,6 +93,12 @@ impl Store {
         let mut kept_above_across = false;
 
         for (key, value) in self.backend().scan(&request).await? {
+            // The columnar families share the table's record prefix; the
+            // reclaim walks past them — they are reclaimed as ordinary
+            // versioned keys, not as records.
+            if !tessari_encoding::RecordKey::is_record_key(key.as_slice()) {
+                continue;
+            }
             let decoded = RecordKey::decode(key.as_slice())?;
             if current.as_ref() != Some(&decoded.id) {
                 current = Some(decoded.id.clone());
