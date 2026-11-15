@@ -1352,6 +1352,29 @@ pub enum StatementKind {
         /// (ADR-0124 D2).
         params: Vec<(String, Span)>,
     },
+    /// `DEFINE FEED [IF NOT EXISTS] <name> ON <table> INTO <topic>
+    /// [FOR CREATE, UPDATE, DELETE] [IMAGE KEYS | FULL] [WHEN <cond>]
+    /// [WITH INITIAL SCAN]` — the declared capture of a table's writes into a
+    /// topic, compiled onto the event machinery.
+    DefineFeed {
+        /// The feed's name, unique on its table.
+        name: Name,
+        /// The table whose writes it captures.
+        table: TableRef,
+        /// The topic the messages land in; the feed owns it.
+        topic: TableRef,
+        /// The writes it captures — all three when `FOR` is not written.
+        on: Vec<tessari_types::WriteKind>,
+        /// Which image the messages carry.
+        image: crate::ast::FeedImage,
+        /// `WHEN`, as written: a write is captured only where it holds.
+        when: Option<String>,
+        /// Whether existing rows are scanned into the topic on the define.
+        initial_scan: bool,
+        /// Whether re-defining an existing name is accepted rather than
+        /// refused.
+        if_not_exists: bool,
+    },
     /// `DEFINE PARAM [IF NOT EXISTS | OR REPLACE] $name VALUE <expr>` — a
     /// database's named value, read wherever a parameter is (ADR-0124 D2).
     DefineParam {

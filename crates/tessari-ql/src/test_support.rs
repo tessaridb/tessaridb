@@ -766,6 +766,7 @@ fn erase_statement(statement: &mut Statement) {
         | StatementKind::ReleaseSavepoint { name } => erase_name(name),
         StatementKind::Backup { .. }
         | StatementKind::Restore { .. }
+        | StatementKind::DefineFeed { .. }
         | StatementKind::Begin
         | StatementKind::Commit
         | StatementKind::Cancel

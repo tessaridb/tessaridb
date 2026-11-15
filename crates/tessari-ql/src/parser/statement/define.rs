@@ -2,6 +2,7 @@
 
 mod declared;
 mod event;
+mod feed;
 mod param;
 mod search;
 use super::Parser;
@@ -311,6 +312,8 @@ impl Parser<'_> {
             _ if self.eat_word("view") => self.define_view(),
             // Contextual, as `view` is: `event` is an ordinary table name.
             _ if self.eat_word("event") => self.define_event(),
+            // Contextual, as `event` is: `feed` is an ordinary table name.
+            _ if self.eat_word("feed") => self.define_feed(),
             // Contextual, as `event` is.
             _ if self.eat_word("param") => self.define_param(),
             _ => Err(self.error_here(

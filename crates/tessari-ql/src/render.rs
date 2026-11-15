@@ -91,6 +91,10 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DropView { .. } => Err(unrenderable("DROP VIEW", span)),
         StatementKind::DefineEvent { .. } => Err(unrenderable("DEFINE EVENT", span)),
         StatementKind::DropEvent { .. } => Err(unrenderable("DROP EVENT", span)),
+        // A feed's WHEN is source text kept in the catalog, like an event's
+        // body, so the session renders a definition from the catalog rather
+        // than the tree.
+        StatementKind::DefineFeed { .. } => Err(unrenderable("DEFINE FEED", span)),
         StatementKind::DropIfExists(_) => Err(unrenderable("DROP … IF EXISTS", span)),
         StatementKind::DefineParam { .. } => Err(unrenderable("DEFINE PARAM", span)),
         StatementKind::DropParam { .. } => Err(unrenderable("DROP PARAM", span)),
