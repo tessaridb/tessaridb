@@ -191,11 +191,23 @@ function openTable(one: Described): void {
           .join(", ")
       : "";
   };
+  const held = one.about["statistics"];
+  const statistics = Array.isArray(held)
+    ? held
+        .map((each) => {
+          if (typeof each !== "object" || each === null || !("field" in each)) return "";
+          const row = each as Record<string, unknown>;
+          return `${String(row["field"])}: ${String(row["entries"] ?? "?")} held, ${String(row["distinct"] ?? "?")} distinct, age ${String(row["age"] ?? "?")}`;
+        })
+        .filter((line) => line !== "")
+        .join("\n")
+    : "";
   facts("table-facts", {
     identity: one.about["identity"] ?? "",
     fields: named("fields") || "none declared",
     indexes: named("indexes") || "none",
     events: named("events") || "none",
+    ...(statistics !== "" ? { statistics } : {}),
     ...(typeof one.about["dead_letter"] === "string" ? { "dead letter": one.about["dead_letter"] } : {}),
   });
   write("table-definition", typeof one.about["definition"] === "string" ? one.about["definition"] : "");

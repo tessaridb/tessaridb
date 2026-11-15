@@ -1648,11 +1648,18 @@
         (each) => typeof each === "object" && each !== null && "name" in each ? String(each.name) : String(each)
       ).join(", ") : "";
     };
+    const held6 = one2.about["statistics"];
+    const statistics = Array.isArray(held6) ? held6.map((each) => {
+      if (typeof each !== "object" || each === null || !("field" in each)) return "";
+      const row = each;
+      return `${String(row["field"])}: ${String(row["entries"] ?? "?")} held, ${String(row["distinct"] ?? "?")} distinct, age ${String(row["age"] ?? "?")}`;
+    }).filter((line) => line !== "").join("\n") : "";
     facts("table-facts", {
       identity: one2.about["identity"] ?? "",
       fields: named("fields") || "none declared",
       indexes: named("indexes") || "none",
       events: named("events") || "none",
+      ...statistics !== "" ? { statistics } : {},
       ...typeof one2.about["dead_letter"] === "string" ? { "dead letter": one2.about["dead_letter"] } : {}
     });
     write("table-definition", typeof one2.about["definition"] === "string" ? one2.about["definition"] : "");
