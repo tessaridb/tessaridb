@@ -116,6 +116,11 @@ pub struct Plan {
     /// merge  — so a plan says `partition-local group by over n
     /// lanes + final merge` in the one number it can know without running.
     pub lanes: Option<u64>,
+    /// How many entry changes the table or index has taken since the
+    /// statistic behind `expected` was walked — present only when the
+    /// estimate came from statistics, so a reader sees the freshness of
+    /// the one number in the plan that may be wrong.
+    pub statistics_age: Option<u64>,
     /// Whether the records are provably the ones the question names.
     ///
     /// Derived from [`Self::access`] rather than set here, so that `EXPLAIN` and
@@ -137,6 +142,7 @@ impl Plan {
             columns: None,
             cells: None,
             expected: None,
+            statistics_age: None,
             shards: None,
             lanes: None,
             exact: access.exactness(),
@@ -182,6 +188,7 @@ impl Plan {
         match self.expected {
             Some(Expected::Estimated(_) | Expected::Counted(_)) if hidden => Self {
                 expected: None,
+                statistics_age: None,
                 ..self
             },
             _ => self,
@@ -256,6 +263,14 @@ impl Plan {
                 Value::Number(Number::Integer(i64::try_from(rows).unwrap_or(i64::MAX))),
             );
             plan.insert("estimated_by".to_owned(), Value::from(by));
+            if by == "statistics"
+                && let Some(age) = self.statistics_age
+            {
+                plan.insert(
+                    "statistics_age".to_owned(),
+                    Value::Number(Number::Integer(i64::try_from(age).unwrap_or(i64::MAX))),
+                );
+            }
         }
         if let Some(lanes) = self.lanes {
             plan.insert(

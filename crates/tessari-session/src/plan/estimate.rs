@@ -121,7 +121,7 @@ async fn estimated(
         if candidate.rows != Rows::Unknown {
             continue;
         }
-        let Some(statistics) = transaction.fresh_statistics(&candidate.index).await? else {
+        let Some((statistics, age)) = transaction.fresh_statistics(&candidate.index).await? else {
             continue;
         };
         let counted = match &candidate.served {
@@ -134,6 +134,7 @@ async fn estimated(
             _ => continue,
         };
         candidate.rows = Rows::About(scaled(counted, records, statistics.records));
+        candidate.age = Some(age);
     }
     Ok(offered)
 }

@@ -4931,13 +4931,17 @@ whichever index holds fewer of its records, not whichever was written first.
 
 ```tessariql
 EXPLAIN SELECT * FROM users WHERE city = 'tromsø';
--- { access: 'index', index: 'by_city', estimate: 3, estimated_by: 'statistics', … }
+-- { access: 'index', index: 'by_city', estimate: 3, estimated_by: 'statistics',
+--   statistics_age: 0, … }
 ```
 
 `estimated_by` is `statistics` for a number read from the summary, or `probe`
 for a count of the index's entries taken to decide whether it beats the table
-(below). The estimate is left out when the index reads a field the caller may not
-see, because how many records hold a value is a fact about that value.
+(below). `statistics_age` rides an estimate that came from statistics: how many
+entries the index has gained or lost since the walk that took the summary, so
+the one number in the plan that may be wrong says how fresh it is. The estimate
+is left out when the index reads a field the caller may not see, because how
+many records hold a value is a fact about that value.
 
 **A statistic is set aside once its index has changed past it.** Every node counts
 the entries each value index gains and loses; a statistic is used while the
@@ -4972,6 +4976,25 @@ Nothing about this changes on a small table. Below about a thousand records a
 scan is a single request to the storage, both paths are cheap, and the comparison
 is switched off — so a table you have just created plans the way you would expect
 from the indexes you declared on it.
+
+**The cost model, stated.** The comparison above is a ratio between two costs
+the store can name: an index read costs an entry walk plus a record fetch for
+each record it names, and a scan costs a record fetch per record. The serve
+threshold is the fraction `PLANNER_SERVE_FRACTION_NUM` over
+`PLANNER_SERVE_FRACTION_DEN` — one half — and the band around it is
+`PLANNER_ESTIMATE_SERVE_NUM` over `PLANNER_ESTIMATE_SERVE_DEN` (three quarters,
+serve on the estimate alone) against `PLANNER_ESTIMATE_DECLINE_NUM` over
+`PLANNER_ESTIMATE_DECLINE_DEN` (three halves, decline on the estimate alone).
+The constants are stated with their units and rationale where they live, and
+they are **stated, not calibrated**: the engine does not yet measure what an
+entry walk costs against a record fetch, so the fractions are the documented
+judgements of the model rather than fitted values — a calibration the benchmark
+harness owes, recorded here so the number is never mistaken for one. What the
+model already guarantees is the discipline around the numbers: every estimate
+travels with `estimated_by` and `statistics_age`, a stale statistic is set aside
+rather than trusted, and a missing measurement never overrules the ranking —
+estimates will be wrong, and the model is built to bound what their being wrong
+can cost, not to chase accuracy.
 
 Where the store has no count, or the candidate is a shape the counting walk
 cannot follow — a `LIKE 'a%'` prefix, a `MATCHES` expansion, a geometric region —

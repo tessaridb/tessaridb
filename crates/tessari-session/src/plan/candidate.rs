@@ -312,6 +312,10 @@ pub(crate) struct Candidate {
     pub(crate) index: IndexDefinition,
     /// How many records it can produce.
     pub(crate) rows: Rows,
+    /// The age of the statistic this estimate came from, in entry changes —
+    /// set only where `rows` is an `About` filled from statistics, so a plan
+    /// can say how fresh the number it reports is.
+    pub(crate) age: Option<u64>,
     /// The conjunct this candidate answers **exactly**, when it answers one.
     ///
     /// `None` — the default, and what every other shape says — means the read
@@ -384,6 +388,7 @@ impl Candidate {
                 Rows::Counted(held) => Some(Expected::Counted(held)),
                 Rows::Unknown => None,
             },
+            statistics_age: self.age.filter(|_| matches!(self.rows, Rows::About(_))),
             ..Plan::new(AccessPath::Index)
         }
     }

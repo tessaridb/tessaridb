@@ -198,7 +198,7 @@ impl Session<'_> {
         };
         let (prepared, searched, mut folded) = match leaders {
             Some((groups, plan)) => (
-                Prepared::Held(Vec::new(), plan),
+                Prepared::Held(Vec::new(), Box::new(plan)),
                 crate::search::Searched::default(),
                 Some(groups),
             ),

@@ -109,6 +109,7 @@ impl Session<'_> {
                             served: Served::Equality(values),
                             index: (*index).clone(),
                             rows,
+                            age: None,
                             answers: None,
                         });
                     }
@@ -125,6 +126,7 @@ impl Session<'_> {
                             served: Served::Prefix(prefix.clone()),
                             index: (*index).clone(),
                             rows: Rows::Unknown,
+                            age: None,
                             answers: None,
                         });
                     }
@@ -252,6 +254,7 @@ impl Session<'_> {
                             // A phrase decided from stored positions is the
                             // predicate's own run test over the same tokens.
                             answers: ((plain && complete) || positioned).then_some(seek.span),
+                            age: None,
                         });
                     }
                 }
@@ -420,6 +423,7 @@ impl Session<'_> {
                             // The expansions are capped, so what this read
                             // produces is bounded rather than complete and the
                             // predicate is still the answer.
+                            age: None,
                             answers: None,
                         });
                     }
@@ -441,6 +445,7 @@ impl Session<'_> {
                     // prefix gives. What it narrows is carried by `Served::fixed`
                     // instead, where it is a proof rather than a guess.
                     rows: Rows::Unknown,
+                    age: None,
                     answers: None,
                 });
             }

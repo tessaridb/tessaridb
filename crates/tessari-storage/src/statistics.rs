@@ -219,7 +219,9 @@ impl Transaction<'_> {
     }
 
     /// One index's statistic, when there is one and it still describes the
-    /// index.
+    /// index, with the statistic's age in entry changes — how much the index
+    /// has changed since the walk that took it, which is what a plan reports
+    /// beside the estimate so a reader sees its freshness.
     ///
     /// `None` both when nothing was ever taken and when more has changed since
     /// than the statistic can absorb — the two cases a planner treats alike,
@@ -232,7 +234,7 @@ impl Transaction<'_> {
     pub async fn fresh_statistics(
         &self,
         index: &IndexDefinition,
-    ) -> Result<Option<IndexStatistics>> {
+    ) -> Result<Option<(IndexStatistics, u64)>> {
         if !kept(index) {
             return Ok(None);
         }
@@ -241,7 +243,11 @@ impl Transaction<'_> {
             return Ok(None);
         };
         let now = changes_of(self.store(), address).await?;
-        Ok(still_fresh(statistics.changes, statistics.entries, now).then_some(statistics))
+        let fresh = still_fresh(statistics.changes, statistics.entries, now);
+        Ok(fresh.then(|| {
+            let age = now.saturating_sub(statistics.changes);
+            (statistics, age)
+        }))
     }
 }
 
