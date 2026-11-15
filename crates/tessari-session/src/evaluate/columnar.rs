@@ -145,12 +145,9 @@ impl Session<'_> {
             // the predicates too — the row authority re-evaluates it, as
             // it does everything the scan narrows on.
             if op == BinaryOp::Equal
-                && definition
-                    .partitions
-                    .as_ref()
-                    .is_some_and(|partitioning| partitioning.by == name)
+                && let Some(partitioning) = definition.partitions.as_ref()
+                && partitioning.by == name
             {
-                let partitioning = definition.partitions.as_ref().expect("checked above");
                 let payload = tessari_encoding::encode_payload(&value).into_bytes();
                 let hashed = u64::from(tessari_encoding::murmur2(&payload) & 0x7fff_ffff);
                 pin = Some(
