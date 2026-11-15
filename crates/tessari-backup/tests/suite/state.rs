@@ -24,7 +24,7 @@ use tessari_types::Sequence;
 use crate::restore::{INTERROGATION, dump, one_log, original, signed_in, store};
 
 /// Take a snapshot of `source` into bytes.
-fn snapshot(source: &Store) -> Vec<u8> {
+pub(super) fn snapshot(source: &Store) -> Vec<u8> {
     let mut taken = Vec::new();
     tessari_backup::write_state(source, &mut taken)
         .now()
@@ -33,7 +33,7 @@ fn snapshot(source: &Store) -> Vec<u8> {
 }
 
 /// Restore `file` into a fresh store.
-fn restored(file: &[u8]) -> (Arc<dyn KvBackend>, Store) {
+pub(super) fn restored(file: &[u8]) -> (Arc<dyn KvBackend>, Store) {
     let (backend, target) = store();
     tessari_backup::read_state(&target, || Ok(file))
         .now()
@@ -47,10 +47,18 @@ fn restored(file: &[u8]) -> (Arc<dyn KvBackend>, Store) {
 /// here from the raw keyspace rather than through the reader under test, so the
 /// comparison does not share the code it is checking. `at` bounds the versions
 /// considered, for a snapshot taken while writes continued.
-fn current(backend: &Arc<dyn KvBackend>, at: Option<Sequence>) -> BTreeMap<Vec<u8>, Vec<u8>> {
+pub(super) fn current(
+    backend: &Arc<dyn KvBackend>,
+    at: Option<Sequence>,
+) -> BTreeMap<Vec<u8>, Vec<u8>> {
     let mut held = BTreeMap::new();
     let mut decided: Option<Vec<u8>> = None;
     for (key, value) in dump(backend, Keyspace::DATA) {
+        // The columnar families share the record keyspace; the state reader
+        // walks past them, and so does this independent recount.
+        if !tessari_encoding::RecordKey::is_record_key(&key) {
+            continue;
+        }
         let (record, version) = key.split_at(key.len().saturating_sub(8));
         let version = !u64::from_be_bytes(version.try_into().unwrap());
         if decided.as_deref() == Some(record) || at.is_some_and(|at| version > at.get()) {
