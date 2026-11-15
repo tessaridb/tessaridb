@@ -88,6 +88,33 @@ pub struct EdgeEndpoints {
     pub order: Option<EdgeOrdering>,
 }
 
+/// The layout a table's records are projected into: `STORE ROW` (the default)
+/// or `STORE COLUMN` (G082). A property of the definition chosen at define
+/// time, immutable afterwards — `ALTER TABLE … STORE …` parses and refuses,
+/// because the migration between layouts is DROP and DEFINE, not a clause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreKind {
+    /// `STORE ROW` — every record kept as a versioned row; the word the
+    /// default answers to, so a stored script keeps saying it after the
+    /// default moves.
+    Row,
+    /// `STORE COLUMN` — the row stays the authority (ADR-0137) and a
+    /// columnar projection is written inside the record's own commit batch,
+    /// serving analytical reads.
+    Column,
+}
+
+impl StoreKind {
+    /// The clause word, as written and as rendered back.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Row => "ROW",
+            Self::Column => "COLUMN",
+        }
+    }
+}
+
 /// The one thing an [`AlterTable`](StatementKind::AlterTable) statement changes.
 ///
 /// One variant rather than a bool, for the reason [`UserChange`] is an enum:
@@ -138,6 +165,10 @@ pub enum TableChange {
         /// The name it takes.
         to: Name,
     },
+    /// `STORE ROW` / `STORE COLUMN` — parses, and refuses: the storage kind
+    /// is chosen at define time and immutable afterwards (G082 C1; the
+    /// migration between layouts is DROP and DEFINE, not a clause).
+    Store(StoreKind),
 }
 
 /// What a table's expiry declaration says (ADR-0122 A1): that its records may

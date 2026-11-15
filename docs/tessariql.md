@@ -3774,6 +3774,59 @@ Defining or dropping one needs the authority to define in the database.
 `DEFINE PARAM` of a name already held is refused `ParamExists` unless it says
 `OR REPLACE` or `IF NOT EXISTS`, and the two together are refused.
 
+## 4b. Choosing the layout: `STORE COLUMN`
+
+```
+DEFINE TABLE events (seq int, kind string) STORE COLUMN;
+DEFINE TABLE events (seq int, kind string) STORE COLUMN PARTITIONS 4 BY kind;
+DEFINE TABLE events (seq int, kind string) STORE ROW;
+```
+
+A table stores its records as versioned rows; saying `STORE COLUMN` beside the
+definition adds a **columnar projection** of the same records, written inside
+the record's own commit batch — every chunk of the projection lands in the same
+atomic write as the rows it projects, and a statement that refuses refuses
+both. The row stays the authority: a read served through the projection names
+candidates, and the row at the snapshot confirms each one, so a columnar table
+answers exactly what the row store answers and the plan says which path it
+took. Analytical reads — folds and filters over many rows — skip chunks the
+projection's per-chunk statistics rule out, and a `GROUP BY` on the partition
+key folds each partition's lanes and merges the partials.
+
+- **`STORE ROW` is the default, and the word `INFO FOR TABLE` and
+  `BACKUP SCRIPT` render.** A script that never says the word reads back with
+  it said, on the rule that a declaration leaning on a default changes meaning
+  silently when the default moves.
+- **The kind is immutable after define.** `ALTER TABLE … STORE …` parses and
+  refuses `StorageKindImmutable`: the migration between layouts is `DROP` and
+  `DEFINE`, not a clause.
+- **`PARTITIONS n BY field`** routes each row's projection to one of `n`
+  lanes by the murmur2 hash of the key field's value; a row whose key is
+  `null` or absent routes to partition 0. The partition count and key are
+  definition-time constants, immutable as the kind is. On a schemafull table
+  whose definition lists its columns, the key must be one of them —
+  `PartitionKeyUndeclared` refuses a key nobody declares, because it would
+  route every row to partition 0, a single-lane table wearing the clause.
+- **Only plain record tables take a storage kind.** `STORE COLUMN` on an
+  edge table, a queue, a series or any other kind refuses
+  `StorageKindOnKind`.
+
+The stated limits of a columnar table at this milestone, each honest rather
+than implicit:
+
+1. Series, collections and the other kinds are row-kind; `STORE COLUMN` is a
+   plain-table clause (the refusal above).
+2. **Feeds refuse on a columnar table** (`FeedOnColumnar`) — the feed captures
+   from the row authority, which a columnar table fully retains, so the
+   composition is designed, but it is not built yet; the refusal is named so a
+   later release lifts it with tests.
+3. A single-row `UPDATE` costs a chunk copy-on-write; columnar is not free for
+   OLTP-shaped writes, and the store does not pretend otherwise.
+4. Reads of versions and point `GET`s are always row-path — exact, never
+   pruned.
+5. Projection vacuum — reclaiming a deleted record's chunk space — rides the
+   store's existing version reclamation; no separate merge job ships yet.
+
 ## 5. Record statements
 
 ```

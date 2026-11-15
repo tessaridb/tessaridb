@@ -3,8 +3,9 @@
 use super::{
     Answer, ColumnDeclaration, ConsumerSource, CreateTarget, Credential, EdgeClause, Edit, Expr,
     FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name, NamespaceChange, OnFailure,
-    RangeExpr, ReachRef, RecordTarget, Select, SetBound, SetCondition, SpaceBound, TableChange,
-    TableExpiry, TableRef, TopicClauses, TrimBound, UserChange, UserGrant, WriteExpiry, Written,
+    RangeExpr, ReachRef, RecordTarget, Select, SetBound, SetCondition, SpaceBound, StoreKind,
+    TableChange, TableExpiry, TableRef, TopicClauses, TrimBound, UserChange, UserGrant,
+    WriteExpiry, Written,
 };
 use crate::token::Span;
 use tessari_types::{
@@ -149,6 +150,16 @@ pub enum StatementKind {
         /// AFTER 7d` (ADR-0122 A1). `None` is a table that said nothing, and
         /// behaves exactly as every table did before the clause existed.
         expire: Option<TableExpiry>,
+        /// The layout the records are projected into: `DEFINE TABLE events (…)
+        /// STORE COLUMN` (G082). `None` is a table that said nothing, which
+        /// reads as [`StoreKind::Row`] — the default since the first table.
+        store: Option<StoreKind>,
+        /// `PARTITIONS 4 BY kind` — how many hash partitions the columnar
+        /// projection routes rows across, and the field whose value picks one
+        /// (G082 SG4; murmur2 over the value's encoding, null/absent → 0).
+        /// Only valid beside `STORE COLUMN`; the catalog refuses the other
+        /// combinations by name.
+        partitions: Option<(u64, String)>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

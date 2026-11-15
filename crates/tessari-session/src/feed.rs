@@ -90,6 +90,16 @@ impl<'a> Session<'a> {
                 span: declared.table.span,
             });
         }
+        // G082 C7: the feed captures from the row authority, which a columnar
+        // table fully retains, so the combination is designed — but the
+        // projection's write-batch work and the capture's are not composed
+        // in v1, and the refusal is named so a later wave lifts it with tests.
+        if definition.storage_kind == Some(tessari_storage::StorageKind::Column) {
+            return Err(Error::FeedOnColumnar {
+                table: definition.name.clone(),
+                span: declared.table.span,
+            });
+        }
         // The name is unique on the table, checked before the topic is
         // examined: a name already taken is refused on the table alone.
         if definition

@@ -1807,6 +1807,38 @@ pub enum Error {
         span: Span,
     },
 
+    /// `ALTER TABLE … STORE ROW|COLUMN` — the storage kind is chosen at define
+    /// time and immutable afterwards (G082 C1, the owner's FEAT-M2 rule: a
+    /// column table is declared at definition; the storage kind is immutable
+    /// after define, and DROP+DEFINE is the migration).
+    ///
+    /// The statement **parses** — a generated script fails here, by name,
+    /// rather than at the parser — and refuses at execution.
+    #[error(
+        "`{table}`: the storage kind is chosen at define time and cannot be changed — DROP and DEFINE the table to move it between layouts (at {span})"
+    )]
+    StorageKindImmutable {
+        /// The table named.
+        table: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// `PARTITIONS n BY field` on a schemafull table that declares no such
+    /// field (G082 SG5, D-SG5-5). A key nobody declares routes every row to
+    /// partition zero — a silently single-lane table wearing the clause —
+    /// refused before anything is created. A schemaless table accepts any
+    /// key: its families are created on first sight.
+    #[error("`{table}`: the partition key `{field}` is not a declared field (at {span})")]
+    PartitionKeyUndeclared {
+        /// The table named.
+        table: String,
+        /// The field the clause named.
+        field: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// `ALTER TABLE … RENAME TO` on a table something else is found by the name
     /// of (ADR-0134 D9).
     #[error("`{table}` cannot be renamed: {why} (at {span})")]
@@ -2370,6 +2402,18 @@ pub enum Error {
         table: String,
         /// Its kind.
         kind: &'static str,
+        /// Where it was named.
+        span: Span,
+    },
+
+    /// A feed on a columnar table (G082 C7): the composition of feed capture
+    /// and projection maintenance is designed — the feed captures from the
+    /// row authority, which columnar tables fully retain — but v1 does not
+    /// ship the combination. Named so a later wave lifts it with tests.
+    #[error("`{table}` stores COLUMN: feeds on a columnar table are not built yet (at {span})")]
+    FeedOnColumnar {
+        /// The table.
+        table: String,
         /// Where it was named.
         span: Span,
     },

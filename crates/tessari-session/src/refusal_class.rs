@@ -175,6 +175,9 @@ impl Error {
             | Self::NotIndexable { .. }
             | Self::SecretNeedsVault { .. }
             | Self::VaultIsStrict { .. }
+            | Self::StorageKindImmutable { .. }
+            | Self::PartitionKeyUndeclared { .. }
+            | Self::FeedOnColumnar { .. }
             | Self::ExpiryNotOnThisKind { .. }
             | Self::TruncateNotOnThisKind { .. }
             | Self::ReferenceRefused { .. }

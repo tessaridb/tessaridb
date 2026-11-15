@@ -171,6 +171,8 @@ impl Session<'_> {
                 spread,
                 conflict,
                 expire,
+                store,
+                partitions,
                 if_not_exists,
             } => {
                 // The endpoints are resolved **before** the table is created, so
@@ -190,7 +192,34 @@ impl Session<'_> {
                     self.refuse_an_expiry_it_cannot_carry(&name.text, &kind, name.span)
                         .await?;
                 }
+                // D-SG5-5: when the statement itself declares columns, the
+                // partition key must be one of them, refused before anything
+                // is created, because a key nobody declares routes every row
+                // to partition zero — a silently single-lane table wearing
+                // the clause. A statement with no parenthesized columns (the
+                // flag form, or the form a backup script writes, where the
+                // fields arrive as their own `DEFINE FIELD` statements) is
+                // accepted: its guarantee is the write-time schema pass,
+                // which refuses a record carrying a field the table does not
+                // declare, so a key no declaration ever names can never be
+                // written. A schemaless table accepts any key outright: its
+                // families are created on first sight (D-SG2-2).
+                if let Some((_, key)) = partitions
+                    && *schemafull
+                    && !columns.is_empty()
+                    && !columns.iter().any(|column| column.name.text == *key)
+                {
+                    return Err(Error::PartitionKeyUndeclared {
+                        table: name.text.clone(),
+                        field: key.clone(),
+                        span: name.span,
+                    });
+                }
                 let existed = expire.is_some() && self.names_a_table(transaction, name).await;
+                let storage_kind = store.map(|kind| match kind {
+                    tessari_ql::StoreKind::Row => tessari_storage::StorageKind::Row,
+                    tessari_ql::StoreKind::Column => tessari_storage::StorageKind::Column,
+                });
                 let defined = self
                     .define_table_with_columns(
                         transaction,
@@ -205,8 +234,15 @@ impl Session<'_> {
                             split: split.clone(),
                             partition: partition.as_ref().map(|field| field.text.clone()),
                             spread: *spread,
-                            storage_kind: None,
-                            partitions: None,
+                            storage_kind,
+                            partitions: partitions.as_ref().and_then(|(count, by)| {
+                                u32::try_from(*count).ok().map(|count| {
+                                    tessari_storage::HashPartitioning {
+                                        count,
+                                        by: by.clone(),
+                                    }
+                                })
+                            }),
                         },
                         *if_not_exists,
                         span,
@@ -920,6 +956,17 @@ impl Session<'_> {
                 match change {
                     TableChange::Rename(to) => {
                         return self.rename_table(transaction, table, to, span).await;
+                    }
+                    // G082 C1: the storage kind is chosen at define time and
+                    // immutable afterwards. The statement parses — a script
+                    // that generates it fails here, by name, rather than at
+                    // the parser — and refuses, because the migration between
+                    // layouts is DROP and DEFINE, not a clause.
+                    TableChange::Store(_) => {
+                        return Err(Error::StorageKindImmutable {
+                            table: table.name.text.clone(),
+                            span: table.span,
+                        });
                     }
                     TableChange::RenameField { from, to } => {
                         return self

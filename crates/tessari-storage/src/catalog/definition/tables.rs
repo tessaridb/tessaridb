@@ -190,6 +190,18 @@ impl TableDefinition {
         matches!(self.kind, TableKind::Edge(_))
     }
 
+    /// The `STORE` clause word for this definition: `None` decodes to the
+    /// row layout, so the word is `ROW` for every table that predates the
+    /// clause as much as for one that said it (G082; describe writes the
+    /// word always, on the same rule as the strictness flag).
+    #[must_use]
+    pub const fn storage_kind_word(&self) -> &'static str {
+        match self.storage_kind {
+            Some(StorageKind::Column) => "COLUMN",
+            Some(StorageKind::Row) | None => "ROW",
+        }
+    }
+
     /// Whether the table holds files.
     #[must_use]
     pub fn is_bucket(&self) -> bool {

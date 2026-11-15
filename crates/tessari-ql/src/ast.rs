@@ -238,7 +238,7 @@ pub struct Assignment {
 pub use info::InfoSubject;
 pub use tables::{
     AutoSplit, ColumnDeclaration, Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, OnDelete,
-    Reference, TableChange, TableExpiry, WriteExpiry,
+    Reference, StoreKind, TableChange, TableExpiry, WriteExpiry,
 };
 pub use tessari_types::BinaryOp;
 pub use users::{Credential, Password, UserChange, UserGrant};

@@ -38,7 +38,7 @@ pub use ast::{
     Outer, ParameterSlot, Password, PathTo, Presence, Projected, Projection, RangeEnd, RangeExpr,
     ReachRef, RecordTarget, Reference, ReplicaChange, Retention, RollupCompute, ScoreCompare,
     ScoreRange, Script, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator, Select,
-    SetBound, SetCondition, SetOperation, Source, SpaceBound, Statement, StatementKind,
+    SetBound, SetCondition, SetOperation, Source, SpaceBound, Statement, StatementKind, StoreKind,
     StructureOp, TableChange, TableExpiry, TableRef, Timeout, TopicClauses, TrimBound, UserChange,
     UserGrant, Using, VaultKey, Version, WindowFunction, Windowed, WriteExpiry, Written,
 };
