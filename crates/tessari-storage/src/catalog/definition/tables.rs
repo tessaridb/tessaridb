@@ -41,6 +41,20 @@ pub enum StorageKind {
     Column,
 }
 
+/// Hash partitioning of a columnar table (G082 SG4): the projection keeps
+/// one chunk lane per partition, and a row's lane is chosen by the murmur2
+/// hash of the partition field's value. `count` is a definition-time
+/// constant — raising it is a redefine (DROP+DEFINE), the same immutability
+/// rule the storage kind carries (worksheet §6.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HashPartitioning {
+    /// How many lanes the projection keeps; must be at least one.
+    pub count: u32,
+    /// The declared field whose value routes a row, by name — resolved per
+    /// write against the table's declared fields.
+    pub by: String,
+}
+
 impl StorageKind {
     /// The word the definition carries, and [`Self::parse`] its inverse.
     #[must_use]
@@ -163,6 +177,10 @@ pub struct TableDefinition {
     /// the grammar exposes no `ALTER` for it, and `DROP` + `DEFINE` is the
     /// migration (worksheet §2, C1).
     pub storage_kind: Option<StorageKind>,
+    /// The hash partitioning the projection keeps, when the definition named
+    /// one; `None` is the single-lane layout SG2 built. Immutable after
+    /// define, as the storage kind is (worksheet §6.3).
+    pub partitions: Option<HashPartitioning>,
 }
 
 impl TableDefinition {
@@ -321,4 +339,7 @@ pub struct TableShape {
     /// The storage kind the definition named, when it named one; `None` is
     /// the row store, which is every table the word could not have reached.
     pub storage_kind: Option<StorageKind>,
+    /// The hash partitioning the definition named, when it named one; `None`
+    /// is the single-lane projection.
+    pub partitions: Option<HashPartitioning>,
 }

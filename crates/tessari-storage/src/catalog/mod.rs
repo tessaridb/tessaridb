@@ -72,11 +72,11 @@ pub(crate) use decoded::DecodedTables;
 pub use definition::{
     AutoSplit, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, DatabaseDefinition, EdgeDeclaration,
     EdgeOrder, EngineField, EngineMember, EventDeclaration, FeedDeclaration, GEO_FIELD,
-    IndexDefinition, IndexShape, NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
-    QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, RollupCompute, RollupDeclaration,
-    RollupFold, SearchCosts, SeriesDeclaration, StorageKind, StoredKind, TableDefinition,
-    TableExpiry, TableKind, TableShape, UNIT_WEIGHT, VECTOR_FIELD, VaultCustody, VaultDeclaration,
-    VectorDeclaration, VectorDistance, ViewDeclaration,
+    HashPartitioning, IndexDefinition, IndexShape, NamespaceDefinition, QUEUE_ATTEMPTS,
+    QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, RollupCompute,
+    RollupDeclaration, RollupFold, SearchCosts, SeriesDeclaration, StorageKind, StoredKind,
+    TableDefinition, TableExpiry, TableKind, TableShape, UNIT_WEIGHT, VECTOR_FIELD, VaultCustody,
+    VaultDeclaration, VectorDeclaration, VectorDistance, ViewDeclaration,
 };
 pub use edge_kind::EdgeKindDefinition;
 pub use failover::{FailoverDefinition, FailoverStamp};

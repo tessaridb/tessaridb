@@ -113,6 +113,27 @@ pub async fn columnar_scan(
     predicates: &[ColumnarPredicate],
     prune: bool,
 ) -> Result<(Vec<RecordId>, ColumnarScanReport)> {
+    columnar_scan_partitioned(store, namespace, database, table, predicates, prune, None).await
+}
+
+/// The pruning scan over one partition's lane, when the caller pins one —
+/// a predicate the session gate proved fixes the partition key to one
+/// constant routes here (worksheet §6.3: a partition's data is one prefix,
+/// and a read naming one partition reads one lane).
+///
+/// # Errors
+///
+/// As [`columnar_scan`]; a pin naming a lane the family's pointer does not
+/// hold answers empty, which is exact — no row routed there.
+pub async fn columnar_scan_partitioned(
+    store: &Store,
+    namespace: NamespaceId,
+    database: DatabaseId,
+    table: TableId,
+    predicates: &[ColumnarPredicate],
+    prune: bool,
+    pin: Option<u64>,
+) -> Result<(Vec<RecordId>, ColumnarScanReport)> {
     let mut report = ColumnarScanReport::default();
     let mut hits: Option<BTreeSet<RecordId>> = None;
     for predicate in predicates {
@@ -123,6 +144,7 @@ pub async fn columnar_scan(
             table,
             predicate,
             prune,
+            pin,
             &mut report,
         )
         .await?;
@@ -145,6 +167,7 @@ pub async fn columnar_scan(
 
 /// One family's chunks: prune by the head statistics, decode survivors,
 /// test each row.
+#[allow(clippy::too_many_arguments)]
 async fn scan_family(
     store: &Store,
     namespace: NamespaceId,
@@ -152,48 +175,55 @@ async fn scan_family(
     table: TableId,
     predicate: &ColumnarPredicate,
     prune: bool,
+    pin: Option<u64>,
     report: &mut ColumnarScanReport,
 ) -> Result<BTreeSet<RecordId>> {
-    let open = match newest_under(
+    let lanes = match newest_under(
         store,
         &PointerKey::versions_prefix(namespace, database, table, &predicate.family),
     )
     .await?
     {
-        Some((_, bytes)) => super::project::seq_of(&bytes),
+        Some((_, bytes)) => super::project::lanes_from_bytes(&bytes)?,
         None => return Ok(BTreeSet::new()),
     };
     let mut hits = BTreeSet::new();
-    let mut seq = 0_u64;
-    while seq <= open {
-        if let Some((_, bytes)) = newest_under(
-            store,
-            &tessari_encoding::ChunkKey::versions_prefix(
-                namespace,
-                database,
-                table,
-                &predicate.family,
-                seq,
-            ),
-        )
-        .await?
-        {
-            report.chunks_examined = report.chunks_examined.saturating_add(1);
-            if prune && pruned_by_head(predicate, &bytes)? {
-                report.chunks_skipped = report.chunks_skipped.saturating_add(1);
-            } else {
-                let chunk = decode_chunk(&bytes)?;
-                report.rows_decoded = report
-                    .rows_decoded
-                    .saturating_add(u64::try_from(chunk.values.len()).unwrap_or(u64::MAX));
-                for (id, value) in chunk.record_ids.iter().zip(chunk.values.iter()) {
-                    if matches(&predicate.compare, &predicate.value, value) {
-                        hits.insert(id.clone());
+    for (partition, open) in lanes {
+        if pin.is_some_and(|pin| pin != partition) {
+            continue;
+        }
+        let mut local = 0_u64;
+        while local <= super::chunk::local_of_seq(open) {
+            let seq = super::chunk::split_seq(partition, local);
+            if let Some((_, bytes)) = newest_under(
+                store,
+                &tessari_encoding::ChunkKey::versions_prefix(
+                    namespace,
+                    database,
+                    table,
+                    &predicate.family,
+                    seq,
+                ),
+            )
+            .await?
+            {
+                report.chunks_examined = report.chunks_examined.saturating_add(1);
+                if prune && pruned_by_head(predicate, &bytes)? {
+                    report.chunks_skipped = report.chunks_skipped.saturating_add(1);
+                } else {
+                    let chunk = decode_chunk(&bytes)?;
+                    report.rows_decoded = report
+                        .rows_decoded
+                        .saturating_add(u64::try_from(chunk.values.len()).unwrap_or(u64::MAX));
+                    for (id, value) in chunk.record_ids.iter().zip(chunk.values.iter()) {
+                        if matches(&predicate.compare, &predicate.value, value) {
+                            hits.insert(id.clone());
+                        }
                     }
                 }
             }
+            local = local.saturating_add(1);
         }
-        seq = seq.saturating_add(1);
     }
     Ok(hits)
 }

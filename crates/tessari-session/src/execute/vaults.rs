@@ -96,6 +96,7 @@ impl Session<'_> {
                 partition: None,
                 spread: false,
                 storage_kind: None,
+                partitions: None,
             },
             if_not_exists,
             span,

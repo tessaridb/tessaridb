@@ -95,15 +95,15 @@ pub use catalog::{
     EdgeOrder, EngineField, EngineMember, EventDeclaration, Eviction, FailoverDefinition,
     FailoverStamp, Feed, FeedDeclaration, FieldDefinition, FieldReference, FieldShape, GEO_FIELD,
     GrantDefinition, GraphDefinition, Greeter, GroupDeclaration, GroupMemberState, GroupState,
-    Held, InFlight, IndexDefinition, IndexShape, JoinTicket, Kind, LeadershipDefinition, Mapped,
-    NamespaceDefinition, OnDelete, OnFailure, Partitioning, PublicAppend, QUEUE_ATTEMPTS,
-    QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach,
-    ReplicaDefinition, Role, RollupCompute, RollupDeclaration, RollupFold, SYSTEM_DATABASE,
-    SYSTEM_NAMESPACE, SearchCosts, SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration,
-    SpaceLimit, StorageKind, StoredKind, TableDefinition, TableExpiry, TableKind, TableShape,
-    TopicDeclaration, UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration,
-    VectorDeclaration, VectorDistance, Verb, ViewDeclaration, WordSet, WordSetKind,
-    another_node_may_write, governing, names_a_peer, the_row_a_greeting_binds,
+    HashPartitioning, Held, InFlight, IndexDefinition, IndexShape, JoinTicket, Kind,
+    LeadershipDefinition, Mapped, NamespaceDefinition, OnDelete, OnFailure, Partitioning,
+    PublicAppend, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
+    RECORD_LEVEL, Reach, ReplicaDefinition, Role, RollupCompute, RollupDeclaration, RollupFold,
+    SYSTEM_DATABASE, SYSTEM_NAMESPACE, SearchCosts, SeriesDeclaration, ShardMap, ShardSpan,
+    SpaceDeclaration, SpaceLimit, StorageKind, StoredKind, TableDefinition, TableExpiry, TableKind,
+    TableShape, TopicDeclaration, UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody,
+    VaultDeclaration, VectorDeclaration, VectorDistance, Verb, ViewDeclaration, WordSet,
+    WordSetKind, another_node_may_write, governing, names_a_peer, the_row_a_greeting_binds,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
@@ -111,7 +111,10 @@ pub use catalog::VaultRoot;
 /// The system tables, by id and name — part of the written format (`docs/key-grammar.md` §9).
 pub use catalog::system::ALL as SYSTEM_TABLES;
 pub use collections::{Collection, Collections, Currency, Upstream, UpstreamReport};
-pub use columnar::{ColumnarCompare, ColumnarPredicate, ColumnarScanReport, columnar_scan};
+pub use columnar::{
+    ColumnarCompare, ColumnarPredicate, ColumnarScanReport, columnar_scan,
+    columnar_scan_partitioned,
+};
 pub use covering::MEASURED_RELATION;
 pub use decisions::{Deciding, Decisions};
 pub use expiry::Expired;

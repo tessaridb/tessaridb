@@ -60,8 +60,26 @@ use crate::error::Result;
 use super::bloom::BloomBits;
 use super::codec::{self, Cursor};
 
+/// How many low bits of a chunk seq hold the local sequence within one
+/// partition's lane: `seq = partition << PARTITION_BITS | local`. A lane
+/// seals at [`ROWS_PER_CHUNK`] rows, so 20 bits is a 128× ceiling — and the
+/// §6.6 key grammar is unchanged, which is the point (D-SG4-1).
+pub(crate) const PARTITION_BITS: u32 = 20;
+
 /// Rows a chunk seals at — the §4.1 prediction, re-measured in C8.
 pub(crate) const ROWS_PER_CHUNK: usize = 8192;
+
+/// The chunk seq one partition's lane-local seq names.
+#[must_use]
+pub(crate) const fn split_seq(partition: u64, local: u64) -> u64 {
+    (partition << PARTITION_BITS) | local
+}
+
+/// The lane-local sequence a split chunk seq names.
+#[must_use]
+pub(crate) const fn local_of_seq(seq: u64) -> u64 {
+    seq & ((1 << PARTITION_BITS) - 1)
+}
 
 /// Bytes a chunk seals at, whichever comes first — the §4.1 prediction.
 pub(crate) const BYTES_PER_CHUNK: usize = 256 * 1024;

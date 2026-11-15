@@ -431,6 +431,179 @@ fn the_row_walk_skips_the_columnar_families() {
     );
 }
 
+/// SG4 T4.2a: hash partitioning — rows route by the murmur2 hash of the
+/// partition field's value; each partition's chunks hold only its rows; the
+/// scan pins to one partition.
+#[cfg(test)]
+mod partitioned {
+    use super::*;
+    use crate::catalog::HashPartitioning;
+
+    /// A columnar table partitioned four ways by `seq`, `count` rows inserted.
+    fn partitioned(store: &Store, count: i64) -> (u32, u32, u32) {
+        let mut transaction = store.begin().now().expect("a transaction begins");
+        let mut catalog = Catalog::new(&mut transaction);
+        let namespace = catalog.create_namespace("prod").now().expect("namespace");
+        let database = catalog
+            .create_database(namespace.id, "analytics")
+            .now()
+            .expect("database");
+        let table = catalog
+            .create_table(
+                namespace.id,
+                database.id,
+                "events",
+                TableShape {
+                    schemafull: true,
+                    storage_kind: Some(StorageKind::Column),
+                    partitions: Some(HashPartitioning {
+                        count: 4,
+                        by: "seq".to_owned(),
+                    }),
+                    ..TableShape::default()
+                },
+            )
+            .now()
+            .expect("table");
+        catalog
+            .create_field(table.id, "seq", FieldKind::Int, FieldShape::default())
+            .now()
+            .expect("seq field");
+        catalog
+            .create_field(table.id, "kind", FieldKind::String, FieldShape::default())
+            .now()
+            .expect("kind field");
+        let ids = (namespace.id.get(), database.id.get(), table.id.get());
+        transaction.commit().now().expect("the tree commits");
+        insert_events(store, ids, count);
+        ids
+    }
+
+    /// The partition a row routes to, re-derived independently of the
+    /// projection: the hash the engine shares, over the payload encoding of
+    /// the partition field's value.
+    fn routed(value: i64, count: u32) -> u64 {
+        let payload = tessari_encoding::encode_payload(&int(value)).into_bytes();
+        let hashed = u64::from(tessari_encoding::murmur2(&payload) & 0x7fff_ffff);
+        hashed
+            .checked_rem(u64::from(count))
+            .expect("the count is at least one")
+    }
+
+    /// The pinned scan: one partition's lane only.
+    fn pinned_scan(
+        store: &Store,
+        ids: (u32, u32, u32),
+        predicates: &[ColumnarPredicate],
+        partition: u64,
+    ) -> (Vec<RecordId>, crate::ColumnarScanReport) {
+        let (ns, db, table) = typed(ids);
+        crate::columnar_scan_partitioned(store, ns, db, table, predicates, true, Some(partition))
+            .now()
+            .expect("the scan runs")
+    }
+
+    #[test]
+    fn rows_route_by_the_hash_of_the_partition_field() {
+        let (_backend, store) = store();
+        let ids = partitioned(&store, 500);
+        let seq = family(&store, ids, "seq");
+
+        // Every row answers from the partition its key routes to, and only
+        // from there: a scan pinned to the wrong partition is empty, pinned
+        // to the right one answers exactly the row.
+        for row in [0_i64, 1, 42, 499] {
+            let partition = routed(row, 4);
+            let (hits, _) = pinned_scan(
+                &store,
+                ids,
+                &[predicate(seq.clone(), ColumnarCompare::Equal, int(row))],
+                partition,
+            );
+            assert_eq!(hits, vec![id(row)], "row {row} at partition {partition}");
+            let (hits, _) = pinned_scan(
+                &store,
+                ids,
+                &[predicate(seq.clone(), ColumnarCompare::Equal, int(row))],
+                partition.saturating_add(1).rem_euclid(4),
+            );
+            assert!(hits.is_empty(), "no row in a partition it did not route to");
+        }
+    }
+
+    #[test]
+    fn a_partition_pin_scans_one_lane() {
+        let (_backend, store) = store();
+        let ids = partitioned(&store, 500);
+        let seq = family(&store, ids, "seq");
+
+        // The pinned scan reports only its lane's chunks; the unpinned scan
+        // reports every lane.
+        let expected: Vec<u64> = (0..500).map(|row| routed(row, 4)).collect();
+        let lane = expected.iter().filter(|p| **p == 1).count();
+        let (hits, pinned) = pinned_scan(
+            &store,
+            ids,
+            &[predicate(
+                seq.clone(),
+                ColumnarCompare::GreaterOrEqual,
+                int(0),
+            )],
+            1,
+        );
+        assert_eq!(hits.len(), lane, "the lane holds exactly its rows");
+        assert!(
+            pinned.chunks_examined <= 128,
+            "one lane examined: {}",
+            pinned.chunks_examined
+        );
+    }
+
+    #[test]
+    fn an_update_crossing_partitions_cows_and_reappends() {
+        let (_backend, store) = store();
+        let ids = partitioned(&store, 500);
+        let seq = family(&store, ids, "seq");
+
+        // A row whose new key routes elsewhere leaves its old lane (copy-on
+        // write) and lands in the new one.
+        let from = routed(7, 4);
+        // A value no existing row holds, routing to a different lane.
+        let new_value = (500..1000)
+            .find(|row| routed(*row, 4) != from)
+            .expect("a target lane");
+        let mut transaction = store.begin().now().expect("a transaction begins");
+        transaction.put(
+            address(ids, id(7)),
+            encode_payload(&Value::Object(BTreeMap::from([
+                ("seq".to_owned(), int(new_value)),
+                ("kind".to_owned(), kind(7)),
+            ])))
+            .into_bytes(),
+        );
+        transaction.commit().now().expect("the update commits");
+
+        let (hits, _) = pinned_scan(
+            &store,
+            ids,
+            &[predicate(
+                seq.clone(),
+                ColumnarCompare::Equal,
+                int(new_value),
+            )],
+            routed(new_value, 4),
+        );
+        assert_eq!(hits, vec![id(7)], "the row answers from its new lane");
+        let (hits, _) = pinned_scan(
+            &store,
+            ids,
+            &[predicate(seq, ColumnarCompare::Equal, int(7))],
+            from,
+        );
+        assert!(hits.is_empty(), "the old lane no longer holds the value");
+    }
+}
+
 /// Multi-predicate scans intersect across families.
 #[test]
 fn families_intersect() {

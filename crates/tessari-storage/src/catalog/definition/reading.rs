@@ -1,7 +1,9 @@
 //! Reading a catalog row's fields back into a definition.
 
 use super::tables::StorageKind;
-use super::{FIELD_CEILING, FIELD_ID, FIELD_IDENTITY, FIELD_NAME, FIELD_STORAGE_KIND};
+use super::{
+    FIELD_CEILING, FIELD_ID, FIELD_IDENTITY, FIELD_NAME, FIELD_PARTITIONS, FIELD_STORAGE_KIND,
+};
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
 use tessari_types::{IdentityKind, Number, Value};
@@ -171,6 +173,73 @@ pub(crate) fn storage_kind(
         Some(other) => Err(Error::CatalogMalformed {
             entity,
             field: FIELD_STORAGE_KIND,
+            found: other.type_name(),
+        }),
+    }
+}
+
+/// The hash partitioning a table definition names, when it named one.
+///
+/// Absent reads as the single-lane projection, the optional-field contract
+/// the storage kind keeps. A malformed entry is refused, not guessed: the
+/// routing of every write depends on it.
+///
+/// # Errors
+///
+/// Returns [`Error::CatalogMalformed`] when the field holds a shape that is
+/// not `{count, by}`.
+pub(crate) fn hash_partitioning(
+    fields: &BTreeMap<String, Value>,
+    entity: &'static str,
+) -> Result<Option<super::tables::HashPartitioning>> {
+    match fields.get(FIELD_PARTITIONS) {
+        None => Ok(None),
+        Some(Value::Object(held)) => {
+            let count = match held.get("count") {
+                Some(Value::Number(Number::Integer(count))) => {
+                    u32::try_from(*count).map_err(|_| Error::CatalogMalformed {
+                        entity,
+                        field: FIELD_PARTITIONS,
+                        found: "a partition count that does not fit",
+                    })?
+                }
+                Some(other) => {
+                    return Err(Error::CatalogMalformed {
+                        entity,
+                        field: FIELD_PARTITIONS,
+                        found: other.type_name(),
+                    });
+                }
+                None => {
+                    return Err(Error::CatalogMalformed {
+                        entity,
+                        field: FIELD_PARTITIONS,
+                        found: "no partition count",
+                    });
+                }
+            };
+            let by = match held.get("by") {
+                Some(Value::String(by)) => by.clone(),
+                Some(other) => {
+                    return Err(Error::CatalogMalformed {
+                        entity,
+                        field: FIELD_PARTITIONS,
+                        found: other.type_name(),
+                    });
+                }
+                None => {
+                    return Err(Error::CatalogMalformed {
+                        entity,
+                        field: FIELD_PARTITIONS,
+                        found: "no partition key",
+                    });
+                }
+            };
+            Ok(Some(super::tables::HashPartitioning { count, by }))
+        }
+        Some(other) => Err(Error::CatalogMalformed {
+            entity,
+            field: FIELD_PARTITIONS,
             found: other.type_name(),
         }),
     }

@@ -49,6 +49,7 @@ async fn a_map_that_moves_before_the_gate_files_the_write_where_the_new_map_puts
                 partition: None,
                 spread: false,
                 storage_kind: None,
+                partitions: None,
             },
         )
         .await

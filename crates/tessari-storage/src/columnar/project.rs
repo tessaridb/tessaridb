@@ -46,7 +46,94 @@ use crate::catalog::{Catalog, TableDefinition};
 use crate::error::Result;
 use crate::store::Store;
 
+use super::chunk::{local_of_seq, split_seq};
 use super::writer::{ChunkWriter, remove_row};
+
+/// The partition a record's values route to, `0` when the table names no
+/// partitioning. The hash is the murmur2 both consumers share, over the
+/// payload encoding of the partition field's value — the normal form
+/// comparison reduces to, so equal values route equal. A null or absent
+/// value routes to partition 0 (D-SG4-3: analytics narrows, it does not
+/// fail); a field the table does not declare is a defective definition and
+/// refuses the write.
+fn partition_of(
+    definition: &TableDefinition,
+    object: Option<&BTreeMap<String, RecordValueType>>,
+) -> Result<u64> {
+    let Some(partitioning) = &definition.partitions else {
+        return Ok(0);
+    };
+    let value = object.and_then(|fields| fields.get(&partitioning.by));
+    let Some(value) =
+        value.filter(|value| !matches!(value, RecordValueType::Null | RecordValueType::None))
+    else {
+        return Ok(0);
+    };
+    let payload = tessari_encoding::encode_payload(value).into_bytes();
+    let hashed = u64::from(tessari_encoding::murmur2(&payload) & 0x7fff_ffff);
+    let count = u64::from(partitioning.count);
+    // The count is a definition-time constant of at least one (the define
+    // guard refuses zero), so the remainder cannot fail.
+    Ok(hashed.checked_rem(count).unwrap_or(0))
+}
+
+/// A family's pointer value: the open chunk seq of every partition lane it
+/// holds, `[count:u32][(partition:u32, open:u64) * count]` in partition
+/// order. An eight-byte value is the pre-partitioning form — one lane at
+/// partition 0 — so a dev store written before SG4 still reads.
+pub(crate) fn lanes_to_bytes(lanes: &BTreeMap<u64, u64>) -> Vec<u8> {
+    let mut out = u32::try_from(lanes.len())
+        .unwrap_or(u32::MAX)
+        .to_be_bytes()
+        .to_vec();
+    for (partition, open) in lanes {
+        out.extend_from_slice(&u32::try_from(*partition).unwrap_or(u32::MAX).to_be_bytes());
+        out.extend_from_slice(&open.to_be_bytes());
+    }
+    out
+}
+
+/// The lanes a pointer value names — [`lanes_to_bytes`] read back, with the
+/// eight-byte legacy form tolerated.
+pub(crate) fn lanes_from_bytes(bytes: &[u8]) -> Result<BTreeMap<u64, u64>> {
+    let mut lanes = BTreeMap::new();
+    if bytes.len() == 8 {
+        lanes.insert(
+            0,
+            u64::from_be_bytes(bytes.try_into().map_err(|_| {
+                crate::error::Error::ColumnarTruncated {
+                    needed: 8,
+                    len: bytes.len(),
+                }
+            })?),
+        );
+        return Ok(lanes);
+    }
+    let mut cursor = super::codec::Cursor::new(bytes);
+    let count = u32::from_be_bytes(cursor.take(4)?.try_into().map_err(|_| {
+        crate::error::Error::ColumnarTruncated {
+            needed: 4,
+            len: bytes.len(),
+        }
+    })?);
+    for _ in 0..count {
+        let partition = u32::from_be_bytes(cursor.take(4)?.try_into().map_err(|_| {
+            crate::error::Error::ColumnarTruncated {
+                needed: 4,
+                len: bytes.len(),
+            }
+        })?);
+        let open = u64::from_be_bytes(cursor.take(8)?.try_into().map_err(|_| {
+            crate::error::Error::ColumnarTruncated {
+                needed: 8,
+                len: bytes.len(),
+            }
+        })?);
+        lanes.insert(u64::from(partition), open);
+    }
+    cursor.finish()?;
+    Ok(lanes)
+}
 
 /// Derive the columnar projection's writes from one commit's record, into
 /// its batch.
@@ -119,7 +206,8 @@ async fn project_table(
         .map(|field| (field.name.clone(), ColumnFamily::Id(field.id)))
         .collect();
 
-    let mut writers: BTreeMap<ColumnFamily, ChunkWriter> = BTreeMap::new();
+    let mut writers: BTreeMap<(ColumnFamily, u64), ChunkWriter> = BTreeMap::new();
+    let mut lanes: BTreeMap<ColumnFamily, BTreeMap<u64, u64>> = BTreeMap::new();
     let mut maps: Vec<(RecordId, Vec<(ColumnFamily, u64)>)> = Vec::new();
     let mut cows: Vec<(u64, ColumnFamily, Vec<u8>)> = Vec::new();
 
@@ -130,6 +218,9 @@ async fn project_table(
             RecordValue::Present(payload) => decode_object(payload)?,
             RecordValue::Tombstone => None,
         };
+        // The row's values route to one partition's lane; the values it is
+        // losing route from the lane they sit in (the object it held).
+        let partition = partition_of(definition, new.as_ref().or(old.as_ref()))?;
         // The families this record touches: every declared family for a
         // schemafull table; every key the old or new object carries for a
         // schemaless one (D-SG2-10 — a record covers the families it has
@@ -161,10 +252,19 @@ async fn project_table(
             if old_value == new_value {
                 continue;
             }
-            let writer = match writers.entry(family.clone()) {
+            let writer = match writers.entry((family.clone(), partition)) {
                 std::collections::btree_map::Entry::Occupied(occupied) => occupied.into_mut(),
                 std::collections::btree_map::Entry::Vacant(vacant) => {
-                    let loaded = load_writer(store, namespace, database, table, &family).await?;
+                    let loaded = load_writer(
+                        store,
+                        namespace,
+                        database,
+                        table,
+                        &family,
+                        partition,
+                        lanes.entry(family.clone()).or_default(),
+                    )
+                    .await?;
                     vacant.insert(loaded)
                 }
             };
@@ -180,7 +280,7 @@ async fn project_table(
                 }
                 writer.append(mutation.id.clone(), new_value.clone());
             }
-            record_map.push((family, writer.seq()));
+            record_map.push((family, split_seq(partition, writer.seq())));
         }
         maps.push((mutation.id.clone(), record_map));
     }
@@ -196,8 +296,8 @@ async fn project_table(
             Value::from(bytes),
         );
     }
-    for (family, writer) in writers {
-        let open_seq = writer.seq();
+    for ((family, partition), writer) in writers {
+        let open_seq = split_seq(partition, writer.seq());
         for sealed in writer.finish() {
             batch = batch.put(
                 ChunkKey::keyspace(),
@@ -206,17 +306,23 @@ async fn project_table(
                     database,
                     table,
                     family.clone(),
-                    sealed.seq,
+                    split_seq(partition, sealed.seq),
                     version,
                 )
                 .encode(),
                 Value::from(sealed.bytes),
             );
         }
+        lanes
+            .entry(family.clone())
+            .or_default()
+            .insert(partition, open_seq);
+    }
+    for (family, held) in lanes {
         batch = batch.put(
             PointerKey::keyspace(),
             PointerKey::new(namespace, database, table, family, version).encode(),
-            Value::from(open_seq.to_be_bytes().to_vec()),
+            Value::from(lanes_to_bytes(&held)),
         );
     }
     for (id, entries) in maps {
@@ -251,36 +357,53 @@ fn decode_object(payload: &[u8]) -> Result<Option<BTreeMap<String, RecordValueTy
     }
 }
 
-/// Load a family's writer from the committed state: the pointer names the
-/// open chunk seq, and that chunk's newest version becomes the rows appends
-/// continue (D-SG2-1).
+/// Load one lane's writer from the committed state: the family's pointer
+/// names every lane's open chunk seq, and the named lane's newest chunk
+/// version becomes the rows appends continue (D-SG2-1). The lanes map is the
+/// caller's, seeded from the pointer when its lane is first touched, so one
+/// pointer read serves the commit.
+#[allow(clippy::too_many_arguments)]
 async fn load_writer(
     store: &Store,
     namespace: NamespaceId,
     database: DatabaseId,
     table: TableId,
     family: &ColumnFamily,
+    partition: u64,
+    lanes: &mut BTreeMap<u64, u64>,
 ) -> Result<ChunkWriter> {
-    let seq = match newest_under(
-        store,
-        &PointerKey::versions_prefix(namespace, database, table, family),
-    )
-    .await?
-    {
-        Some((_, bytes)) => seq_of(&bytes),
-        None => 0,
-    };
+    if lanes.is_empty() {
+        *lanes = match newest_under(
+            store,
+            &PointerKey::versions_prefix(namespace, database, table, family),
+        )
+        .await?
+        {
+            Some((_, bytes)) => lanes_from_bytes(&bytes)?,
+            None => BTreeMap::new(),
+        };
+    }
+    let local = lanes
+        .get(&partition)
+        .map(|open| local_of_seq(*open))
+        .unwrap_or(0);
     match newest_under(
         store,
-        &ChunkKey::versions_prefix(namespace, database, table, family, seq),
+        &ChunkKey::versions_prefix(
+            namespace,
+            database,
+            table,
+            family,
+            split_seq(partition, local),
+        ),
     )
     .await?
     {
         Some((_, bytes)) => {
             let chunk = super::chunk::decode_chunk(&bytes)?;
-            Ok(ChunkWriter::loaded(seq, chunk.record_ids, chunk.values))
+            Ok(ChunkWriter::loaded(local, chunk.record_ids, chunk.values))
         }
-        None => Ok(ChunkWriter::loaded(seq, Vec::new(), Vec::new())),
+        None => Ok(ChunkWriter::loaded(local, Vec::new(), Vec::new())),
     }
 }
 
@@ -378,14 +501,6 @@ fn map_bytes(entries: &[(ColumnFamily, u64)]) -> Vec<u8> {
         out.extend_from_slice(&seq.to_be_bytes());
     }
     out
-}
-
-/// The pointer value's chunk seq.
-pub(crate) fn seq_of(bytes: &[u8]) -> u64 {
-    let mut raw = [0_u8; 8];
-    let len = bytes.len().min(8);
-    raw[..len].copy_from_slice(&bytes[..len]);
-    u64::from_be_bytes(raw)
 }
 
 /// The newest version under a versions prefix — the first entry the

@@ -199,6 +199,26 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 table: name.to_owned(),
             });
         }
+        // Hash partitioning rides only a columnar record table, and the
+        // count is a constant of at least one (worksheet §6.3 — the named
+        // refusals the grammar surfaces in SG5).
+        if let Some(partitioning) = &shape.partitions {
+            if shape.storage_kind != Some(crate::catalog::StorageKind::Column) {
+                return Err(Error::StorageKindOnKind {
+                    table: name.to_owned(),
+                });
+            }
+            if partitioning.count == 0 {
+                return Err(Error::PartitionCountZero {
+                    table: name.to_owned(),
+                });
+            }
+            if partitioning.by.is_empty() {
+                return Err(Error::PartitionKeyEmpty {
+                    table: name.to_owned(),
+                });
+            }
+        }
 
         // The store names a partitioned record as the field's value and a UUID
         // v7 after it (ADR-0096), so a counter has nowhere to go.
@@ -236,6 +256,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             expire: None,
             referenced_by: Vec::new(),
             storage_kind: shape.storage_kind,
+            partitions: shape.partitions,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

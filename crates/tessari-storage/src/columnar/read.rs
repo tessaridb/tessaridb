@@ -31,27 +31,30 @@ pub(crate) async fn family_chunks(
     table: TableId,
     family: &ColumnFamily,
 ) -> Result<Vec<(u64, ColumnChunk)>> {
-    let open = match newest_under(
+    let lanes = match newest_under(
         store,
         &PointerKey::versions_prefix(namespace, database, table, family),
     )
     .await?
     {
-        Some((_, bytes)) => super::project::seq_of(&bytes),
+        Some((_, bytes)) => super::project::lanes_from_bytes(&bytes)?,
         None => return Ok(Vec::new()),
     };
     let mut chunks = Vec::new();
-    let mut seq = 0;
-    while seq <= open {
-        if let Some((_, bytes)) = newest_under(
-            store,
-            &ChunkKey::versions_prefix(namespace, database, table, family, seq),
-        )
-        .await?
-        {
-            chunks.push((seq, decode_chunk(&bytes)?));
+    for (partition, open) in lanes {
+        let mut local = 0_u64;
+        while local <= super::chunk::local_of_seq(open) {
+            let seq = super::chunk::split_seq(partition, local);
+            if let Some((_, bytes)) = newest_under(
+                store,
+                &ChunkKey::versions_prefix(namespace, database, table, family, seq),
+            )
+            .await?
+            {
+                chunks.push((seq, decode_chunk(&bytes)?));
+            }
+            local = local.saturating_add(1);
         }
-        seq = seq.saturating_add(1);
     }
     Ok(chunks)
 }

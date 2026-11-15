@@ -1932,6 +1932,7 @@ fn declaring(policy: Option<ConflictPolicy>) -> (Store, NamespaceId, DatabaseId,
                 partition: None,
                 spread: false,
                 storage_kind: None,
+                partitions: None,
             },
         )
         .now()

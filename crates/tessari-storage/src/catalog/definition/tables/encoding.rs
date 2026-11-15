@@ -1,3 +1,4 @@
+use super::super::FIELD_PARTITIONS;
 use super::*;
 
 impl TableDefinition {
@@ -92,6 +93,24 @@ impl TableDefinition {
         // clause keeps (G082, worksheet §2).
         if let Some(StorageKind::Column) = self.storage_kind {
             fields.insert(FIELD_STORAGE_KIND.to_owned(), Value::from("column"));
+        }
+        // Written only when the definition named one: a table the clause
+        // never reached keeps the single-lane projection, as the row-store
+        // contract above keeps every table the word never reached (worksheet
+        // §6.3).
+        if let Some(partitioning) = &self.partitions {
+            fields.insert(
+                FIELD_PARTITIONS.to_owned(),
+                Value::Object(BTreeMap::from([
+                    (
+                        "count".to_owned(),
+                        Value::Number(tessari_types::Number::Integer(i64::from(
+                            partitioning.count,
+                        ))),
+                    ),
+                    ("by".to_owned(), Value::from(partitioning.by.as_str())),
+                ])),
+            );
         }
         if !self.feeds.is_empty() {
             fields.insert(
@@ -252,6 +271,7 @@ impl TableDefinition {
             })?,
             identity: identity_kind(fields, "table")?,
             storage_kind: storage_kind(fields, "table")?,
+            partitions: super::super::reading::hash_partitioning(fields, "table")?,
             graph: match fields.get(FIELD_GRAPH) {
                 Some(_) => Some(GraphId::new(field_id(fields, FIELD_GRAPH, "table")?)),
                 None => None,

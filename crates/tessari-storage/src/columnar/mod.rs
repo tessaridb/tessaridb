@@ -37,4 +37,7 @@ mod project_tests;
 #[cfg(test)]
 pub(crate) use chunk::ROWS_PER_CHUNK;
 pub(crate) use project::maintain;
-pub use scan::{ColumnarCompare, ColumnarPredicate, ColumnarScanReport, columnar_scan};
+pub use scan::{
+    ColumnarCompare, ColumnarPredicate, ColumnarScanReport, columnar_scan,
+    columnar_scan_partitioned,
+};

@@ -1182,6 +1182,22 @@ pub enum Error {
         table: String,
     },
 
+    /// A hash partition count is a definition-time constant of at least
+    /// one; zero names no lanes at all (worksheet §6.3).
+    #[error("`{table}`: a partition count must be at least one")]
+    PartitionCountZero {
+        /// The table that was asked.
+        table: String,
+    },
+
+    /// A partitioned columnar table names a declared field as its routing
+    /// key, by name; the empty string names nothing.
+    #[error("`{table}`: a partition key must name a field")]
+    PartitionKeyEmpty {
+        /// The table that was asked.
+        table: String,
+    },
+
     /// A failure from the key-value substrate.
     #[error(transparent)]
     Kv(#[from] tessari_kv::Error),
@@ -1296,6 +1312,8 @@ impl Error {
             | Self::PartitionMismatch { .. }
             | Self::SplitPointsOutOfOrder { .. }
             | Self::StorageKindOnKind { .. }
+            | Self::PartitionCountZero { .. }
+            | Self::PartitionKeyEmpty { .. }
             | Self::SplitOnAKindThatIsNotRecords { .. }
             | Self::NotASplitTable { .. }
             | Self::SplitPointOnABoundary { .. }

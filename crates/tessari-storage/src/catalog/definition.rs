@@ -44,7 +44,7 @@ pub(crate) use reading::{
     ceiling, count_of, field_id, field_name, flag, id_of, identity_kind, object, storage_kind,
 };
 pub use rollups::{RollupCompute, RollupDeclaration, RollupFold};
-pub use tables::{StorageKind, TableDefinition, TableShape};
+pub use tables::{HashPartitioning, StorageKind, TableDefinition, TableShape};
 
 const FIELD_ID: &str = "id";
 const FIELD_NAME: &str = "name";
@@ -94,6 +94,7 @@ const FIELD_DEAD_LETTER: &str = "dead_letter";
 const FIELD_SERIES: &str = "series";
 /// The storage kind a table declared, when it declared one (G082).
 const FIELD_STORAGE_KIND: &str = "storage_kind";
+const FIELD_PARTITIONS: &str = "partitions";
 /// A space's declaration: present (possibly empty) exactly when the table is one.
 const FIELD_SPACE: &str = "space";
 /// A topic's declaration: present (possibly empty) exactly when the table is one.
