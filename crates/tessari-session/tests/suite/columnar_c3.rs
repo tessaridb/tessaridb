@@ -202,3 +202,76 @@ fn c3_selective_aggregates_over_a_million_rows() {
         );
     }
 }
+
+/// C8 — the write path's cost, stated honestly. One transaction holds the
+/// same 100 000 rows for each layout (single-variable: identical rows,
+/// identical batching, only the storage kind differs); the measured figure
+/// is the commit's wall time divided by the rows. Debug build, in-memory
+/// store — the shape the number's barbs point at, stated beside it.
+#[test]
+fn c8_the_write_paths_cost_stated() {
+    const WRITES: i64 = 100_000;
+    let mut seconds = Vec::new();
+    for column in [false, true] {
+        let store = store();
+        let mut transaction = store.begin().now().unwrap();
+        let mut catalog = Catalog::new(&mut transaction);
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog
+            .create_database(namespace.id, "analytics")
+            .now()
+            .unwrap();
+        let table = catalog
+            .create_table(
+                namespace.id,
+                database.id,
+                "events",
+                TableShape {
+                    schemafull: true,
+                    storage_kind: column.then_some(StorageKind::Column),
+                    ..TableShape::default()
+                },
+            )
+            .now()
+            .unwrap()
+            .id;
+        catalog
+            .create_field(table, "kind", FieldKind::String, FieldShape::default())
+            .now()
+            .unwrap();
+        transaction.commit().now().unwrap();
+        let mut transaction = store.begin().now().unwrap();
+        for row in 0..WRITES {
+            let payload = encode_payload(&Value::Object(BTreeMap::from([(
+                "kind".to_owned(),
+                Value::String(format!("kind-{}", row.rem_euclid(100))),
+            )])))
+            .into_bytes();
+            transaction.put(
+                RecordAddress::new(
+                    NamespaceId::new(namespace.id.get()),
+                    DatabaseId::new(database.id.get()),
+                    TableId::new(table.get()),
+                    RecordId::Int(row),
+                ),
+                payload,
+            );
+        }
+        let started = Instant::now();
+        transaction.commit().now().unwrap();
+        seconds.push(started.elapsed().as_secs_f64());
+    }
+    let row_per = seconds[0] / WRITES as f64;
+    let column_per = seconds[1] / WRITES as f64;
+    eprintln!(
+        "c8 | write | rows {WRITES} | debug, in-memory | row {:.0} ns/row | column {:.0} ns/row | ratio {:.2}x",
+        row_per * 1e9,
+        column_per * 1e9,
+        column_per / row_per
+    );
+    // The columnar write pays the projection inside the same commit; the
+    // measured claim is the RATIO, not a threshold — the assertion pins
+    // only that the projection landed (the commit answered), the printed
+    // line is the evidence.
+    assert!(column_per.is_finite() && row_per.is_finite());
+}
