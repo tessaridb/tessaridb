@@ -39,6 +39,7 @@ mod bounded_index_reads;
 mod bounded_reads;
 mod bucket_ceiling;
 mod bucket_grants;
+mod columnar_c3;
 mod columnar_scan;
 mod combined_reads;
 mod composite_index;
