@@ -12,6 +12,7 @@
 //! and the chunk payload only; the commit-batch projection lands in T2.2
 //! beside `index::maintain`, the same-batch pattern the engine already runs.
 
+mod bloom;
 mod chunk;
 mod codec;
 mod project;

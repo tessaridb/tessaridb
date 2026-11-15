@@ -61,9 +61,12 @@ fn an_all_null_chunk_has_an_empty_data_section() {
     let values = vec![Value::Null; 4];
     let bytes = encode_chunk(&ids, &values);
     // Header(10) + bitmap(1) + the empty plain section(4) + the record-id
-    // index(56: four integer ids at 13 bytes each plus its length) — 71 in
-    // all. The same chunk holding four integer values would add their data
-    // (~56 bytes); the all-null chunk's data section stays at its floor.
+    // index(56: four integer ids at 13 bytes each plus its length) + the
+    // stats footer's empty bloom(13: a length, the 8-byte minimum filter,
+    // the hash count) — 84 in all, with min/max honestly absent (there is
+    // nothing to order). The same chunk holding four integer values would
+    // add their data (~56 bytes) and the min/max payloads; the all-null
+    // chunk's data section stays at its empty floor.
     assert!(
         bytes.len() < 100,
         "an all-null chunk's data section is its empty floor: {}",
@@ -183,5 +186,110 @@ fn an_absurd_row_count_is_refused_before_it_allocates() {
     bytes[1] = 0xff;
     bytes[2] = 0xff;
     bytes[3] = 0xff; // count = u32::MAX, far past the row ceiling
+    assert!(decode_chunk(&bytes).is_err());
+}
+
+// --- SG3 T3.1: footer statistics (min/max under the declared order, an
+// equality bloom, the NaN rule) are written with every chunk and verified
+// on read. See the SG3 plan §2 and the worksheet §4.3/§4.4.
+
+fn float(value: f64) -> Value {
+    Value::Number(Number::float(value))
+}
+
+#[test]
+fn min_max_roundtrip_under_the_declared_order() {
+    let ids = sequential_ids(4);
+    let values = vec![int(5), int(-3), int(9), int(0)];
+    let chunk = decode_chunk(&encode_chunk(&ids, &values)).expect("a fresh chunk decodes");
+    assert_eq!(chunk.stats.min, Some(int(-3)));
+    assert_eq!(chunk.stats.max, Some(int(9)));
+}
+
+#[test]
+fn string_min_max_use_the_same_order_the_store_declares() {
+    let ids = sequential_ids(3);
+    let values = vec![
+        Value::String("pear".to_owned()),
+        Value::String("apple".to_owned()),
+        Value::String("fig".to_owned()),
+    ];
+    let chunk = decode_chunk(&encode_chunk(&ids, &values)).expect("a fresh chunk decodes");
+    assert_eq!(chunk.stats.min, Some(Value::String("apple".to_owned())));
+    assert_eq!(chunk.stats.max, Some(Value::String("pear".to_owned())));
+}
+
+#[test]
+fn mixed_kind_min_max_follow_the_cross_kind_rank() {
+    // Numbers rank before strings in the store's one declared order, so the
+    // pair spans the kinds without a second comparator anywhere (§4.3: the
+    // comparator is the store's own, which is what makes the statistic
+    // trustworthy for pruning).
+    let ids = sequential_ids(3);
+    let values = vec![
+        Value::String("apple".to_owned()),
+        int(1),
+        Value::String("zz".to_owned()),
+    ];
+    let chunk = decode_chunk(&encode_chunk(&ids, &values)).expect("a fresh chunk decodes");
+    assert_eq!(chunk.stats.min, Some(int(1)));
+    assert_eq!(chunk.stats.max, Some(Value::String("zz".to_owned())));
+}
+
+#[test]
+fn a_nan_disables_range_statistics_but_keeps_the_bloom() {
+    // Worksheet §4.3: NaN is excluded from min/max and its presence disables
+    // range pruning for the chunk; the bloom is unaffected and still answers
+    // equality.
+    let ids = sequential_ids(3);
+    let values = vec![float(1.5), float(f64::NAN), float(2.5)];
+    let chunk = decode_chunk(&encode_chunk(&ids, &values)).expect("a fresh chunk decodes");
+    assert_eq!(chunk.stats.min, None);
+    assert_eq!(chunk.stats.max, None);
+    assert!(chunk.stats.range_disabled);
+    let bloom = chunk.stats.bloom.expect("the bloom is written");
+    let member = tessari_encoding::encode_payload(&float(2.5)).into_bytes();
+    assert!(bloom.might_contain(&member));
+}
+
+#[test]
+fn an_all_null_chunk_carries_no_min_max_and_an_empty_bloom() {
+    let ids = sequential_ids(3);
+    let values = vec![Value::Null; 3];
+    let chunk = decode_chunk(&encode_chunk(&ids, &values)).expect("a fresh chunk decodes");
+    assert_eq!(chunk.stats.min, None);
+    assert_eq!(chunk.stats.max, None);
+    let bloom = chunk.stats.bloom.expect("the bloom is written");
+    // Nothing was inserted, so every probe finds an unset bit: an all-null
+    // chunk is skippable for any equality predicate.
+    let probe = tessari_encoding::encode_payload(&int(42)).into_bytes();
+    assert!(!bloom.might_contain(&probe));
+}
+
+#[test]
+fn the_bloom_answers_membership_for_every_value_it_was_built_from() {
+    let ids = sequential_ids(64);
+    let values: Vec<Value> = (0..64).map(|row| int(row * 7 + 3)).collect();
+    let chunk = decode_chunk(&encode_chunk(&ids, &values)).expect("a fresh chunk decodes");
+    let bloom = chunk.stats.bloom.expect("the bloom is written");
+    for value in &values {
+        let payload = tessari_encoding::encode_payload(value).into_bytes();
+        assert!(
+            bloom.might_contain(&payload),
+            "a bloom never denies a value it holds (no false negatives)"
+        );
+    }
+}
+
+#[test]
+fn an_absurd_bloom_length_is_refused_before_it_allocates() {
+    let ids = sequential_ids(2);
+    let values = vec![int(1), int(2)];
+    let mut bytes = encode_chunk(&ids, &values);
+    // The footer ends [bloom byte_len:u32][bloom bytes][hash_count:u8]. The
+    // two-value bloom is the format's minimum (8 bytes), so the length field
+    // sits 12 bytes from the end; a hostile length must refuse, not allocate.
+    let at = bytes.len() - 12;
+    bytes[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(decode_chunk(&bytes).is_err());
 }
