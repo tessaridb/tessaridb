@@ -282,6 +282,25 @@ fn the_bloom_answers_membership_for_every_value_it_was_built_from() {
 }
 
 #[test]
+fn the_bloom_survives_an_encode_decode_roundtrip() {
+    // The birth-site bug this guards: a bit count not rounded to a whole
+    // byte reads back as `byte_len × 8`, and every probe lands off its bit.
+    // Probing the same process's build agrees with itself, so the check must
+    // cross the encode/decode boundary.
+    let ids = sequential_ids(55);
+    let values: Vec<Value> = (0..55).map(|row| int(row * 3 + 1)).collect();
+    let chunk = decode_chunk(&encode_chunk(&ids, &values)).expect("a fresh chunk decodes");
+    let bloom = chunk.stats.bloom.expect("the bloom is written");
+    for value in &values {
+        let payload = tessari_encoding::encode_payload(value).into_bytes();
+        assert!(
+            bloom.might_contain(&payload),
+            "a decoded bloom never denies a value it holds"
+        );
+    }
+}
+
+#[test]
 fn an_absurd_bloom_length_is_refused_before_it_allocates() {
     let ids = sequential_ids(2);
     let values = vec![int(1), int(2)];

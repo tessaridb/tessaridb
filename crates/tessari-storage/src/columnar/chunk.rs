@@ -14,13 +14,15 @@
 //! [null_count:u32]       rows whose slot is null
 //! [validity bitmap]      (count + 7) / 8 bytes, iff null_count > 0; a set
 //!                        bit marks a null slot
+//! [statistics]           iff 0x02: min payload, max payload (each u32
+//!                        length + encoded value, the store's own
+//!                        comparator); iff 0x04: the bloom filter
+//!                        (bloom.rs). Before the data section on purpose:
+//!                        a pruning read parses only the head and never
+//!                        touches the data section of a chunk it skips
 //! [data section]         the non-null values in row order, encoded
 //! [record ids]           u32 byte length, then per row: u32 length + the
 //!                        record id, preserving the append order
-//! [stats footer]         iff 0x02: min payload, max payload (each u32
-//!                        length + encoded value, the store's own
-//!                        comparator); iff 0x04: the bloom filter
-//!                        (bloom.rs)
 //! ```
 //!
 //! # Nulls are a bitmap, never a sentinel (§4.3)
@@ -67,14 +69,14 @@ pub(crate) const BYTES_PER_CHUNK: usize = 256 * 1024;
 /// `flags`: the non-null values are non-decreasing.
 const FLAG_SORTED: u8 = 0x01;
 
-/// `flags`: min/max statistics are present in the footer.
+/// `flags`: min/max statistics are present in the head.
 const FLAG_MINMAX: u8 = 0x02;
 
-/// `flags`: a bloom filter is present in the footer.
+/// `flags`: a bloom filter is present in the head.
 const FLAG_BLOOM: u8 = 0x04;
 
 /// `flags`: a NaN sat the column; range statistics are disabled for this
-/// chunk even though other footer fields may be present.
+/// chunk even though other head fields may be present.
 const FLAG_RANGE_DISABLED: u8 = 0x08;
 
 /// A hard ceiling on a header's row count, refusing absurd counts before any
@@ -83,7 +85,7 @@ const FLAG_RANGE_DISABLED: u8 = 0x08;
 /// bound only stops a hostile header from turning one into an allocation.
 const ROW_CEILING: usize = 1 << 24;
 
-/// The footer statistics one chunk carries (SG3 T3.1).
+/// The head statistics one chunk carries (SG3 T3.1).
 ///
 /// Every member is `Option` because absence is a first-class state the scan
 /// consults: an absent statistic disables the pruning it would serve, which
@@ -91,9 +93,7 @@ const ROW_CEILING: usize = 1 << 24;
 /// chunk with values carries no min/max — a NaN sat the column — so the
 /// scan's report can say it instead of guessing.
 ///
-/// The members are read by SG3's pruning scan (`columnar/scan.rs`, landing
-/// later in this wave); the expectations below are removed there.
-#[allow(dead_code)]
+/// The members are read by SG3's pruning scan (`columnar/scan.rs`).
 pub(crate) struct ChunkStats {
     /// The least non-null value under the store's one declared order.
     pub(crate) min: Option<Value>,
@@ -101,7 +101,12 @@ pub(crate) struct ChunkStats {
     pub(crate) max: Option<Value>,
     /// The equality bloom over the non-null values' payload encodings.
     pub(crate) bloom: Option<BloomBits>,
-    /// Whether a NaN disabled range statistics for this chunk.
+    /// Whether a NaN disabled range statistics for this chunk. The scan
+    /// consults min/max presence, not this flag; the flag records *why* a
+    /// valued chunk carries no range (worksheet §4.3), for the report the
+    /// answer grows later — kept per the spec, read by no production path
+    /// yet.
+    #[allow(dead_code)]
     pub(crate) range_disabled: bool,
 }
 
@@ -119,8 +124,10 @@ pub(crate) struct ColumnChunk {
     pub(crate) sorted: bool,
     /// Rows whose slot is null.
     pub(crate) null_count: usize,
-    /// The footer statistics the writer computed with the chunk — read by
-    /// SG3's pruning scan, landing later in this wave.
+    /// The head statistics the writer computed with the chunk. The pruning
+    /// scan reads them through [`decode_head`] before deciding; the decoded
+    /// copy rides here for the chunk tests and the report the answer grows
+    /// later.
     #[allow(dead_code)]
     pub(crate) stats: ChunkStats,
 }
@@ -215,6 +222,21 @@ pub(crate) fn encode_chunk(record_ids: &[RecordId], values: &[Value]) -> Vec<u8>
         out.extend_from_slice(&bitmap);
     }
 
+    // The head statistics: min then max (each a length-prefixed payload),
+    // then the bloom — before the data section, so a pruning read parses
+    // only the head and never decodes a chunk it will skip. Absent min/max
+    // (all-null, or NaN-disabled) write nothing; the flags byte is the
+    // authority for what follows.
+    if let (Some(min), Some(max)) = (&min, &max) {
+        let encoded = encode_payload(min).into_bytes();
+        put_u32(&mut out, encoded.len());
+        out.extend_from_slice(&encoded);
+        let encoded = encode_payload(max).into_bytes();
+        put_u32(&mut out, encoded.len());
+        out.extend_from_slice(&encoded);
+    }
+    bloom.encode_into(&mut out);
+
     out.extend_from_slice(&data);
 
     let mut ids = Vec::new();
@@ -225,19 +247,6 @@ pub(crate) fn encode_chunk(record_ids: &[RecordId], values: &[Value]) -> Vec<u8>
     }
     put_u32(&mut out, ids.len());
     out.extend_from_slice(&ids);
-
-    // The stats footer: min then max (each a length-prefixed payload), then
-    // the bloom. Absent min/max (all-null, or NaN-disabled) write nothing —
-    // the flags byte is the authority for what follows.
-    if let (Some(min), Some(max)) = (&min, &max) {
-        let encoded = encode_payload(min).into_bytes();
-        put_u32(&mut out, encoded.len());
-        out.extend_from_slice(&encoded);
-        let encoded = encode_payload(max).into_bytes();
-        put_u32(&mut out, encoded.len());
-        out.extend_from_slice(&encoded);
-    }
-    bloom.encode_into(&mut out);
     out
 }
 
@@ -248,18 +257,16 @@ pub(crate) fn decode_chunk(bytes: &[u8]) -> Result<ColumnChunk> {
     if count > ROW_CEILING {
         return Err(cursor.truncated());
     }
-    let encoding = cursor.u8()?;
-    let flags = cursor.u8()?;
-    let null_count = usize::try_from(cursor.u32()?).unwrap_or(usize::MAX);
-    if null_count > count {
+    let head = read_head(&mut cursor)?;
+    if head.null_count > count {
         return Err(cursor.truncated());
     }
     let non_null_count = count
-        .checked_sub(null_count)
+        .checked_sub(head.null_count)
         .ok_or_else(|| cursor.truncated())?;
 
     let mut null_slots = vec![false; count];
-    if null_count > 0 {
+    if head.null_count > 0 {
         let bitmap = cursor.take(count.div_ceil(8))?;
         let mut counted = 0_usize;
         for (row, slot) in null_slots.iter_mut().enumerate() {
@@ -273,12 +280,14 @@ pub(crate) fn decode_chunk(bytes: &[u8]) -> Result<ColumnChunk> {
             }
         }
         // The bitmap is the authority for the slots; the count must agree.
-        if counted != null_count {
+        if counted != head.null_count {
             return Err(cursor.truncated());
         }
     }
 
-    let decoded = codec::decode(encoding, &mut cursor, non_null_count)?;
+    let stats = read_stats(&mut cursor, head.flags)?;
+
+    let decoded = codec::decode(head.encoding, &mut cursor, non_null_count)?;
     let mut next = decoded.into_iter();
     let mut values = Vec::with_capacity(count.min(1024));
     for slot in null_slots {
@@ -299,40 +308,87 @@ pub(crate) fn decode_chunk(bytes: &[u8]) -> Result<ColumnChunk> {
         record_ids.push(tessari_encoding::decode_record_id(raw)?);
     }
     id_cursor.finish()?;
-
-    // The stats footer: min then max (each a length-prefixed payload), then
-    // the bloom. A member the flags do not promise, or one that truncates,
-    // refuses rather than guesses — a statistic read past its bytes would be
-    // a wrong one, and a wrong one deletes rows.
-    let minmax = if flags & FLAG_MINMAX != 0 {
-        let min = decode_stat(&mut cursor)?;
-        let max = decode_stat(&mut cursor)?;
-        Some((min, max))
-    } else {
-        None
-    };
-    let bloom = if flags & FLAG_BLOOM != 0 {
-        Some(BloomBits::decode(&mut cursor)?)
-    } else {
-        None
-    };
     cursor.finish()?;
 
     Ok(ColumnChunk {
         record_ids,
         values,
-        sorted: flags & FLAG_SORTED != 0,
-        null_count,
-        stats: ChunkStats {
-            min: minmax.as_ref().map(|(min, _)| min.clone()),
-            max: minmax.map(|(_, max)| max),
-            bloom,
-            range_disabled: flags & FLAG_RANGE_DISABLED != 0,
-        },
+        sorted: head.flags & FLAG_SORTED != 0,
+        null_count: head.null_count,
+        stats,
     })
 }
 
-/// One footer statistic: a length-prefixed payload decoded back to its value.
+/// Decode the head alone — the row count and the statistics — without
+/// touching the data section or the record-id index. This is what SG3's
+/// pruning scan parses to decide whether a chunk is a candidate; a chunk
+/// that survives is still decoded whole through [`decode_chunk`], which
+/// validates everything. The row count rides alongside so a caller that
+/// needs it never sizes anything from a header the [`ROW_CEILING`] check
+/// has not cleared.
+pub(crate) fn decode_head(bytes: &[u8]) -> Result<(usize, ChunkStats)> {
+    let mut cursor = Cursor::new(bytes);
+    let count = usize::try_from(cursor.u32()?).unwrap_or(usize::MAX);
+    if count > ROW_CEILING {
+        return Err(cursor.truncated());
+    }
+    let head = read_head(&mut cursor)?;
+    if head.null_count > count {
+        return Err(cursor.truncated());
+    }
+    // The validity bitmap sits between the fixed head and the statistics;
+    // a head read skips it without materialising the slots.
+    if head.null_count > 0 {
+        cursor.take(count.div_ceil(8))?;
+    }
+    read_stats(&mut cursor, head.flags).map(|stats| (count, stats))
+}
+
+/// The fixed head: encoding, flags, and null count. Shared by the full
+/// decode and the pruning head read.
+struct FixedHead {
+    encoding: u8,
+    flags: u8,
+    null_count: usize,
+}
+
+fn read_head(cursor: &mut Cursor<'_>) -> Result<FixedHead> {
+    let encoding = cursor.u8()?;
+    let flags = cursor.u8()?;
+    let null_count = usize::try_from(cursor.u32()?).unwrap_or(usize::MAX);
+    Ok(FixedHead {
+        encoding,
+        flags,
+        null_count,
+    })
+}
+
+/// The head statistics: min then max (each a length-prefixed payload), then
+/// the bloom. A member the flags do not promise, or one that truncates,
+/// refuses rather than guesses — a statistic read past its bytes would be a
+/// wrong one, and a wrong one deletes rows.
+fn read_stats(cursor: &mut Cursor<'_>, flags: u8) -> Result<ChunkStats> {
+    let minmax = if flags & FLAG_MINMAX != 0 {
+        let min = decode_stat(cursor)?;
+        let max = decode_stat(cursor)?;
+        Some((min, max))
+    } else {
+        None
+    };
+    let bloom = if flags & FLAG_BLOOM != 0 {
+        Some(BloomBits::decode(cursor)?)
+    } else {
+        None
+    };
+    Ok(ChunkStats {
+        min: minmax.as_ref().map(|(min, _)| min.clone()),
+        max: minmax.map(|(_, max)| max),
+        bloom,
+        range_disabled: flags & FLAG_RANGE_DISABLED != 0,
+    })
+}
+
+/// One head statistic: a length-prefixed payload decoded back to its value.
 fn decode_stat(cursor: &mut Cursor<'_>) -> Result<Value> {
     let len = usize::try_from(cursor.u32()?).unwrap_or(usize::MAX);
     let raw = cursor.take(len)?;

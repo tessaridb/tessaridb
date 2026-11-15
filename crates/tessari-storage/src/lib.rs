@@ -111,6 +111,7 @@ pub use catalog::VaultRoot;
 /// The system tables, by id and name — part of the written format (`docs/key-grammar.md` §9).
 pub use catalog::system::ALL as SYSTEM_TABLES;
 pub use collections::{Collection, Collections, Currency, Upstream, UpstreamReport};
+pub use columnar::{ColumnarCompare, ColumnarPredicate, ColumnarScanReport, columnar_scan};
 pub use covering::MEASURED_RELATION;
 pub use decisions::{Deciding, Decisions};
 pub use expiry::Expired;

@@ -46,13 +46,17 @@ pub(crate) struct BloomBits {
 impl BloomBits {
     /// Build a filter over the payload encodings of the non-null values.
     pub(crate) fn build(payloads: &[Vec<u8>]) -> Self {
-        let bit_count = payloads
+        // The bit count is rounded up to a whole byte and stored implicitly
+        // as the byte length: decode recomputes it as `byte_len × 8`, so the
+        // two sides must agree exactly or every probe lands off its bit.
+        let byte_count = payloads
             .len()
             .saturating_mul(BITS_PER_VALUE)
-            .max(MIN_BIT_COUNT);
+            .max(MIN_BIT_COUNT)
+            .div_ceil(8);
         let mut bits = Self {
-            bytes: vec![0_u8; bit_count.div_ceil(8)],
-            bit_count,
+            bytes: vec![0_u8; byte_count],
+            bit_count: byte_count.saturating_mul(8),
             hash_count: HASH_COUNT,
         };
         for payload in payloads {
@@ -63,8 +67,7 @@ impl BloomBits {
 
     /// Whether the payload's value may be in the set — always true when it
     /// is, sometimes true when it is not (the declared false-positive rate).
-    /// Read by SG3's pruning scan, landing later in this wave.
-    #[allow(dead_code)]
+    /// Read by SG3's pruning scan.
     pub(crate) fn might_contain(&self, payload: &[u8]) -> bool {
         positions(fnv1a_64(payload), self.bit_count, self.hash_count).all(|at| {
             let byte = self.bytes.get(at >> 3).copied().unwrap_or(0);
