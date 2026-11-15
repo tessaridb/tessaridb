@@ -211,6 +211,20 @@ impl Transaction<'_> {
         .await
     }
 
+    /// One family's decoded rows in one partition lane — the
+    /// partition-local group-by's raw read (G082 SG4).
+    pub async fn columnar_lane(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        family: &tessari_encoding::ColumnFamily,
+        partition: u64,
+    ) -> Result<Vec<(RecordId, tessari_types::Value)>> {
+        crate::columnar::columnar_lane(self.store(), namespace, database, table, family, partition)
+            .await
+    }
+
     /// Every live record of one table, handed over as the walk finds them.
     ///
     /// The streaming twin of [`Self::scan_table`], and one difference is the

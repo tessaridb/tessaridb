@@ -295,7 +295,7 @@ impl Removed {
         match self.records {
             Some(records) => Outcome::Records {
                 records,
-                plan,
+                plan: Box::new(plan),
                 notes: Vec::new(),
                 suggestion: None,
                 only: false,

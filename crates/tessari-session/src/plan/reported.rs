@@ -112,6 +112,10 @@ pub struct Plan {
     /// The shards of a split table a span read touches, in key order
     /// (ADR-0096 D3) — so a read naming one partition says it reads one shard.
     pub shards: Option<Box<[u32]>>,
+    /// How many partition lanes a group-by folded locally before its final
+    /// merge (G082 SG4) — so a plan says `partition-local group by over n
+    /// lanes + final merge` in the one number it can know without running.
+    pub lanes: Option<u64>,
     /// Whether the records are provably the ones the question names.
     ///
     /// Derived from [`Self::access`] rather than set here, so that `EXPLAIN` and
@@ -134,7 +138,17 @@ impl Plan {
             cells: None,
             expected: None,
             shards: None,
+            lanes: None,
             exact: access.exactness(),
+        }
+    }
+
+    /// The same plan, folding group-bys over this many partition lanes.
+    #[must_use]
+    pub fn over_lanes(self, lanes: u64) -> Self {
+        Self {
+            lanes: Some(lanes),
+            ..self
         }
     }
 
@@ -242,6 +256,12 @@ impl Plan {
                 Value::Number(Number::Integer(i64::try_from(rows).unwrap_or(i64::MAX))),
             );
             plan.insert("estimated_by".to_owned(), Value::from(by));
+        }
+        if let Some(lanes) = self.lanes {
+            plan.insert(
+                "lanes".to_owned(),
+                Value::Number(Number::Integer(i64::try_from(lanes).unwrap_or(i64::MAX))),
+            );
         }
         if let Some(shards) = &self.shards {
             plan.insert(

@@ -165,6 +165,60 @@ pub async fn columnar_scan_partitioned(
     Ok((candidates.into_iter().collect(), report))
 }
 
+/// Every decoded row of one family's one lane, in local chunk order:
+/// `(record id, value)` pairs, null slots omitted (a null or absent value
+/// holds no row, D-SG2-10). This is the partition-local group-by's raw
+/// read: the caller unions the ids across the families it folds, so a
+/// record whose key is null — which routed here but holds no key-family
+/// row — is not lost.
+///
+/// # Errors
+///
+/// As [`columnar_scan`]; a lane the family's pointer does not hold answers
+/// empty.
+pub async fn columnar_lane(
+    store: &Store,
+    namespace: NamespaceId,
+    database: DatabaseId,
+    table: TableId,
+    family: &ColumnFamily,
+    partition: u64,
+) -> Result<Vec<(RecordId, Value)>> {
+    let lanes = match newest_under(
+        store,
+        &PointerKey::versions_prefix(namespace, database, table, family),
+    )
+    .await?
+    {
+        Some((_, bytes)) => super::project::lanes_from_bytes(&bytes)?,
+        None => return Ok(Vec::new()),
+    };
+    let Some(open) = lanes.get(&partition).copied() else {
+        return Ok(Vec::new());
+    };
+    let mut rows = Vec::new();
+    let mut local = 0_u64;
+    while local <= super::chunk::local_of_seq(open) {
+        if let Some((_, bytes)) = newest_under(
+            store,
+            &tessari_encoding::ChunkKey::versions_prefix(
+                namespace,
+                database,
+                table,
+                family,
+                super::chunk::split_seq(partition, local),
+            ),
+        )
+        .await?
+        {
+            let chunk = decode_chunk(&bytes)?;
+            rows.extend(chunk.record_ids.into_iter().zip(chunk.values));
+        }
+        local = local.saturating_add(1);
+    }
+    Ok(rows)
+}
+
 /// One family's chunks: prune by the head statistics, decode survivors,
 /// test each row.
 #[allow(clippy::too_many_arguments)]

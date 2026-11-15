@@ -40,9 +40,9 @@
 //! yielded, in the walk's key order; only how it was reached changed.
 
 use tessari_encoding::ColumnFamily;
-use tessari_ql::{BinaryOp, Expr, ExprKind};
+use tessari_ql::{BinaryOp, Expr, ExprKind, Select, Source};
 use tessari_storage::{Catalog, ColumnarCompare, ColumnarPredicate, Transaction};
-use tessari_types::{TableId, Value};
+use tessari_types::{RecordId, TableId, Value};
 
 use crate::condition::boolean;
 use crate::consume::Consumer;
@@ -236,6 +236,274 @@ impl Session<'_> {
         }
         Ok(report)
     }
+}
+
+impl Session<'_> {
+    /// The groups a qualifying grouped read folds partition-locally (G082
+    /// SG4, worksheet §6.3): a `GROUP BY` on the partition key, with only
+    /// mergeable folds over declared fields, folds per lane over the
+    /// projection; the final merge combines the lanes' partials — or `None`
+    /// for every other grouped read, which prepares its source as before.
+    ///
+    /// The gate is deliberately narrow (v1): no `WHERE` (the records path
+    /// serves it), one grouping key and it the partition field, folds that
+    /// merge exactly and carry no `at`, no `EXPIRE` on the table (the
+    /// projection cannot know what expired — at the tail, with no held
+    /// writes, the lane rows are the authority for the declared fields), and
+    /// the same two snapshot refusals the scan gate makes.
+    pub(crate) async fn prepare_columnar_grouped(
+        &self,
+        transaction: &mut Transaction<'_>,
+        select: &Select,
+    ) -> Result<Option<(crate::aggregate::Groups, crate::plan::Plan)>> {
+        if crate::reduce::reduce_of(select).is_none() {
+            return Ok(None);
+        }
+        let Source::Table(table) = &select.from else {
+            return Ok(None);
+        };
+        // A resolution that refuses (a name the view rewrite did not reach,
+        // an unknown table) is not this gate's verdict: the read's ordinary
+        // path raises it where it always did.
+        let Ok((context, id)) = self.resolve_table(transaction, table).await else {
+            return Ok(None);
+        };
+        let Some(shape) = self
+            .columnar_grouped_shape(transaction, context, id, select)
+            .await?
+        else {
+            return Ok(None);
+        };
+        // The projection describes committed state: same two refusals as the
+        // scan gate.
+        if !transaction.indexes_are_current_for(id).await?
+            || transaction.writes_in(context.namespace, context.database, id)
+        {
+            return Ok(None);
+        }
+        let fields = Catalog::new(transaction)
+            .fields_on(context.namespace, context.database, id)
+            .await?;
+        let overs: Vec<(String, ColumnFamily)> = shape
+            .overs
+            .iter()
+            .map(|(name, field_id)| (name.clone(), ColumnFamily::Id(*field_id)))
+            .collect();
+        let Some(key_field) = fields.iter().find(|field| field.name == shape.key) else {
+            return Ok(None);
+        };
+        let partitioning_count = shape.lanes;
+        let key_name = shape.key.clone();
+        let key_rows_family = ColumnFamily::Id(key_field.id);
+        let _ = &key_rows_family;
+
+        let count = partitioning_count;
+        let occurrences = crate::aggregate::occurrences(select.projection.written());
+        let mut groups = crate::aggregate::Groups::new();
+        for lane in 0..count {
+            let key_rows: std::collections::BTreeMap<RecordId, Value> = transaction
+                .columnar_lane(
+                    context.namespace,
+                    context.database,
+                    id,
+                    &key_rows_family,
+                    lane,
+                )
+                .await?
+                .into_iter()
+                .collect();
+            let mut over_rows = Vec::with_capacity(overs.len());
+            for (name, family) in &overs {
+                let rows: std::collections::BTreeMap<RecordId, Value> = transaction
+                    .columnar_lane(context.namespace, context.database, id, family, lane)
+                    .await?
+                    .into_iter()
+                    .collect();
+                over_rows.push((name.as_str(), rows));
+            }
+            // The lane's records are the union of the families' rows: a
+            // record whose key is null routed here but holds no key-family
+            // row, and it still groups.
+            let mut ids: std::collections::BTreeSet<RecordId> = key_rows.keys().cloned().collect();
+            for (_, rows) in &over_rows {
+                ids.extend(rows.keys().cloned());
+            }
+            let mut records = Vec::with_capacity(ids.len());
+            for record_id in ids {
+                let mut object = std::collections::BTreeMap::new();
+                // The row authority decides whenever the projection is
+                // silent or ambiguous about the key: no row covers a null
+                // OR absent key (D-SG2-10 — two different facts, grouped
+                // differently), and a null key row is how a delete or an
+                // update-to-null records the value's departure (D-SG3-8) —
+                // which may be a tombstone the lane must not count at all.
+                let needs_authority = key_rows
+                    .get(&record_id)
+                    .is_none_or(|value| matches!(value, Value::Null | Value::None));
+                if needs_authority {
+                    let address = tessari_storage::RecordAddress::new(
+                        context.namespace,
+                        context.database,
+                        id,
+                        record_id.clone(),
+                    );
+                    let held = match transaction.get(&address).await? {
+                        Some(payload) => match tessari_encoding::decode_payload(&payload) {
+                            Ok(Value::Object(held)) => Some(held),
+                            _ => None,
+                        },
+                        // Tombstoned at this snapshot: the lane rows its
+                        // delete left are not a record, and the group-by
+                        // must not count it.
+                        None => continue,
+                    };
+                    if let Some(held) = held
+                        && let Some(value) = held.get(&key_name)
+                    {
+                        object.insert(key_name.clone(), value.clone());
+                    }
+                } else if let Some(value) = key_rows.get(&record_id) {
+                    object.insert(key_name.clone(), value.clone());
+                }
+                for (name, rows) in &over_rows {
+                    if let Some(value) = rows.get(&record_id) {
+                        object.insert((*name).to_owned(), value.clone());
+                    }
+                }
+                records.push((record_id, Value::Object(object)));
+            }
+            let mut lane_groups = crate::aggregate::Groups::new();
+            self.fold_into(
+                transaction,
+                &mut lane_groups,
+                records,
+                &occurrences,
+                (&select.group, None),
+            )
+            .await?;
+            if count == 1 {
+                groups = lane_groups;
+                break;
+            }
+            // The lane's groups travel as partials; the merge is the final
+            // merge. A fold that cannot travel means the lanes cannot merge
+            // exactly — the records path answers.
+            let mut partials = Vec::with_capacity(lane_groups.len());
+            let mut travelable = true;
+            for (key, (first, holding)) in lane_groups {
+                let mut states = Vec::new();
+                for accumulator in holding.iter().flatten() {
+                    let Some(state) = accumulator.state() else {
+                        travelable = false;
+                        break;
+                    };
+                    states.push(state);
+                }
+                if !travelable {
+                    break;
+                }
+                partials.push(crate::reduce::Partial { key, first, states });
+            }
+            if !travelable
+                || !crate::aggregate::merge_partials(&mut groups, &occurrences, partials)?
+            {
+                return Ok(None);
+            }
+        }
+        let plan = crate::plan::Plan::new(crate::outcome::AccessPath::Columnar)
+            .over_lanes(count)
+            .on(table.name.text.as_str());
+        Ok(Some((groups, plan)))
+    }
+
+    /// The pure shape of a partition-local group-by, without the snapshot
+    /// gates — what `EXPLAIN` asks, so the plan it reports is the plan the
+    /// read takes. `None` declines, always safely.
+    pub(crate) async fn columnar_grouped_shape(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: Context,
+        id: TableId,
+        select: &Select,
+    ) -> Result<Option<ColumnarGroupedShape>> {
+        if crate::reduce::reduce_of(select).is_none() {
+            return Ok(None);
+        }
+        let Some(definition) = Catalog::new(transaction).table(id).await?.filter(|found| {
+            found.namespace == context.namespace && found.database == context.database
+        }) else {
+            return Ok(None);
+        };
+        if !matches!(
+            definition.storage_kind,
+            Some(tessari_storage::StorageKind::Column)
+        ) || definition.expire.is_some()
+        {
+            return Ok(None);
+        }
+        let Some(partitioning) = &definition.partitions else {
+            return Ok(None);
+        };
+        // One grouping key, and it the partition field.
+        let [key] = select.group.as_slice() else {
+            return Ok(None);
+        };
+        let Some(key_name) = root_field(key) else {
+            return Ok(None);
+        };
+        if partitioning.by != key_name {
+            return Ok(None);
+        }
+        let fields = Catalog::new(transaction)
+            .fields_on(context.namespace, context.database, id)
+            .await?;
+        if !fields.iter().any(|field| field.name == key_name) {
+            return Ok(None);
+        }
+        let visible = self.visible_in(transaction, id).await?;
+        if !field_visible(&visible, &key_name) {
+            return Ok(None);
+        }
+        // Every fold occurrence must merge exactly over a root field this
+        // session may read; `at` (counter folds) is the one shape v1 leaves
+        // to the records path.
+        let mut overs: Vec<(String, tessari_types::FieldId)> = Vec::new();
+        for held in crate::aggregate::occurrences(select.projection.written())
+            .iter()
+            .flatten()
+        {
+            let ExprKind::Fold { over, at, .. } = &held.kind else {
+                continue;
+            };
+            if at.is_some() {
+                return Ok(None);
+            }
+            if let Some(over) = over
+                && let Some(name) = root_field(over)
+            {
+                let Some(field) = fields.iter().find(|field| field.name == name) else {
+                    return Ok(None);
+                };
+                if !field_visible(&visible, &name) {
+                    return Ok(None);
+                }
+                overs.push((name, field.id));
+            }
+        }
+        Ok(Some(ColumnarGroupedShape {
+            lanes: u64::from(partitioning.count),
+            key: key_name,
+            overs,
+        }))
+    }
+}
+
+/// What [`Session::columnar_grouped_shape`] resolved: the lane count, the
+/// grouping field, and the fields the folds read.
+pub(crate) struct ColumnarGroupedShape {
+    lanes: u64,
+    key: String,
+    overs: Vec<(String, tessari_types::FieldId)>,
 }
 
 /// Whether every field this session may not read excludes `name` — a

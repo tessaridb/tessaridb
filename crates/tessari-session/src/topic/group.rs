@@ -285,7 +285,7 @@ impl Session<'_> {
                 .into_iter()
                 .map(|(id, _, body)| (id, body))
                 .collect(),
-            plan: Plan::new(AccessPath::Scan).on(&topic.name.text),
+            plan: Box::new(Plan::new(AccessPath::Scan).on(&topic.name.text)),
             notes,
             suggestion: None,
             only: false,

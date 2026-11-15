@@ -9,7 +9,7 @@ fn outcomes_carried_back_read_as_the_answering_node_gave_them() {
         Outcome::Value(Value::from(7)),
         Outcome::Records {
             records: vec![(RecordId::from("a"), Value::from("x"))],
-            plan: Plan::new(AccessPath::Record),
+            plan: Box::new(Plan::new(AccessPath::Record)),
             notes: Vec::new(),
             suggestion: None,
             only: true,

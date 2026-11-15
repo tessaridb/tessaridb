@@ -27,8 +27,10 @@ pub enum Outcome {
         /// What was found.
         records: Vec<(RecordId, Value)>,
         /// How — the same structure `EXPLAIN` answers with, for the read that
-        /// actually ran.
-        plan: Plan,
+        /// actually ran. Boxed because the variant sits in a per-statement
+        /// enum whose other arms are small: the plan rides the heap so the
+        /// outcome itself stays the size of its cheapest arm.
+        plan: Box<Plan>,
         /// What the store did that the records alone do not show.
         ///
         /// Empty for almost every read, which is the point: a note is worth
@@ -379,9 +381,9 @@ impl Outcome {
 
     /// The plan the read took, if this outcome carries records.
     #[must_use]
-    pub const fn plan(&self) -> Option<&Plan> {
+    pub fn plan(&self) -> Option<&Plan> {
         match self {
-            Self::Records { plan, .. } => Some(plan),
+            Self::Records { plan, .. } => Some(plan.as_ref()),
             _ => None,
         }
     }

@@ -182,8 +182,17 @@ impl Session<'_> {
         // and is never folded on the leaders (ADR-0122 C5).
         let merging = self.rollup_merging(transaction, select).await?;
         let leaders = if merging.is_none() {
-            self.prepare_folded(transaction, select, (&mut notes, &noticed), within)
-                .await?
+            // A grouped read of a partitioned columnar table folds
+            // partition-locally when the gate qualifies it (G082 SG4); what
+            // it declines, the leaders' fold below or the records path
+            // answers, in that order.
+            match self.prepare_columnar_grouped(transaction, select).await? {
+                Some(prepared) => Some(prepared),
+                None => {
+                    self.prepare_folded(transaction, select, (&mut notes, &noticed), within)
+                        .await?
+                }
+            }
         } else {
             None
         };

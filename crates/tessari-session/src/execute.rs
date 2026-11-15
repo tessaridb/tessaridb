@@ -1892,7 +1892,7 @@ impl Session<'_> {
                 let answered = self.read(transaction, select, None, None).await?;
                 Ok(Outcome::Records {
                     records: answered.records,
-                    plan: answered.plan,
+                    plan: Box::new(answered.plan),
                     notes: answered.notes,
                     suggestion: answered.suggestion,
                     only: select.only.is_some(),

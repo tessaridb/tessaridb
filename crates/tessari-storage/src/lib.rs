@@ -112,7 +112,7 @@ pub use catalog::VaultRoot;
 pub use catalog::system::ALL as SYSTEM_TABLES;
 pub use collections::{Collection, Collections, Currency, Upstream, UpstreamReport};
 pub use columnar::{
-    ColumnarCompare, ColumnarPredicate, ColumnarScanReport, columnar_scan,
+    ColumnarCompare, ColumnarPredicate, ColumnarScanReport, columnar_lane, columnar_scan,
     columnar_scan_partitioned,
 };
 pub use covering::MEASURED_RELATION;

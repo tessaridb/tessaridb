@@ -164,7 +164,7 @@ fn outcome_of(shape: Value) -> Option<Outcome> {
                     _ => None,
                 })
                 .collect::<Option<Vec<_>>>()?,
-            plan: Plan::new(AccessPath::Scan),
+            plan: Box::new(Plan::new(AccessPath::Scan)),
             notes: Vec::new(),
             suggestion: None,
             only: false,

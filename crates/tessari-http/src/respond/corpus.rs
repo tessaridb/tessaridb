@@ -230,14 +230,14 @@ fn ada() -> Value {
 fn rendering(name: &str) -> Option<Rendering> {
     let records = |plan: Plan| Outcome::Records {
         records: Vec::new(),
-        plan,
+        plan: Box::new(plan),
         notes: Vec::new(),
         suggestion: None,
         only: false,
     };
     let suggested = |plan: Plan, suggestion: Suggestion| Outcome::Records {
         records: Vec::new(),
-        plan,
+        plan: Box::new(plan),
         notes: Vec::new(),
         suggestion: Some(suggestion),
         only: false,
@@ -261,7 +261,7 @@ fn rendering(name: &str) -> Option<Rendering> {
         "outcome-keys-empty" => is(Outcome::Keys(Vec::new())),
         "outcome-records-element-is-a-pair" => is(Outcome::Records {
             records: vec![(RecordId::Int(1), ada())],
-            plan: Plan::new(AccessPath::Record).on("users"),
+            plan: Box::new(Plan::new(AccessPath::Record).on("users")),
             notes: Vec::new(),
             suggestion: None,
             only: false,
@@ -276,7 +276,7 @@ fn rendering(name: &str) -> Option<Rendering> {
             plan.cells = Some(40);
             is(Outcome::Records {
                 records: Vec::new(),
-                plan,
+                plan: Box::new(plan),
                 notes: vec![Note::FellBack {
                     from: AccessPath::Index,
                     to: AccessPath::Scan,
@@ -291,7 +291,7 @@ fn rendering(name: &str) -> Option<Rendering> {
             plan.shape = Some("point");
             is(Outcome::Records {
                 records: vec![(RecordId::Int(1), ada())],
-                plan,
+                plan: Box::new(plan),
                 notes: Vec::new(),
                 suggestion: None,
                 only: true,
@@ -342,7 +342,7 @@ fn rendering(name: &str) -> Option<Rendering> {
                         Value::from("the engine stores every vector"),
                     )])),
                 )],
-                plan,
+                plan: Box::new(plan),
                 notes: Vec::new(),
                 suggestion: Some(Suggestion::DidYouMean(vec![Nearest {
                     typed: "vecter".to_owned(),
