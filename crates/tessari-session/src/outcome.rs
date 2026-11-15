@@ -90,6 +90,19 @@ pub enum AccessPath {
     /// until a text index exists to serve it; the statement does not change when
     /// one does.
     Scan,
+    /// Through the columnar projection of a column store table: chunks the
+    /// head statistics cleared were never decoded, and every candidate the
+    /// scan handed up was re-tested against the record at the reader's own
+    /// snapshot.
+    ///
+    /// Its own word rather than [`Self::Index`], because nothing secondary was
+    /// read — the projection is where the table's column data lives — and
+    /// rather than [`Self::Scan`], because the cost is not linear in the
+    /// table: what the statistics cleared never paid a decode. Exact for the
+    /// same reason the scan is: a chunk the statistics skip is a chunk the
+    /// writer proved cannot match, and a survivor is re-tested against the
+    /// row, which stays the authority.
+    Columnar,
     /// Through a vector index, which answers with the best the graph found
     /// rather than provably the best there is.
     ///
@@ -270,11 +283,12 @@ impl AccessPath {
     /// test pins its length against the count. A variant missing from here would
     /// not be *wrong* — it would be unassertable by `USING` and unlistable in
     /// the refusal that names the words, which is the quiet kind of gap.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Record,
         Self::Index,
         Self::Ordered,
         Self::Scan,
+        Self::Columnar,
         Self::Approximate,
         Self::Graph,
         Self::Join,
@@ -327,6 +341,7 @@ impl AccessPath {
             | Self::Index
             | Self::Ordered
             | Self::Scan
+            | Self::Columnar
             | Self::Graph
             | Self::Join
             | Self::Span
@@ -342,6 +357,7 @@ impl AccessPath {
             Self::Index => "index",
             Self::Ordered => "ordered",
             Self::Scan => "scan",
+            Self::Columnar => "columnar",
             Self::Approximate => "approximate",
             Self::Graph => "graph",
             Self::Join => "join",

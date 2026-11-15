@@ -173,6 +173,24 @@ pub enum Note {
         /// past which the ranks in them are no longer within the bound.
         collapsed: Option<bool>,
     },
+    /// The columnar scan's pruning figures (worksheet §6.2): what the head
+    /// statistics cleared without a decode, and what the survivors cost.
+    ///
+    /// These exist only after the read — a plan cannot know them without
+    /// running — so they ride the answer as a note rather than the plan.
+    /// The figures are the instrument that says whether the layout is
+    /// working: skipped chunks that stay at zero mean the statistics are
+    /// not paying for their bytes.
+    Columnar {
+        /// Chunks whose head statistics were consulted.
+        chunks_examined: u64,
+        /// Chunks the statistics proved cannot match.
+        chunks_skipped: u64,
+        /// Rows decoded from surviving chunks.
+        rows_decoded: u64,
+        /// Candidates the scan handed up to the row authority.
+        rows_returned: u64,
+    },
     /// A strict table was read for a field it does not declare.
     ///
     /// A strict table refuses a write carrying a field nobody declared, so no
@@ -206,6 +224,7 @@ impl Note {
             Self::NeedsRebuild { .. } => "needs-rebuild",
             Self::Estimated { .. } => "estimated",
             Self::UndeclaredField { .. } => "undeclared-field",
+            Self::Columnar { .. } => "columnar",
         }
     }
 
@@ -324,6 +343,17 @@ impl Note {
                     if fields.len() == 1 { "it" } else { "them" },
                 )
             }
+            Self::Columnar {
+                chunks_examined,
+                chunks_skipped,
+                rows_decoded,
+                rows_returned,
+            } => format!(
+                "the columnar scan examined {chunks_examined} chunk{}, skipped {chunks_skipped}                  on their head statistics, decoded {rows_decoded} row{}, and handed                  {rows_returned} candidate{} to the row authority",
+                if *chunks_examined == 1 { "" } else { "s" },
+                if *rows_decoded == 1 { "" } else { "s" },
+                if *rows_returned == 1 { "" } else { "s" },
+            ),
             Self::Gathered { table, shards } => format!(
                 "shard{} {} of `{table}` {} read from {} leader{} on other nodes, each when \
                  it was asked, so this answer is complete and not one snapshot",

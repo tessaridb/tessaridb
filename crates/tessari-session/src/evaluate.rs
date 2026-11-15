@@ -33,6 +33,7 @@ pub(crate) use stages::{
 
 mod asof;
 mod candidates;
+mod columnar;
 mod combine;
 pub(crate) use candidates::declared_for;
 pub(crate) use delete::Matched;

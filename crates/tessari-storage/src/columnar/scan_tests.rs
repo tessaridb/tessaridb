@@ -403,6 +403,34 @@ fn a_deleted_row_is_not_a_candidate_for_its_old_value() {
     assert!(hits.is_empty(), "the deleted row's seq was nulled too");
 }
 
+/// The row walk meets the columnar families that share the record prefix
+/// and walks past them: every record comes back, and no chunk, map or
+/// pointer key refuses the walk (the `UnknownRecordIdKind` class this
+/// regression pins).
+#[test]
+fn the_row_walk_skips_the_columnar_families() {
+    let (_backend, store) = store();
+    let ids = tree(&store);
+    insert_events(&store, ids, 64);
+    let (ns, db, table) = typed(ids);
+
+    let transaction = store.begin().now().expect("a transaction begins");
+    let mut walk = transaction
+        .walk_table(ns, db, table)
+        .now()
+        .expect("the walk begins");
+    let mut found = Vec::new();
+    while let Some(round) = walk.next_round(&transaction).now().expect("a round") {
+        found.extend(round.into_iter().map(|(id, _)| id));
+    }
+    transaction.commit().now().expect("the read closes");
+    assert_eq!(
+        found,
+        (0..64).map(id).collect::<Vec<_>>(),
+        "the walk reads the records and skips the projection's keys"
+    );
+}
+
 /// Multi-predicate scans intersect across families.
 #[test]
 fn families_intersect() {

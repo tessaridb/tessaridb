@@ -169,6 +169,25 @@ impl Transaction<'_> {
         .await
     }
 
+    /// The columnar projection's pruning scan (G082 SG3): candidates for a
+    /// set of simple predicates, with the report the answer notes carry.
+    ///
+    /// Only valid while the caller has established that this transaction is
+    /// at the tail for the table and holds no writes on it — the projection
+    /// describes committed state, and the session seam's gate makes those
+    /// two refusals before ever calling here.
+    pub async fn columnar_scan(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        predicates: &[crate::ColumnarPredicate],
+        prune: bool,
+    ) -> Result<(Vec<RecordId>, crate::ColumnarScanReport)> {
+        crate::columnar::columnar_scan(self.store(), namespace, database, table, predicates, prune)
+            .await
+    }
+
     /// Every live record of one table, handed over as the walk finds them.
     ///
     /// The streaming twin of [`Self::scan_table`], and one difference is the

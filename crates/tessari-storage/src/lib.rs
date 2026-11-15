@@ -100,10 +100,10 @@ pub use catalog::{
     QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach,
     ReplicaDefinition, Role, RollupCompute, RollupDeclaration, RollupFold, SYSTEM_DATABASE,
     SYSTEM_NAMESPACE, SearchCosts, SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration,
-    SpaceLimit, StoredKind, TableDefinition, TableExpiry, TableKind, TableShape, TopicDeclaration,
-    UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
-    VectorDistance, Verb, ViewDeclaration, WordSet, WordSetKind, another_node_may_write, governing,
-    names_a_peer, the_row_a_greeting_binds,
+    SpaceLimit, StorageKind, StoredKind, TableDefinition, TableExpiry, TableKind, TableShape,
+    TopicDeclaration, UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration,
+    VectorDeclaration, VectorDistance, Verb, ViewDeclaration, WordSet, WordSetKind,
+    another_node_may_write, governing, names_a_peer, the_row_a_greeting_binds,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.

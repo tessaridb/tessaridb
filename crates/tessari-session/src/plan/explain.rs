@@ -294,7 +294,18 @@ impl Session<'_> {
                         .await?
                     {
                         Some(sides) => super::union_plan(&sides, Some(named)),
-                        None => Plan::new(AccessPath::Scan).on(named),
+                        // The same gate the read asks, so the plan reported
+                        // is the plan taken: a qualifying column store table
+                        // answers through the projection.
+                        None => {
+                            match self
+                                .columnar_qualifies(transaction, context, id, condition)
+                                .await?
+                            {
+                                Some(_) => Plan::new(AccessPath::Columnar).on(named),
+                                None => Plan::new(AccessPath::Scan).on(named),
+                            }
+                        }
                     },
                 )
             }

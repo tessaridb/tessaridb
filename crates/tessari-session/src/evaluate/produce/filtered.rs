@@ -190,6 +190,54 @@ impl Session<'_> {
             // Read whole, that break saved the decode and nothing else:
             // a match found at the third of a hundred thousand records
             // cost 83.3 ms and a match at the last cost 82.9 (Q-72).
+            // A column-store table and a condition the columnar gate proves
+            // simple is answered through the projection instead: the scan
+            // hands up candidates, and each is confirmed against the row at
+            // this snapshot before anything answers. Every other shape of
+            // fallback — richer conditions, hidden fields, a stale or
+            // writing transaction — takes the row walk below.
+            if let Some(predicates) = self
+                .columnar_qualifies(transaction, context, id, condition)
+                .await?
+            {
+                let report = self
+                    .scan_columnar(
+                        transaction,
+                        context,
+                        id,
+                        Testing {
+                            condition,
+                            searched,
+                            noticed: reporting.noticed,
+                        },
+                        &predicates,
+                        consumer,
+                    )
+                    .await?;
+                let access = AccessPath::Columnar;
+                if declined {
+                    reporting.collected.push(Note::FellBack {
+                        from: AccessPath::Ordered,
+                        to: access,
+                    });
+                }
+                if gave_up {
+                    reporting.collected.push(Note::FellBack {
+                        from: AccessPath::Approximate,
+                        to: access,
+                    });
+                }
+                reporting.collected.push(Note::Columnar {
+                    chunks_examined: report.chunks_examined,
+                    chunks_skipped: report.chunks_skipped,
+                    rows_decoded: report.rows_decoded,
+                    rows_returned: report.rows_returned,
+                });
+                return Ok(Plan {
+                    table: named.map(ToOwned::to_owned),
+                    ..Plan::new(access)
+                });
+            }
             let plan = Plan {
                 table: named.map(ToOwned::to_owned),
                 ..Plan::new(AccessPath::Scan)
