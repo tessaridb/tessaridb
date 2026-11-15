@@ -53,6 +53,17 @@ use crate::session::Session;
 
 use super::{Scope, Testing};
 
+/// A read the columnar gate qualified: the predicates it runs with and the
+/// partition lane it pins to, when the condition fixes the partition key to
+/// one constant (worksheet §6.3 — a read naming one partition reads one
+/// lane).
+pub(crate) struct ColumnarPlan {
+    /// The per-family predicates the scan prunes on.
+    pub(crate) predicates: Vec<ColumnarPredicate>,
+    /// The lane the partition key's equality names, when it names one.
+    pub(crate) pin: Option<u64>,
+}
+
 impl Session<'_> {
     /// Whether this read may run through the columnar projection, and the
     /// predicates it would run with. `None` is the common answer — every
@@ -64,7 +75,7 @@ impl Session<'_> {
         context: Context,
         table: TableId,
         condition: &Expr,
-    ) -> Result<Option<Vec<ColumnarPredicate>>> {
+    ) -> Result<Option<ColumnarPlan>> {
         let Some(definition) = Catalog::new(transaction)
             .table(table)
             .await?
@@ -102,6 +113,7 @@ impl Session<'_> {
         }
         let visible = self.visible_in(transaction, table).await?;
         let mut predicates = Vec::with_capacity(conjuncts.len());
+        let mut pin: Option<u64> = None;
         for (name, op, value) in conjuncts {
             if matches!(value, Value::Null | Value::None) {
                 // Null semantics are the row engine's third-valued logic;
@@ -126,8 +138,27 @@ impl Session<'_> {
                     // gather_conjuncts only yields the six comparisons.
                     _ => return Ok(None),
                 },
-                value,
+                value: value.clone(),
             });
+            // An equality on the partition key names one lane: the scan
+            // reads that lane alone (worksheet §6.3). The constant rides
+            // the predicates too — the row authority re-evaluates it, as
+            // it does everything the scan narrows on.
+            if op == BinaryOp::Equal
+                && definition
+                    .partitions
+                    .as_ref()
+                    .is_some_and(|partitioning| partitioning.by == name)
+            {
+                let partitioning = definition.partitions.as_ref().expect("checked above");
+                let payload = tessari_encoding::encode_payload(&value).into_bytes();
+                let hashed = u64::from(tessari_encoding::murmur2(&payload) & 0x7fff_ffff);
+                pin = Some(
+                    hashed
+                        .checked_rem(u64::from(partitioning.count))
+                        .unwrap_or(0),
+                );
+            }
         }
         if predicates.is_empty() {
             return Ok(None);
@@ -140,7 +171,7 @@ impl Session<'_> {
         {
             return Ok(None);
         }
-        Ok(Some(predicates))
+        Ok(Some(ColumnarPlan { predicates, pin }))
     }
 
     /// Run a qualifying read through the columnar projection: scan for
@@ -153,7 +184,7 @@ impl Session<'_> {
         context: Context,
         table: TableId,
         testing: Testing<'_>,
-        predicates: &[ColumnarPredicate],
+        plan: &ColumnarPlan,
         consumer: &mut impl Consumer,
     ) -> Result<tessari_storage::ColumnarScanReport> {
         let Testing {
@@ -162,7 +193,14 @@ impl Session<'_> {
             noticed,
         } = testing;
         let (mut candidates, report) = transaction
-            .columnar_scan(context.namespace, context.database, table, predicates, true)
+            .columnar_scan_partitioned(
+                context.namespace,
+                context.database,
+                table,
+                &plan.predicates,
+                true,
+                plan.pin,
+            )
             .await?;
         // The row walk yields in record-key order; the scan owes the
         // consumer the same contract. Decorate once rather than re-encode

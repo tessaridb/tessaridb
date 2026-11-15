@@ -196,7 +196,7 @@ impl Session<'_> {
             // this snapshot before anything answers. Every other shape of
             // fallback — richer conditions, hidden fields, a stale or
             // writing transaction — takes the row walk below.
-            if let Some(predicates) = self
+            if let Some(plan) = self
                 .columnar_qualifies(transaction, context, id, condition)
                 .await?
             {
@@ -210,7 +210,7 @@ impl Session<'_> {
                             searched,
                             noticed: reporting.noticed,
                         },
-                        &predicates,
+                        &plan,
                         consumer,
                     )
                     .await?;

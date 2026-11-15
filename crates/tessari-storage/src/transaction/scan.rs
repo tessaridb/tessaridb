@@ -188,6 +188,29 @@ impl Transaction<'_> {
             .await
     }
 
+    /// The pruning scan pinned to one partition's lane, when the caller's
+    /// predicate names one — [`columnar_scan`]'s shape with the lane pin.
+    pub async fn columnar_scan_partitioned(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        predicates: &[crate::ColumnarPredicate],
+        prune: bool,
+        pin: Option<u64>,
+    ) -> Result<(Vec<RecordId>, crate::ColumnarScanReport)> {
+        crate::columnar::columnar_scan_partitioned(
+            self.store(),
+            namespace,
+            database,
+            table,
+            predicates,
+            prune,
+            pin,
+        )
+        .await
+    }
+
     /// Every live record of one table, handed over as the walk finds them.
     ///
     /// The streaming twin of [`Self::scan_table`], and one difference is the
