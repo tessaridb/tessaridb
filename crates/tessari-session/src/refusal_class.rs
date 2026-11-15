@@ -21,6 +21,8 @@ impl Error {
             // is retried like any write, one that wrote a missing table is a
             // request to fix (ADR-0124 D7).
             Self::EventFailed { cause, .. } => cause.class(),
+            // The class of what failed in the capture, on the event's rule.
+            Self::FeedFailed { cause, .. } => cause.class(),
             Self::Store(error) => store(error),
             Self::AcrossAborted { refusal, .. } => match refusal {
                 AcrossRefusal::Here(cause) => cause.class(),
@@ -68,6 +70,7 @@ impl Error {
             | Self::NoSuchRecord { .. }
             | Self::HeldByAnother { .. }
             | Self::EventExists { .. }
+            | Self::FeedExists { .. }
             | Self::ParamExists { .. }
             | Self::SearchExists { .. }
             | Self::GroupExists { .. } => RefusalClass::Conflict,
@@ -191,6 +194,7 @@ impl Error {
             | Self::NotSearched { .. }
             | Self::EventDepth { .. }
             | Self::EventOnKind { .. }
+            | Self::FeedOnKind { .. }
             | Self::SearchNamesTableTwice { .. }
             | Self::SearchNamesFieldTwice { .. }
             | Self::NotOneWord { .. }
@@ -247,6 +251,11 @@ impl Error {
             | Self::PartitionsAboveCeiling { .. }
             | Self::ClaimDeadlineUnreachable { .. }
             | Self::NotWrittenByHand { .. }
+            // A topic that only its feed's capture writes is told apart from
+            // one the caller may append to at the statement, like the
+            // hand-written refusal beside it.
+            | Self::TopicOwnedByFeed { .. }
+            | Self::FeedTopicDeduplicated { .. }
             | Self::FileIsNotBytes { .. }
             | Self::FileNeedsAPath { .. }
             | Self::FileIsIncomplete { .. }

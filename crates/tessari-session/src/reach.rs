@@ -244,6 +244,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // Declarations *on* a table, which is a table that already exists.
         StatementKind::DefineIndex { table, .. }
         | StatementKind::DefineEvent { table, .. }
+        | StatementKind::DefineFeed { table, .. }
         | StatementKind::DropEvent { table, .. }
         | StatementKind::DefineField { table, .. }
         | StatementKind::DropField { table, .. }

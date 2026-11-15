@@ -5,7 +5,7 @@ use tessari_encoding::decode_payload;
 use tessari_ql::{
     Identity, Name, Parameters, RecordTarget, Script, Span, Statement, StatementKind, TableRef,
 };
-use tessari_storage::{Catalog, EventDeclaration, RecordAddress, Transaction};
+use tessari_storage::{Catalog, EventDeclaration, RecordAddress, TableKind, Transaction};
 use tessari_types::{Value, WriteKind};
 
 use super::Pending;
@@ -15,19 +15,43 @@ use crate::session::Session;
 
 impl<'a> Session<'a> {
     /// Before a caller writes or deletes `address`: the table's events, and the
-    /// record as it stands, when the table has any (ADR-0110 D10).
+    /// record as it stands, when the table has any (ADR-0110 D10); the feed
+    /// capture and the feed-ownership refusal, when the table has feeds
+    /// (FEAT-S1) — the one definition read this funnel already makes.
     ///
     /// # Errors
     ///
-    /// Whatever reading the catalog or the record refuses.
+    /// Whatever reading the catalog or the record refuses, and
+    /// [`Error::TopicOwnedByFeed`] on a hand append to a feed's topic.
     pub(crate) async fn events_before(
         &self,
         transaction: &mut Transaction<'_>,
         address: &RecordAddress,
+        span: Span,
     ) -> Result<Option<Pending>> {
         let Some(definition) = Catalog::new(transaction).table(address.table).await? else {
             return Ok(None);
         };
+        // A feed's topic takes no hand append: only the feed's capture writes
+        // it (FEAT-S1). Asked here, at the head of both write funnels, so a
+        // caller is refused before anything lands.
+        if let TableKind::Topic(declared) = &definition.kind
+            && let Some(owner) = &declared.owned_by
+        {
+            return Err(Error::TopicOwnedByFeed {
+                topic: definition.name.clone(),
+                feed: owner.clone(),
+                span,
+            });
+        }
+        // A fed table's write captures what stood there, once per record per
+        // transaction: the commit's flush reads it back to label the net
+        // effect. The raw value is kept undecoded, so a record written several
+        // times in one transaction is decoded once, at the commit.
+        if !definition.feeds.is_empty() {
+            let old = transaction.get(address).await?;
+            transaction.capture_feed(address.clone(), old);
+        }
         if definition.events.is_empty() {
             return Ok(None);
         }

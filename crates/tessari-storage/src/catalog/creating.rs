@@ -222,6 +222,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             spread: shape.spread,
             auto_split: None,
             events: Vec::new(),
+            feeds: Vec::new(),
             expire: None,
             referenced_by: Vec::new(),
         };

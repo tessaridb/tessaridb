@@ -440,7 +440,7 @@ impl Session<'_> {
     ) -> Result<()> {
         // Events see the record that was there, and run after it is gone
         // (ADR-0110).
-        let events = self.events_before(transaction, &address).await?;
+        let events = self.events_before(transaction, &address, span).await?;
         let evented = events.as_ref().map(|_| address.clone());
         let released = address.clone();
         match self.rollups_before(transaction, &address, span).await? {

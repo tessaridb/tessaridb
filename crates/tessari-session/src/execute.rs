@@ -1685,6 +1685,32 @@ impl Session<'_> {
             StatementKind::DropEvent { name, table } => {
                 self.drop_event(transaction, name, table).await
             }
+            StatementKind::DefineFeed {
+                name,
+                table,
+                topic,
+                on,
+                image,
+                when,
+                initial_scan,
+                if_not_exists,
+            } => {
+                self.define_feed(
+                    transaction,
+                    &crate::feed::DeclaredFeed {
+                        name,
+                        table,
+                        topic,
+                        on,
+                        image: *image,
+                        when: when.as_ref(),
+                        initial_scan: *initial_scan,
+                        if_not_exists: *if_not_exists,
+                    },
+                    span,
+                )
+                .await
+            }
             StatementKind::Claim {
                 table,
                 count,

@@ -67,6 +67,12 @@ pub(crate) fn kind_name(error: &Error) -> &'static str {
         Error::EventFailed { .. } => "EventFailed",
         Error::EventDepth { .. } => "EventDepth",
         Error::EventOnKind { .. } => "EventOnKind",
+        // Named for the refusal the capture carries, on the wrapper's rule.
+        Error::FeedFailed { cause, .. } => kind_name(cause),
+        Error::FeedExists { .. } => "FeedExists",
+        Error::FeedOnKind { .. } => "FeedOnKind",
+        Error::TopicOwnedByFeed { .. } => "TopicOwnedByFeed",
+        Error::FeedTopicDeduplicated { .. } => "FeedTopicDeduplicated",
         Error::PathOverEdgeTable { .. } => "PathOverEdgeTable",
         Error::EdgePropertiesNotAnObject { .. } => "EdgePropertiesNotAnObject",
         Error::ConditionNotBoolean { .. } => "ConditionNotBoolean",

@@ -4,12 +4,12 @@ use super::ShardMap;
 use super::{
     EdgeDeclaration, FIELD_AUTO_SPLIT, FIELD_BUCKET, FIELD_CEILING, FIELD_COLLECTION,
     FIELD_CONFLICT, FIELD_DATABASE, FIELD_EDGE, FIELD_ENDPOINTS, FIELD_EVENTS, FIELD_EXPIRE,
-    FIELD_GEO, FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY, FIELD_NAME, FIELD_NAMESPACE, FIELD_PARTITION,
-    FIELD_QUEUE, FIELD_REFERENCED_BY, FIELD_SCHEMAFULL, FIELD_SERIES, FIELD_SHARDS, FIELD_SPACE,
-    FIELD_SPREAD, FIELD_TOPIC, FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW, QueueDeclaration,
-    SeriesDeclaration, StoredKind, TableKind, VaultCustody, VaultDeclaration, VectorDeclaration,
-    ViewDeclaration, byte_count, ceiling, field_id, field_name, flag, identity_kind, number,
-    object,
+    FIELD_FEEDS, FIELD_GEO, FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY, FIELD_NAME, FIELD_NAMESPACE,
+    FIELD_PARTITION, FIELD_QUEUE, FIELD_REFERENCED_BY, FIELD_SCHEMAFULL, FIELD_SERIES,
+    FIELD_SHARDS, FIELD_SPACE, FIELD_SPREAD, FIELD_TOPIC, FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW,
+    QueueDeclaration, SeriesDeclaration, StoredKind, TableKind, VaultCustody, VaultDeclaration,
+    VectorDeclaration, ViewDeclaration, byte_count, ceiling, field_id, field_name, flag,
+    identity_kind, number, object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -103,6 +103,10 @@ pub struct TableDefinition {
     /// order; written only when there is one, so an entry without events is
     /// the bytes it always was.
     pub events: Vec<super::EventDeclaration>,
+    /// The declared captures of this table's writes into topics (FEAT-S1), in
+    /// name order; written only when there is one, so an entry without feeds
+    /// is the bytes it always was.
+    pub feeds: Vec<super::FeedDeclaration>,
     /// Whether the table's records expire, and the lifetime a new one gets
     /// (ADR-0122 A1); written only when declared.
     pub expire: Option<super::TableExpiry>,

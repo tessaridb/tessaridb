@@ -1,0 +1,86 @@
+# Feeds: the declared capture of a table's writes into a topic (FEAT-S1).
+#
+# Every case leans on one property: one message per record per transaction,
+# the message and the write landing in ONE commit, and a topic that refuses
+# hand appends — the guarantees a hand-written outbox cannot state.
+#
+# The file is one session: what an earlier case wrote, a later case reads.
+
+--- case: a table, a topic, and the feed between them
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+DEFINE COLLECTION orders;
+DEFINE TOPIC order_events;
+DEFINE FEED orders_feed ON orders INTO order_events;
+--- expect: ok
+
+--- case: a created record lands as one create message
+CREATE orders:1 = { v: 3 };
+READ FROM order_events;
+--- expect: rows 1
+
+--- case: a delete lands as an erase record
+DELETE orders:1;
+READ FROM order_events;
+--- expect: rows 2
+
+--- case: a record written twice in one transaction lands once, with the final image
+BEGIN;
+CREATE orders:2 = { v: 1 };
+UPDATE orders:2 SET v = 2;
+COMMIT;
+READ FROM order_events;
+--- expect: rows 3
+
+--- case: a canceled transaction leaves no message
+BEGIN;
+CREATE orders:3 = { v: 1 };
+CANCEL;
+READ FROM order_events;
+--- expect: rows 3
+
+--- case: FOR takes only the kinds it names
+DEFINE COLLECTION for_delete;
+DEFINE TOPIC delete_events;
+DEFINE FEED deletes_only ON for_delete INTO delete_events FOR DELETE;
+CREATE for_delete:1 = { v: 1 };
+UPDATE for_delete:1 SET v = 2;
+DELETE for_delete:1;
+READ FROM delete_events;
+--- expect: rows 1
+
+--- case: IMAGE KEYS carries no images
+DEFINE COLLECTION keyed;
+DEFINE TOPIC key_events;
+DEFINE FEED keys_only ON keyed INTO key_events IMAGE KEYS;
+CREATE keyed:1 = { v: 1 };
+READ FROM key_events;
+--- expect: rows 1
+
+--- case: WHEN keeps only the writes it holds for
+DEFINE COLLECTION filtered;
+DEFINE TOPIC big_events;
+DEFINE FEED big_only ON filtered INTO big_events WHEN $after.v > 10;
+CREATE filtered:1 = { v: 3 };
+CREATE filtered:2 = { v: 30 };
+READ FROM big_events;
+--- expect: rows 1
+
+--- case: a hand append to a feed's topic is refused naming the feed
+CREATE order_events = { forged: true };
+--- expect: error TopicOwnedByFeed
+
+--- case: a second feed onto the same topic is refused
+DEFINE FEED another ON orders INTO order_events;
+--- expect: error TopicOwnedByFeed
+
+--- case: a feed onto a topic that drops repeated keys is refused
+DEFINE TOPIC dedup_events DEDUPLICATE 5m ON msg_id;
+DEFINE FEED onto_dedup ON orders INTO dedup_events;
+--- expect: error FeedTopicDeduplicated
+
+--- case: a feed's name is unique on its table
+DEFINE FEED orders_feed ON orders INTO order_events;
+--- expect: error FeedExists

@@ -47,6 +47,7 @@ mod error;
 mod evaluate;
 mod event;
 mod execute;
+mod feed;
 mod file;
 mod fill;
 mod gather;

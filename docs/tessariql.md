@@ -2082,6 +2082,7 @@ Every catalog object this language can declare can be undeclared, except one:
 | `DEFINE TOPIC CONSUMER` | `DROP TOPIC CONSUMER` |
 | `DEFINE QUEUE` | `DROP QUEUE` |
 | `DEFINE EVENT` | `DROP EVENT` |
+| `DEFINE FEED` | **nothing — see below** |
 | `DEFINE PARAM` | `DROP PARAM` |
 | `DEFINE NODE` | **nothing — see below** |
 
@@ -8782,6 +8783,65 @@ defines it, and adds them to the table's `definition`. `BACKUP SCRIPT` writes th
 were written again would run for each of them and apply its effects a second time
 over the effects the script already carries. A snapshot, the log, a follower and a
 restore apply commits whose effects are already in them, and run nothing.
+
+## 6g. A declared feed of a table's writes
+
+```tessariql
+DEFINE TOPIC order_events;
+DEFINE FEED orders_feed ON orders INTO order_events;
+DEFINE FEED deletes_only ON orders INTO delete_events FOR DELETE;
+DEFINE FEED big_only ON orders INTO big_events WHEN $after.total > 1000;
+DEFINE FEED keyed ON orders INTO key_events IMAGE KEYS;
+```
+
+A feed is the outbox pattern of §6f declared instead of hand-written: **every
+write of a table's records lands in a topic**, as a message carrying the
+operation, the record's key and — unless `IMAGE KEYS` says otherwise — the
+images. Where the hand-written event body appends one message per *statement*
+that writes a record, the feed speaks for the *transaction*: a record written
+several times inside one `BEGIN … COMMIT` appears **once**, as the net effect —
+a record that was not there and now is answers `CREATE` with what it became, a
+record that was there and is gone answers `DELETE` with what it was, and a
+record that was not there and is not there lands nothing, even when it was
+created and deleted inside the one transaction.
+
+- **One commit.** The message and the writes it describes land together or not
+  at all: the capture refuses the commit exactly as an event's body refuses the
+  write, as `feed orders_feed on orders refused the write: …` carrying the
+  refusal. A `CANCEL` discards both; a `VERIFY` rehearsal runs the capture's
+  checks and then discards the messages with the rest.
+- **As whom.** The append is authorized exactly as the writer's own `CREATE` on
+  the topic would be. A writer who may write `orders` and not append
+  `order_events` has the write refused — the capture is part of the write, not
+  a loophole in its authority. And the images are what the writer may read: a
+  writer who may write a table and not read it feeds messages whose fields they
+  could not see are absent.
+- **Which writes.** `FOR CREATE, UPDATE, DELETE` narrows the capture to those
+  kinds, as an event's `FOR` does. `WHEN $after.total > 1000` narrows it to the
+  records the condition holds for, bound to the same four names an event binds:
+  `$event`, `$before`, `$after` and `$id`. `IMAGE KEYS` drops the images and
+  keeps the key and the operation — the shape for a consumer that only needs to
+  know *that* and *which*.
+- **The topic is the feed's.** `INTO` names a topic that becomes the feed's
+  alone: a hand `CREATE` or `INSERT` into it is refused, naming the feed, so a
+  consumer is never fed a message nobody's writes produced. One topic belongs
+  to at most one feed; a feed's name is unique on its table. A topic that
+  declares `DEDUPLICATE` refuses a feed onto it, because a capture the window
+  drops is a loss the feature exists to forbid. The topic and the table must
+  live in one database — the capture appends in the writer's transaction, and a
+  transaction is one database's.
+- **What a message is.** `{ key, op, before?, after?, at }`: the record's
+  identity, the operation, the images `IMAGE` admits, and `at`, the instant the
+  write ran. The topic's own order is the ordering contract: positions are
+  dense and decided at the commit, and a message a reader can see is past every
+  message it describes. On a topic declared `PARTITIONS n BY f` the envelope
+  carries `f` from the record and the message lands in the partition it
+  chooses, so per-key order is the partition's order. The position is the
+  message's identity — resume with `FOR CONSUMER` or a group (§6e) and the
+  store's own machinery gives exactly once for what a consumer writes into it.
+
+Tables, collections and edge tables carry feeds; the kinds an event refuses
+refuse a feed too. `IF NOT EXISTS` keeps an existing feed of the name.
 
 ## 7. Transactions
 

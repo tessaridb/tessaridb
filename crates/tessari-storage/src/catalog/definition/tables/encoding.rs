@@ -85,6 +85,17 @@ impl TableDefinition {
                 ),
             );
         }
+        if !self.feeds.is_empty() {
+            fields.insert(
+                FIELD_FEEDS.to_owned(),
+                Value::Array(
+                    self.feeds
+                        .iter()
+                        .map(super::super::FeedDeclaration::to_value)
+                        .collect(),
+                ),
+            );
+        }
         // A declaration is not a flag, so it is written only by the edge table
         // that has one. Absent is how every edge table declared without a pair
         // reads, which is the same compatibility contract the flags keep: the
@@ -317,6 +328,20 @@ impl TableDefinition {
                     return Err(Error::CatalogMalformed {
                         entity: "table",
                         field: FIELD_EVENTS,
+                        found: other.type_name(),
+                    });
+                }
+            },
+            feeds: match fields.get(FIELD_FEEDS) {
+                None => Vec::new(),
+                Some(Value::Array(held)) => held
+                    .iter()
+                    .map(super::super::FeedDeclaration::from_value)
+                    .collect::<Result<_>>()?,
+                Some(other) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: "table",
+                        field: FIELD_FEEDS,
                         found: other.type_name(),
                     });
                 }

@@ -2308,6 +2308,69 @@ pub enum Error {
         span: Span,
     },
 
+    /// A feed of this name is already defined on the table (FEAT-S1).
+    #[error("a feed named `{feed}` is already defined on `{table}` (at {span})")]
+    FeedExists {
+        /// The feed.
+        feed: String,
+        /// The table.
+        table: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A feed's capture refused, so the write it describes is refused
+    /// (FEAT-S1). The cause is the refusal the capture met, unchanged.
+    #[error("feed `{feed}` on `{table}` refused the write: {cause}")]
+    FeedFailed {
+        /// The feed whose capture refused.
+        feed: String,
+        /// The table it is defined on.
+        table: String,
+        /// What the capture refused with.
+        cause: Box<Error>,
+    },
+
+    /// A feed on a table kind that cannot carry one (FEAT-S1) — the kinds an
+    /// event can be on, a feed being the same declaration shape.
+    #[error(
+        "`{table}` is a {kind}, and only tables, collections and edge tables carry feeds (at {span})"
+    )]
+    FeedOnKind {
+        /// The table.
+        table: String,
+        /// Its kind.
+        kind: &'static str,
+        /// Where it was named.
+        span: Span,
+    },
+
+    /// A hand append to a topic a feed owns (FEAT-S1): only the feed's
+    /// capture writes it, so a consumer is never fed a message nobody's
+    /// writes produced.
+    #[error("`{topic}` belongs to feed `{feed}` and only its capture appends to it (at {span})")]
+    TopicOwnedByFeed {
+        /// The topic.
+        topic: String,
+        /// The feed that owns it.
+        feed: String,
+        /// Where it was named.
+        span: Span,
+    },
+
+    /// A feed declared onto a topic that drops repeated keys (FEAT-S1): a
+    /// dropped capture is a loss the feed's premise forbids, so the
+    /// combination is refused where it is written.
+    #[error(
+        "`{topic}` deduplicates published keys, and a feed's capture must never be dropped (at {span})"
+    )]
+    FeedTopicDeduplicated {
+        /// The topic.
+        topic: String,
+        /// Where it was named.
+        span: Span,
+    },
+
     /// A search of this name already exists in the database.
     #[error("a search named `{name}` already exists (at {span})")]
     SearchExists {

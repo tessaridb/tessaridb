@@ -15,6 +15,7 @@ mod declarations;
 mod engine;
 mod events;
 mod expiry;
+mod feeds;
 mod indexes;
 mod kinds;
 mod reading;
@@ -36,6 +37,7 @@ pub use declarations::{
 pub use engine::{EngineField, EngineMember, UNIT_WEIGHT};
 pub use events::EventDeclaration;
 pub use expiry::TableExpiry;
+pub use feeds::FeedDeclaration;
 pub use indexes::{IndexDefinition, IndexShape, SearchCosts, VectorDistance};
 pub use kinds::{StoredKind, TableKind};
 pub(crate) use reading::{
@@ -109,6 +111,7 @@ const FIELD_SPREAD: &str = "spread";
 const FIELD_AUTO_SPLIT: &str = "auto_split";
 const FIELD_EXPIRE: &str = "expire";
 const FIELD_EVENTS: &str = "events";
+const FIELD_FEEDS: &str = "feeds";
 const FIELD_REFERENCED_BY: &str = "referenced_by";
 
 /// A namespace: the outermost tenancy level.

@@ -131,25 +131,9 @@ impl OnFailure {
     }
 }
 
-/// Which image of a record a feed's message carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FeedImage {
-    /// The record's key and operation only.
-    Keys,
-    /// The key, the operation and the images the operation names.
-    Full,
-}
-
-impl FeedImage {
-    /// The word a statement writes it as.
-    #[must_use]
-    pub const fn spelling(self) -> &'static str {
-        match self {
-            Self::Keys => "KEYS",
-            Self::Full => "FULL",
-        }
-    }
-}
+/// Which image of a record a feed's message carries — owned by
+/// `tessari-types`, re-exported here where the grammar names it.
+pub use tessari_types::FeedImage;
 
 /// What a write answers with.
 ///

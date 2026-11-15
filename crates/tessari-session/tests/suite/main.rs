@@ -59,6 +59,7 @@ mod events;
 mod exactness;
 mod expiring_tables;
 mod explain;
+mod feeds;
 mod fell_behind;
 mod fetch;
 mod field_defaults;
