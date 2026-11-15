@@ -288,9 +288,16 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
             .time
             .as_ref()
             .map_or_else(String::new, |field| format!(" TIME {field}"));
+        let layout = format!(" STORE {}", definition.storage_kind_word())
+            + &definition
+                .partitions
+                .as_ref()
+                .map_or_else(String::new, |partitioning| {
+                    format!(" PARTITIONS {} BY {}", partitioning.count, partitioning.by)
+                });
         let _ = writeln!(
             script,
-            "DEFINE SERIES {name} RETAIN {}{time};",
+            "DEFINE SERIES {name} RETAIN {}{time}{layout};",
             declared.retain.to_literal()
         );
         return Ok(());

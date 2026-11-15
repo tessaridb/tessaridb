@@ -1243,6 +1243,15 @@ pub enum StatementKind {
         /// happened rather than when it arrived (ADR-0088 §1). `None` keeps
         /// arrival time.
         time: Option<Name>,
+        /// The layout the points are projected into: `DEFINE SERIES readings
+        /// RETAIN 30d STORE COLUMN` (G082 SG7 — a series holds points a
+        /// columnar projection can serve). `None` is a series that said
+        /// nothing, which reads as [`StoreKind::Row`].
+        store: Option<StoreKind>,
+        /// `PARTITIONS 4 BY sensor` — the hash partitioning of the columnar
+        /// projection (G082 SG4), beside `STORE COLUMN`. Immutable after
+        /// define, as the storage kind is.
+        partitions: Option<(u64, String)>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

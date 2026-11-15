@@ -1170,13 +1170,15 @@ pub enum Error {
         found: u8,
     },
 
-    /// A storage kind was asked of a table whose kind is not a plain record
-    /// table.
+    /// A storage kind was asked of a table whose kind does not take one.
     ///
-    /// At v1 only `DEFINE TABLE` takes `STORE COLUMN` (worksheet §3): kinds
-    /// whose semantics are not record-shaped refuse the clause, named, rather
-    /// than accept a layout they have no projection rules for.
-    #[error("`{table}` is not a record table: a storage kind rides only on DEFINE TABLE at v1")]
+    /// At v1 `DEFINE TABLE` and `DEFINE SERIES` take `STORE COLUMN`
+    /// (worksheet §3, G082 SG7): kinds whose semantics are not record-shaped
+    /// refuse the clause, named, rather than accept a layout they have no
+    /// projection rules for.
+    #[error(
+        "`{table}` is not a record-shaped kind: a storage kind rides only on DEFINE TABLE and DEFINE SERIES at v1"
+    )]
     StorageKindOnKind {
         /// The table that was asked.
         table: String,

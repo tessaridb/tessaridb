@@ -116,7 +116,7 @@ fn store_column_on_an_edge_table_refuses_by_name() {
         panic!("STORE COLUMN on an edge table was accepted");
     };
     assert!(
-        refused.to_string().contains("not a record table"),
+        refused.to_string().contains("record-shaped"),
         "the refusal names the kind rule: {refused}"
     );
 }

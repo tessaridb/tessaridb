@@ -190,16 +190,19 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             });
         }
         let shards = shard::declared_for(name, &shape)?;
-        // A storage kind rides only on a plain record table at v1: kinds
-        // whose semantics are not record-shaped do not take one (worksheet
-        // §3, §10 — `StorageKindOnKind`, the named refusal the grammar will
-        // surface in SG5).
-        if shape.storage_kind.is_some() && shape.kind != TableKind::Table {
+        // A storage kind rides only on a plain record table or a series at
+        // v1: kinds whose semantics are not record-shaped refuse the clause
+        // (worksheet §3, §10 — `StorageKindOnKind`; topics, queues and spaces
+        // have no projection rules for a layout, a series holds points a
+        // projection can serve, G082 SG7).
+        if shape.storage_kind.is_some()
+            && !matches!(shape.kind, TableKind::Table | TableKind::Series(_))
+        {
             return Err(Error::StorageKindOnKind {
                 table: name.to_owned(),
             });
         }
-        // Hash partitioning rides only a columnar record table, and the
+        // Hash partitioning rides only a columnar table, and the
         // count is a constant of at least one (worksheet §6.3 — the named
         // refusals the grammar surfaces in SG5).
         if let Some(partitioning) = &shape.partitions {

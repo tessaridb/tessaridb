@@ -1596,6 +1596,8 @@ impl Session<'_> {
                 name,
                 retain,
                 time,
+                store,
+                partitions,
                 if_not_exists,
             } => {
                 self.define_table(
@@ -1623,8 +1625,18 @@ impl Session<'_> {
                         split: Vec::new(),
                         partition: None,
                         spread: false,
-                        storage_kind: None,
-                        partitions: None,
+                        storage_kind: store.map(|kind| match kind {
+                            tessari_ql::StoreKind::Row => tessari_storage::StorageKind::Row,
+                            tessari_ql::StoreKind::Column => tessari_storage::StorageKind::Column,
+                        }),
+                        partitions: partitions.as_ref().and_then(|(count, by)| {
+                            u32::try_from(*count).ok().map(|count| {
+                                tessari_storage::HashPartitioning {
+                                    count,
+                                    by: by.clone(),
+                                }
+                            })
+                        }),
                     },
                     *if_not_exists,
                     span,
