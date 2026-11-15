@@ -1,6 +1,7 @@
 //! Reading a catalog row's fields back into a definition.
 
-use super::{FIELD_CEILING, FIELD_ID, FIELD_IDENTITY, FIELD_NAME};
+use super::tables::StorageKind;
+use super::{FIELD_CEILING, FIELD_ID, FIELD_IDENTITY, FIELD_NAME, FIELD_STORAGE_KIND};
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
 use tessari_types::{IdentityKind, Number, Value};
@@ -140,6 +141,36 @@ pub(crate) fn identity_kind(
         Some(other) => Err(Error::CatalogMalformed {
             entity,
             field: FIELD_IDENTITY,
+            found: other.type_name(),
+        }),
+    }
+}
+
+/// The storage kind a table declared, when it declared one.
+///
+/// Absent reads as the row store — the optional-field contract every clause
+/// keeps. A word this build does not recognise is refused for the reason
+/// [`identity_kind`] refuses one: a table stored under a layout this build
+/// cannot read is not a table this build may answer for as though it were a
+/// row store (G082).
+pub(crate) fn storage_kind(
+    fields: &BTreeMap<String, Value>,
+    entity: &'static str,
+) -> Result<Option<StorageKind>> {
+    match fields.get(FIELD_STORAGE_KIND) {
+        None => Ok(None),
+        Some(Value::String(word)) => {
+            StorageKind::parse(word)
+                .map(Some)
+                .ok_or(Error::CatalogMalformed {
+                    entity,
+                    field: FIELD_STORAGE_KIND,
+                    found: "an unknown storage kind",
+                })
+        }
+        Some(other) => Err(Error::CatalogMalformed {
+            entity,
+            field: FIELD_STORAGE_KIND,
             found: other.type_name(),
         }),
     }

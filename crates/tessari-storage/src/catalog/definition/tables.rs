@@ -6,10 +6,10 @@ use super::{
     FIELD_CONFLICT, FIELD_DATABASE, FIELD_EDGE, FIELD_ENDPOINTS, FIELD_EVENTS, FIELD_EXPIRE,
     FIELD_FEEDS, FIELD_GEO, FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY, FIELD_NAME, FIELD_NAMESPACE,
     FIELD_PARTITION, FIELD_QUEUE, FIELD_REFERENCED_BY, FIELD_SCHEMAFULL, FIELD_SERIES,
-    FIELD_SHARDS, FIELD_SPACE, FIELD_SPREAD, FIELD_TOPIC, FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW,
-    QueueDeclaration, SeriesDeclaration, StoredKind, TableKind, VaultCustody, VaultDeclaration,
-    VectorDeclaration, ViewDeclaration, byte_count, ceiling, field_id, field_name, flag,
-    identity_kind, number, object,
+    FIELD_SHARDS, FIELD_SPACE, FIELD_SPREAD, FIELD_STORAGE_KIND, FIELD_TOPIC, FIELD_VAULT,
+    FIELD_VECTOR, FIELD_VIEW, QueueDeclaration, SeriesDeclaration, StoredKind, TableKind,
+    VaultCustody, VaultDeclaration, VectorDeclaration, ViewDeclaration, byte_count, ceiling,
+    field_id, field_name, flag, identity_kind, number, object, storage_kind,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -18,6 +18,49 @@ use tessari_types::{
 };
 
 mod encoding;
+
+/// How a plain record table stores its records beside its row: the storage
+/// kind, chosen at `DEFINE` and immutable after (worksheet §2; the owner,
+/// 2026-11-15 — a column table is declared at definition and the kind does
+/// not convert).
+///
+/// Rides on the definition beside [`TableKind`] rather than inside it,
+/// because a kind encodes which *rules* a table plays by while the storage
+/// kind changes the *layout*: an update on a columnar table is still an
+/// update, a where still filters. `TableKind` stays untouched, which is what
+/// lets a kind that holds records adopt the attribute later without a
+/// migration of the mechanism (Q-G082-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageKind {
+    /// The versioned row is the only layout — the default every table that
+    /// existed before the clause decodes to.
+    Row,
+    /// Beside each versioned row, the write path projects every field's
+    /// values into per-column chunks inside the record's own commit batch
+    /// (ADR-0137). The row stays the canonical, versioned value.
+    Column,
+}
+
+impl StorageKind {
+    /// The word the definition carries, and [`Self::parse`] its inverse.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Row => "row",
+            Self::Column => "column",
+        }
+    }
+
+    /// The word a definition carries, when this build knows it.
+    #[must_use]
+    pub fn parse(word: &str) -> Option<Self> {
+        match word {
+            "row" => Some(Self::Row),
+            "column" => Some(Self::Column),
+            _ => None,
+        }
+    }
+}
 
 /// A table within a database.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +157,12 @@ pub struct TableDefinition {
     /// (ADR-0134 D10), so a delete here asks only them; written only when there
     /// is one.
     pub referenced_by: Vec<tessari_types::FieldId>,
+    /// How the table stores its records beside its row, when it named one;
+    /// written only when `STORE COLUMN` declared it, so every entry without
+    /// the field is the row-store table it always was. Immutable after define:
+    /// the grammar exposes no `ALTER` for it, and `DROP` + `DEFINE` is the
+    /// migration (worksheet §2, C1).
+    pub storage_kind: Option<StorageKind>,
 }
 
 impl TableDefinition {
@@ -269,4 +318,7 @@ pub struct TableShape {
     /// so new records spread over the table's shards (`IDENTITY uuid SPREAD`,
     /// ADR-0113 D1).
     pub spread: bool,
+    /// The storage kind the definition named, when it named one; `None` is
+    /// the row store, which is every table the word could not have reached.
+    pub storage_kind: Option<StorageKind>,
 }

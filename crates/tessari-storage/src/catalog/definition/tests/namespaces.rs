@@ -156,6 +156,7 @@ fn every_definition_round_trips_through_its_value() {
             body: "CREATE log = { v: $after.v }".to_owned(),
         }],
         referenced_by: Vec::new(),
+        storage_kind: None,
     };
     assert_eq!(
         TableDefinition::from_value(&table.to_value()).unwrap(),

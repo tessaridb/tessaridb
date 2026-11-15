@@ -95,6 +95,7 @@ impl Session<'_> {
                 split: Vec::new(),
                 partition: None,
                 spread: false,
+                storage_kind: None,
             },
             if_not_exists,
             span,

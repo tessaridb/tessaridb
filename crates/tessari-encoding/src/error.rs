@@ -128,6 +128,25 @@ pub enum Error {
         found: u8,
     },
 
+    /// A columnar key carried a position tag this build does not know — a
+    /// byte where a chunk, map or pointer tag was expected.
+    #[error("{kind} key holds an unknown columnar tag 0x{found:02x}")]
+    UnknownColumnarTag {
+        /// The kind being decoded.
+        kind: KeyKind,
+        /// The tag found.
+        found: u8,
+    },
+
+    /// A columnar key carried a family discriminant this build does not know.
+    #[error("{kind} key holds an unknown columnar family discriminant 0x{found:02x}")]
+    UnknownColumnarFamily {
+        /// The kind being decoded.
+        kind: KeyKind,
+        /// The discriminant found.
+        found: u8,
+    },
+
     /// A text record id did not decode as UTF-8.
     #[error("{kind} key holds a text record id that is not valid UTF-8")]
     InvalidUtf8 {
@@ -324,6 +343,8 @@ impl Error {
             | Self::InvalidEscape { .. }
             | Self::UnexpectedKind { .. }
             | Self::UnknownRecordIdKind { .. }
+            | Self::UnknownColumnarTag { .. }
+            | Self::UnknownColumnarFamily { .. }
             | Self::UnknownDirection { .. }
             | Self::InvalidUtf8 { .. }
             | Self::ValueTruncated { .. }

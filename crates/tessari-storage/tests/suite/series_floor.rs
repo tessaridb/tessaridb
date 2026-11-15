@@ -107,6 +107,7 @@ impl Fixture {
                     split: Vec::new(),
                     partition: None,
                     spread: false,
+                    storage_kind: None,
                 },
             )
             .now()

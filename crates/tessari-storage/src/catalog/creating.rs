@@ -190,6 +190,16 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             });
         }
         let shards = shard::declared_for(name, &shape)?;
+        // A storage kind rides only on a plain record table at v1: kinds
+        // whose semantics are not record-shaped do not take one (worksheet
+        // §3, §10 — `StorageKindOnKind`, the named refusal the grammar will
+        // surface in SG5).
+        if shape.storage_kind.is_some() && shape.kind != TableKind::Table {
+            return Err(Error::StorageKindOnKind {
+                table: name.to_owned(),
+            });
+        }
+
         // The store names a partitioned record as the field's value and a UUID
         // v7 after it (ADR-0096), so a counter has nowhere to go.
         if shape.partition.is_some() && shape.identity != tessari_types::IdentityKind::Uuid {
@@ -225,6 +235,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             feeds: Vec::new(),
             expire: None,
             referenced_by: Vec::new(),
+            storage_kind: shape.storage_kind,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

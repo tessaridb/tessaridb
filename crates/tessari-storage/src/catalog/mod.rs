@@ -74,8 +74,8 @@ pub use definition::{
     EdgeOrder, EngineField, EngineMember, EventDeclaration, FeedDeclaration, GEO_FIELD,
     IndexDefinition, IndexShape, NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
     QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, RollupCompute, RollupDeclaration,
-    RollupFold, SearchCosts, SeriesDeclaration, StoredKind, TableDefinition, TableExpiry,
-    TableKind, TableShape, UNIT_WEIGHT, VECTOR_FIELD, VaultCustody, VaultDeclaration,
+    RollupFold, SearchCosts, SeriesDeclaration, StorageKind, StoredKind, TableDefinition,
+    TableExpiry, TableKind, TableShape, UNIT_WEIGHT, VECTOR_FIELD, VaultCustody, VaultDeclaration,
     VectorDeclaration, VectorDistance, ViewDeclaration,
 };
 pub use edge_kind::EdgeKindDefinition;

@@ -1147,6 +1147,41 @@ pub enum Error {
     #[error("this store holds no node identity, so there is nothing to configure")]
     NoIdentity,
 
+    /// A columnar chunk's bytes end before the chunk does.
+    ///
+    /// Corruption rather than a caller's mistake: the chunk is store-written
+    /// state, so truncated bytes mean the store lost something it acknowledged.
+    #[error("a columnar chunk is truncated: needed {needed} bytes, holds {len}")]
+    ColumnarTruncated {
+        /// The length the chunk needed.
+        needed: usize,
+        /// The length the bytes hold.
+        len: usize,
+    },
+
+    /// A columnar chunk names an encoding this build does not know.
+    ///
+    /// The chunk carries its encoding in its own header so the reader never
+    /// guesses; a tag this build has no decoder for is a chunk written by a
+    /// newer one.
+    #[error("a columnar chunk carries unknown encoding {found}")]
+    ColumnarUnknownEncoding {
+        /// The encoding tag the chunk held.
+        found: u8,
+    },
+
+    /// A storage kind was asked of a table whose kind is not a plain record
+    /// table.
+    ///
+    /// At v1 only `DEFINE TABLE` takes `STORE COLUMN` (worksheet §3): kinds
+    /// whose semantics are not record-shaped refuse the clause, named, rather
+    /// than accept a layout they have no projection rules for.
+    #[error("`{table}` is not a record table: a storage kind rides only on DEFINE TABLE at v1")]
+    StorageKindOnKind {
+        /// The table that was asked.
+        table: String,
+    },
+
     /// A failure from the key-value substrate.
     #[error(transparent)]
     Kv(#[from] tessari_kv::Error),
@@ -1260,6 +1295,7 @@ impl Error {
             | Self::AutoSplitWouldOscillate { .. }
             | Self::PartitionMismatch { .. }
             | Self::SplitPointsOutOfOrder { .. }
+            | Self::StorageKindOnKind { .. }
             | Self::SplitOnAKindThatIsNotRecords { .. }
             | Self::NotASplitTable { .. }
             | Self::SplitPointOnABoundary { .. }
@@ -1327,6 +1363,13 @@ impl Error {
             | Self::VaultNoKey { .. } => ErrorCategory::Validation,
             Self::Kv(inner) => inner.category(),
             Self::Encoding(inner) => inner.category(),
+            // Both are bytes the store wrote (or was handed as a chunk) not
+            // parsing the way the writer's contract says — the store having
+            // lost something it acknowledged, or holding a newer build's
+            // chunk. Not the caller's statement being wrong.
+            Self::ColumnarTruncated { .. } | Self::ColumnarUnknownEncoding { .. } => {
+                ErrorCategory::Corruption
+            }
         }
     }
 

@@ -123,6 +123,7 @@ fn an_edge_table_round_trips_its_endpoints_and_the_order_its_edges_are_held_in()
         identity: IdentityKind::Int,
         conflict: None,
         referenced_by: Vec::new(),
+        storage_kind: None,
     };
     assert_eq!(
         TableDefinition::from_value(&table.to_value()).unwrap(),
@@ -183,6 +184,7 @@ fn a_vector_store_round_trips_its_width_and_its_distance() {
         identity: IdentityKind::Int,
         conflict: None,
         referenced_by: Vec::new(),
+        storage_kind: None,
     };
     assert_eq!(
         TableDefinition::from_value(&table.to_value()).unwrap(),

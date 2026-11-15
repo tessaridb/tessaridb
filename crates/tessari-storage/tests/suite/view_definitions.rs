@@ -71,6 +71,7 @@ fn view(id: u32, read: &str) -> TableDefinition {
         events: Vec::new(),
         feeds: Vec::new(),
         referenced_by: Vec::new(),
+        storage_kind: None,
     }
 }
 

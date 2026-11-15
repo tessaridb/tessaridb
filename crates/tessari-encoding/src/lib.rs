@@ -30,6 +30,7 @@
 
 mod adjacency;
 mod causal;
+mod columnar_keys;
 mod error;
 mod expiry_key;
 mod index_keys;
@@ -50,6 +51,7 @@ mod value;
 
 pub use adjacency::{AdjacencyKey, Direction, EdgeProperties};
 pub use causal::{CausalOrder, CausalStamp, CausalVersions};
+pub use columnar_keys::{ChunkKey, ColumnFamily, MapKey, PointerKey};
 pub use error::{Error, Result};
 pub use expiry_key::{ExpiryKey, ExpiryMark};
 pub use index_keys::{

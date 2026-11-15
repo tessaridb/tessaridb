@@ -41,10 +41,10 @@ pub use feeds::FeedDeclaration;
 pub use indexes::{IndexDefinition, IndexShape, SearchCosts, VectorDistance};
 pub use kinds::{StoredKind, TableKind};
 pub(crate) use reading::{
-    ceiling, count_of, field_id, field_name, flag, id_of, identity_kind, object,
+    ceiling, count_of, field_id, field_name, flag, id_of, identity_kind, object, storage_kind,
 };
 pub use rollups::{RollupCompute, RollupDeclaration, RollupFold};
-pub use tables::{TableDefinition, TableShape};
+pub use tables::{StorageKind, TableDefinition, TableShape};
 
 const FIELD_ID: &str = "id";
 const FIELD_NAME: &str = "name";
@@ -92,6 +92,8 @@ const FIELD_NOT_BEFORE: &str = "not_before";
 const FIELD_DEDUPLICATE: &str = "deduplicate";
 const FIELD_DEAD_LETTER: &str = "dead_letter";
 const FIELD_SERIES: &str = "series";
+/// The storage kind a table declared, when it declared one (G082).
+const FIELD_STORAGE_KIND: &str = "storage_kind";
 /// A space's declaration: present (possibly empty) exactly when the table is one.
 const FIELD_SPACE: &str = "space";
 /// A topic's declaration: present (possibly empty) exactly when the table is one.

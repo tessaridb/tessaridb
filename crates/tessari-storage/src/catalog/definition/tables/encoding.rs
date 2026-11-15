@@ -85,6 +85,14 @@ impl TableDefinition {
                 ),
             );
         }
+        // Written only when the definition named one, for the reason the
+        // optional fields above keep: a table the word never reached stays
+        // byte-for-byte what it was. Row is never written — absence reads as
+        // it, which is the contract every table that existed before the
+        // clause keeps (G082, worksheet §2).
+        if let Some(StorageKind::Column) = self.storage_kind {
+            fields.insert(FIELD_STORAGE_KIND.to_owned(), Value::from("column"));
+        }
         if !self.feeds.is_empty() {
             fields.insert(
                 FIELD_FEEDS.to_owned(),
@@ -243,6 +251,7 @@ impl TableDefinition {
                 ceiling: ceiling(fields)?,
             })?,
             identity: identity_kind(fields, "table")?,
+            storage_kind: storage_kind(fields, "table")?,
             graph: match fields.get(FIELD_GRAPH) {
                 Some(_) => Some(GraphId::new(field_id(fields, FIELD_GRAPH, "table")?)),
                 None => None,

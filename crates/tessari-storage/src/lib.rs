@@ -35,6 +35,7 @@ mod catalog;
 mod catalog_rows_tests;
 mod claiming;
 mod collections;
+mod columnar;
 mod covering;
 mod decisions;
 mod error;

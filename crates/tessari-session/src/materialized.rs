@@ -118,6 +118,7 @@ impl Session<'_> {
                     split: Vec::new(),
                     partition: None,
                     spread: false,
+                    storage_kind: None,
                 },
                 false,
                 span,
