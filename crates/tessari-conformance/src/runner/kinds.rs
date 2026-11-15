@@ -74,6 +74,7 @@ pub(crate) fn kind_name(error: &Error) -> &'static str {
         Error::TopicOwnedByFeed { .. } => "TopicOwnedByFeed",
         Error::FeedTopicDeduplicated { .. } => "FeedTopicDeduplicated",
         Error::FeedScanInTransaction { .. } => "FeedScanInTransaction",
+        Error::FeedPartitionFieldMissing { .. } => "FeedPartitionFieldMissing",
         Error::PathOverEdgeTable { .. } => "PathOverEdgeTable",
         Error::EdgePropertiesNotAnObject { .. } => "EdgePropertiesNotAnObject",
         Error::ConditionNotBoolean { .. } => "ConditionNotBoolean",

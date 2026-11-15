@@ -8816,8 +8816,10 @@ created and deleted inside the one transaction.
   the topic would be. A writer who may write `orders` and not append
   `order_events` has the write refused — the capture is part of the write, not
   a loophole in its authority. And the images are what the writer may read: a
-  writer who may write a table and not read it feeds messages whose fields they
-  could not see are absent.
+  writer who may write a table and not read it feeds messages carrying no
+  image at all — the topic is not a way to copy what a grant hides somewhere
+  the writer can read. A field a field-grant hides is absent from an image
+  the writer may otherwise read.
 - **Which writes.** `FOR CREATE, UPDATE, DELETE` narrows the capture to those
   kinds, as an event's `FOR` does. `WHEN $after.total > 1000` narrows it to the
   records the condition holds for, bound to the same four names an event binds:
@@ -8838,7 +8840,10 @@ created and deleted inside the one transaction.
   dense and decided at the commit, and a message a reader can see is past every
   message it describes. On a topic declared `PARTITIONS n BY f` the envelope
   carries `f` from the record and the message lands in the partition it
-  chooses, so per-key order is the partition's order. The position is the
+  chooses, so per-key order is the partition's order. A schema-full table that
+  does not declare the routing field refuses a feed onto the topic: no record
+  of it could ever carry the key, and the order the split promises would be a
+  round robin. The position is the
   message's identity — resume with `FOR CONSUMER` or a group (§6e) and the
   store's own machinery gives exactly once for what a consumer writes into it.
 

@@ -31,8 +31,8 @@
 use std::collections::BTreeMap;
 
 use tessari_ql::{
-    Answer, CreateTarget, Expr, ExprKind, FeedImage, Name, Parameters, Script, Span, Statement,
-    StatementKind, TableRef,
+    Answer, CreateTarget, Expr, ExprKind, FeedImage, Identity, Name, Parameters, RecordTarget,
+    Script, Span, Statement, StatementKind, TableRef,
 };
 use tessari_storage::{Catalog, FeedDeclaration, TableKind, Transaction};
 use tessari_types::{Datetime, Value, WriteKind};
@@ -144,6 +144,30 @@ impl<'a> Session<'a> {
         if topic_kind.deduplicate.is_some() {
             return Err(Error::FeedTopicDeduplicated {
                 topic: topic_definition.name,
+                span: declared.topic.span,
+            });
+        }
+        // A partitioned topic's per-key order is a promise the captured
+        // messages keep only if the record can carry the routing field (D9):
+        // a schema-full table that does not declare it can never hold it, and
+        // the feed would route by turn. A schemaless table may gain the field
+        // on any record, so the define cannot know and is not refused.
+        if let TableKind::Topic(tessari_storage::TopicDeclaration {
+            partitions: Some(partitioning),
+            ..
+        }) = &topic_definition.kind
+            && let Some(field) = &partitioning.by
+            && definition.schemafull
+            && !Catalog::new(transaction)
+                .fields_on(definition.namespace, definition.database, id)
+                .await?
+                .iter()
+                .any(|held| &held.name == field)
+        {
+            return Err(Error::FeedPartitionFieldMissing {
+                field: field.clone(),
+                table: definition.name.clone(),
+                topic: topic_definition.name.clone(),
                 span: declared.topic.span,
             });
         }
@@ -323,18 +347,48 @@ impl<'a> Session<'a> {
             (Some(_), None) => WriteKind::Delete,
             (None, None) => return Ok(()),
         };
-        // What the writer may read is redacted out of both images, as an
-        // event's `$before`/`$after` are — a write-only writer's messages
-        // carry no field they could not see.
-        let visible = self.visible_in(transaction, address.table).await?;
-        let seen = |value: &Option<Value>| match value {
-            Some(value) => crate::redact::seen(value.clone(), &visible),
-            None => Value::None,
+        // The images are what the writer may read, the two halves an event
+        // body's `$before`/`$after` apply (fire.rs): a read of the record,
+        // authorized as the writer's own would be, and then their field
+        // grant. A writer who may write the table and not read it feeds no
+        // image at all — the topic is not a way to copy what a grant hides
+        // somewhere the writer can read.
+        let probe = StatementKind::Get {
+            target: RecordTarget {
+                table: TableRef {
+                    database: None,
+                    name: Name {
+                        text: table.to_owned(),
+                        span: Span::new(0, 0),
+                    },
+                    span: Span::new(0, 0),
+                },
+                id: Identity::Fixed(address.id.clone()),
+                span: Span::new(0, 0),
+            },
         };
+        let open = self.identity.user().is_none();
+        let readable = self
+            .authorize_as_refreshed(self.store, &probe, open, Span::new(0, 0))
+            .await
+            .is_ok();
+        let visible = self.visible_in(transaction, address.table).await?;
+        let image = |value: &Option<Value>| match value {
+            Some(value) if readable => Some(crate::redact::seen(value.clone(), &visible)),
+            _ => None,
+        };
+        let before_image = image(old);
+        let after_image = image(new);
         let bindings = Parameters::from([
             ("event".to_owned(), Value::from(kind.word())),
-            ("before".to_owned(), seen(old)),
-            ("after".to_owned(), seen(new)),
+            (
+                "before".to_owned(),
+                before_image.clone().unwrap_or(Value::None),
+            ),
+            (
+                "after".to_owned(),
+                after_image.clone().unwrap_or(Value::None),
+            ),
             ("id".to_owned(), crate::info::id_value(address.id.clone())),
         ]);
         if let Some(when) = &feed.when {
@@ -361,17 +415,53 @@ impl<'a> Session<'a> {
                 return Ok(());
             }
         }
+        let topic = Catalog::new(transaction)
+            .table_id(address.namespace, address.database, &feed.topic)
+            .await?
+            .ok_or_else(|| Error::FeedFailed {
+                feed: feed.name.clone(),
+                table: table.to_owned(),
+                cause: Box::new(Error::Unknown {
+                    entity: "topic",
+                    name: feed.topic.clone(),
+                    span: Span::new(0, 0),
+                }),
+            })?;
+        let topic_definition = Catalog::new(transaction).table(topic).await?;
         let mut envelope = BTreeMap::from([
             ("key".to_owned(), crate::info::id_value(address.id.clone())),
             ("op".to_owned(), Value::from(kind.word())),
             ("at".to_owned(), Value::Datetime(self.now_datetime())),
         ]);
-        if feed.image == FeedImage::Full {
-            if let Some(before) = old {
-                envelope.insert("before".to_owned(), seen(&Some(before.clone())));
+        // A partitioned topic's envelope carries the field it routes by
+        // (FEAT-S1 D9): metadata, not image — present even in IMAGE KEYS
+        // mode, from the images the writer may read. A field a grant hides
+        // is absent, and the message routes by turn like any its key cannot
+        // place.
+        if let Some(TableKind::Topic(tessari_storage::TopicDeclaration {
+            partitions: Some(partitioning),
+            ..
+        })) = topic_definition.as_ref().map(|held| &held.kind)
+            && let Some(field) = &partitioning.by
+            && !envelope.contains_key(field)
+        {
+            let held = [after_image.clone(), before_image.clone()]
+                .into_iter()
+                .flatten()
+                .find_map(|image| match image {
+                    Value::Object(fields) => fields.get(field).cloned(),
+                    _ => None,
+                });
+            if let Some(held) = held {
+                envelope.insert(field.clone(), held);
             }
-            if let Some(after) = new {
-                envelope.insert("after".to_owned(), seen(&Some(after.clone())));
+        }
+        if feed.image == FeedImage::Full {
+            if let Some(before) = before_image {
+                envelope.insert("before".to_owned(), before);
+            }
+            if let Some(after) = after_image {
+                envelope.insert("after".to_owned(), after);
             }
         }
         let payload = Value::Object(envelope);
@@ -405,19 +495,6 @@ impl<'a> Session<'a> {
                 cause: Box::new(cause),
             })?;
 
-        let topic = Catalog::new(transaction)
-            .table_id(address.namespace, address.database, &feed.topic)
-            .await?
-            .ok_or_else(|| Error::FeedFailed {
-                feed: feed.name.clone(),
-                table: table.to_owned(),
-                cause: Box::new(Error::Unknown {
-                    entity: "topic",
-                    name: feed.topic.clone(),
-                    span: Span::new(0, 0),
-                }),
-            })?;
-        let topic_definition = Catalog::new(transaction).table(topic).await?;
         let context = Context {
             namespace: address.namespace,
             database: address.database,

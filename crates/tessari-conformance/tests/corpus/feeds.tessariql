@@ -108,3 +108,9 @@ BEGIN;
 DEFINE TOPIC scan_tx;
 DEFINE FEED scan_tx_feed ON orders INTO scan_tx WITH INITIAL SCAN;
 --- expect: error FeedScanInTransaction
+
+--- case: a feed onto a partitioned topic whose field the table cannot hold is refused
+DEFINE TABLE ledger (amount decimal);
+DEFINE TOPIC keyed_events PARTITIONS 3 BY customer;
+DEFINE FEED ledger_feed ON ledger INTO keyed_events;
+--- expect: error FeedPartitionFieldMissing

@@ -21,7 +21,7 @@
 //! image mode and `WHEN` are honoured either way.
 
 use tessari_ql::{Parameters, Script, Span, Statement, StatementKind};
-use tessari_storage::{Catalog, FeedDeclaration, FeedScanState, Store, Transaction};
+use tessari_storage::{Catalog, FeedDeclaration, FeedScanState, Store, TableKind, Transaction};
 use tessari_types::{DatabaseId, NamespaceId, Sequence, TableId, Value, WriteKind};
 
 use crate::context::Context;
@@ -215,16 +215,6 @@ impl<'a> Session<'a> {
                 return Ok(());
             }
         }
-        let mut envelope = std::collections::BTreeMap::from([
-            ("key".to_owned(), crate::info::id_value(id.clone())),
-            ("op".to_owned(), Value::from(WriteKind::Create.word())),
-            ("at".to_owned(), Value::Datetime(self.now_datetime())),
-        ]);
-        if feed.image == tessari_ql::FeedImage::Full {
-            envelope.insert("after".to_owned(), after.clone());
-        }
-        let payload = Value::Object(envelope);
-
         let topic = Catalog::new(transaction)
             .table_id(context.namespace, context.database, &feed.topic)
             .await?
@@ -238,6 +228,33 @@ impl<'a> Session<'a> {
                 }),
             })?;
         let topic_definition = Catalog::new(transaction).table(topic).await?;
+        let mut envelope = std::collections::BTreeMap::from([
+            ("key".to_owned(), crate::info::id_value(id.clone())),
+            ("op".to_owned(), Value::from(WriteKind::Create.word())),
+            ("at".to_owned(), Value::Datetime(self.now_datetime())),
+        ]);
+        // A partitioned topic's envelope carries the field it routes by
+        // (FEAT-S1 D9): metadata, not image — present even in IMAGE KEYS
+        // mode. The scan reads as the engine, so the field is the record's.
+        if let Some(TableKind::Topic(tessari_storage::TopicDeclaration {
+            partitions: Some(partitioning),
+            ..
+        })) = topic_definition.as_ref().map(|held| &held.kind)
+            && let Some(field) = &partitioning.by
+            && !envelope.contains_key(field)
+        {
+            let held = match after {
+                Value::Object(fields) => fields.get(field).cloned(),
+                _ => None,
+            };
+            if let Some(held) = held {
+                envelope.insert(field.clone(), held);
+            }
+        }
+        if feed.image == tessari_ql::FeedImage::Full {
+            envelope.insert("after".to_owned(), after.clone());
+        }
+        let payload = Value::Object(envelope);
         let identity = self
             .free_identity(transaction, context, topic, &payload, Span::new(0, 0))
             .await

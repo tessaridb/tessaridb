@@ -980,6 +980,24 @@ pub enum Error {
         span: Span,
     },
 
+    /// `DEFINE FEED` onto a partitioned topic whose `BY` field a schema-full
+    /// table cannot hold: no record of it can carry the key the partitioner
+    /// routes by, so per-key order the split promises would be a round robin
+    /// (FEAT-S1 D9).
+    #[error(
+        "topic {topic} partitions by {field}, which table {table} does not declare; the feed would route by turn (at {span})"
+    )]
+    FeedPartitionFieldMissing {
+        /// The field the topic partitions by.
+        field: String,
+        /// The table the feed captures.
+        table: String,
+        /// The topic the feed appends to.
+        topic: String,
+        /// Where the statement was written.
+        span: Span,
+    },
+
     /// Two keys of one window whose rows would share an identity.
     #[error(
         "two keys of one rollup window share a row identity; the write is refused rather than merged (at {span})"

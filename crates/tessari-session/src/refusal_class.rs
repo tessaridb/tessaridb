@@ -144,6 +144,7 @@ impl Error {
             | Self::RollupIsDerived { .. }
             | Self::RollupInTransaction { .. }
             | Self::FeedScanInTransaction { .. }
+            | Self::FeedPartitionFieldMissing { .. }
             | Self::RollupKeyCollision { .. }
             | Self::RollupsDependOn { .. }
             | Self::RecipientIsNotAName { .. }

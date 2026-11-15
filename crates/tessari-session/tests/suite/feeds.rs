@@ -623,3 +623,269 @@ fn initial_scan_honours_the_feeds_when_and_image_keys() {
         "IMAGE KEYS carries no images"
     );
 }
+
+// --- S1.2: the silent-failure matrix. Each row pins the property a
+// hand-written outbox cannot state, at the place it could silently break.
+
+/// Messages of one partition of a topic, as envelopes.
+fn partition_messages(
+    session: &mut Session<'_>,
+    topic: &str,
+    partition: u64,
+) -> Vec<BTreeMap<String, Value>> {
+    let outcomes = session
+        .run_now(&format!(
+            "READ FROM {topic} PARTITION {partition} LIMIT 1000000;"
+        ))
+        .unwrap();
+    let Some(tessari_session::Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!(
+            "READ FROM {topic} PARTITION {partition}: {:?}",
+            outcomes.last()
+        );
+    };
+    records
+        .iter()
+        .map(|(_, row)| match row {
+            Value::Object(fields) => match fields.get("value") {
+                Some(Value::Object(envelope)) => envelope.clone(),
+                other => panic!("message has no envelope: {other:?}"),
+            },
+            other => panic!("not an object: {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn the_capture_redacts_what_the_writer_may_not_read() {
+    // The images are what the writer may read (FEAT-S1): a write-only writer
+    // feeds messages whose fields they could not see are absent — the feed
+    // is not a way to copy what a grant hides. The scan's images are the
+    // record as the engine holds it, pinned separately below.
+    let store = store();
+    let mut setup = inside(&store);
+    setup
+        .run_now(
+            "DEFINE TOPIC order_events; DEFINE FEED orders_feed ON orders INTO order_events; \
+             DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
+        )
+        .unwrap();
+    let mut root = Session::new(&store);
+    root.sign_in("root", "correct horse battery").now().unwrap();
+    root.run_now(
+        "DEFINE USER clerk ON prod.shop ROLE editor PASSWORD 'correct horse battery'; \
+         USE NAMESPACE prod; USE DATABASE shop; \
+         GRANT write ON orders TO clerk; GRANT read, write ON order_events TO clerk;",
+    )
+    .unwrap();
+    let mut clerk = Session::new(&store);
+    clerk
+        .sign_in("clerk", "correct horse battery")
+        .now()
+        .unwrap();
+    clerk
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    // `UPSERT`: the write a write-only grant runs.
+    clerk
+        .run_now("UPSERT orders:1 = { v: 1, secret: 42 };")
+        .unwrap();
+    let found = messages(&mut root, "order_events");
+    assert_eq!(found.len(), 1);
+    assert!(
+        !found[0].contains_key("after") && !found[0].contains_key("before"),
+        "a write-only writer's message carries no image at all: {found:?}"
+    );
+    // Control: the owner's write feeds the whole record.
+    root.run_now("CREATE orders:2 = { v: 2, secret: 43 };")
+        .unwrap();
+    let found = messages(&mut root, "order_events");
+    assert_eq!(found.len(), 2);
+    assert_eq!(
+        found[1]
+            .get("after")
+            .and_then(|after| field(after, "secret")),
+        Some(&Value::Number(tessari_types::Number::Integer(43))),
+        "the owner's image carries every field"
+    );
+}
+
+#[test]
+fn the_scans_images_are_the_record_the_engine_holds() {
+    // Where the live capture redacts to the writer, the scan reads as the
+    // engine: a row written before the define scans whole.
+    let store = store();
+    let mut session = inside(&store);
+    session
+        .run_now("CREATE orders:1 = { v: 1, secret: 7 };")
+        .unwrap();
+    session
+        .run_now(
+            "DEFINE TOPIC order_events; \
+             DEFINE FEED orders_feed ON orders INTO order_events WITH INITIAL SCAN;",
+        )
+        .unwrap();
+    scan(&store);
+    let found = messages(&mut session, "order_events");
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found[0]
+            .get("after")
+            .and_then(|after| field(after, "secret")),
+        Some(&Value::Number(tessari_types::Number::Integer(7))),
+        "the scanned image is the record as it stands"
+    );
+}
+
+#[test]
+fn a_partitioned_feed_routes_by_the_partition_field_and_carries_it_as_metadata() {
+    // FEAT-S1 D9: on a PARTITIONS n BY f topic the envelope always carries
+    // f — even in IMAGE KEYS mode, where it is metadata, not image — and the
+    // message lands in the partition f chooses, so per-key order is the
+    // partition's order.
+    let store = store();
+    let mut session = inside(&store);
+    session
+        .run_now(
+            "DEFINE TOPIC events PARTITIONS 3 BY customer; \
+             DEFINE FEED live_feed ON orders INTO events FOR CREATE IMAGE KEYS;",
+        )
+        .unwrap();
+    session
+        .run_now("CREATE orders:1 = { customer: 'user-42', total: 5 };")
+        .unwrap();
+    // murmur2("user-42") = 1, as the Kafka partitioner computes it.
+    assert_eq!(partition_messages(&mut session, "events", 1).len(), 1);
+    assert!(partition_messages(&mut session, "events", 0).is_empty());
+    assert!(partition_messages(&mut session, "events", 2).is_empty());
+    let envelope = &partition_messages(&mut session, "events", 1)[0];
+    assert_eq!(
+        envelope.get("customer"),
+        Some(&Value::from("user-42")),
+        "the partition field rides as metadata even with IMAGE KEYS"
+    );
+    assert!(
+        !envelope.contains_key("after"),
+        "IMAGE KEYS carries no images"
+    );
+    // The scan routes the same way: a row standing at the define is placed
+    // by its field, not by turn.
+    session
+        .run_now("CREATE orders:2 = { customer: 21, total: 3 };")
+        .unwrap();
+    session
+        .run_now(
+            "DEFINE TOPIC scanned PARTITIONS 3 BY customer; \
+             DEFINE FEED scan_feed ON orders INTO scanned FOR CREATE IMAGE KEYS WITH INITIAL SCAN;",
+        )
+        .unwrap();
+    scan(&store);
+    // Both standing rows scan: 'user-42' → partition 1, the integer 21 as
+    // the text "21" → partition 0, each placed by its field.
+    assert_eq!(partition_messages(&mut session, "scanned", 0).len(), 1);
+    assert_eq!(partition_messages(&mut session, "scanned", 1).len(), 1);
+    assert_eq!(
+        partition_messages(&mut session, "scanned", 0)[0].get("customer"),
+        Some(&Value::Number(tessari_types::Number::Integer(21))),
+    );
+    assert_eq!(
+        partition_messages(&mut session, "scanned", 1)[0].get("customer"),
+        Some(&Value::from("user-42")),
+    );
+}
+
+#[test]
+fn a_feed_onto_a_partition_field_the_table_cannot_hold_is_refused() {
+    let store = store();
+    let mut session = inside(&store);
+    session
+        .run_now(
+            "DEFINE TABLE ledger (amount decimal); \
+             DEFINE TOPIC events PARTITIONS 3 BY customer;",
+        )
+        .unwrap();
+    let refused = session.run_now("DEFINE FEED f ON ledger INTO events;");
+    assert!(
+        format!("{refused:?}").contains("FeedPartitionFieldMissing"),
+        "the refusal names the missing partition field: {refused:?}"
+    );
+}
+
+#[test]
+fn a_message_is_never_visible_before_its_write_commits() {
+    // Snapshot isolation is the property: a reader whose transaction began
+    // before the write sees no message; after the commit, one.
+    let store = store();
+    let mut writer = inside(&store);
+    writer
+        .run_now("DEFINE TOPIC t; DEFINE FEED f ON orders INTO t;")
+        .unwrap();
+    let mut reader = inside(&store);
+    let mut held = reader.atomic().now().unwrap();
+    // The reader's transaction began here; the write lands after.
+    writer.run_now("CREATE orders:1 = { v: 1 };").unwrap();
+    let seen = held
+        .run_with("READ FROM t;", &Default::default())
+        .now()
+        .unwrap();
+    let Some(tessari_session::Outcome::Records { records, .. }) = seen.last() else {
+        panic!("READ FROM t: {:?}", seen.last());
+    };
+    assert!(
+        records.is_empty(),
+        "a message before its commit is not there"
+    );
+    held.conclude::<(), Error>(Ok(())).now().unwrap();
+    assert_eq!(messages(&mut reader, "t").len(), 1);
+}
+
+#[test]
+fn a_feeds_topic_surfaces_retention_loss_once() {
+    use std::time::Duration;
+    let store = store();
+    let mut session = inside(&store);
+    session
+        .run_now("DEFINE TOPIC t RETAIN 300ms; DEFINE FEED f ON orders INTO t;")
+        .unwrap();
+    for n in 1..=4 {
+        session
+            .run_now(&format!("CREATE orders:{n} = {{ v: {n} }};"))
+            .unwrap();
+    }
+    // A slow consumer takes the first message and stops.
+    session
+        .run_now("READ FROM t FOR CONSUMER 'slow' LIMIT 1;")
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(450));
+    let lapsed = |session: &mut Session<'_>, source: &str| {
+        let outcomes = session.run_now(source).unwrap();
+        outcomes
+            .last()
+            .map(|outcome| outcome.notes().to_vec())
+            .unwrap_or_default()
+            .into_iter()
+            .find_map(|note| match note {
+                tessari_session::Note::Lapsed { missed, .. } => Some(missed),
+                _ => None,
+            })
+    };
+    // Passed but not yet removed: the read passes over them and says so.
+    assert_eq!(lapsed(&mut session, "READ FROM t AFTER 1;"), Some(3));
+    // Removed through the log; the feed's own writes keep landing.
+    store.remove_expired().now().unwrap();
+    session.run_now("CREATE orders:5 = { v: 5 };").unwrap();
+    assert_eq!(
+        lapsed(&mut session, "READ FROM t FOR CONSUMER 'slow';"),
+        Some(3)
+    );
+    // Given once: the reader's position moved past what it missed.
+    assert_eq!(
+        lapsed(&mut session, "READ FROM t FOR CONSUMER 'slow';"),
+        None
+    );
+    assert_eq!(
+        messages(&mut session, "t").len(),
+        1,
+        "position 5 is the answer"
+    );
+}
