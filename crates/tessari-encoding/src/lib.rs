@@ -56,12 +56,13 @@ pub use columnar_keys::{ChunkKey, ColumnFamily, MapKey, PointerKey};
 pub use error::{Error, Result};
 pub use expiry_key::{ExpiryKey, ExpiryMark};
 pub use index_keys::{
-    ContainmentKey, INDEX_PREFIX_LEN, IndexAddress, IndexChanges, IndexChangesKey, IndexStatistics,
-    IndexStatisticsKey, IndexTarget, IndexValues, Located, NoPayload, Posting, PostingKey,
-    QuantizedVector, RetiredIndexKey, SearchStatistics, SearchStatisticsKey, SearchSuffixKey,
-    SearchSurfaceKey, SearchTermKey, SecondaryIndexKey, SpatialRefinement, SpatialRefinementKey,
-    StoredVector, TermStatistics, UniqueIndexKey, VectorNode, VectorNodeKey, VectorRecall,
-    VectorRecallKey,
+    ContainmentKey, FieldAddress, FieldChanges, FieldChangesKey, FieldStatistics,
+    FieldStatisticsKey, INDEX_PREFIX_LEN, IndexAddress, IndexChanges, IndexChangesKey,
+    IndexStatistics, IndexStatisticsKey, IndexTarget, IndexValues, Located, NoPayload, Posting,
+    PostingKey, QuantizedVector, RetiredIndexKey, SearchStatistics, SearchStatisticsKey,
+    SearchSuffixKey, SearchSurfaceKey, SearchTermKey, SecondaryIndexKey, SpatialRefinement,
+    SpatialRefinementKey, StoredVector, TermStatistics, UniqueIndexKey, VectorNode, VectorNodeKey,
+    VectorRecall, VectorRecallKey,
 };
 pub use keys::{
     AppliedPositionKey, FormatVersionKey, LogKey, LogRetentionKey, LogStartKey, NodeIdentityKey,

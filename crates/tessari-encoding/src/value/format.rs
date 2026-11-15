@@ -85,7 +85,7 @@ impl FormatVersion {
     /// moves with them. The catalog field that names the storage kind is not
     /// surface (a catalog definition's fields are not), but the keys its
     /// tables write are, so the store a columnar table lives in states 11.
-    pub const CURRENT: Self = Self(11);
+    pub const CURRENT: Self = Self(12);
 
     /// The first format whose tables may be declared columnar (ADR-0137,
     /// ADR-0137). Named for the reason [`Self::HOMED_LOG`] is.
@@ -166,6 +166,7 @@ impl FormatVersion {
             9 => (0, 37),
             10 => (0, 40),
             11 => (0, 41),
+            12 => (0, 41),
             _ => return None,
         };
         Some(crate::NodeVersion {

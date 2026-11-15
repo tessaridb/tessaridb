@@ -60,8 +60,8 @@ pub(crate) use replicas::{
     described_failover, described_follower, described_leaders, described_replica,
 };
 pub(crate) use shapes::{
-    described_expiry, described_field, described_index, described_sample, shape_of,
-    tokenizer_report,
+    described_expiry, described_field, described_field_statistics, described_index,
+    described_sample, shape_of, tokenizer_report,
 };
 pub(crate) use users::{
     described_authorities, described_grant, described_user, named_database, named_namespace,

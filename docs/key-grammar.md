@@ -114,6 +114,8 @@ because renumbering after data exists is a full rebuild.
 | `0x44` | `Containment` (one (path, leaf) pair of one record's document) | `index` | implemented — see §6.2a |
 | `0x45` | `RetiredIndex` (a removed plain index entry, stamped with the version that removed it) | `index` | implemented — see §6.2a |
 | `0x46` | `RetiredSince` (the version from which this store keeps retired entries) | `meta` | implemented — see §6.2a; node-local, never in the log |
+| `0x47` | `FieldStatistics` (one declared field of one table summarised for the planner) | `index` | implemented — per-column statistics (G083); node-local, never in the log |
+| `0x48` | `FieldChanges` (writes one table has gained or lost on this node) | `index` | implemented — the freshness counter for `0x47` (G083); node-local, never in the log |
 | `0x50` | `TransactionRecord` (one transaction across leaders) | `meta` | implemented — see §6.5 |
 | `0x51` | `IntentOf` (an intent this node holds, by transaction) | `meta` | implemented — see §6.5 |
 | `0x52` | `AcrossPart` (where a transaction's part in one range landed here) | `meta` | implemented — see §6.5 |
@@ -131,7 +133,10 @@ is a topic's, beside `0x1e`, likewise by number only. `0x44` is a containment
 index's entry (ADR-0116), by number only as well. `0x45` is a plain index's
 retired entry and `0x46` the singleton saying since when they are kept
 (format 8) — by number only too, the second a `meta` key in the `0x4_` range
-because the `0x3_` family is full.
+because the `0x3_` family is full. `0x47` and `0x48` (format 12) are the
+per-column sibling of the `0x40`/`0x41` pair: a declared field's planner
+summary and the table-level write counter its freshness is measured against,
+both node-local and never in the log.
 
 `0x50` opens a sixth family, `0x5_`: what this store keeps about transactions
 whose writes fall in ranges led by different nodes (ADR-0112). The family was
@@ -1237,6 +1242,7 @@ and is rewritten at open only where the row below says so.
 | `9` | a topic may be split into partitions (ADR-0131) — a catalog change: a build before it would append to a split topic itself, where no partition's reader sees the message — and a hash field may carry an instant of its own, flag `0x80` (ADR-0132), which a build before it refuses as a reserved bit; and a topic keeps each message's append instant in its `0x1c` entry and its clock in system table `30` (ADR-0133) | opened as is and keeps its stamp; `DEFINE TOPIC … PARTITIONS` and `HASH EXPIRE` are refused, and a topic keeps no append instant, until the store is finalized |
 | `10` | a declared feed's initial scan keeps its job in system table `31` (FEAT-S1 D8) — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `31` | opened as is and keeps its stamp; `DEFINE FEED … WITH INITIAL SCAN` is refused (`FormatNotFinalized`) until the store is finalized |
 | `11` | a table may be declared `STORE COLUMN` (G082, ADR-0137) — the columnar projection's keys (§6.6) ride the record keyspace under tags a build before it reads as nothing it knows; the storage-kind field on a table definition is not surface, but the keys its tables write are | opened as is and keeps its stamp; a columnar definition is refused (`FormatNotFinalized`) until the store is finalized |
+| `12` | key kinds `0x47` and `0x48`: the per-column planner statistics and the table write counter they are freshened against (G083) — node-local facts a build before it neither reads nor writes; nothing a pre-12 build does changes or is changed by them | opened as is and keeps its stamp |
 
 **The stamp is the format the store holds, and it lags this build** (ADR-0118,
 from `0.31.0-beta`). A build opens an older store and keeps its stamp, so the

@@ -126,11 +126,11 @@ async fn held_statistics(store: &Store, address: IndexAddress) -> Result<Option<
     }
 }
 
-/// Whether a statistic taken at `at` changes still describes an index that has
-/// seen `now`.
-fn still_fresh(statistics: &IndexStatistics, now: u64) -> bool {
-    let since = now.saturating_sub(statistics.changes);
-    since <= (statistics.entries / 10).max(STATISTICS_STALE_FLOOR_CHANGES)
+/// Whether a statistic taken at `changes` on a summary of `entries` still
+/// describes a thing that has seen `now` changes.
+pub(crate) fn still_fresh(changes: u64, entries: u64, now: u64) -> bool {
+    let since = now.saturating_sub(changes);
+    since <= (entries / 10).max(STATISTICS_STALE_FLOOR_CHANGES)
 }
 
 impl Transaction<'_> {
@@ -241,7 +241,7 @@ impl Transaction<'_> {
             return Ok(None);
         };
         let now = changes_of(self.store(), address).await?;
-        Ok(still_fresh(&statistics, now).then_some(statistics))
+        Ok(still_fresh(statistics.changes, statistics.entries, now).then_some(statistics))
     }
 }
 

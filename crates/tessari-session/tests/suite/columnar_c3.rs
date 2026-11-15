@@ -211,6 +211,8 @@ fn c3_selective_aggregates_over_a_million_rows() {
 #[test]
 fn c8_the_write_paths_cost_stated() {
     const WRITES: i64 = 100_000;
+    /// The same count as a float, so the per-row division casts nothing.
+    const WRITES_F64: f64 = 100_000.0;
     let mut seconds = Vec::new();
     for column in [false, true] {
         let store = store();
@@ -261,8 +263,8 @@ fn c8_the_write_paths_cost_stated() {
         transaction.commit().now().unwrap();
         seconds.push(started.elapsed().as_secs_f64());
     }
-    let row_per = seconds[0] / WRITES as f64;
-    let column_per = seconds[1] / WRITES as f64;
+    let row_per = seconds[0] / WRITES_F64;
+    let column_per = seconds[1] / WRITES_F64;
     eprintln!(
         "c8 | write | rows {WRITES} | debug, in-memory | row {:.0} ns/row | column {:.0} ns/row | ratio {:.2}x",
         row_per * 1e9,

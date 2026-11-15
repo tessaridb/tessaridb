@@ -88,6 +88,13 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
                 Ok(_) => {}
                 Err(why) => tracing::warn!(error = %why, "this node cannot take index statistics"),
             }
+            match db.store().refresh_field_statistics().await {
+                Ok(taken) if taken > 0 => {
+                    tracing::debug!(fields = taken, "took field statistics for the planner");
+                }
+                Ok(_) => {}
+                Err(why) => tracing::warn!(error = %why, "this node cannot take field statistics"),
+            }
             // Materialized views brought current from their sources' changes
             // (ADR-0109 D6). A view this node may not write is refused at its
             // commit before anything changes, which is the design rather than a

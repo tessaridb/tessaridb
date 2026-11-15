@@ -11,14 +11,16 @@ use crate::outcome::Outcome;
 use crate::session::Session;
 
 impl Session<'_> {
-    /// Take the statistics of every value index on `table`, on this node.
+    /// Take the statistics of every value index on `table`, on this node, and
+    /// of every declared field of the table itself.
     ///
-    /// The answer is one object per index summarised: how many entries it
-    /// held, how many distinct values each leading run of its fields held, how
-    /// many common values were kept and how many buckets its first field was
-    /// divided into. The values themselves are not answered — they are stored
-    /// as the index encodes them, and a summary that printed them would be a
-    /// way to read a field through its index.
+    /// The answer is one object per index and one per field summarised: how
+    /// many entries it held, how many distinct values each leading run of an
+    /// index's fields held, how many records held a field and how many of
+    /// those were null, how many common values were kept and how many buckets
+    /// the values were divided into. The values themselves are not answered —
+    /// they are stored as the index encodes them, and a summary that printed
+    /// them would be a way to read a field through its index.
     pub(super) async fn analyze_table(
         &self,
         transaction: &mut Transaction<'_>,
@@ -28,9 +30,12 @@ impl Session<'_> {
         let taken = transaction
             .analyze_table(context.namespace, context.database, id)
             .await?;
+        let fields = transaction
+            .analyze_table_fields(context.namespace, context.database, id)
+            .await?;
         let count =
             |held: u64| Value::Number(Number::Integer(i64::try_from(held).unwrap_or(i64::MAX)));
-        let mut answer = Vec::with_capacity(taken.len());
+        let mut answer = Vec::with_capacity(taken.len().saturating_add(fields.len()));
         for (index, statistics) in taken {
             let mut summary = BTreeMap::new();
             summary.insert("index".to_owned(), Value::from(index.name.as_str()));
@@ -39,6 +44,22 @@ impl Session<'_> {
                 "distinct".to_owned(),
                 Value::Array(statistics.distinct.iter().copied().map(count).collect()),
             );
+            summary.insert(
+                "common".to_owned(),
+                count(u64::try_from(statistics.common.len()).unwrap_or(u64::MAX)),
+            );
+            summary.insert(
+                "buckets".to_owned(),
+                count(u64::try_from(statistics.bounds.len().saturating_sub(1)).unwrap_or(u64::MAX)),
+            );
+            answer.push(Value::Object(summary));
+        }
+        for (field, statistics) in fields {
+            let mut summary = BTreeMap::new();
+            summary.insert("field".to_owned(), Value::from(field.name.as_str()));
+            summary.insert("entries".to_owned(), count(statistics.entries));
+            summary.insert("nulls".to_owned(), count(statistics.nulls));
+            summary.insert("distinct".to_owned(), count(statistics.distinct));
             summary.insert(
                 "common".to_owned(),
                 count(u64::try_from(statistics.common.len()).unwrap_or(u64::MAX)),

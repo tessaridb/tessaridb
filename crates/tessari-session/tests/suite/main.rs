@@ -69,6 +69,7 @@ mod feeds;
 mod fell_behind;
 mod fetch;
 mod field_defaults;
+mod field_statistics;
 mod file_ranges;
 mod files;
 mod fill;
