@@ -143,6 +143,7 @@ impl Error {
             | Self::RollupWindow { .. }
             | Self::RollupIsDerived { .. }
             | Self::RollupInTransaction { .. }
+            | Self::FeedScanInTransaction { .. }
             | Self::RollupKeyCollision { .. }
             | Self::RollupsDependOn { .. }
             | Self::RecipientIsNotAName { .. }

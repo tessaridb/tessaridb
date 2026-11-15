@@ -117,6 +117,25 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
                 Ok(_) => {}
                 Err(why) => tracing::warn!(error = %why, "this node cannot reclaim retired index entries"),
             }
+            // A feed's initial scan: existing rows carried into its topic in
+            // bounded batches (FEAT-S1 D8). A feed this node may not write is
+            // refused at its commit before anything changes, which is the
+            // design rather than a fault, so that refusal stays quiet like
+            // the views' — the node that leads the range scans.
+            match tessari_session::scan_feeds(db.store()).await {
+                Ok(done) if done.records > 0 => tracing::debug!(
+                    records = done.records,
+                    feeds = done.feeds,
+                    "advanced feeds' initial scans"
+                ),
+                Ok(_) => {}
+                Err(tessari_session::Error::Store(
+                    tessari_storage::Error::LeaseSpent { .. }
+                    | tessari_storage::Error::NoLeadershipYet
+                    | tessari_storage::Error::WriteIsElsewhere { .. },
+                )) => tracing::debug!("feeds' initial scans run where the range is led"),
+                Err(why) => tracing::warn!(error = %why, "this node cannot advance feeds' initial scans"),
+            }
             // A series' records past its floor, removed as one range per table
             // (G044 C11). This node's own storage work: every node runs it over
             // its own copy, leader or not, because the answer already changed

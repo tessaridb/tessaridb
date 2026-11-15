@@ -1181,6 +1181,7 @@ already written carries it. A new table takes the next id; none is reused.
 | `28` | `ROLLUP_STATES` | the exact state of each rollup key's float sums for its last-written window |
 | `29` | `KAFKA_QUARANTINE` | the messages each Kafka consumer quarantined, by partition and offset |
 | `30` | `TOPIC_CLOCKS` | each topic's clock: the instant its newest message was appended, never lower than the one before (row `ns/db/table`, ADR-0133) |
+| `31` | `FEED_SCAN_STATES` | where each declared feed's initial scan has reached: its snapshot sequence, resume position, and whether the table is exhausted (row `table id + feed name`, FEAT-S1) |
 
 ## 10. Format versions
 
@@ -1201,6 +1202,7 @@ and is rewritten at open only where the row below says so.
 | `7` | a table may declare that its records expire — no key or value changes (the `expires` flag is §7.1's), so the surface digest is format 6's; what moves is the **write rule**: a build before it would clear a record's instant on a plain write and stamp no default (ADR-0122 A8) | opened as is and keeps its stamp; `DEFINE`/`ALTER … EXPIRE` is refused until the store is finalized |
 | `8` | a plain index keeps its removed entries as retired entries, key kinds `0x45` and `0x46` (Q-S3-34) | opened as is and keeps its stamp; no retired entry is written and a transaction behind the tail reads as before until the store is finalized |
 | `9` | a topic may be split into partitions (ADR-0131) — a catalog change: a build before it would append to a split topic itself, where no partition's reader sees the message — and a hash field may carry an instant of its own, flag `0x80` (ADR-0132), which a build before it refuses as a reserved bit; and a topic keeps each message's append instant in its `0x1c` entry and its clock in system table `30` (ADR-0133) | opened as is and keeps its stamp; `DEFINE TOPIC … PARTITIONS` and `HASH EXPIRE` are refused, and a topic keeps no append instant, until the store is finalized |
+| `10` | a declared feed's initial scan keeps its job in system table `31` (FEAT-S1 D8) — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `31` | opened as is and keeps its stamp; `DEFINE FEED … WITH INITIAL SCAN` is refused (`FormatNotFinalized`) until the store is finalized |
 
 **The stamp is the format the store holds, and it lags this build** (ADR-0118,
 from `0.31.0-beta`). A build opens an older store and keeps its stamp, so the

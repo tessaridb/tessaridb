@@ -39,7 +39,10 @@ fn inside(store: &Store) -> Session<'_> {
 /// The messages of a topic, as objects — each read answers
 /// `{appended, position, value}`, and the envelope is the `value`.
 fn messages(session: &mut Session<'_>, topic: &str) -> Vec<BTreeMap<String, Value>> {
-    let outcomes = session.run_now(&format!("READ FROM {topic};")).unwrap();
+    // LIMIT: a bare READ FROM answers its first hundred.
+    let outcomes = session
+        .run_now(&format!("READ FROM {topic} LIMIT 1000000;"))
+        .unwrap();
     let Some(tessari_session::Outcome::Records { records, .. }) = outcomes.last() else {
         panic!("READ FROM {topic}: {:?}", outcomes.last());
     };
@@ -413,4 +416,210 @@ fn when_filters_the_captured_writes() {
     let found = messages(&mut session, "order_events");
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].get("key"), Some(&Value::from(2_i64)));
+}
+
+// --- The initial scan (D8): a background job owned by the feed, snapshot = the a background job owned by the feed, snapshot = the
+// define commit, exactly-once per key, resumable across a restart. Driven by
+// `tessari_session::scan_feeds` — the function the housekeeping cadence calls.
+
+/// One object field of a value.
+fn field<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
+    match value {
+        Value::Object(fields) => fields.get(name),
+        _ => None,
+    }
+}
+
+/// Run one scan tick over every feed with `WITH INITIAL SCAN`.
+fn scan(store: &Store) {
+    tessari_session::scan_feeds(store).now().unwrap();
+}
+
+#[test]
+fn initial_scan_backfills_existing_rows_as_create_messages() {
+    let store = store();
+    let mut session = inside(&store);
+    session
+        .run_now(
+            "CREATE orders:1 = { v: 10 }; CREATE orders:2 = { v: 20 }; CREATE orders:3 = { v: 30 };",
+        )
+        .unwrap();
+    session
+        .run_now(
+            "DEFINE TOPIC backfill; DEFINE FEED mine ON orders INTO backfill WITH INITIAL SCAN;",
+        )
+        .unwrap();
+    scan(&store);
+    let messages = messages(&mut session, "backfill");
+    assert_eq!(messages.len(), 3, "one scanned message per existing row");
+    let mut carried: Vec<i64> = messages
+        .iter()
+        .map(|message| {
+            let after = message.get("after").expect("FULL image carries after");
+            match field(after, "v") {
+                Some(Value::Number(tessari_types::Number::Integer(held))) => *held,
+                other => panic!("after.v is not an integer: {other:?}"),
+            }
+        })
+        .collect();
+    carried.sort_unstable();
+    assert_eq!(carried, vec![10, 20, 30], "the scanned images are the rows");
+}
+
+#[test]
+fn initial_scan_skips_rows_changed_after_the_define() {
+    let store = store();
+    let mut session = inside(&store);
+    session.run_now("CREATE orders:1 = { v: 1 };").unwrap();
+    session
+        .run_now("DEFINE TOPIC live; DEFINE FEED mine ON orders INTO live WITH INITIAL SCAN;")
+        .unwrap();
+    // Between the define and the scan: one row changes, one is created. Their
+    // live messages carry them; the scan must not add a second per key.
+    session
+        .run_now("UPDATE orders:1 SET v = 2; CREATE orders:2 = { v: 2 };")
+        .unwrap();
+    scan(&store);
+    let messages = messages(&mut session, "live");
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for message in &messages {
+        *counts
+            .entry(format!("{:?}", message.get("key").unwrap()))
+            .or_default() += 1;
+    }
+    for (key, count) in &counts {
+        assert_eq!(*count, 1, "exactly one message per key, got {key} x{count}");
+    }
+    assert_eq!(counts.len(), 2, "both rows are carried once");
+    let ops: Vec<&Value> = messages
+        .iter()
+        .map(|message| message.get("op").unwrap())
+        .collect();
+    assert!(
+        ops.contains(&&Value::from("CREATE")),
+        "the new row is a live create"
+    );
+    assert!(
+        ops.contains(&&Value::from("UPDATE")),
+        "the changed row is a live update"
+    );
+}
+
+#[test]
+fn initial_scan_resumes_after_a_restart_without_a_second_message() {
+    let directory = tempfile::tempdir().unwrap();
+    let open = || {
+        let backend = tessari_lsm::TessariKvBackend::open(
+            directory.path(),
+            tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
+        )
+        .now()
+        .unwrap();
+        Store::open(Arc::new(backend)).now().unwrap()
+    };
+    {
+        let disk = open();
+        let mut session = Session::new(&disk);
+        session
+            .run_now(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+                 DEFINE COLLECTION orders; DEFINE TOPIC backfill;",
+            )
+            .unwrap();
+        for at in 1..=700 {
+            session
+                .run_now(&format!("CREATE orders:{at} = {{ v: {at} }};"))
+                .unwrap();
+        }
+        session
+            .run_now("DEFINE FEED mine ON orders INTO backfill WITH INITIAL SCAN;")
+            .unwrap();
+        scan(&disk);
+        // One tick covers one bounded batch — the job is not done.
+        let seen = {
+            let mut session = inside(&disk);
+            messages(&mut session, "backfill").len()
+        };
+        assert!(
+            seen > 0 && seen < 700,
+            "one tick scans one batch, saw {seen}"
+        );
+    }
+    let disk = open();
+    scan(&disk);
+    scan(&disk);
+    let mut session = inside(&disk);
+    let messages = messages(&mut session, "backfill");
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for message in &messages {
+        *counts
+            .entry(format!("{:?}", message.get("key").unwrap()))
+            .or_default() += 1;
+    }
+    let dupes: Vec<_> = counts.iter().filter(|(_, n)| **n > 1).collect();
+    println!(
+        "DEBUG total={} unique={} dupes={dupes:?}",
+        messages.len(),
+        counts.len()
+    );
+    assert_eq!(
+        messages.len(),
+        700,
+        "every row exactly once across restarts"
+    );
+    assert!(dupes.is_empty(), "duplicate keys: {dupes:?}");
+}
+
+#[test]
+fn initial_scan_is_refused_inside_an_explicit_transaction() {
+    let store = store();
+    let mut session = inside(&store);
+    let refused = session
+        .run_now("BEGIN; DEFINE TOPIC t; DEFINE FEED mine ON orders INTO t WITH INITIAL SCAN;");
+    assert!(
+        matches!(refused, Err(Error::FeedScanInTransaction { .. })),
+        "expected FeedScanInTransaction, got {refused:?}"
+    );
+}
+
+#[test]
+fn drop_feed_clears_the_scan_job_and_redefine_starts_fresh() {
+    let store = store();
+    let mut session = inside(&store);
+    session.run_now("CREATE orders:1 = { v: 1 };").unwrap();
+    session
+        .run_now("DEFINE TOPIC t; DEFINE FEED mine ON orders INTO t WITH INITIAL SCAN;")
+        .unwrap();
+    session.run_now("DROP FEED mine ON orders;").unwrap();
+    scan(&store);
+    assert!(
+        messages(&mut session, "t").is_empty(),
+        "a dropped feed has no scan to run"
+    );
+    session
+        .run_now("DEFINE FEED again ON orders INTO t WITH INITIAL SCAN;")
+        .unwrap();
+    scan(&store);
+    assert_eq!(messages(&mut session, "t").len(), 1, "the fresh job scans");
+}
+
+#[test]
+fn initial_scan_honours_the_feeds_when_and_image_keys() {
+    let store = store();
+    let mut session = inside(&store);
+    session
+        .run_now(
+            "CREATE orders:1 = { v: 1 }; CREATE orders:2 = { v: 100 }; \
+             DEFINE TOPIC t; \
+             DEFINE FEED big ON orders INTO t FOR CREATE IMAGE KEYS WHEN $after.v > 10 WITH INITIAL SCAN;",
+        )
+        .unwrap();
+    scan(&store);
+    let messages = messages(&mut session, "t");
+    assert_eq!(messages.len(), 1, "WHEN keeps only the rows it holds for");
+    assert_eq!(messages[0].get("op"), Some(&Value::from("CREATE")));
+    assert!(
+        !messages[0].contains_key("after") && !messages[0].contains_key("before"),
+        "IMAGE KEYS carries no images"
+    );
 }

@@ -70,7 +70,19 @@ impl FormatVersion {
     /// Moved to 9 when a topic could be split into partitions (ADR-0131): an
     /// older build reading the declaration would append to the parent as one
     /// topic, where no partition's reader would ever see the message.
-    pub const CURRENT: Self = Self(9);
+    ///
+    /// Moved to 10 when a declared feed's initial scan began keeping its job
+    /// in system table 31 (FEAT-S1 D8): an older build would not misread the
+    /// row — it never looks at the table — but the row's key names a system
+    /// table the older build's key grammar cannot place, and every surface
+    /// unit that names a system table moves with it, so the store states the
+    /// shape it is.
+    pub const CURRENT: Self = Self(10);
+
+    /// The first format whose declared feeds keep an initial scan's job in
+    /// system table 31 (FEAT-S1 D8). Named for the reason [`Self::HOMED_LOG`]
+    /// is.
+    pub const FEED_SCAN: Self = Self(10);
 
     /// The first format whose topics may be split into partitions (ADR-0131).
     /// Named for the reason [`Self::HOMED_LOG`] is.
@@ -140,6 +152,7 @@ impl FormatVersion {
             7 => (0, 33),
             8 => (0, 34),
             9 => (0, 37),
+            10 => (0, 40),
             _ => return None,
         };
         Some(crate::NodeVersion {

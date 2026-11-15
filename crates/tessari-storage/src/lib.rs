@@ -41,6 +41,7 @@ mod error;
 mod expiry;
 mod failover;
 mod feed;
+mod feed_scan;
 mod followers;
 mod format_stamp;
 mod gate;
@@ -126,6 +127,7 @@ pub use audit::{
 pub use error::{ConflictWith, Error, Result};
 pub use failover::Failover;
 pub use feed::{Change, ChangeKind, Changes, History, Merged, Subject, Subscription, Watch};
+pub use feed_scan::{FeedScanState, ScannedBatch};
 pub use followers::FollowerLag;
 pub use graph::{Admit, Graph as VectorGraph, Matched, filtered_ceiling, vector_of};
 pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};

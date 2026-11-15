@@ -167,6 +167,13 @@ impl<'a> Session<'a> {
             StatementKind::DefineRollup { .. } if open.is_some() => {
                 Err(Error::RollupInTransaction { span })
             }
+            // The scan anchors at the define commit's sequence; a write
+            // sharing that commit — this transaction's own — cannot be told
+            // from a pre-existing row, so the scan would double a key the
+            // live capture already carried (FEAT-S1 D8).
+            StatementKind::DefineFeed {
+                initial_scan: true, ..
+            } if open.is_some() => Err(Error::FeedScanInTransaction { span }),
             // It runs its script in a transaction of its own, which an enclosing
             // one would hold back or silently split from.
             StatementKind::Restore { .. } if open.is_some() => Err(Error::RestoreRefused {

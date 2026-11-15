@@ -8792,6 +8792,7 @@ DEFINE FEED orders_feed ON orders INTO order_events;
 DEFINE FEED deletes_only ON orders INTO delete_events FOR DELETE;
 DEFINE FEED big_only ON orders INTO big_events WHEN $after.total > 1000;
 DEFINE FEED keyed ON orders INTO key_events IMAGE KEYS;
+DEFINE FEED everything ON orders INTO all_events WITH INITIAL SCAN;
 DROP FEED keyed ON orders;
 ```
 
@@ -8851,6 +8852,25 @@ only while a feed claims it. `DROP FEED IF EXISTS` answers `ok` when no feed of
 the name stands on the table, the drop half of a re-runnable migration. A feed
 whose `FOR`, `WHEN` or `IMAGE` should change is dropped and defined again; the
 combination is the migration path until an `ALTER` spelling exists.
+
+**Existing rows: `WITH INITIAL SCAN`.** A feed defined with `WITH INITIAL SCAN`
+does not only capture what is written from then on — a background job the feed
+owns scans the rows that already stand and appends one `CREATE` message per row
+to the topic, so a consumer starting at the topic's beginning sees the table's
+present, not just its future. The scan anchors at the defining commit: a row
+that has not changed since the define is scanned, a row written or changed
+after it is skipped — its live message already carries it — and the two
+together give exactly one message per key, with no gap and no duplicate. The
+job advances in bounded batches on the node's housekeeping cadence and records
+where it has reached beside the feed itself, so a restart resumes mid-scan
+without a second message for any key. `WHEN` and `IMAGE` apply to scanned rows
+as they do to captured writes; scanned images are the record as the engine
+holds it, where a captured image is redacted to what the writing caller may
+read. `WITH INITIAL SCAN` runs as its own statement — it is refused inside
+`BEGIN … COMMIT`, because a write sharing the define's commit could not be
+told from a pre-existing row and the scan would double a key the capture
+already carried. `DROP FEED` ends the job with the feed; defining the feed
+again starts a fresh scan.
 
 ## 7. Transactions
 

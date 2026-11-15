@@ -73,6 +73,7 @@ pub(crate) fn kind_name(error: &Error) -> &'static str {
         Error::FeedOnKind { .. } => "FeedOnKind",
         Error::TopicOwnedByFeed { .. } => "TopicOwnedByFeed",
         Error::FeedTopicDeduplicated { .. } => "FeedTopicDeduplicated",
+        Error::FeedScanInTransaction { .. } => "FeedScanInTransaction",
         Error::PathOverEdgeTable { .. } => "PathOverEdgeTable",
         Error::EdgePropertiesNotAnObject { .. } => "EdgePropertiesNotAnObject",
         Error::ConditionNotBoolean { .. } => "ConditionNotBoolean",

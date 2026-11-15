@@ -102,3 +102,9 @@ DEFINE FEED onto_dedup ON orders INTO dedup_events;
 --- case: a feed's name is unique on its table
 DEFINE FEED orders_feed ON orders INTO order_events;
 --- expect: error FeedExists
+
+--- case: WITH INITIAL SCAN is refused inside an explicit transaction
+BEGIN;
+DEFINE TOPIC scan_tx;
+DEFINE FEED scan_tx_feed ON orders INTO scan_tx WITH INITIAL SCAN;
+--- expect: error FeedScanInTransaction

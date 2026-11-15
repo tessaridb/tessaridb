@@ -969,6 +969,17 @@ pub enum Error {
         span: Span,
     },
 
+    /// `DEFINE FEED … WITH INITIAL SCAN` inside `BEGIN … COMMIT`: a write
+    /// sharing the define's commit cannot be told from a pre-existing row,
+    /// so the scan would double a key the live capture already carried.
+    #[error(
+        "`WITH INITIAL SCAN` anchors at its defining commit, so it runs as its own statement, outside `BEGIN … COMMIT` (at {span})"
+    )]
+    FeedScanInTransaction {
+        /// Where the statement was written.
+        span: Span,
+    },
+
     /// Two keys of one window whose rows would share an identity.
     #[error(
         "two keys of one rollup window share a row identity; the write is refused rather than merged (at {span})"

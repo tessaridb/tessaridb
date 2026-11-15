@@ -163,6 +163,24 @@ impl<'a> Session<'a> {
         Catalog::new(transaction)
             .set_topic_owner(topic, Some(declared.name.text.clone()))
             .await?;
+        // The initial scan's job state lands in the same commit, so the
+        // row's key version is the define commit's sequence — the snapshot
+        // the scan anchors at, with no second write to carry it (FEAT-S1 D8).
+        // The row names system table 31, a format-10 surface: a store the
+        // build finalized to 9 cannot hold the job (FEAT-S1, the shape of
+        // partitioned topics' gate).
+        if declared.initial_scan {
+            self.refuse_a_format_the_store_does_not_hold(
+                "a feed's initial scan",
+                tessari_encoding::FormatVersion::FEED_SCAN,
+            )
+            .await?;
+            transaction.put_feed_scan_state(
+                id,
+                &declared.name.text,
+                &tessari_storage::FeedScanState::pending(),
+            )?;
+        }
         Ok(Outcome::Done)
     }
 
@@ -204,6 +222,8 @@ impl<'a> Session<'a> {
         let mut feeds = definition.feeds;
         feeds.retain(|held| held.name != name.text);
         Catalog::new(transaction).set_feeds(id, feeds).await?;
+        // The scan job dies with the feed: a redefine starts a fresh one.
+        transaction.forget_feed_scan(id, &name.text);
         // The topic is the feed's no longer: a caller may append to it again.
         // Resolved in the table's database, where the define resolved it.
         if let Some(topic) = Catalog::new(transaction)
@@ -435,8 +455,8 @@ impl<'a> Session<'a> {
         Ok(())
     }
 
-    /// The writer's instant as a datetime value, for the envelope's `at`.
-    fn now_datetime(&self) -> Datetime {
+    /// The engine's instant as a datetime value, for an envelope's `at`.
+    pub(crate) fn now_datetime(&self) -> Datetime {
         let since = self
             .now
             .duration_since(std::time::UNIX_EPOCH)
