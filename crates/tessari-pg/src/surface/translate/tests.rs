@@ -165,3 +165,14 @@ fn where_limit_combined_is_the_wire_shape() {
     assert_eq!(parameters.len(), 1);
     assert_eq!(columns, Columns::Named(vec!["name".to_owned()]));
 }
+
+#[test]
+fn group_having_order_render_the_engines_shape() {
+    let (script, _, _) = translated(
+        "SELECT band, count(*) AS n FROM orders GROUP BY band HAVING count(*) > 1 ORDER BY band DESC",
+    );
+    assert_eq!(
+        script,
+        "SELECT band, count(*) AS n FROM orders GROUP BY band HAVING count(*) > 1 ORDER BY band DESC;"
+    );
+}
