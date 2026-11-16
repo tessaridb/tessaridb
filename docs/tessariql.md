@@ -2571,7 +2571,8 @@ change handled.
 ```
 ALTER TABLE events SPLIT AUTOMATICALLY ABOVE 100000 RECORDS
     OR 500 WRITES PER SECOND
-    MERGE BELOW 20000 RECORDS;
+    MERGE BELOW 20000 RECORDS
+    MIN 2 SHARDS MAX 16 SHARDS;
 ALTER TABLE events SPLIT MANUALLY;
 ```
 
@@ -2585,10 +2586,20 @@ the `ALTER TABLE … SPLIT AT` or `MERGE SHARD` an operator would type: it is in
 the log, every node applies it, a feed over the table ends with the usual refusal,
 and the node logs it. `SPLIT MANUALLY` stops it. It is off unless asked.
 
+`MIN n SHARDS` and `MAX n SHARDS` bound how few and how many shards the
+balancing passes may leave the table with: a shard past its bounds is not
+split while the table holds its `MAX`, and neighbours are not merged while
+the table is at its `MIN`. Both are optional and may stand alone, in that
+order after `MERGE BELOW`; absent `MIN` reads as one shard, absent `MAX` as
+unbounded, which is how a declaration written before the bounds existed is
+read.
+
 - **`AutoSplitOnAnUnsplitTable`** — the table has no `SPLIT AT`; there is no
   shard to split.
 - **`AutoSplitWouldOscillate`** — the merge bound is at least half the split
   bound, so the halves of a split would merge straight back.
+- **`AutoSplitMaxBelowMin`** — the maximum shard count is below the minimum,
+  so no count of shards could satisfy the declaration.
 
 Counting a shard walks its records up to the bound, so a pass costs each shard
 at most its bound. `INFO FOR TABLE` reports the bounds as `auto_split`, and its

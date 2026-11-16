@@ -195,6 +195,32 @@ fn the_policy_is_refused_where_it_could_never_act_or_would_undo_itself() {
         ),
         "{refused:?}"
     );
+    let refused = db.session().run_now(&format!(
+        "{TENANCY} ALTER TABLE orders SPLIT AUTOMATICALLY ABOVE 100 RECORDS \
+         MERGE BELOW 20 RECORDS MIN 4 SHARDS MAX 3 SHARDS;"
+    ));
+    assert!(
+        matches!(
+            refused,
+            Err(tessari_session::Error::Store(
+                tessari_storage::Error::AutoSplitMaxBelowMin {
+                    min_shards: 4,
+                    max_shards: 3,
+                    ..
+                }
+            ))
+        ),
+        "{refused:?}"
+    );
+    // A shard count the grammar refuses: zero is no count at all.
+    let refused = db.session().run_now(&format!(
+        "{TENANCY} ALTER TABLE orders SPLIT AUTOMATICALLY ABOVE 100 RECORDS \
+         MERGE BELOW 20 RECORDS MIN 0 SHARDS;"
+    ));
+    assert!(
+        matches!(refused, Err(tessari_session::Error::Script(_))),
+        "{refused:?}"
+    );
 }
 
 #[test]
@@ -231,6 +257,107 @@ fn the_report_names_the_policy_and_its_definition_restores_it() {
     let Some(Value::String(script)) = fields.get("definition") else {
         unreachable!("a table reports its definition");
     };
+    let copy = Db::in_memory().now().unwrap();
+    copy.session()
+        .run_now(&format!("{DECLARED} {script}"))
+        .unwrap();
+    assert_eq!(table(&copy).auto_split, table(&db).auto_split);
+}
+
+#[test]
+fn a_table_at_its_max_shard_count_is_not_split_further() {
+    let db = Db::in_memory().now().unwrap();
+    orders(
+        &db,
+        "SPLIT AUTOMATICALLY ABOVE 100 RECORDS MERGE BELOW 20 RECORDS MAX 3 SHARDS",
+        400,
+    );
+    let mut samples = ShardSamples::default();
+    let mut split = 0_usize;
+    let mut refusal = None;
+    for _ in 0..32 {
+        let pass = db.balance_shards(&mut samples).now().unwrap();
+        split = split.saturating_add(pass.split);
+        refusal = pass.last_refusal.clone().or(refusal);
+        if pass.split == 0 && pass.merged == 0 {
+            break;
+        }
+    }
+    // `SPLIT AT '80'` leaves two shards; one split is allowed, the next pass
+    // meets the declaration's ceiling and refuses with nothing merged back.
+    assert_eq!(split, 1, "one split under the ceiling");
+    assert_eq!(per_shard(&db).len(), 3, "the ceiling held");
+    assert!(
+        refusal.as_ref().is_some_and(|why| why.contains("orders")),
+        "{refusal:?}"
+    );
+    assert!(
+        ids(&db).len() == 400,
+        "a refused split moved no record and lost none"
+    );
+}
+
+#[test]
+fn a_table_at_its_min_shard_count_is_not_merged_further() {
+    let db = Db::in_memory().now().unwrap();
+    orders(
+        &db,
+        "SPLIT AUTOMATICALLY ABOVE 10000 RECORDS MERGE BELOW 40 RECORDS MIN 2 SHARDS",
+        20,
+    );
+    let (_, merged) = passes(&db, &mut ShardSamples::default());
+    assert_eq!(merged, 0, "the floor held");
+    assert_eq!(per_shard(&db).len(), 2);
+    // Without the floor the same quiet table merges its two near-empty
+    // neighbours into one.
+    let db = Db::in_memory().now().unwrap();
+    orders(
+        &db,
+        "SPLIT AUTOMATICALLY ABOVE 10000 RECORDS MERGE BELOW 40 RECORDS",
+        20,
+    );
+    let (_, merged) = passes(&db, &mut ShardSamples::default());
+    assert!(merged >= 1);
+    assert_eq!(per_shard(&db).len(), 1);
+}
+
+#[test]
+fn a_policy_with_shard_count_bounds_round_trips_through_the_report_and_definition() {
+    let db = Db::in_memory().now().unwrap();
+    orders(
+        &db,
+        "SPLIT AUTOMATICALLY ABOVE 100 RECORDS MERGE BELOW 20 RECORDS \
+         MIN 2 SHARDS MAX 8 SHARDS",
+        0,
+    );
+    let outcomes = db
+        .session()
+        .run_now(&format!("{TENANCY} INFO FOR TABLE orders;"))
+        .unwrap();
+    let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
+        unreachable!("INFO FOR TABLE answers a value");
+    };
+    let policy = fields.get("auto_split").cloned();
+    assert_eq!(
+        policy.map(|held| format!("{held:?}")),
+        Some(format!(
+            "{:?}",
+            Value::Object(
+                [
+                    ("above".to_owned(), Value::from(100_i64)),
+                    ("max_shards".to_owned(), Value::from(8_i64)),
+                    ("merge_below".to_owned(), Value::from(20_i64)),
+                    ("min_shards".to_owned(), Value::from(2_i64)),
+                ]
+                .into_iter()
+                .collect()
+            )
+        ))
+    );
+    let Some(Value::String(script)) = fields.get("definition") else {
+        unreachable!("a table reports its definition");
+    };
+    assert!(script.contains("MIN 2 SHARDS MAX 8 SHARDS"), "{script}");
     let copy = Db::in_memory().now().unwrap();
     copy.session()
         .run_now(&format!("{DECLARED} {script}"))

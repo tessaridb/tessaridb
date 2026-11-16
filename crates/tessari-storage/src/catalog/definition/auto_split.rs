@@ -11,6 +11,8 @@ use crate::error::{Error, Result};
 const ABOVE: &str = "above";
 const WRITES_PER_SECOND: &str = "writes_per_second";
 const MERGE_BELOW: &str = "merge_below";
+const MIN_SHARDS: &str = "min_shards";
+const MAX_SHARDS: &str = "max_shards";
 
 /// The bounds the store line's leader keeps a table's shards within.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +24,13 @@ pub struct AutoSplit {
     /// Two neighbouring shards holding fewer records than this together are
     /// merged.
     pub merge_below: u64,
+    /// The balancing passes never merge the table down to fewer shards than
+    /// this. Stored only when above one, so a declaration written before the
+    /// bound existed keeps its bytes.
+    pub min_shards: u64,
+    /// The balancing passes never split the table into more shards than this;
+    /// `None` is unbounded.
+    pub max_shards: Option<u64>,
 }
 
 impl AutoSplit {
@@ -35,6 +44,12 @@ impl AutoSplit {
             fields.insert(WRITES_PER_SECOND.to_owned(), number(writes));
         }
         fields.insert(MERGE_BELOW.to_owned(), number(self.merge_below));
+        if self.min_shards > 1 {
+            fields.insert(MIN_SHARDS.to_owned(), number(self.min_shards));
+        }
+        if let Some(held) = self.max_shards {
+            fields.insert(MAX_SHARDS.to_owned(), number(held));
+        }
         Value::Object(fields)
     }
 
@@ -57,6 +72,11 @@ impl AutoSplit {
             above: bound(ABOVE)?.ok_or_else(|| malformed("no upper bound"))?,
             writes_per_second: bound(WRITES_PER_SECOND)?,
             merge_below: bound(MERGE_BELOW)?.ok_or_else(|| malformed("no lower bound"))?,
+            // A declaration written before the count bounds existed has no
+            // such fields: it meant one shard at the least and no maximum,
+            // which is what the balancer did then.
+            min_shards: bound(MIN_SHARDS)?.unwrap_or(1),
+            max_shards: bound(MAX_SHARDS)?,
         })
     }
 }

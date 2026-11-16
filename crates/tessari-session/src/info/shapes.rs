@@ -81,6 +81,12 @@ pub(crate) fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> 
             fields.insert("writes_per_second".to_owned(), number(writes));
         }
         fields.insert("merge_below".to_owned(), number(policy.merge_below));
+        if policy.min_shards > 1 {
+            fields.insert("min_shards".to_owned(), number(policy.min_shards));
+        }
+        if let Some(held) = policy.max_shards {
+            fields.insert("max_shards".to_owned(), number(held));
+        }
         shape.insert("auto_split".to_owned(), Value::Object(fields));
     }
     // Present only on a table that declared that its records expire

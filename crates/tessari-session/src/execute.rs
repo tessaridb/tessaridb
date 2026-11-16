@@ -1027,6 +1027,8 @@ impl Session<'_> {
                                     above: u64::from(policy.above),
                                     writes_per_second: policy.writes_per_second.map(u64::from),
                                     merge_below: u64::from(policy.merge_below),
+                                    min_shards: u64::from(policy.min_shards.unwrap_or(1)),
+                                    max_shards: policy.max_shards.map(u64::from),
                                 }),
                             )
                             .await?;

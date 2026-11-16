@@ -190,6 +190,12 @@ pub struct AutoSplit {
     /// Two neighbouring shards holding fewer records than this together are
     /// merged.
     pub merge_below: u32,
+    /// Never merge the table down to fewer shards than this (`MIN n SHARDS`;
+    /// absent reads as one).
+    pub min_shards: Option<u32>,
+    /// Never split the table into more shards than this (`MAX n SHARDS`;
+    /// absent reads as unbounded).
+    pub max_shards: Option<u32>,
 }
 
 /// Which endpoint of an edge a traversal starts from.

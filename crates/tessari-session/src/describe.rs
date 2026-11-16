@@ -471,7 +471,14 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         if let Some(writes) = policy.writes_per_second {
             let _ = write!(script, " OR {writes} WRITES PER SECOND");
         }
-        let _ = writeln!(script, " MERGE BELOW {} RECORDS;", policy.merge_below);
+        let _ = write!(script, " MERGE BELOW {} RECORDS", policy.merge_below);
+        if policy.min_shards > 1 {
+            let _ = write!(script, " MIN {} SHARDS", policy.min_shards);
+        }
+        if let Some(held) = policy.max_shards {
+            let _ = write!(script, " MAX {held} SHARDS");
+        }
+        script.push_str(";\n");
     }
     Ok(())
 }

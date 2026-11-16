@@ -122,26 +122,46 @@ impl Db {
                     .zip(shard.writes_per_second)
                     .is_some_and(|(bound, rate)| rate > bound)
             };
+            let held = map.spans().count();
             let act = if let Some(shard) = measured
                 .iter()
                 .find(|shard| shard.records > above || busy(shard))
             {
-                // The first id of the right half: half the bound into a shard
-                // that is too big, half its records into one that is too busy.
-                let into = if shard.records > above {
-                    above / 2
+                let at_max = policy
+                    .max_shards
+                    .and_then(|max| usize::try_from(max).ok())
+                    .is_some_and(|max| held >= max);
+                if at_max {
+                    // The declaration says the table may not grow past this
+                    // many shards; an over-bound shard stays over its bounds
+                    // rather than the act crossing the count it declared.
+                    balanced.last_refusal = Some(format!(
+                        "table `{}`: a shard is past its bounds but the table \
+                         already holds the shards its declaration allows",
+                        table.name
+                    ));
+                    None
                 } else {
-                    shard.records / 2
-                };
-                self.nth_record(&table, map, shard.id, into.max(1))
-                    .await?
-                    .map(Act::Split)
+                    // The first id of the right half: half the bound into a
+                    // shard that is too big, half its records into one that
+                    // is too busy.
+                    let into = if shard.records > above {
+                        above / 2
+                    } else {
+                        shard.records / 2
+                    };
+                    self.nth_record(&table, map, shard.id, into.max(1))
+                        .await?
+                        .map(Act::Split)
+                }
             } else {
                 let below = usize::try_from(policy.merge_below).unwrap_or(usize::MAX);
+                let min_held = usize::try_from(policy.min_shards).unwrap_or(usize::MAX);
                 measured
                     .windows(2)
                     .find(|pair| {
-                        pair.iter().all(|shard| shard.complete)
+                        held > min_held
+                            && pair.iter().all(|shard| shard.complete)
                             && pair[0].records.saturating_add(pair[1].records) < below
                     })
                     .map(|pair| Act::Merge(pair[0].id, pair[1].id))
