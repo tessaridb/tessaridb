@@ -224,6 +224,9 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
         // ratchet below is a statement about a set somebody wrote down:
         //   ALLOCATORS        one counter per level, for the whole store
         //   REPLICAS          who else is in the cluster is the store's
+        //   REPLICATIONS      which external clusters hold our databases is
+        //                     likewise the store's, and the row names a party
+        //                     outside every subscriber's trust boundary
         //   RECORD_SEQUENCES  keyed by table id, tenancy not in the record
         //   VAULT_ROOT        one record, the store's
         //   VAULT_AUDIT       the store's own trail

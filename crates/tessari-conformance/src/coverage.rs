@@ -109,6 +109,8 @@ forms! {
     RevokeCertificate => "REVOKE CERTIFICATE",
     CreateJoinToken => "CREATE JOIN TOKEN",
     DefineReplica => "DEFINE REPLICA",
+    DefineReplication => "DEFINE REPLICATION",
+    CreateLinkToken => "CREATE LINK TOKEN",
     DefineConsumer => "DEFINE KAFKA CONSUMER",
     DropConsumer => "DROP KAFKA CONSUMER",
     DefineTopicConsumer => "DEFINE TOPIC CONSUMER",
@@ -130,6 +132,8 @@ forms! {
     DropStopwords => "DROP STOPWORDS",
     DropReplica => "DROP REPLICA",
     AlterReplica => "ALTER REPLICA",
+    DropReplication => "DROP REPLICATION",
+    AlterReplication => "ALTER REPLICATION",
     FinalizeFormat => "ALTER STORE FINALIZE FORMAT",
     DropDatabase => "DROP DATABASE",
     DropNamespace => "DROP NAMESPACE",
@@ -297,6 +301,10 @@ mod tests {
              DROP ANALYZER a;\
              DROP REPLICA second;\
              ALTER REPLICA second LEADS NONE;\
+             DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop AS 'warehouse';\
+             ALTER REPLICATION east PAUSED;\
+             DROP REPLICATION east;\
+             CREATE LINK TOKEN FOR REPLICATION east EXPIRES 10m;\
              DROP DATABASE d;\
              DROP NAMESPACE n;\
              ALTER TABLE t SET SCHEMAFULL;\

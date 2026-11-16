@@ -280,4 +280,82 @@ impl Parser<'_> {
             Some(reach) => Ok(reach),
         }
     }
+
+    /// `DEFINE REPLICATION backup TO 'cluster-b:9080' FOR DATABASE prod.shop
+    /// [AS 'shop']`.
+    ///
+    /// The cross-cluster half of replication: one database, outbound to another
+    /// cluster. `FOR DATABASE` takes the fully qualified `namespace.database`
+    /// spelling for the reason `REPLICATES SHARD` is fully qualified: a
+    /// replication is a statement about the cluster, and a database named
+    /// relative to whatever the writing session happened to select would mean
+    /// different databases in two scripts that read the same. The bare name
+    /// `shop` is refused here, where the span is, rather than resolved against
+    /// a session the statement does not name.
+    pub(in crate::parser::statement) fn define_replication(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        // `TO` is reserved (it leads `INFO FOR ACCESS TO` and the grant
+        // spellings), so it arrives as a keyword rather than a contextual word.
+        if !self.eat_keyword(Keyword::To) {
+            return Err(self.error_here("`TO` and where the remote cluster answers"));
+        }
+        let (endpoint, _) = self.text("the endpoint, as text")?;
+        if !self.eat_word("for") {
+            return Err(self.error_here("`FOR` and the database that replicates"));
+        }
+        // `DATABASE` is reserved (it leads the reach spellings), so it arrives
+        // as a keyword like `TO` and `AS`.
+        if !self.eat_keyword(Keyword::Database) {
+            return Err(self.error_here("`DATABASE` and the database that replicates"));
+        }
+        let first = self.name()?;
+        self.expect_punct(Punct::Dot, "`.` and the database, as `namespace.database`")?;
+        let second = self.name()?;
+        let database = crate::ast::TableRef {
+            database: Some(first.clone()),
+            name: second,
+            span: first.span.to(self.span_behind()),
+        };
+        // `AS` is reserved, for the reason `TO` above is.
+        let remote = if self.eat_keyword(Keyword::As) {
+            Some(
+                self.text("the database's name on the remote cluster, as text")?
+                    .0,
+            )
+        } else {
+            None
+        };
+        Ok(StatementKind::DefineReplication {
+            name,
+            endpoint,
+            database,
+            remote,
+            if_not_exists,
+        })
+    }
+
+    /// The one clause an `ALTER REPLICATION` changes, read by the readers
+    /// `DEFINE REPLICATION` uses for the same clause.
+    pub(in crate::parser::statement) fn replication_change(&mut self) -> Result<ReplicationChange> {
+        if self.eat_word("at") {
+            return Ok(ReplicationChange::At(self.text("the endpoint, as text")?.0));
+        }
+        if self.eat_keyword(Keyword::As) {
+            if self.eat_keyword(Keyword::None) {
+                return Ok(ReplicationChange::Remote(None));
+            }
+            return Ok(ReplicationChange::Remote(Some(
+                self.text("the database's name on the remote cluster, as text, or `NONE`")?
+                    .0,
+            )));
+        }
+        if self.eat_word("paused") {
+            return Ok(ReplicationChange::Paused);
+        }
+        if self.eat_word("resumed") {
+            return Ok(ReplicationChange::Resumed);
+        }
+        Err(self.error_here("`AT`, `AS`, `PAUSED` or `RESUMED` — the one clause that changes"))
+    }
 }

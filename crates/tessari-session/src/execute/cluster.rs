@@ -215,6 +215,189 @@ impl Session<'_> {
         Ok(Outcome::Done)
     }
 
+    /// `DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop
+    /// [AS 'shop']` — the cross-cluster half of replication.
+    ///
+    /// The row runs in the transaction, for the peer half's reason: it is a
+    /// catalog record and reaches every node of this cluster through the
+    /// ordinary apply path. What it never does is reach the other cluster —
+    /// the link is declared on each side, and what crosses the seam is the
+    /// database's log.
+    ///
+    /// # The format gate
+    ///
+    /// The row names system table 32, a format-13 surface: a store the build
+    /// finalized to 12 cannot hold the row, so the statement is refused there
+    /// rather than written into a store an older build then cannot place.
+    pub(super) async fn define_replication(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        endpoint: &str,
+        database: &tessari_ql::TableRef,
+        remote: Option<&str>,
+        if_not_exists: bool,
+    ) -> Result<Outcome> {
+        let declared = Catalog::new(transaction)
+            .replications()
+            .await?
+            .into_iter()
+            .any(|found| found.name == name.text);
+        if if_not_exists && declared {
+            return Ok(Outcome::Done);
+        }
+        // The database is resolved before the name is claimed, so a statement
+        // naming a database that is not there leaves nothing behind: it either
+        // declares the link it was asked for or declares nothing.
+        let reach = self
+            .reach_of(
+                transaction,
+                &tessari_ql::ReachRef::Database(database.clone()),
+            )
+            .await?;
+        let tessari_storage::Reach::Database(namespace, database_id) = reach else {
+            return Err(Error::Unknown {
+                entity: "database",
+                name: database.name.text.clone(),
+                span: database.span,
+            });
+        };
+        self.refuse_a_format_the_store_does_not_hold(
+            "DEFINE REPLICATION",
+            tessari_encoding::FormatVersion::REPLICATION_LINK,
+        )
+        .await?;
+        Catalog::new(transaction)
+            .create_replication_with(tessari_storage::ReplicationDefinition {
+                name: name.text.clone(),
+                endpoint: endpoint.to_owned(),
+                database: tessari_storage::Reach::Database(namespace, database_id),
+                remote: remote.map(str::to_owned),
+                paused: false,
+                join: None,
+            })
+            .await?;
+        Ok(Outcome::Done)
+    }
+
+    /// `ALTER REPLICATION east AT '…'` · `… AS '…'` · `… PAUSED` · `… RESUMED`
+    /// — amends one clause of a link's row, the way `ALTER REPLICA` amends a
+    /// peer's.
+    pub(super) async fn alter_replication(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        change: &tessari_ql::ReplicationChange,
+        span: Span,
+    ) -> Result<Outcome> {
+        use tessari_ql::ReplicationChange;
+        let amended = match change {
+            ReplicationChange::At(endpoint) => {
+                Catalog::new(transaction)
+                    .amend_replication(&name.text, |row| row.endpoint.clone_from(endpoint))
+                    .await?
+            }
+            ReplicationChange::Remote(remote) => {
+                Catalog::new(transaction)
+                    .amend_replication(&name.text, |row| row.remote.clone_from(remote))
+                    .await?
+            }
+            ReplicationChange::Paused => {
+                Catalog::new(transaction)
+                    .amend_replication(&name.text, |row| row.paused = true)
+                    .await?
+            }
+            ReplicationChange::Resumed => {
+                Catalog::new(transaction)
+                    .amend_replication(&name.text, |row| row.paused = false)
+                    .await?
+            }
+        };
+        if !amended {
+            return Err(Error::Unknown {
+                entity: "replication",
+                name: name.text.clone(),
+                span,
+            });
+        }
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP REPLICATION east` — stops shipping a database to another cluster.
+    ///
+    /// Nothing is told and nothing is chased, for `DROP REPLICA`'s reason: the
+    /// statement says only that we no longer count the link.
+    pub(super) async fn drop_replication(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        if !Catalog::new(transaction)
+            .drop_replication(&name.text)
+            .await?
+        {
+            return Err(Error::Unknown {
+                entity: "replication",
+                name: name.text.clone(),
+                span,
+            });
+        }
+        Ok(Outcome::Done)
+    }
+
+    /// `CREATE LINK TOKEN FOR REPLICATION east EXPIRES 10m` — the join-token
+    /// pattern (ADR-0108 D9) on the cross-cluster table: the token is answered
+    /// once and never stored, the row keeps its SHA-256 and its expiry, and a
+    /// second token for the row replaces the first, which is how a lost one is
+    /// withdrawn.
+    pub(super) async fn create_link_token(
+        transaction: &mut Transaction<'_>,
+        replication: &Name,
+        expires: tessari_types::Duration,
+        span: Span,
+    ) -> Result<Outcome> {
+        let mut secret = [0_u8; 32];
+        crate::generate::fill(&mut secret).map_err(|_| Error::TokenUnavailable {
+            reason: "the operating system's randomness source could not be read",
+            span,
+        })?;
+        let token: String = secret.iter().map(|byte| format!("{byte:02x}")).collect();
+        // The digest of the token's bytes — what the remote offers on the link —
+        // and not of the hex an operator copies.
+        let digest: String = <sha2::Sha256 as sha2::Digest>::digest(secret)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| {
+                i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+            });
+        // The parser refuses a length of zero or less, so the seconds are
+        // non-negative; a life past the clock's range saturates rather than
+        // wrapping into the past.
+        let life_ms = expires
+            .seconds()
+            .saturating_mul(1_000)
+            .saturating_add(i64::from(expires.nanos() / 1_000_000));
+        let ticket = tessari_storage::JoinTicket {
+            digest,
+            expires_ms: now_ms.saturating_add(life_ms),
+        };
+        if !Catalog::new(transaction)
+            .wait_for_link(&replication.text, ticket)
+            .await?
+        {
+            return Err(Error::Unknown {
+                entity: "replication",
+                name: replication.text.clone(),
+                span,
+            });
+        }
+        Ok(Outcome::Value(tessari_types::Value::String(token)))
+    }
+
     /// `CREATE JOIN TOKEN FOR REPLICA r EXPIRES 10m` (ADR-0108 D9).
     ///
     /// The token is answered once and never stored: the row keeps its SHA-256

@@ -11344,6 +11344,58 @@ node was unreachable while its row said otherwise.
 `NODE` and `REPLICA` are read as contextual words, so `DEFINE TABLE node` is
 still an ordinary table for data that already uses the name.
 
+### Replicating to another cluster
+
+`DEFINE REPLICA` names a peer of **this** cluster. Replicating to a **different**
+cluster is the neighbouring statement, and its unit is one database:
+
+```
+DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop AS 'warehouse';
+INFO FOR REPLICATION east;
+ALTER REPLICATION east PAUSED;
+ALTER REPLICATION east AT 'cluster-c:9080';
+CREATE LINK TOKEN FOR REPLICATION east EXPIRES 10m;
+DROP REPLICATION east;
+```
+
+**The database is always `namespace.database`.** A replication is a statement
+about the cluster, not about whatever the session happened to select, so the bare
+name is refused where the span is rather than resolved against a session the
+statement does not name. `AS 'warehouse'` is the database's name on the remote
+cluster — what the remote must call the copy for it to be this link's. Left out,
+the copy carries the same name it has here; `AS NONE` says so again on an
+`ALTER`.
+
+**The link is declared on each side, and what crosses the seam is the
+database's log.** The row names an external party, so it is this cluster's
+topology: it reaches every node here through the ordinary catalog apply, and it
+never rides the data channel to the other cluster. A row the remote could not
+trust the provenance of would be a link nobody vouched for.
+
+**`INFO FOR REPLICATION` answers the declaration** — the endpoint, the database
+in the spelling `FOR DATABASE` takes, the remote name, whether the stream is
+paused, and the token's remaining life when one stands. It is refused rather than
+filtered to a smaller answer, for the reason `INFO FOR NODE` is: an endpoint is
+this cluster's position toward an outside party, and there is no truthful
+half of it to hand a caller who may not see the whole. The token's digest is
+never the answer — a token is shown once, at creation, and the row keeps its
+SHA-256 and expiry the way a join token's row does.
+
+**`CREATE LINK TOKEN FOR REPLICATION east EXPIRES 10m`** answers a one-time
+token the remote cluster offers when it binds this link — the join-token pattern
+on the cross-cluster table. The token is answered once and never stored: the row
+keeps the digest and the expiry, so the catalog — in every backup and on every
+node — holds nothing that binds a link by itself, and a second token for the row
+replaces the first, which is how a lost one is withdrawn.
+
+**`PAUSED` and `RESUMED` are the operability surface**: a stopped stream is a
+statement, not a process to hunt down. Pausing a link that has no driver yet is
+inert and answers `ok` — the surface lands before the machinery, so an operator
+can read back what they declared before anything acts on it.
+
+`REPLICATION` is read as a contextual word like `REPLICA`, so a table called
+`replication` keeps its name everywhere but directly after `DEFINE`.
+
 ## 8. What is deliberately absent from this milestone
 
 Named here rather than merely missing, so each absence reads as a decision.

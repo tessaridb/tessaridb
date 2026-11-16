@@ -9,7 +9,7 @@ use tessari_types::{
     Acknowledge, Acknowledgement, Duration, Number, Replication, ReplicationClass, parse_uuid,
 };
 
-use crate::ast::{ReachRef, ReplicaChange, StatementKind};
+use crate::ast::{ReachRef, ReplicaChange, ReplicationChange, StatementKind};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
 
@@ -95,6 +95,49 @@ impl Parser<'_> {
         }
         let expires = self.length("expires")?;
         Ok(StatementKind::CreateJoinToken { replica, expires })
+    }
+
+    /// Whether `CREATE` here makes a link token: the word `LINK` and the word
+    /// `TOKEN`.
+    ///
+    /// Both are checked rather than reserved, for the reason `creates_a_join
+    /// _token` checks `TOKEN`: a record write begins `CREATE <table>`, and a
+    /// table called `link` followed by an id or a keyword is never these two
+    /// words in this order — `CREATE link SET …` and `CREATE link:token` keep
+    /// meaning the writes they have always meant.
+    pub(super) fn creates_a_link_token(&self) -> bool {
+        let at = |offset: usize| {
+            self.tokens
+                .get(self.position.saturating_add(offset))
+                .map(|spanned| &spanned.token)
+        };
+        matches!(at(1), Some(Token::Ident(word)) if word.eq_ignore_ascii_case("link"))
+            && matches!(at(2), Some(Token::Ident(word)) if word.eq_ignore_ascii_case("token"))
+    }
+
+    /// `CREATE LINK TOKEN FOR REPLICATION backup EXPIRES 10m` — the join-token
+    /// pattern (ADR-0108 D9) carried across the cluster seam: a one-time token
+    /// the remote cluster offers when it binds the named link.
+    ///
+    /// `EXPIRES` is required with no default, for the reason
+    /// [`Self::create_join_token`] gives: a token nobody gave a life to would be
+    /// a credential that binds a row for as long as nobody remembers it exists.
+    pub(super) fn create_link_token(&mut self) -> Result<StatementKind> {
+        self.advance();
+        self.eat_word("link");
+        self.eat_word("token");
+        if !self.eat_word("for") || !self.eat_word("replication") {
+            return Err(self.error_here("`REPLICATION` and the row the token binds"));
+        }
+        let replication = self.name()?;
+        if !self.eat_word("expires") {
+            return Err(self.error_here("`EXPIRES` and how long the token binds for"));
+        }
+        let expires = self.length("expires")?;
+        Ok(StatementKind::CreateLinkToken {
+            replication,
+            expires,
+        })
     }
 
     /// A contextual word this statement requires.

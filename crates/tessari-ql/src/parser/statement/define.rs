@@ -286,6 +286,11 @@ impl Parser<'_> {
             // arms consume their word, so neither may `advance` again.
             _ if self.eat_word("node") => self.define_node(),
             _ if self.eat_word("replica") => self.define_replica(),
+            // The cross-cluster half : `REPLICATION` is read whole, so the
+            // arm above never eats it, and contextual like every subject here —
+            // a table called `replication` keeps its name everywhere but
+            // directly after `DEFINE`.
+            _ if self.eat_word("replication") => self.define_replication(),
             // And a third contextual subject, on the same reasoning: `failover`
             // is a perfectly good name for a table somebody's data already uses.
             _ if self.eat_word("failover") => self.define_failover(),

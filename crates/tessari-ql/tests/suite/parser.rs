@@ -1792,6 +1792,132 @@ fn a_peer_keeps_no_second_spelling_for_an_absent_roles_clause() {
 }
 
 #[test]
+fn a_replication_names_a_fully_qualified_database() {
+    // G084. The database is always `namespace.database`: a replication is a
+    // statement about the cluster, and a bare name here would mean whatever the
+    // writing session happened to select.
+    let StatementKind::DefineReplication {
+        name,
+        endpoint,
+        database,
+        remote,
+        if_not_exists,
+    } = one("DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop AS 'shop';")
+    else {
+        panic!("DEFINE REPLICATION did not parse as DEFINE REPLICATION");
+    };
+    assert_eq!(name.text, "east");
+    assert_eq!(endpoint, "cluster-b:9080");
+    assert_eq!(
+        database.database.as_ref().map(|part| part.text.as_str()),
+        Some("prod"),
+        "the namespace is part of the name, not the session's selection"
+    );
+    assert_eq!(database.name.text, "shop");
+    assert_eq!(remote.as_deref(), Some("shop"));
+    assert!(!if_not_exists);
+    // Absent clauses: no remote name, no IF NOT EXISTS — declared, not amended.
+    let StatementKind::DefineReplication {
+        remote,
+        if_not_exists,
+        ..
+    } = one("DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop;")
+    else {
+        panic!("DEFINE REPLICATION did not parse as DEFINE REPLICATION");
+    };
+    assert_eq!(remote, None, "absent reads as the same name it has here");
+    assert!(!if_not_exists);
+    // A bare database name is refused where the span is, not resolved against a
+    // session the statement does not name.
+    assert!(parse("DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE shop;").is_err());
+}
+
+#[test]
+fn one_clause_of_a_replication_changes_per_statement() {
+    // The ALTER family: AT moves the endpoint, AS moves or clears the remote
+    // name, PAUSED and RESUMED hold and take up the stream. Anything else is
+    // refused, for the reason `ALTER REPLICA` refuses it.
+    let StatementKind::AlterReplication { name, change } =
+        one("ALTER REPLICATION east AT 'cluster-c:9080';")
+    else {
+        panic!("ALTER REPLICATION AT did not parse as ALTER REPLICATION");
+    };
+    assert_eq!(name.text, "east");
+    assert!(
+        matches!(change, tessari_ql::ReplicationChange::At(found) if found == "cluster-c:9080")
+    );
+    let StatementKind::AlterReplication { change, .. } =
+        one("ALTER REPLICATION east AS 'warehouse';")
+    else {
+        panic!("ALTER REPLICATION AS did not parse as ALTER REPLICATION");
+    };
+    assert!(
+        matches!(change, tessari_ql::ReplicationChange::Remote(Some(found)) if found == "warehouse")
+    );
+    let StatementKind::AlterReplication { change, .. } = one("ALTER REPLICATION east AS NONE;")
+    else {
+        panic!("ALTER REPLICATION AS NONE did not parse as ALTER REPLICATION");
+    };
+    assert!(matches!(
+        change,
+        tessari_ql::ReplicationChange::Remote(None)
+    ));
+    let StatementKind::AlterReplication { change, .. } = one("ALTER REPLICATION east PAUSED;")
+    else {
+        panic!("ALTER REPLICATION PAUSED did not parse as ALTER REPLICATION");
+    };
+    assert!(matches!(change, tessari_ql::ReplicationChange::Paused));
+    let StatementKind::AlterReplication { change, .. } = one("ALTER REPLICATION east RESUMED;")
+    else {
+        panic!("ALTER REPLICATION RESUMED did not parse as ALTER REPLICATION");
+    };
+    assert!(matches!(change, tessari_ql::ReplicationChange::Resumed));
+    assert!(parse("ALTER REPLICATION east ROLES serving;").is_err());
+}
+
+#[test]
+fn a_replication_is_dropped_by_name_and_a_table_named_link_keeps_its_writes() {
+    let StatementKind::DropReplication { name } = one("DROP REPLICATION east;") else {
+        panic!("DROP REPLICATION did not parse as DROP REPLICATION");
+    };
+    assert_eq!(name.text, "east");
+    // The two-word gate on `CREATE LINK TOKEN` must not eat an ordinary write:
+    // a table called `link` is spelled by somebody, and a record write against
+    // it is the write it has always been.
+    assert!(matches!(
+        one("CREATE link:1 = { name: 'a' };"),
+        StatementKind::Create { .. }
+    ));
+}
+
+#[test]
+fn a_link_token_binds_a_replication_and_only_a_replication() {
+    let StatementKind::CreateLinkToken {
+        replication,
+        expires,
+    } = one("CREATE LINK TOKEN FOR REPLICATION east EXPIRES 10m;")
+    else {
+        panic!("CREATE LINK TOKEN did not parse as CREATE LINK TOKEN");
+    };
+    assert_eq!(replication.text, "east");
+    assert_eq!(expires.to_literal(), "10m");
+    // `EXPIRES` is required with no default: a token nobody gave a life to
+    // would bind for as long as nobody remembers it exists.
+    assert!(parse("CREATE LINK TOKEN FOR REPLICATION east;").is_err());
+}
+
+#[test]
+fn a_replication_is_asked_about_by_name() {
+    let StatementKind::Info { subject } = one("INFO FOR REPLICATION east;") else {
+        panic!("INFO FOR REPLICATION did not parse as INFO");
+    };
+    assert!(
+        matches!(subject, InfoSubject::Replication(found) if found.text == "east"),
+        "the subject is the row, not the database"
+    );
+}
+
+#[test]
 fn a_records_history_is_asked_for_with_of_and_a_record() {
     // The sibling of `INFO FOR VERSIONS OF`, parsed the same way: the subject
     // word, `OF`, and a record target. Every statement in this suite is copied

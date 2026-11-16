@@ -58,6 +58,7 @@ pub(crate) use consumers::{described_consumer, guarantees, running_state};
 pub(crate) use measures::{refining, reported};
 pub(crate) use replicas::{
     described_failover, described_follower, described_leaders, described_replica,
+    described_replication,
 };
 pub(crate) use shapes::{
     described_expiry, described_field, described_field_statistics, described_index,
@@ -128,6 +129,9 @@ impl Session<'_> {
             InfoSubject::Consumers => self.info_consumers(transaction).await?,
             InfoSubject::TopicConsumer(name) => {
                 self.info_topic_consumer(transaction, name, span).await?
+            }
+            InfoSubject::Replication(name) => {
+                self.info_replication(transaction, name, span).await?
             }
         };
         Ok(Outcome::Value(Value::Object(report)))

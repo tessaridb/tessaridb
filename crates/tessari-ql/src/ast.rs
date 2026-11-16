@@ -306,6 +306,24 @@ pub enum ReplicaChange {
     Region(Option<String>),
 }
 
+/// The one clause an `ALTER REPLICATION` changes, read by the readers
+/// `DEFINE REPLICATION` uses for the same clause.
+///
+/// Amended in place for [`ReplicaChange`]'s reason: the row is one unit and the
+/// statement says which part of it moves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplicationChange {
+    /// `AT 'cluster-b:9080'` — where the remote cluster answers now.
+    At(String),
+    /// `AS 'shop'` — the database's name on the remote cluster, or `AS NONE`
+    /// to say the copy carries the same name it has here.
+    Remote(Option<String>),
+    /// `PAUSED` — the driver holds the stream.
+    Paused,
+    /// `RESUMED` — the driver takes it up again.
+    Resumed,
+}
+
 /// A table, optionally qualified by its database.
 ///
 /// An explicit qualification always wins over the session's context, so that a

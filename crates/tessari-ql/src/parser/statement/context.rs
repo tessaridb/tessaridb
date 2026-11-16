@@ -78,6 +78,10 @@ impl Parser<'_> {
                 InfoSubject::Access(self.table_ref()?)
             }
             _ if self.eat_word("node") => InfoSubject::Node,
+            // The cross-cluster row is asked about by the same operator
+            // who declares it; read whole so the `REPLICA` INFO word above (for
+            // the peer rows an `INFO FOR NODE` lists) is never half-eaten.
+            _ if self.eat_word("replication") => InfoSubject::Replication(self.name()?),
             // Plural first, as with `USERS` above, so that reading this arm in
             // order tells you which of the two a bare word reaches.
             _ if self.eat_word("kafka") => {

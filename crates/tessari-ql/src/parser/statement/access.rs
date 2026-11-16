@@ -73,6 +73,13 @@ impl Parser<'_> {
             let change = self.replica_change()?;
             return Ok(StatementKind::AlterReplica { name, change });
         }
+        // The cross-cluster row amends the same way: one clause per
+        // statement, the rest of the row untouched.
+        if self.eat_word("replication") {
+            let name = self.name()?;
+            let change = self.replication_change()?;
+            return Ok(StatementKind::AlterReplication { name, change });
+        }
         // ADR-0118. `STORE` is already a keyword; the other two are words, since
         // reserving them would take two names away from every table.
         if self.eat_keyword(Keyword::Store) {

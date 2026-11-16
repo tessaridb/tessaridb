@@ -598,6 +598,35 @@ impl Session<'_> {
             StatementKind::CreateJoinToken { replica, expires } => {
                 Self::create_join_token(transaction, replica, *expires, span).await
             }
+            // The cross-cluster half: a database shipped to another cluster.
+            StatementKind::DefineReplication {
+                name,
+                endpoint,
+                database,
+                remote,
+                if_not_exists,
+            } => {
+                self.define_replication(
+                    transaction,
+                    name,
+                    endpoint,
+                    database,
+                    remote.as_deref(),
+                    *if_not_exists,
+                )
+                .await
+            }
+            StatementKind::AlterReplication { name, change } => {
+                self.alter_replication(transaction, name, change, span)
+                    .await
+            }
+            StatementKind::DropReplication { name } => {
+                self.drop_replication(transaction, name, span).await
+            }
+            StatementKind::CreateLinkToken {
+                replication,
+                expires,
+            } => Self::create_link_token(transaction, replication, *expires, span).await,
             StatementKind::DefineConsumer {
                 name,
                 source,

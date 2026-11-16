@@ -11,7 +11,7 @@ use crate::session::Session;
 
 use super::{
     described_consumer, described_failover, described_follower, described_leaders,
-    described_replica, guarantees, running_state,
+    described_replica, described_replication, guarantees, running_state,
 };
 
 impl Session<'_> {
@@ -372,6 +372,35 @@ impl Session<'_> {
     /// The counters are left to `INFO FOR KAFKA CONSUMER <name>`: this is the listing
     /// an operator reads to find out *which* consumer to ask about, and a table
     /// of every partition position would bury that.
+    /// `INFO FOR REPLICATION east` — one outbound replication's declaration.
+    ///
+    /// Needs `OPERATE_STORE`, decided by `Needs::of` before this runs: the row
+    /// names an external party and the endpoint it answers at, which is
+    /// topology with no smaller truthful form to filter down to.
+    pub(super) async fn info_replication(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let found = Catalog::new(transaction)
+            .replications()
+            .await?
+            .into_iter()
+            .find(|held| held.name == name.text);
+        let Some(replication) = found else {
+            return Err(Error::Unknown {
+                entity: "replication",
+                name: name.text.clone(),
+                span,
+            });
+        };
+        Ok(BTreeMap::from([(
+            "declared".to_owned(),
+            described_replication(&replication, &Catalog::new(transaction)).await?,
+        )]))
+    }
+
     pub(super) async fn info_consumers(
         &self,
         transaction: &mut Transaction<'_>,
