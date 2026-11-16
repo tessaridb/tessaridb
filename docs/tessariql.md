@@ -2571,24 +2571,39 @@ change handled.
 ```
 ALTER TABLE events SPLIT AUTOMATICALLY ABOVE 100000 RECORDS
     OR 500 WRITES PER SECOND
-    MERGE BELOW 20000 RECORDS;
+    MERGE BELOW 20000 RECORDS
+    MIN 2 SHARDS MAX 16 SHARDS;
 ALTER TABLE events SPLIT MANUALLY;
 ```
 
 A split table can ask the cluster to keep its shards within bounds. The node
 leading the store line looks every few seconds: a shard holding more records
-than `ABOVE`, or taking more writes a second than `OR … WRITES PER SECOND`, is
-split — at the record half the bound into it, so a much larger shard splits again
-on later passes — and two neighbouring shards holding fewer than `MERGE BELOW`
+than `ABOVE` is split at the record half the bound into it, so a much larger
+shard splits again on later passes; a shard taking more writes a second than
+`OR … WRITES PER SECOND` is split where the middle write of its recent traffic
+hit — the pass samples the keys written into each shard, bounded, and a sample
+of fewer than two keys falls back to the record median — so both halves serve
+about half the measured load; and two neighbouring shards holding fewer than
+`MERGE BELOW`
 together are merged. At most one change per table per pass, and each is exactly
 the `ALTER TABLE … SPLIT AT` or `MERGE SHARD` an operator would type: it is in
 the log, every node applies it, a feed over the table ends with the usual refusal,
 and the node logs it. `SPLIT MANUALLY` stops it. It is off unless asked.
 
+`MIN n SHARDS` and `MAX n SHARDS` bound how few and how many shards the
+balancing passes may leave the table with: a shard past its bounds is not
+split while the table holds its `MAX`, and neighbours are not merged while
+the table is at its `MIN`. Both are optional and may stand alone, in that
+order after `MERGE BELOW`; absent `MIN` reads as one shard, absent `MAX` as
+unbounded, which is how a declaration written before the bounds existed is
+read.
+
 - **`AutoSplitOnAnUnsplitTable`** — the table has no `SPLIT AT`; there is no
   shard to split.
 - **`AutoSplitWouldOscillate`** — the merge bound is at least half the split
   bound, so the halves of a split would merge straight back.
+- **`AutoSplitMaxBelowMin`** — the maximum shard count is below the minimum,
+  so no count of shards could satisfy the declaration.
 
 Counting a shard walks its records up to the bound, so a pass costs each shard
 at most its bound. `INFO FOR TABLE` reports the bounds as `auto_split`, and its
@@ -11215,7 +11230,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.42.0", "build": "0.42.0", "endpoints": ["db-1.internal:9000"],
+ "version": "0.43.0", "build": "0.43.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

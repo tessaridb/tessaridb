@@ -340,9 +340,12 @@ impl Parser<'_> {
     }
 
     /// A shard's number, as `INFO FOR TABLE` reports it.
-    /// `ABOVE n RECORDS [OR w WRITES PER SECOND] MERGE BELOW m RECORDS` after
-    /// `SPLIT AUTOMATICALLY` — every bound written, since a threshold the
-    /// store chose would decide when a table changes shape (ADR-0113 D2).
+    /// `ABOVE n RECORDS [OR w WRITES PER SECOND] MERGE BELOW m RECORDS
+    /// [MIN i SHARDS] [MAX j SHARDS]` after `SPLIT AUTOMATICALLY` — every
+    /// threshold bound written, since a threshold the store chose would decide
+    /// when a table changes shape (ADR-0113 D2). `MIN` and `MAX` bound how
+    /// few and how many shards the balancing passes may leave the table with:
+    /// absent `MIN` reads as one shard, absent `MAX` as unbounded.
     fn auto_split(&mut self) -> Result<AutoSplit> {
         self.expect_word("above", "`ABOVE` and how many records a shard may hold")?;
         let above = self.whole_number("how many records a shard may hold")?;
@@ -363,10 +366,26 @@ impl Parser<'_> {
         self.expect_word("below", "`BELOW` and the count two shards merge under")?;
         let merge_below = self.whole_number("the count two shards merge under")?;
         self.expect_word("records", "`RECORDS` after the count")?;
+        let min_shards = if self.eat_word("min") {
+            let held = self.whole_number("how few shards the table may shrink to")?;
+            self.expect_word("shards", "`SHARDS` after the count")?;
+            Some(held)
+        } else {
+            None
+        };
+        let max_shards = if self.eat_word("max") {
+            let held = self.whole_number("how many shards the table may grow to")?;
+            self.expect_word("shards", "`SHARDS` after the count")?;
+            Some(held)
+        } else {
+            None
+        };
         Ok(AutoSplit {
             above,
             writes_per_second,
             merge_below,
+            min_shards,
+            max_shards,
         })
     }
 

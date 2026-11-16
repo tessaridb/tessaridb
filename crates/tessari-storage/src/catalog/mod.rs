@@ -307,7 +307,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     ///
     /// [`Error::AutoSplitOnAnUnsplitTable`] for a table with no shard map,
     /// whose shards nothing could split; [`Error::AutoSplitWouldOscillate`]
-    /// when a split's two halves would merge straight back.
+    /// when a split's two halves would merge straight back;
+    /// [`Error::AutoSplitMaxBelowMin`] when the maximum shard count is below
+    /// the minimum.
     pub async fn set_auto_split(&mut self, id: TableId, policy: Option<AutoSplit>) -> Result<bool> {
         let Some(mut definition) = self.table(id).await? else {
             return Ok(false);
@@ -327,6 +329,17 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                     table: definition.name,
                     above: policy.above,
                     merge_below: policy.merge_below,
+                });
+            }
+            // Both bounds on the shard count must leave the passes a count
+            // they can keep.
+            if let Some(max_shards) = policy.max_shards
+                && max_shards < policy.min_shards
+            {
+                return Err(Error::AutoSplitMaxBelowMin {
+                    table: definition.name,
+                    min_shards: policy.min_shards,
+                    max_shards,
                 });
             }
         }

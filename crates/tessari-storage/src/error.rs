@@ -852,6 +852,21 @@ pub enum Error {
         merge_below: u64,
     },
 
+    /// `SPLIT AUTOMATICALLY` whose maximum shard count is below its minimum:
+    /// the balancing passes could never satisfy both (ADR-0113 D2).
+    #[error(
+        "table `{table}` would keep at least {min_shards} shards and at most \
+         {max_shards} — the maximum must not be below the minimum"
+    )]
+    AutoSplitMaxBelowMin {
+        /// The table.
+        table: String,
+        /// The minimum shard count.
+        min_shards: u64,
+        /// The maximum shard count.
+        max_shards: u64,
+    },
+
     /// `SPREAD` on a table whose identity is not generated as a UUID: the
     /// bucket is taken from a UUID's random part (ADR-0113 D1).
     #[error(
@@ -1354,6 +1369,7 @@ impl Error {
             | Self::SpreadNeedsGeneratedUuid { .. }
             | Self::AutoSplitOnAnUnsplitTable { .. }
             | Self::AutoSplitWouldOscillate { .. }
+            | Self::AutoSplitMaxBelowMin { .. }
             | Self::PartitionMismatch { .. }
             | Self::SplitPointsOutOfOrder { .. }
             | Self::StorageKindOnKind { .. }

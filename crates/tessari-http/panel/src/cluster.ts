@@ -238,7 +238,10 @@ export const cluster = (): Node =>
                 "Which statements change them",
                 note(
                     "ALTER TABLE … SPLIT AT and MERGE SHARD change the map in place, and " +
-                        "SPLIT AUTOMATICALLY lets the store's leader do it by size and load. " +
+                        "SPLIT AUTOMATICALLY lets the store's leader do it by size and " +
+                        "load: MIN and MAX SHARDS bound how few or many it may hold, and " +
+                        "a shard split for its load is cut where its recent traffic says " +
+                        "the mass sits. " +
                         "IDENTITY uuid SPREAD spreads new records over the shards, PARTITION BY " +
                         "gives each region its shard. ALTER REPLICA … LEADS moves a placement, " +
                         "LEADS NONE gives a range back to the store line, PREFERRED names the " +

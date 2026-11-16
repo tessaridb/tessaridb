@@ -586,7 +586,7 @@
               <p class="note"><strong>A split table's shards and placements change while it serves.</strong> Each change is a statement, and the store's leader can make some itself.</p>
               <details class="tucked">
                 <summary>Which statements change them</summary>
-                <p class="note">ALTER TABLE … SPLIT AT and MERGE SHARD change the map in place, and SPLIT AUTOMATICALLY lets the store's leader do it by size and load. IDENTITY uuid SPREAD spreads new records over the shards, PARTITION BY gives each region its shard. ALTER REPLICA … LEADS moves a placement, LEADS NONE gives a range back to the store line, PREFERRED names the candidate that should lead it, and DEFINE FAILOVER … BALANCE LEADERSHIPS evens out who leads what.</p>
+                <p class="note">ALTER TABLE … SPLIT AT and MERGE SHARD change the map in place, and SPLIT AUTOMATICALLY lets the store's leader do it by size and load: MIN and MAX SHARDS bound how few or many it may hold, and a shard split for its load is cut where its recent traffic says the mass sits. IDENTITY uuid SPREAD spreads new records over the shards, PARTITION BY gives each region its shard. ALTER REPLICA … LEADS moves a placement, LEADS NONE gives a range back to the store line, PREFERRED names the candidate that should lead it, and DEFINE FAILOVER … BALANCE LEADERSHIPS evens out who leads what.</p>
               </details>
               <p class="note"><strong>Lag is per follower, and leadership is what the log recorded.</strong></p>
               <details class="tucked">
