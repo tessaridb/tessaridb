@@ -23,6 +23,22 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.46.0 — 2026-11-17
+
+A store written by 0.45.0 opens under 0.46.0 unchanged.
+
+- **The relational wire protocol as a node surface.** A node started with
+  `--pg <host:port>` (or `TESSARIDB_PG`) answers the v3 wire protocol on the
+  store's own tables and users: psql, psycopg and tokio-postgres connect,
+  authenticate and read. Simple and extended query protocols, joins,
+  aggregates with `GROUP BY`/`HAVING`, `ORDER BY`, the subquery `IN`, wire
+  transaction blocks with `I`/`T`/`E`, and a binary format for the fixed
+  scalars. A connection names its tenancy in the startup database
+  (`<namespace>.<database>`) or lands in the default namespace
+  (`TESSARIDB_PG_NAMESPACE`, else `public`), and moves with
+  `SET search_path`. What the port does not speak refuses by name — the
+  defer list (catalog introspection heads it) ships with the release.
+
 ## 0.45.0 — 2026-11-16
 
 A store written by 0.44.0 opens under 0.45.0 unchanged (format 13).
