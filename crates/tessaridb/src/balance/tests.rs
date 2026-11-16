@@ -3,8 +3,11 @@
 use tessari_session::Outcome;
 use tessari_session::RunNow;
 use tessari_storage::Now;
-use tessari_storage::{Catalog, TableDefinition};
+use tessari_storage::{Catalog, SYSTEM_TABLES, TableDefinition};
+use tessari_types::Sequence;
 use tessari_types::{RecordId, Value};
+
+use std::time::Instant;
 
 use super::ShardSamples;
 use crate::Db;
@@ -534,6 +537,78 @@ fn a_policy_with_shard_count_bounds_round_trips_through_the_report_and_definitio
         .run_now(&format!("{DECLARED} {script}"))
         .unwrap();
     assert_eq!(table(&copy).auto_split, table(&db).auto_split);
+}
+
+#[test]
+fn every_automatic_act_is_one_record_in_the_log() {
+    let db = Db::in_memory().now().unwrap();
+    orders(
+        &db,
+        "SPLIT AUTOMATICALLY ABOVE 100 RECORDS MERGE BELOW 20 RECORDS",
+        400,
+    );
+    let store = db.store();
+    // Where every log stood before the balancing passes: the window the acts
+    // land in is everything committed after this.
+    let mut marks = Vec::new();
+    for log in store.logs().now().unwrap() {
+        marks.push((log, store.committed_tail(log).now().unwrap()));
+    }
+    let (split, merged) = passes(&db, &mut ShardSamples::default());
+    assert!(split >= 1, "the passes performed acts");
+    let tables = SYSTEM_TABLES
+        .iter()
+        .find(|(_, name)| *name == "TABLES")
+        .map(|(id, _)| *id)
+        .unwrap_or_else(|| unreachable!("the catalog's TABLES table is named"));
+    // Each act is exactly the catalog transaction an operator's ALTER would
+    // be: one record in the log, its mutation the TABLES row of the map.
+    let mut acts = 0_usize;
+    for (log, tail) in marks {
+        let from = Sequence::new(tail.get().saturating_add(1));
+        let Ok(records) = store.log_records(log, from, 1_000).now() else {
+            continue;
+        };
+        acts = acts.saturating_add(
+            records
+                .iter()
+                .filter(|(_, record)| {
+                    record
+                        .mutations()
+                        .iter()
+                        .any(|mutation| mutation.table == tables)
+                })
+                .count(),
+        );
+    }
+    assert_eq!(
+        acts,
+        split.saturating_add(merged),
+        "every automatic act is one auditable record in the log"
+    );
+}
+
+#[test]
+fn one_automatic_split_completes_within_the_stated_shape() {
+    // Stated scale: 10 000 records held by one shard, the bound set so the
+    // first pass performs exactly one split. The pass is timed whole — the
+    // bounded count, the split point, the commit — on an in-memory store.
+    let db = Db::in_memory().now().unwrap();
+    orders(
+        &db,
+        "SPLIT AUTOMATICALLY ABOVE 5000 RECORDS MERGE BELOW 100 RECORDS",
+        10_000,
+    );
+    let mut samples = ShardSamples::default();
+    let at = Instant::now();
+    let pass = db.balance_shards(&mut samples).now().unwrap();
+    let took = at.elapsed();
+    assert_eq!(pass.split, 1, "exactly one act at the stated scale");
+    println!("one automatic split at 10000 records, in-memory: {took:?}");
+    assert!(
+        took < std::time::Duration::from_millis(500),
+        "the ~500 ms shape at the stated scale: {took:?}"
+    );
 }
 
 #[test]
