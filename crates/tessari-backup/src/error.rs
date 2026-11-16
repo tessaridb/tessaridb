@@ -110,6 +110,23 @@ pub enum Error {
          fewer records than it says; a snapshot is restored whole or not at all"
     )]
     StateIncomplete,
+
+    /// An increment whose file ends before the position its section promises.
+    ///
+    /// A whole backup cut short is a prefix of history and restores what it
+    /// holds, saying so; an increment cut short would leave the chain believing
+    /// it reached where it never did, so it refuses rather than lands.
+    #[error(
+        "this increment stops at sequence {stopped} but its section promises \
+         the log through {promised} — an increment that does not reach where it \
+         promises refuses rather than leave the chain short"
+    )]
+    CutShort {
+        /// The last sequence the file actually holds.
+        stopped: u64,
+        /// The sequence its section promises.
+        promised: u64,
+    },
 }
 
 /// Result alias for this crate.

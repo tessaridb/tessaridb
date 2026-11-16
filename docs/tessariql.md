@@ -9106,7 +9106,12 @@ backup, and the one a store whose log is bounded can always take (ADR-0094; the
 snapshot is described below). `BACKUP LOG` answers with the store's **log**, as
 the file the backup reader and the verifier already read. `FROM` names a position
 in a log, so it means the log: the records at or after that sequence — and a base
-plus its increments answers what the original answers.
+plus its increments answers what the original answers. An increment is a
+continuation, not a summary: its file names the position it continues from and
+the position it reaches, and a file that stops short of where its section
+promises refuses by name — `CutShort` — rather than land a chain that believes
+it reached what it never did. A whole backup cut short is different: it is a
+prefix of history, and restores what it holds, saying so.
 
 **It is a statement because a serving node is the only thing that can take one.**
 This store is single-writer, so a node that is up holds the store and no second
