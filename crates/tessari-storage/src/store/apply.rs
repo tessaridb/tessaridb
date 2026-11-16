@@ -199,6 +199,20 @@ impl Store {
         .await
     }
 
+    /// Apply one shipped record at the position it was read from — the intake
+    /// half of a cross-cluster link, the same apply a follower replays a
+    /// collect by: an already-applied position is answered by the divergence
+    /// check rather than written twice, which is what makes a re-delivered
+    /// batch a no-op and at-least-once delivery idempotent at the apply.
+    pub(crate) async fn apply_shipped(
+        &self,
+        log: LogId,
+        at: Sequence,
+        record: &LogRecord,
+    ) -> Result<()> {
+        self.apply_at(log, at, record, Landing::Synced).await
+    }
+
     /// Apply one record into `home`, whatever named it.
     pub(super) async fn apply_at(
         &self,

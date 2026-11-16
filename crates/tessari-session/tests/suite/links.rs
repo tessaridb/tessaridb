@@ -20,7 +20,7 @@ use tessari_session::RunNow;
 use tessari_session::Session;
 use tessari_storage::{
     Catalog, ChannelSink, Envelope, Error, Links, Reach, ReplicationDefinition, Result, Sink,
-    Store, serve_once,
+    Store, intake, serve_once,
 };
 use tessari_types::Value;
 use tessari_types::{NamespaceId, Sequence};
@@ -383,5 +383,97 @@ fn the_direction_is_reported_and_alter_cannot_flip_it() {
         session
             .run_now("ALTER REPLICATION west TO 'cluster-c:9080';")
             .is_err()
+    );
+}
+
+#[test]
+fn a_link_end_to_end_records_land_and_the_copy_is_read_only() {
+    // The shape of the whole seam in one process: a source cluster serves its
+    // link, a target cluster applies what ships, and the two halves of the
+    // contract meet — the DDL crosses with the data, the copy is read-only by
+    // declaration on the target, and a write made after the link is up lands
+    // on the next pass.
+    let source = store_with_a_link();
+    let mut writing = Session::new(&source);
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+
+    let definition = definition(&source, "east");
+    let registry = source.links();
+    let mut sink = ChannelSink::new();
+    serve_once(&source, &definition, registry, &mut sink)
+        .now()
+        .unwrap();
+    let shipped = sink.drain();
+    assert!(!shipped.is_empty(), "the source shipped its database's log");
+
+    // The target starts empty: the schema crossed inside the stream, so the
+    // intake declares the namespace, the database, the table and the record
+    // in one application — a copy built by the log alone.
+    let target = Store::open(backend()).now().unwrap();
+    for (_, envelope) in &shipped {
+        intake(&target, envelope.clone()).now().unwrap();
+    }
+    let mut reading = Session::new(&target);
+    let outcomes = reading
+        .run_now("USE NAMESPACE prod DATABASE shop; SELECT * FROM orders;")
+        .unwrap();
+    let answer = outcomes.last().expect("the SELECT answers");
+    let records = match answer {
+        tessari_session::Outcome::Records { records, .. } => records,
+        other => panic!("the SELECT did not answer records: {other:?}"),
+    };
+    assert_eq!(
+        records.len(),
+        1,
+        "the record the source wrote is the record the copy holds"
+    );
+
+    // The target declares the inbound half, and the copy becomes read-only
+    // by declaration — the write the source took goes nowhere here.
+    reading
+        .run_now("DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop;")
+        .unwrap();
+    let refused = reading
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'sneaky' };")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("read-only"),
+        "the copy refuses its own divergent writes: {refused}"
+    );
+
+    // A write made on the source after the link is up ships on the next pass
+    // and lands — the stream is alive, and the at-least-once boundary holds:
+    // only what the target has not confirmed crosses.
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:3 = { item: 'map' };")
+        .unwrap();
+    let mut sink = ChannelSink::new();
+    serve_once(&source, &definition, registry, &mut sink)
+        .now()
+        .unwrap();
+    let more = sink.drain();
+    for (_, envelope) in &more {
+        intake(&target, envelope.clone()).now().unwrap();
+    }
+    assert!(
+        !more.is_empty(),
+        "the second pass shipped what the first had not seen"
+    );
+    let outcomes = reading
+        .run_now("USE NAMESPACE prod DATABASE shop; SELECT * FROM orders;")
+        .unwrap();
+    let answer = outcomes.last().expect("the SELECT answers");
+    let records = match answer {
+        tessari_session::Outcome::Records { records, .. } => records,
+        other => panic!("the SELECT did not answer records: {other:?}"),
+    };
+    assert_eq!(
+        records.len(),
+        2,
+        "the copy holds exactly what the source has written — the refused \
+         divergent write is not among them: {records:?}"
     );
 }

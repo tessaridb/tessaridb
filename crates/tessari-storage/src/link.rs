@@ -317,3 +317,28 @@ impl Replicated {
         Ok(())
     }
 }
+
+/// The replica side of a link: apply what a shipped envelope carries, at the
+/// positions it was read from. The records ride the ordinary apply a follower
+/// replays a collect by (D6), so the copy keeps the source's ids, the log the
+/// source wrote, and the persistence both already have — a position applied is
+/// the position persisted, and a batch applied twice is a no-op the second
+/// time, not a divergence.
+///
+/// Returns the position applied through — the confirmation the source's
+/// at-least-once boundary is drawn at.
+///
+/// # Errors
+///
+/// Returns an error when the batch cannot be applied — a gap where a position
+/// was pruned, a divergence from a record the copy already holds, or a
+/// substrate failure. The source keeps the batch and re-reads it when the
+/// refusal is retryable; a divergence is not, and is the operator's question.
+pub async fn intake(store: &Store, envelope: Envelope) -> Result<Sequence> {
+    let mut applied = envelope.from;
+    for (at, record) in envelope.records {
+        store.apply_shipped(envelope.log, at, &record).await?;
+        applied = at;
+    }
+    Ok(applied)
+}
