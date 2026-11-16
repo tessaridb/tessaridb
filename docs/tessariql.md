@@ -10225,6 +10225,8 @@ reversible:
 |---|---|
 | a follower catching up | its next collect is **refused**, naming the horizon, and the node copies its leader's state and follows again from there by itself — unless it leads a range of its own, when it reports `stranded` and is restored from a snapshot |
 | a backup taken as a replay | begins at the horizon instead of at the beginning |
+| a point-in-time restore | the reachable window is the horizon to the tail: an instant below the horizon is not recoverable, and a base taken at the horizon replays to any instant inside the window |
+| an incremental backup | `--from` below the horizon is refused, naming the floor, and a delta chain is only as restorable as its base plus every delta in it — a prune does not shorten a snapshot restore, because the state form needs no history |
 | a subscriber holding a position | the same refusal, for the same reason; a client re-reads what it follows and follows again from the current tail |
 | `INFO FOR HISTORY OF` | answers what survives, and stops reporting itself `complete` |
 
