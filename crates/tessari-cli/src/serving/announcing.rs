@@ -8,6 +8,7 @@ pub(super) fn announce(
     http: Option<&tessari_http::Node>,
     kafka: Option<&tessari_kafka::Node>,
     resp: Option<&tessari_resp::Node>,
+    pg: Option<&tessari_pg::Node>,
     clients: &crate::tls::Clients,
     peers: Option<&Peering>,
 ) -> Result<Vec<tessari_session::Listener>, String> {
@@ -31,6 +32,11 @@ pub(super) fn announce(
         let bound = node.address().map_err(|failure| failure.to_string())?;
         tracing::info!(address = %bound, "serving the resp protocol");
         listening.push(listener("resp", bound));
+    }
+    if let Some(node) = &pg {
+        let bound = node.address().map_err(|failure| failure.to_string())?;
+        tracing::info!(address = %bound, "serving the relational wire protocol");
+        listening.push(listener("pg", bound));
     }
     match &clients {
         crate::tls::Clients::Tls { cert, required, .. } => {

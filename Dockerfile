@@ -128,7 +128,7 @@ ENV TESSARIDB_STORE=/var/lib/tessaridb/store \
 #   TESSARIDB_RESP_SPACE        <namespace>.<database>.<space> a connection starts in
 
 VOLUME ["/var/lib/tessaridb"]
-EXPOSE 9080/tcp 8000/tcp 9092/tcp 6379/tcp
+EXPOSE 9080/tcp 8000/tcp 9092/tcp 6379/tcp 5432/tcp
 
 USER tessaridb
 WORKDIR /var/lib/tessaridb
@@ -155,4 +155,4 @@ LABEL org.opencontainers.image.title="TessariDB" \
       org.opencontainers.image.documentation="https://docs.tessaridb.com" \
       org.opencontainers.image.url="https://tessaridb.com" \
       org.opencontainers.image.licenses="BUSL-1.1" \
-      org.opencontainers.image.version="0.0.5-alpha"
+      org.opencontainers.image.version="0.46.0"

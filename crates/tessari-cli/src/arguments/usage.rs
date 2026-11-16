@@ -21,6 +21,12 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --resp-space <namespace>.<database>.<space> the space a RESP connection
                   starts in; default TESSARIDB_RESP_SPACE, else a connection
                   names one with TESSARIDB.USE
+  --pg <host:port> serve the store's tables over the relational wire protocol
+                  (the standard port is 5432); default TESSARIDB_PG, `off`
+                  or empty is not serving
+  --pg-namespace <namespace> the namespace a connection lands in when its
+                  startup names none; default TESSARIDB_PG_NAMESPACE, else
+                  the surface's own default (`public`)
   --backup-dir <folder> where a serving node writes `BACKUP … TO '<name>'`;
                   without it every `TO` is refused
   --unseal-for <duration> how long an unseal lasts before the store seals itself,
