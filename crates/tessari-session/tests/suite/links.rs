@@ -563,3 +563,96 @@ fn the_loop_honors_pause_between_passes_and_ships_again_on_resume() {
     .unwrap()
     .unwrap();
 }
+
+#[test]
+fn a_batch_applied_twice_leaves_the_copy_unchanged() {
+    // C2's injection proof: at-least-once means a batch CAN arrive twice, and
+    // idempotent application is what makes that a bookkeeping fact instead of
+    // a corruption. Applying a shipped envelope a second time is a no-op — the
+    // apply path answers an already-held position by its divergence check,
+    // and an identical record is not a divergence.
+    let source = store_with_a_link();
+    let mut writing = Session::new(&source);
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+    let definition = definition(&source, "east");
+    let mut sink = ChannelSink::new();
+    serve_once(&source, &definition, source.links(), &mut sink)
+        .now()
+        .unwrap();
+    let shipped = sink.drain();
+    let target = Store::open(backend()).now().unwrap();
+    for (_, envelope) in &shipped {
+        intake(&target, envelope.clone()).now().unwrap();
+        // The re-delivery: the same bytes, a second time.
+        intake(&target, envelope.clone()).now().unwrap();
+    }
+    let mut reading = Session::new(&target);
+    let outcomes = reading
+        .run_now("USE NAMESPACE prod DATABASE shop; SELECT * FROM orders;")
+        .unwrap();
+    let Some(tessari_session::Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("the SELECT did not answer records");
+    };
+    assert_eq!(
+        records.len(),
+        1,
+        "a batch applied twice landed once: {records:?}"
+    );
+}
+
+#[test]
+fn dropping_the_link_stops_the_stream_between_passes() {
+    let source = store_with_a_link();
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let seen = ChannelSink::new();
+    let task = std::future::poll_fn({
+        let source = source.clone();
+        let seen = seen.clone();
+        move |_| {
+            let mut serving = seen.clone();
+            let stop_rx = stop_rx.clone();
+            let source = source.clone();
+            std::task::Poll::Ready(tokio::spawn(async move {
+                serve_links(&source, &mut serving, stop_rx).await
+            }))
+        }
+    })
+    .now();
+    let mut session = Session::new(&source);
+    session
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+    let shipped = (0..250).any(|_| {
+        if !seen.drain().is_empty() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        false
+    });
+    assert!(shipped, "the loop shipped before the drop");
+
+    session.run_now("DROP REPLICATION east;").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    seen.drain();
+    session
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' };")
+        .unwrap();
+    let mut quiet = true;
+    for _ in 0..15 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        if !seen.drain().is_empty() {
+            quiet = false;
+            break;
+        }
+    }
+    assert!(quiet, "a dropped link stops shipping at the next pass");
+    (async {
+        stop_tx.send(true).ok();
+        task.await
+    })
+    .now()
+    .unwrap()
+    .unwrap();
+}
