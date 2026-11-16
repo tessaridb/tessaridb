@@ -283,6 +283,10 @@ impl Select<Sourced> {
             // a builder that named the leader by default would send every read
             // it assembles to the one node a cluster exists to take load off.
             answered_by: None,
+            // And no level. Same argument both axes at once: a level is a
+            // contract an author names for one read, and a builder that chose
+            // one by default would be promising it every read it assembles.
+            level: None,
             start_parameter: None,
             limit_parameter: None,
             span: BUILT,

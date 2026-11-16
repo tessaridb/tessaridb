@@ -51,6 +51,7 @@ mod composite_order;
 mod composite_range;
 mod conditionals;
 mod configuration;
+mod consistency;
 mod consumers;
 mod containment_index;
 mod coordinated;
