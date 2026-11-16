@@ -1142,7 +1142,18 @@ const TABLES: &[Table] = &[
         // (`copying::copy`) — neither reachable from a session or a route.
         // Re-classification trigger: any caller reachable from a session or a
         // route.
-        expected: 85,
+        //
+        // 21 since the outbound link: `Store::links` hands out the registry of
+        // what the far sides of this store's declared replications have
+        // confirmed — per link and log, positions and nothing else. Classified
+        // **exempt, and by the same argument as `running` beside it**: what the
+        // registry can say is what `INFO FOR REPLICATION` already answers to
+        // the caller the store admits, and what it can change is a
+        // process-local position it is the designed writer of — there is no
+        // store data, no record and no grant-reachable surface behind it, and
+        // the positions it holds are the lag half of an answer the language
+        // already gives.
+        expected: 86,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1405,7 +1416,9 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 175 since `Store::restore_topic_entries` and `Store::finish_topics`
     // (G079 W8b-2), classified above.
-    assert_eq!(total, 175, "the counted tables no longer sum to 175");
+    //
+    // 176 since `Store::links`, classified above.
+    assert_eq!(total, 176, "the counted tables no longer sum to 176");
 }
 
 /// Every `.rs` file under a directory.

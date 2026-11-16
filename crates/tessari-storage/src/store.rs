@@ -202,6 +202,10 @@ pub struct Store {
     /// answering `INFO FOR KAFKA CONSUMER` and the thread doing the consuming must be
     /// looking at one registry, not at two that agree until they do not.
     running: Arc<crate::running::Running>,
+    /// What the far sides of this store's outbound links have confirmed, per
+    /// link and log. In memory for the reason `followers` is: a live
+    /// relationship, never a persisted claim about one.
+    links: Arc<crate::link::Links>,
     /// Whether this process can open what its vaults hold.
     ///
     /// Shared for the same reason as the two registries above, and the

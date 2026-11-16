@@ -395,10 +395,40 @@ impl Session<'_> {
                 span,
             });
         };
-        Ok(BTreeMap::from([(
-            "declared".to_owned(),
-            described_replication(&replication, &Catalog::new(transaction)).await?,
-        )]))
+        // Two groups rather than one flat object, for `INFO FOR NODE`'s reason:
+        // the declaration follows a backup, and what the far side has confirmed
+        // does not — it dies with the process and is empty after a restart
+        // until the link serves again.
+        let catalog = Catalog::new(transaction);
+        let confirmed: Vec<Value> = {
+            let mut rows = Vec::new();
+            for (log, at) in self.store.links().floors(&name.text) {
+                rows.push(Value::Object(BTreeMap::from([
+                    (
+                        "log".to_owned(),
+                        Value::from(super::spelled_reach(log.home, &catalog).await?.as_str()),
+                    ),
+                    (
+                        "confirmed".to_owned(),
+                        Value::from(i64::try_from(at.get()).unwrap_or(i64::MAX)),
+                    ),
+                ])));
+            }
+            rows
+        };
+        Ok(BTreeMap::from([
+            (
+                "declared".to_owned(),
+                described_replication(&replication, &catalog).await?,
+            ),
+            (
+                "served".to_owned(),
+                Value::Object(BTreeMap::from([(
+                    "confirmed".to_owned(),
+                    Value::Array(confirmed),
+                )])),
+            ),
+        ]))
     }
 
     pub(super) async fn info_consumers(

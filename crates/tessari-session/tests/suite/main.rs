@@ -109,6 +109,7 @@ mod key_routes;
 mod key_value;
 mod kinds;
 mod latest;
+mod links;
 mod management;
 mod materialized_groups;
 mod materialized_views;

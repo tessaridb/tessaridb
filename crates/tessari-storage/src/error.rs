@@ -1200,6 +1200,19 @@ pub enum Error {
         table: String,
     },
 
+    /// The far side of a cross-cluster link refused or did not answer a batch.
+    ///
+    /// Unavailable rather than a permanent refusal, because it is the only
+    /// reading that is always true: the batch this side holds is unchanged,
+    /// and shipping it again a moment from now may well succeed. The link
+    /// driver paces its retries around this — a batch is kept and re-read
+    /// until the far side confirms it durably applied.
+    #[error("the far side of the link refused the batch: {reason}")]
+    LinkRefused {
+        /// What the far side said, or why it could not be asked.
+        reason: String,
+    },
+
     /// A failure from the key-value substrate.
     #[error(transparent)]
     Kv(#[from] tessari_kv::Error),
@@ -1279,7 +1292,8 @@ impl Error {
             Self::LeaseSpent { .. }
             | Self::NoLeadershipYet
             | Self::LeadershipUnconfirmed { .. }
-            | Self::WriteIsElsewhere { .. } => ErrorCategory::Unavailable,
+            | Self::WriteIsElsewhere { .. }
+            | Self::LinkRefused { .. } => ErrorCategory::Unavailable,
             Self::LogGap { .. }
             | Self::NameTaken { .. }
             | Self::NoSuchParent { .. }

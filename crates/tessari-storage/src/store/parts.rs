@@ -55,6 +55,16 @@ impl Store {
         &self.running
     }
 
+    /// What the far sides of this store's outbound links have confirmed — the
+    /// registry the link driver advances and `INFO FOR REPLICATION` reports.
+    /// Nothing here is persisted: confirmation is a fact about a live
+    /// relationship, and a restored process holds no claims about one it has
+    /// not had.
+    #[must_use]
+    pub fn links(&self) -> &Arc<crate::link::Links> {
+        &self.links
+    }
+
     /// This store's sign-in failure counts, which every way of trying a
     /// password or a vault passphrase asks before it spends a derivation.
     #[must_use]
