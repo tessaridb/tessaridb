@@ -875,6 +875,40 @@ fn an_incremental_backup_plus_its_base_is_the_whole_store() {
 }
 
 #[test]
+fn an_increment_holds_only_the_delta_and_is_a_fraction_of_the_full_backup() {
+    // The size half of the incremental claim (C1): a backup taken after the
+    // first carries only what moved. The records half — that base + increment
+    // is the whole store — is the test above; here the delta's bytes are
+    // asserted against the full backup's, an order of magnitude apart.
+    let (_, held, base) = original();
+    {
+        let mut session = signed_in(&held);
+        session
+            .run_now(
+                "CREATE people:9 = { name: 'later', email: 'z@x' };\n\
+                 CREATE people:10 = { name: 'last', email: 'y@x' };",
+            )
+            .unwrap();
+    }
+    let (home, base_tail) = moved_since(&base, &held);
+    let mut increment = Vec::new();
+    tessari_backup::write_from(
+        &held,
+        &mut increment,
+        home,
+        tessari_types::Sequence::new(base_tail.get() + 1),
+    )
+    .now()
+    .unwrap();
+    assert!(
+        increment.len().saturating_mul(10) < base.len(),
+        "the delta is a fraction of the full backup: increment {} bytes, base {} bytes",
+        increment.len(),
+        base.len()
+    );
+}
+
+#[test]
 fn an_increment_refuses_a_store_that_is_not_where_it_continues_from() {
     // The header says what the file continues from, so this is checkable rather
     // than a filename's promise.
