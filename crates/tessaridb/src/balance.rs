@@ -19,7 +19,9 @@
 //! has a log of its own or shares its database's. A record count kept beside
 //! each write was rejected: records are stamped with the shard they were
 //! written into, so after a split the parent would keep counting what its
-//! children now hold.
+//! children now hold. The pass also keeps the keys written into each shard —
+//! bounded, like the walk — because a shard split for its load is split where
+//! the middle write of that sample hit, not at the middle of its records.
 //!
 //! # How much it does
 //!
@@ -50,6 +52,12 @@ const PAGE: usize = 1_000;
 /// rate is at least what was read, which is all a bound needs.
 const LOG_READ: usize = 100_000;
 
+/// How many written keys one pass keeps per shard as the split-point sample:
+/// the median of the window's traffic, bounded like the walk itself. The
+/// first thousand of the window is enough — a shard out-writing the cap in
+/// one pass interval has a traffic median the first thousand settles too.
+const SAMPLE: usize = 1_000;
+
 /// Where each log stood at the last pass, to count the writes since.
 ///
 /// Owned by the caller's loop rather than by the node: one balancer runs per
@@ -61,7 +69,18 @@ pub struct ShardSamples {
 }
 
 /// Writes a second into each shard since the last pass; `None` on the first.
-type Rates = Option<BTreeMap<(TableId, ShardId), u64>>;
+type Rates = Option<BTreeMap<(TableId, ShardId), Traffic>>;
+
+/// The writes counted into one shard over the window between passes: how
+/// many a second they came to, and the keys they hit — the sample the
+/// traffic-balancing split point is read from.
+#[derive(Debug, Default)]
+struct Traffic {
+    /// Writes a second over the window.
+    per_second: u64,
+    /// The written record keys, in log order, at most [`SAMPLE`].
+    keys: Vec<RecordId>,
+}
 
 /// What one pass did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -83,6 +102,8 @@ struct Measured {
     complete: bool,
     /// Writes a second since the last pass, once there was one.
     writes_per_second: Option<u64>,
+    /// The keys written into it since the last pass — the traffic sample.
+    traffic: Vec<RecordId>,
 }
 
 impl Db {
@@ -141,18 +162,32 @@ impl Db {
                         table.name
                     ));
                     None
-                } else {
+                } else if shard.records > above {
                     // The first id of the right half: half the bound into a
-                    // shard that is too big, half its records into one that
-                    // is too busy.
-                    let into = if shard.records > above {
-                        above / 2
-                    } else {
-                        shard.records / 2
-                    };
+                    // shard that is too big.
+                    let into = above / 2;
                     self.nth_record(&table, map, shard.id, into.max(1))
                         .await?
                         .map(Act::Split)
+                } else {
+                    // Split where the traffic says the mass sits, so both
+                    // halves serve about half the measured writes; a thin
+                    // sample — fewer than two keys — says nothing the record
+                    // median does not, and falls back to it.
+                    let traffic_point = shard
+                        .traffic
+                        .get(shard.traffic.len() / 2)
+                        .filter(|_| shard.traffic.len() >= 2)
+                        .cloned();
+                    match traffic_point {
+                        Some(point) => Some(Act::Split(point)),
+                        None => {
+                            let into = shard.records / 2;
+                            self.nth_record(&table, map, shard.id, into.max(1))
+                                .await?
+                                .map(Act::Split)
+                        }
+                    }
                 }
             } else {
                 let below = usize::try_from(policy.merge_below).unwrap_or(usize::MAX);
@@ -238,7 +273,7 @@ impl Db {
     ) -> Result<Rates> {
         let store = self.store();
         let now = Instant::now();
-        let mut counted: BTreeMap<(TableId, ShardId), u64> = BTreeMap::new();
+        let mut counted: BTreeMap<(TableId, ShardId), Traffic> = BTreeMap::new();
         for log in store.logs().await? {
             let holds = |table: &TableDefinition| {
                 log.home
@@ -267,8 +302,11 @@ impl Db {
             for (_, record) in records {
                 for mutation in record.mutations() {
                     if let Some(shard) = mutation.shard {
-                        let held = counted.entry((mutation.table, shard)).or_insert(0);
-                        *held = held.saturating_add(1);
+                        let held = counted.entry((mutation.table, shard)).or_default();
+                        held.per_second = held.per_second.saturating_add(1);
+                        if held.keys.len() < SAMPLE {
+                            held.keys.push(mutation.id.clone());
+                        }
                     }
                 }
             }
@@ -280,12 +318,13 @@ impl Db {
         Ok(Some(
             counted
                 .into_iter()
-                .map(|(shard, writes)| {
-                    let rate = u128::from(writes)
+                .map(|(shard, mut traffic)| {
+                    let rate = u128::from(traffic.per_second)
                         .saturating_mul(1_000)
                         .checked_div(elapsed)
                         .unwrap_or(u128::MAX);
-                    (shard, u64::try_from(rate).unwrap_or(u64::MAX))
+                    traffic.per_second = u64::try_from(rate).unwrap_or(u64::MAX);
+                    (shard, traffic)
                 })
                 .collect(),
         ))
@@ -304,13 +343,15 @@ impl Db {
         for span in map.spans() {
             let (records, complete) =
                 count(&reading, table, &span, above.saturating_add(1)).await?;
+            let traffic = rates
+                .as_ref()
+                .and_then(|rates| rates.get(&(table.id, span.id)));
             measured.push(Measured {
                 id: span.id,
                 records,
                 complete,
-                writes_per_second: rates
-                    .as_ref()
-                    .map(|rates| rates.get(&(table.id, span.id)).copied().unwrap_or(0)),
+                writes_per_second: traffic.map(|held| held.per_second),
+                traffic: traffic.map(|held| held.keys.clone()).unwrap_or_default(),
             });
         }
         reading.rollback();

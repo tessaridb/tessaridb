@@ -2578,9 +2578,13 @@ ALTER TABLE events SPLIT MANUALLY;
 
 A split table can ask the cluster to keep its shards within bounds. The node
 leading the store line looks every few seconds: a shard holding more records
-than `ABOVE`, or taking more writes a second than `OR … WRITES PER SECOND`, is
-split — at the record half the bound into it, so a much larger shard splits again
-on later passes — and two neighbouring shards holding fewer than `MERGE BELOW`
+than `ABOVE` is split at the record half the bound into it, so a much larger
+shard splits again on later passes; a shard taking more writes a second than
+`OR … WRITES PER SECOND` is split where the middle write of its recent traffic
+hit — the pass samples the keys written into each shard, bounded, and a sample
+of fewer than two keys falls back to the record median — so both halves serve
+about half the measured load; and two neighbouring shards holding fewer than
+`MERGE BELOW`
 together are merged. At most one change per table per pass, and each is exactly
 the `ALTER TABLE … SPLIT AT` or `MERGE SHARD` an operator would type: it is in
 the log, every node applies it, a feed over the table ends with the usual refusal,
