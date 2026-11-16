@@ -224,7 +224,7 @@ impl Needs {
             // different key. Named here rather than left to the `Info`
             // catch-all for the reason the consumer arm below states.
             StatementKind::Info {
-                subject: InfoSubject::Replication(_),
+                subject: InfoSubject::Replication(_) | InfoSubject::Replications,
             } => Self::OPERATE_STORE,
             // Configuring the node is administering it. Not `Write`, which is
             // where the other `DEFINE`s sit: an `editor` is expected to shape

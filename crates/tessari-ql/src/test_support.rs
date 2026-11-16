@@ -212,7 +212,8 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Users
             | InfoSubject::Node
             | InfoSubject::Seal(None)
-            | InfoSubject::Consumers => {}
+            | InfoSubject::Consumers
+            | InfoSubject::Replications => {}
             InfoSubject::Seal(Some(vault)) => erase_name(vault),
             InfoSubject::Table(table) | InfoSubject::Access(table) => erase_table(table),
             InfoSubject::Recipients(target)

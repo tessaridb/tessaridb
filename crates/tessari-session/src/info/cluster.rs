@@ -372,6 +372,47 @@ impl Session<'_> {
     /// The counters are left to `INFO FOR KAFKA CONSUMER <name>`: this is the listing
     /// an operator reads to find out *which* consumer to ask about, and a table
     /// of every partition position would bury that.
+    /// `INFO FOR REPLICATIONS` — every declared link: the name, the
+    /// direction, the endpoint, and whether the stream is paused.
+    ///
+    /// Needs `OPERATE_STORE`, for [`Self::info_replication`]'s reason. The
+    /// plural exists for the manager that has no name to look up yet — the
+    /// console above all — and answers in name order, the order two nodes
+    /// comparing what they think the cluster says can compare in.
+    pub(super) async fn info_replications(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<BTreeMap<String, Value>> {
+        let catalog = Catalog::new(transaction);
+        let mut rows = Vec::new();
+        for replication in catalog.replications().await? {
+            let mut row = BTreeMap::from([
+                ("name".to_owned(), Value::from(replication.name.as_str())),
+                (
+                    "direction".to_owned(),
+                    Value::from(if replication.inbound {
+                        "inbound"
+                    } else {
+                        "outbound"
+                    }),
+                ),
+                (
+                    "endpoint".to_owned(),
+                    Value::from(replication.endpoint.as_str()),
+                ),
+                ("paused".to_owned(), Value::Bool(replication.paused)),
+            ]);
+            if let Some(remote) = &replication.remote {
+                row.insert("remote".to_owned(), Value::from(remote.as_str()));
+            }
+            rows.push(Value::Object(row));
+        }
+        Ok(BTreeMap::from([(
+            "replications".to_owned(),
+            Value::Array(rows),
+        )]))
+    }
+
     /// `INFO FOR REPLICATION east` — one outbound replication's declaration.
     ///
     /// Needs `OPERATE_STORE`, decided by `Needs::of` before this runs: the row

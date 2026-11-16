@@ -81,6 +81,9 @@ impl Parser<'_> {
             // The cross-cluster row is asked about by the same operator
             // who declares it; read whole so the `REPLICA` INFO word above (for
             // the peer rows an `INFO FOR NODE` lists) is never half-eaten.
+            // Plural first, as with `USERS` and the KAFKA pair, so this arm
+            // never half-eats the singular.
+            _ if self.eat_word("replications") => InfoSubject::Replications,
             _ if self.eat_word("replication") => InfoSubject::Replication(self.name()?),
             // Plural first, as with `USERS` above, so that reading this arm in
             // order tells you which of the two a bare word reaches.

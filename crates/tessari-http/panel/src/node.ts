@@ -122,6 +122,33 @@ export async function readNode(): Promise<void> {
       endpoints: all["endpoints"],
       id: all["id"],
     });
+    // Replication links are the cluster's other topology, and they read the
+    // same way. A refusal — a signed-in user who may not operate the store —
+    // leaves the part quiet rather than failing the tab: the map above is
+    // the cluster tab's subject, and a link list is not worth an error over.
+    try {
+      const links = held(await valueOf("INFO FOR REPLICATIONS;", "Node")) ?? {};
+      const rows = Array.isArray(links["replications"]) ? links["replications"] : [];
+      if (rows.length === 0) {
+        state("replication-status", "empty", "No replication links — this cluster ships to nobody and receives from nobody.");
+      } else {
+        settled("replication-status");
+        facts("replication-facts", {
+          links: rows
+            .map((row) => {
+              const link = (row ?? {}) as Record<string, unknown>;
+              const name = typeof link["name"] === "string" ? link["name"] : "?";
+              const direction = typeof link["direction"] === "string" ? link["direction"] : "?";
+              const endpoint = typeof link["endpoint"] === "string" ? link["endpoint"] : "?";
+              const paused = link["paused"] === true ? " · paused" : "";
+              return `${name} · ${direction} · ${endpoint}${paused}`;
+            })
+            .join("\n"),
+        });
+      }
+    } catch {
+      state("replication-status", "empty", "Replication links need the store's operator to read them.");
+    }
     // A node with no peers drew one card and said nothing, so the map read the
     // same whether this node is alone or the map simply had nothing to add.
     // They are different situations with different next actions, and the four

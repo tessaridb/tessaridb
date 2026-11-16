@@ -656,3 +656,44 @@ fn dropping_the_link_stops_the_stream_between_passes() {
     .unwrap()
     .unwrap();
 }
+
+#[test]
+fn the_plural_lists_every_link_for_the_manager_that_has_no_name_yet() {
+    // The console asks before it has a name to look up. Name order, so two
+    // nodes comparing what they think the cluster says can compare in it.
+    let store = store_with_a_link();
+    let mut session = Session::new(&store);
+    session
+        .run_now("DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop;")
+        .unwrap();
+    let outcomes = session.run_now("INFO FOR REPLICATIONS;").unwrap();
+    let Some(tessari_session::Outcome::Value(Value::Object(report))) = outcomes.into_iter().next()
+    else {
+        panic!("INFO FOR REPLICATIONS did not answer with an object");
+    };
+    let Some(Value::Array(rows)) = report.get("replications") else {
+        panic!("no replications list: {report:?}");
+    };
+    let names: Vec<String> = rows
+        .iter()
+        .filter_map(|row| match row {
+            Value::Object(fields) => match fields.get("name") {
+                Some(Value::String(name)) => Some(name.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, vec!["east".to_owned(), "west".to_owned()]);
+    let directions: Vec<&str> = rows
+        .iter()
+        .filter_map(|row| match row {
+            Value::Object(fields) => match fields.get("direction") {
+                Some(Value::String(held)) => Some(held.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(directions, vec!["outbound", "inbound"]);
+}

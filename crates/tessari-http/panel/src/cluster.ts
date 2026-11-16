@@ -103,9 +103,29 @@ export const cluster = (): Node =>
                         "<range> or LEADS NONE, run on the store's leader from the query tab.",
                 ),
             ),
+            // Replication links live here because they are topology, the way
+            // peers are: what this cluster ships to another, and what it
+            // receives, read from the catalog the console already speaks to.
+            el("div", { id: "replication-part" }, status("replication-status")),
+            // Filled by the read, like `cluster-facts` above: an empty
+            // container here, a `facts()` call there.
+            el("div", { id: "replication-facts" }),
             behindDisclosure(
                 "The answer this was drawn from",
                 answer("cluster-facts", "small"),
+            ),
+            behindDisclosure(
+                "What a replication link is",
+                note(
+                    "One named database, shipped to another cluster, declared " +
+                        "on each side. TO names the outbound half — this cluster " +
+                        "serves the link; FROM names the receiving half, and the " +
+                        "copy is read-only by declaration: a write into it is " +
+                        "refused with a named class. The stream is at-least-once " +
+                        "with idempotent application, and ALTER REPLICATION … " +
+                        "PAUSED | RESUMED holds and restarts it — the statement " +
+                        "is the control, run from the query tab.",
+                ),
             ),
         ),
         dialog(

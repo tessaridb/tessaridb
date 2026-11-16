@@ -264,4 +264,13 @@ pub enum InfoSubject {
     /// The token's digest is never the answer — a token is shown once, at
     /// creation, the way a join token is (ADR-0108 D9).
     Replication(Name),
+    /// `INFO FOR REPLICATIONS` — every declared link, its direction and
+    /// whether the stream is paused.
+    ///
+    /// The plural exists for the same reason `INFO FOR KAFKA CONSUMERS` does:
+    /// a manager — the console above all — has a name to ask before it has a
+    /// name to look up. Refuses rather than filters, for
+    /// [`InfoSubject::Replication`]'s reason: an endpoint toward an external
+    /// cluster has no smaller truthful form.
+    Replications,
 }

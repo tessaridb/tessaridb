@@ -403,9 +403,15 @@
                 </div>
                 <p class="note">Handing the store's leadership over has no statement yet, so no control is offered for it. A placed range moves with ALTER REPLICA &lt;peer&gt; LEADS &lt;range&gt; or LEADS NONE, run on the store's leader from the query tab.</p>
               </div>
+              <div id="replication-part"><span id="replication-status" class="status" role="status"></span></div>
+              <div id="replication-facts"></div>
               <details class="tucked">
                 <summary>The answer this was drawn from</summary>
                 <div id="cluster-facts" class="answer small" aria-live="polite"></div>
+              </details>
+              <details class="tucked">
+                <summary>What a replication link is</summary>
+                <p class="note">One named database, shipped to another cluster, declared on each side. TO names the outbound half — this cluster serves the link; FROM names the receiving half, and the copy is read-only by declaration: a write into it is refused with a named class. The stream is at-least-once with idempotent application, and ALTER REPLICATION … PAUSED | RESUMED holds and restarts it — the statement is the control, run from the query tab.</p>
               </details>
             </div>
             <dialog id="form-dialog" class="dialog" aria-labelledby="form-dialog-title">

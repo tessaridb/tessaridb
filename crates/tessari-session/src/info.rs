@@ -133,6 +133,7 @@ impl Session<'_> {
             InfoSubject::Replication(name) => {
                 self.info_replication(transaction, name, span).await?
             }
+            InfoSubject::Replications => self.info_replications(transaction).await?,
         };
         Ok(Outcome::Value(Value::Object(report)))
     }

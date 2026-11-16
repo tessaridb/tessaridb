@@ -23,6 +23,27 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.42.0 — 2026-11-16
+
+A store written by 0.41.0 or any earlier release opens under 0.42.0; a 0.42.0 store
+is refused by an older build at open (format 13).
+
+- **Cross-cluster replication, declared in the language.** `DEFINE REPLICATION
+  east TO 'cluster-b:9080' FOR DATABASE prod.shop [AS 'warehouse']` ships one
+  named database's log to another cluster; `FROM` declares the receiving half,
+  and the copy is read-only by declaration — a write into it is refused with a
+  named class (`WritesToAReplica`), a `VERIFY` rehearses the refusal, and
+  `DROP REPLICATION` lifts it. The stream is at-least-once with idempotent
+  application: a batch the far side has not confirmed is re-read verbatim, and
+  a batch applied twice lands once. `ALTER REPLICATION … PAUSED | RESUMED`
+  holds and restarts the stream at the next pass; `CREATE LINK TOKEN FOR
+  REPLICATION … EXPIRES …` binds the pair the way a join token does; `INFO FOR
+  REPLICATION` reports the declaration, the direction, and the confirmed
+  positions. The link's own definition never crosses the seam — it is this
+  cluster's topology, the way a peer row is.
+- Format 13: the catalog gains the `REPLICATIONS` system table.
+- **1737 conformance cases** define the language and run in the build.
+
 ## 0.41.0 — 2026-11-16
 
 A store written by 0.40.0 or any earlier release opens under 0.41.0; a 0.41.0 store
