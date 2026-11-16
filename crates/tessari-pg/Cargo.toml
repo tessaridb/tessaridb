@@ -34,6 +34,8 @@ surface = ["dep:tessaridb", "dep:tessari-serve", "dep:tessari-types", "dep:rust_
 [dev-dependencies]
 # A certificate minted per test for the TLS rows (the serve crate's test-support).
 tessari-serve = { workspace = true, features = ["test-support"] }
+# The conformance matrix: the dialect's own Rust driver, in the suite.
+tokio-postgres = { workspace = true, features = ["runtime"] }
 # The surface is served in its tests on a runtime the test owns.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "test-util"] }
 

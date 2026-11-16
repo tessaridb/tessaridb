@@ -171,3 +171,23 @@ async fn a_type_outside_the_subset_refuses_by_name() {
     let (kind, body) = raw(&mut client).await;
     assert_eq!(kind, b'E', "the refusal names the type: {body:?}");
 }
+
+#[tokio::test]
+async fn an_sslrequest_without_a_certificate_answers_n_and_the_session_proceeds() {
+    let (address, _stop, _db) = serving_with(super::SETUP).await;
+    let mut client = Client::to(&address).await;
+    // SSLRequest: len 8, code 80877103.
+    let mut ssl = Vec::new();
+    ssl.extend_from_slice(&8_u32.to_be_bytes());
+    ssl.extend_from_slice(&80877103_u32.to_be_bytes());
+    client.write(&ssl).await;
+    let answer = client.read(1).await;
+    assert_eq!(answer, vec![b'N'], "no certificate: the dialect continues");
+    let seen = client.start(None, "app.main", None).await;
+    assert!(
+        seen.iter().any(|m| matches!(m, Seen::Ready(b'I'))),
+        "startup after the N answers: {seen:?}"
+    );
+    let seen = client.query("SELECT name FROM orders LIMIT 1").await;
+    assert_eq!(super::rows(&seen), vec![vec![Some("first".to_owned())]]);
+}

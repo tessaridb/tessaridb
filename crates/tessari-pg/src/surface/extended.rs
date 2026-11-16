@@ -481,18 +481,14 @@ impl Kitchen {
 }
 
 /// The parameter types Describe(statement) answers: what the Parse declared,
-/// the unspecified ones read as text, one per placeholder the query used.
+/// the unspecified ones left unspecified (zero) — the port does not invent a
+/// type it never resolved, and the dialect's clients read zero as "use your
+/// own inference", exactly as the protocol intends.
 fn described_types(prepared: &Prepared) -> Vec<u32> {
     let slots = prepared.translated.slots.len();
     let mut oids = Vec::with_capacity(slots);
     for index in 0..slots {
-        oids.push(
-            prepared
-                .types
-                .get(index)
-                .copied()
-                .unwrap_or(types::oid::TEXT),
-        );
+        oids.push(prepared.types.get(index).copied().unwrap_or(0));
     }
     oids
 }
