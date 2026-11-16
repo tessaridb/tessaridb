@@ -204,6 +204,26 @@ pub enum Note {
         /// The names it does not declare, in the order the store sorts them.
         fields: Vec<String>,
     },
+    /// The answer came from a copy that is not the leader's own, and this says
+    /// how old that copy was.
+    ///
+    /// Written only when the read named a freshness bound and was answered
+    /// locally by a node holding a follower copy — the one shape in which "how
+    /// stale is this answer" has an answer the store can state. The bound is
+    /// the guarantee: a copy beyond it is never asked. This note is the
+    /// information, so a caller that accepted a bounded answer can read what
+    /// it actually got instead of measuring it. A writable node answers as of
+    /// now, and a read that named no bound accepted the default contract, so
+    /// neither carries this note — and a note on every answer is a note nobody
+    /// reads.
+    ///
+    /// The age is time since the copy was last **level** with the leader (the
+    /// same lower bound `current_as_of` documents): the copy's data may be
+    /// older, never newer, than the number stated.
+    AnsweredAsOf {
+        /// How old the answering copy was when the read was answered.
+        age: tessari_types::Duration,
+    },
 }
 
 impl Note {
@@ -224,6 +244,7 @@ impl Note {
             Self::NeedsRebuild { .. } => "needs-rebuild",
             Self::Estimated { .. } => "estimated",
             Self::UndeclaredField { .. } => "undeclared-field",
+            Self::AnsweredAsOf { .. } => "answered-as-of",
             Self::Columnar { .. } => "columnar",
         }
     }
@@ -343,6 +364,12 @@ impl Note {
                     if fields.len() == 1 { "it" } else { "them" },
                 )
             }
+            Self::AnsweredAsOf { age } => format!(
+                "the copy that answered this read was last level with the leader {} ago, \
+                 so the answer may be that far behind; the bound the statement named is \
+                 the guarantee, and this is the copy's actual age",
+                age.to_literal(),
+            ),
             Self::Columnar {
                 chunks_examined,
                 chunks_skipped,

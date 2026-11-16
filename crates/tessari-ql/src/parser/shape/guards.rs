@@ -1,7 +1,9 @@
 //! The clauses that bound or guard a read: USING, TIMEOUT, STALENESS, ANSWERED BY, VERSION, bounds and depth.
 
 use super::super::Parser;
-use crate::ast::{Admitted, AnsweredBy, Hop, SetBound, Staleness, Timeout, Using, Version};
+use crate::ast::{
+    Admitted, AnsweredBy, Hop, Level, LevelKind, SetBound, Staleness, Timeout, Using, Version,
+};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Token};
 use tessari_types::Number;
@@ -174,6 +176,51 @@ impl Parser<'_> {
         let at = at.to(self.span_here());
         self.advance();
         Ok(Some(AnsweredBy { admits, span: at }))
+    }
+
+    /// `LEADER`, `SNAPSHOT` or `STALE WITHIN <span>`, when one is there.
+    ///
+    /// The read's consistency level: one word at the statement's tail, parsed
+    /// last of all the read clauses the way the level qualifies the whole read
+    /// rather than any one clause. Contextual like `staleness`: the words open
+    /// a level only in a level's position, so a field called `leader` reads as
+    /// a name everywhere a name can sit.
+    ///
+    /// A span of zero or less is refused for `stale` with the `staleness`
+    /// clause's own reason and error: a tolerance that admits no node at all,
+    /// including the one being asked, is a mistake in the statement, and the
+    /// statement is where it should be said.
+    pub(crate) fn level(&mut self) -> Result<Option<Level>> {
+        let kind = if self.eat_word("leader") {
+            LevelKind::Leader
+        } else if self.eat_word("snapshot") {
+            LevelKind::Snapshot
+        } else if self.eat_word("stale") {
+            if !self.eat_word("within") {
+                return Err(Error::StaleLevelNeedsWithin {
+                    span: self.span_behind(),
+                });
+            }
+            let expected = "a duration, like `30s` or `5m`";
+            let Some(Token::Duration(within)) = self.peek() else {
+                return Err(self.error_here(expected));
+            };
+            let within = *within;
+            self.advance();
+            if within.seconds() < 0 || (within.seconds() == 0 && within.nanos() == 0) {
+                return Err(Error::EmptyStaleness {
+                    written: within.to_literal(),
+                    span: self.span_behind(),
+                });
+            }
+            LevelKind::Stale { within }
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(Level {
+            kind,
+            span: self.span_behind(),
+        }))
     }
 
     /// `VERSION 42`, when it is there.

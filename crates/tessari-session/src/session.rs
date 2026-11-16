@@ -407,3 +407,25 @@ const fn read_version(kind: &StatementKind) -> Option<tessari_ql::Version> {
         _ => None,
     }
 }
+
+/// Whether a statement names the snapshot level.
+///
+/// Only a read can: the level says which state answers the question, like
+/// `VERSION` does. A statement naming it promises one point in history for the
+/// whole read, and where the read would have to gather a part from another
+/// node's present that promise cannot be kept — so the gatherer is withheld
+/// for the statement, exactly as it is for `VERSION` and inside a transaction.
+const fn read_snapshot(kind: &StatementKind) -> bool {
+    match kind {
+        StatementKind::Select(select) => {
+            matches!(
+                select.level,
+                Some(tessari_ql::Level {
+                    kind: tessari_ql::LevelKind::Snapshot,
+                    ..
+                })
+            )
+        }
+        _ => false,
+    }
+}

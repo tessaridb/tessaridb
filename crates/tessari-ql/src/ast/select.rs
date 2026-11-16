@@ -219,6 +219,12 @@ pub struct Select {
     /// copy may answer. See [`AnsweredBy`] for why this is a second axis rather
     /// than a tighter [`Staleness`].
     pub answered_by: Option<AnsweredBy>,
+    /// The consistency level the read names for itself.
+    ///
+    /// `None` is the ordinary case: the read names no level and is answered
+    /// under the default contract. See [`Level`] for what naming one adds over
+    /// the two axes it desugars onto.
+    pub level: Option<Level>,
     /// Where the statement sits in the source.
     pub span: Span,
 }
@@ -305,6 +311,65 @@ pub enum Admitted {
     AnyCopy,
     /// Only the node that decides writes for these records may answer.
     Leader,
+}
+
+/// The consistency level a read names for itself.
+///
+/// # What naming a level adds
+///
+/// A level is the two read axes — authority and freshness — named together as
+/// one word, with the anomaly contract that word carries stated in the
+/// documentation. It is not a third axis: [`LevelKind::Leader`] and
+/// [`LevelKind::Stale`] desugar onto [`AnsweredBy`] and [`Staleness`]
+/// respectively and are enforced by exactly the machinery those clauses have
+/// always had. The level earns its place by refusing where its contract
+/// cannot be met, not by answering anywhere new.
+///
+/// [`LevelKind::Snapshot`] is the one level with no clause of its own. It
+/// names the promise every statement already makes on a node holding
+/// everything it reads — one committed point in history for the whole
+/// statement — and it is refused wherever that promise cannot be kept: where
+/// the read would have to gather a part from another node's present, exactly
+/// where a transaction and a `VERSION` read refuse, because a gathered part
+/// would be a second point and two points are not one snapshot.
+///
+/// # Why the words are bare
+///
+/// Each level is one word at the statement's tail, the way `STALENESS` is —
+/// a head word would need a name of its own, and the names that suggest
+/// themselves were already weighed and found wanting: *strong* and
+/// *consistency* promise a linearisability this engine does not claim (see
+/// [`AnsweredBy`]), and the level exists precisely to name a contract weaker
+/// than that word. The levels read as the axis they name: the leader, the
+/// snapshot, the stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Level {
+    /// Which level was named.
+    pub kind: LevelKind,
+    /// Where the level sits, for a refusal to point at.
+    pub span: Span,
+}
+
+/// The three levels a read may name.
+///
+/// Three and not four: a fourth waits for something that needs it. Named
+/// values rather than a `bool` or a string, for the reason every tag in this
+/// workspace is named — an unrecognised spelling must refuse rather than
+/// silently become one of the known ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelKind {
+    /// Answered only where writes for these records are decided — the current
+    /// moment, at the node that decides it. Desugars to [`Admitted::Leader`].
+    Leader,
+    /// One committed point in history for the whole statement. Repeatable
+    /// across statements only inside a transaction.
+    Snapshot,
+    /// The answering copy is no older than the span — an upper bound, never
+    /// understated. Desugars to [`Staleness`] with the span as its bound.
+    Stale {
+        /// How old the answering copy may be at most.
+        within: Duration,
+    },
 }
 
 /// A point in the store's history a read answers from.

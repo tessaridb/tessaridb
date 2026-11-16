@@ -81,6 +81,12 @@ impl Session<'_> {
         // is a fact about the cluster and the parser has no cluster. A subquery
         // carrying its own bound is checked by the same line, because it asks
         // the same impossible thing.
+        // The age of the copy this read is about to answer from, captured only
+        // when the read named a freshness bound and the gate below admitted
+        // this node: it is the number the `answered-as-of` note states, and a
+        // note states a number taken at the decision, not one measured after
+        // the answer.
+        let mut served_as_of = None;
         if let Some(bound) = select.staleness {
             let floor = tessari_constants::STALENESS_FLOOR_SECONDS;
             // The parser has already refused a bound of zero or less, so the
@@ -109,12 +115,8 @@ impl Session<'_> {
             // is the direction this refusal is already erring.
             let within_bound =
                 core::time::Duration::from_secs(u64::try_from(bound.within.seconds()).unwrap_or(0));
-            if self
-                .store
-                .current_as_of()
-                .await?
-                .is_none_or(|age| age > within_bound)
-            {
+            let age = self.store.current_as_of().await?;
+            if age.is_none_or(|age| age > within_bound) {
                 // Asked only here, and asked only this. *Here* has already been
                 // decided by the line above, so the directory is handed the
                 // bound and nothing else — see `elsewhere.rs` for why letting it
@@ -146,6 +148,22 @@ impl Session<'_> {
                     },
                 );
             }
+            served_as_of = age;
+        }
+        // The lag stated, and only where a bound admitted a copy that is not
+        // the leader's own. The bound is the guarantee — a copy beyond it is
+        // never asked — and this note is the information, so a caller that
+        // accepted a bounded answer can read what it actually got instead of
+        // measuring. A writable node answers as of now, and a read that named
+        // no bound accepted the default contract, so neither carries this note.
+        if let Some(age) = served_as_of
+            && age > core::time::Duration::ZERO
+            && let Some(stated) = tessari_types::Duration::new(
+                i64::try_from(age.as_secs()).unwrap_or(i64::MAX),
+                age.subsec_nanos(),
+            )
+        {
+            notes.push(Note::AnsweredAsOf { age: stated });
         }
         // Narrowed by this statement's own clause, and never widened by it: a
         // subquery may set a tighter ceiling than the read holding it and may

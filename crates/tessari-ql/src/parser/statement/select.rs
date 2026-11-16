@@ -2,7 +2,9 @@
 
 use super::Parser;
 
-use crate::ast::{Expr, JoinSide, Name, Projection, Select, Source};
+use crate::ast::{
+    Admitted, AnsweredBy, Expr, JoinSide, LevelKind, Name, Projection, Select, Source, Staleness,
+};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
 
@@ -274,6 +276,46 @@ impl Parser<'_> {
         // there is no pairing rule between them to enforce here: naming both is
         // legal and the read is answered only where both hold.
         let answered_by = self.answered_by()?;
+        // Last of all the read clauses, because a level qualifies the whole
+        // read — and after `VERSION`, `STALENESS` and `ANSWERED BY` in
+        // particular, so the composition rules below see every clause a level
+        // can disagree with. `LEADER` and `STALE WITHIN <span>` settle onto
+        // the axes they name here, at the statement, so the read itself meets
+        // the same fields it always has.
+        let level = self.level()?;
+        let mut answered_by = answered_by;
+        let mut staleness = staleness;
+        if let Some(level) = &level {
+            if version.is_some() {
+                return Err(Error::LevelBesideAVersion { span: level.span });
+            }
+            match level.kind {
+                LevelKind::Leader => {
+                    if let Some(asked) = answered_by
+                        && asked.admits != Admitted::Leader
+                    {
+                        return Err(Error::AnsweredByContradictsLevel {
+                            written: "ANY".to_owned(),
+                            span: asked.span,
+                        });
+                    }
+                    answered_by.get_or_insert(AnsweredBy {
+                        admits: Admitted::Leader,
+                        span: level.span,
+                    });
+                }
+                LevelKind::Snapshot => {}
+                LevelKind::Stale { within } => {
+                    if let Some(bound) = staleness {
+                        return Err(Error::StaleLevelBesideStaleness { span: bound.span });
+                    }
+                    staleness.get_or_insert(Staleness {
+                        within,
+                        span: level.span,
+                    });
+                }
+            }
+        }
         crate::parser::shape::check_grouping(&projection, &group)?;
         crate::parser::shape::check_fold_positions(&from, &group, &order)?;
         // A fused order ranks records, and a grouped read's rows are groups; a
@@ -385,6 +427,7 @@ impl Parser<'_> {
             version,
             staleness,
             answered_by,
+            level,
             start_parameter,
             limit_parameter,
             span: start.to(self.span_behind()),

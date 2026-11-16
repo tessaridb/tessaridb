@@ -1,6 +1,6 @@
 //! Running one statement of a script, inside or outside a transaction.
 
-use super::{Consumer, Session, advised, conflicting, read_version, settle};
+use super::{Consumer, Session, advised, conflicting, read_snapshot, read_version, settle};
 use crate::error::{Error, Result};
 use crate::outcome::Outcome;
 use tessari_ql::{Answer, CreateTarget, Statement, StatementKind, TableRef};
@@ -225,10 +225,22 @@ impl<'a> Session<'a> {
                     // the caller would do (`crate::kv::atomic`).
                     let retried = crate::kv::retried_on_conflict(other);
                     let started = std::time::Instant::now();
+                    let snapshot = read_snapshot(other);
                     let mut attempt = 0_u32;
                     loop {
                         let mut transaction = store.begin().await?;
-                        let outcome = match self.execute(&mut transaction, other, span).await {
+                        // A snapshot-level read promises one point in history,
+                        // and a gathered part would be another node's present:
+                        // the gatherer is withheld for the statement, the way
+                        // `VERSION` and a transaction withhold it. Restored
+                        // before the outcome is examined, so a refusal mid-read
+                        // leaves the session exactly as it was.
+                        let gather = if snapshot { self.gather.take() } else { None };
+                        let executed = self.execute(&mut transaction, other, span).await;
+                        if snapshot {
+                            self.gather = gather;
+                        }
+                        let outcome = match executed {
                             Ok(outcome) => outcome,
                             Err(refusal) => return Err(fell_behind(refusal, &transaction).await?),
                         };

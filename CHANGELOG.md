@@ -23,6 +23,30 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.45.0 — 2026-11-16
+
+A store written by 0.44.0 opens under 0.45.0 unchanged (format 13).
+
+- **Named consistency levels on a read.** A statement may name its level in one
+  word at the tail: `LEADER` — answered only where writes for these records are
+  decided; `SNAPSHOT` — one committed point in history for the whole statement;
+  `STALE WITHIN <span>` — the answering copy at most the span old. The first and
+  the last settle onto `ANSWERED BY LEADER` and `STALENESS <span>` and are
+  enforced by exactly the machinery those clauses have always had; the levels
+  earn their place by refusing where their contract cannot be met — `SNAPSHOT`
+  refuses a read that would gather a part from another node's present, naming
+  the shards, exactly where a transaction or `VERSION` read refuses. Composition
+  is stated once: a level beside `VERSION` is refused, `ANSWERED BY ANY` beside
+  `LEADER` is refused, `STALENESS` beside `STALE` is refused while it may still
+  refine `LEADER` and `SNAPSHOT`, and `STALE` without `WITHIN` is refused where
+  the statement is read. The level words are contextual, not reserved — a field
+  may still be called `leader`.
+- **The lag stated with a bounded answer.** A read that named a freshness bound
+  and was answered locally from a follower copy carries an `answered-as-of` note
+  stating the copy's age at the decision. The bound remains the guarantee; the
+  note is the information, additive on every surface (the embedded API, HTTP,
+  and the wire protocol without a version gate).
+
 ## 0.44.0 — 2026-11-17
 
 A store written by 0.43.0 opens under 0.44.0 unchanged (format 13).

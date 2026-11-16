@@ -422,6 +422,64 @@ pub enum Error {
         span: Span,
     },
 
+    /// A read named both a consistency level and an exact version.
+    ///
+    /// `VERSION` names one point in this store's history, and a level is a
+    /// contract about how the read is answered — for `SNAPSHOT` literally a
+    /// second point. There is no reading of the pair that is not a guess about
+    /// which was meant.
+    #[error("a consistency level (at {span}) cannot qualify a read that already names a `VERSION`")]
+    LevelBesideAVersion {
+        /// Where the level is.
+        span: Span,
+    },
+
+    /// `ANSWERED BY ANY` contradicted a level that demands the leader.
+    ///
+    /// The level says only the node that decides writes may answer; the clause
+    /// admits any copy. A parser that shrugged and admitted the wider set would
+    /// answer the careful read from a follower with nothing in an error state,
+    /// which is the failure the level exists to refuse.
+    #[error(
+        "`ANSWERED BY {written}` (at {span}) contradicts the `LEADER` level — the level \
+         admits only the node that decides writes"
+    )]
+    AnsweredByContradictsLevel {
+        /// The answerer as it was written.
+        written: String,
+        /// Where the clause sits.
+        span: Span,
+    },
+
+    /// `STALE` named no span.
+    ///
+    /// The level is a bound, and a bound the statement does not write down is
+    /// a tolerance the caller never chose — there is no stored default, and a
+    /// guessed one would be the level's whole meaning.
+    #[error(
+        "`STALE` (at {span}) needs the span it tolerates — write `STALE WITHIN 30s`, \
+         not `STALE`"
+    )]
+    StaleLevelNeedsWithin {
+        /// Where the level is.
+        span: Span,
+    },
+
+    /// `STALENESS` repeated a bound the `STALE` level already carries.
+    ///
+    /// The level and the clause each answer how old the answering copy may be,
+    /// and two answers to one question leave the reader guessing which holds.
+    /// (`STALENESS` may still refine the levels that carry no bound of their
+    /// own — `LEADER`, `SNAPSHOT` — as it always has.)
+    #[error(
+        "`STALENESS` (at {span}) cannot sit beside the `STALE` level, which carries \
+         its own bound"
+    )]
+    StaleLevelBesideStaleness {
+        /// Where the `STALENESS` clause is.
+        span: Span,
+    },
+
     /// A `RETAIN` names a floor that would leave nothing to answer with.
     ///
     /// `RETAIN 0s` and `RETAIN -1d` put the floor at or ahead of the present, so
@@ -937,6 +995,10 @@ impl Error {
             | Self::EmptyStaleness { span, .. }
             | Self::UnknownAnswerer { span, .. }
             | Self::StalenessBesideAVersion { span }
+            | Self::LevelBesideAVersion { span }
+            | Self::AnsweredByContradictsLevel { span, .. }
+            | Self::StaleLevelNeedsWithin { span }
+            | Self::StaleLevelBesideStaleness { span }
             | Self::CursorBesideAnOffset { span }
             | Self::CursorBesideAReshaping { span, .. }
             | Self::AnchorFromAnotherTable { span, .. }
