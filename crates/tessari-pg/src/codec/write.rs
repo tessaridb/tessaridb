@@ -149,6 +149,38 @@ pub(crate) fn empty_query() -> Vec<u8> {
     frame(b'I', &[])
 }
 
+/// A Parse landed; the statement is prepared under its name.
+pub(crate) fn parse_complete() -> Vec<u8> {
+    frame(b'1', &[])
+}
+
+/// A Bind landed; the portal holds its values.
+pub(crate) fn bind_complete() -> Vec<u8> {
+    frame(b'2', &[])
+}
+
+/// A Close landed; whatever it named is gone.
+pub(crate) fn close_complete() -> Vec<u8> {
+    frame(b'3', &[])
+}
+
+/// The parameter types a statement answers Describe(statement) with: what the
+/// Parse declared, the unspecified ones read as text.
+pub(crate) fn parameter_description(types: &[u32]) -> Vec<u8> {
+    let mut body = Vec::new();
+    put_u16(&mut body, types.len());
+    for held in types {
+        body.extend_from_slice(&held.to_be_bytes());
+    }
+    frame(b't', &body)
+}
+
+/// The thing a Describe asked about carries no row shape: a statement whose
+/// projection the surface cannot name without running it answers this.
+pub(crate) fn no_data() -> Vec<u8> {
+    frame(b'n', &[])
+}
+
 /// One frame: the kind byte, the length word counting itself and the body,
 /// then the body.
 fn frame(kind: u8, body: &[u8]) -> Vec<u8> {

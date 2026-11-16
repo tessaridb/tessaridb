@@ -118,17 +118,17 @@ async fn an_unspoken_message_refuses_by_name_and_sync_recovers() {
     let (address, stop, _) = serving_with(SETUP).await;
     let mut client = Client::to(&address).await;
     client.start(None, "app.main", None).await;
-    // A Parse, as an extended-protocol driver would send: refused, then Sync
+    // A FunctionCall, a message this build does not speak: refused, then Sync
     // answers with readiness and the session is whole.
-    let mut parse = vec![b'P'];
-    let body = b"\0SELECT 1\0\0\0\0\0\0";
-    parse.extend_from_slice(
+    let mut call = vec![b'F'];
+    let body = b"\0\0\0\0";
+    call.extend_from_slice(
         &u32::try_from(body.len().saturating_add(4))
             .unwrap()
             .to_be_bytes(),
     );
-    parse.extend_from_slice(body);
-    client.write(&parse).await;
+    call.extend_from_slice(body);
+    client.write(&call).await;
     let seen = client.message().await;
     assert!(matches!(seen, Seen::Error(code, _) if code == "0A000"));
     let sync = [b'S', 0, 0, 0, 4];

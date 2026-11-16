@@ -1907,6 +1907,7 @@ dependencies = [
 name = "tessari-pg"
 version = "0.45.0"
 dependencies = [
+ "rust_decimal",
  "rustls",
  "tessari-constants",
  "tessari-serve",

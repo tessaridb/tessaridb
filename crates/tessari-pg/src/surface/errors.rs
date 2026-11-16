@@ -28,6 +28,18 @@ pub(crate) mod code {
     pub(crate) const UNAVAILABLE: &str = "57P03";
     /// The caller is being made to wait.
     pub(crate) const THROTTLED: &str = "55P03";
+    /// A Bind named a statement that was not prepared, or a Describe or an
+    /// Execute named a portal that is not open.
+    pub(crate) const UNDEFINED_STATEMENT: &str = "26000";
+    /// A Describe or an Execute named a portal that is not open.
+    pub(crate) const UNDEFINED_CURSOR: &str = "34000";
+    /// The messages did not add up: the values did not match the statement's
+    /// parameters, or a name was asked for in two kinds.
+    pub(crate) const PROTOCOL: &str = "08P01";
+    /// The surface has as many named statements or portals open as it takes.
+    pub(crate) const LIMIT: &str = "53400";
+    /// A text value did not read as the type it was declared under.
+    pub(crate) const INVALID_TEXT: &str = "22P02";
     /// Everything else, including what this surface does not carry yet.
     pub(crate) const INTERNAL: &str = "XX000";
 }

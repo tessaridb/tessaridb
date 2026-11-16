@@ -15,6 +15,7 @@ tessaridb = { workspace = true, optional = true }
 tessari-constants.workspace = true
 tessari-serve = { workspace = true, optional = true }
 tessari-types = { workspace = true, optional = true }
+rust_decimal = { workspace = true, optional = true }
 tracing.workspace = true
 zeroize.workspace = true
 # Connections are tasks on the process's runtime, which the binary builds;
@@ -28,7 +29,7 @@ tokio-rustls = { workspace = true, optional = true }
 # The node's surface: the listener, the connections and the statements they
 # run. Off, the crate is its decoders alone, as tessari-resp's is.
 default = ["surface"]
-surface = ["dep:tessaridb", "dep:tessari-serve", "dep:tessari-types", "dep:tokio", "dep:tokio-util", "dep:rustls", "dep:tokio-rustls"]
+surface = ["dep:tessaridb", "dep:tessari-serve", "dep:tessari-types", "dep:rust_decimal", "dep:tokio", "dep:tokio-util", "dep:rustls", "dep:tokio-rustls"]
 
 [dev-dependencies]
 # A certificate minted per test for the TLS rows (the serve crate's test-support).

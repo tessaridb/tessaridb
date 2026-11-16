@@ -18,6 +18,7 @@ pub(crate) const SETUP: &str = "DEFINE TABLE orders SCHEMALESS; \
      CREATE orders:2 = { band: 3, name: 'third' }; \
      CREATE orders:3 = { band: 3 };";
 
+mod extended;
 mod queries;
 mod secured;
 mod signing;
@@ -68,6 +69,11 @@ pub(crate) enum Seen {
     Command(String),
     Empty,
     Error(String, String),
+    ParseComplete,
+    BindComplete,
+    CloseComplete,
+    ParamDesc(Vec<u32>),
+    NoData,
 }
 
 /// A connected client speaking the wire protocol by hand.
@@ -172,6 +178,82 @@ impl Client {
         }
     }
 
+    /// A Parse: a named statement and the parameter types it declares.
+    pub(crate) async fn parse(&mut self, name: &str, sql: &str, oids: &[u32]) {
+        let mut body = cstrs(name);
+        body.extend_from_slice(sql.as_bytes());
+        body.push(0);
+        put_u16(&mut body, oids.len());
+        for oid in oids {
+            body.extend_from_slice(&oid.to_be_bytes());
+        }
+        self.write(&framed(b'P', body)).await;
+    }
+
+    /// A Bind: a portal over a statement, the parameter formats and values,
+    /// and the result formats the client asks for.
+    pub(crate) async fn bind(
+        &mut self,
+        portal: &str,
+        statement: &str,
+        formats: &[u16],
+        params: &[Option<Vec<u8>>],
+        results: &[u16],
+    ) {
+        let mut body = cstrs(portal);
+        body.extend_from_slice(statement.as_bytes());
+        body.push(0);
+        put_u16(&mut body, formats.len());
+        for format in formats {
+            body.extend_from_slice(&format.to_be_bytes());
+        }
+        put_u16(&mut body, params.len());
+        for param in params {
+            match param {
+                None => body.extend_from_slice(&(-1_i32).to_be_bytes()),
+                Some(bytes) => {
+                    body.extend_from_slice(
+                        &i32::try_from(bytes.len()).unwrap_or(i32::MAX).to_be_bytes(),
+                    );
+                    body.extend_from_slice(bytes);
+                }
+            }
+        }
+        put_u16(&mut body, results.len());
+        for format in results {
+            body.extend_from_slice(&format.to_be_bytes());
+        }
+        self.write(&framed(b'B', body)).await;
+    }
+
+    /// A Describe over a statement (`b'S'`) or a portal (`b'P'`).
+    pub(crate) async fn describe(&mut self, kind: u8, name: &str) {
+        let mut body = vec![kind];
+        body.extend_from_slice(name.as_bytes());
+        body.push(0);
+        self.write(&framed(b'D', body)).await;
+    }
+
+    /// An Execute of a portal, at most `rows` rows asked for.
+    pub(crate) async fn execute(&mut self, portal: &str, rows: u32) {
+        let mut body = cstrs(portal);
+        body.extend_from_slice(&rows.to_be_bytes());
+        self.write(&framed(b'E', body)).await;
+    }
+
+    /// A Close of a statement or a portal.
+    pub(crate) async fn close(&mut self, kind: u8, name: &str) {
+        let mut body = vec![kind];
+        body.extend_from_slice(name.as_bytes());
+        body.push(0);
+        self.write(&framed(b'C', body)).await;
+    }
+
+    /// A Sync: the end of the extended batch; readiness answers it.
+    pub(crate) async fn sync(&mut self) {
+        self.write(&framed(b'S', Vec::new())).await;
+    }
+
     /// One raw message.
     pub(crate) async fn message(&mut self) -> Seen {
         self.try_message()
@@ -229,6 +311,31 @@ fn push_pair(body: &mut Vec<u8>, key: &str, value: &str) {
     body.push(0);
 }
 
+/// One null-terminated string.
+fn cstrs(text: &str) -> Vec<u8> {
+    let mut out = text.as_bytes().to_vec();
+    out.push(0);
+    out
+}
+
+fn put_u16(body: &mut Vec<u8>, n: usize) {
+    let n = u16::try_from(n).expect("a count this small");
+    body.extend_from_slice(&n.to_be_bytes());
+}
+
+/// One frame: the kind byte, the length word counting itself and the body,
+/// then the body.
+fn framed(kind: u8, body: Vec<u8>) -> Vec<u8> {
+    let mut out = vec![kind];
+    out.extend_from_slice(
+        &u32::try_from(body.len().saturating_add(4))
+            .expect("a frame this small")
+            .to_be_bytes(),
+    );
+    out.extend_from_slice(&body);
+    out
+}
+
 /// Decode one message far enough for the assertions; anything unspoken keeps
 /// its kind byte in the tag.
 pub(crate) fn decode(kind: u8, body: &[u8]) -> Seen {
@@ -281,6 +388,24 @@ pub(crate) fn decode(kind: u8, body: &[u8]) -> Seen {
         }
         b'C' => Seen::Command(cstr(body)),
         b'I' => Seen::Empty,
+        b'1' => Seen::ParseComplete,
+        b'2' => Seen::BindComplete,
+        b'3' => Seen::CloseComplete,
+        b'n' => Seen::NoData,
+        b't' => {
+            let count = u16::from_be_bytes(body[..2].try_into().expect("two bytes"));
+            let mut at: usize = 2;
+            let mut oids = Vec::new();
+            for _ in 0..count {
+                oids.push(u32::from_be_bytes(
+                    body[at..at.saturating_add(4)]
+                        .try_into()
+                        .expect("four bytes"),
+                ));
+                at = at.saturating_add(4);
+            }
+            Seen::ParamDesc(oids)
+        }
         b'E' => {
             let fields = fields(body);
             let code = fields

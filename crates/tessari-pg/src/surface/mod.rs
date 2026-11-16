@@ -17,6 +17,7 @@
 
 mod connection;
 mod errors;
+mod extended;
 mod running;
 mod translate;
 mod types;

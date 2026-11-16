@@ -96,8 +96,8 @@ fn a_query_round_trips_as_text() {
 
 #[test]
 fn an_unspoken_message_keeps_its_kind_byte() {
-    let decoded = read::message(b'P', b"\0stmt\0\0\0\0").expect("the fixture parse decodes");
-    assert!(matches!(decoded, Frontend::Unspoken(b'P')));
+    let decoded = read::message(b'F', b"\0\0\0\0").expect("the fixture call decodes");
+    assert!(matches!(decoded, Frontend::Unspoken(b'F')));
 }
 
 #[test]

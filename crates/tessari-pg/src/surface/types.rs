@@ -18,8 +18,18 @@ pub(crate) mod oid {
     /// `int8`; every integer answers as the widest kind, which the clients
     /// of the dialect read without complaint.
     pub(crate) const INT8: u32 = 20;
+    /// `int2`
+    pub(crate) const INT2: u32 = 21;
+    /// `int4`
+    pub(crate) const INT4: u32 = 23;
     /// `text`
     pub(crate) const TEXT: u32 = 25;
+    /// a character string of unspecified length
+    pub(crate) const VARCHAR: u32 = 1043;
+    /// an undecorated literal, the type a bare string arrives as
+    pub(crate) const UNKNOWN: u32 = 705;
+    /// `float4`
+    pub(crate) const FLOAT4: u32 = 700;
     /// `float8`
     pub(crate) const FLOAT8: u32 = 701;
     /// `numeric`
@@ -92,6 +102,50 @@ pub(crate) fn text_of(value: &Value) -> Option<String> {
         Value::Table(_) | Value::Record(_) | Value::Geometry(_) | Value::Regex(_) => {
             Some(value.to_string())
         }
+    }
+}
+
+/// The value a text-format parameter reads as under the type it was declared
+/// with. The scalar set the wire's clients bind; anything outside it refuses
+/// by name rather than reading as a string nobody asked for.
+pub(crate) fn value_of_text(
+    type_oid: u32,
+    text: &str,
+) -> Result<Value, crate::surface::errors::Refused> {
+    use crate::surface::errors::{Refused, code};
+    let invalid = || {
+        Refused::with_detail(
+            code::INVALID_TEXT,
+            "the parameter's text does not read as its declared type",
+            format!("type {type_oid}, value {text:?}"),
+        )
+    };
+    match type_oid {
+        oid::BOOL => match text {
+            "t" | "true" | "yes" | "1" => Ok(Value::Bool(true)),
+            "f" | "false" | "no" | "0" => Ok(Value::Bool(false)),
+            _ => Err(invalid()),
+        },
+        oid::INT2 | oid::INT4 | oid::INT8 => text
+            .parse::<i64>()
+            .map(|held| Value::Number(held.into()))
+            .map_err(|_| invalid()),
+        oid::FLOAT4 | oid::FLOAT8 => text
+            .parse::<f64>()
+            .map(tessaridb::Number::float)
+            .map(Value::Number)
+            .map_err(|_| invalid()),
+        oid::NUMERIC => text
+            .parse::<rust_decimal::Decimal>()
+            .map(tessaridb::Number::from)
+            .map(Value::Number)
+            .map_err(|_| invalid()),
+        oid::TEXT | oid::VARCHAR | oid::UNKNOWN => Ok(Value::String(text.to_owned())),
+        other => Err(Refused::with_detail(
+            code::FEATURE,
+            "binding this parameter type is not spoken in this build",
+            format!("type {other}"),
+        )),
     }
 }
 

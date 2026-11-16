@@ -11,19 +11,23 @@ use tessaridb::{Parameters, Value};
 use super::errors::{Refused, code};
 
 /// What the translator owes the caller: the script, its bound values, and the
-/// column order the projection named (or the mark that it was `*`).
-#[derive(Debug)]
+/// column order the projection named (or the mark that it was `*`). `slots`
+/// maps a `$n` placeholder to the parameter name the Bind's nth value takes —
+/// `None` marks a slot the query never used, which Bind refuses.
+#[derive(Debug, Clone)]
 pub(crate) struct Translated {
     pub(crate) script: String,
     pub(crate) parameters: Parameters,
     pub(crate) columns: Columns,
     /// The table the FROM named, for the identity column's spelling.
     pub(crate) table: Option<String>,
+    /// The parameter name each `$1..$n` takes, in placeholder order.
+    pub(crate) slots: Vec<Option<String>>,
 }
 
 /// The projection's shape: the names it answers under, in order, or a star
 /// whose names the answer itself must supply.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Columns {
     Named(Vec<String>),
     Star,
@@ -47,6 +51,7 @@ struct Parser<'a> {
     at: usize,
     parameters: Parameters,
     next: usize,
+    slots: Vec<Option<String>>,
 }
 
 impl<'a> Parser<'a> {
@@ -56,6 +61,7 @@ impl<'a> Parser<'a> {
             at: 0,
             parameters: Parameters::new(),
             next: 0,
+            slots: Vec::new(),
         }
     }
 
@@ -149,7 +155,37 @@ impl<'a> Parser<'a> {
             parameters: self.parameters,
             columns,
             table: from,
+            slots: self.slots,
         })
+    }
+
+    /// A `$n` placeholder at the cursor: the script keeps a named parameter
+    /// the Bind's nth value fills. Every use of the same `$n` takes one name.
+    fn placeholder(&mut self) -> Option<String> {
+        let at = self.at;
+        self.skip_space();
+        if !self.byte(b'$') {
+            self.at = at;
+            return None;
+        }
+        let digits = self.digits_raw();
+        let Ok(index) = digits.parse::<usize>() else {
+            self.at = at;
+            return None;
+        };
+        if index == 0 {
+            self.at = at;
+            return None;
+        }
+        while self.slots.len() < index {
+            self.slots.push(None);
+        }
+        if let Some(name) = &self.slots[index.saturating_sub(1)] {
+            return Some(format!("${name}"));
+        }
+        let name = format!("e{index}");
+        self.slots[index.saturating_sub(1)] = Some(name.clone());
+        Some(format!("${name}"))
     }
 
     /// `*` or a comma list of fields and literals, each with its alias.
@@ -179,6 +215,13 @@ impl<'a> Parser<'a> {
 
     /// One projection item: a field path or a literal, with an optional alias.
     fn item(&mut self) -> Result<Item, Refused> {
+        if let Some(held) = self.placeholder() {
+            let (text, column) = match self.alias()? {
+                Some(alias) => (format!("{held} AS {alias}"), alias),
+                None => (held, UNNAMED.to_owned()),
+            };
+            return Ok(Item { text, column });
+        }
         if let Some(literal) = self.literal()? {
             let bound = self.bind(literal);
             let (text, column) = match self.alias()? {
@@ -277,15 +320,20 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    /// One side of a comparison: a literal binds; a field path passes.
+    /// One side of a comparison: a placeholder passes as its parameter; a
+    /// literal binds; a field path passes.
     fn operand(&mut self) -> Result<String, Refused> {
+        if let Some(held) = self.placeholder() {
+            return Ok(held);
+        }
         if let Some(literal) = self.literal()? {
             return Ok(self.bind(literal));
         }
         self.ident_path()
     }
 
-    /// A literal of the dialect: number, string, boolean, or NULL.
+    /// A literal of the dialect: a `$n` placeholder, a number, a string, a
+    /// boolean, or NULL.
     fn literal(&mut self) -> Result<Option<Value>, Refused> {
         if let Some(number) = self.numeric_literal() {
             return Ok(Some(number));

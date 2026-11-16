@@ -165,6 +165,7 @@ async fn session(
     conn.send(&codec::write::ready_for_query(codec::write::Tx::Idle))
         .await?;
 
+    let mut kitchen = super::extended::Kitchen::new();
     loop {
         tokio::select! {
             biased;
@@ -172,9 +173,21 @@ async fn session(
             message = conn.message() => {
                 match message? {
                     Frontend::Terminate => return Ok(()),
-                    Frontend::Query(query) => query_once(conn, &query, &mut held, shared).await?,
-                    Frontend::Sync | Frontend::Flush => {
-                        conn.send(&codec::write::ready_for_query(codec::write::Tx::Idle)).await?;
+                    Frontend::Query(query) => {
+                        // A simple Query is a synchronisation point: it ends
+                        // any extended skip state, then answers as simple
+                        // queries answer.
+                        kitchen.interrupt();
+                        query_once(conn, &query, &mut held, shared).await?;
+                    }
+                    extended @ (Frontend::Parse { .. }
+                    | Frontend::Bind { .. }
+                    | Frontend::Describe { .. }
+                    | Frontend::Execute { .. }
+                    | Frontend::Close { .. }
+                    | Frontend::Sync
+                    | Frontend::Flush) => {
+                        kitchen.handle(conn, extended, &mut held, shared).await?;
                     }
                     Frontend::Password(_) => {
                         conn.refuse(&Refused::surface(
@@ -184,10 +197,10 @@ async fn session(
                         .await?;
                     }
                     Frontend::Unspoken(kind) => {
-                        // An extended-protocol message in a build that does
-                        // not speak the extended protocol: the error answers
-                        // it, and the Sync the client sends next carries the
-                        // readiness — one Ready, as the protocol counts them.
+                        // A message this build does not speak at all: the
+                        // error answers it, and the Sync the client sends next
+                        // carries the readiness — one Ready, as the protocol
+                        // counts them.
                         conn.refuse_pending(&Refused::with_detail(
                             code::FEATURE,
                             "this message is not spoken in this build",
@@ -247,40 +260,51 @@ async fn query_once(
         Err(Failed::Lost) => return Err(Error::Malformed("the session is lost")),
     };
     for outcome in &outcomes {
-        answer(conn, outcome, &translated).await?;
+        answer(conn, outcome, &translated, false).await?;
     }
     conn.send(&codec::write::ready_for_query(codec::write::Tx::Idle))
         .await?;
     Ok(())
 }
 
-/// One statement's outcome as the wire spells it.
-async fn answer(
+/// One statement's outcome as the wire spells it. `described` marks that a
+/// Describe(portal) already answered the first records' row description, so
+/// the Execute owes only the rows and the tag.
+pub(crate) async fn answer(
     conn: &mut Conn,
     outcome: &tessaridb::Outcome,
     translated: &translate::Translated,
+    described: bool,
 ) -> Result<()> {
     use tessaridb::Outcome;
     match outcome {
         Outcome::Records { records, .. } => {
-            let (columns, rows) = if records.is_empty()
-                && let translate::Columns::Named(names) = &translated.columns
+            if !described {
+                let columns = if records.is_empty()
+                    && let translate::Columns::Named(names) = &translated.columns
+                {
+                    // An empty answer still owes the client the projection's
+                    // names: the rows cannot speak for columns that never came.
+                    names
+                        .iter()
+                        .map(|name| codec::write::Column {
+                            name: name.clone(),
+                            type_oid: types::oid::TEXT,
+                            type_len: -1,
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    super::rows(records, &translated.columns, translated.table.as_deref()).0
+                };
+                conn.send(&codec::write::row_description(&columns)).await?;
+            }
+            let (_, rows) = if records.is_empty()
+                && matches!(translated.columns, translate::Columns::Named(_))
             {
-                // An empty answer still owes the client the projection's
-                // names: the rows cannot speak for columns that never came.
-                let columns = names
-                    .iter()
-                    .map(|name| codec::write::Column {
-                        name: name.clone(),
-                        type_oid: types::oid::TEXT,
-                        type_len: -1,
-                    })
-                    .collect::<Vec<_>>();
-                (columns, Vec::new())
+                (Vec::new(), Vec::new())
             } else {
                 super::rows(records, &translated.columns, translated.table.as_deref())
             };
-            conn.send(&codec::write::row_description(&columns)).await?;
             for row in &rows {
                 conn.send(&codec::write::data_row(row)).await?;
             }
@@ -385,7 +409,7 @@ impl Conn {
         codec::read::message(kind, &payload)
     }
 
-    async fn send(&mut self, bytes: &[u8]) -> Result<()> {
+    pub(crate) async fn send(&mut self, bytes: &[u8]) -> Result<()> {
         match self {
             Self::Plain(_, write) => {
                 write.write_all(bytes).await?;
@@ -416,7 +440,7 @@ impl Conn {
     /// An error whose readiness waits for the Sync the client sends next —
     /// the extended protocol's error-recovery shape, so exactly one Ready
     /// answers one Sync.
-    async fn refuse_pending(&mut self, refused: &Refused) -> Result<()> {
+    pub(crate) async fn refuse_pending(&mut self, refused: &Refused) -> Result<()> {
         self.send(&refused_frame(refused)).await
     }
 }
