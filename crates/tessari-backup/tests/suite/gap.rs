@@ -370,3 +370,52 @@ fn a_record_is_restored_into_the_log_it_was_backed_up_from() {
         answers(&held, "SELECT * FROM people;"),
     );
 }
+
+#[test]
+fn a_point_in_time_restore_answers_what_the_source_held_at_each_of_three_instants() {
+    // C2: three instants of the data log, and each cut store holds exactly what
+    // the source held then. The fixture's mid-log DELETE is the discriminator:
+    // an instant before it answers with the deleted row, one after without —
+    // so a replay that skipped a record would be caught by an answer, not by a
+    // position. The names are the fixture's documented sequence map (1 ada,
+    // 2 grace, 3 deletes grace, 4 edith), and a twin replay answers identically,
+    // which is the determinism the log-is-the-store claim rests on.
+    let (_backend, leader) = leader();
+    // (instant, names the source held then, names it did not)
+    let instants: [(u64, &[&str], &[&str]); 3] = [
+        (1, &["ada"], &["grace", "edith"]),
+        (2, &["ada", "grace"], &["edith"]),
+        (4, &["ada", "edith"], &["grace"]),
+    ];
+    for (at, held, gone) in instants {
+        let cut = follower_at(&leader, at);
+        let home = data_log(&cut);
+        assert_eq!(
+            cut.committed_tail(home).now().unwrap(),
+            Sequence::new(at),
+            "the cut store's log stands exactly at the instant"
+        );
+        let mut here = session(&cut);
+        let answered = format!("{:?}", here.run_now("SELECT name FROM people;").unwrap());
+        for name in held {
+            assert!(
+                answered.contains(&format!("String(\"{name}\")")),
+                "at {at} the source held {name}: {answered}"
+            );
+        }
+        for name in gone {
+            assert!(
+                !answered.contains(&format!("String(\"{name}\")")),
+                "at {at} the source had no {name}: {answered}"
+            );
+        }
+
+        let twin = follower_at(&leader, at);
+        let mut again = session(&twin);
+        assert_eq!(
+            format!("{:?}", again.run_now("SELECT name FROM people;").unwrap()),
+            answered,
+            "a twin replay of the same instant answers identically"
+        );
+    }
+}

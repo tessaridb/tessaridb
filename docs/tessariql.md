@@ -9106,7 +9106,12 @@ backup, and the one a store whose log is bounded can always take (ADR-0094; the
 snapshot is described below). `BACKUP LOG` answers with the store's **log**, as
 the file the backup reader and the verifier already read. `FROM` names a position
 in a log, so it means the log: the records at or after that sequence — and a base
-plus its increments answers what the original answers.
+plus its increments answers what the original answers. An increment is a
+continuation, not a summary: its file names the position it continues from and
+the position it reaches, and a file that stops short of where its section
+promises refuses by name — `CutShort` — rather than land a chain that believes
+it reached what it never did. A whole backup cut short is different: it is a
+prefix of history, and restores what it holds, saying so.
 
 **It is a statement because a serving node is the only thing that can take one.**
 This store is single-writer, so a node that is up holds the store and no second
@@ -10220,6 +10225,8 @@ reversible:
 |---|---|
 | a follower catching up | its next collect is **refused**, naming the horizon, and the node copies its leader's state and follows again from there by itself — unless it leads a range of its own, when it reports `stranded` and is restored from a snapshot |
 | a backup taken as a replay | begins at the horizon instead of at the beginning |
+| a point-in-time restore | the reachable window is the horizon to the tail: an instant below the horizon is not recoverable, and a base taken at the horizon replays to any instant inside the window |
+| an incremental backup | `--from` below the horizon is refused, naming the floor, and a delta chain is only as restorable as its base plus every delta in it — a prune does not shorten a snapshot restore, because the state form needs no history |
 | a subscriber holding a position | the same refusal, for the same reason; a client re-reads what it follows and follows again from the current tail |
 | `INFO FOR HISTORY OF` | answers what survives, and stops reporting itself `complete` |
 
@@ -11230,7 +11237,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.43.0", "build": "0.43.0", "endpoints": ["db-1.internal:9000"],
+ "version": "0.44.0", "build": "0.44.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

@@ -875,6 +875,156 @@ fn an_incremental_backup_plus_its_base_is_the_whole_store() {
 }
 
 #[test]
+fn a_damaged_increment_is_refused_by_name_and_applies_nothing() {
+    // The delta form takes the same hostile arm as the whole file: bytes that
+    // are not the bytes written refuse by name. And because a delta continues
+    // a base, the refusal must leave the base exactly as the base was — the
+    // chain is only as good as the moment nothing unwritten lands.
+    let (_, held, base) = original();
+    {
+        let mut session = signed_in(&held);
+        session
+            .run_now("CREATE people:9 = { name: 'later', email: 'z@x' };")
+            .unwrap();
+    }
+    let (home, base_tail) = moved_since(&base, &held);
+    let mut increment = Vec::new();
+    tessari_backup::write_from(
+        &held,
+        &mut increment,
+        home,
+        tessari_types::Sequence::new(base_tail.get() + 1),
+    )
+    .now()
+    .unwrap();
+    // A byte well inside the increment's first record body.
+    let at = HEADER_LEN + SECTION_LEN + FRAME_LEN + 3;
+    increment[at] ^= 0xff;
+
+    let (_, rebuilt) = store();
+    tessari_backup::read(&rebuilt, &mut base.as_slice())
+        .now()
+        .unwrap();
+    let base_answers = format!(
+        "{:?}",
+        signed_in(&rebuilt)
+            .run_now("SELECT * FROM people;")
+            .unwrap()
+    );
+    let refused = tessari_backup::read(&rebuilt, &mut increment.as_slice())
+        .now()
+        .unwrap_err();
+    assert!(
+        matches!(refused, tessari_backup::Error::Damaged { .. }),
+        "{refused}"
+    );
+    assert_eq!(
+        format!(
+            "{:?}",
+            signed_in(&rebuilt)
+                .run_now("SELECT * FROM people;")
+                .unwrap()
+        ),
+        base_answers,
+        "the refused delta changed nothing the base held"
+    );
+}
+
+#[test]
+fn a_truncated_increment_is_refused_not_landed_partial() {
+    // A whole backup interrupted partway is still most of a store, and the file
+    // says so (the test above this one). A delta interrupted partway is a
+    // different thing: it claims to continue a base to an exact position, and
+    // landing it short would leave the chain believing it reached where it
+    // never did. So the delta refuses by name, and the base is untouched.
+    let (_, held, base) = original();
+    {
+        let mut session = signed_in(&held);
+        session
+            .run_now("CREATE people:9 = { name: 'later', email: 'z@x' };")
+            .unwrap();
+    }
+    let (home, base_tail) = moved_since(&base, &held);
+    let mut increment = Vec::new();
+    tessari_backup::write_from(
+        &held,
+        &mut increment,
+        home,
+        tessari_types::Sequence::new(base_tail.get() + 1),
+    )
+    .now()
+    .unwrap();
+    // Drop the file's last byte: mid-record, never clean.
+    let cut = increment.len().saturating_sub(1);
+    let truncated = increment[..cut].to_vec();
+
+    let (_, rebuilt) = store();
+    tessari_backup::read(&rebuilt, &mut base.as_slice())
+        .now()
+        .unwrap();
+    let base_answers = format!(
+        "{:?}",
+        signed_in(&rebuilt)
+            .run_now("SELECT * FROM people;")
+            .unwrap()
+    );
+    let refused = tessari_backup::read(&rebuilt, &mut truncated.as_slice())
+        .now()
+        .unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            tessari_backup::Error::CutShort { stopped, promised } if promised > stopped
+        ),
+        "a delta cut mid-record refuses by name: {refused}"
+    );
+    assert_eq!(
+        format!(
+            "{:?}",
+            signed_in(&rebuilt)
+                .run_now("SELECT * FROM people;")
+                .unwrap()
+        ),
+        base_answers,
+        "the refused delta changed nothing the base held"
+    );
+}
+
+#[test]
+fn an_increment_holds_only_the_delta_and_is_a_fraction_of_the_full_backup() {
+    // The size half of the incremental claim (C1): a backup taken after the
+    // first carries only what moved. The records half — that base + increment
+    // is the whole store — is the test above; here the delta's bytes are
+    // asserted against the full backup's, an order of magnitude apart.
+    let (_, held, base) = original();
+    {
+        let mut session = signed_in(&held);
+        session
+            .run_now(
+                "CREATE people:9 = { name: 'later', email: 'z@x' };\n\
+                 CREATE people:10 = { name: 'last', email: 'y@x' };",
+            )
+            .unwrap();
+    }
+    let (home, base_tail) = moved_since(&base, &held);
+    let mut increment = Vec::new();
+    tessari_backup::write_from(
+        &held,
+        &mut increment,
+        home,
+        tessari_types::Sequence::new(base_tail.get() + 1),
+    )
+    .now()
+    .unwrap();
+    assert!(
+        increment.len().saturating_mul(10) < base.len(),
+        "the delta is a fraction of the full backup: increment {} bytes, base {} bytes",
+        increment.len(),
+        base.len()
+    );
+}
+
+#[test]
 fn an_increment_refuses_a_store_that_is_not_where_it_continues_from() {
     // The header says what the file continues from, so this is checkable rather
     // than a filename's promise.

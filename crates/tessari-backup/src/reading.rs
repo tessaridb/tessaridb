@@ -107,6 +107,12 @@ async fn replay(
                 }
                 opened.push(span.log);
                 if let Some((span, reached)) = open.replace((span, at)) {
+                    if span.from.get() > 1 && reached.get() < span.tail.get() {
+                        return Err(Error::CutShort {
+                            stopped: reached.get(),
+                            promised: span.tail.get(),
+                        });
+                    }
                     truncated = truncated || reached.get() < span.tail.get();
                     logs.push(span);
                 }
@@ -149,6 +155,12 @@ async fn replay(
         // from `from` to `tail` holds exactly that many records, and fewer means
         // the file lost some. `upto` is the exception — there the store is
         // deliberately behind — and it only ever reaches one section.
+        if upto.is_none() && span.from.get() > 1 && reached.get() < span.tail.get() {
+            return Err(Error::CutShort {
+                stopped: reached.get(),
+                promised: span.tail.get(),
+            });
+        }
         truncated = truncated || (upto.is_none() && reached.get() < span.tail.get());
         logs.push(span);
     }

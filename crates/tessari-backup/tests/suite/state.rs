@@ -228,6 +228,39 @@ fn a_snapshot_and_the_log_after_it_answer_what_the_source_answers_now() {
 }
 
 #[test]
+fn an_increment_below_the_pruned_floor_is_refused_naming_the_floor() {
+    // The prune<->PITR window, tested where the spec states it: a prune moves
+    // the reachable window's edge, a delta asked from below the edge refuses
+    // naming the floor, and a delta asked at the edge takes what the window
+    // holds.
+    let (_, source, _taken) = one_log();
+    let log = source.own_log(tessari_types::Reach::Store).now().unwrap();
+    let pruned = source.prune_log(log, Sequence::new(2)).now().unwrap();
+    assert_eq!(pruned.start, Sequence::new(3), "the window keeps 3..=5");
+
+    let mut below = Vec::new();
+    let refused = tessari_backup::write_from(&source, &mut below, log, Sequence::new(1))
+        .now()
+        .unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            tessari_backup::Error::Store(tessari_storage::Error::BelowLogStart {
+                asked: 1,
+                start: 3,
+            })
+        ),
+        "a delta from below the floor names the floor: {refused}"
+    );
+
+    let mut at_the_edge = Vec::new();
+    let written = tessari_backup::write_from(&source, &mut at_the_edge, log, Sequence::new(3))
+        .now()
+        .unwrap();
+    assert_eq!(crate::only(&written.logs).from, Sequence::new(3));
+}
+
+#[test]
 fn a_pruned_store_takes_a_snapshot_where_it_can_take_no_log_backup() {
     let (_, source, _) = original();
     for log in source.logs().now().unwrap() {
