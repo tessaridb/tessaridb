@@ -32,6 +32,7 @@ tessari-ingest = { path = "crates/tessari-ingest", version = "0.45.0" }
 tessari-serve = { path = "crates/tessari-serve", version = "0.45.0" }
 tessari-vault = { path = "crates/tessari-vault", version = "0.45.0" }
 tessari-kafka = { path = "crates/tessari-kafka", version = "0.45.0" }
+tessari-pg = { path = "crates/tessari-pg", version = "0.45.0" }
 tessari-resp = { path = "crates/tessari-resp", version = "0.45.0" }
 
 thiserror = "2"

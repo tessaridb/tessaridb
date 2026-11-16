@@ -1754,6 +1754,7 @@ dependencies = [
  "tessari-ingest",
  "tessari-kafka",
  "tessari-kv",
+ "tessari-pg",
  "tessari-ql",
  "tessari-resp",
  "tessari-serve",
@@ -1898,6 +1899,23 @@ dependencies = [
  "tessarikv",
  "thiserror",
  "tokio",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
+name = "tessari-pg"
+version = "0.45.0"
+dependencies = [
+ "rustls",
+ "tessari-constants",
+ "tessari-serve",
+ "tessari-types",
+ "tessaridb",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
  "tracing",
  "zeroize",
 ]

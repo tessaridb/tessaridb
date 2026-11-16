@@ -1,0 +1,40 @@
+[package]
+name = "tessari-pg"
+description = "The v3 relational wire protocol as a surface of a TessariDB node: its tables, its users"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tessaridb = { workspace = true, optional = true }
+tessari-constants.workspace = true
+tessari-serve = { workspace = true, optional = true }
+tessari-types = { workspace = true, optional = true }
+tracing.workspace = true
+zeroize.workspace = true
+# Connections are tasks on the process's runtime, which the binary builds;
+# this crate creates none.
+tokio = { workspace = true, optional = true, features = ["net", "rt", "sync", "time", "macros", "io-util"] }
+tokio-util = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+
+[features]
+# The node's surface: the listener, the connections and the statements they
+# run. Off, the crate is its decoders alone, as tessari-resp's is.
+default = ["surface"]
+surface = ["dep:tessaridb", "dep:tessari-serve", "dep:tessari-types", "dep:tokio", "dep:tokio-util", "dep:rustls", "dep:tokio-rustls"]
+
+[dev-dependencies]
+# A certificate minted per test for the TLS rows (the serve crate's test-support).
+tessari-serve = { workspace = true, features = ["test-support"] }
+# The surface is served in its tests on a runtime the test owns.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "test-util"] }
+
+[lints]
+workspace = true

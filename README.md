@@ -525,6 +525,7 @@ crates/
   tessari-wire                the wire protocol
   tessari-kafka               the Kafka protocol over the store's own topics
   tessari-resp                the RESP protocol over the store's own spaces
+  tessari-pg                  the relational wire protocol over the store's own tables
   tessari-serve               stopping a serving process in the order the stages require
   tessari-ingest              running the declared stream consumers: source, shaping, runner
   tessari-backup              log as backup, replay as restore

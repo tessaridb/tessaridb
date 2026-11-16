@@ -128,7 +128,7 @@ ENV TESSARIDB_STORE=/var/lib/tessaridb/store \
 #   TESSARIDB_RESP_SPACE        <namespace>.<database>.<space> a connection starts in
 
 VOLUME ["/var/lib/tessaridb"]
-EXPOSE 9080/tcp 8000/tcp 9092/tcp 6379/tcp
+EXPOSE 9080/tcp 8000/tcp 9092/tcp 6379/tcp 5432/tcp
 
 USER tessaridb
 WORKDIR /var/lib/tessaridb
