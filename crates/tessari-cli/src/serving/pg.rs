@@ -7,6 +7,10 @@ use crate::arguments::Serving;
 /// The address the surface binds when `--pg` is absent; empty is off.
 const PG: &str = "TESSARIDB_PG";
 
+/// The namespace a connection lands in when its startup names none; empty
+/// leaves the node's own resolution — the surface's built-in default.
+const PG_NAMESPACE: &str = "TESSARIDB_PG_NAMESPACE";
+
 fn flag_or_variable(flag: Option<&String>, variable: &str) -> Option<String> {
     flag.cloned()
         .or_else(|| std::env::var(variable).ok())
@@ -26,6 +30,9 @@ pub(super) fn bind(
     };
     let mut node = tessari_pg::Node::bind(std::sync::Arc::clone(db), address.as_str())
         .map_err(|failure| format!("{address}: {failure}"))?;
+    if let Some(namespace) = flag_or_variable(serving.pg_namespace.as_ref(), PG_NAMESPACE) {
+        node = node.defaulting_namespace(namespace);
+    }
     if let Some(credential) = secured {
         node = node.securing(credential.server_config(&[]));
     }

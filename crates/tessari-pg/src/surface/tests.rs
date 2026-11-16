@@ -22,6 +22,8 @@ mod extended;
 mod queries;
 mod secured;
 mod signing;
+mod tenancy;
+mod widening;
 
 /// A node over a fresh store holding the namespace `app` and the database
 /// `main`, after `setup` ran on it.
@@ -101,14 +103,14 @@ impl Client {
         out
     }
 
-    /// The startup packet, as the dialect's clients send it.
-    fn startup(user: Option<&str>, database: &str) -> Vec<u8> {
+    /// A startup packet from arbitrary pairs — the tenancy channels the
+    /// namespace resolution reads ride here too.
+    fn startup_packet(pairs: &[(&str, &str)]) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(&codec::PROTOCOL_VERSION.to_be_bytes());
-        if let Some(user) = user {
-            push_pair(&mut body, "user", user);
+        for (key, value) in pairs {
+            push_pair(&mut body, key, value);
         }
-        push_pair(&mut body, "database", database);
         body.push(0);
         let mut frame = Vec::new();
         frame.extend_from_slice(
@@ -128,7 +130,23 @@ impl Client {
         database: &str,
         password: Option<&str>,
     ) -> Vec<Seen> {
-        self.write(&Self::startup(user, database)).await;
+        self.start_pairs(
+            &[user.map(|u| ("user", u)), Some(("database", database))]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>(),
+            password,
+        )
+        .await
+    }
+
+    /// As [`Self::start`], from arbitrary startup pairs.
+    pub(crate) async fn start_pairs(
+        &mut self,
+        pairs: &[(&str, &str)],
+        password: Option<&str>,
+    ) -> Vec<Seen> {
+        self.write(&Self::startup_packet(pairs)).await;
         let mut seen = Vec::new();
         loop {
             let Some(message) = self.try_message().await else {

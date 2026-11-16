@@ -19,6 +19,7 @@ mod connection;
 mod errors;
 mod extended;
 mod running;
+mod session;
 mod translate;
 mod types;
 
@@ -36,11 +37,32 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 use translate::Columns;
 
+/// The environment variable that names the namespace a connection lands in
+/// when the startup names none. Overrides the built-in default; the explicit
+/// channels — the `database` field, the `namespace` pair, the `options`
+/// string — override it in turn.
+pub const NAMESPACE_ENV: &str = "TESSARIDB_PG_NAMESPACE";
+
+/// The namespace a connection lands in when nothing names one: the dialect's
+/// own default-schema word, so the mapping reads familiar before it reads
+/// documented.
+const DEFAULT_NAMESPACE: &str = "public";
+
+/// The default namespace for one value of the override variable: empty or
+/// absent names fall back to [`DEFAULT_NAMESPACE`].
+pub(crate) fn default_namespace_from(value: Option<String>) -> String {
+    value
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| DEFAULT_NAMESPACE.to_owned())
+}
+
 /// What every connection of one node shares.
 pub(crate) struct Shared {
     pub(crate) db: Arc<Db>,
     pub(crate) bridge: Arc<Bridge>,
     pub(crate) stopping: Arc<Stopping>,
+    pub(crate) namespace_default: String,
     clients: AtomicU64,
 }
 
@@ -64,8 +86,8 @@ impl Shared {
 }
 
 /// The session facts every connection is greeted with: what this build is,
-/// and the two settings a client may negotiate at startup.
-fn parameters(application: &Option<String>) -> Vec<(String, String)> {
+/// where it landed, and the two settings a client may negotiate at startup.
+fn parameters(application: &Option<String>, namespace: &str) -> Vec<(String, String)> {
     let mut out = vec![
         (
             "server_version".to_owned(),
@@ -80,6 +102,9 @@ fn parameters(application: &Option<String>) -> Vec<(String, String)> {
         ("default_transaction_read_only".to_owned(), "off".to_owned()),
         ("in_hot_standby".to_owned(), "off".to_owned()),
         ("is_superuser".to_owned(), "on".to_owned()),
+        // The namespace the connection landed in, reported under the dialect's
+        // own navigation word — SET search_path moves it, SHOW answers it.
+        ("search_path".to_owned(), namespace.to_owned()),
     ];
     if let Some(application) = application {
         out.push(("application_name".to_owned(), application.clone()));
@@ -187,7 +212,10 @@ pub struct Node {
 }
 
 impl Node {
-    /// Bind `address` for the wire protocol over `db`.
+    /// Bind `address` for the wire protocol over `db`. The default namespace —
+    /// where a connection lands when its startup names none — comes from
+    /// [`NAMESPACE_ENV`] when the variable holds a name, else from
+    /// `public`.
     ///
     /// # Errors
     ///
@@ -201,11 +229,29 @@ impl Node {
                 db,
                 bridge: Arc::new(Bridge::new(MAX_STORE_CALLS)),
                 stopping: Stopping::new(),
+                namespace_default: default_namespace_from(
+                    std::env::var(NAMESPACE_ENV).ok().filter(|v| !v.is_empty()),
+                ),
                 clients: AtomicU64::new(0),
             }),
             door: Admitting::to(MAX_CONNECTIONS),
             secured: None,
         })
+    }
+
+    /// Name the namespace a connection lands in when its startup names none.
+    /// Overrides [`NAMESPACE_ENV`] for this node; the explicit startup
+    /// channels override it in turn.
+    #[must_use]
+    pub fn defaulting_namespace(mut self, namespace: impl Into<String>) -> Self {
+        let namespace = namespace.into();
+        let name = namespace.trim();
+        if !name.is_empty() {
+            Arc::get_mut(&mut self.shared)
+                .expect("the node is not serving yet")
+                .namespace_default = name.to_owned();
+        }
+        self
     }
 
     /// Answer `S` to an SSLRequest and wrap what follows in TLS. Without a

@@ -88,6 +88,9 @@ pub struct Serving {
     pub resp_space: Option<String>,
     /// The relational wire protocol over the store's tables (ADR-0138).
     pub pg: Option<String>,
+    /// The namespace a wire-protocol connection lands in when its startup
+    /// names none.
+    pub pg_namespace: Option<String>,
     /// The folder `BACKUP … TO` writes into; absent, every `TO` is refused.
     pub backups: Option<PathBuf>,
     /// How long an unseal lasts; absent, `TESSARIDB_UNSEAL_FOR` or ten minutes.
@@ -253,6 +256,11 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                     .ok_or_else(|| "--pg wants a host:port".to_owned())?;
                 serving.pg = Some(address);
                 source = Source::Serve;
+            }
+            "--pg-namespace" => {
+                serving.pg_namespace = Some(arguments.next().ok_or_else(|| {
+                    "--pg-namespace wants the namespace connections land in".to_owned()
+                })?);
             }
             "--backup-dir" => {
                 let folder = arguments

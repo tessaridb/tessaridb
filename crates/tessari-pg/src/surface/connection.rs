@@ -91,30 +91,61 @@ async fn session(
         .find(|(key, _)| key == "database")
         .map(|(_, value)| value.clone())
         .unwrap_or_default();
-    let Some((namespace, chosen)) = database.split_once('.') else {
-        conn.refuse_startup(&Refused::with_detail(
-            code::INVALID_CATALOG,
-            "the startup database names a namespace and a database as <namespace>.<database>",
-            format!("got {database:?}"),
-        ))
-        .await?;
-        return Ok(());
+    // The tenancy the connection lands in, from the most specific channel
+    // that named one: the database field's <namespace>.<database>, then the
+    // namespace startup pair, then the options string's -c namespace=, then
+    // the node's default. A bare database name reads inside the default
+    // namespace; no name at all follows the dialect's own convention — the
+    // database defaults to the user's name.
+    let pair_namespace = pairs
+        .iter()
+        .find(|(key, _)| key == "namespace")
+        .map(|(_, value)| value.clone());
+    let options_namespace = pairs
+        .iter()
+        .find(|(key, _)| key == "options")
+        .and_then(|(_, options)| option_namespace(options));
+    let (namespace, chosen) = match database.split_once('.') {
+        Some((namespace, chosen)) => {
+            if namespace.is_empty() || chosen.is_empty() || chosen.contains('.') {
+                conn.refuse_startup(&Refused::with_detail(
+                    code::INVALID_CATALOG,
+                    "the startup database names exactly one namespace and one database",
+                    format!("got {database:?}"),
+                ))
+                .await?;
+                return Ok(());
+            }
+            (namespace.to_owned(), chosen.to_owned())
+        }
+        None => {
+            if database.contains('.') {
+                conn.refuse_startup(&Refused::with_detail(
+                    code::INVALID_CATALOG,
+                    "the startup database names exactly one namespace and one database",
+                    format!("got {database:?}"),
+                ))
+                .await?;
+                return Ok(());
+            }
+            let namespace = pair_namespace
+                .or(options_namespace)
+                .unwrap_or_else(|| shared.namespace_default.clone());
+            let chosen = if database.is_empty() {
+                user.clone().filter(|name| !name.is_empty())
+            } else {
+                Some(database.clone())
+            }
+            .unwrap_or_else(|| "main".to_owned());
+            (namespace, chosen)
+        }
     };
-    if chosen.is_empty() || namespace.is_empty() || chosen.contains('.') {
-        conn.refuse_startup(&Refused::with_detail(
-            code::INVALID_CATALOG,
-            "the startup database names exactly one namespace and one database",
-            format!("got {database:?}"),
-        ))
-        .await?;
-        return Ok(());
-    }
     let application = pairs
         .iter()
         .find(|(key, _)| key == "application_name")
         .map(|(_, value)| value.clone());
 
-    let mut held = Held::anonymous(shared, namespace, chosen);
+    let mut held = Held::anonymous(shared, &namespace, &chosen);
     if let Some(user) = user {
         conn.send(&codec::write::cleartext_password()).await?;
         let Frontend::Password(password) = conn.message().await? else {
@@ -152,7 +183,7 @@ async fn session(
     }
 
     conn.send(&codec::write::authentication_ok()).await?;
-    for (name, value) in super::parameters(&application) {
+    for (name, value) in super::parameters(&application, held.namespace()) {
         conn.send(&codec::write::parameter_status(&name, &value))
             .await?;
     }
@@ -214,14 +245,49 @@ async fn session(
     }
 }
 
-/// One simple query: blank answers empty; the translation refuses by name;
-/// a store refusal carries the store's words; rows come back described.
+/// One simple query: the session commands answer first — `SET search_path`
+/// moves the connection, `SHOW search_path` answers where it reads. Then the
+/// usual path: blank answers empty; the translation refuses by name; a store
+/// refusal carries the store's words; rows come back described.
 async fn query_once(
     conn: &mut Conn,
     query: &str,
     held: &mut Held,
     shared: &Arc<Shared>,
 ) -> Result<()> {
+    match super::session::parse(query) {
+        Ok(Some(super::session::Session::Namespace(namespace))) => {
+            held.set_namespace(&namespace);
+            conn.send(&codec::write::command_complete("SET")).await?;
+            conn.send(&codec::write::ready_for_query(codec::write::Tx::Idle))
+                .await?;
+            return Ok(());
+        }
+        Ok(Some(super::session::Session::ShowNamespace)) => {
+            let column = codec::write::Column {
+                name: "search_path".to_owned(),
+                type_oid: super::types::oid::TEXT,
+                type_len: -1,
+            };
+            conn.send(&codec::write::row_description(std::slice::from_ref(
+                &column,
+            )))
+            .await?;
+            conn.send(&codec::write::data_row(&[Some(
+                held.namespace().to_owned(),
+            )]))
+            .await?;
+            conn.send(&codec::write::command_complete("SHOW")).await?;
+            conn.send(&codec::write::ready_for_query(codec::write::Tx::Idle))
+                .await?;
+            return Ok(());
+        }
+        Ok(None) => {}
+        Err(refused) => {
+            conn.refuse(&refused).await?;
+            return Ok(());
+        }
+    }
     if query.trim().is_empty() {
         conn.send(&codec::write::empty_query()).await?;
         conn.send(&codec::write::ready_for_query(codec::write::Tx::Idle))
@@ -344,6 +410,29 @@ pub(crate) async fn answer(
 /// The frame an error refuses with.
 fn refused_frame(refused: &Refused) -> Vec<u8> {
     codec::write::error(refused.code, &refused.message, refused.detail.as_deref())
+}
+
+/// The namespace an `options` startup string names, when it does: the
+/// dialect's own convention carries `-c name=value` pairs there, so a libpq
+/// `options='-c namespace=app'` reaches the tenancy the same way a pair does.
+fn option_namespace(options: &str) -> Option<String> {
+    let mut words = options.split_whitespace();
+    while let Some(word) = words.next() {
+        let setting = if word == "-c" {
+            words.next()?
+        } else if let Some(rest) = word.strip_prefix("-c") {
+            rest
+        } else {
+            continue;
+        };
+        let Some((name, value)) = setting.split_once('=') else {
+            continue;
+        };
+        if name == "namespace" && !value.is_empty() {
+            return Some(value.to_owned());
+        }
+    }
+    None
 }
 
 /// The stream a connection speaks over: plain, or TLS after the client asked

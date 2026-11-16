@@ -157,7 +157,7 @@ async fn a_store_refusal_carries_the_stores_words() {
 async fn a_bad_database_form_refuses_before_the_session_and_closes() {
     let (address, stop, _) = serving_with(SETUP).await;
     let mut client = Client::to(&address).await;
-    let seen = client.start(None, "shop", None).await;
+    let seen = client.start(None, "app.main.extra", None).await;
     let (code, _) = refused(&seen).expect("the catalog refusal");
     assert_eq!(code, "3D000");
     stop.cancel();

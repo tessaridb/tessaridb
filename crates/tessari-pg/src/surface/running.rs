@@ -49,6 +49,18 @@ impl Held {
         )
     }
 
+    /// The namespace the connection reads under — what `search_path` answers
+    /// and what `SET search_path` changes.
+    pub(crate) fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    /// Move the connection to another namespace; the next statement's tenancy
+    /// prefix carries it, so nothing runs where the last session left it.
+    pub(crate) fn set_namespace(&mut self, namespace: &str) {
+        self.namespace = namespace.to_owned();
+    }
+
     /// Run `script` with `parameters` bound, answering the script's own
     /// outcomes — the two `USE`s the prefix adds are not among them.
     pub(crate) async fn run(
