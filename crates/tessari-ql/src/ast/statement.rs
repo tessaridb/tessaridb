@@ -865,6 +865,11 @@ pub enum StatementKind {
         /// what the remote must call the copy for it to be this link's. Absent
         /// reads as the same name it has here.
         remote: Option<String>,
+        /// The direction: `TO` answers outbound — this cluster ships the
+        /// database — and `FROM` answers inbound — another cluster ships it,
+        /// and this cluster's copy is read-only by declaration until the link
+        /// is dropped.
+        inbound: bool,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

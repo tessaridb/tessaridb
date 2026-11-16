@@ -12,6 +12,24 @@ use crate::session::Session;
 
 use super::{Declared, FORMAT_JSON, Peer, named_roles};
 
+/// A `DEFINE REPLICATION` statement's parts, as the parser left them — the
+/// shape `DEFINE REPLICA`'s `Peer` takes, so the signature stays a statement
+/// and a transaction however many clauses the grammar grows.
+pub(super) struct DeclaredReplication<'s> {
+    /// The name the link is known by.
+    pub(super) name: &'s Name,
+    /// Where the remote cluster answers, as written.
+    pub(super) endpoint: &'s str,
+    /// The database that replicates, always fully qualified.
+    pub(super) database: &'s tessari_ql::TableRef,
+    /// The database's name on the remote cluster, when said.
+    pub(super) remote: Option<&'s str>,
+    /// The direction: `TO` outbound, `FROM` inbound.
+    pub(super) inbound: bool,
+    /// Whether re-defining an existing name is accepted.
+    pub(super) if_not_exists: bool,
+}
+
 impl Session<'_> {
     /// `DEFINE NODE ROLES … ENDPOINTS …` — the local half of the configuration.
     ///
@@ -232,18 +250,14 @@ impl Session<'_> {
     pub(super) async fn define_replication(
         &self,
         transaction: &mut Transaction<'_>,
-        name: &Name,
-        endpoint: &str,
-        database: &tessari_ql::TableRef,
-        remote: Option<&str>,
-        if_not_exists: bool,
+        declared: &DeclaredReplication<'_>,
     ) -> Result<Outcome> {
-        let declared = Catalog::new(transaction)
+        let exists = Catalog::new(transaction)
             .replications()
             .await?
             .into_iter()
-            .any(|found| found.name == name.text);
-        if if_not_exists && declared {
+            .any(|found| found.name == declared.name.text);
+        if declared.if_not_exists && exists {
             return Ok(Outcome::Done);
         }
         // The database is resolved before the name is claimed, so a statement
@@ -252,14 +266,14 @@ impl Session<'_> {
         let reach = self
             .reach_of(
                 transaction,
-                &tessari_ql::ReachRef::Database(database.clone()),
+                &tessari_ql::ReachRef::Database(declared.database.clone()),
             )
             .await?;
         let tessari_storage::Reach::Database(namespace, database_id) = reach else {
             return Err(Error::Unknown {
                 entity: "database",
-                name: database.name.text.clone(),
-                span: database.span,
+                name: declared.database.name.text.clone(),
+                span: declared.database.span,
             });
         };
         self.refuse_a_format_the_store_does_not_hold(
@@ -269,10 +283,11 @@ impl Session<'_> {
         .await?;
         Catalog::new(transaction)
             .create_replication_with(tessari_storage::ReplicationDefinition {
-                name: name.text.clone(),
-                endpoint: endpoint.to_owned(),
+                name: declared.name.text.clone(),
+                endpoint: declared.endpoint.to_owned(),
                 database: tessari_storage::Reach::Database(namespace, database_id),
-                remote: remote.map(str::to_owned),
+                remote: declared.remote.map(str::to_owned),
+                inbound: declared.inbound,
                 paused: false,
                 join: None,
             })

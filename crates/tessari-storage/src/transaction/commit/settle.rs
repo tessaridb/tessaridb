@@ -23,6 +23,29 @@ impl Transaction<'_> {
         if let Some(held) = self.held_only().await? {
             return self.settle_held(settle, held).await;
         }
+        // A write into a database this cluster receives from another is
+        // refused here, before the leadership questions and for their reason:
+        // a gate a `VERIFY` cannot see is one an operator meets for the first
+        // time in production. Asked against the derived registry and not the
+        // catalog, so the hot path pays no catalog walk; asked before the
+        // fence, so a node does no validation on work it is about to refuse.
+        // The commit that declares or drops a link writes only the system
+        // tenancy, so it never meets its own gate.
+        for (namespace, database) in self.write_tenancies() {
+            if let Some(link) = self.store.replicated().link_over((namespace, database)) {
+                let mut reading = self.store.begin().await?;
+                let named = crate::catalog::Catalog::new(&mut reading)
+                    .databases_in(namespace)
+                    .await?
+                    .into_iter()
+                    .find(|held| held.id == database)
+                    .map_or_else(|| database.get().to_string(), |held| held.name);
+                return Err(Error::WritesToAReplica {
+                    database: named,
+                    link,
+                });
+            }
+        }
         // First, and after the empty check rather than before it. First because
         // a node that has run out of leadership should not be doing schema
         // validation on work it is about to refuse; after the empty check
@@ -394,6 +417,9 @@ impl Transaction<'_> {
         let batch = crate::bounded::maintain(self.store, carried, batch, commit_version).await?;
         // And a topic's positions, dense in commit order (G037).
         let batch = crate::topic::maintain(self.store, carried, batch).await?;
+        // And what the record says about inbound links — in memory, beside the
+        // batch, for the reason the registry's own header gives.
+        self.store.replicated().maintain(carried)?;
         // And this node's format stamp, when the record finalizes it
         // (ADR-0118) — on the leader as on every follower.
         crate::format_stamp::maintain(self.store, carried, batch, commit_version).await

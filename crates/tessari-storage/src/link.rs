@@ -246,3 +246,74 @@ impl Sink for ChannelSink {
         std::future::ready(Ok(confirmed))
     }
 }
+
+/// The databases this cluster receives from another, and the inbound link each
+/// is received over. Derived from the catalog's replication rows on every
+/// commit and apply, the way record counts are — a follower replaying the
+/// record reaches the same registry, so the gate below it answers identically
+/// on every node. Sharded like the other registries: a commit touching one
+/// database never waits on a link it has nothing to do with.
+#[derive(Debug, Default)]
+pub struct Replicated {
+    inbound: DashMap<(tessari_types::NamespaceId, tessari_types::DatabaseId), String>,
+}
+
+impl Replicated {
+    /// An empty registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The link a database is received over, when it is received.
+    #[must_use]
+    pub fn link_over(
+        &self,
+        tenancy: (tessari_types::NamespaceId, tessari_types::DatabaseId),
+    ) -> Option<String> {
+        self.inbound.get(&tenancy).map(|held| held.clone())
+    }
+
+    /// Learn what one record's mutations say about inbound links. Called from
+    /// the commit and the apply in the same order as every other derived
+    /// thing, for the same reason: a state reached by replay derives the same
+    /// registry as the state that was committed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when a replication row in the log
+    /// cannot be decoded — refused rather than skipped, because a row read as
+    /// nothing is a gate that quietly stops refusing.
+    pub(crate) fn maintain(&self, record: &tessari_encoding::LogRecord) -> Result<()> {
+        use tessari_encoding::RecordValue;
+        for mutation in record.mutations() {
+            if mutation.namespace != crate::catalog::system::SYSTEM_NAMESPACE
+                || mutation.database != crate::catalog::system::SYSTEM_DATABASE
+                || mutation.table != crate::catalog::system::REPLICATIONS
+            {
+                continue;
+            }
+            match mutation.value.value() {
+                RecordValue::Present(payload) => {
+                    let definition = ReplicationDefinition::from_value(
+                        &tessari_encoding::decode_payload(payload)?,
+                    )?;
+                    if definition.inbound
+                        && let Reach::Database(namespace, database) = definition.database
+                    {
+                        self.inbound
+                            .insert((namespace, database), definition.name.clone());
+                    }
+                }
+                RecordValue::Tombstone => {
+                    // A dropped link forgets its databases; the tombstone's id
+                    // is the link name the row lived under.
+                    if let tessari_types::RecordId::Text(name) = &mutation.id {
+                        self.inbound.retain(|_, link| link != name);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}

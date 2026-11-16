@@ -295,11 +295,18 @@ impl Parser<'_> {
     pub(in crate::parser::statement) fn define_replication(&mut self) -> Result<StatementKind> {
         let if_not_exists = self.eat_if_not_exists()?;
         let name = self.name()?;
-        // `TO` is reserved (it leads `INFO FOR ACCESS TO` and the grant
-        // spellings), so it arrives as a keyword rather than a contextual word.
-        if !self.eat_keyword(Keyword::To) {
-            return Err(self.error_here("`TO` and where the remote cluster answers"));
-        }
+        // `TO` and `FROM` are reserved (they lead the grant spellings and
+        // `INFO FOR ACCESS TO`), so they arrive as keywords rather than
+        // contextual words. `TO` declares the outbound half — this cluster
+        // ships; `FROM` declares the inbound half — another cluster ships and
+        // this cluster's copy is read-only by declaration.
+        let inbound = if self.eat_keyword(Keyword::To) {
+            false
+        } else if self.eat_keyword(Keyword::From) {
+            true
+        } else {
+            return Err(self.error_here("`TO` or `FROM` and where the remote cluster answers"));
+        };
         let (endpoint, _) = self.text("the endpoint, as text")?;
         if !self.eat_word("for") {
             return Err(self.error_here("`FOR` and the database that replicates"));
@@ -331,6 +338,7 @@ impl Parser<'_> {
             endpoint,
             database,
             remote,
+            inbound,
             if_not_exists,
         })
     }

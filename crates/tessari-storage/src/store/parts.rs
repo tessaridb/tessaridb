@@ -65,6 +65,15 @@ impl Store {
         &self.links
     }
 
+    /// The databases this cluster receives over an inbound link — the registry
+    /// the commit's write gate reads. Derived, never persisted: a state
+    /// reached by replay derives the same registry as the state that was
+    /// committed.
+    #[must_use]
+    pub fn replicated(&self) -> &Arc<crate::link::Replicated> {
+        &self.replicated
+    }
+
     /// This store's sign-in failure counts, which every way of trying a
     /// password or a vault passphrase asks before it spends a derivation.
     #[must_use]

@@ -298,3 +298,90 @@ fn the_served_group_reports_what_the_far_side_confirmed() {
         "dropping the link forgot the floors"
     );
 }
+
+#[test]
+fn a_database_received_from_another_cluster_is_read_only_by_declaration() {
+    // D7: the named refusal. Not NotWritable — the replica is not "not the
+    // leader"; its writer is another cluster, and the refusal says so, because
+    // the remedy for the two is different. Refused inside the commit, so a
+    // VERIFY rehearses it; refused for the owner as for anybody, because the
+    // copy's writer is elsewhere no matter who asks.
+    let store = store_with_a_link();
+    let mut session = Session::new(&store);
+    session
+        .run_now(
+            "DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop; \
+             USE NAMESPACE prod DATABASE shop;",
+        )
+        .unwrap();
+    let refused = session
+        .run_now("CREATE orders:9 = { item: 'sneaky' };")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("read-only") && refused.contains("west"),
+        "the refusal names the class and the link: {refused}"
+    );
+    // A rehearsal sees the same refusal — the gate runs inside the commit,
+    // and `VERIFY` is the rehearsal: every check a COMMIT runs, then nothing
+    // is written.
+    let rehearsal = session
+        .run_now(
+            "BEGIN; \
+             USE NAMESPACE prod DATABASE shop; \
+             CREATE orders:9 = { item: 'sneaky' }; \
+             VERIFY;",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        rehearsal.contains("read-only"),
+        "a VERIFY rehearses the gate: {rehearsal}"
+    );
+    // And the database beside the replica is writable — the gate is per
+    // database, not per store.
+    session
+        .run_now("USE NAMESPACE prod DATABASE other; CREATE orders:1 = { item: 'pen' };")
+        .unwrap();
+    // Dropping the link lifts the read-only: the declaration was the gate.
+    session.run_now("DROP REPLICATION west;").unwrap();
+    session
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:9 = { item: 'book' };")
+        .unwrap();
+}
+
+#[test]
+fn the_direction_is_reported_and_alter_cannot_flip_it() {
+    let store = store_with_a_link();
+    let mut session = Session::new(&store);
+    session
+        .run_now("DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop;")
+        .unwrap();
+    let mut read = |statement: &str| {
+        let outcomes = session.run_now(statement).unwrap();
+        let Some(tessari_session::Outcome::Value(Value::Object(report))) =
+            outcomes.into_iter().next()
+        else {
+            panic!("{statement} did not answer with an object");
+        };
+        report
+    };
+    let west = read("INFO FOR REPLICATION west;");
+    let Some(Value::Object(declared)) = west.get("declared") else {
+        panic!("no declared group: {west:?}");
+    };
+    assert_eq!(declared.get("direction"), Some(&Value::from("inbound")));
+    // `east` is declared by the fixture, outbound.
+    let east = read("INFO FOR REPLICATION east;");
+    let Some(Value::Object(declared)) = east.get("declared") else {
+        panic!("no declared group: {east:?}");
+    };
+    assert_eq!(declared.get("direction"), Some(&Value::from("outbound")));
+    // Direction is not a clause: flipping it is dropping and re-declaring,
+    // because a flipped link is a different link.
+    assert!(
+        session
+            .run_now("ALTER REPLICATION west TO 'cluster-c:9080';")
+            .is_err()
+    );
+}

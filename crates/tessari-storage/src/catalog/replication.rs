@@ -31,6 +31,7 @@ const FIELD_NAME: &str = "name";
 const FIELD_ENDPOINT: &str = "endpoint";
 const FIELD_DATABASE: &str = "database";
 const FIELD_REMOTE: &str = "remote";
+const FIELD_INBOUND: &str = "inbound";
 const FIELD_PAUSED: &str = "paused";
 const FIELD_JOIN: &str = "join";
 const FIELD_DIGEST: &str = "digest";
@@ -62,6 +63,13 @@ pub struct ReplicationDefinition {
     /// The database's name on the remote cluster (`AS 'shop'`), when said.
     /// `None` reads as the same name it has here.
     pub remote: Option<String>,
+    /// The direction. `false` (`TO`, the default this field's absence reads
+    /// as) is the outbound half — this cluster ships the database. `true`
+    /// (`FROM`) is the inbound half: another cluster ships it, and this
+    /// cluster's copy is read-only by declaration until the link is dropped.
+    /// Written only when inbound, so a row declared before directions existed
+    /// keeps its bytes.
+    pub inbound: bool,
     /// Whether the stream is held (`ALTER REPLICATION … PAUSED`).
     ///
     /// Written only when true, so a row declared before pausing existed keeps
@@ -88,6 +96,9 @@ impl ReplicationDefinition {
         ]);
         if let Some(remote) = &self.remote {
             fields.insert(FIELD_REMOTE.to_owned(), Value::from(remote.as_str()));
+        }
+        if self.inbound {
+            fields.insert(FIELD_INBOUND.to_owned(), Value::Bool(true));
         }
         if self.paused {
             fields.insert(FIELD_PAUSED.to_owned(), Value::Bool(true));
@@ -127,6 +138,7 @@ impl ReplicationDefinition {
             endpoint: text_of(fields, FIELD_ENDPOINT)?,
             database: Reach::from_value(database, ENTITY, FIELD_DATABASE)?,
             remote: text_in(fields, FIELD_REMOTE)?,
+            inbound: flag_in(fields, FIELD_INBOUND)?,
             paused: flag_in(fields, FIELD_PAUSED)?,
             join: join_in(fields)?,
         })

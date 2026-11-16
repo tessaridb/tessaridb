@@ -297,6 +297,10 @@ impl Store {
         let batch = crate::cardinality::maintain(self, record, batch, version).await?;
         // The catalog's id counters, in the commit path's order (engine Q-959).
         let batch = crate::catalog::maintain_allocators(self, record, batch, version).await?;
+        // And what the record says about inbound links — in memory, in the
+        // commit path's order, so a state reached by replay derives the same
+        // registry as the state that was committed.
+        self.replicated().maintain(record)?;
         // And the expiry index, so a follower promoted to leader can remove what
         // has expired without having written any of it .
         let batch = crate::lapse::maintain(self, record, batch).await?;

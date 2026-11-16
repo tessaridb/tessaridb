@@ -1153,7 +1153,9 @@ const TABLES: &[Table] = &[
         // store data, no record and no grant-reachable surface behind it, and
         // the positions it holds are the lag half of an answer the language
         // already gives.
-        expected: 86,
+        // 22 since the inbound link: `Store::replicated` hands out the derived
+        // registry, classified above with the total.
+        expected: 87,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1418,7 +1420,15 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // (G079 W8b-2), classified above.
     //
     // 176 since `Store::links`, classified above.
-    assert_eq!(total, 176, "the counted tables no longer sum to 176");
+    //
+    // 177 since `Store::replicated` — the derived registry the commit's write
+    // gate reads. Classified **enforced by the gate it exists for**: what it
+    // can say is which databases are received over which link, an answer
+    // `INFO FOR REPLICATION` already gives the caller the store admits, and
+    // what it can change is a process-local derived registry the commit path
+    // itself re-derives on every record — a caller holding it can no more
+    // weaken the gate than a caller holding the write gate can.
+    assert_eq!(total, 177, "the counted tables no longer sum to 177");
 }
 
 /// Every `.rs` file under a directory.

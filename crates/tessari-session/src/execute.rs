@@ -604,15 +604,19 @@ impl Session<'_> {
                 endpoint,
                 database,
                 remote,
+                inbound,
                 if_not_exists,
             } => {
                 self.define_replication(
                     transaction,
-                    name,
-                    endpoint,
-                    database,
-                    remote.as_deref(),
-                    *if_not_exists,
+                    &cluster::DeclaredReplication {
+                        name,
+                        endpoint,
+                        database,
+                        remote: remote.as_deref(),
+                        inbound: *inbound,
+                        if_not_exists: *if_not_exists,
+                    },
                 )
                 .await
             }

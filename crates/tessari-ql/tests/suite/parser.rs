@@ -1801,6 +1801,7 @@ fn a_replication_names_a_fully_qualified_database() {
         endpoint,
         database,
         remote,
+        inbound,
         if_not_exists,
     } = one("DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop AS 'shop';")
     else {
@@ -1815,6 +1816,7 @@ fn a_replication_names_a_fully_qualified_database() {
     );
     assert_eq!(database.name.text, "shop");
     assert_eq!(remote.as_deref(), Some("shop"));
+    assert!(!inbound, "`TO` is the outbound half — this cluster ships");
     assert!(!if_not_exists);
     // Absent clauses: no remote name, no IF NOT EXISTS — declared, not amended.
     let StatementKind::DefineReplication {
@@ -1830,6 +1832,17 @@ fn a_replication_names_a_fully_qualified_database() {
     // A bare database name is refused where the span is, not resolved against a
     // session the statement does not name.
     assert!(parse("DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE shop;").is_err());
+    // `FROM` declares the inbound half — the copy this cluster receives and
+    // holds read-only by declaration.
+    let StatementKind::DefineReplication { inbound, .. } =
+        one("DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop;")
+    else {
+        panic!("DEFINE REPLICATION FROM did not parse as DEFINE REPLICATION");
+    };
+    assert!(inbound);
+    // One direction per declaration: neither is a default, and `AT` is not a
+    // spelling for either.
+    assert!(parse("DEFINE REPLICATION east AT 'cluster-b:9080' FOR DATABASE prod.shop;").is_err());
 }
 
 #[test]

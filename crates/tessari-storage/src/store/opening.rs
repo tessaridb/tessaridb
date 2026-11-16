@@ -80,6 +80,7 @@ impl Store {
             snapshots: Arc::new(Registry::default()),
             running: Arc::new(crate::running::Running::default()),
             links: Arc::new(crate::link::Links::new()),
+            replicated: Arc::new(crate::link::Replicated::new()),
             // Sealed. A store that opened unsealed would be one that opens
             // secrets for whoever restarted it.
             vault: Arc::new(crate::vault::OpenVault::sealed()),

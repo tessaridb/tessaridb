@@ -68,3 +68,49 @@ DROP REPLICATION east;
 --- case: and asking about it refuses rather than answering empty
 INFO FOR REPLICATION east;
 --- expect: error Unknown
+
+--- case: the tables and the neighbour database the inbound half needs
+USE NAMESPACE prod DATABASE shop;
+DEFINE TABLE orders SCHEMALESS;
+DEFINE DATABASE other;
+USE DATABASE other;
+DEFINE TABLE orders SCHEMALESS;
+--- expect: ok
+
+--- case: the inbound half is declared FROM, and the copy is read-only by declaration
+DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop;
+--- expect: ok
+
+--- case: a write into a received database is refused, naming the link
+USE NAMESPACE prod DATABASE shop;
+CREATE orders:1 = { item: 'sneaky' };
+--- expect: error WritesToAReplica
+
+--- case: and the refusal survives a rehearsal
+BEGIN;
+USE NAMESPACE prod DATABASE shop;
+CREATE orders:1 = { item: 'sneaky' };
+VERIFY;
+--- expect: error WritesToAReplica
+
+--- case: the database beside the replica stays writable
+USE NAMESPACE prod DATABASE other;
+CREATE orders:1 = { item: 'pen' };
+--- expect: ok
+
+--- case: direction is reported, and is not a clause
+INFO FOR REPLICATION west;
+--- expect: ok
+
+--- case: flipping a direction is refused — a flipped link is a different link
+ALTER REPLICATION west TO 'cluster-b:9080';
+--- expect: error UnexpectedToken
+
+--- case: dropping the link lifts the read-only
+DROP REPLICATION west;
+--- expect: ok
+
+--- case: and the database is writable again
+USE NAMESPACE prod DATABASE shop;
+CREATE orders:1 = { item: 'book' };
+--- expect: ok

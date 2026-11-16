@@ -206,6 +206,11 @@ pub struct Store {
     /// link and log. In memory for the reason `followers` is: a live
     /// relationship, never a persisted claim about one.
     links: Arc<crate::link::Links>,
+    /// The databases received from another cluster over an inbound link, and
+    /// the link each is received over. Derived from the catalog on every
+    /// commit and apply; the write gate inside the commit reads it, so the
+    /// refusal costs no catalog walk on the hot path.
+    replicated: Arc<crate::link::Replicated>,
     /// Whether this process can open what its vaults hold.
     ///
     /// Shared for the same reason as the two registries above, and the

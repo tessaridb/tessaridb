@@ -272,6 +272,14 @@ pub(crate) async fn described_replication(
                 .as_deref()
                 .map_or(Value::Null, Value::from),
         ),
+        (
+            "direction".to_owned(),
+            Value::from(if replication.inbound {
+                "inbound"
+            } else {
+                "outbound"
+            }),
+        ),
         ("paused".to_owned(), Value::Bool(replication.paused)),
         (
             "join_expires_ms".to_owned(),
