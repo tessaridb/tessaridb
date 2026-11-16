@@ -23,6 +23,25 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.44.0 — 2026-11-17
+
+A store written by 0.43.0 opens under 0.44.0 unchanged (format 13).
+
+- **Incremental backup and point-in-time recovery, evidenced and made honest.** The log delta
+  and the bounded replay were already the store's machinery; this release proves the claims and
+  closes the holes the proof found. A base plus its increments restores to the whole store and
+  answers what the original answers, and the delta is asserted an order of magnitude smaller
+  than the base. A restore to three instants of the log answers what the source held at each —
+  a record created after the instant is absent, one deleted before it is absent too.
+- **A truncated increment refuses as `CutShort`.** A whole backup cut short is a prefix of
+  history and restores what it holds, saying so; an increment cut short would leave the chain
+  believing it reached where it never did, so the reader refuses by name, with the base
+  untouched. A damaged delta refuses the same way it always has.
+- **The prune and the PITR window, stated.** A prune moves the reachable window's edge: an
+  instant below the horizon is not recoverable, `--from` below it refuses naming the floor, a
+  delta chain is only as restorable as its base plus every delta in it, and a snapshot restore
+  needs no history.
+
 ## 0.43.0 — 2026-11-17
 
 A store written by 0.42.0 opens under 0.43.0 unchanged (format 13); nothing in this
