@@ -9774,6 +9774,68 @@ and `SELECT answered FROM tickets` still reads it. The clause opens only when
 `BY` follows, the same way every other contextual word in this grammar is
 settled.
 
+## 7b‴‴′. Naming the read's consistency level
+
+```
+SELECT * FROM accounts WHERE id = 1 LEADER;
+SELECT * FROM orders SNAPSHOT;
+SELECT * FROM prices STALE WITHIN 30s;
+```
+
+A read may name its **consistency level** in one word at the statement's tail —
+`LEADER`, `SNAPSHOT`, or `STALE WITHIN <span>`. A level is the two axes above —
+which node may answer, how old the answering copy may be — named together as one
+word, with the contract that word carries stated here. It is not a third axis:
+`LEADER` and `STALE WITHIN <span>` settle onto `ANSWERED BY LEADER` and
+`STALENESS <span>` at the statement and are enforced by exactly the machinery
+those clauses have always had. The level earns its place by **refusing where its
+contract cannot be met**, not by answering anywhere new.
+
+### The three levels, and what each promises
+
+| level | answered by | promises | refuses, rather than answering weaker |
+|---|---|---|---|
+| `LEADER` | only the node that decides writes for these records | no stale data — the answer is the one writes are decided at; not repeatable across statements (a transaction is how reads that must agree are held to one point) | a node that does not lead: it redirects to the one that claims to, or refuses and names the remedy (§7b‴‴) |
+| `SNAPSHOT` | any node holding everything the read needs — its own committed tail is one point | one committed point in history for the whole statement; repeatable across statements only inside a transaction | a read that would gather a part from another node's present: the refusal names the shards it does not hold |
+| `STALE WITHIN <span>` | any node whose copy is no older than the span | the answering copy is at most the span old — an upper bound, never understated — and the answer **states the copy's actual age** (below) | a bound below the floor, with the floor named; a bound no copy can meet, rather than being served from a staler one |
+
+### Composition, stated once
+
+- A level sits at the statement's **tail**, after every clause it can disagree
+  with. Beside `VERSION`, any level is refused — `VERSION` names one exact point,
+  and a level beside it is a second answer to a question already answered.
+- `LEADER` beside `ANSWERED BY ANY` is refused: the level demands the one node
+  that decides writes, the clause admits any copy, and a guess would fail in the
+  unsafe direction. Agreement is not a contradiction — `ANSWERED BY LEADER`
+  beside `LEADER` says the same thing twice.
+- `STALE` carries its own bound, and a `STALENESS` clause beside it is refused
+  as the same question asked twice. `STALENESS` may still refine the levels that
+  carry no bound of their own — `LEADER`, `SNAPSHOT` — exactly as it always has.
+- `STALE` without `WITHIN` is refused where the statement is read: a tolerance
+  the statement does not write down is a tolerance the caller never chose, and
+  there is no stored default.
+- Inside a transaction, `SNAPSHOT` is legal and says no more than the transaction
+  already promises — one point in history. (`VERSION` inside one is refused,
+  because it names a *second* point; the level restates the first.)
+
+`leader`, `snapshot` and `stale` are **not** reserved words — fields may still
+carry them, and the words open a level only at the statement's tail, the same
+way every other contextual word in this grammar is settled.
+
+### The lag is stated with a bounded answer
+
+When a read that named a freshness bound is answered locally by a node holding a
+follower copy, the answer carries an `answered-as-of` **note** stating how old
+the answering copy was at the decision. The bound is the guarantee — a copy
+beyond it is never asked — and the note is the information, so a caller that
+accepted a bounded answer can read what it actually got instead of measuring it.
+The age is time since the copy was last **level** with the leader (the same
+lower bound the follower rows of `INFO FOR NODE` document): the answer's data
+may be older, never newer, than the number stated.
+
+A read answered by the leader, or one that named no bound, carries no such note.
+A note on every answer is a note nobody reads.
+
 ## 7b′. What the answer says without being asked
 
 `EXPLAIN` answers a question you have to know to ask. A **note** is the other
@@ -9820,6 +9882,7 @@ The kinds include:
 | `needs-rebuild` | a search index this read met may hold an earlier tokenizer's terms: a field's index was not answered from (the read scanned) and a search's member was read and can miss records; the message names the statement that rebuilds it (§4, *Which tokenizer built an index*) |
 | `estimated` | an `approx_distinct` or `approx_quantile` answered: `fold`, `method` (`hll-14` or `ddsketch`), the declared `bound`, and whether a quantile sketch `collapsed` (§5, *One answer per group*) |
 | `undeclared-field` | a read of a strict table named a field the table does not declare — a misspelling, or `id`, which is a record's address and not a field — so it found that field on no record; the message names the fields (from engine `0.40.0`) |
+| `answered-as-of` | a read that named a freshness bound was answered locally from a copy that is not the leader's own, and this is how old that copy was: the bound named is the guarantee, and this is the copy's actual age (§7b‴″′) |
 
 **`fell-back` fires on an index that declined, never on a table that has none.**
 A bounded ordered read over an unindexed table is the most ordinary read in the

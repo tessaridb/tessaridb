@@ -558,3 +558,53 @@ fn a_lagging_follower_answers_each_level_per_its_contract() {
         "the leader's present holds 'm': {records:?}"
     );
 }
+
+#[test]
+fn a_bounded_read_served_from_a_replica_is_single_digit_milliseconds() {
+    // The measured shape of a local read: a bounded read served by a follower
+    // copy answers in single-digit milliseconds. The figure prints beside the
+    // build and the shape — a measurement, not an assertion the reader has to
+    // take on faith; the assert below is the criterion's bar with the headroom
+    // the in-memory shape deserves, and a regression that crosses it is a real
+    // one. Same-host processes stand in for same-DC: the serving path being
+    // measured is the local one, and the deployment's regions are the honest
+    // same-DC story.
+    let pair = pair();
+    let mut draining = pair.on_the_follower("root");
+    draining.run_now("DEFINE NODE ROLES serving;").unwrap();
+    level(pair.follower(), 1);
+
+    let span = STALENESS_FLOOR_SECONDS.saturating_mul(60);
+    let read = format!("SELECT * FROM ledger:'h'..'n' STALE WITHIN {span}s;");
+    let mut session = pair.on_the_follower("reader");
+
+    // Warmup: parsing, caches, and the steady state a measurement wants.
+    for _ in 0..50 {
+        session.run_now(&read).unwrap();
+    }
+    let mut samples = Vec::with_capacity(200);
+    for _ in 0..200 {
+        let started = std::time::Instant::now();
+        session.run_now(&read).unwrap();
+        samples.push(started.elapsed());
+    }
+    samples.sort_unstable();
+    let p50 = samples
+        .get(samples.len() / 2)
+        .copied()
+        .unwrap_or(Duration::ZERO);
+    println!(
+        "bounded read served from a follower copy: p50 {p50:?} over {} reads \
+         (engine {}, ledger split in 3, window 'h'..'n' inside the held shard, \
+         ~8 records, STALE WITHIN {span}s, same-process pair — same-host stands \
+         in for same-DC)",
+        samples.len(),
+        env!("CARGO_PKG_VERSION"),
+    );
+    assert!(
+        p50 < Duration::from_millis(10),
+        "single-digit milliseconds at the stated shape: p50 {p50:?}, \
+         worst {:?}",
+        samples.last().copied().unwrap_or(Duration::ZERO),
+    );
+}
