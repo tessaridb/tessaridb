@@ -89,6 +89,7 @@ async fn psql_connects_and_reads() {
     }
     let (address, _stop, _db) = serving_with(&format!("{SETUP} {USERS}")).await;
     let port = address.rsplit(':').next().unwrap_or_default().to_owned();
+    let port_block = port.clone();
 
     // The child is a blocking process: it runs off the runtime, so the
     // node keeps serving while psql speaks.
@@ -124,6 +125,44 @@ async fn psql_connects_and_reads() {
         String::from_utf8_lossy(&output.stdout).trim(),
         "first",
         "psql read through the port"
+    );
+
+    // libpq sends several statements in one query string as one implicit
+    // block — the port's wrap carries them in one engine transaction.
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("psql")
+            .args([
+                "-X",
+                "-h",
+                "127.0.0.1",
+                "-p",
+                &port_block,
+                "-U",
+                "matrix",
+                "-d",
+                "app.main",
+                "-t",
+                "-A",
+                "-c",
+                "SELECT name FROM orders WHERE band = 3 ORDER BY name NULLS LAST; SELECT band FROM orders LIMIT 1",
+            ])
+            .env("PGPASSWORD", "matrix-secret")
+            .output()
+            .expect("psql runs")
+    })
+    .await
+    .expect("psql task lands");
+    assert!(
+        output.status.success(),
+        "psql refused: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // psql prints only the last statement's result for -c; both ran (the
+    // block refused or the last would not have answered).
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "1",
+        "the implicit block ran to its last statement"
     );
 }
 

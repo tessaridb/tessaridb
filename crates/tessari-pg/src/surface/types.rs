@@ -141,11 +141,39 @@ pub(crate) fn value_of_text(
             .map(Value::Number)
             .map_err(|_| invalid()),
         oid::TEXT | oid::VARCHAR | oid::UNKNOWN => Ok(Value::String(text.to_owned())),
+        oid::TIMESTAMPTZ => tessari_types::Datetime::parse_rfc3339(text)
+            .map(Value::Datetime)
+            .ok_or_else(invalid),
+        oid::UUID => uuid_bytes(text).map(Value::Uuid).ok_or_else(invalid),
         other => Err(Refused::with_detail(
             code::FEATURE,
             "binding this parameter type is not spoken in this build",
             format!("type {other}"),
         )),
+    }
+}
+
+/// The sixteen bytes of a hyphenated uuid, the one spelling the wire uses.
+fn uuid_bytes(text: &str) -> Option<[u8; 16]> {
+    let hex: Vec<u8> = text.bytes().filter(|byte| *byte != b'-').collect();
+    if hex.len() != 32 {
+        return None;
+    }
+    let mut out = [0_u8; 16];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let high = hex_value(*hex.get(i.saturating_mul(2))?)?;
+        let low = hex_value(*hex.get(i.saturating_mul(2).saturating_add(1))?)?;
+        *slot = high.saturating_mul(16).saturating_add(low);
+    }
+    Some(out)
+}
+
+const fn hex_value(digit: u8) -> Option<u8> {
+    match digit {
+        b'0'..=b'9' => Some(digit.saturating_sub(b'0')),
+        b'a'..=b'f' => Some(digit.saturating_sub(b'a').saturating_add(10)),
+        b'A'..=b'F' => Some(digit.saturating_sub(b'A').saturating_add(10)),
+        _ => None,
     }
 }
 

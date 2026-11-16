@@ -189,3 +189,46 @@ async fn the_port_and_tessariql_agree_on_the_bi_baseline() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn timestamp_and_uuid_parameters_bind_from_text() {
+    let (address, _stop, _db) = serving_with(&format!("{SETUP} {SPREAD}")).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    // A timestamptz parameter finds the record by its instant.
+    client
+        .parse("", "SELECT i FROM spread WHERE at = $1", &[1184])
+        .await;
+    client
+        .bind("", "", &[], &[Some(b"2026-11-16T12:00:00Z".to_vec())], &[])
+        .await;
+    client.execute("", 0).await;
+    client.sync().await;
+    let mut seen = Vec::new();
+    for _ in 0..5 {
+        seen.push(client.message().await);
+    }
+    assert_eq!(rows(&seen), vec![vec![Some("42".to_owned())]], "{seen:?}");
+
+    // A uuid parameter does too.
+    client
+        .parse("", "SELECT i FROM spread WHERE u = $1", &[2950])
+        .await;
+    client
+        .bind(
+            "",
+            "",
+            &[],
+            &[Some(b"550e8400-e29b-41d4-a716-446655440000".to_vec())],
+            &[],
+        )
+        .await;
+    client.execute("", 0).await;
+    client.sync().await;
+    let mut seen = Vec::new();
+    for _ in 0..5 {
+        seen.push(client.message().await);
+    }
+    assert_eq!(rows(&seen), vec![vec![Some("42".to_owned())]], "{seen:?}");
+}
