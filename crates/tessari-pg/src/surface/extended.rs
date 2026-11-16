@@ -42,6 +42,9 @@ struct Prepared {
 struct Portal {
     translated: translate::Translated,
     parameters: Parameters,
+    /// The result formats the Bind asked for: one word names every column,
+    /// a word per column names each, nothing asks for text.
+    formats: Vec<u16>,
     /// The outcomes a Describe(portal) already produced.
     spent: Option<Vec<Outcome>>,
     /// A Describe already answered this portal's row description.
@@ -187,17 +190,20 @@ impl Kitchen {
                 format!("name {statement:?}"),
             )
         })?;
-        if formats.iter().any(|format| *format != 0) {
-            return Err(Refused::surface(
-                code::FEATURE,
-                "binary parameter formats are not spoken in this build",
-            ));
-        }
-        if results.iter().any(|format| *format != 0) {
-            return Err(Refused::surface(
-                code::FEATURE,
-                "binary result formats are not spoken in this build",
-            ));
+        let param_formats = super::expand_formats(formats, values.len()).map_err(|_| {
+            Refused::with_detail(
+                code::PROTOCOL,
+                "the parameter formats do not match the Bind's values",
+                format!("{} formats for {} values", formats.len(), values.len()),
+            )
+        })?;
+        for format in param_formats.iter().chain(results.iter()) {
+            if *format > 1 {
+                return Err(Refused::surface(
+                    code::PROTOCOL,
+                    "a format other than text or binary is not spoken",
+                ));
+            }
         }
         let slots = &prepared.translated.slots;
         if values.len() != slots.len() {
@@ -218,17 +224,20 @@ impl Kitchen {
             let Some(name) = &slots[index] else {
                 continue;
             };
+            let type_oid = prepared
+                .types
+                .get(index)
+                .copied()
+                .unwrap_or(types::oid::TEXT);
             let decoded = match value {
                 None => tessaridb::Value::Null,
+                Some(bytes) if param_formats[index] == 1 => {
+                    types::value_of_binary(type_oid, bytes)?
+                }
                 Some(bytes) => {
                     let text = String::from_utf8(bytes.clone()).map_err(|_| {
                         Refused::surface(code::INVALID_TEXT, "a text parameter is not utf-8")
                     })?;
-                    let type_oid = prepared
-                        .types
-                        .get(index)
-                        .copied()
-                        .unwrap_or(types::oid::TEXT);
                     types::value_of_text(type_oid, &text)?
                 }
             };
@@ -237,6 +246,7 @@ impl Kitchen {
         Ok(Portal {
             translated: prepared.translated.clone(),
             parameters,
+            formats: results.to_vec(),
             spent: None,
             described: false,
             done: false,
@@ -392,7 +402,20 @@ impl Kitchen {
         portal.done = true;
         let mut described = portal.described;
         for outcome in &outcomes {
-            answer(conn, outcome, &portal.translated, described).await?;
+            let answered = answer(
+                conn,
+                outcome,
+                &portal.translated,
+                described,
+                &portal.formats.clone(),
+            )
+            .await?;
+            if !answered {
+                // An encoding refusal was answered; the Sync to come owns the
+                // readiness, and the batch is skipped like any extended error.
+                self.skipping = true;
+                return Ok(());
+            }
             described = false;
         }
         Ok(())
@@ -471,6 +494,7 @@ fn columns_of(translated: &translate::Translated) -> Option<Vec<codec::write::Co
                     name: name.clone(),
                     type_oid: types::oid::TEXT,
                     type_len: -1,
+                    format: 0,
                 })
                 .collect(),
         ),

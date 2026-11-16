@@ -268,13 +268,14 @@ async fn query_once(
                 name: "search_path".to_owned(),
                 type_oid: super::types::oid::TEXT,
                 type_len: -1,
+                format: 0,
             };
             conn.send(&codec::write::row_description(std::slice::from_ref(
                 &column,
             )))
             .await?;
             conn.send(&codec::write::data_row(&[Some(
-                held.namespace().to_owned(),
+                held.namespace().as_bytes().to_vec(),
             )]))
             .await?;
             conn.send(&codec::write::command_complete("SHOW")).await?;
@@ -326,7 +327,9 @@ async fn query_once(
         Err(Failed::Lost) => return Err(Error::Malformed("the session is lost")),
     };
     for outcome in &outcomes {
-        answer(conn, outcome, &translated, false).await?;
+        // An encoding refusal was already answered on the wire; the
+        // readiness below still arrives, as the simple protocol counts it.
+        let _answered = answer(conn, outcome, &translated, false, &[]).await?;
     }
     conn.send(&codec::write::ready_for_query(codec::write::Tx::Idle))
         .await?;
@@ -336,42 +339,59 @@ async fn query_once(
 /// One statement's outcome as the wire spells it. `described` marks that a
 /// Describe(portal) already answered the first records' row description, so
 /// the Execute owes only the rows and the tag.
+/// One statement's outcome as the wire spells it. `described` marks that a
+/// Describe(portal) already answered the first records' row description, so
+/// the Execute owes only the rows and the tag. `formats` are what a Bind
+/// asked: text everywhere, or the binary subset per column. Answers `false`
+/// when an encoding refusal was sent instead — the caller owns the
+/// conversation state (readiness, or the skip that follows an extended
+/// error).
 pub(crate) async fn answer(
     conn: &mut Conn,
     outcome: &tessaridb::Outcome,
     translated: &translate::Translated,
     described: bool,
-) -> Result<()> {
+    formats: &[u16],
+) -> Result<bool> {
     use tessaridb::Outcome;
     match outcome {
         Outcome::Records { records, .. } => {
-            if !described {
-                let columns = if records.is_empty()
-                    && let translate::Columns::Named(names) = &translated.columns
-                {
-                    // An empty answer still owes the client the projection's
-                    // names: the rows cannot speak for columns that never came.
-                    names
-                        .iter()
-                        .map(|name| codec::write::Column {
-                            name: name.clone(),
-                            type_oid: types::oid::TEXT,
-                            type_len: -1,
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    super::rows(records, &translated.columns, translated.table.as_deref()).0
-                };
-                conn.send(&codec::write::row_description(&columns)).await?;
-            }
-            let (_, rows) = if records.is_empty()
-                && matches!(translated.columns, translate::Columns::Named(_))
+            let (mut columns, rows) = if records.is_empty()
+                && let translate::Columns::Named(names) = &translated.columns
             {
-                (Vec::new(), Vec::new())
+                // An empty answer still owes the client the projection's
+                // names: the rows cannot speak for columns that never came.
+                let columns = names
+                    .iter()
+                    .map(|name| codec::write::Column {
+                        name: name.clone(),
+                        type_oid: types::oid::TEXT,
+                        type_len: -1,
+                        format: 0,
+                    })
+                    .collect::<Vec<_>>();
+                (columns, Vec::new())
             } else {
                 super::rows(records, &translated.columns, translated.table.as_deref())
             };
-            for row in &rows {
+            let encoded = match super::encode(&columns, &rows, formats) {
+                Ok(encoded) => encoded,
+                Err(refused) => {
+                    conn.refuse_pending(&refused).await?;
+                    return Ok(false);
+                }
+            };
+            if !described {
+                // The columns answer under the formats a Bind asked for, one
+                // word naming every column, a word per column naming each.
+                if let Ok(expanded) = super::expand_formats(formats, columns.len()) {
+                    for (i, column) in columns.iter_mut().enumerate() {
+                        column.format = expanded[i];
+                    }
+                }
+                conn.send(&codec::write::row_description(&columns)).await?;
+            }
+            for row in &encoded {
                 conn.send(&codec::write::data_row(row)).await?;
             }
             conn.send(&codec::write::command_complete(&format!(
@@ -381,13 +401,30 @@ pub(crate) async fn answer(
             .await?;
         }
         Outcome::Value(value) => {
-            let column = super::value_column(value);
+            let mut column = super::value_column(value);
+            if let Ok(expanded) = super::expand_formats(formats, 1)
+                && let Some(format) = expanded.first()
+            {
+                column.format = *format;
+            }
             conn.send(&codec::write::row_description(std::slice::from_ref(
                 &column,
             )))
             .await?;
-            conn.send(&codec::write::data_row(&[types::text_of(value)]))
-                .await?;
+            let encoded = match super::encode(
+                std::slice::from_ref(&column),
+                &[vec![Some(value.clone())]],
+                formats,
+            ) {
+                Ok(encoded) => encoded,
+                Err(refused) => {
+                    conn.refuse_pending(&refused).await?;
+                    return Ok(false);
+                }
+            };
+            for row in &encoded {
+                conn.send(&codec::write::data_row(row)).await?;
+            }
             conn.send(&codec::write::command_complete("SELECT 1"))
                 .await?;
         }
@@ -404,7 +441,7 @@ pub(crate) async fn answer(
             .await?;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// The frame an error refuses with.

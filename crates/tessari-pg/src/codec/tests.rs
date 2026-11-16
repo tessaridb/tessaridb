@@ -145,7 +145,7 @@ fn ready_for_query_spells_the_three_states() {
 
 #[test]
 fn data_row_marks_null_with_minus_one() {
-    let frame = out::data_row(&[Some("42".to_owned()), None]);
+    let frame = out::data_row(&[Some(b"42".to_vec()), None]);
     let body = &frame[5..];
     let count: [u8; 2] = body[..2].try_into().expect("two count bytes");
     assert_eq!(u16::from_be_bytes(count), 2);
@@ -162,6 +162,7 @@ fn row_description_answers_text_format_columns() {
         name: "id".to_owned(),
         type_oid: 20,
         type_len: 8,
+        format: 0,
     }]);
     assert_eq!(frame[0], b'T');
     let body = &frame[5..];

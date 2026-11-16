@@ -208,31 +208,27 @@ async fn parameter_count_mismatch_refuses() {
 }
 
 #[tokio::test]
-async fn binary_formats_refuse_by_name() {
+async fn binary_formats_outside_the_subset_refuse_by_name() {
     let (address, _stop, _db) = serving_with(SETUP).await;
     let mut client = Client::to(&address).await;
     client.start(None, "app.main", None).await;
 
+    // A binary parameter of a type the subset does not speak refuses where
+    // the Bind asks it.
     client
-        .parse("", "SELECT name FROM orders WHERE band = $1", &[20])
+        .parse("", "SELECT name FROM orders WHERE name = $1", &[1184])
         .await;
-    client.bind("", "", &[1], &[text("3")], &[]).await;
+    client
+        .bind("", "", &[1], &[Some(8_i64.to_be_bytes().to_vec())], &[])
+        .await;
     client.sync().await;
     client.message().await; // ParseComplete
     let error = client.message().await;
     assert!(
         matches!(&error, Seen::Error(code, _) if code == "0A000"),
-        "a binary parameter format refuses by name: {error:?}"
+        "a binary parameter format the subset does not speak refuses by name: {error:?}"
     );
     client.message().await; // Ready
-
-    client.bind("", "", &[], &[text("3")], &[1]).await;
-    client.sync().await;
-    let error = client.message().await;
-    assert!(
-        matches!(&error, Seen::Error(code, _) if code == "0A000"),
-        "a binary result format refuses by name: {error:?}"
-    );
 }
 
 #[tokio::test]

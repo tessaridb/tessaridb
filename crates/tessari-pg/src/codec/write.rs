@@ -35,6 +35,9 @@ pub struct Column {
     pub type_oid: u32,
     /// The type's size in bytes, negative for the variable-width ones.
     pub type_len: i16,
+    /// The format the column crosses in: zero is text, one is the binary
+    /// subset the type correspondence speaks.
+    pub format: u16,
 }
 
 /// The authentication exchange is over.
@@ -112,24 +115,24 @@ pub(crate) fn row_description(columns: &[Column]) -> Vec<u8> {
         body.extend_from_slice(&column.type_oid.to_be_bytes());
         body.extend_from_slice(&column.type_len.to_be_bytes());
         body.extend_from_slice(&(-1_i32).to_be_bytes());
-        // Text format; the binary subset arrives with the extended protocol.
-        body.extend_from_slice(&0_u16.to_be_bytes());
+        body.extend_from_slice(&column.format.to_be_bytes());
     }
     frame(b'T', &body)
 }
 
 /// One row; `None` is the dialect's NULL, the absence the wire spells as the
-/// length -1.
-pub(crate) fn data_row(cells: &[Option<String>]) -> Vec<u8> {
+/// length -1. Cells arrive already encoded in their column's format — text
+/// bytes or the binary subset's bytes.
+pub(crate) fn data_row(cells: &[Option<Vec<u8>>]) -> Vec<u8> {
     let mut body = Vec::new();
     put_u16(&mut body, cells.len());
     for cell in cells {
         match cell {
             None => body.extend_from_slice(&(-1_i32).to_be_bytes()),
-            Some(text) => {
-                let len = i32::try_from(text.len()).unwrap_or(i32::MAX);
+            Some(bytes) => {
+                let len = i32::try_from(bytes.len()).unwrap_or(i32::MAX);
                 body.extend_from_slice(&len.to_be_bytes());
-                body.extend_from_slice(text.as_bytes());
+                body.extend_from_slice(bytes);
             }
         }
     }

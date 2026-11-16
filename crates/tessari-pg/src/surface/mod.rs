@@ -61,7 +61,6 @@ pub(crate) fn default_namespace_from(value: Option<String>) -> String {
 pub(crate) struct Shared {
     pub(crate) db: Arc<Db>,
     pub(crate) bridge: Arc<Bridge>,
-    pub(crate) stopping: Arc<Stopping>,
     pub(crate) namespace_default: String,
     clients: AtomicU64,
 }
@@ -116,15 +115,19 @@ fn parameters(application: &Option<String>, namespace: &str) -> Vec<(String, Str
 /// a floor of the dialect this surface speaks, not a claim about the store.
 const VERSION: &str = "13.0";
 
-/// Fold a statement's records into the wire's columns and rows. The column
-/// names come from the projection when it named them, and from the first
-/// record's fields when it was `*`; the type of a column is its first
-/// non-null cell's, and a column of nothing is text.
+/// Fold a statement's records into the wire's columns and value rows. The
+/// column names come from the projection when it named them, and from the
+/// first record's fields when it was `*`; the type of a column is its first
+/// non-null cell's, and a column of nothing is text. Values stay values here:
+/// the wire's format — text or the binary subset — is a send-time choice.
 pub(crate) fn rows(
     records: &[(tessaridb::RecordId, tessaridb::Value)],
     projection: &Columns,
     table: Option<&str>,
-) -> (Vec<codec::write::Column>, Vec<Vec<Option<String>>>) {
+) -> (
+    Vec<codec::write::Column>,
+    Vec<Vec<Option<tessaridb::Value>>>,
+) {
     let names: Vec<String> = match projection {
         // The projection named its columns: the answer owes them in that
         // order, and the records carry their values.
@@ -143,13 +146,17 @@ fn finish(
     records: &[(tessaridb::RecordId, tessaridb::Value)],
     names: Vec<String>,
     table: Option<&str>,
-) -> (Vec<codec::write::Column>, Vec<Vec<Option<String>>>) {
+) -> (
+    Vec<codec::write::Column>,
+    Vec<Vec<Option<tessaridb::Value>>>,
+) {
     let mut columns: Vec<codec::write::Column> = names
         .iter()
         .map(|name| codec::write::Column {
             name: name.clone(),
             type_oid: types::oid::TEXT,
             type_len: -1,
+            format: 0,
         })
         .collect();
     let mut rows = Vec::with_capacity(records.len());
@@ -183,11 +190,62 @@ fn finish(
                 column.type_oid = types::type_of(&value);
                 column.type_len = types::size_of(column.type_oid);
             }
-            row.push(types::text_of(&value));
+            row.push(Some(value));
         }
         rows.push(row);
     }
     (columns, rows)
+}
+
+/// The format word per column, from what a Bind asked: one word names every
+/// column, a word per column names each; nothing asks for text everywhere.
+pub(crate) fn expand_formats(
+    formats: &[u16],
+    columns: usize,
+) -> std::result::Result<Vec<u16>, errors::Refused> {
+    match formats.len() {
+        0 => Ok(vec![0; columns]),
+        1 => Ok(vec![formats[0]; columns]),
+        n if n == columns => Ok(formats.to_vec()),
+        n => Err(errors::Refused::with_detail(
+            errors::code::PROTOCOL,
+            "the result formats do not match the answer's columns",
+            format!("{n} formats for {columns} columns"),
+        )),
+    }
+}
+
+/// Encode value rows under their columns and the formats a Bind asked for:
+/// text everywhere unless a column asked for the binary subset.
+pub(crate) fn encode(
+    columns: &[codec::write::Column],
+    rows: &[Vec<Option<tessaridb::Value>>],
+    formats: &[u16],
+) -> std::result::Result<Vec<Vec<Option<Vec<u8>>>>, errors::Refused> {
+    let expanded = expand_formats(formats, columns.len())?;
+    for format in &expanded {
+        if *format > 1 {
+            return Err(errors::Refused::surface(
+                errors::code::PROTOCOL,
+                "a result format other than text or binary is not spoken",
+            ));
+        }
+    }
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut cells = Vec::with_capacity(row.len());
+        for (i, value) in row.iter().enumerate() {
+            let held = value.as_ref().unwrap_or(&tessaridb::Value::None);
+            let cell = if expanded[i] == 1 {
+                types::binary_of(held, columns[i].type_oid)
+            } else {
+                Ok(types::text_of(held).map(String::into_bytes))
+            }?;
+            cells.push(cell);
+        }
+        out.push(cells);
+    }
+    Ok(out)
 }
 
 /// One unnamed value's column, as `SELECT 1` answers it.
@@ -200,13 +258,19 @@ pub(crate) fn value_column(value: &tessaridb::Value) -> codec::write::Column {
         name: translate::UNNAMED.to_owned(),
         type_oid,
         type_len: types::size_of(type_oid),
+        format: 0,
     }
 }
 
-/// A bound surface, not yet serving.
+/// A bound surface, not yet serving. The node's own state stays plain until
+/// [`Node::serve`] assembles the connection-shared [`Shared`]: before that
+/// the builder is free to move things.
 pub struct Node {
     listener: std::net::TcpListener,
-    shared: Arc<Shared>,
+    db: Arc<Db>,
+    bridge: Arc<Bridge>,
+    stopping: Arc<Stopping>,
+    namespace_default: String,
     door: Arc<Admitting>,
     secured: Option<TlsAcceptor>,
 }
@@ -225,15 +289,12 @@ impl Node {
         listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
-            shared: Arc::new(Shared {
-                db,
-                bridge: Arc::new(Bridge::new(MAX_STORE_CALLS)),
-                stopping: Stopping::new(),
-                namespace_default: default_namespace_from(
-                    std::env::var(NAMESPACE_ENV).ok().filter(|v| !v.is_empty()),
-                ),
-                clients: AtomicU64::new(0),
-            }),
+            db,
+            bridge: Arc::new(Bridge::new(MAX_STORE_CALLS)),
+            stopping: Stopping::new(),
+            namespace_default: default_namespace_from(
+                std::env::var(NAMESPACE_ENV).ok().filter(|v| !v.is_empty()),
+            ),
             door: Admitting::to(MAX_CONNECTIONS),
             secured: None,
         })
@@ -247,9 +308,7 @@ impl Node {
         let namespace = namespace.into();
         let name = namespace.trim();
         if !name.is_empty() {
-            Arc::get_mut(&mut self.shared)
-                .expect("the node is not serving yet")
-                .namespace_default = name.to_owned();
+            self.namespace_default = name.to_owned();
         }
         self
     }
@@ -282,7 +341,7 @@ impl Node {
     /// taken before [`Node::serve`].
     #[must_use]
     pub fn stopping(&self) -> Arc<Stopping> {
-        Arc::clone(&self.shared.stopping)
+        Arc::clone(&self.stopping)
     }
 
     /// Accept connections until `stop` is cancelled. Must be awaited inside a
@@ -295,6 +354,12 @@ impl Node {
     ///
     /// The listener's failure when accepting fails in a way that does not pass.
     pub async fn serve(&self, stop: CancellationToken) -> std::io::Result<()> {
+        let shared = Arc::new(Shared {
+            db: Arc::clone(&self.db),
+            bridge: Arc::clone(&self.bridge),
+            namespace_default: self.namespace_default.clone(),
+            clients: AtomicU64::new(0),
+        });
         let listener = tokio::net::TcpListener::from_std(self.listener.try_clone()?)?;
         let mut connections = JoinSet::new();
         loop {
@@ -311,7 +376,7 @@ impl Node {
                 }
                 accepted = listener.accept() => accepted,
             };
-            if self.shared.stopping.asked() {
+            if self.stopping.asked() {
                 break;
             }
             let (stream, peer) = match accepted {
@@ -323,7 +388,7 @@ impl Node {
                 tracing::warn!(from = %peer, open = self.door.limit(), "wire connection refused: as many open as this node takes");
                 continue;
             };
-            let shared = Arc::clone(&self.shared);
+            let shared = Arc::clone(&shared);
             let secured = self.secured.clone();
             let stop = stop.clone();
             connections.spawn(

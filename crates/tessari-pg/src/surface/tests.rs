@@ -18,6 +18,7 @@ pub(crate) const SETUP: &str = "DEFINE TABLE orders SCHEMALESS; \
      CREATE orders:2 = { band: 3, name: 'third' }; \
      CREATE orders:3 = { band: 3 };";
 
+mod binary;
 mod extended;
 mod queries;
 mod secured;

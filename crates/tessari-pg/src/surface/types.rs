@@ -149,6 +149,122 @@ pub(crate) fn value_of_text(
     }
 }
 
+/// The value a binary-format parameter reads as under the type it was
+/// declared with — the fixed-scalar subset, the only binary forms this build
+/// speaks. The text family decodes as UTF-8 text, which is what it is.
+pub(crate) fn value_of_binary(
+    type_oid: u32,
+    bytes: &[u8],
+) -> Result<Value, crate::surface::errors::Refused> {
+    use crate::surface::errors::{Refused, code};
+    let malformed = || {
+        Refused::with_detail(
+            code::INVALID_TEXT,
+            "the parameter's bytes do not read as its declared type",
+            format!("type {type_oid}, {} bytes", bytes.len()),
+        )
+    };
+    let take = |n: usize| -> Result<&[u8], Refused> {
+        bytes
+            .get(..n)
+            .filter(|_| bytes.len() == n)
+            .ok_or_else(malformed)
+    };
+    match type_oid {
+        oid::BOOL => match bytes {
+            [0] => Ok(Value::Bool(false)),
+            [1] => Ok(Value::Bool(true)),
+            _ => Err(malformed()),
+        },
+        oid::INT2 => {
+            let word: [u8; 2] = take(2)?.try_into().map_err(|_| malformed())?;
+            Ok(Value::Number(i64::from(i16::from_be_bytes(word)).into()))
+        }
+        oid::INT4 => {
+            let word: [u8; 4] = take(4)?.try_into().map_err(|_| malformed())?;
+            Ok(Value::Number(i64::from(i32::from_be_bytes(word)).into()))
+        }
+        oid::INT8 => {
+            let word: [u8; 8] = take(8)?.try_into().map_err(|_| malformed())?;
+            Ok(Value::Number(i64::from_be_bytes(word).into()))
+        }
+        oid::FLOAT4 => {
+            let word: [u8; 4] = take(4)?.try_into().map_err(|_| malformed())?;
+            Ok(Value::Number(tessaridb::Number::float(f64::from(
+                f32::from_be_bytes(word),
+            ))))
+        }
+        oid::FLOAT8 => {
+            let word: [u8; 8] = take(8)?.try_into().map_err(|_| malformed())?;
+            Ok(Value::Number(tessaridb::Number::float(f64::from_be_bytes(
+                word,
+            ))))
+        }
+        oid::BYTEA => Ok(Value::Bytes(bytes.to_vec())),
+        oid::TEXT | oid::VARCHAR | oid::UNKNOWN => String::from_utf8(bytes.to_vec())
+            .map(Value::String)
+            .map_err(|_| malformed()),
+        other => Err(Refused::with_detail(
+            code::FEATURE,
+            "binding this parameter type in binary is not spoken in this build",
+            format!("type {other}"),
+        )),
+    }
+}
+
+/// The wire's float4 form: 32 big-endian bits. A value past f32's range
+/// narrows to infinity, which the dialect's own clients read without
+/// complaint — the one deliberate narrowing in the correspondence.
+// bgv-allow(numeric-as-cast): the wire's float4 IS 32-bit; there is no
+// lossless conversion to refuse in favour of.
+#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+fn float4_bits(held: f64) -> [u8; 4] {
+    (held as f32).to_be_bytes()
+}
+
+/// The binary form one value crosses in under the column's type — the same
+/// fixed-scalar subset, plus the text family whose binary form is the text
+/// bytes. `None` is the NULL either way.
+pub(crate) fn binary_of(
+    value: &Value,
+    type_oid: u32,
+) -> Result<Option<Vec<u8>>, crate::surface::errors::Refused> {
+    use crate::surface::errors::{Refused, code};
+    let unsupported = || {
+        Refused::with_detail(
+            code::FEATURE,
+            "this type has no binary form in this build",
+            format!("type {type_oid}"),
+        )
+    };
+    match value {
+        Value::None | Value::Null => Ok(None),
+        Value::Bool(held) if type_oid == oid::BOOL => Ok(Some(vec![u8::from(*held)])),
+        Value::Number(tessaridb::Number::Integer(held)) => match type_oid {
+            oid::INT2 => i16::try_from(*held)
+                .map(|word| word.to_be_bytes().to_vec())
+                .map(Some)
+                .map_err(|_| unsupported()),
+            oid::INT4 => i32::try_from(*held)
+                .map(|word| word.to_be_bytes().to_vec())
+                .map(Some)
+                .map_err(|_| unsupported()),
+            oid::INT8 => Ok(Some(held.to_be_bytes().to_vec())),
+            _ => Err(unsupported()),
+        },
+        Value::Number(tessaridb::Number::Float(held)) => match type_oid {
+            oid::FLOAT4 => Ok(Some(float4_bits(*held).to_vec())),
+            oid::FLOAT8 => Ok(Some(held.to_be_bytes().to_vec())),
+            _ => Err(unsupported()),
+        },
+        Value::Bytes(bytes) if type_oid == oid::BYTEA => Ok(Some(bytes.clone())),
+        Value::String(text) if matches!(type_oid, oid::TEXT | oid::VARCHAR | oid::UNKNOWN) => {
+            Ok(Some(text.as_bytes().to_vec()))
+        }
+        _ => Err(unsupported()),
+    }
+}
+
 /// `bytea`'s text form: a `\x` prefix and the hex of the bytes.
 fn bytea(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
