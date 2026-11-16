@@ -199,6 +199,20 @@ impl Store {
         .await
     }
 
+    /// Apply one shipped record at the position it was read from — the intake
+    /// half of a cross-cluster link, the same apply a follower replays a
+    /// collect by: an already-applied position is answered by the divergence
+    /// check rather than written twice, which is what makes a re-delivered
+    /// batch a no-op and at-least-once delivery idempotent at the apply.
+    pub(crate) async fn apply_shipped(
+        &self,
+        log: LogId,
+        at: Sequence,
+        record: &LogRecord,
+    ) -> Result<()> {
+        self.apply_at(log, at, record, Landing::Synced).await
+    }
+
     /// Apply one record into `home`, whatever named it.
     pub(super) async fn apply_at(
         &self,
@@ -297,6 +311,10 @@ impl Store {
         let batch = crate::cardinality::maintain(self, record, batch, version).await?;
         // The catalog's id counters, in the commit path's order (engine Q-959).
         let batch = crate::catalog::maintain_allocators(self, record, batch, version).await?;
+        // And what the record says about inbound links — in memory, in the
+        // commit path's order, so a state reached by replay derives the same
+        // registry as the state that was committed.
+        self.replicated().maintain(record)?;
         // And the expiry index, so a follower promoted to leader can remove what
         // has expired without having written any of it .
         let batch = crate::lapse::maintain(self, record, batch).await?;

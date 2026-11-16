@@ -85,7 +85,17 @@ impl FormatVersion {
     /// moves with them. The catalog field that names the storage kind is not
     /// surface (a catalog definition's fields are not), but the keys its
     /// tables write are, so the store a columnar table lives in states 11.
-    pub const CURRENT: Self = Self(12);
+    ///
+    /// Moved to 12 when per-column field statistics arrived under their own
+    /// index keyspace: an older build would neither write them nor refresh
+    /// them, so a store holding them is one it must not open.
+    ///
+    /// Moved to 13 when the catalog gained the `REPLICATIONS` system table:
+    /// its rows name an external cluster, and every surface unit that names a
+    /// system table moves with the format. An older build would not misread
+    /// the rows — it never looks at the table — but a row's key names a system
+    /// table its key grammar cannot place.
+    pub const CURRENT: Self = Self(13);
 
     /// The first format whose tables may be declared columnar (ADR-0137,
     /// ADR-0137). Named for the reason [`Self::HOMED_LOG`] is.
@@ -95,6 +105,12 @@ impl FormatVersion {
     /// system table 31. Named for the reason [`Self::HOMED_LOG`]
     /// is.
     pub const FEED_SCAN: Self = Self(10);
+
+    /// The first format whose catalog keeps an outbound replication's
+    /// declaration (system table `REPLICATIONS`). Named for the reason
+    /// [`Self::FEED_SCAN`] is: a system-table addition moves every surface
+    /// unit that names one.
+    pub const REPLICATION_LINK: Self = Self(13);
 
     /// The first format whose topics may be split into partitions (ADR-0131).
     /// Named for the reason [`Self::HOMED_LOG`] is.
@@ -167,6 +183,7 @@ impl FormatVersion {
             10 => (0, 40),
             11 => (0, 41),
             12 => (0, 41),
+            13 => (0, 42),
             _ => return None,
         };
         Some(crate::NodeVersion {

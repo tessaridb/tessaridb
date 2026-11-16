@@ -36,11 +36,12 @@ pub use ast::{
     Fusion, GroupChange, GroupClauses, GroupMember, Hand, Handing, Hop, Identity, InfoSubject,
     JoinSide, ListEnd, Name, NamespaceChange, Neighbour, Nulls, OnDelete, OnFailure, Ordering,
     Outer, ParameterSlot, Password, PathTo, Presence, Projected, Projection, RangeEnd, RangeExpr,
-    ReachRef, RecordTarget, Reference, ReplicaChange, Retention, RollupCompute, ScoreCompare,
-    ScoreRange, Script, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator, Select,
-    SetBound, SetCondition, SetOperation, Source, SpaceBound, Statement, StatementKind, StoreKind,
-    StructureOp, TableChange, TableExpiry, TableRef, Timeout, TopicClauses, TrimBound, UserChange,
-    UserGrant, Using, VaultKey, Version, WindowFunction, Windowed, WriteExpiry, Written,
+    ReachRef, RecordTarget, Reference, ReplicaChange, ReplicationChange, Retention, RollupCompute,
+    ScoreCompare, ScoreRange, Script, SearchAsk, SearchCosts, SearchField, SearchMember,
+    SearchOperator, Select, SetBound, SetCondition, SetOperation, Source, SpaceBound, Statement,
+    StatementKind, StoreKind, StructureOp, TableChange, TableExpiry, TableRef, Timeout,
+    TopicClauses, TrimBound, UserChange, UserGrant, Using, VaultKey, Version, WindowFunction,
+    Windowed, WriteExpiry, Written,
 };
 pub use bind::{Parameters, bind_expression, bind_read};
 pub use error::{Error, Result};

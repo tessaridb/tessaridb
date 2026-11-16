@@ -547,6 +547,10 @@ const NEGATIONS: &[&str] = &[
 #[cfg(feature = "console")]
 const ACCEPTED_NEGATIONS: &[(&str, &str)] = &[
     (
+        "No replication links — this cluster ships to nobody and receives from nobody.",
+        "True: the link list is read from the catalog, and an empty catalog names no links.",
+    ),
+    (
         "A password reaches the node and goes no further: what is stored is a hash, so no plaintext reaches the log or any replica.",
         "True: the credential is hashed before storage and the hash is what replicates.",
     ),

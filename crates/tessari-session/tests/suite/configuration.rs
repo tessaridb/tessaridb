@@ -1701,3 +1701,221 @@ fn a_node_reports_who_the_log_says_leads_each_range() {
         "{cluster:?}"
     );
 }
+
+#[test]
+fn a_replication_declares_a_database_outbound_and_reports_it_back() {
+    // The cross-cluster half: one database, named fully, shipped to an endpoint.
+    // The report is the declaration, in the spelling the statement takes, so an
+    // operator can compare what the catalog holds against what they meant.
+    let store = closed(&backend());
+    owner(&store)
+        .run_now(
+            "DEFINE NAMESPACE prod; \
+             USE NAMESPACE prod; \
+             DEFINE DATABASE shop; \
+             DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop AS 'warehouse';",
+        )
+        .unwrap();
+    let mut session = owner(&store);
+    let report = info_object(&mut session, "INFO FOR REPLICATION east;");
+    let Some(Value::Object(declared)) = report.get("declared") else {
+        panic!("no declared group: {report:?}");
+    };
+    assert_eq!(declared.get("name"), Some(&Value::from("east")));
+    assert_eq!(
+        declared.get("endpoint"),
+        Some(&Value::from("cluster-b:9080"))
+    );
+    assert_eq!(
+        declared.get("database"),
+        Some(&Value::from("DATABASE prod.shop"))
+    );
+    assert_eq!(declared.get("remote"), Some(&Value::from("warehouse")));
+    assert_eq!(declared.get("paused"), Some(&Value::Bool(false)));
+    assert_eq!(declared.get("join_expires_ms"), Some(&Value::Null));
+}
+
+#[test]
+fn a_replication_declared_twice_is_refused_unless_the_statement_says_otherwise() {
+    // The peer rule, on the cross-cluster table: the name is what makes a link
+    // one link, and `IF NOT EXISTS` is not an upsert.
+    let store = closed(&backend());
+    let mut session = owner(&store);
+    session
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+             DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop;",
+        )
+        .unwrap();
+    assert!(
+        session
+            .run_now("DEFINE REPLICATION east TO 'cluster-c:9080' FOR DATABASE prod.shop;")
+            .is_err()
+    );
+    session
+        .run_now(
+            "DEFINE REPLICATION IF NOT EXISTS east TO 'cluster-c:9080' FOR DATABASE prod.shop;",
+        )
+        .unwrap();
+    let mut session = owner(&store);
+    let report = info_object(&mut session, "INFO FOR REPLICATION east;");
+    let Some(Value::Object(declared)) = report.get("declared") else {
+        panic!("no declared group: {report:?}");
+    };
+    assert_eq!(
+        declared.get("endpoint"),
+        Some(&Value::from("cluster-b:9080")),
+        "the accepted re-run left the first declaration standing"
+    );
+    assert_eq!(
+        declared.get("remote"),
+        Some(&Value::Null),
+        "absent `AS` reads as the same name it has here"
+    );
+}
+
+#[test]
+fn one_clause_of_a_replication_moves_per_statement() {
+    // ALTER amends in place, the peer row's rule: the endpoint moves, the
+    // remote name moves or clears, PAUSED and RESUMED flip the flag, and what
+    // the statement did not name stays exactly as it was.
+    let store = closed(&backend());
+    owner(&store)
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+             DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop AS 'warehouse';",
+        )
+        .unwrap();
+    let mut session = owner(&store);
+    session
+        .run_now("ALTER REPLICATION east AT 'cluster-c:9080';")
+        .unwrap();
+    session.run_now("ALTER REPLICATION east PAUSED;").unwrap();
+    let report = info_object(&mut session, "INFO FOR REPLICATION east;");
+    let Some(Value::Object(declared)) = report.get("declared") else {
+        panic!("no declared group: {report:?}");
+    };
+    assert_eq!(
+        declared.get("endpoint"),
+        Some(&Value::from("cluster-c:9080"))
+    );
+    assert_eq!(declared.get("remote"), Some(&Value::from("warehouse")));
+    assert_eq!(declared.get("paused"), Some(&Value::Bool(true)));
+    session
+        .run_now("ALTER REPLICATION east AS NONE; ALTER REPLICATION east RESUMED;")
+        .unwrap();
+    let report = info_object(&mut session, "INFO FOR REPLICATION east;");
+    let Some(Value::Object(declared)) = report.get("declared") else {
+        panic!("no declared group: {report:?}");
+    };
+    assert_eq!(declared.get("remote"), Some(&Value::Null));
+    assert_eq!(declared.get("paused"), Some(&Value::Bool(false)));
+}
+
+#[test]
+fn a_replication_is_dropped_by_name_and_unknown_afterwards() {
+    let store = closed(&backend());
+    let mut session = owner(&store);
+    session
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+             DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop;",
+        )
+        .unwrap();
+    session.run_now("DROP REPLICATION east;").unwrap();
+    let refused = session.run_now("INFO FOR REPLICATION east;").unwrap_err();
+    assert!(
+        refused.to_string().contains("replication"),
+        "the drop is complete on its own: {refused}"
+    );
+}
+
+#[test]
+fn a_database_that_is_not_there_leaves_nothing_behind() {
+    // The database is resolved before the name is claimed: a statement naming a
+    // database the store does not hold refuses rather than declaring a row
+    // about nothing.
+    let store = closed(&backend());
+    let mut session = owner(&store);
+    assert!(
+        session
+            .run_now("DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.missing;")
+            .is_err()
+    );
+    let refused = session.run_now("INFO FOR REPLICATION east;").unwrap_err();
+    assert!(
+        refused.to_string().contains("replication"),
+        "nothing was declared: {refused}"
+    );
+}
+
+#[test]
+fn a_link_token_is_answered_once_and_its_digest_is_what_the_row_keeps() {
+    // The join-token pattern on the cross-cluster table: the token is the
+    // answer and nothing else — the row keeps the SHA-256 and the expiry, so
+    // the catalog holds nothing that binds a link by itself.
+    let store = closed(&backend());
+    owner(&store)
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+             DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop;",
+        )
+        .unwrap();
+    let mut session = owner(&store);
+    let outcomes = session
+        .run_now("CREATE LINK TOKEN FOR REPLICATION east EXPIRES 10m;")
+        .unwrap();
+    let Some(Outcome::Value(Value::String(token))) = outcomes.into_iter().next() else {
+        panic!("CREATE LINK TOKEN did not answer with the token");
+    };
+    assert_eq!(token.len(), 64, "the token is 32 bytes as hex");
+    let report = info_object(&mut session, "INFO FOR REPLICATION east;");
+    let Some(Value::Object(declared)) = report.get("declared") else {
+        panic!("no declared group: {report:?}");
+    };
+    assert!(
+        matches!(declared.get("join_expires_ms"), Some(Value::Number(_))),
+        "the expiry is reported, never the digest: {declared:?}"
+    );
+    assert!(
+        !declared.contains_key("join_digest"),
+        "the digest is what a token is checked against, and nothing reading \
+         this needs it: {declared:?}"
+    );
+}
+
+#[test]
+fn a_viewer_is_refused_the_link_rather_than_passed_over_by_an_empty_grant_check() {
+    // The same vacuity guard the peer statements needed: `DEFINE REPLICATION`
+    // and `INFO FOR REPLICATION` name no table, so a grant loop passes over
+    // them vacuously, and the refusal has to come from the need itself.
+    let store = closed(&backend());
+    owner(&store)
+        .run_now(&format!(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+             DEFINE USER ada ROLE viewer PASSWORD '{PASSWORD}';"
+        ))
+        .unwrap();
+    let mut viewer = signed_in(&store, "ada");
+    for statement in [
+        "INFO FOR REPLICATION east;",
+        "DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop;",
+        "CREATE LINK TOKEN FOR REPLICATION east EXPIRES 10m;",
+    ] {
+        let refused = viewer.run_now(statement).unwrap_err().to_string();
+        assert!(refused.contains("operate"), "{statement}: {refused}");
+    }
+}
+
+/// The single object one INFO statement answers with.
+fn info_object(
+    session: &mut Session<'_>,
+    statement: &str,
+) -> std::collections::BTreeMap<String, Value> {
+    let outcomes = session.run_now(statement).unwrap();
+    assert_eq!(outcomes.len(), 1, "{statement}");
+    let Some(Outcome::Value(Value::Object(report))) = outcomes.into_iter().next() else {
+        panic!("{statement} did not answer with an object");
+    };
+    report
+}

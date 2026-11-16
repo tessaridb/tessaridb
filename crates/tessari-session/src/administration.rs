@@ -27,6 +27,12 @@ pub(crate) fn administered(kind: &StatementKind) -> Option<(&'static str, &str)>
         StatementKind::DefineReplica { name, .. } => ("DEFINE REPLICA", name.text.as_str()),
         StatementKind::AlterReplica { name, .. } => ("ALTER REPLICA", name.text.as_str()),
         StatementKind::DropReplica { name } => ("DROP REPLICA", name.text.as_str()),
+        // The cross-cluster half: the row names an external party, which is
+        // membership-shaped however the data it ships is not — the authority
+        // and membership rules (ADR-0108) apply by analogy.
+        StatementKind::DefineReplication { name, .. } => ("DEFINE REPLICATION", name.text.as_str()),
+        StatementKind::AlterReplication { name, .. } => ("ALTER REPLICATION", name.text.as_str()),
+        StatementKind::DropReplication { name } => ("DROP REPLICATION", name.text.as_str()),
         StatementKind::DefineFailover { .. } => ("DEFINE FAILOVER", "the store"),
         StatementKind::FinalizeFormat => ("ALTER STORE FINALIZE FORMAT", "the store"),
         StatementKind::RevokeCertificate { fingerprint } => {
@@ -34,6 +40,9 @@ pub(crate) fn administered(kind: &StatementKind) -> Option<(&'static str, &str)>
         }
         StatementKind::CreateJoinToken { replica, .. } => {
             ("CREATE JOIN TOKEN", replica.text.as_str())
+        }
+        StatementKind::CreateLinkToken { replication, .. } => {
+            ("CREATE LINK TOKEN", replication.text.as_str())
         }
         _ => return None,
     })

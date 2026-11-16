@@ -282,6 +282,11 @@ fn store(error: &tessari_storage::Error) -> RefusalClass {
         | Store::UniqueViolation { .. }
         | Store::NoSuchParent { .. }
         | Store::SpaceFull { .. } => return RefusalClass::Conflict,
+        // The write's remedy is on another cluster and no retry of it here
+        // will ever be accepted — Forbidden rather than the storage layer's
+        // Validation, for the caller, whose question is "will asking again
+        // help", and for this write it will not.
+        Store::WritesToAReplica { .. } => return RefusalClass::Forbidden,
         _ => {}
     }
     match error.category() {

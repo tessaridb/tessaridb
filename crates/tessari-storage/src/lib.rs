@@ -58,6 +58,7 @@ mod lapse;
 mod lease;
 mod lifetime;
 mod lines;
+mod link;
 mod log;
 mod log_holds;
 mod memory;
@@ -99,12 +100,13 @@ pub use catalog::{
     HashPartitioning, Held, InFlight, IndexDefinition, IndexShape, JoinTicket, Kind,
     LeadershipDefinition, Mapped, NamespaceDefinition, OnDelete, OnFailure, Partitioning,
     PublicAppend, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
-    RECORD_LEVEL, Reach, ReplicaDefinition, Role, RollupCompute, RollupDeclaration, RollupFold,
-    SYSTEM_DATABASE, SYSTEM_NAMESPACE, SearchCosts, SeriesDeclaration, ShardMap, ShardSpan,
-    SpaceDeclaration, SpaceLimit, StorageKind, StoredKind, TableDefinition, TableExpiry, TableKind,
-    TableShape, TopicDeclaration, UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody,
-    VaultDeclaration, VectorDeclaration, VectorDistance, Verb, ViewDeclaration, WordSet,
-    WordSetKind, another_node_may_write, governing, names_a_peer, the_row_a_greeting_binds,
+    RECORD_LEVEL, Reach, ReplicaDefinition, ReplicationDefinition, Role, RollupCompute,
+    RollupDeclaration, RollupFold, SYSTEM_DATABASE, SYSTEM_NAMESPACE, SearchCosts,
+    SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration, SpaceLimit, StorageKind, StoredKind,
+    TableDefinition, TableExpiry, TableKind, TableShape, TopicDeclaration, UNIT_WEIGHT,
+    UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
+    VectorDistance, Verb, ViewDeclaration, WordSet, WordSetKind, another_node_may_write, governing,
+    names_a_peer, the_row_a_greeting_binds,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
@@ -120,6 +122,7 @@ pub use covering::MEASURED_RELATION;
 pub use decisions::{Deciding, Decisions};
 pub use expiry::Expired;
 pub use lapse::Lapsed;
+pub use link::{ChannelSink, Envelope, Links, Sink, intake, serve_links, serve_once};
 pub use log_holds::LogHold;
 pub use retention::{Retention, RetentionSource};
 pub use tessari_encoding::FieldStatistics;

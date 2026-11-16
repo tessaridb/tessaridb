@@ -47,6 +47,7 @@ mod position;
 mod qualified;
 mod renaming;
 mod replica;
+mod replication;
 mod revocation;
 mod rows;
 mod shard;
@@ -92,6 +93,7 @@ pub use replica::{
     Greeter, JoinTicket, ReplicaDefinition, another_node_may_write, names_a_peer,
     the_row_a_greeting_binds,
 };
+pub use replication::ReplicationDefinition;
 pub(crate) use rows::CatalogRows;
 pub use shard::{ShardMap, ShardSpan};
 pub use space::{Eviction, SpaceDeclaration, SpaceLimit};

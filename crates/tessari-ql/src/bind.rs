@@ -673,6 +673,14 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // reason a revocation's fingerprint is.
         | StatementKind::CreateJoinToken { .. }
         | StatementKind::DefineReplica { .. }
+        // The cross-cluster row is written where it stands, for the
+        // revocation's-fingerprint reason: an endpoint, a database name and a
+        // remote name aimed by a parameter would be a link configured by
+        // whatever a caller happened to supply.
+        | StatementKind::DefineReplication { .. }
+        | StatementKind::AlterReplication { .. }
+        | StatementKind::DropReplication { .. }
+        | StatementKind::CreateLinkToken { .. }
         // A broker address, a group name and a mapping are written where they
         // stand, for the reason above: a consumer whose destination arrived as a
         // parameter is a background writer aimed by whoever last called, and

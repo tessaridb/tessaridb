@@ -1,0 +1,116 @@
+# Cross-cluster replication: one database, outbound to another cluster.
+#
+# The link between two clusters is declared, on each side, in the language:
+# the statement names the database this cluster ships and the endpoint the
+# other cluster answers at. What crosses the seam is the database's log — the
+# link's own definition stays in this cluster's catalog, the way a peer row
+# does, because a row naming an external party is this cluster's topology.
+#
+# A corpus file is one session against one store, so these run in order.
+
+--- case: the database is named fully, or the statement is refused
+DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE shop;
+--- expect: error UnexpectedToken
+
+--- case: what the link ships must exist when the link is declared
+DEFINE NAMESPACE prod;
+--- expect: ok
+
+--- case: the database the statement will name
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+--- expect: ok
+
+--- case: a replication names an endpoint and a fully qualified database
+DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop AS 'warehouse';
+--- expect: ok
+
+--- case: the same name twice is refused
+DEFINE REPLICATION east TO 'cluster-c:9080' FOR DATABASE prod.shop;
+--- expect: error NameTaken
+
+--- case: unless the statement says otherwise, and then it is not an upsert
+DEFINE REPLICATION IF NOT EXISTS east TO 'cluster-c:9080' FOR DATABASE prod.shop;
+--- expect: ok
+
+--- case: one clause moves per statement
+ALTER REPLICATION east AT 'cluster-c:9080';
+--- expect: ok
+
+--- case: the stream can be held
+ALTER REPLICATION east PAUSED;
+--- expect: ok
+
+--- case: and taken up again
+ALTER REPLICATION east RESUMED;
+--- expect: ok
+
+--- case: the remote name clears with NONE
+ALTER REPLICATION east AS NONE;
+--- expect: ok
+
+--- case: amending a link that is not declared is refused
+ALTER REPLICATION nobody PAUSED;
+--- expect: error Unknown
+
+--- case: a link token binds the pair, answered once and never stored
+CREATE LINK TOKEN FOR REPLICATION east EXPIRES 10m;
+--- expect: ok
+
+--- case: the token needs a life
+CREATE LINK TOKEN FOR REPLICATION east;
+--- expect: error UnexpectedToken
+
+--- case: dropping undeclares, and afterwards the name is unknown
+DROP REPLICATION east;
+--- expect: ok
+
+--- case: and asking about it refuses rather than answering empty
+INFO FOR REPLICATION east;
+--- expect: error Unknown
+
+--- case: the tables and the neighbour database the inbound half needs
+USE NAMESPACE prod DATABASE shop;
+DEFINE TABLE orders SCHEMALESS;
+DEFINE DATABASE other;
+USE DATABASE other;
+DEFINE TABLE orders SCHEMALESS;
+--- expect: ok
+
+--- case: the inbound half is declared FROM, and the copy is read-only by declaration
+DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop;
+--- expect: ok
+
+--- case: a write into a received database is refused, naming the link
+USE NAMESPACE prod DATABASE shop;
+CREATE orders:1 = { item: 'sneaky' };
+--- expect: error WritesToAReplica
+
+--- case: and the refusal survives a rehearsal
+BEGIN;
+USE NAMESPACE prod DATABASE shop;
+CREATE orders:1 = { item: 'sneaky' };
+VERIFY;
+--- expect: error WritesToAReplica
+
+--- case: the database beside the replica stays writable
+USE NAMESPACE prod DATABASE other;
+CREATE orders:1 = { item: 'pen' };
+--- expect: ok
+
+--- case: direction is reported, and is not a clause
+INFO FOR REPLICATION west;
+--- expect: ok
+
+--- case: flipping a direction is refused — a flipped link is a different link
+ALTER REPLICATION west TO 'cluster-b:9080';
+--- expect: error UnexpectedToken
+
+--- case: dropping the link lifts the read-only
+DROP REPLICATION west;
+--- expect: ok
+
+--- case: and the database is writable again
+USE NAMESPACE prod DATABASE shop;
+CREATE orders:1 = { item: 'book' };
+--- expect: ok

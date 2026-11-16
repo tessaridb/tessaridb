@@ -11,7 +11,7 @@ use crate::session::Session;
 
 use super::{
     described_consumer, described_failover, described_follower, described_leaders,
-    described_replica, guarantees, running_state,
+    described_replica, described_replication, guarantees, running_state,
 };
 
 impl Session<'_> {
@@ -372,6 +372,106 @@ impl Session<'_> {
     /// The counters are left to `INFO FOR KAFKA CONSUMER <name>`: this is the listing
     /// an operator reads to find out *which* consumer to ask about, and a table
     /// of every partition position would bury that.
+    /// `INFO FOR REPLICATIONS` — every declared link: the name, the
+    /// direction, the endpoint, and whether the stream is paused.
+    ///
+    /// Needs `OPERATE_STORE`, for [`Self::info_replication`]'s reason. The
+    /// plural exists for the manager that has no name to look up yet — the
+    /// console above all — and answers in name order, the order two nodes
+    /// comparing what they think the cluster says can compare in.
+    pub(super) async fn info_replications(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<BTreeMap<String, Value>> {
+        let catalog = Catalog::new(transaction);
+        let mut rows = Vec::new();
+        for replication in catalog.replications().await? {
+            let mut row = BTreeMap::from([
+                ("name".to_owned(), Value::from(replication.name.as_str())),
+                (
+                    "direction".to_owned(),
+                    Value::from(if replication.inbound {
+                        "inbound"
+                    } else {
+                        "outbound"
+                    }),
+                ),
+                (
+                    "endpoint".to_owned(),
+                    Value::from(replication.endpoint.as_str()),
+                ),
+                ("paused".to_owned(), Value::Bool(replication.paused)),
+            ]);
+            if let Some(remote) = &replication.remote {
+                row.insert("remote".to_owned(), Value::from(remote.as_str()));
+            }
+            rows.push(Value::Object(row));
+        }
+        Ok(BTreeMap::from([(
+            "replications".to_owned(),
+            Value::Array(rows),
+        )]))
+    }
+
+    /// `INFO FOR REPLICATION east` — one outbound replication's declaration.
+    ///
+    /// Needs `OPERATE_STORE`, decided by `Needs::of` before this runs: the row
+    /// names an external party and the endpoint it answers at, which is
+    /// topology with no smaller truthful form to filter down to.
+    pub(super) async fn info_replication(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let found = Catalog::new(transaction)
+            .replications()
+            .await?
+            .into_iter()
+            .find(|held| held.name == name.text);
+        let Some(replication) = found else {
+            return Err(Error::Unknown {
+                entity: "replication",
+                name: name.text.clone(),
+                span,
+            });
+        };
+        // Two groups rather than one flat object, for `INFO FOR NODE`'s reason:
+        // the declaration follows a backup, and what the far side has confirmed
+        // does not — it dies with the process and is empty after a restart
+        // until the link serves again.
+        let catalog = Catalog::new(transaction);
+        let confirmed: Vec<Value> = {
+            let mut rows = Vec::new();
+            for (log, at) in self.store.links().floors(&name.text) {
+                rows.push(Value::Object(BTreeMap::from([
+                    (
+                        "log".to_owned(),
+                        Value::from(super::spelled_reach(log.home, &catalog).await?.as_str()),
+                    ),
+                    (
+                        "confirmed".to_owned(),
+                        Value::from(i64::try_from(at.get()).unwrap_or(i64::MAX)),
+                    ),
+                ])));
+            }
+            rows
+        };
+        Ok(BTreeMap::from([
+            (
+                "declared".to_owned(),
+                described_replication(&replication, &catalog).await?,
+            ),
+            (
+                "served".to_owned(),
+                Value::Object(BTreeMap::from([(
+                    "confirmed".to_owned(),
+                    Value::Array(confirmed),
+                )])),
+            ),
+        ]))
+    }
+
     pub(super) async fn info_consumers(
         &self,
         transaction: &mut Transaction<'_>,

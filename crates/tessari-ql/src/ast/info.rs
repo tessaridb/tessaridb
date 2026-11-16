@@ -255,4 +255,22 @@ pub enum InfoSubject {
     /// `INFO FOR TOPIC CONSUMER orders_in` — one topic consumer's declaration,
     /// its running state on **this** node, and what it guarantees (ADR-0087).
     TopicConsumer(Name),
+    /// `INFO FOR REPLICATION backup` — one outbound replication's declaration:
+    /// the endpoint, the database and its remote name, whether the stream is
+    /// paused, and the token's remaining life when one stands.
+    ///
+    /// Two named groups rather than one flat object, for [`InfoSubject::Node`]'s
+    /// reason: the declaration follows a backup and the running state does not.
+    /// The token's digest is never the answer — a token is shown once, at
+    /// creation, the way a join token is (ADR-0108 D9).
+    Replication(Name),
+    /// `INFO FOR REPLICATIONS` — every declared link, its direction and
+    /// whether the stream is paused.
+    ///
+    /// The plural exists for the same reason `INFO FOR KAFKA CONSUMERS` does:
+    /// a manager — the console above all — has a name to ask before it has a
+    /// name to look up. Refuses rather than filters, for
+    /// [`InfoSubject::Replication`]'s reason: an endpoint toward an external
+    /// cluster has no smaller truthful form.
+    Replications,
 }

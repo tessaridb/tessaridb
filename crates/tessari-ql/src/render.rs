@@ -131,6 +131,10 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::RevokeCertificate { .. } => Err(unrenderable("REVOKE CERTIFICATE", span)),
         StatementKind::CreateJoinToken { .. } => Err(unrenderable("CREATE JOIN TOKEN", span)),
         StatementKind::DefineReplica { .. } => Err(unrenderable("DEFINE REPLICA", span)),
+        StatementKind::DefineReplication { .. } => Err(unrenderable("DEFINE REPLICATION", span)),
+        StatementKind::AlterReplication { .. } => Err(unrenderable("ALTER REPLICATION", span)),
+        StatementKind::DropReplication { .. } => Err(unrenderable("DROP REPLICATION", span)),
+        StatementKind::CreateLinkToken { .. } => Err(unrenderable("CREATE LINK TOKEN", span)),
         StatementKind::DefineConsumer { .. } => Err(unrenderable("DEFINE KAFKA CONSUMER", span)),
         StatementKind::DropConsumer { .. } => Err(unrenderable("DROP KAFKA CONSUMER", span)),
         StatementKind::DefineTopicConsumer { .. } => {

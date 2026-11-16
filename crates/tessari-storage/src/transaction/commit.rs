@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use tessari_constants::{COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS};
 use tessari_encoding::{CausalStamp, LogId, LogRecord, Mutation, RecordValue, StampedValue};
-use tessari_types::{Epoch, NamespaceId, Reach, Sequence, ShardId, TableId};
+use tessari_types::{DatabaseId, Epoch, NamespaceId, Reach, Sequence, ShardId, TableId};
 
 use super::{RecordAddress, Transaction};
 use crate::catalog::ShardMap;
@@ -279,6 +279,21 @@ impl Transaction<'_> {
 
     /// Whether this transaction has written anything a commit would land.
     ///
+    /// The (namespace, database) pairs this transaction writes to, each once.
+    ///
+    /// What a gate above the commit needs to refuse a class of writes by
+    /// tenancy without walking the writes themselves: the distinct addresses
+    /// are few even when the records are many.
+    #[must_use]
+    pub fn write_tenancies(&self) -> Vec<(NamespaceId, DatabaseId)> {
+        self.writes
+            .keys()
+            .map(|address| (address.namespace, address.database))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     /// A read commits too — an empty transaction — and nothing about it is
     /// worth waiting for copies of (ADR-0106).
     #[must_use]

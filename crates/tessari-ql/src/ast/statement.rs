@@ -835,6 +835,57 @@ pub enum StatementKind {
         /// How long it binds for.
         expires: Duration,
     },
+    /// `DEFINE REPLICATION backup TO 'cluster-b:9080' FOR DATABASE prod.shop
+    /// [AS 'shop']` — the cross-cluster half of replication.
+    ///
+    /// Where [`StatementKind::DefineReplica`] names a peer of THIS cluster, this
+    /// names an outbound replication of ONE database to ANOTHER cluster:
+    /// the unit is the database, because a database is the smallest scope that is
+    /// self-naming — its records, topics and feeds resolve inside it, and the
+    /// carried machinery already classifies a whole database's log.
+    ///
+    /// The declaration is cluster-local configuration, exactly as a peer row is:
+    /// it names an external party, so it travels to every node of this cluster
+    /// and to no other.
+    DefineReplication {
+        /// The name the replication is known by.
+        name: Name,
+        /// Where the remote cluster answers, as written — for the reason
+        /// `DEFINE REPLICA`'s endpoint is text: whether it resolves is a
+        /// question for whoever dials it.
+        endpoint: String,
+        /// The database that replicates, always fully qualified.
+        ///
+        /// A replication is a statement about the cluster, not about whatever
+        /// the writing session happened to select, so the grammar takes the
+        /// qualified `namespace.database` spelling and nothing else — the same
+        /// reasoning a `REPLICATES SHARD` name is fully qualified for.
+        database: TableRef,
+        /// The database's name on the remote cluster (`AS 'shop'`), when said —
+        /// what the remote must call the copy for it to be this link's. Absent
+        /// reads as the same name it has here.
+        remote: Option<String>,
+        /// The direction: `TO` answers outbound — this cluster ships the
+        /// database — and `FROM` answers inbound — another cluster ships it,
+        /// and this cluster's copy is read-only by declaration until the link
+        /// is dropped.
+        inbound: bool,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `CREATE LINK TOKEN FOR REPLICATION backup EXPIRES 10m` — a one-time
+    /// token the remote cluster offers when it binds this link, the join-token
+    /// pattern (ADR-0108 D9) carried across the seam.
+    ///
+    /// The token is answered once and never stored: the row keeps its SHA-256
+    /// and its expiry, so the catalog — in every backup and on every node —
+    /// holds nothing that binds a row by itself.
+    CreateLinkToken {
+        /// The replication the token binds.
+        replication: Name,
+        /// How long it binds for.
+        expires: Duration,
+    },
     /// `DEFINE KAFKA CONSUMER orders_in FROM 'broker:9092' TOPIC 'orders' …`
     ///
     /// Ingestion that is **declared rather than scripted**: one statement says
@@ -1080,6 +1131,17 @@ pub enum StatementKind {
     /// endpoint, and a peer that disagrees is an operator's question.
     DropReplica {
         /// The peer to undeclare.
+        name: Name,
+    },
+    /// `DROP REPLICATION backup` — stops replicating one database to another
+    /// cluster.
+    ///
+    /// Declarative exactly as `DROP REPLICA` is: the remote cluster is not told
+    /// and its copy is not chased, and the statement says only that this cluster
+    /// no longer counts the link. What the remote cluster does with a copy whose
+    /// writer went quiet is the remote's own policy question, answered there.
+    DropReplication {
+        /// The replication to undeclare.
         name: Name,
     },
     /// `DROP DATABASE staging` — refused while it still holds a table.
@@ -1619,6 +1681,19 @@ pub enum StatementKind {
         name: Name,
         /// What changes.
         change: super::ReplicaChange,
+    },
+    /// `ALTER REPLICATION backup AT '…'` · `… AS '…'` · `… AS NONE` ·
+    /// `… PAUSED` · `… RESUMED`
+    ///
+    /// Amends one clause of a replication's row, the way `ALTER REPLICA` amends
+    /// a peer's: the rest of the row stays as declared. `PAUSED` and `RESUMED`
+    /// are the operability surface (a stopped stream is a statement, not a
+    /// process to hunt down); pausing is inert until a driver consumes it.
+    AlterReplication {
+        /// The replication whose row changes.
+        name: Name,
+        /// What changes.
+        change: super::ReplicationChange,
     },
     /// `ALTER STORE FINALIZE FORMAT`
     ///

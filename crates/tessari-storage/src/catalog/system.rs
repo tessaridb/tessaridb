@@ -218,6 +218,15 @@ pub const TOPIC_CLOCKS: TableId = TableId::new(30);
 /// must anchor at, with no second write to carry it.
 pub const FEED_SCAN_STATES: TableId = TableId::new(31);
 
+/// Where each declared outbound replication stands.
+///
+/// One row per `DEFINE REPLICATION`: the endpoint of another cluster, the
+/// database this cluster ships to it, and the link token waiting to bind the
+/// pair when one stands. The row is cluster-local configuration the way a peer
+/// row is — it travels to every node of THIS cluster (classified `StoreOnly`)
+/// and to no other, because what it names is an external party.
+pub const REPLICATIONS: TableId = TableId::new(32);
+
 /// Every system table and its name, in id order — part of the on-disk format,
 /// because a row's key carries the table id (`docs/key-grammar.md` §9).
 pub const ALL: &[(TableId, &str)] = &[
@@ -252,6 +261,7 @@ pub const ALL: &[(TableId, &str)] = &[
     (KAFKA_QUARANTINE, "KAFKA_QUARANTINE"),
     (TOPIC_CLOCKS, "TOPIC_CLOCKS"),
     (FEED_SCAN_STATES, "FEED_SCAN_STATES"),
+    (REPLICATIONS, "REPLICATIONS"),
 ];
 
 /// The one record [`VAULT_ROOT`] holds.

@@ -130,6 +130,12 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DefineReplica { .. }
         | StatementKind::DropReplica { .. }
         | StatementKind::AlterReplica { .. }
+        // The cross-cluster row is the same shape: it names a database, which
+        // is a reach and not a table, so the grant loop has nothing to check.
+        | StatementKind::DefineReplication { .. }
+        | StatementKind::AlterReplication { .. }
+        | StatementKind::DropReplication { .. }
+        | StatementKind::CreateLinkToken { .. }
         // Forgetting a consumer names no table. Declaring one does, and it is
         // listed below rather than here — see the arm that returns its
         // destination.

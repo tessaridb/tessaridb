@@ -212,7 +212,8 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Users
             | InfoSubject::Node
             | InfoSubject::Seal(None)
-            | InfoSubject::Consumers => {}
+            | InfoSubject::Consumers
+            | InfoSubject::Replications => {}
             InfoSubject::Seal(Some(vault)) => erase_name(vault),
             InfoSubject::Table(table) | InfoSubject::Access(table) => erase_table(table),
             InfoSubject::Recipients(target)
@@ -230,6 +231,7 @@ fn erase_statement(statement: &mut Statement) {
             InfoSubject::User(name)
             | InfoSubject::Consumer(name)
             | InfoSubject::TopicConsumer(name)
+            | InfoSubject::Replication(name)
             | InfoSubject::Graph(name)
             | InfoSubject::Vector(name)
             | InfoSubject::Search(name)
@@ -313,6 +315,15 @@ fn erase_statement(statement: &mut Statement) {
         // A fingerprint is not a name.
         StatementKind::RevokeCertificate { .. } => {}
         StatementKind::CreateJoinToken { replica, .. } => erase_name(replica),
+        StatementKind::CreateLinkToken { replication, .. } => erase_name(replication),
+        StatementKind::DefineReplication {
+            name, database, ..
+        } => {
+            erase_name(name);
+            erase_table(database);
+        }
+        StatementKind::AlterReplication { name, .. } => erase_name(name),
+        StatementKind::DropReplication { name } => erase_name(name),
         StatementKind::DefineReplica {
             name,
             roles,

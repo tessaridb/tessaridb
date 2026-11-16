@@ -242,6 +242,55 @@ pub(crate) fn described_failover(held: &tessari_storage::FailoverDefinition) -> 
     ]))
 }
 
+/// One outbound replication, as the catalog holds it.
+///
+/// The declaration only: there is no running state to report until a driver
+/// consumes the row, and the surface lands before the machinery so an operator
+/// can read back what they declared before anything acts on it. The token's
+/// expiry is reported — milliseconds since the Unix epoch — and never its
+/// digest, for the reason `described_replica` gives.
+pub(crate) async fn described_replication(
+    replication: &tessari_storage::ReplicationDefinition,
+    catalog: &Catalog<'_, '_>,
+) -> Result<Value> {
+    Ok(Value::Object(BTreeMap::from([
+        ("name".to_owned(), Value::from(replication.name.as_str())),
+        (
+            "endpoint".to_owned(),
+            Value::from(replication.endpoint.as_str()),
+        ),
+        // The database, in the spelling `FOR DATABASE` takes, so the answer
+        // can be pasted into the statement that would correct it.
+        (
+            "database".to_owned(),
+            Value::from(spelled_reach(replication.database, catalog).await?.as_str()),
+        ),
+        (
+            "remote".to_owned(),
+            replication
+                .remote
+                .as_deref()
+                .map_or(Value::Null, Value::from),
+        ),
+        (
+            "direction".to_owned(),
+            Value::from(if replication.inbound {
+                "inbound"
+            } else {
+                "outbound"
+            }),
+        ),
+        ("paused".to_owned(), Value::Bool(replication.paused)),
+        (
+            "join_expires_ms".to_owned(),
+            replication
+                .join
+                .as_ref()
+                .map_or(Value::Null, |join| Value::from(join.expires_ms)),
+        ),
+    ])))
+}
+
 pub(crate) fn described_follower(lag: FollowerLag) -> Value {
     Value::Object(BTreeMap::from([
         ("node".to_owned(), Value::Uuid(lag.node)),

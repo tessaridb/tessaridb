@@ -303,6 +303,7 @@ pub(crate) fn store_kind(error: &tessari_storage::Error) -> &'static str {
         tessari_storage::Error::VaultReservedRecipient { .. } => "VaultReservedRecipient",
         tessari_storage::Error::VaultRecipientExists { .. } => "VaultRecipientExists",
         tessari_storage::Error::VaultNoRecipient { .. } => "VaultNoRecipient",
+        tessari_storage::Error::WritesToAReplica { .. } => "WritesToAReplica",
         _ => "Unnamed",
     }
 }

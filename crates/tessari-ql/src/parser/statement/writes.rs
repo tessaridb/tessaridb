@@ -182,6 +182,10 @@ impl Parser<'_> {
             _ if self.eat_word("replica") => Ok(StatementKind::DropReplica {
                 name: self.dropped_name()?,
             }),
+            // The cross-cluster half, contextual for `replica`'s reason.
+            _ if self.eat_word("replication") => Ok(StatementKind::DropReplication {
+                name: self.dropped_name()?,
+            }),
             // Contextual, as the word is everywhere else it appears.
             _ if self.eat_word("vector") => Ok(StatementKind::DropVector {
                 name: self.dropped_name()?,

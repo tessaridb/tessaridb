@@ -235,6 +235,17 @@ impl Effect {
             StatementKind::DefineReplica { .. }
             | StatementKind::DropReplica { .. }
             | StatementKind::AlterReplica { .. } => Self::Write,
+            // The cross-cluster half, a write for the peer half's reason: the
+            // row is a catalog record, commits in the transaction that issued
+            // it, and reaches every node of this cluster through the ordinary
+            // apply path. It never reaches the other cluster — what crosses the
+            // seam is the database's log, not the link's definition.
+            StatementKind::DefineReplication { .. }
+            | StatementKind::AlterReplication { .. }
+            | StatementKind::DropReplication { .. }
+            // A link token is a field on the row, written like the row — the
+            // join-token shape, on the cross-cluster table.
+            | StatementKind::CreateLinkToken { .. } => Self::Write,
             // `DEFINE FAILOVER` is a write for the same reason and it matters
             // more here than anywhere else: the periods decide when a leader
             // counts as gone, so a policy that reached one node and not the

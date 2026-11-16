@@ -3234,6 +3234,27 @@ Shown once. The node keeps only its digest.`);
         endpoints: all2["endpoints"],
         id: all2["id"]
       });
+      try {
+        const links = held3(await valueOf("INFO FOR REPLICATIONS;", "Node")) ?? {};
+        const rows2 = Array.isArray(links["replications"]) ? links["replications"] : [];
+        if (rows2.length === 0) {
+          state("replication-status", "empty", "No replication links — this cluster ships to nobody and receives from nobody.");
+        } else {
+          settled("replication-status");
+          facts("replication-facts", {
+            links: rows2.map((row) => {
+              const link = row ?? {};
+              const name = typeof link["name"] === "string" ? link["name"] : "?";
+              const direction = typeof link["direction"] === "string" ? link["direction"] : "?";
+              const endpoint = typeof link["endpoint"] === "string" ? link["endpoint"] : "?";
+              const paused = link["paused"] === true ? " · paused" : "";
+              return `${name} · ${direction} · ${endpoint}${paused}`;
+            }).join("\n")
+          });
+        }
+      } catch {
+        state("replication-status", "empty", "Replication links need the store's operator to read them.");
+      }
       const joining = Array.isArray(all2["certificates"]) && all2["certificates"].some(
         (shown3) => typeof shown3 === "object" && shown3 !== null && "surface" in shown3 && shown3.surface === "peers"
       );

@@ -218,6 +218,14 @@ impl Needs {
             StatementKind::Info {
                 subject: InfoSubject::Node,
             } => Self::OPERATE_STORE,
+            // A link's report is an endpoint, a remote name and a token's
+            // remaining life: topology about an external party, with no smaller
+            // truthful form to filter down to — the `INFO FOR NODE` answer in a
+            // different key. Named here rather than left to the `Info`
+            // catch-all for the reason the consumer arm below states.
+            StatementKind::Info {
+                subject: InfoSubject::Replication(_) | InfoSubject::Replications,
+            } => Self::OPERATE_STORE,
             // Configuring the node is administering it. Not `Write`, which is
             // where the other `DEFINE`s sit: an `editor` is expected to shape
             // the data they own, and neither what this machine is for nor which
@@ -229,7 +237,14 @@ impl Needs {
             | StatementKind::CreateJoinToken { .. }
             | StatementKind::DefineReplica { .. }
             | StatementKind::DropReplica { .. }
-            | StatementKind::AlterReplica { .. } => Self::OPERATE_STORE,
+            | StatementKind::AlterReplica { .. }
+            // The cross-cluster row is administered exactly as a peer row is:
+            // it names an external party, and which external clusters hold
+            // copies of what is topology, not anybody's tables.
+            | StatementKind::DefineReplication { .. }
+            | StatementKind::AlterReplication { .. }
+            | StatementKind::DropReplication { .. }
+            | StatementKind::CreateLinkToken { .. } => Self::OPERATE_STORE,
             // Declaring a consumer is administering, not writing — the same
             // reasoning that puts `DEFINE USER` here. It hands a broker address
             // and a group name to a process that will then write into somebody's

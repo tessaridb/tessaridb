@@ -1200,6 +1200,40 @@ pub enum Error {
         table: String,
     },
 
+    /// A write into a database this cluster receives from another.
+    ///
+    /// Not [`Error::WriteIsElsewhere`], which means *this node may not write*:
+    /// the replica is read-only by **declaration**, and the writer it answers
+    /// to is another cluster. The refusal says so, because the remedy for the
+    /// two is different — the first is routed to a leader, and the second is
+    /// routed nowhere: the write belongs on the cluster the link names. Asked
+    /// inside the commit, not at the statement layer, so a `VERIFY` rehearses
+    /// it — a refusal a rehearsal cannot see is one an operator meets for the
+    /// first time in production.
+    #[error(
+        "{database} is received from another cluster over the link '{link}' and \
+         is read-only here; write to it where the link points"
+    )]
+    WritesToAReplica {
+        /// The database as the catalog names it.
+        database: String,
+        /// The inbound link whose copy this write reached for.
+        link: String,
+    },
+
+    /// The far side of a cross-cluster link refused or did not answer a batch.
+    ///
+    /// Unavailable rather than a permanent refusal, because it is the only
+    /// reading that is always true: the batch this side holds is unchanged,
+    /// and shipping it again a moment from now may well succeed. The link
+    /// driver paces its retries around this — a batch is kept and re-read
+    /// until the far side confirms it durably applied.
+    #[error("the far side of the link refused the batch: {reason}")]
+    LinkRefused {
+        /// What the far side said, or why it could not be asked.
+        reason: String,
+    },
+
     /// A failure from the key-value substrate.
     #[error(transparent)]
     Kv(#[from] tessari_kv::Error),
@@ -1279,7 +1313,16 @@ impl Error {
             Self::LeaseSpent { .. }
             | Self::NoLeadershipYet
             | Self::LeadershipUnconfirmed { .. }
-            | Self::WriteIsElsewhere { .. } => ErrorCategory::Unavailable,
+            | Self::WriteIsElsewhere { .. }
+            | Self::LinkRefused { .. } => ErrorCategory::Unavailable,
+            // Validation rather than Unavailable, because Unavailable's own
+            // argument — "the cluster may accept it somewhere else a moment
+            // from now" — is the one thing that is not true: no node of this
+            // cluster takes the write, and retrying cannot help. Validation's
+            // "a stated precondition did not hold" is the shape of it: the
+            // database's writer being elsewhere is a precondition the write
+            // declined to meet.
+            Self::WritesToAReplica { .. } => ErrorCategory::Validation,
             Self::LogGap { .. }
             | Self::NameTaken { .. }
             | Self::NoSuchParent { .. }
