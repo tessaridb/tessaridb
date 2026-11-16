@@ -442,6 +442,33 @@ fn a_table_at_its_max_shard_count_is_not_split_further() {
 }
 
 #[test]
+fn a_quiet_table_converges_down_but_never_under_its_floor() {
+    let db = Db::in_memory().now().unwrap();
+    orders(
+        &db,
+        "SPLIT AUTOMATICALLY ABOVE 100 RECORDS MERGE BELOW 40 RECORDS MIN 2 SHARDS",
+        400,
+    );
+    passes(&db, &mut ShardSamples::default());
+    // SPREAD lands the identities unevenly, so the grown count is an
+    // artifact; what matters is that the table holds more shards than the
+    // floor, so convergence has somewhere to fall from.
+    assert!(per_shard(&db).len() > 2, "the table grew past the floor");
+    db.session()
+        .run_now(&format!(
+            "{TENANCY} DELETE FROM orders WHERE n = 1 LIMIT 390;"
+        ))
+        .unwrap();
+    let (_, merged) = passes(&db, &mut ShardSamples::default());
+    assert!(merged >= 1, "the quiet table converged down");
+    assert_eq!(
+        per_shard(&db).len(),
+        2,
+        "the merge stopped at the declared floor"
+    );
+}
+
+#[test]
 fn a_table_at_its_min_shard_count_is_not_merged_further() {
     let db = Db::in_memory().now().unwrap();
     orders(
