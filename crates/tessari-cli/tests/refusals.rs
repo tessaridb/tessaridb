@@ -27,12 +27,19 @@ const PASSWORD: &str = "correct horse battery";
 
 /// The binary under test.
 fn binary() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    if path.ends_with("deps") {
-        path.pop();
+    // The binary sits in the profile directory (target/debug), wherever cargo
+    // placed the test binary itself — deps/ ordinarily, a build script's out
+    // directory when the build plan emits it there — so resolve upward to the
+    // first ancestor that holds it rather than assuming the layout.
+    let mut dir = std::env::current_exe().unwrap();
+    loop {
+        dir.pop();
+        let candidate = dir.join("tessaridb");
+        if candidate.is_file() {
+            return candidate;
+        }
+        assert!(dir.parent().is_some(), "tessaridb not found above the test");
     }
-    path.join("tessaridb")
 }
 
 /// A store directory of this test's own, emptied first.
