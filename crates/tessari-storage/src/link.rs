@@ -35,7 +35,7 @@ use dashmap::DashMap;
 use tessari_encoding::{LogId, LogRecord};
 use tessari_types::Sequence;
 
-use crate::catalog::{Reach, ReplicationDefinition};
+use crate::catalog::{Catalog, Reach, ReplicationDefinition};
 use crate::error::Result;
 use crate::store::Store;
 
@@ -341,4 +341,69 @@ pub async fn intake(store: &Store, envelope: Envelope) -> Result<Sequence> {
         applied = at;
     }
     Ok(applied)
+}
+
+/// Serve every declared outbound link until `stop`, one pass per tick — the
+/// runtime shape the node wraps in a supervised task, and the shape the
+/// two-cluster suite drives directly.
+///
+/// # Live pause
+///
+/// The catalog is re-read every pass, so `ALTER REPLICATION … PAUSED` holds
+/// the stream at the next tick rather than at the next restart — a stopped
+/// stream is a statement, not a process to hunt down. The same re-read means
+/// a `DROP REPLICATION` retires a link between one pass and the next, and a
+/// newly declared one starts serving without anything being told.
+///
+/// # What a refusal does
+///
+/// Nothing, for the reason a collect's refusal does nothing: a far side that
+/// is down leaves the registry where it was, is logged, and is asked again
+/// next pass. At-least-once holds because the unconfirmed batch survives —
+/// the hold below is what makes "survives" true under pruning.
+///
+/// # The hold
+///
+/// Each pass holds the link's confirmed floors against pruning for the
+/// pass's duration. Between passes a record is not held, which is honest:
+/// the promise is made while serving, and a link nobody is serving has no
+/// live relationship for the registry to describe either.
+///
+/// # Errors
+///
+/// Returns an error only when the catalog cannot be read; per-link failures
+/// are logged and the pass goes on.
+pub async fn serve_links(
+    store: &Store,
+    sink: &mut impl Sink,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(20));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            biased;
+            changed = stop.changed() => {
+                // The sender dropped or set the flag: either way, stop.
+                if changed.is_err() || *stop.borrow() {
+                    return Ok(());
+                }
+            }
+            _ = tick.tick() => {}
+        }
+        let links = {
+            let mut reading = store.begin().await?;
+            Catalog::new(&mut reading).replications().await?
+        };
+        for definition in links.iter().filter(|held| !held.inbound && !held.paused) {
+            let _hold = store.hold_logs(&store.links().floors(&definition.name));
+            if let Err(failure) = serve_once(store, definition, store.links(), sink).await {
+                tracing::warn!(
+                    link = %definition.name,
+                    error = %failure,
+                    "a link's pass failed; its unconfirmed batch survives for the next"
+                );
+            }
+        }
+    }
 }

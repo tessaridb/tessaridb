@@ -20,7 +20,7 @@ use tessari_session::RunNow;
 use tessari_session::Session;
 use tessari_storage::{
     Catalog, ChannelSink, Envelope, Error, Links, Reach, ReplicationDefinition, Result, Sink,
-    Store, intake, serve_once,
+    Store, intake, serve_links, serve_once,
 };
 use tessari_types::Value;
 use tessari_types::{NamespaceId, Sequence};
@@ -476,4 +476,90 @@ fn a_link_end_to_end_records_land_and_the_copy_is_read_only() {
         "the copy holds exactly what the source has written — the refused \
          divergent write is not among them: {records:?}"
     );
+}
+
+#[test]
+fn the_loop_honors_pause_between_passes_and_ships_again_on_resume() {
+    // The operability contract, live: the catalog is re-read every pass, so
+    // PAUSED holds the stream at the next tick rather than at the next
+    // restart — a stopped stream is a statement, not a process to hunt down.
+    let source = store_with_a_link();
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    // One queue, two handles: `seen` drains what the loop's handle ships.
+    let seen = ChannelSink::new();
+    // The spawn needs a runtime context; the sessions must NOT run inside one
+    // (`run_now` drives its own future, and a future driven inside a runtime
+    // is the panic `now` exists to catch). So: spawn in one small drive, do
+    // the synchronous work while the shared test runtime runs the loop on its
+    // workers, and stop in a last drive. The runtime outlives each drive —
+    // that is what the shared runtime is for.
+    // `poll_fn`, not an `async` block: the block's output would be the
+    // JoinHandle itself, and an async construct yielding an awaitable is the
+    // lint this sidesteps. The closure is polled once and answers at once.
+    let task = std::future::poll_fn({
+        let source = source.clone();
+        let seen = seen.clone();
+        move |_| {
+            // The clones move into this one poll's spawn; `poll_fn` is polled
+            // once and the queue is shared behind the handles, so nothing is
+            // lost if it were polled again.
+            let mut serving = seen.clone();
+            let stop_rx = stop_rx.clone();
+            let source = source.clone();
+            std::task::Poll::Ready(tokio::spawn(async move {
+                serve_links(&source, &mut serving, stop_rx).await
+            }))
+        }
+    })
+    .now();
+    let mut session = Session::new(&source);
+    session
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+    // The loop ships on its tick; poll with a deadline rather than sleeping a
+    // fixed hope.
+    let landed = (0..250).any(|_| {
+        if !seen.drain().is_empty() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        false
+    });
+    assert!(landed, "the loop shipped what was written");
+
+    // Pause, write, and wait well past several ticks: nothing ships.
+    session.run_now("ALTER REPLICATION east PAUSED;").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    seen.drain();
+    session
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' };")
+        .unwrap();
+    let mut idle = true;
+    for _ in 0..15 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        if !seen.drain().is_empty() {
+            idle = false;
+            break;
+        }
+    }
+    assert!(idle, "a paused link holds the stream at the next pass");
+
+    // Resume, and the same pass picks the stream up where the registry left
+    // it — the confirmation boundary, not a re-ship of what crossed already.
+    session.run_now("ALTER REPLICATION east RESUMED;").unwrap();
+    let resumed = (0..250).any(|_| {
+        if !seen.drain().is_empty() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        false
+    });
+    assert!(resumed, "a resumed link ships again");
+    (async {
+        stop_tx.send(true).ok();
+        task.await
+    })
+    .now()
+    .unwrap()
+    .unwrap();
 }

@@ -122,7 +122,7 @@ pub use covering::MEASURED_RELATION;
 pub use decisions::{Deciding, Decisions};
 pub use expiry::Expired;
 pub use lapse::Lapsed;
-pub use link::{ChannelSink, Envelope, Links, Sink, intake, serve_once};
+pub use link::{ChannelSink, Envelope, Links, Sink, intake, serve_links, serve_once};
 pub use log_holds::LogHold;
 pub use retention::{Retention, RetentionSource};
 pub use tessari_encoding::FieldStatistics;
