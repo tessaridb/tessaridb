@@ -26,9 +26,9 @@ use core::time::Duration;
 use tessari_constants::STALENESS_FLOOR_SECONDS;
 use tessari_encoding::NODE_ID_LEN;
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_session::{Elsewhere, Error, Peer, Session};
+use tessari_session::{Elsewhere, Error, Note, Peer, Session};
 use tessari_storage::Store;
-use tessari_types::Epoch;
+use tessari_types::{Epoch, RecordId};
 
 use super::gathered_reads::{answer, pair, refused as refused_on_the_pair};
 
@@ -396,4 +396,165 @@ fn a_field_called_leader_is_still_a_field() {
     session
         .run_now("SELECT * FROM tickets WHERE leader = true AND stale > 0;")
         .expect("and in a condition the words are the fields they always were");
+}
+
+#[test]
+fn a_bounded_read_answered_from_a_copy_states_its_age() {
+    // The lag stated: the bound is the guarantee, and the note says what the
+    // copy actually was — information, so a caller that wants to know what it
+    // got does not have to measure it.
+    let store = store();
+    let mut session = ready(&store).among(peer(false, Duration::ZERO));
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
+    level(&store, 1);
+    // A beat of real time, so the age the note states is unambiguously not a
+    // zero. The assertion is presence and non-zero, never the exact figure —
+    // the note's value is time since the copy levelled, which no test can
+    // pin to the nanosecond.
+    std::thread::sleep(Duration::from_millis(2));
+
+    let (records, notes) = answer(
+        &mut session,
+        &format!("SELECT * FROM orders STALENESS {};", allowed()),
+    );
+    assert_eq!(records.len(), 1, "answered here, inside the bound");
+    let Some(note) = notes.iter().find(|note| note.kind() == "answered-as-of") else {
+        panic!("the lag was not stated: {notes:?}");
+    };
+    let Note::AnsweredAsOf { age } = note else {
+        panic!("not the lag note: {note:?}");
+    };
+    assert_ne!(
+        age.to_literal(),
+        "0s",
+        "the note states a real age, not a placeholder: {note:?}"
+    );
+}
+
+#[test]
+fn the_stale_level_states_its_lag_too() {
+    // The level desugars onto the bound at the statement, so its locally
+    // served answer carries the same note — one contract, two spellings.
+    let store = store();
+    let mut session = ready(&store).among(peer(false, Duration::ZERO));
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
+    level(&store, 1);
+    std::thread::sleep(Duration::from_millis(2));
+
+    let (_, notes) = answer(
+        &mut session,
+        &format!("SELECT * FROM orders STALE WITHIN {};", allowed()),
+    );
+    assert!(
+        notes.iter().any(|note| note.kind() == "answered-as-of"),
+        "the level's answer states its lag: {notes:?}"
+    );
+}
+
+#[test]
+fn a_bounded_read_answered_by_the_leader_carries_no_age_note() {
+    // A writable node answers as of now — there is no copy age to state, and
+    // saying "0s" on every bounded read would teach readers to skip the note.
+    let store = store();
+    let mut session = ready(&store);
+
+    let (_, notes) = answer(
+        &mut session,
+        &format!("SELECT * FROM orders STALENESS {};", allowed()),
+    );
+    assert!(
+        notes.iter().all(|note| note.kind() != "answered-as-of"),
+        "a current answer has no lag to state: {notes:?}"
+    );
+}
+
+#[test]
+fn an_unbounded_read_carries_no_age_note() {
+    // The note exists only where the caller accepted a bounded answer. The
+    // default contract states nothing, so its answers carry nothing new.
+    let store = store();
+    let mut session = ready(&store).among(peer(false, Duration::ZERO));
+    session.run_now("DEFINE NODE ROLES serving;").unwrap();
+    level(&store, 1);
+
+    let (_, notes) = answer(&mut session, "SELECT * FROM orders;");
+    assert!(
+        notes.iter().all(|note| note.kind() != "answered-as-of"),
+        "no bound was named, so no lag is stated: {notes:?}"
+    );
+}
+
+#[test]
+fn a_lagging_follower_answers_each_level_per_its_contract() {
+    // The cluster shape of C2: a follower whose copy is genuinely behind,
+    // asked at each level.
+    let pair = pair();
+    // The leader writes into the shard the follower holds, after the follower
+    // collected: 'm' exists on the leader and is absent from the follower's
+    // copy, which is the fact every arm below answers from.
+    let mut leader = pair.on_the_leader("root");
+    leader
+        .run_now("CREATE ledger:'m' = { total: 4, note: 'm' };")
+        .unwrap();
+
+    // The follower is drained of the writable role and marked level at the
+    // fixture's point: a serving copy with a known age.
+    let mut draining = pair.on_the_follower("root");
+    draining.run_now("DEFINE NODE ROLES serving;").unwrap();
+    level(pair.follower(), 1);
+
+    // `STALE WITHIN` on the window the follower holds: answered from the copy
+    // — 'm' absent, the note states the lag. The window stays inside the one
+    // shard it holds, so nothing is gathered.
+    let bound = format!("{}s", STALENESS_FLOOR_SECONDS.saturating_mul(60));
+    let (records, notes) = answer(
+        &mut pair.on_the_follower("reader"),
+        &format!("SELECT * FROM ledger:'h'..'n' STALE WITHIN {bound};"),
+    );
+    assert!(
+        records.iter().any(|(id, _)| *id == RecordId::from("h")),
+        "the copy's records answer: {records:?}"
+    );
+    assert!(
+        !records.iter().any(|(id, _)| *id == RecordId::from("m")),
+        "the answer is what the copy holds, and the copy predates 'm'"
+    );
+    assert!(
+        notes.iter().any(|note| note.kind() == "answered-as-of"),
+        "the lag is stated with the answer: {notes:?}"
+    );
+
+    // `LEADER` on the same window: the follower may not answer, and this
+    // fixture knows no directory, so the refusal names the remedy — exactly
+    // the discipline the axis has always had.
+    let error = refused_on_the_pair(
+        &mut pair.on_the_follower("reader"),
+        "SELECT * FROM ledger:'h'..'n' LEADER;",
+    );
+    assert!(
+        matches!(error, Error::NoLeaderKnown { .. }),
+        "never answered weaker than it was named: {error}"
+    );
+
+    // `SNAPSHOT` on the same window: the follower's own committed tail is one
+    // point, so the level answers here — still what the copy holds.
+    let (records, _) = answer(
+        &mut pair.on_the_follower("reader"),
+        "SELECT * FROM ledger:'h'..'n' SNAPSHOT;",
+    );
+    assert!(records.iter().any(|(id, _)| *id == RecordId::from("h")));
+    assert!(!records.iter().any(|(id, _)| *id == RecordId::from("m")));
+
+    // The control that the copy is genuinely behind: the same window on the
+    // leader — the node the 'm' write landed on — includes it. (The follower's
+    // held shard is never gathered from, so a whole-table read could not show
+    // this; the same window on the node that holds the write does.)
+    let (records, _) = answer(
+        &mut pair.on_the_leader("reader"),
+        "SELECT * FROM ledger:'h'..'n';",
+    );
+    assert!(
+        records.iter().any(|(id, _)| *id == RecordId::from("m")),
+        "the leader's present holds 'm': {records:?}"
+    );
 }
