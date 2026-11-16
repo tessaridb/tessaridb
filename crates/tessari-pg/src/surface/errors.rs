@@ -40,6 +40,11 @@ pub(crate) mod code {
     pub(crate) const LIMIT: &str = "53400";
     /// A text value did not read as the type it was declared under.
     pub(crate) const INVALID_TEXT: &str = "22P02";
+    /// The transaction verb had no transaction: COMMIT or ROLLBACK outside
+    /// one, or work sent into an aborted one.
+    pub(crate) const NO_TRANSACTION: &str = "25P01";
+    /// The transaction is aborted; only its end may come next.
+    pub(crate) const ABORTED: &str = "25P02";
     /// Everything else, including what this surface does not carry yet.
     pub(crate) const INTERNAL: &str = "XX000";
 }

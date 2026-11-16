@@ -17,17 +17,18 @@ use tessaridb::Parameters;
 pub(crate) use super::errors::{Refused, code};
 use parser::Parser;
 
-/// What the translator owes the caller: the script, its bound values, and the
-/// column order the projection named (or the mark that it was `*`). `slots`
-/// maps a `$n` placeholder to the parameter name the Bind's nth value takes —
-/// `None` marks a slot the query never used, which Bind refuses.
+/// What the translator owes the caller: the script, its bound values, and one
+/// shape per statement the query held. `slots` maps a `$n` placeholder to the
+/// parameter name the Bind's nth value takes — `None` marks a slot the query
+/// never used, which Bind refuses.
 #[derive(Debug, Clone)]
 pub(crate) struct Translated {
     pub(crate) script: String,
     pub(crate) parameters: Parameters,
-    pub(crate) columns: Columns,
-    /// The table the FROM named, for the identity column's spelling.
-    pub(crate) table: Option<String>,
+    /// The statements' shapes, in the order they run — one for the extended
+    /// protocol (which speaks one statement per Parse), more for a
+    /// multi-statement simple query.
+    pub(crate) statements: Vec<Shaped>,
     /// The parameter name each `$1..$n` takes, in placeholder order.
     pub(crate) slots: Vec<Option<String>>,
 }
@@ -43,11 +44,19 @@ pub(crate) enum Columns {
 /// The name the dialect gives a column the projection did not name.
 pub(crate) const UNNAMED: &str = "?column?";
 
-/// Translate one query string. A refusal carries the wire code and the words
-/// a client shows.
+/// Translate one statement — the extended protocol's Parse, which speaks
+/// exactly one. A refusal carries the wire code and the words a client shows.
 pub(crate) fn translate(query: &str) -> Result<Translated, Refused> {
     let mut parser = Parser::new(query);
     parser.select()
+}
+
+/// Translate a simple query's text, which the dialect says may hold several
+/// statements: they run as one implicit transaction block, the store's own
+/// `BEGIN … COMMIT` wrapping them.
+pub(crate) fn translate_many(query: &str) -> Result<Translated, Refused> {
+    let mut parser = Parser::new(query);
+    parser.select_many()
 }
 
 /// The words a bare alias may not be: the shape's own keywords. `AS` is not
@@ -89,6 +98,7 @@ fn is_keyword(word: &str) -> bool {
 }
 
 /// One shaped query, before the parser's collected state moves out.
+#[derive(Debug, Clone)]
 pub(crate) struct Shaped {
     pub(crate) script: String,
     pub(crate) columns: Columns,

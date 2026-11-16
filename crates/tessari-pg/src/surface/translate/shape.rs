@@ -16,12 +16,56 @@ impl Parser<'_> {
             ));
         }
         let shaped = self.shape()?;
-        self.end()?;
+        self.end_strict()?;
+        let script = shaped.script.clone();
         Ok(Translated {
-            script: shaped.script,
+            script,
             parameters: std::mem::take(&mut self.parameters),
-            columns: shaped.columns,
-            table: shaped.table,
+            statements: vec![shaped],
+            slots: std::mem::take(&mut self.slots),
+        })
+    }
+
+    /// The simple query path: statements until the text ends, the whole held
+    /// in one implicit transaction block when there is more than one — the
+    /// dialect's own multi-statement semantics (§54.2.2.1), on the store's
+    /// own transaction boundary.
+    pub(crate) fn select_many(&mut self) -> Result<Translated, Refused> {
+        self.depth_guard()?;
+        if self.keyword("SELECT").is_err() {
+            return Err(Refused::surface(
+                code::SYNTAX,
+                "a query starts with SELECT in this build",
+            ));
+        }
+        let mut statements = Vec::new();
+        loop {
+            statements.push(self.shape()?);
+            if !self.end_more()? {
+                break;
+            }
+            if self.keyword("SELECT").is_err() {
+                return Err(Refused::surface(
+                    code::SYNTAX,
+                    "a query starts with SELECT in this build",
+                ));
+            }
+        }
+        let script = if statements.len() == 1 {
+            statements[0].script.clone()
+        } else {
+            let mut script = String::from("BEGIN; ");
+            for shaped in &statements {
+                script.push_str(shaped.script.trim_end_matches(';'));
+                script.push_str("; ");
+            }
+            script.push_str("COMMIT;");
+            script
+        };
+        Ok(Translated {
+            script,
+            parameters: std::mem::take(&mut self.parameters),
+            statements,
             slots: std::mem::take(&mut self.slots),
         })
     }
@@ -260,22 +304,38 @@ impl Parser<'_> {
         Ok(text)
     }
 
-    /// The query must end here; a trailing semicolon or whitespace is the
-    /// dialect's own punctuation and is accepted. What follows a semicolon
-    /// that is not punctuation is another statement, which this build does
-    /// not speak — the implicit transaction it would need is not built yet.
-    fn end(&mut self) -> Result<(), Refused> {
+    /// One statement ends here; a trailing semicolon or whitespace is the
+    /// dialect's own punctuation and is accepted, nothing more — what follows
+    /// a semicolon is another statement, and the extended protocol speaks one
+    /// per Parse.
+    fn end_strict(&mut self) -> Result<(), Refused> {
         self.skip_space();
         if self.byte(b';') {
             self.skip_space();
             if self.at != self.source.len() {
                 return Err(Refused::surface(
-                    code::FEATURE,
-                    "multiple statements in one query are not spoken in this build",
+                    code::SYNTAX,
+                    "cannot insert multiple commands into a prepared statement",
                 ));
             }
             return Ok(());
         }
+        self.end_here()
+    }
+
+    /// Whether another statement follows the semicolon just eaten: `true`
+    /// when text remains, `false` at the end of the query.
+    fn end_more(&mut self) -> Result<bool, Refused> {
+        self.skip_space();
+        if self.byte(b';') {
+            self.skip_space();
+            return Ok(self.at != self.source.len());
+        }
+        self.end_here()?;
+        Ok(false)
+    }
+
+    fn end_here(&mut self) -> Result<(), Refused> {
         if self.at == self.source.len() {
             Ok(())
         } else {

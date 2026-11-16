@@ -11,6 +11,20 @@ pub(crate) enum Session {
     Namespace(String),
     /// `SHOW search_path`: answer the namespace the connection reads under.
     ShowNamespace,
+    /// A transaction verb: `BEGIN`/`START TRANSACTION`, `COMMIT`/`END`,
+    /// `ROLLBACK`/`ABORT`.
+    Transaction(TxVerb),
+}
+
+/// Which end of a transaction block a verb names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TxVerb {
+    /// `BEGIN` / `START TRANSACTION`.
+    Begin,
+    /// `COMMIT` / `END`.
+    Commit,
+    /// `ROLLBACK` / `ABORT`.
+    Rollback,
 }
 
 /// Parse one session command; `Ok(None)` hands the query to the translator,
@@ -23,6 +37,46 @@ pub(crate) fn parse(query: &str) -> Result<Option<Session>, Refused> {
     match first.as_str() {
         "set" => set(&words[1..]).map(Some),
         "show" => show(&words[1..]).map(Some),
+        "begin" => {
+            if words.len() == 1 {
+                return Ok(Some(Session::Transaction(TxVerb::Begin)));
+            }
+            Err(Refused::surface(
+                code::SYNTAX,
+                "BEGIN takes no words in this build",
+            ))
+        }
+        "start" => {
+            if words
+                .get(1)
+                .is_some_and(|word| word.eq_ignore_ascii_case("transaction"))
+                && words.len() == 2
+            {
+                return Ok(Some(Session::Transaction(TxVerb::Begin)));
+            }
+            Err(Refused::surface(
+                code::SYNTAX,
+                "START wants TRANSACTION in this build",
+            ))
+        }
+        "commit" | "end" => {
+            if words.len() == 1 {
+                return Ok(Some(Session::Transaction(TxVerb::Commit)));
+            }
+            Err(Refused::surface(
+                code::SYNTAX,
+                "COMMIT takes no words in this build",
+            ))
+        }
+        "rollback" | "abort" => {
+            if words.len() == 1 {
+                return Ok(Some(Session::Transaction(TxVerb::Rollback)));
+            }
+            Err(Refused::surface(
+                code::SYNTAX,
+                "ROLLBACK takes no words in this build",
+            ))
+        }
         _ => Ok(None),
     }
 }

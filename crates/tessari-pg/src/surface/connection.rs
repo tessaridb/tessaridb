@@ -196,6 +196,11 @@ async fn session(
     conn.send(&codec::write::ready_for_query(codec::write::Tx::Idle))
         .await?;
 
+    // The kitchen carries the transaction state the readiness reports. The
+    // store's own transactions close inside the script that opened them, so
+    // a wire-level block is the connection's own tracking: the statements
+    // inside answer as themselves, and the divergence a held snapshot would
+    // close is named on the defer list.
     let mut kitchen = super::extended::Kitchen::new();
     loop {
         tokio::select! {
@@ -209,7 +214,7 @@ async fn session(
                         // any extended skip state, then answers as simple
                         // queries answer.
                         kitchen.interrupt();
-                        query_once(conn, &query, &mut held, shared).await?;
+                        query_once(conn, &query, &mut held, shared, &mut kitchen).await?;
                     }
                     extended @ (Frontend::Parse { .. }
                     | Frontend::Bind { .. }
@@ -221,10 +226,13 @@ async fn session(
                         kitchen.handle(conn, extended, &mut held, shared).await?;
                     }
                     Frontend::Password(_) => {
-                        conn.refuse(&Refused::surface(
-                            code::INVALID_AUTHORIZATION,
-                            "the session is already signed in",
-                        ))
+                        conn.refuse(
+                            &Refused::surface(
+                                code::INVALID_AUTHORIZATION,
+                                "the session is already signed in",
+                            ),
+                            kitchen.tx,
+                        )
                         .await?;
                     }
                     Frontend::Unspoken(kind) => {
@@ -246,21 +254,28 @@ async fn session(
 }
 
 /// One simple query: the session commands answer first — `SET search_path`
-/// moves the connection, `SHOW search_path` answers where it reads. Then the
-/// usual path: blank answers empty; the translation refuses by name; a store
-/// refusal carries the store's words; rows come back described.
+/// moves the connection, `SHOW search_path` answers where it reads, and the
+/// transaction verbs walk the connection's block state. Then the usual path:
+/// blank answers empty; the translation refuses by name; a store refusal
+/// carries the store's words; rows come back described. A refusal inside a
+/// block aborts it, as the dialect's own state machine counts.
 async fn query_once(
     conn: &mut Conn,
     query: &str,
     held: &mut Held,
     shared: &Arc<Shared>,
+    kitchen: &mut super::extended::Kitchen,
 ) -> Result<()> {
+    let tx = &mut kitchen.tx;
     match super::session::parse(query) {
         Ok(Some(super::session::Session::Namespace(namespace))) => {
             held.set_namespace(&namespace);
             conn.send(&codec::write::command_complete("SET")).await?;
-            conn.send(&codec::write::ready_for_query(codec::write::Tx::Idle))
-                .await?;
+            conn.send(&codec::write::ready_for_query(*tx)).await?;
+            return Ok(());
+        }
+        Ok(Some(super::session::Session::Transaction(verb))) => {
+            transaction(conn, verb, tx).await?;
             return Ok(());
         }
         Ok(Some(super::session::Session::ShowNamespace)) => {
@@ -279,60 +294,160 @@ async fn query_once(
             )]))
             .await?;
             conn.send(&codec::write::command_complete("SHOW")).await?;
-            conn.send(&codec::write::ready_for_query(codec::write::Tx::Idle))
-                .await?;
+            conn.send(&codec::write::ready_for_query(*tx)).await?;
             return Ok(());
         }
         Ok(None) => {}
         Err(refused) => {
-            conn.refuse(&refused).await?;
+            if *tx == codec::write::Tx::InTx {
+                *tx = codec::write::Tx::Failed;
+            }
+            conn.refuse(&refused, *tx).await?;
             return Ok(());
         }
     }
     if query.trim().is_empty() {
         conn.send(&codec::write::empty_query()).await?;
-        conn.send(&codec::write::ready_for_query(codec::write::Tx::Idle))
-            .await?;
+        conn.send(&codec::write::ready_for_query(*tx)).await?;
         return Ok(());
     }
-    let translated = match translate::translate(query) {
+    let translated = match translate::translate_many(query) {
         Ok(translated) => translated,
         Err(refused) => {
-            conn.refuse(&refused).await?;
+            if *tx == codec::write::Tx::InTx {
+                *tx = codec::write::Tx::Failed;
+            }
+            conn.refuse(&refused, *tx).await?;
             return Ok(());
         }
     };
+    if *tx == codec::write::Tx::Failed {
+        conn.refuse(
+            &Refused::surface(
+                code::ABORTED,
+                "current transaction is aborted, commands ignored until end of transaction block",
+            ),
+            *tx,
+        )
+        .await?;
+        return Ok(());
+    }
     let outcomes = match held
         .run(shared, &translated.script, &translated.parameters)
         .await
     {
         Ok(outcomes) => outcomes,
         Err(Failed::Refused(refused)) => {
-            conn.refuse(&Refused::store(&refused)).await?;
+            if *tx == codec::write::Tx::InTx {
+                *tx = codec::write::Tx::Failed;
+            }
+            conn.refuse(&Refused::store(&refused), *tx).await?;
             return Ok(());
         }
         Err(Failed::Carried(carried)) => {
-            conn.refuse(&Refused::carried(carried.class, carried.message))
+            if *tx == codec::write::Tx::InTx {
+                *tx = codec::write::Tx::Failed;
+            }
+            conn.refuse(&Refused::carried(carried.class, carried.message), *tx)
                 .await?;
             return Ok(());
         }
         Err(Failed::Busy) => {
-            conn.refuse(&Refused::surface(
-                code::UNAVAILABLE,
-                "the node is busy; try again",
-            ))
+            conn.refuse(
+                &Refused::surface(code::UNAVAILABLE, "the node is busy; try again"),
+                *tx,
+            )
             .await?;
             return Ok(());
         }
         Err(Failed::Lost) => return Err(Error::Malformed("the session is lost")),
     };
+    // The implicit block's BEGIN and COMMIT answer Done among the outcomes;
+    // the statements pair with their shapes in order, the Dones skipped.
+    let mut shapes = translated.statements.iter();
     for outcome in &outcomes {
+        if matches!(outcome, tessaridb::Outcome::Done) {
+            continue;
+        }
+        let Some(shape) = shapes.next() else {
+            break;
+        };
         // An encoding refusal was already answered on the wire; the
         // readiness below still arrives, as the simple protocol counts it.
-        let _answered = answer(conn, outcome, &translated, false, &[]).await?;
+        let _answered = answer(conn, outcome, shape, false, &[]).await?;
     }
-    conn.send(&codec::write::ready_for_query(codec::write::Tx::Idle))
-        .await?;
+    conn.send(&codec::write::ready_for_query(*tx)).await?;
+    Ok(())
+}
+
+/// One transaction verb, walked through the connection's block state the way
+/// the dialect's own clients expect: COMMIT of an aborted block answers
+/// ROLLBACK, a verb outside any block refuses by name, and BEGIN inside one
+/// warns and changes nothing.
+async fn transaction(
+    conn: &mut Conn,
+    verb: super::session::TxVerb,
+    tx: &mut codec::write::Tx,
+) -> Result<()> {
+    use super::session::TxVerb;
+    let (tag, reply): (&str, std::result::Result<(), Refused>) = match verb {
+        TxVerb::Begin => match tx {
+            codec::write::Tx::Idle => {
+                *tx = codec::write::Tx::InTx;
+                ("BEGIN", Ok(()))
+            }
+            _ => {
+                conn.send(&codec::write::notice(
+                    code::NO_TRANSACTION,
+                    "there is already a transaction in progress",
+                ))
+                .await?;
+                ("BEGIN", Ok(()))
+            }
+        },
+        TxVerb::Commit => match tx {
+            codec::write::Tx::InTx => {
+                *tx = codec::write::Tx::Idle;
+                ("COMMIT", Ok(()))
+            }
+            codec::write::Tx::Failed => {
+                *tx = codec::write::Tx::Idle;
+                ("ROLLBACK", Ok(()))
+            }
+            codec::write::Tx::Idle => (
+                "COMMIT",
+                Err(Refused::surface(
+                    code::NO_TRANSACTION,
+                    "there is no transaction in progress",
+                )),
+            ),
+        },
+        TxVerb::Rollback => match tx {
+            codec::write::Tx::InTx | codec::write::Tx::Failed => {
+                *tx = codec::write::Tx::Idle;
+                ("ROLLBACK", Ok(()))
+            }
+            codec::write::Tx::Idle => (
+                "ROLLBACK",
+                Err(Refused::surface(
+                    code::NO_TRANSACTION,
+                    "there is no transaction in progress",
+                )),
+            ),
+        },
+    };
+    match reply {
+        Ok(()) => conn.send(&codec::write::command_complete(tag)).await?,
+        Err(refused) => {
+            conn.send(&codec::write::error(
+                refused.code,
+                &refused.message,
+                refused.detail.as_deref(),
+            ))
+            .await?;
+        }
+    }
+    conn.send(&codec::write::ready_for_query(*tx)).await?;
     Ok(())
 }
 
@@ -349,7 +464,7 @@ async fn query_once(
 pub(crate) async fn answer(
     conn: &mut Conn,
     outcome: &tessaridb::Outcome,
-    translated: &translate::Translated,
+    shape: &translate::Shaped,
     described: bool,
     formats: &[u16],
 ) -> Result<bool> {
@@ -357,7 +472,7 @@ pub(crate) async fn answer(
     match outcome {
         Outcome::Records { records, .. } => {
             let (mut columns, rows) = if records.is_empty()
-                && let translate::Columns::Named(names) = &translated.columns
+                && let translate::Columns::Named(names) = &shape.columns
             {
                 // An empty answer still owes the client the projection's
                 // names: the rows cannot speak for columns that never came.
@@ -372,7 +487,7 @@ pub(crate) async fn answer(
                     .collect::<Vec<_>>();
                 (columns, Vec::new())
             } else {
-                super::rows(records, &translated.columns, translated.table.as_deref())
+                super::rows(records, &shape.columns, shape.table.as_deref())
             };
             let encoded = match super::encode(&columns, &rows, formats) {
                 Ok(encoded) => encoded,
@@ -433,12 +548,13 @@ pub(crate) async fn answer(
                 .await?;
         }
         other => {
-            conn.refuse(&Refused::with_detail(
+            conn.refuse_pending(&Refused::with_detail(
                 code::INTERNAL,
                 "this answer shape is not spoken in this build",
                 format!("{other:?}"),
             ))
             .await?;
+            return Ok(false);
         }
     }
     Ok(true)
@@ -556,11 +672,10 @@ impl Conn {
     }
 
     /// An error mid-session, followed by readiness as the simple query
-    /// protocol requires.
-    async fn refuse(&mut self, refused: &Refused) -> Result<()> {
+    /// protocol requires — the transaction state rides it.
+    pub(crate) async fn refuse(&mut self, refused: &Refused, tx: codec::write::Tx) -> Result<()> {
         self.send(&refused_frame(refused)).await?;
-        self.send(&codec::write::ready_for_query(codec::write::Tx::Idle))
-            .await
+        self.send(&codec::write::ready_for_query(tx)).await
     }
 
     /// An error whose readiness waits for the Sync the client sends next —

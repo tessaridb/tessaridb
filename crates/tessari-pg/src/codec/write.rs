@@ -91,7 +91,6 @@ pub(crate) fn error(code: &str, message: &str, detail: Option<&str>) -> Vec<u8> 
 }
 
 /// A warning that does not stop the conversation.
-#[allow(dead_code)]
 pub(crate) fn notice(code: &str, message: &str) -> Vec<u8> {
     let mut body = Vec::new();
     field(&mut body, b'S', "WARNING");

@@ -29,6 +29,9 @@ pub(crate) struct Kitchen {
     /// An extended error was answered; every message is dropped until the
     /// Sync that re-synchronises the conversation.
     skipping: bool,
+    /// The transaction block the readiness reports, shared with the simple
+    /// query path through [`Self::tx`].
+    pub(crate) tx: codec::write::Tx,
 }
 
 /// A parsed statement: its translation and the parameter types it declared.
@@ -60,6 +63,7 @@ impl Kitchen {
             statements: HashMap::new(),
             portals: HashMap::new(),
             skipping: false,
+            tx: codec::write::Tx::Idle,
         }
     }
 
@@ -400,16 +404,22 @@ impl Kitchen {
             },
         };
         portal.done = true;
+        let shape = match portal.translated.statements.first() {
+            Some(shape) => shape,
+            None => {
+                return self
+                    .fail(
+                        conn,
+                        &Refused::surface(code::INTERNAL, "the portal holds no statement"),
+                    )
+                    .await;
+            }
+        };
+        let shape = shape.clone();
         let mut described = portal.described;
         for outcome in &outcomes {
-            let answered = answer(
-                conn,
-                outcome,
-                &portal.translated,
-                described,
-                &portal.formats.clone(),
-            )
-            .await?;
+            let answered =
+                answer(conn, outcome, &shape, described, &portal.formats.clone()).await?;
             if !answered {
                 // An encoding refusal was answered; the Sync to come owns the
                 // readiness, and the batch is skipped like any extended error.
@@ -449,19 +459,23 @@ impl Kitchen {
     }
 
     /// Sync: the batch ends. The readiness is owed, the skip state clears, and
-    /// the unnamed portal closes — exactly one Ready answers one Sync.
+    /// the unnamed portal closes — exactly one Ready answers one Sync, the
+    /// transaction state riding it.
     async fn sync(&mut self, conn: &mut Conn) -> Result<()> {
         self.skipping = false;
         self.portals.remove("");
-        conn.send(&codec::write::ready_for_query(codec::write::Tx::Idle))
-            .await
+        conn.send(&codec::write::ready_for_query(self.tx)).await
     }
 
     /// An extended error: the refusal answers now, the readiness waits for the
-    /// Sync, and every message until it is dropped.
+    /// Sync, and every message until it is dropped. An error inside a
+    /// transaction block aborts it, as the dialect counts.
     async fn fail(&mut self, conn: &mut Conn, refused: &Refused) -> Result<()> {
         conn.refuse_pending(refused).await?;
         self.skipping = true;
+        if self.tx == codec::write::Tx::InTx {
+            self.tx = codec::write::Tx::Failed;
+        }
         Ok(())
     }
 }
@@ -486,7 +500,8 @@ fn described_types(prepared: &Prepared) -> Vec<u32> {
 /// The columns a projection can name without running: the named ones, or
 /// nothing for a star, whose names only the records carry.
 fn columns_of(translated: &translate::Translated) -> Option<Vec<codec::write::Column>> {
-    match &translated.columns {
+    let shape = translated.statements.first()?;
+    match &shape.columns {
         Columns::Named(names) => Some(
             names
                 .iter()
@@ -508,13 +523,13 @@ fn describe_outcome(
     outcomes: &[Outcome],
     translated: &translate::Translated,
 ) -> Option<Vec<codec::write::Column>> {
+    let shape = translated.statements.first()?;
     match outcomes.first()? {
         Outcome::Records { records, .. } => {
-            if records.is_empty() && matches!(translated.columns, Columns::Star) {
+            if records.is_empty() && matches!(shape.columns, Columns::Star) {
                 return None;
             }
-            let (columns, _) =
-                super::rows(records, &translated.columns, translated.table.as_deref());
+            let (columns, _) = super::rows(records, &shape.columns, shape.table.as_deref());
             Some(columns)
         }
         Outcome::Value(value) => Some(vec![super::value_column(value)]),

@@ -24,6 +24,7 @@ mod queries;
 mod secured;
 mod signing;
 mod tenancy;
+mod transaction;
 mod widening;
 
 /// A node over a fresh store holding the namespace `app` and the database

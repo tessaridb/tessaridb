@@ -10,7 +10,11 @@ fn translated(query: &str) -> (String, Vec<(String, Value)>, Columns) {
         .parameters
         .into_iter()
         .collect::<Vec<(String, Value)>>();
-    (answer.script, parameters, answer.columns)
+    (
+        answer.script,
+        parameters,
+        answer.statements[0].columns.clone(),
+    )
 }
 
 #[test]
@@ -116,9 +120,24 @@ fn a_trailing_semicolon_is_punctuation() {
 
 #[test]
 fn a_second_statement_refuses_by_name() {
+    // The extended protocol speaks one statement per Parse, in the dialect's
+    // own words.
     let refused = translate("SELECT 1; SELECT 2").expect_err("two statements");
-    assert_eq!(refused.code, super::super::errors::code::FEATURE);
-    assert!(refused.message.contains("multiple statements"));
+    assert_eq!(refused.code, super::super::errors::code::SYNTAX);
+    assert!(refused.message.contains("multiple commands"));
+}
+
+#[test]
+fn the_simple_query_wraps_several_statements_in_one_block() {
+    let translated = super::translate_many("SELECT 1; SELECT name FROM orders").expect("two");
+    assert_eq!(
+        translated.script,
+        "BEGIN; RETURN $p1; SELECT name FROM orders; COMMIT;"
+    );
+    assert_eq!(translated.statements.len(), 2);
+    let single = super::translate_many("SELECT 1;").expect("one");
+    assert_eq!(single.script, "RETURN $p1;");
+    assert_eq!(single.statements.len(), 1);
 }
 
 #[test]
