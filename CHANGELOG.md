@@ -23,6 +23,23 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.43.0 — 2026-11-17
+
+A store written by 0.42.0 opens under 0.43.0 unchanged (format 13); nothing in this
+release moves the on-disk format.
+
+- **Auto-sharding by size and load, bounded.** `SPLIT AUTOMATICALLY … MERGE BELOW
+  m RECORDS [MIN i SHARDS] [MAX j SHARDS]` bounds how few and how many shards the
+  balancing passes may leave a table with: a shard past its bounds is not split
+  while the table holds its `MAX`, and neighbours are not merged at its `MIN`.
+  A declaration whose maximum sits below its minimum is refused at the statement
+  (`AutoSplitMaxBelowMin`). A shard split for its load — writes per second, not
+  records — now cuts where the middle write of a bounded sample of its recent
+  traffic hit, so both halves serve about half the measured load; a thin sample
+  falls back to the record median. Every automatic act remains exactly the
+  `ALTER TABLE … SPLIT AT` or `MERGE SHARD` an operator would type: one catalog
+  record in the log, applied by every node.
+
 ## 0.42.0 — 2026-11-16
 
 A store written by 0.41.0 or any earlier release opens under 0.42.0; a 0.42.0 store
