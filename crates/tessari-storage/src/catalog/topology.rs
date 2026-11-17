@@ -18,14 +18,15 @@
 //! is bytes on a disk, and bytes can be older than the relations, or edited,
 //! so [`TopologyDefinition::from_value`] re-states the value rather than
 //! trusting it. The relations that need the membership — the claim arithmetic,
-//! the copies-span-realms fit, the acknowledge fit — are checked where the
-//! replicas and namespaces are readable: the session's write of the row, which
-//! is the next layer up from this one.
+//! the copies-span-realms fit, the acknowledge fit — are [`check_topology`], a
+//! pure check over views the caller assembles from the catalog rows it can
+//! read: they run at the session's write of the scheme and of every member
+//! row, which is where the replicas and namespaces are readable.
 
 use std::collections::BTreeMap;
 
 use tessari_encoding::{decode_payload, encode_payload};
-use tessari_types::{Epoch, Number, RecordId, Value};
+use tessari_types::{Acknowledge, Epoch, NamespaceId, Number, RecordId, Value};
 
 use super::definition::{count_of, object};
 use super::{Catalog, system};
@@ -290,6 +291,176 @@ impl Catalog<'_, '_> {
     }
 }
 
+/// A member as the relations read it: its labels, whether it votes, and which
+/// namespaces it holds copies of.
+///
+/// Assembled by the caller from the catalog rows it can read — one view per
+/// member row, plus one for the node the check runs on, which holds its own
+/// namespaces whether or not a row says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberView {
+    /// The row's name — `self` for the node the check runs on.
+    pub row: String,
+    /// The region label (`REGION`), when the row names one.
+    pub region: Option<String>,
+    /// The domain label (`DOMAIN`), when the row names one.
+    pub domain: Option<String>,
+    /// Whether the member votes — the `coordinating` role.
+    pub coordinating: bool,
+    /// Which namespaces the member holds copies of.
+    pub holds: MemberHolds,
+}
+
+/// Which namespaces a member holds copies of, from its `REPLICATES` reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemberHolds {
+    /// `REPLICATES STORE` — every namespace.
+    Store,
+    /// `REPLICATES NAMESPACE …` / `DATABASE` / `SHARD` — the listed ones.
+    Namespaces(Vec<NamespaceId>),
+    /// No subscription — the member holds no copies.
+    Nothing,
+}
+
+/// A namespace as the relations read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamespaceView {
+    /// The namespace's id — what holders are matched on.
+    pub id: NamespaceId,
+    /// Its name, for refusals.
+    pub name: String,
+    /// The copies the cluster is asked to keep. `1` reads as a single copy,
+    /// which spans nothing and needs to; a namespace that never stated its
+    /// replication is not checked, for the worksheet's third-state rule.
+    pub copies: u32,
+    /// The acknowledged level, when stated.
+    pub acknowledge: Option<Acknowledge>,
+}
+
+/// The checked relations R1–R4, as a set, against the membership as it stands.
+///
+/// Pure so the matrix is exact: the caller assembles the views from the
+/// catalog rows it can read and the relations answer without I/O. Every
+/// refusal names the relation it broke and the direction — the row and label,
+/// the realm and its arithmetic, the namespace and its single realm, the
+/// namespace and its region's voters — because a check a caller cannot act on
+/// is a complaint.
+///
+/// R1 (no orphan labels) always runs: a scheme declares the labels, so the
+/// labels must be the scheme's. R2 (the claim arithmetic) runs only when the
+/// scheme claims `SURVIVES REALM LOSS` — silence is a third state, and an
+/// unclaimed scheme is never judged. R3 (copies span realms) runs for every
+/// namespace asked to keep more than one copy. R4 (acknowledge fit) runs for
+/// every namespace acknowledging `LOCAL MAJORITY`, against the leader's
+/// region; a leader naming no region is the write guard's own refusal, not
+/// this check's, so the check stays silent there.
+///
+/// # Errors
+///
+/// [`Error::TopologyOrphanLabel`], [`Error::TopologyClaimBreaks`],
+/// [`Error::TopologyCopiesInOneRealm`] or [`Error::TopologyAcknowledgeWithoutVoters`],
+/// whichever relation fails first, in that order.
+pub fn check_topology(
+    scheme: &Topology,
+    members: &[MemberView],
+    namespaces: &[NamespaceView],
+    leader_region: Option<&str>,
+) -> Result<()> {
+    for member in members {
+        if let Some(region) = &member.region {
+            let Some(realm) = scheme.realm(region) else {
+                return Err(Error::TopologyOrphanLabel {
+                    row: member.row.clone(),
+                    label: region.clone(),
+                    what: "region",
+                });
+            };
+            if let Some(domain) = &member.domain
+                && !realm.has_domain(domain)
+            {
+                return Err(Error::TopologyOrphanLabel {
+                    row: member.row.clone(),
+                    label: domain.clone(),
+                    what: "domain",
+                });
+            }
+        }
+    }
+
+    if scheme.survives_realm_loss() {
+        let voters: Vec<&MemberView> = members
+            .iter()
+            .filter(|member| member.coordinating)
+            .collect();
+        let total = voters.len();
+        for realm in scheme.realms() {
+            // A voter no realm claims is outside every realm: it survives any
+            // single loss, which is what the arithmetic counts.
+            let outside = voters
+                .iter()
+                .filter(|voter| voter.region.as_deref() != Some(realm.name()))
+                .count();
+            if outside.saturating_mul(2) <= total {
+                return Err(Error::TopologyClaimBreaks {
+                    realm: realm.name().to_owned(),
+                    left: outside,
+                    total,
+                });
+            }
+        }
+    }
+
+    for namespace in namespaces {
+        if namespace.copies < 2 {
+            continue;
+        }
+        let mut realms: Vec<&str> = Vec::new();
+        for member in members {
+            let holds = match &member.holds {
+                MemberHolds::Store => true,
+                MemberHolds::Namespaces(held) => held.contains(&namespace.id),
+                MemberHolds::Nothing => false,
+            };
+            if holds
+                && let Some(region) = &member.region
+                && !realms.contains(&region.as_str())
+            {
+                realms.push(region);
+            }
+        }
+        if realms.len() <= 1 {
+            return Err(Error::TopologyCopiesInOneRealm {
+                namespace: namespace.name.clone(),
+                realm: realms.first().map(|realm| (*realm).to_owned()),
+            });
+        }
+    }
+
+    if let Some(region) = leader_region {
+        for namespace in namespaces {
+            let Some(Acknowledge::LocalMajority) = namespace.acknowledge else {
+                continue;
+            };
+            let in_region: Vec<&MemberView> = members
+                .iter()
+                .filter(|member| member.region.as_deref() == Some(region))
+                .collect();
+            let voters = in_region
+                .iter()
+                .filter(|member| member.coordinating)
+                .count();
+            if voters.saturating_mul(2) <= in_region.len() {
+                return Err(Error::TopologyAcknowledgeWithoutVoters {
+                    namespace: namespace.name.clone(),
+                    region: region.to_owned(),
+                    voters,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     // Test assertions are exactly where a panic is the correct outcome.
@@ -356,5 +527,257 @@ mod tests {
             matches!(refused, Error::TopologyRealmNamedTwice { .. }),
             "expected the structural refusal, got {refused}"
         );
+    }
+
+    // --- The checked relations R1–R4. The views are what the session assembles
+    // from the catalog rows; the relations themselves are pure, so the matrix
+    // below is exact and store-free.
+
+    /// The two-realm scheme WITHOUT the survival claim: R1's matrix stays R1's
+    /// — the claim arithmetic is R2's own test, and a fixture that runs both
+    /// would test whichever refuses first.
+    fn bare() -> Topology {
+        Topology::stated(
+            vec![
+                Realm::stated("dc-a".to_owned(), vec!["az-1".to_owned()])
+                    .expect("a well-formed realm"),
+                Realm::stated("dc-b".to_owned(), vec!["az-1".to_owned()])
+                    .expect("a well-formed realm"),
+            ],
+            false,
+        )
+        .expect("a topology inside every structural relation")
+    }
+
+    fn member(
+        row: &str,
+        region: Option<&str>,
+        domain: Option<&str>,
+        coordinating: bool,
+    ) -> MemberView {
+        MemberView {
+            row: row.to_owned(),
+            region: region.map(str::to_owned),
+            domain: domain.map(str::to_owned),
+            coordinating,
+            holds: MemberHolds::Store,
+        }
+    }
+
+    fn namespace(id: u32, name: &str, copies: u32) -> NamespaceView {
+        NamespaceView {
+            id: NamespaceId::new(id),
+            name: name.to_owned(),
+            copies,
+            acknowledge: None,
+        }
+    }
+
+    #[test]
+    fn r1_a_member_label_the_scheme_does_not_hold_is_refused_and_named() {
+        let refused = check_topology(
+            &bare(),
+            &[member("n1", Some("dc-x"), None, true)],
+            &[],
+            None,
+        )
+        .expect_err("an orphan region parsed as a position");
+        match refused {
+            Error::TopologyOrphanLabel { row, label, what } => {
+                assert_eq!(row, "n1");
+                assert_eq!(label, "dc-x");
+                assert_eq!(what, "region");
+            }
+            other => panic!("expected the orphan-label refusal, got {other}"),
+        }
+
+        // A domain the realm does not hold is refused the same way, named as a
+        // domain — the label's kind is part of the direction.
+        let refused = check_topology(
+            &bare(),
+            &[member("n1", Some("dc-a"), Some("az-9"), true)],
+            &[],
+            None,
+        )
+        .expect_err("an orphan domain parsed as a position");
+        match refused {
+            Error::TopologyOrphanLabel { label, what, .. } => {
+                assert_eq!(label, "az-9");
+                assert_eq!(what, "domain");
+            }
+            other => panic!("expected the orphan-label refusal, got {other}"),
+        }
+
+        // A member whose labels the scheme holds, and one with no labels at
+        // all, are both fine: R1 checks the labels that exist, never invents
+        // the ones that do not.
+        check_topology(
+            &bare(),
+            &[
+                member("n1", Some("dc-a"), Some("az-1"), true),
+                member("n2", None, None, true),
+            ],
+            &[],
+            None,
+        )
+        .expect("labels the scheme holds, and silence, both pass");
+    }
+
+    #[test]
+    fn r2_the_claim_arithmetic_counts_voters_outside_each_realm() {
+        let scheme = Topology::stated(
+            vec![
+                Realm::stated("dc-a".to_owned(), vec![]).expect("a well-formed realm"),
+                Realm::stated("dc-b".to_owned(), vec![]).expect("a well-formed realm"),
+                Realm::stated("dc-c".to_owned(), vec![]).expect("a well-formed realm"),
+            ],
+            true,
+        )
+        .expect("a topology inside every structural relation");
+        // Two voters in one realm: losing it leaves two of four, which is not
+        // more than half — the claim refuses, naming the realm and the
+        // arithmetic.
+        let members = [
+            member("n1", Some("dc-a"), None, true),
+            member("n2", Some("dc-a"), None, true),
+            member("n3", Some("dc-b"), None, true),
+            member("n4", Some("dc-c"), None, true),
+        ];
+        let refused = check_topology(&scheme, &members, &[], None)
+            .expect_err("a claim the arithmetic breaks");
+        match refused {
+            Error::TopologyClaimBreaks { realm, left, total } => {
+                assert_eq!(realm, "dc-a");
+                assert_eq!(left, 2);
+                assert_eq!(total, 4);
+            }
+            other => panic!("expected the claim refusal, got {other}"),
+        }
+
+        // One voter per realm survives any single loss: losing one leaves two
+        // of three, which is more than half — the claim holds.
+        let spread = [
+            member("n1", Some("dc-a"), None, true),
+            member("n2", Some("dc-b"), None, true),
+            member("n3", Some("dc-c"), None, true),
+        ];
+        check_topology(&scheme, &spread, &[], None)
+            .expect("one voter per realm survives any single loss");
+
+        // A structure with no claim is not checked: silence is a third state.
+        // The no-claim scheme declares the same three realms — the case is
+        // about the claim's silence, and R1 refuses an undeclared label long
+        // before R2's quiet is reachable.
+        let quiet = Topology::stated(
+            vec![
+                Realm::stated("dc-a".to_owned(), vec![]).expect("a well-formed realm"),
+                Realm::stated("dc-b".to_owned(), vec![]).expect("a well-formed realm"),
+                Realm::stated("dc-c".to_owned(), vec![]).expect("a well-formed realm"),
+            ],
+            false,
+        )
+        .expect("a topology inside every structural relation");
+        check_topology(&quiet, &members, &[], None).expect("no claim, no arithmetic");
+    }
+
+    #[test]
+    fn r3_copies_of_a_kept_namespace_span_at_least_two_realms() {
+        let namespaces = [namespace(1, "prod", 3)];
+        // Both holders in one realm: the fiction refuses, naming the realm.
+        let refused = check_topology(
+            &bare(),
+            &[
+                member("n1", Some("dc-a"), None, true),
+                member("n2", Some("dc-a"), None, true),
+                member("n3", Some("dc-a"), None, true),
+            ],
+            &namespaces,
+            None,
+        )
+        .expect_err("every copy in one realm read as spanning");
+        match refused {
+            Error::TopologyCopiesInOneRealm { namespace, realm } => {
+                assert_eq!(namespace, "prod");
+                assert_eq!(realm.as_deref(), Some("dc-a"));
+            }
+            other => panic!("expected the copies refusal, got {other}"),
+        }
+
+        // Copies across two realms hold; a single copy needs no span.
+        check_topology(
+            &bare(),
+            &[
+                member("n1", Some("dc-a"), None, true),
+                member("n2", Some("dc-b"), None, true),
+            ],
+            &namespaces,
+            None,
+        )
+        .expect("copies spanning realms hold");
+        check_topology(
+            &bare(),
+            &[member("n1", Some("dc-a"), None, true)],
+            &[namespace(1, "prod", 1)],
+            None,
+        )
+        .expect("a single copy spans nothing and needs to");
+    }
+
+    #[test]
+    fn r4_a_local_majority_namespace_needs_a_majority_where_the_leader_stands() {
+        let mut local = namespace(1, "prod", 2);
+        local.acknowledge = Some(tessari_types::Acknowledge::LocalMajority);
+        let namespaces = [local];
+
+        // The leader stands in dc-a with one voter there out of one — a
+        // majority of one. The check holds.
+        check_topology(
+            &bare(),
+            &[
+                member("n1", Some("dc-a"), None, true),
+                member("n2", Some("dc-b"), None, true),
+            ],
+            &namespaces,
+            Some("dc-a"),
+        )
+        .expect("one voter in the leader's region is its own majority");
+
+        // Two voters in the region, one coordinating: no majority, and the
+        // refusal names the namespace, the region, and the count.
+        let refused = check_topology(
+            &bare(),
+            &[
+                member("n1", Some("dc-a"), None, true),
+                member("n1b", Some("dc-a"), None, false),
+                member("n2", Some("dc-b"), None, true),
+            ],
+            &namespaces,
+            Some("dc-a"),
+        )
+        .expect_err("no majority in the leader's region");
+        match refused {
+            Error::TopologyAcknowledgeWithoutVoters {
+                namespace,
+                region,
+                voters,
+            } => {
+                assert_eq!(namespace, "prod");
+                assert_eq!(region, "dc-a");
+                assert_eq!(voters, 1);
+            }
+            other => panic!("expected the acknowledge refusal, got {other}"),
+        }
+
+        // A leader naming no region is the write guard's case, not this
+        // check's: the set-level check stays silent and lets the per-row
+        // refusal name the moment a write actually asks.
+        let single = [namespace(1, "prod", 1)];
+        check_topology(
+            &bare(),
+            &[member("n1", Some("dc-a"), None, true)],
+            &single,
+            None,
+        )
+        .expect("an unlabelled leader is the write guard's case");
     }
 }

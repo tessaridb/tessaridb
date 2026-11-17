@@ -4,8 +4,9 @@
 # the scheme is that knowledge as catalog data — which realms exist, what
 # failure domains they span, and whether the voters survive the loss the
 # operator is arranging against. The claim is checked as a set when the scheme
-# is written and on every write that changes what the check reads; what it
-# deliberately never does is move data, elect leaders, or gate writes.
+# is written and on every write that changes what the check reads — a member
+# row's labels or roles, a namespace's copies or acknowledge level. What the
+# scheme deliberately never does is move data, elect leaders, or gate writes.
 #
 # A corpus file is one session against one store, so these run in order.
 
@@ -17,7 +18,15 @@ DEFINE TOPOLOGY main REALM 'dc-a' REALM 'dc-a';
 DEFINE TOPOLOGY main REALM 'dc-a' DOMAIN 'az-1', 'az-1';
 --- expect: error TopologyRefused
 
---- case: a scheme declares its realms, and the claim is optional
+--- case: the membership the claim will be checked against
+DEFINE REPLICA n1 AT 'a:9001' ROLES coordinating, writable REPLICATES STORE REGION 'dc-a';
+--- expect: ok
+
+--- case: a voter in the second realm
+DEFINE REPLICA n2 AT 'b:9001' ROLES coordinating, writable REPLICATES STORE REGION 'dc-b';
+--- expect: ok
+
+--- case: a scheme declares its realms, and the claim checks the membership it meets
 DEFINE TOPOLOGY main REALM 'dc-a' DOMAIN 'az-1', 'az-2' REALM 'dc-b' SURVIVES REALM LOSS;
 --- expect: ok
 
@@ -25,13 +34,13 @@ DEFINE TOPOLOGY main REALM 'dc-a' DOMAIN 'az-1', 'az-2' REALM 'dc-b' SURVIVES RE
 DEFINE TOPOLOGY other REALM 'dc-c';
 --- expect: error TopologyAlreadyDeclared
 
---- case: the refused declare left the held scheme alone
-ALTER TOPOLOGY main ADD REALM 'dc-d';
---- expect: ok
-
 --- case: adding a realm the scheme holds is a structural refusal
-ALTER TOPOLOGY main ADD REALM 'dc-d';
+ALTER TOPOLOGY main ADD REALM 'dc-a';
 --- expect: error TopologyRefused
+
+--- case: a realm adds by its name, and the claim still checks the whole
+ALTER TOPOLOGY main ADD REALM 'dc-d' DOMAIN 'az-1';
+--- expect: ok
 
 --- case: a realm drops by its name
 ALTER TOPOLOGY main DROP REALM 'dc-d';
@@ -45,19 +54,11 @@ ALTER TOPOLOGY main DROP REALM 'dc-x';
 ALTER TOPOLOGY nobody ADD REALM 'dc-e';
 --- expect: error Unknown
 
---- case: a member row names its domain within its region
-DEFINE REPLICA n1 AT 'a:9001' ROLES coordinating, writable REPLICATES STORE REGION 'dc-a' DOMAIN 'az-1';
---- expect: ok
+--- case: a domain the realm does not declare is refused, naming the row and the label
+DEFINE REPLICA n3 AT 'c:9001' ROLES serving REPLICATES STORE REGION 'dc-a' DOMAIN 'az-9';
+--- expect: error TopologyRefused
 
---- case: the domain moves the way the region does — one clause per statement
-ALTER REPLICA n1 DOMAIN 'az-2';
---- expect: ok
-
---- case: and clears alone, leaving the region alone
-ALTER REPLICA n1 DOMAIN NONE;
---- expect: ok
-
---- case: dropping the scheme leaves the member row's labels alone
+--- case: dropping the scheme leaves the member rows' labels alone
 DROP TOPOLOGY main;
 --- expect: ok
 

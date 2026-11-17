@@ -100,7 +100,7 @@ pub use shard::{ShardMap, ShardSpan};
 pub use space::{Eviction, SpaceDeclaration, SpaceLimit};
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 pub use topic::{Partitioning, PublicAppend, TopicDeclaration};
-pub use topology::TopologyDefinition;
+pub use topology::{MemberHolds, MemberView, NamespaceView, TopologyDefinition, check_topology};
 pub use user::{Role, UserDefinition, Verb};
 pub use vault::VaultRoot;
 pub use words::{WordSet, WordSetKind};

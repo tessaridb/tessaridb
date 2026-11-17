@@ -205,7 +205,7 @@ fn a_topology_amends_by_the_realm_and_replaces_the_row() {
 fn dropping_the_scheme_leaves_the_member_rows_labels_alone() {
     let store = closed(&backend());
     owner(&store)
-        .run_now("DEFINE TOPOLOGY main REALM 'dc-a';")
+        .run_now("DEFINE TOPOLOGY main REALM 'dc-a' DOMAIN 'az-1';")
         .unwrap();
     owner(&store)
         .run_now(
@@ -286,6 +286,200 @@ fn amending_or_dropping_under_another_name_refuses_naming_it() {
     }
     // The scheme the wrong name would have touched is untouched.
     assert_eq!(declared(&store).expect("held").topology.realms().len(), 1);
+}
+
+#[test]
+fn r1_a_member_label_the_scheme_does_not_hold_is_refused_where_it_is_written() {
+    // The relations run at the member-row write: a region or domain the held
+    // scheme does not declare is refused naming the row and the label.
+    let store = closed(&backend());
+    owner(&store)
+        .run_now("DEFINE TOPOLOGY main REALM 'dc-a' DOMAIN 'az-1';")
+        .unwrap();
+    let refused = owner(&store)
+        .run_now(
+            "DEFINE REPLICA n1 AT 'a:9001' ROLES coordinating REPLICATES \
+             STORE REGION 'dc-x';",
+        )
+        .expect_err("an orphan region parsed as a position");
+    let Error::TopologyRefused { reason, .. } = refused else {
+        panic!("expected the relations refusal, got {refused}");
+    };
+    assert!(
+        reason.contains("'n1'"),
+        "the refusal names the row: {reason}"
+    );
+    assert!(
+        reason.contains("'dc-x'"),
+        "the refusal names the label: {reason}"
+    );
+
+    // And the declare of the scheme itself is refused when the membership it
+    // meets already holds a label the scheme does not cover.
+    let fresh = closed(&backend());
+    owner(&fresh)
+        .run_now(
+            "DEFINE REPLICA n1 AT 'a:9001' ROLES coordinating REPLICATES \
+             STORE REGION 'dc-x';",
+        )
+        .unwrap();
+    let refused = owner(&fresh)
+        .run_now("DEFINE TOPOLOGY main REALM 'dc-a';")
+        .expect_err("a scheme that orphans an existing label declared");
+    let Error::TopologyRefused { reason, .. } = refused else {
+        panic!("expected the relations refusal, got {refused}");
+    };
+    assert!(
+        reason.contains("'dc-x'"),
+        "the refusal names the orphan label: {reason}"
+    );
+}
+
+#[test]
+fn r2_the_claim_is_refused_where_the_arithmetic_does_not_hold() {
+    // Two realms claim survival; two voters stand in one of them. The node
+    // running the check is its own unlabelled electorate, and even counting
+    // it the loss of dc-a leaves two of four — not more than half. The declare
+    // is refused naming the realm and the arithmetic.
+    let store = closed(&backend());
+    for (name, region) in [("n1", "dc-a"), ("n2", "dc-a"), ("n3", "dc-b")] {
+        owner(&store)
+            .run_now(&format!(
+                "DEFINE REPLICA {name} AT '{name}:9001' ROLES coordinating, \
+                 writable REPLICATES STORE REGION '{region}';"
+            ))
+            .unwrap();
+    }
+    let refused = owner(&store)
+        .run_now("DEFINE TOPOLOGY main REALM 'dc-a' REALM 'dc-b' SURVIVES REALM LOSS;")
+        .expect_err("a claim the membership cannot keep declared");
+    let Error::TopologyRefused { reason, .. } = refused else {
+        panic!("expected the relations refusal, got {refused}");
+    };
+    assert!(
+        reason.contains("'dc-a'"),
+        "the refusal names the realm: {reason}"
+    );
+    assert!(
+        reason.contains("more than half"),
+        "the refusal names the direction: {reason}"
+    );
+    // The refused declare left no scheme behind.
+    assert!(declared(&store).is_none());
+}
+
+#[test]
+fn r3_copies_of_a_kept_namespace_must_span_realms() {
+    let store = closed(&backend());
+    owner(&store)
+        .run_now("DEFINE TOPOLOGY main REALM 'dc-a' REALM 'dc-b';")
+        .unwrap();
+    // A namespace asked to keep copies before any realm holds one is refused
+    // at the ask: the only holder is the unlabelled node the check runs on,
+    // and copies in no arrangement are the same fiction one degree worse.
+    let refused = owner(&store)
+        .run_now("DEFINE NAMESPACE prod REPLICATION FACTOR 3;")
+        .expect_err("copies in no realm read as spanning");
+    let Error::TopologyRefused { reason, .. } = refused else {
+        panic!("expected the relations refusal, got {refused}");
+    };
+    assert!(
+        reason.contains("'prod'"),
+        "the refusal names the namespace: {reason}"
+    );
+
+    // A single copy spans nothing and needs to; holders then place themselves
+    // one realm at a time.
+    owner(&store).run_now("DEFINE NAMESPACE prod;").unwrap();
+    owner(&store)
+        .run_now(
+            "DEFINE REPLICA n1 AT 'a:9001' ROLES coordinating, writable \
+             REPLICATES STORE REGION 'dc-a';",
+        )
+        .unwrap();
+    let refused = owner(&store)
+        .run_now("ALTER NAMESPACE prod REPLICATION FACTOR 2;")
+        .expect_err("one-realm copies read as spanning");
+    let Error::TopologyRefused { reason, .. } = refused else {
+        panic!("expected the relations refusal, got {refused}");
+    };
+    assert!(
+        reason.contains("'dc-a'"),
+        "the refusal names the realm: {reason}"
+    );
+
+    // The second realm's holder satisfies the relation at the ask.
+    owner(&store)
+        .run_now(
+            "DEFINE REPLICA n2 AT 'b:9001' ROLES coordinating, writable \
+             REPLICATES STORE REGION 'dc-b';",
+        )
+        .unwrap();
+    owner(&store)
+        .run_now("ALTER NAMESPACE prod REPLICATION FACTOR 2;")
+        .expect("copies spanning two realms hold the ask");
+}
+
+#[test]
+fn r4_a_local_majority_namespace_needs_a_majority_where_the_leader_stands() {
+    // The leader's region is its own row's region: bind the node's own row,
+    // place one non-voter beside it in that region and a second voter in the
+    // other realm, and the namespace asking LOCAL MAJORITY is refused at the
+    // ask — the region holds two members but one voter, and one is not a
+    // majority of two.
+    let store = closed(&backend());
+    let id = match owner(&store).run_now("INFO FOR NODE;").unwrap().first() {
+        Some(tessari_session::Outcome::Value(tessari_types::Value::Object(fields))) => {
+            match fields.get("id") {
+                Some(tessari_types::Value::String(text)) => text.clone(),
+                other => panic!("id is {other:?}"),
+            }
+        }
+        other => panic!("not a report: {other:?}"),
+    };
+    owner(&store)
+        .run_now("DEFINE TOPOLOGY main REALM 'dc-a' REALM 'dc-b';")
+        .unwrap();
+    owner(&store)
+        .run_now(&format!(
+            "DEFINE REPLICA selfrow AT 's:9001' NODE '{id}' ROLES coordinating, \
+             writable REPLICATES STORE REGION 'dc-a';"
+        ))
+        .unwrap();
+    owner(&store)
+        .run_now(
+            "DEFINE REPLICA n1 AT 'a:9001' ROLES serving REPLICATES STORE \
+             REGION 'dc-a';",
+        )
+        .unwrap();
+    owner(&store)
+        .run_now(
+            "DEFINE REPLICA n2 AT 'b:9001' ROLES coordinating, writable \
+             REPLICATES STORE REGION 'dc-b';",
+        )
+        .unwrap();
+    let refused = owner(&store)
+        .run_now(
+            "DEFINE NAMESPACE prod REPLICATION FACTOR 2 ACKNOWLEDGE LOCAL \
+             MAJORITY;",
+        )
+        .expect_err("a LOCAL MAJORITY with no majority where the leader stands");
+    let Error::TopologyRefused { reason, .. } = refused else {
+        panic!("expected the relations refusal, got {refused}");
+    };
+    assert!(
+        reason.contains("'prod'"),
+        "the refusal names the namespace: {reason}"
+    );
+    assert!(
+        reason.contains("'dc-a'"),
+        "the refusal names the region: {reason}"
+    );
+
+    // The level the region CAN meet is accepted at the ask.
+    owner(&store)
+        .run_now("DEFINE NAMESPACE prod REPLICATION FACTOR 2 ACKNOWLEDGE MAJORITY;")
+        .expect("MAJORITY meets the membership as it stands");
 }
 
 #[test]

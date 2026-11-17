@@ -311,6 +311,90 @@ pub enum Error {
         realm: String,
     },
 
+    /// R1 — a member row's label names nothing the scheme declares.
+    ///
+    /// Every `REGION` and `DOMAIN` on a member row must name a realm or domain
+    /// the topology holds, because the whole point of the scheme is that a
+    /// label is a position in an arrangement and not a free-text sticker. The
+    /// refusal names the row, the label, and whether it reads as a realm or a
+    /// domain.
+    #[error(
+        "the member row '{row}' names the {what} '{label}', which the topology \
+         does not declare — a label the scheme does not hold is a position in \
+         no arrangement"
+    )]
+    TopologyOrphanLabel {
+        /// The member row that carries the label.
+        row: String,
+        /// The label as written.
+        label: String,
+        /// Which kind of label it reads as — `region` or `domain`.
+        what: &'static str,
+    },
+
+    /// R2 — the survival claim's arithmetic does not hold.
+    ///
+    /// For `SURVIVES REALM LOSS`, losing any one realm must leave the voters
+    /// outside it holding a majority of the membership: the cluster that
+    /// remains must still elect. The refusal names the realm whose loss breaks
+    /// the claim and the voters it leaves against the membership they were
+    /// counted out of.
+    #[error(
+        "losing the realm '{realm}' leaves {left} voters where the claim needs \
+         more than half of {total} — the cluster that remains cannot elect, so \
+         the scheme survives this loss only on paper"
+    )]
+    TopologyClaimBreaks {
+        /// The realm whose loss breaks the claim.
+        realm: String,
+        /// The voters outside the realm after the loss.
+        left: usize,
+        /// The membership the majority is counted against.
+        total: usize,
+    },
+
+    /// R3 — every copy of a kept namespace sits in one realm.
+    ///
+    /// A claim of realm-loss survival with every copy in one realm is a
+    /// fiction: losing the realm loses the namespace whatever the claim says.
+    /// The refusal names the namespace and the single realm holding every
+    /// copy — `None` when no holder is labelled at all, which is the same
+    /// failure one degree worse.
+    #[error(
+        "every copy of '{namespace}' sits in {place}, so losing it loses the \
+         namespace — the claim the scheme makes for it cannot be kept",
+        place = copies_realm(realm)
+    )]
+    TopologyCopiesInOneRealm {
+        /// The namespace whose copies do not span realms.
+        namespace: String,
+        /// The single realm holding every copy, or `None` when no holder is
+        /// labelled at all.
+        realm: Option<String>,
+    },
+
+    /// R4 — a namespace acknowledging `LOCAL MAJORITY` has no majority where
+    /// its leader stands.
+    ///
+    /// The level answers once a majority of the voters in the leader's region
+    /// hold the write; a region with too few voters can never answer, so the
+    /// namespace's stated level is unmeetable where the leader is. The refusal
+    /// names the namespace, the leader's region, and the voters it holds
+    /// against the majority the level needs.
+    #[error(
+        "'{namespace}' acknowledges LOCAL MAJORITY, but the leader's region \
+         '{region}' holds {voters} voters where it needs a majority — the level \
+         can never be answered where the leader stands"
+    )]
+    TopologyAcknowledgeWithoutVoters {
+        /// The namespace whose level does not fit.
+        namespace: String,
+        /// The leader's region.
+        region: String,
+        /// The voters the region holds.
+        voters: usize,
+    },
+
     /// This node is in a cluster and has not been given a leadership yet.
     ///
     /// A different state from [`Self::LeaseSpent`] and deliberately a different
@@ -1498,6 +1582,10 @@ impl Error {
             | Self::TopologyRealmNamedTwice { .. }
             | Self::TopologyDomainNamedTwice { .. }
             | Self::TopologyEmptyName { .. }
+            | Self::TopologyOrphanLabel { .. }
+            | Self::TopologyClaimBreaks { .. }
+            | Self::TopologyCopiesInOneRealm { .. }
+            | Self::TopologyAcknowledgeWithoutVoters { .. }
             | Self::VaultReservedField { .. }
             | Self::VaultNotAnObject { .. }
             | Self::VaultReservedRecipient { .. }
@@ -1529,6 +1617,17 @@ impl Error {
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         self.category().is_retryable()
+    }
+}
+
+/// How [`Error::TopologyCopiesInOneRealm`] names the place every copy sits:
+/// the realm quoted, or the unlabelled reading named — the refusal names
+/// where the copies are either way, because *somewhere you cannot point at*
+/// is a place too.
+fn copies_realm(realm: &Option<String>) -> String {
+    match realm {
+        Some(realm) => format!("the realm '{realm}'"),
+        None => "no declared realm at all".to_owned(),
     }
 }
 
