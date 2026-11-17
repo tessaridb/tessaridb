@@ -372,6 +372,24 @@ pub(crate) fn serve(
             wake: Box::new(move || stop.cancel()),
         });
     }
+    // Cross-cluster links, served like the house: one supervised task on the
+    // runtime, stopped with the rest of the node's own work. The loop re-reads
+    // the catalog every pass, so a link declared after the node came up starts
+    // serving without anything being told, and `ALTER REPLICATION … PAUSED`
+    // holds its stream at the next tick. A token that is not set is a link that
+    // logs its refusal and is asked again next pass.
+    let links_stop = tokio::sync::watch::channel(false);
+    let links_stops = tokio_util::sync::CancellationToken::new();
+    {
+        let stop = links_stop.0.clone();
+        surfaces.push(shutdown::Surface {
+            name: "link shipping",
+            stopping: tessari_serve::Stopping::new(),
+            wake: Box::new(move || {
+                stop.send(true).ok();
+            }),
+        });
+    }
 
     // Unreachable through the parser, which sets `Source::Serve` only when an
     // address was given — said here rather than assumed, because the two are
@@ -398,6 +416,26 @@ pub(crate) fn serve(
                 "housekeeping",
                 house_stops.clone(),
                 move || keep_house(std::sync::Arc::clone(&db), stop.clone()),
+            ));
+        }
+        {
+            let store = db.store().clone();
+            let stopped = links_stop.1.clone();
+            hosting.spawn(supervise::supervised(
+                "links",
+                links_stops.clone(),
+                move || {
+                    let store = store.clone();
+                    let stopped = stopped.clone();
+                    let mut shipping = tessari_wire::Shipping::new(store.clone());
+                    async move {
+                        if let Err(why) =
+                            tessari_storage::serve_links(&store, &mut shipping, stopped).await
+                        {
+                            tracing::error!(error = %why, "the link shipping cadence ended");
+                        }
+                    }
+                },
             ));
         }
 

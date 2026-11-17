@@ -11587,10 +11587,23 @@ keeps the digest and the expiry, so the catalog — in every backup and on every
 node — holds nothing that binds a link by itself, and a second token for the row
 replaces the first, which is how a lost one is withdrawn.
 
+**The live wire runs from the receiving cluster's token.** The node that serves
+the outbound links presents the token on every shipment, read from its process
+environment — `TESSARIDB_LINK_TOKEN_<NAME>`, the join token's precedent: a
+secret enters through the environment and never through the catalog. The token
+is created where the copy lives, on the inbound row, and carried to the shipping
+cluster's operator by hand; the shipment itself rides the client door as its own
+frame, one connection per batch, and is answered with the position the far side
+has durably applied through — the confirmation the at-least-once boundary is
+drawn at. A token that does not match the row's digest, or has expired, is
+refused as `Unauthenticated` before anything is applied, and the unconfirmed
+batch simply crosses again on the next pass.
+
 **`PAUSED` and `RESUMED` are the operability surface**: a stopped stream is a
-statement, not a process to hunt down. Pausing a link that has no driver yet is
-inert and answers `ok` — the surface lands before the machinery, so an operator
-can read back what they declared before anything acts on it.
+statement, not a process to hunt down. The serving loop re-reads the catalog
+every pass, so pausing holds the stream at the next tick rather than at the
+next restart, and a link declared after the node came up starts serving without
+anything being told.
 
 `REPLICATION` is read as a contextual word like `REPLICA`, so a table called
 `replication` keeps its name everywhere but directly after `DEFINE`.

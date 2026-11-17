@@ -166,6 +166,54 @@ pub(crate) async fn converse<C: Carried>(
             }
             continue;
         }
+        if kind == frame::Kind::Link {
+            // A cross-cluster link's shipment: the token is the admission, so
+            // there is no session to attach — the work crosses the bridge with
+            // none, the way a greeting-only call would.
+            let Decoded::Link(asked) = decoded? else {
+                return Err(Error::Malformed);
+            };
+            let db = Arc::clone(&talk.db);
+            let bridged = talk
+                .bridge
+                .call_here((), move |()| async move {
+                    crate::shipping::receive_link(&db, asked).await
+                })
+                .await;
+            match bridged {
+                Bridged::Answered(Ok(confirmed)) => {
+                    reply(
+                        &mut writer,
+                        &talk.stopping,
+                        frame::Kind::Link,
+                        &crate::shipping::LinkAnswer { confirmed }.encode(),
+                    )
+                    .await?;
+                }
+                Bridged::Answered(Err((class, text))) => {
+                    reply(
+                        &mut writer,
+                        &talk.stopping,
+                        frame::Kind::Refusal,
+                        &frame::refusal(theirs, class, &text),
+                    )
+                    .await?;
+                }
+                Bridged::Busy(()) => {
+                    reply(
+                        &mut writer,
+                        &talk.stopping,
+                        frame::Kind::Refusal,
+                        &frame::refusal(theirs, RefusalClass::Unavailable, BUSY),
+                    )
+                    .await?;
+                }
+                Bridged::Panicked => {
+                    return Err(Error::Io(std::io::Error::other("a link shipment panicked")));
+                }
+            }
+            continue;
+        }
         if kind != frame::Kind::Request {
             // A client sending an answer is a client this build does not
             // understand, and continuing would be guessing at what it meant.
@@ -350,17 +398,19 @@ enum Decoded {
     Request(Request),
     Vault(crate::VaultAsk),
     Follow(Follow),
+    Link(crate::shipping::LinkAsk),
     Other,
 }
 
 /// Decode `body` as `kind` and wipe it, decoded or not: a Request's password and
-/// keys, and a Vault frame's passphrase or key, then live only in the types that
-/// wipe themselves (ADR-0136).
+/// keys, a Vault frame's passphrase or key, and a link ask's token, then live
+/// only in the types that wipe themselves (ADR-0136).
 fn decode_and_wipe(kind: frame::Kind, body: &mut Vec<u8>) -> Result<Decoded> {
     let decoded = match kind {
         frame::Kind::Request => Request::decode(body).map(Decoded::Request),
         frame::Kind::Vault => crate::VaultAsk::decode(body).map(Decoded::Vault),
         frame::Kind::Subscribe => Follow::decode(body).map(Decoded::Follow),
+        frame::Kind::Link => crate::shipping::LinkAsk::decode(body).map(Decoded::Link),
         _ => Ok(Decoded::Other),
     };
     // The slice, not the Vec: the Vec form also empties it, and the bytes are

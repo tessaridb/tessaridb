@@ -107,6 +107,8 @@ mod node;
 mod peer;
 mod push;
 mod redirect;
+#[cfg(feature = "server")]
+mod shipping;
 mod transport;
 mod vault;
 
@@ -171,6 +173,8 @@ pub use crate::node::Node;
 #[cfg(feature = "server")]
 pub use crate::peer::{Hello, Line, PeerFrame, Presented, Purpose, admit};
 pub use crate::push::{Became, Follow, Happened, Narrow, Progressed};
+#[cfg(feature = "server")]
+pub use crate::shipping::Shipping;
 
 pub use crate::redirect::{Elsewhere, Settlement};
 pub use crate::vault::{VaultAsk, VaultCall, VaultPlace};

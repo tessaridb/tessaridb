@@ -565,6 +565,124 @@ fn the_loop_honors_pause_between_passes_and_ships_again_on_resume() {
 }
 
 #[test]
+fn the_loop_persists_the_confirmed_position_and_a_fresh_loop_resumes_from_it() {
+    // The cursor round-trip: a confirming run leaves the floor in the row, and
+    // the next run seeds the registry from the row — a restart resumes near
+    // where the relationship stood instead of re-shipping from the origin.
+    let source = store_with_a_link();
+    let mut session = Session::new(&source);
+    session
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+    let definition = definition(&source, "east");
+    let mut sink = ChannelSink::new();
+    serve_once(&source, &definition, source.links(), &mut sink)
+        .now()
+        .unwrap();
+    let floor = source.links().floors("east");
+    assert!(!floor.is_empty(), "the pass confirmed a floor");
+    // The cursor that matters is the own log's — the log whose home is the
+    // link's database reach — beside the parent (store) log's floor the same
+    // pass also holds.
+    let (own_log, own_floor) = floor
+        .iter()
+        .copied()
+        .find(|(log, _)| log.home == definition.database)
+        .expect("the own log's floor");
+
+    // Stop the loop before it has served a tick: the stop itself lands the cursor.
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let mut seen = ChannelSink::new();
+    let task = std::future::poll_fn({
+        let source = source.clone();
+        move |_| {
+            let mut serving = seen.clone();
+            let stop_rx = stop_rx.clone();
+            let source = source.clone();
+            std::task::Poll::Ready(tokio::spawn(async move {
+                serve_links(&source, &mut serving, stop_rx).await
+            }))
+        }
+    })
+    .now();
+    (async {
+        stop_tx.send(true).ok();
+        task.await
+    })
+    .now()
+    .unwrap()
+    .unwrap();
+
+    let mut reading = source.begin().now().unwrap();
+    let row = Catalog::new(&mut reading)
+        .replications()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|held| held.name == "east")
+        .expect("the row");
+    assert_eq!(
+        row.position,
+        Some(own_floor),
+        "the stop wrote the confirmed floor to the row"
+    );
+    drop(reading);
+
+    // A fresh loop seeds from the row: a write after the seed ships alone —
+    // the pass resumes one past the cursor instead of re-reading the confirmed
+    // history.
+    source.links().drop_link("east");
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let seen = ChannelSink::new();
+    let task = std::future::poll_fn({
+        let source = source.clone();
+        let seen = seen.clone();
+        move |_| {
+            let mut serving = seen.clone();
+            let stop_rx = stop_rx.clone();
+            let source = source.clone();
+            std::task::Poll::Ready(tokio::spawn(async move {
+                serve_links(&source, &mut serving, stop_rx).await
+            }))
+        }
+    })
+    .now();
+    session
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' };")
+        .unwrap();
+    let shipped = (0..250).find_map(|_| {
+        let found = seen
+            .drain()
+            .into_iter()
+            .find(|(_, envelope)| envelope.log == own_log)
+            .map(|(_, envelope)| envelope);
+        if found.is_some() {
+            return found;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        None
+    });
+    let shipped = shipped.expect("the seeded loop served the link's own log");
+    assert_eq!(
+        shipped.from,
+        Sequence::new(own_floor.get().saturating_add(1)),
+        "the pass resumed one past the persisted cursor, not at the origin"
+    );
+    assert_eq!(
+        shipped.records.len(),
+        1,
+        "the seeded pass shipped only the record the cursor had not seen"
+    );
+    (async {
+        stop_tx.send(true).ok();
+        task.await
+    })
+    .now()
+    .unwrap()
+    .unwrap();
+}
+
+#[test]
 fn a_batch_applied_twice_leaves_the_copy_unchanged() {
     // C2's injection proof: at-least-once means a batch CAN arrive twice, and
     // idempotent application is what makes that a bookkeeping fact instead of
