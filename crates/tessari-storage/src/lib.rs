@@ -87,6 +87,7 @@ mod store;
 mod tailmarks;
 mod tally;
 mod topic;
+mod topology;
 mod transaction;
 mod vault;
 mod views;
@@ -166,6 +167,7 @@ pub use tessari_encoding::{
 /// The category [`Error::category`] answers, re-exported so a caller can match it
 /// without reaching below this crate.
 pub use tessari_kv::ErrorCategory;
+pub use topology::{Realm, Topology};
 pub use transaction::{
     AcrossPart, Committed, Expansion, FieldedPostings, Neighbour, PlacesNearest, RecordAddress,
     RecordWalk, Region, Savepoint, SearchCounts, StoredRecord, TopicTrim, Transaction,
