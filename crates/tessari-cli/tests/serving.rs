@@ -2009,6 +2009,183 @@ fn a_pooled_cluster_serves_every_tenant_on_every_node_and_the_seam_holds_everywh
     }
 }
 
+/// The noisy-neighbour exercise's band. Ports need not be contiguous — a band
+/// is three (surface, peer) pairs and nothing else — and the free ports near
+/// the pool's band are four, not six.
+const NOISY: [(&str, &str); 3] = [
+    ("127.0.0.1:47871", "127.0.0.1:47872"),
+    ("127.0.0.1:47873", "127.0.0.1:47916"),
+    ("127.0.0.1:47917", "127.0.0.1:47918"),
+];
+
+#[test]
+#[ignore = "a measurement, not a check: three processes, an election, and two
+            hundred timed operations twice — once idle, once while a noisy
+            tenant saturates its own ranges. SG2's U1 answer lands in the
+            worksheet from the printed percentiles; run it explicitly: cargo
+            test -p tessari-cli --test serving noisy -- --ignored --nocapture"]
+fn a_noisy_tenants_writes_leave_the_quiet_tenants_bounds() {
+    // SG2 worksheet U1: what bounds a pooled tenant's load WITHOUT per-query
+    // metering? The design claim: a tenant's serving compute is its ranges'
+    // leaderships — per-range, per-thread — while the log append, the commit
+    // batch and the peer link are shared. This measures the claim: tenant_b's
+    // reads and writes, timed idle, then timed while tenant_a saturates. The
+    // printed percentiles are the deliverable; the assert is a generous
+    // engineering bound (3x) that exists so a wholesale regression cannot
+    // pass silently, not a latency contract.
+    let mut cluster = a_cluster_of_rows(
+        &NOISY,
+        "",
+        [
+            POOLED_ROW.to_owned(),
+            POOLED_ROW.to_owned(),
+            POOLED_ROW.to_owned(),
+        ],
+    );
+    let logs = cluster.logs.clone();
+    let _running = &mut cluster.running;
+    let schema_at = declared_through_the_leader(&NOISY, POOLED_SCHEMA, &logs);
+    let declared = paced_until(Duration::from_secs(90), Duration::from_secs(2), || {
+        [
+            schema_at,
+            the_next_node(&NOISY, schema_at),
+            the_next_node(&NOISY, the_next_node(&NOISY, schema_at)),
+        ]
+        .into_iter()
+        .any(|index| {
+            asked(
+                &NOISY[index].0,
+                "BEGIN; \
+                 DEFINE USER a_app ON tenant_a.app AUTHORITIES read, write \
+                 PASSWORD 'a long enough password'; \
+                 DEFINE USER b_app ON tenant_b.app AUTHORITIES read, write \
+                 PASSWORD 'a long enough password'; \
+                 COMMIT;",
+                Some(("operator", SECRET)),
+            )
+            .is_ok_and(|answers: Vec<Answer>| landed(&Ok::<_, String>(answers)))
+        })
+    });
+    assert!(
+        declared,
+        "no node took the per-tenant readers{}",
+        what_the_nodes_said(&NOISY, &logs)
+    );
+    let serving = paced_until(Duration::from_secs(120), Duration::from_secs(2), || {
+        NOISY.iter().all(|(surface, _)| {
+            says(
+                surface,
+                Some(("b_app", SECRET)),
+                "USE NAMESPACE tenant_b; USE DATABASE app; SELECT * FROM payroll;",
+                "salary",
+            )
+        })
+    });
+    assert!(
+        serving,
+        "the pool never served the quiet tenant{}",
+        what_the_nodes_said(&NOISY, &logs)
+    );
+
+    let read = "USE NAMESPACE tenant_b; USE DATABASE app; SELECT * FROM payroll;";
+    let write = |n: u64| {
+        format!("USE NAMESPACE tenant_b; USE DATABASE app; CREATE payroll:{n} = {{ salary: 1 }};")
+    };
+    let measure = |surface: &str, ops: usize, id_from: u64| {
+        let mut reader = Client::connect(surface).expect("the quiet reader connects");
+        let mut reads = Vec::with_capacity(ops);
+        let mut writes = Vec::with_capacity(ops);
+        for n in 0..ops {
+            let began = Instant::now();
+            reader
+                .run(read, Some(("b_app", SECRET)))
+                .unwrap_or_else(|why| panic!("quiet read {n} failed: {why}"));
+            reads.push(began.elapsed());
+            let began = Instant::now();
+            reader
+                .run(&write(id_from + n as u64), Some(("b_app", SECRET)))
+                .unwrap_or_else(|why| panic!("quiet write {n} failed: {why}"));
+            writes.push(began.elapsed());
+        }
+        (reads, writes)
+    };
+    let percentile = |sorted: &[std::time::Duration], at: f64| -> std::time::Duration {
+        sorted[((sorted.len() as f64 * at) as usize).min(sorted.len() - 1)]
+    };
+    let report = |label: &str,
+                  reads: &mut Vec<std::time::Duration>,
+                  writes: &mut Vec<std::time::Duration>| {
+        reads.sort();
+        writes.sort();
+        println!(
+            "U1 {label}: reads p50 {:?} p99 {:?} | writes p50 {:?} p99 {:?}",
+            percentile(reads, 0.50),
+            percentile(reads, 0.99),
+            percentile(writes, 0.50),
+            percentile(writes, 0.99)
+        );
+        (percentile(reads, 0.99), percentile(writes, 0.99))
+    };
+
+    let quiet_surface = NOISY[schema_at].0;
+    let (mut idle_r, mut idle_w) = measure(quiet_surface, 100, 1000);
+    let (idle_r99, idle_w99) = report("idle     ", &mut idle_r, &mut idle_w);
+
+    // tenant_a saturates: three writers, each on its own connection, tight
+    // loop, unique ids. Issued vs completed is counted so a writer that died
+    // mid-run is a fact in the report, not a silently lighter load.
+    let issued = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let completed = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let saturation = std::time::Duration::from_secs(8);
+    std::thread::scope(|scope| {
+        for _ in 0..3 {
+            let issued = issued.clone();
+            let completed = completed.clone();
+            scope.spawn(move || {
+                let began = Instant::now();
+                let mut writer = Client::connect(quiet_surface).expect("a noisy writer connects");
+                while began.elapsed() < saturation {
+                    let n = issued.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if writer
+                        .run(
+                            &format!(
+                                "USE NAMESPACE tenant_a; USE DATABASE app; \
+                                 CREATE orders:{} = {{ total: 1 }};",
+                                10_000 + n
+                            ),
+                            Some(("a_app", SECRET)),
+                        )
+                        .is_ok()
+                    {
+                        completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            });
+        }
+        // Give the writers a moment to reach full tilt before the measurement,
+        // then run the quiet tenant's own operations through it.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let (mut sat_r, mut sat_w) = measure(quiet_surface, 100, 5000);
+        let (sat_r99, sat_w99) = report("saturated", &mut sat_r, &mut sat_w);
+        let bound = |idle: std::time::Duration| idle.saturating_mul(3);
+        assert!(
+            sat_r99 <= bound(idle_r99),
+            "the quiet tenant's read p99 moved from {idle_r99:?} to {sat_r99:?} under              saturation — more than 3x, which the worksheet must answer with the              shared-cost story, not silence"
+        );
+        assert!(
+            sat_w99 <= bound(idle_w99),
+            "the quiet tenant's write p99 moved from {idle_w99:?} to {sat_w99:?} under              saturation — more than 3x, which the worksheet must answer with the              shared-cost story, not silence"
+        );
+    });
+    let issued = issued.load(std::sync::atomic::Ordering::Relaxed);
+    let completed = completed.load(std::sync::atomic::Ordering::Relaxed);
+    println!("U1 saturation: {completed} of {issued} noisy writes landed");
+    assert!(
+        completed as f64 > issued as f64 * 0.9,
+        "the noisy load itself mostly failed ({completed} of {issued}), so the          measurement measured nothing"
+    );
+}
+
 /// A three-node cluster's addresses — a client surface and a peer door each.
 ///
 /// A named type rather than the array spelled out at four signatures, and a
