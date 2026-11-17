@@ -29,7 +29,9 @@ impl Parser<'_> {
     /// The simple query path: statements until the text ends, the whole held
     /// in one implicit transaction block when there is more than one — the
     /// dialect's own multi-statement semantics (§54.2.2.1), on the store's
-    /// own transaction boundary.
+    /// own transaction boundary. Strings carrying transaction verbs take the
+    /// `verbs` module's path instead, which dispatches every statement on one
+    /// parser — see [`super::verbs`].
     pub(crate) fn select_many(&mut self) -> Result<Translated, Refused> {
         self.depth_guard()?;
         if self.keyword("SELECT").is_err() {
@@ -68,6 +70,42 @@ impl Parser<'_> {
             statements,
             slots: std::mem::take(&mut self.slots),
         })
+    }
+
+    /// One transaction verb at the cursor, when one opens here: the
+    /// dialect's own words, run as the store's — `ROLLBACK` included, which
+    /// the store spells `CANCEL`. `Ok(None)` is not a verb: the caller reads
+    /// a query. Used by the `verbs` module, which drives strings mixing
+    /// verbs with the other statements on one parser.
+    pub(crate) fn transaction_verb(&mut self) -> Result<Option<Shaped>, Refused> {
+        use super::write::Tag;
+        let verb = if self.keyword("begin").is_ok() {
+            Some(("BEGIN;", Tag::Begin))
+        } else if self.keyword("start").is_ok() {
+            if self.keyword("transaction").is_err() {
+                return Err(Refused::surface(
+                    code::SYNTAX,
+                    "START wants TRANSACTION in this build",
+                ));
+            }
+            Some(("BEGIN;", Tag::Begin))
+        } else if self.keyword("commit").is_ok() || self.keyword("end").is_ok() {
+            Some(("COMMIT;", Tag::Commit))
+        } else if self.keyword("rollback").is_ok() || self.keyword("abort").is_ok() {
+            Some(("CANCEL;", Tag::Rollback))
+        } else {
+            None
+        };
+        Ok(verb.map(|(script, tag)| Shaped {
+            script: script.to_owned(),
+            columns: Columns::Named(Vec::new()),
+            table: None,
+            catalog: None,
+            inference: Vec::new(),
+            record_names: Vec::new(),
+            tag,
+            returning: None,
+        }))
     }
 
     /// The SELECT is consumed; the rest of the shape follows. `IN (SELECT …)`

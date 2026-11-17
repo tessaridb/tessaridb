@@ -113,6 +113,118 @@ async fn rollback_closes_an_open_block() {
 }
 
 #[tokio::test]
+async fn a_block_holds_its_writes_until_rollback() {
+    let (address, _stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    client.query("BEGIN;").await;
+    let seen = client
+        .query("UPDATE orders SET name = 'changed' WHERE name = 'first'")
+        .await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "UPDATE 1")),
+        "{seen:?}"
+    );
+    // Its own write is its own read, inside the block.
+    let seen = client.query("SELECT name FROM orders LIMIT 1").await;
+    assert_eq!(rows(&seen), vec![vec![Some("changed".to_owned())]]);
+
+    let seen = client.query("ROLLBACK;").await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "ROLLBACK")),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter().any(|m| matches!(m, Seen::Ready(b'I'))),
+        "{seen:?}"
+    );
+    // The undo is the store's own: the old value stands.
+    let seen = client.query("SELECT name FROM orders LIMIT 1").await;
+    assert_eq!(rows(&seen), vec![vec![Some("first".to_owned())]]);
+}
+
+#[tokio::test]
+async fn a_block_lands_its_writes_at_commit() {
+    let (address, _stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    client.query("BEGIN").await;
+    client
+        .query("UPDATE orders SET name = 'landed' WHERE name = 'first'")
+        .await;
+    let seen = client.query("COMMIT").await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "COMMIT")),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter().any(|m| matches!(m, Seen::Ready(b'I'))),
+        "{seen:?}"
+    );
+
+    // A later statement on the same connection reads what the block landed.
+    let seen = client.query("SELECT name FROM orders LIMIT 1").await;
+    assert_eq!(rows(&seen), vec![vec![Some("landed".to_owned())]]);
+}
+
+#[tokio::test]
+async fn verbs_in_one_string_run_as_one_block() {
+    let (address, _stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    // The whole block in one simple query: the verbs answer under their own
+    // tags, the statement between them under its count, and the readiness
+    // reports the block closed inside the run.
+    let seen = client
+        .query("BEGIN; UPDATE orders SET name = 'one string' WHERE name = 'first'; COMMIT")
+        .await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "BEGIN")),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "UPDATE 1")),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "COMMIT")),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter().any(|m| matches!(m, Seen::Ready(b'I'))),
+        "the block closed inside the string: {seen:?}"
+    );
+
+    let seen = client.query("SELECT name FROM orders LIMIT 1").await;
+    assert_eq!(rows(&seen), vec![vec![Some("one string".to_owned())]]);
+
+    // The same block with ROLLBACK answers ROLLBACK and lands nothing.
+    let seen = client
+        .query("BEGIN; UPDATE orders SET name = 'gone' WHERE name = 'first'; ROLLBACK")
+        .await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "ROLLBACK")),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter().any(|m| matches!(m, Seen::Ready(b'I'))),
+        "{seen:?}"
+    );
+    let seen = client.query("SELECT name FROM orders LIMIT 1").await;
+    assert_eq!(rows(&seen), vec![vec![Some("one string".to_owned())]]);
+}
+
+#[tokio::test]
 async fn a_multi_statement_query_runs_as_one_block() {
     let (address, _stop, _db) = serving_with(SETUP).await;
     let mut client = Client::to(&address).await;

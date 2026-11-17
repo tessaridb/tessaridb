@@ -118,7 +118,7 @@ pub(crate) fn term(parser: &mut Parser<'_>) -> Result<Term, Refused> {
         comparison(parser, &column)?
     };
     let operand = operand(parser)?;
-    let _ = collate(parser)?;
+    collate(parser)?;
     Ok(Term::Cmp {
         column,
         op,

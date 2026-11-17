@@ -21,6 +21,11 @@ pub(crate) enum Tag {
     Delete,
     CreateTable,
     DropTable,
+    /// A transaction verb running as a store statement of its own — the
+    /// simple query's explicit `BEGIN … COMMIT` block.
+    Begin,
+    Commit,
+    Rollback,
 }
 
 impl Tag {
@@ -33,12 +38,10 @@ impl Tag {
             Tag::Delete => format!("DELETE {count}"),
             Tag::CreateTable => "CREATE TABLE".to_owned(),
             Tag::DropTable => "DROP TABLE".to_owned(),
+            Tag::Begin => "BEGIN".to_owned(),
+            Tag::Commit => "COMMIT".to_owned(),
+            Tag::Rollback => "ROLLBACK".to_owned(),
         }
-    }
-
-    /// Whether the tag counts rows the records carry.
-    fn counts_rows(self) -> bool {
-        matches!(self, Tag::Select | Tag::Insert | Tag::Update | Tag::Delete)
     }
 }
 
@@ -84,8 +87,9 @@ fn finish(parser: Parser<'_>, statements: Vec<Shaped>) -> super::Translated {
     }
 }
 
-/// One write statement at the cursor.
-fn statement(parser: &mut Parser<'_>) -> Result<Shaped, Refused> {
+/// One write statement at the cursor. `pub(crate)` for the `verbs`
+/// dispatcher, which mixes writes with the other statements on one parser.
+pub(crate) fn statement(parser: &mut Parser<'_>) -> Result<Shaped, Refused> {
     if parser.keyword("INSERT").is_ok() {
         return insert(parser);
     }

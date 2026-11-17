@@ -97,6 +97,39 @@ impl<'a> Session<'a> {
         Ok(outcomes)
     }
 
+    /// [`Session::run_holding`]'s engine: as [`Session::run_script`], except
+    /// the run starts from a transaction a previous run parked and ends by
+    /// parking what is still open, instead of refusing it. See
+    /// [`Session::run_holding`] for the contract a surface holds to.
+    pub(crate) async fn run_script_holding(
+        &mut self,
+        mut script: tessari_ql::Script,
+    ) -> Result<Vec<Outcome>> {
+        let store = self.store;
+
+        // Where a statement may run, asked once for the whole script and before
+        // any of it runs — the same question run_script asks, for the same
+        // reason (a script that writes must not have its first half committed
+        // here and its second half refused).
+        if matches!(Effect::of_script(&script), Effect::Write) {
+            admits(store.node_identity().await?.roles, &script)?;
+        }
+
+        // The parked transaction rejoins as this run's open one — the
+        // binding's type seats the `'static` spelling into this run's
+        // lifetime: nothing the run does shortens the store it answers
+        // through.
+        let mut open: Option<(Transaction<'a>, tessari_ql::Span)> = self.held.take();
+        let outcomes = self.run_statements(store, &mut open, &mut script).await?;
+
+        // Still open: park it for the run that carries the block's next
+        // statements, owning its store handle so no borrow has to reach here.
+        if let Some((transaction, span)) = open {
+            self.held = Some((transaction.into_owned(), span));
+        }
+        Ok(outcomes)
+    }
+
     /// Run a parsed, bound script's statements against `open`, which is the
     /// transaction they join when one is open.
     ///

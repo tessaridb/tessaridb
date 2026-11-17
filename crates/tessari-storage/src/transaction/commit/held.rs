@@ -124,10 +124,10 @@ impl Transaction<'_> {
             }
             let turn = self.store.write_gate().hold().await;
             self.check_for_conflicts().await?;
-            crate::schema::validate(self.store, &record).await?;
-            let mut evicted = crate::bounded::enforce(self.store, &record, identity.id).await?;
+            crate::schema::validate(&self.store, &record).await?;
+            let mut evicted = crate::bounded::enforce(&self.store, &record, identity.id).await?;
             if let Some(admitted) = crate::lifetime::admit(
-                self.store,
+                &self.store,
                 evicted.as_ref().unwrap_or(&record),
                 self.clock(),
                 &self.lifetimes,

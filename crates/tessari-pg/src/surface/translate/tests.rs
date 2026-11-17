@@ -1,6 +1,8 @@
 //! The translator's contract: what each shape of the dialect becomes, and
 //! what each shape it does not speak refuses with.
 
+#![allow(clippy::panic)]
+
 use super::{Columns, UNNAMED, translate};
 use tessaridb::Value;
 

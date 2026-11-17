@@ -38,7 +38,7 @@ impl Transaction<'_> {
             return Ok(Vec::new());
         };
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
-        let graph = crate::graph::Graph::read(self.store, &address, distance, index.quantized)?;
+        let graph = crate::graph::Graph::read(&self.store, &address, distance, index.quantized)?;
         graph.nearest(query, wanted, effort).await
     }
 
@@ -60,7 +60,7 @@ impl Transaction<'_> {
             return Ok(None);
         };
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
-        crate::graph::Graph::read(self.store, &address, distance, index.quantized).map(Some)
+        crate::graph::Graph::read(&self.store, &address, distance, index.quantized).map(Some)
     }
 
     /// What a vector index's nodes cost on disk: how many there are, the average

@@ -93,8 +93,20 @@ impl Kitchen {
                 values,
                 results,
             } => {
-                self.bind(conn, &portal, &statement, &formats, &values, &results)
-                    .await
+                if self.skipping {
+                    return Ok(());
+                }
+                match self.prepare_bind(&portal, &statement, &formats, &values, &results) {
+                    Ok(bound) => {
+                        self.portals.insert(portal, bound);
+                        conn.send(&codec::write::bind_complete()).await?;
+                    }
+                    // A Bind refusal is an error like any other while a block
+                    // is open: it aborts, and the engine-side block drops with
+                    // the state the readiness reports.
+                    Err(refused) => self.fail(conn, held, shared, &refused).await?,
+                }
+                Ok(())
             }
             Frontend::Describe { kind, name } => {
                 self.describe(conn, held, shared, kind, &name).await
@@ -102,8 +114,8 @@ impl Kitchen {
             Frontend::Execute { portal, rows } => {
                 self.execute(conn, held, shared, &portal, rows).await
             }
-            Frontend::Close { kind, name } => self.close(conn, kind, &name).await,
-            Frontend::Sync => self.sync(conn).await,
+            Frontend::Close { kind, name } => self.close(conn, held, shared, kind, &name).await,
+            Frontend::Sync => self.sync(conn, held).await,
             // Flush asks for delivery; this surface holds nothing back, so the
             // question answers itself — also while skipping.
             Frontend::Flush => Ok(()),
@@ -162,14 +174,15 @@ impl Kitchen {
                     // time. A table the store refuses refuses the Parse in
                     // the store's words, exactly where a real server fails.
                     let unresolved = |index: usize| resolved.get(index).copied().unwrap_or(0) == 0;
-                    let inference = if translated.statements.first().is_some_and(|shape| {
+                    let first = translated.statements.first();
+                    let needs_inference = first.is_some_and(|shape| {
                         shape.catalog.is_none()
                             && shape.inference.iter().any(|(slot, _)| unresolved(*slot))
-                    }) {
-                        let shape = translated
-                            .statements
-                            .first()
-                            .expect("the check above names it");
+                    });
+                    let inference = if needs_inference {
+                        let Some(shape) = first else {
+                            unreachable!("the check above names it");
+                        };
                         infer_table_types(
                             held,
                             shared,
@@ -212,30 +225,7 @@ impl Kitchen {
             }
         };
         if let Some(refused) = refusal {
-            self.fail(conn, &refused).await?;
-        }
-        Ok(())
-    }
-
-    async fn bind(
-        &mut self,
-        conn: &mut Conn,
-        portal: &str,
-        statement: &str,
-        formats: &[u16],
-        values: &[Option<Vec<u8>>],
-        results: &[u16],
-    ) -> Result<()> {
-        if self.skipping {
-            return Ok(());
-        }
-        let refusal = self.prepare_bind(portal, statement, formats, values, results);
-        match refusal {
-            Ok(bound) => {
-                self.portals.insert(portal.to_owned(), bound);
-                conn.send(&codec::write::bind_complete()).await?;
-            }
-            Err(refused) => self.fail(conn, &refused).await?,
+            self.fail(conn, held, shared, &refused).await?;
         }
         Ok(())
     }
@@ -337,6 +327,8 @@ impl Kitchen {
             other => {
                 self.fail(
                     conn,
+                    held,
+                    shared,
                     &Refused::with_detail(
                         code::PROTOCOL,
                         "Describe names a statement or a portal",
@@ -366,6 +358,8 @@ impl Kitchen {
             return self
                 .fail(
                     conn,
+                    held,
+                    shared,
                     &Refused::with_detail(
                         code::UNDEFINED_STATEMENT,
                         "the statement was not prepared on this connection",
@@ -413,6 +407,8 @@ impl Kitchen {
             return self
                 .fail(
                     conn,
+                    held,
+                    shared,
                     &Refused::with_detail(
                         code::UNDEFINED_CURSOR,
                         "the portal is not open on this connection",
@@ -434,7 +430,7 @@ impl Kitchen {
                 Ok(outcomes) => outcomes,
                 Err(failed) => {
                     let refused = run_refusal(failed);
-                    return self.fail(conn, &refused).await;
+                    return self.fail(conn, held, shared, &refused).await;
                 }
             };
             let mut described = describe_outcome(&outcomes, &portal.translated);
@@ -464,7 +460,7 @@ impl Kitchen {
         .await
         {
             Ok(dynamic) => dynamic,
-            Err(refused) => return self.fail(conn, &refused).await,
+            Err(refused) => return self.fail(conn, held, shared, &refused).await,
         };
         let rows = match translate::catalog::evaluate(
             &query,
@@ -474,7 +470,7 @@ impl Kitchen {
             held.user(),
         ) {
             Ok(rows) => rows,
-            Err(refused) => return self.fail(conn, &refused).await,
+            Err(refused) => return self.fail(conn, held, shared, &refused).await,
         };
         portal.catalog_rows = Some(rows);
         portal.described = true;
@@ -503,6 +499,8 @@ impl Kitchen {
             return self
                 .fail(
                     conn,
+                    held,
+                    shared,
                     &Refused::with_detail(
                         code::UNDEFINED_CURSOR,
                         "the portal is not open on this connection",
@@ -533,7 +531,7 @@ impl Kitchen {
                     .await
                     {
                         Ok(dynamic) => dynamic,
-                        Err(refused) => return self.fail(conn, &refused).await,
+                        Err(refused) => return self.fail(conn, held, shared, &refused).await,
                     };
                     match translate::catalog::evaluate(
                         &query,
@@ -543,7 +541,7 @@ impl Kitchen {
                         held.user(),
                     ) {
                         Ok(rows) => rows,
-                        Err(refused) => return self.fail(conn, &refused).await,
+                        Err(refused) => return self.fail(conn, held, shared, &refused).await,
                     }
                 }
             };
@@ -592,7 +590,7 @@ impl Kitchen {
                 Ok(outcomes) => outcomes,
                 Err(failed) => {
                     let refused = run_refusal(failed);
-                    return self.fail(conn, &refused).await;
+                    return self.fail(conn, held, shared, &refused).await;
                 }
             },
         };
@@ -602,6 +600,8 @@ impl Kitchen {
                 return self
                     .fail(
                         conn,
+                        held,
+                        shared,
                         &Refused::surface(code::INTERNAL, "the portal holds no statement"),
                     )
                     .await;
@@ -666,7 +666,14 @@ impl Kitchen {
         Ok(())
     }
 
-    async fn close(&mut self, conn: &mut Conn, kind: u8, name: &str) -> Result<()> {
+    async fn close(
+        &mut self,
+        conn: &mut Conn,
+        held: &mut Held,
+        shared: &Arc<super::Shared>,
+        kind: u8,
+        name: &str,
+    ) -> Result<()> {
         if self.skipping {
             return Ok(());
         }
@@ -681,6 +688,8 @@ impl Kitchen {
                 return self
                     .fail(
                         conn,
+                        held,
+                        shared,
                         &Refused::with_detail(
                             code::PROTOCOL,
                             "Close names a statement or a portal",
@@ -695,21 +704,42 @@ impl Kitchen {
 
     /// Sync: the batch ends. The readiness is owed, the skip state clears, and
     /// the unnamed portal closes — exactly one Ready answers one Sync, the
-    /// transaction state riding it.
-    async fn sync(&mut self, conn: &mut Conn) -> Result<()> {
+    /// transaction state riding it. The state is reconciled with what the
+    /// session actually holds: a portal run may have closed the block (a
+    /// string carrying its own `COMMIT`) or none on this connection may have
+    /// opened one yet, and the readiness answers the engine, not the hope.
+    async fn sync(&mut self, conn: &mut Conn, held: &Held) -> Result<()> {
         self.skipping = false;
         self.portals.remove("");
+        self.tx = match (self.tx, held.transaction_open()) {
+            (codec::write::Tx::InTx, false) => codec::write::Tx::Idle,
+            (codec::write::Tx::Idle, true) => codec::write::Tx::InTx,
+            (state, _) => state,
+        };
         conn.send(&codec::write::ready_for_query(self.tx)).await
     }
 
     /// An extended error: the refusal answers now, the readiness waits for the
     /// Sync, and every message until it is dropped. An error inside a
-    /// transaction block aborts it, as the dialect counts.
-    async fn fail(&mut self, conn: &mut Conn, refused: &Refused) -> Result<()> {
+    /// transaction block aborts it, as the dialect counts — the block the
+    /// session parked is dropped engine-side too, so nothing stays held
+    /// behind a Failed readiness.
+    async fn fail(
+        &mut self,
+        conn: &mut Conn,
+        held: &mut Held,
+        shared: &Arc<super::Shared>,
+        refused: &Refused,
+    ) -> Result<()> {
         conn.refuse_pending(refused).await?;
         self.skipping = true;
         if self.tx == codec::write::Tx::InTx {
             self.tx = codec::write::Tx::Failed;
+            // The discard's own refusal, should one arrive, changes nothing
+            // the client has not already been told.
+            let _discard = held
+                .run(shared, "CANCEL", &tessaridb::Parameters::new())
+                .await;
         }
         Ok(())
     }

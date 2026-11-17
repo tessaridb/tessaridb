@@ -26,6 +26,13 @@ pub trait RunNow {
     ///
     /// As [`Session::run_with`].
     fn run_with_now(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>>;
+
+    /// [`Session::run_holding`], driven to its end on this thread.
+    ///
+    /// # Errors
+    ///
+    /// As [`Session::run_holding`].
+    fn run_holding_now(&mut self, source: &str) -> Result<Vec<Outcome>>;
 }
 
 // Boxed: a statement's future is large, and handing it to the runtime by value
@@ -37,5 +44,9 @@ impl RunNow for Session<'_> {
 
     fn run_with_now(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
         now(Box::pin(self.run_with(source, parameters)))
+    }
+
+    fn run_holding_now(&mut self, source: &str) -> Result<Vec<Outcome>> {
+        now(Box::pin(self.run_holding(source, &Parameters::new())))
     }
 }

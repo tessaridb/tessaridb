@@ -137,6 +137,12 @@ pub struct Session<'a> {
     /// it answers (DB-21): read once per statement, so two calls in one
     /// statement are one instant rather than two readings a walk apart.
     pub(crate) now: std::time::SystemTime,
+    /// A transaction a surface asked this session to hold across calls —
+    /// opened by a `BEGIN` that ended its run still open, ridden by the
+    /// statements of later runs, closed by their `COMMIT`/`CANCEL`. Owned in
+    /// the store-clone spelling, so it outlives the attach the `BEGIN` ran
+    /// in and rides the [`Detached`] state across a bridge call.
+    pub(crate) held: Option<(Transaction<'static>, tessari_ql::Span)>,
 }
 
 /// Who a session is, to a queue.
@@ -181,6 +187,7 @@ impl<'a> Session<'a> {
             across_open: false,
             event_depth: 0,
             now: std::time::SystemTime::now(),
+            held: None,
         }
     }
 
@@ -326,6 +333,44 @@ impl<'a> Session<'a> {
     ) -> Result<Vec<Outcome>> {
         let script = self.bind_script(parse(source)?, parameters).await?;
         self.run_script(script).await
+    }
+
+    /// [`Session::run_with`] for a surface that holds a transaction across
+    /// calls of its own — a wire connection answering `BEGIN`, then running
+    /// the statements that ride the block until its `COMMIT`/`ROLLBACK`.
+    ///
+    /// Where [`Session::run_with`] refuses a script that ends with its
+    /// transaction open (`UnclosedTransaction`), this parks the open
+    /// transaction in the session's detached state and answers normally; the
+    /// next `run_holding` starts from it, so every statement between the
+    /// verbs joins one snapshot with the store's own repeatable reads and
+    /// undo. A script with no open transaction at its end behaves exactly as
+    /// [`Session::run_with`] — a block closed inside the string leaves
+    /// nothing held, and statements outside a block commit as they run.
+    ///
+    /// A refusal inside the block ends it: the parked transaction is dropped,
+    /// which discards its buffered writes exactly as a `CANCEL` would, and the
+    /// caller reports the block aborted the way its dialect counts.
+    ///
+    /// # Errors
+    ///
+    /// As [`Session::run_with`], except `Error::UnclosedTransaction`, which
+    /// this path does not raise — the open transaction is held instead.
+    pub async fn run_holding(
+        &mut self,
+        source: &str,
+        parameters: &Parameters,
+    ) -> Result<Vec<Outcome>> {
+        let script = self.bind_script(parse(source)?, parameters).await?;
+        self.run_script_holding(script).await
+    }
+
+    /// Whether a transaction is currently held for a later `run_holding` —
+    /// what a connection's readiness reports between the block's `BEGIN` and
+    /// its close.
+    #[must_use]
+    pub fn transaction_open(&self) -> bool {
+        self.held.is_some()
     }
 
     /// [`Session::run`], boxed: a statement that runs a script of its own on a

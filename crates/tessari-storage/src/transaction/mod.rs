@@ -70,6 +70,38 @@ use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 use crate::owned::Owned;
 use crate::store::Store;
 
+/// How a [`Transaction`] reaches its store.
+///
+/// The borrowed spelling is the one [`Store::begin`] opens: the transaction
+/// lives exactly as long as the store reference the caller holds. The held
+/// spelling owns a clone of the store's shared handle, so the transaction can
+/// outlive any one borrow — a surface that parks an open transaction across
+/// calls of its own (a wire connection answering `BEGIN`, then running the
+/// statements that ride it) carries it in this spelling, usually through
+/// [`Transaction::into_owned`].
+#[derive(Debug)]
+pub enum StoreRef<'a> {
+    /// The store a caller borrowed this transaction from.
+    Borrowed(&'a Store),
+    /// A handle this transaction owns, boxed so the borrowed spelling — the
+    /// one every ordinary transaction takes — pays no size for a variant it
+    /// never is. Cloning a store shares one backend and one snapshot
+    /// registry, so the held spelling answers through the same store the
+    /// borrow would have.
+    Held(Box<Store>),
+}
+
+impl std::ops::Deref for StoreRef<'_> {
+    type Target = Store;
+
+    fn deref(&self) -> &Store {
+        match self {
+            StoreRef::Borrowed(store) => store,
+            StoreRef::Held(store) => store.as_ref(),
+        }
+    }
+}
+
 /// A unit of work at a fixed snapshot.
 ///
 /// Dropping one releases its snapshot. That is deliberately not left to
@@ -79,7 +111,7 @@ use crate::store::Store;
 /// silently, as space that never comes back.
 #[derive(Debug)]
 pub struct Transaction<'a> {
-    store: &'a Store,
+    store: StoreRef<'a>,
     snapshot: Sequence,
     /// Where the snapshot was registered, so that it is released there.
     registered: crate::snapshots::Slot,
@@ -185,5 +217,61 @@ impl Transaction<'_> {
                     u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
                 })
         })
+    }
+}
+
+impl Transaction<'_> {
+    /// This transaction with its borrow erased, ready to be parked where no
+    /// store reference reaches: a detached session carried across a bridge
+    /// call, holding an open block for the statements a connection sends next.
+    ///
+    /// The borrowed spelling pays one clone of the store's shared handle —
+    /// the held spelling moves what it already owns. Every other field travels
+    /// as it stands: the snapshot and its registration are store-wide facts,
+    /// not borrow-scoped ones.
+    ///
+    /// `Transaction` implements [`Drop`], so the fields are taken with
+    /// replacements and the emptied original forgotten: its `Drop` must not
+    /// release a snapshot registration the parked transaction still holds.
+    #[must_use]
+    pub fn into_owned(self) -> Transaction<'static> {
+        let mut this = self;
+        // A clone of the shared handle either way: the borrowed spelling turns
+        // into an owned one here, the held spelling could move its handle only
+        // by taking the store field out of a `Drop` type, which one spare
+        // handle clone is not worth an `unsafe` for.
+        let store = StoreRef::Held(Box::new(this.store.clone()));
+        let taken = Transaction {
+            store,
+            snapshot: this.snapshot,
+            registered: std::mem::replace(&mut this.registered, crate::snapshots::Slot(0)),
+            writes: std::mem::take(&mut this.writes),
+            expiring: std::mem::take(&mut this.expiring),
+            field_expiring: std::mem::take(&mut this.field_expiring),
+            lifetimes: std::mem::take(&mut this.lifetimes),
+            trims: std::mem::take(&mut this.trims),
+            feed_captures: std::mem::take(&mut this.feed_captures),
+            reading_at: std::mem::take(&mut this.reading_at),
+            floors: std::mem::replace(
+                &mut this.floors,
+                Owned::new(std::collections::BTreeMap::new()),
+            ),
+            guarded: std::mem::replace(
+                &mut this.guarded,
+                Owned::new(std::collections::BTreeSet::new()),
+            ),
+            across: this.across.take(),
+            decided: std::mem::replace(
+                &mut this.decided,
+                Owned::new(std::collections::BTreeMap::new()),
+            ),
+            asks_leaders: this.asks_leaders,
+            retired_reads: std::mem::replace(&mut this.retired_reads, AtomicBool::new(false)),
+            claim_token: std::mem::replace(&mut this.claim_token, AtomicU64::new(0)),
+            claiming: std::mem::replace(&mut this.claiming, Owned::new(Vec::new())),
+            past: this.past,
+        };
+        std::mem::forget(this);
+        taken
     }
 }

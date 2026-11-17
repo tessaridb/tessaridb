@@ -43,7 +43,7 @@ impl Transaction<'_> {
         let below = match trim {
             TopicTrim::Before(below) => below,
             TopicTrim::Keep(keep) => {
-                match crate::topic::edge(self.store, topic, ScanDirection::Reverse).await? {
+                match crate::topic::edge(&self.store, topic, ScanDirection::Reverse).await? {
                     Some(last) => last.saturating_add(1).saturating_sub(keep),
                     None => return Ok(0),
                 }

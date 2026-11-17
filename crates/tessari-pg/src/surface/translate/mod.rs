@@ -11,6 +11,7 @@
 mod expression;
 mod parser;
 mod shape;
+mod verbs;
 
 pub(crate) mod catalog;
 pub(crate) mod write;
@@ -61,8 +62,13 @@ pub(crate) fn translate(query: &str) -> Result<Translated, Refused> {
 
 /// Translate a simple query's text, which the dialect says may hold several
 /// statements: they run as one implicit transaction block, the store's own
-/// `BEGIN … COMMIT` wrapping them.
+/// `BEGIN … COMMIT` wrapping them — except when a transaction verb opens any
+/// of the statements, which is then the client's own block, run as it is
+/// written (`verbs`).
 pub(crate) fn translate_many(query: &str) -> Result<Translated, Refused> {
+    if verbs::present(query) {
+        return verbs::translate(query);
+    }
     if let Some(first) = query.split_whitespace().next()
         && write::opens(first)
     {

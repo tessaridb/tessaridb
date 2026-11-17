@@ -46,6 +46,10 @@ pub(crate) struct Held {
     /// The user the connection signed in as, when the startup named one —
     /// what the catalog's owner answers ride on.
     user: Option<String>,
+    /// Whether the session parked a transaction a `BEGIN` opened — the
+    /// engine's side of the connection's block state, read after every run
+    /// for the readiness the wire reports.
+    transaction_open: bool,
 }
 
 impl Held {
@@ -56,6 +60,7 @@ impl Held {
             namespace: namespace.to_owned(),
             database: database.to_owned(),
             user: None,
+            transaction_open: false,
         }
     }
 
@@ -93,6 +98,11 @@ impl Held {
 
     /// Run `script` with `parameters` bound, answering the script's own
     /// outcomes — the two `USE`s the prefix adds are not among them.
+    ///
+    /// Every run rides the session's held transaction when one is parked
+    /// (`run_holding`): outside a block nothing is held and this is the
+    /// ordinary auto-commit path; inside one, the statements join the block
+    /// the connection's `BEGIN` opened.
     pub(crate) async fn run(
         &mut self,
         shared: &Arc<super::Shared>,
@@ -109,7 +119,7 @@ impl Held {
             .bridge
             .call_here(session, move |held: Detached| async move {
                 let mut attached = held.attach(db.store());
-                let answer = match attached.run_with(&prefixed, &parameters).await {
+                let answer = match attached.run_holding(&prefixed, &parameters).await {
                     Err(refused) if !attached.landed() && tessaridb::travels(&prefixed) => {
                         tessaridb::carried::carry(&db, &attached, refused, &prefixed, &parameters)
                             .await
@@ -129,12 +139,15 @@ impl Held {
             .await;
         match bridged {
             Bridged::Answered((session, Ok(answer))) => {
+                self.transaction_open = session.transaction_open();
                 self.session = Some(session);
                 let mut outcomes = answer.into_iter();
                 outcomes.by_ref().take(USE_OUTCOMES).for_each(drop);
                 Ok(outcomes.collect())
             }
             Bridged::Answered((session, Err(failed))) => {
+                // A refusal ends the block: the session dropped what it held.
+                self.transaction_open = session.transaction_open();
                 self.session = Some(session);
                 Err(failed)
             }
@@ -144,6 +157,12 @@ impl Held {
             }
             Bridged::Panicked => Err(Failed::Lost),
         }
+    }
+
+    /// Whether the session holds an open transaction — the readiness half of
+    /// the connection's block state.
+    pub(crate) fn transaction_open(&self) -> bool {
+        self.transaction_open
     }
 
     /// Sign a fresh session in as `user`, keeping the old one on a refusal.
@@ -170,6 +189,7 @@ impl Held {
             Bridged::Answered((session, Ok(()))) => {
                 self.session = Some(session);
                 self.user = Some(user);
+                self.transaction_open = false;
                 Ok(())
             }
             Bridged::Answered((_, Err(refused))) => Err(Failed::Refused(refused)),

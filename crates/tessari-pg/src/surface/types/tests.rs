@@ -1,6 +1,8 @@
 //! The type correspondence: one row per store value — its text form, its
 //! type id, and the NULL the two absences share.
 
+#![allow(clippy::panic)]
+
 use super::{oid, size_of, text_of, type_of};
 use tessaridb::{Number, Value};
 

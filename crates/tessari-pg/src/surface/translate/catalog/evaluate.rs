@@ -20,6 +20,10 @@ use super::{Join, Order, Query, Row, Source};
 /// carries the user-table rows the store's introspection built, when the
 /// query names them. `user` names the signed-in connection, what the owner
 /// answers ride on — anonymous sessions name no owner, as the store holds
+/// One row and the ordering keys it answered under: the keys the
+/// ordering compares, beside the row itself.
+type KeyedRow = (Vec<Option<Value>>, Vec<Option<Value>>);
+
 /// none.
 pub(crate) fn evaluate(
     query: &Query,
@@ -33,7 +37,7 @@ pub(crate) fn evaluate(
         rows = join_rows(rows, joined, dynamic)?;
     }
     validate_patterns(query, slots, parameters)?;
-    let mut keyed: Vec<(Vec<Option<Value>>, Vec<Option<Value>>)> = Vec::new();
+    let mut keyed: Vec<KeyedRow> = Vec::new();
     for row in &rows {
         if query
             .terms
@@ -92,9 +96,9 @@ fn key_value(key: &Order, query: &Query, row: &Row, user: Option<&str>) -> Optio
 fn materialize(source: &Source, dynamic: Option<&Dynamic>) -> Result<Vec<Row>, Refused> {
     let dynamic_rows = dynamic.and_then(|held| dynamic::materialize(source, held));
     let relation = relation(source.name);
-    if relation.is_none() {
-        // `pg_class` and `pg_attribute` live only in the dynamic rows — the
-        // answer path guaranteed them when the query named them.
+    // `pg_class` and `pg_attribute` live only in the dynamic rows — the
+    // answer path guaranteed them when the query named them.
+    let Some(relation) = relation else {
         return dynamic_rows.ok_or_else(|| {
             Refused::with_detail(
                 code::FEATURE,
@@ -102,8 +106,7 @@ fn materialize(source: &Source, dynamic: Option<&Dynamic>) -> Result<Vec<Row>, R
                 source.name.to_owned(),
             )
         });
-    }
-    let relation = relation.expect("checked above");
+    };
     let mut rows: Vec<Row> = relation
         .rows
         .iter()

@@ -350,7 +350,11 @@ impl Transaction<'_> {
     ///
     /// The same as [`commit`](Self::commit).
     pub async fn commit_placed(self) -> Result<Committed> {
-        let store = self.store;
+        // A handle of its own, taken before the settle consumes the
+        // transaction: the expiry pass below answers through the same store,
+        // and the shared handle's clone is the store's documented cheap way
+        // to hold it past a consuming call.
+        let store = self.store.clone();
         let committed = self.settle(Settle::Apply).await?;
         // With this transaction's snapshot gone, a space it dropped leaves node
         // memory now, unless an older reader still sees it (ADR-0130). The

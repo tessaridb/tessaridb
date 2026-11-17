@@ -3,6 +3,8 @@
 //! declared type's binary form, DataRow cells encode into it. The text
 //! family crosses unchanged: its binary form IS the text bytes.
 
+#![allow(clippy::panic)]
+
 use super::super::tests::Client;
 use super::{SETUP, Seen, serving_with};
 
@@ -239,7 +241,8 @@ async fn a_uuid_binary_result_matches_the_text_form() {
     for (index, slot) in bytes.iter_mut().enumerate() {
         let high = (hex[index * 2] as char).to_digit(16).expect("hex");
         let low = (hex[index * 2 + 1] as char).to_digit(16).expect("hex");
-        *slot = ((high << 4) | low) as u8;
+        // Two hex digits are a byte: each digit carried four bits.
+        *slot = u8::try_from((high << 4) | low).expect("two hex digits are a byte");
     }
 
     // The binary result is those sixteen bytes, big-endian order kept.

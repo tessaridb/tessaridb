@@ -28,8 +28,11 @@ pub(crate) enum TxVerb {
 }
 
 /// Parse one session command; `Ok(None)` hands the query to the translator,
-/// which refuses what is not a query in the store's own words.
+/// which refuses what is not a query in the store's own words. A trailing
+/// semicolon is the dialect's own punctuation and says nothing — `BEGIN;`
+/// is the verb `BEGIN`.
 pub(crate) fn parse(query: &str) -> Result<Option<Session>, Refused> {
+    let query = query.trim_end_matches([';', ' ']);
     let words: Vec<&str> = query.split_whitespace().collect();
     let Some(first) = words.first().map(|word| word.to_ascii_lowercase()) else {
         return Ok(None);

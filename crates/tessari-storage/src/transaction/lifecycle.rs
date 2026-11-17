@@ -18,7 +18,7 @@ use tessari_encoding::{
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
-use super::{RecordAddress, Transaction};
+use super::{RecordAddress, StoreRef, Transaction};
 use crate::error::Result;
 use crate::store::Store;
 
@@ -28,7 +28,7 @@ impl<'a> Transaction<'a> {
         // be read from without the store knowing it is being read from.
         let registered = store.snapshot_registry().register(snapshot);
         Self {
-            store,
+            store: StoreRef::Borrowed(store),
             snapshot,
             registered,
             writes: BTreeMap::new(),
@@ -125,8 +125,11 @@ impl<'a> Transaction<'a> {
     /// crate already holds the store it opened the transaction from, and the one
     /// caller here is the sealing path, which needs the per-process keyring that
     /// lives on the store rather than in the log.
-    pub(crate) const fn store(&self) -> &Store {
-        self.store
+    pub(crate) fn store(&self) -> &Store {
+        match &self.store {
+            StoreRef::Borrowed(store) => store,
+            StoreRef::Held(store) => store.as_ref(),
+        }
     }
 
     /// Read a record as of this transaction's snapshot.

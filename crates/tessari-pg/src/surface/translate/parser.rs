@@ -368,6 +368,31 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The bare word opening at the cursor, looked at and not eaten — what
+    /// a dispatcher reads to choose the statement's translator before any
+    /// keyword is consumed.
+    pub(crate) fn peek_word(&self) -> Option<String> {
+        let mut at = self.at;
+        while let Some(byte) = self.source.get(at) {
+            if !byte.is_ascii_whitespace() {
+                break;
+            }
+            at = at.saturating_add(1);
+        }
+        let start = at;
+        while let Some(byte) = self.source.get(at) {
+            if !(byte.is_ascii_alphanumeric() || *byte == b'_') {
+                break;
+            }
+            at = at.saturating_add(1);
+        }
+        if at == start {
+            None
+        } else {
+            Some(String::from_utf8_lossy(&self.source[start..at]).to_ascii_lowercase())
+        }
+    }
+
     pub(crate) fn operator(&mut self, mark: &str) -> bool {
         let at = self.at;
         self.skip_space();
