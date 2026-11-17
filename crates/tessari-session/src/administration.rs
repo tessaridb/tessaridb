@@ -34,6 +34,11 @@ pub(crate) fn administered(kind: &StatementKind) -> Option<(&'static str, &str)>
         StatementKind::AlterReplication { name, .. } => ("ALTER REPLICATION", name.text.as_str()),
         StatementKind::DropReplication { name } => ("DROP REPLICATION", name.text.as_str()),
         StatementKind::DefineFailover { .. } => ("DEFINE FAILOVER", "the store"),
+        // The scheme beside the policy: one per cluster, named so the trail
+        // says which scheme a statement touched.
+        StatementKind::DefineTopology { name, .. } => ("DEFINE TOPOLOGY", name.text.as_str()),
+        StatementKind::AlterTopology { name, .. } => ("ALTER TOPOLOGY", name.text.as_str()),
+        StatementKind::DropTopology { name } => ("DROP TOPOLOGY", name.text.as_str()),
         StatementKind::FinalizeFormat => ("ALTER STORE FINALIZE FORMAT", "the store"),
         StatementKind::RevokeCertificate { fingerprint } => {
             ("REVOKE CERTIFICATE", fingerprint.as_str())

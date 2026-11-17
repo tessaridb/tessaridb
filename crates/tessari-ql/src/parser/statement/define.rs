@@ -294,6 +294,9 @@ impl Parser<'_> {
             // And a third contextual subject, on the same reasoning: `failover`
             // is a perfectly good name for a table somebody's data already uses.
             _ if self.eat_word("failover") => self.define_failover(),
+            // And a fourth, on the same reasoning: `topology` is a name data
+            // already uses, and nothing but a subject can stand after `DEFINE`.
+            _ if self.eat_word("topology") => self.define_topology(),
             // `KAFKA` qualifies the word rather than replacing it, and it is
             // contextual like every other subject here — special after `DEFINE`
             // and an ordinary identifier everywhere else, so a table called

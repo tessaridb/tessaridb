@@ -20,6 +20,7 @@ fn row(node: Option<[u8; 16]>, leads: Option<Reach>) -> ReplicaDefinition {
         releasing: false,
         preferred: false,
         region: None,
+        domain: None,
     }
 }
 

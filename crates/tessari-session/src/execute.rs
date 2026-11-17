@@ -74,6 +74,7 @@ struct Peer<'a> {
     preferred: bool,
     fingerprint: Option<&'a str>,
     region: Option<&'a str>,
+    domain: Option<&'a str>,
 }
 
 struct Declared<'a> {
@@ -573,6 +574,7 @@ impl Session<'_> {
                 preferred,
                 fingerprint,
                 region,
+                domain,
                 if_not_exists,
             } => {
                 self.define_replica(
@@ -590,6 +592,7 @@ impl Session<'_> {
                         preferred: *preferred,
                         fingerprint: fingerprint.as_deref(),
                         region: region.as_deref(),
+                        domain: domain.as_deref(),
                     },
                     *if_not_exists,
                 )
@@ -631,6 +634,23 @@ impl Session<'_> {
                 replication,
                 expires,
             } => Self::create_link_token(transaction, replication, *expires, span).await,
+            // The layout a cluster is arranged over: a catalog record like the
+            // failover policy, checked as a structure where the value is built
+            // and against the membership where that layer lives.
+            StatementKind::DefineTopology {
+                name,
+                realms,
+                survives_realm_loss,
+            } => {
+                self.define_topology(transaction, name, realms, *survives_realm_loss, span)
+                    .await
+            }
+            StatementKind::AlterTopology { name, change } => {
+                self.alter_topology(transaction, name, change, span).await
+            }
+            StatementKind::DropTopology { name } => {
+                self.drop_topology(transaction, name, span).await
+            }
             StatementKind::DefineConsumer {
                 name,
                 source,

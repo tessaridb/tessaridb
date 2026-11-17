@@ -36,6 +36,7 @@ fn declared(id: u32, endpoint: &str, node: Option<[u8; NODE_ID_LEN]>) -> Replica
         releasing: false,
         preferred: false,
         region: None,
+        domain: None,
     }
 }
 

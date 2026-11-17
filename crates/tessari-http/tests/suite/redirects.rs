@@ -77,6 +77,7 @@ fn one_of_two(addressed: bool) -> Arc<Db> {
             releasing: false,
             preferred: false,
             region: None,
+            domain: None,
         })
         .now()
         .unwrap();

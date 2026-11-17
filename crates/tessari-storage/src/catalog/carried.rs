@@ -227,6 +227,10 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
         //   REPLICATIONS      which external clusters hold our databases is
         //                     likewise the store's, and the row names a party
         //                     outside every subscriber's trust boundary
+        //   TOPOLOGY          the scheme the store is arranged over is the
+        //                     store's, like the failover policy it stands
+        //                     beside; a selective follower does not vote and
+        //                     does not need the claim
         //   RECORD_SEQUENCES  keyed by table id, tenancy not in the record
         //   VAULT_ROOT        one record, the store's
         //   VAULT_AUDIT       the store's own trail

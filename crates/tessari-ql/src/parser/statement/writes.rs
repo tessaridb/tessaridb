@@ -186,6 +186,12 @@ impl Parser<'_> {
             _ if self.eat_word("replication") => Ok(StatementKind::DropReplication {
                 name: self.dropped_name()?,
             }),
+            // Contextual for `replica`'s reason: dropping the scheme never
+            // touches member rows, and a table called `topology` keeps its
+            // name everywhere but directly after `DROP`.
+            _ if self.eat_word("topology") => Ok(StatementKind::DropTopology {
+                name: self.dropped_name()?,
+            }),
             // Contextual, as the word is everywhere else it appears.
             _ if self.eat_word("vector") => Ok(StatementKind::DropVector {
                 name: self.dropped_name()?,

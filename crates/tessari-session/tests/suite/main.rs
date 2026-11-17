@@ -183,6 +183,7 @@ mod tightening;
 mod timeout;
 mod topic;
 mod topic_consumers;
+mod topology;
 mod traversal;
 mod truncate;
 mod trusted_index;

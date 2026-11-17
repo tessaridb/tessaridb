@@ -86,6 +86,7 @@ fn declare(store: &Store, node: [u8; NODE_ID_LEN], reach: Reach) {
             releasing: false,
             preferred: false,
             region: None,
+            domain: None,
         })
         .now()
         .unwrap();

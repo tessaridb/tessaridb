@@ -1729,6 +1729,123 @@ fn failover_is_a_contextual_word_and_still_names_a_table() {
 }
 
 #[test]
+fn a_topology_declares_its_realms_and_the_optional_claim() {
+    // `docs/tessariql.md` § The layout a cluster is arranged over, copied from
+    // the specification as every statement in this file is. One REALM clause
+    // per realm — the same text a member row names with `REGION` — and the
+    // claim last, optional, and off unless written.
+    let StatementKind::DefineTopology {
+        name,
+        realms,
+        survives_realm_loss,
+    } = one("DEFINE TOPOLOGY main \
+         REALM 'dc-a' DOMAIN 'az-1', 'az-2' \
+         REALM 'dc-b' DOMAIN 'az-1', 'az-2' \
+         REALM 'dc-c' \
+         SURVIVES REALM LOSS;")
+    else {
+        panic!("DEFINE TOPOLOGY did not parse as DEFINE TOPOLOGY");
+    };
+    assert_eq!(name.text, "main");
+    assert_eq!(realms.len(), 3);
+    assert_eq!(realms[0].name, "dc-a");
+    assert_eq!(realms[0].domains, ["az-1", "az-2"]);
+    assert!(realms[2].domains.is_empty(), "a realm may name no domains");
+    assert!(survives_realm_loss);
+    // Absent claim: structure only, which is a third state rather than the
+    // weakest claim — the read-back must be able to say *no claim was made*.
+    let StatementKind::DefineTopology {
+        realms,
+        survives_realm_loss,
+        ..
+    } = one("DEFINE TOPOLOGY main REALM 'dc-a';")
+    else {
+        panic!("DEFINE TOPOLOGY did not parse as DEFINE TOPOLOGY");
+    };
+    assert_eq!(realms.len(), 1);
+    assert!(!survives_realm_loss);
+    // `DOMAIN` without its realm is a different clause's shape and refuses.
+    let refused =
+        parse("DEFINE TOPOLOGY main DOMAIN 'az-1';").expect_err("a topology with no realm parsed");
+    let said = refused.to_string();
+    assert!(
+        said.contains("REALM"),
+        "the refusal did not name the missing clause: {said}"
+    );
+}
+
+#[test]
+fn a_topology_amends_by_the_realm_and_drops_whole() {
+    // `ALTER TOPOLOGY` moves one realm per statement, the same one-clause
+    // discipline `ALTER REPLICA` keeps; `DROP TOPOLOGY` takes the scheme whole.
+    let StatementKind::AlterTopology { name, change } =
+        one("ALTER TOPOLOGY main ADD REALM 'dc-d' DOMAIN 'az-1';")
+    else {
+        panic!("ALTER TOPOLOGY ADD REALM did not parse as ALTER TOPOLOGY");
+    };
+    assert_eq!(name.text, "main");
+    let tessari_ql::TopologyChange::AddRealm { name, domains } = change else {
+        panic!("ADD REALM did not parse as ADD REALM");
+    };
+    assert_eq!(name, "dc-d");
+    assert_eq!(domains, ["az-1"]);
+    let StatementKind::AlterTopology { change, .. } = one("ALTER TOPOLOGY main DROP REALM 'dc-c';")
+    else {
+        panic!("ALTER TOPOLOGY DROP REALM did not parse as ALTER TOPOLOGY");
+    };
+    assert!(matches!(change, tessari_ql::TopologyChange::DropRealm(found) if found == "dc-c"));
+    let StatementKind::DropTopology { name } = one("DROP TOPOLOGY main;") else {
+        panic!("DROP TOPOLOGY did not parse as DROP TOPOLOGY");
+    };
+    assert_eq!(name.text, "main");
+    // Anything but ADD REALM or DROP REALM is refused, for the reason
+    // `ALTER REPLICA` refuses anything but its one clause.
+    assert!(parse("ALTER TOPOLOGY main REALM 'dc-e';").is_err());
+    // `topology` is contextual like `failover`: a table called `topology`
+    // keeps its name everywhere but directly after the define/drop verbs.
+    assert!(matches!(
+        one("SELECT * FROM topology;"),
+        StatementKind::Select(_)
+    ));
+}
+
+#[test]
+fn a_member_row_names_its_domain_within_its_region() {
+    // The DOMAIN clause on a member row: optional, last — every declaration
+    // written before it reads as it did — and a position within the region,
+    // which is why a domain with no region refuses.
+    let StatementKind::DefineReplica { region, domain, .. } = one(
+        "DEFINE REPLICA n1 AT 'a:9001' ROLES coordinating, writable \
+         REPLICATES STORE REGION 'dc-a' DOMAIN 'az-1';",
+    ) else {
+        panic!("DEFINE REPLICA … DOMAIN did not parse as DEFINE REPLICA");
+    };
+    assert_eq!(region.as_deref(), Some("dc-a"));
+    assert_eq!(domain.as_deref(), Some("az-1"));
+    let StatementKind::DefineReplica { domain, .. } =
+        one("DEFINE REPLICA n1 AT 'a:9001' REGION 'dc-a';")
+    else {
+        panic!("DEFINE REPLICA … REGION did not parse as DEFINE REPLICA");
+    };
+    assert_eq!(domain, None, "a clause left out is still left alone");
+    // `ALTER REPLICA` moves the domain the same one-clause way it moves the
+    // region, and `DOMAIN NONE` clears it.
+    let StatementKind::AlterReplica { name, change } = one("ALTER REPLICA n1 DOMAIN 'az-2';")
+    else {
+        panic!("ALTER REPLICA DOMAIN did not parse as ALTER REPLICA");
+    };
+    assert_eq!(name.text, "n1");
+    assert!(matches!(
+        change,
+        tessari_ql::ReplicaChange::Domain(Some(found)) if found == "az-2"
+    ));
+    let StatementKind::AlterReplica { change, .. } = one("ALTER REPLICA n1 DOMAIN NONE;") else {
+        panic!("ALTER REPLICA DOMAIN NONE did not parse as ALTER REPLICA");
+    };
+    assert!(matches!(change, tessari_ql::ReplicaChange::Domain(None)));
+}
+
+#[test]
 fn a_node_is_drained_by_naming_no_roles() {
     // `docs/tessariql.md` § Draining this node. `Roles::NONE` is a state the
     // store has always been able to hold and no statement could ask for: the

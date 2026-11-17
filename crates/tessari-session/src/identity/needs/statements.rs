@@ -244,7 +244,13 @@ impl Needs {
             | StatementKind::DefineReplication { .. }
             | StatementKind::AlterReplication { .. }
             | StatementKind::DropReplication { .. }
-            | StatementKind::CreateLinkToken { .. } => Self::OPERATE_STORE,
+            | StatementKind::CreateLinkToken { .. }
+            // The scheme is administered exactly as the policy beside it is:
+            // which realms a cluster is arranged over is topology, not
+            // anybody's tables.
+            | StatementKind::DefineTopology { .. }
+            | StatementKind::AlterTopology { .. }
+            | StatementKind::DropTopology { .. } => Self::OPERATE_STORE,
             // Declaring a consumer is administering, not writing — the same
             // reasoning that puts `DEFINE USER` here. It hands a broker address
             // and a group name to a process that will then write into somebody's

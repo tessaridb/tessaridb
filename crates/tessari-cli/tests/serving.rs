@@ -1925,7 +1925,7 @@ fn a_pooled_cluster_serves_every_tenant_on_every_node_and_the_seam_holds_everywh
         .into_iter()
         .any(|index| {
             asked(
-                &POOLED[index].0,
+                POOLED[index].0,
                 "BEGIN; \
                  DEFINE USER a_app ON tenant_a.app AUTHORITIES read, write \
                  PASSWORD 'a long enough password'; \
@@ -2054,7 +2054,7 @@ fn a_noisy_tenants_writes_leave_the_quiet_tenants_bounds() {
         .into_iter()
         .any(|index| {
             asked(
-                &NOISY[index].0,
+                NOISY[index].0,
                 "BEGIN; \
                  DEFINE USER a_app ON tenant_a.app AUTHORITIES read, write \
                  PASSWORD 'a long enough password'; \
@@ -2109,8 +2109,15 @@ fn a_noisy_tenants_writes_leave_the_quiet_tenants_bounds() {
         }
         (reads, writes)
     };
-    let percentile = |sorted: &[std::time::Duration], at: f64| -> std::time::Duration {
-        sorted[((sorted.len() as f64 * at) as usize).min(sorted.len() - 1)]
+    // Integer parts-per-thousand rather than an f64 fraction: the cast
+    // lints exist because `as` truncates silently, and a percentile index
+    // has no business being a float anyway.
+    let percentile = |sorted: &[std::time::Duration], at: u32| -> std::time::Duration {
+        let scaled = sorted
+            .len()
+            .saturating_mul(usize::try_from(at).unwrap_or(0))
+            / 1000;
+        sorted[scaled.min(sorted.len() - 1)]
     };
     let report = |label: &str,
                   reads: &mut Vec<std::time::Duration>,
@@ -2119,12 +2126,12 @@ fn a_noisy_tenants_writes_leave_the_quiet_tenants_bounds() {
         writes.sort();
         println!(
             "U1 {label}: reads p50 {:?} p99 {:?} | writes p50 {:?} p99 {:?}",
-            percentile(reads, 0.50),
-            percentile(reads, 0.99),
-            percentile(writes, 0.50),
-            percentile(writes, 0.99)
+            percentile(reads, 500),
+            percentile(reads, 990),
+            percentile(writes, 500),
+            percentile(writes, 990)
         );
-        (percentile(reads, 0.99), percentile(writes, 0.99))
+        (percentile(reads, 990), percentile(writes, 990))
     };
 
     let quiet_surface = NOISY[schema_at].0;
@@ -2181,7 +2188,7 @@ fn a_noisy_tenants_writes_leave_the_quiet_tenants_bounds() {
     let completed = completed.load(std::sync::atomic::Ordering::Relaxed);
     println!("U1 saturation: {completed} of {issued} noisy writes landed");
     assert!(
-        completed as f64 > issued as f64 * 0.9,
+        completed.saturating_mul(10) > issued.saturating_mul(9),
         "the noisy load itself mostly failed ({completed} of {issued}), so the          measurement measured nothing"
     );
 }

@@ -76,6 +76,41 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// A `DEFINE`/`ALTER TOPOLOGY` names realms and domains that do not hold
+    /// together.
+    ///
+    /// The store owns the structural relations and the direction each one
+    /// fails in, so the reason is carried through verbatim rather than
+    /// restated, for [`FailoverRefused`]'s reason: a second copy of the
+    /// direction would be a second answer that drifts from the one place that
+    /// enforces it.
+    #[error("{reason} (at {span})")]
+    TopologyRefused {
+        /// The store's own words for which relation broke and in which direction.
+        reason: String,
+        /// Where the statement is.
+        span: tessari_ql::Span,
+    },
+
+    /// A `DEFINE TOPOLOGY` stands while the cluster already holds one.
+    ///
+    /// One scheme per cluster: a second row would be a second answer to a
+    /// question that admits one, so the statement is refused naming the scheme
+    /// it would have to replace — the operator drops it, or amends it with
+    /// `ALTER TOPOLOGY`.
+    #[error(
+        "a topology '{held}' is already declared — DROP TOPOLOGY {held} before \
+         DEFINE TOPOLOGY {written} replaces it (at {span})"
+    )]
+    TopologyAlreadyDeclared {
+        /// The scheme the store holds.
+        held: String,
+        /// The scheme the statement named.
+        written: String,
+        /// Where the statement is.
+        span: tessari_ql::Span,
+    },
+
     /// A `USING` naming a word that is not an access path.
     ///
     /// Almost always a typo, and refused before the read rather than after it:

@@ -11037,6 +11037,104 @@ without the clause turns the balancer off; `cluster.failover.balance_leaderships
 says which.
 
 
+### The layout a cluster is arranged over
+
+A `REGION` on a member row is a free-text label — an acknowledge level counts
+it, and nothing more. What the cluster cannot do with labels alone is
+**validate a layout**: it does not know which rows form a realm, how many
+failure domains a realm spans, or whether the voters would survive the loss the
+operator is arranging against. A stated topology is that knowledge as catalog
+data, for the failover policy's reason — which realms exist and what their loss
+would do is a cluster-wide fact, so it is a statement and a replicated row:
+
+```
+DEFINE TOPOLOGY main
+    REALM 'dc-a' DOMAIN 'az-1', 'az-2'
+    REALM 'dc-b' DOMAIN 'az-1', 'az-2'
+    REALM 'dc-c' DOMAIN 'az-1', 'az-2'
+    SURVIVES REALM LOSS;
+```
+
+- One `REALM` clause per realm, at least one, each naming the realm as text —
+  the same text a member row names with `REGION`. `DOMAIN` is optional and
+  names the failure domains within the realm (racks, availability zones), as
+  text, comma-separated.
+- `SURVIVES REALM LOSS` is the claim: losing any one realm still leaves a
+  cluster that elects and still holds every acknowledged write. Absent means
+  the structure is declared with no claim made — silence is a third state, not
+  the weakest claim and not the strongest.
+- **The statement replaces the set, and there is one topology per cluster.** A
+  second `DEFINE TOPOLOGY` while one is held is refused naming the scheme it
+  would replace, the way a second answer to a question that admits one is a
+  second answer and not an amendment.
+
+A member row joins a realm-domain with the shipped region plus one new clause:
+
+```
+DEFINE REPLICA n1 AT 'a:9001' ROLES coordinating, writable REPLICATES STORE
+    REGION 'dc-a' DOMAIN 'az-1';
+ALTER REPLICA n1 DOMAIN 'az-2';
+ALTER REPLICA n1 DOMAIN NONE;
+```
+
+`DOMAIN` is optional and last, and it says which domain of the row's region the
+member stands in. `DOMAIN NONE` clears it. A domain without a region is refused
+— a domain is a position within a realm, and a row that names no realm names no
+position within one.
+
+The scheme is **checked as a set** when it is written and on every write that
+changes what the check reads — declaring or amending the topology, placing or
+amending a member row's region, domain or roles. Four relations hold, and a
+write that breaks one is refused **with the relation and its direction named**:
+
+1. **No orphan labels.** Every `REGION` and `DOMAIN` on a member row names a
+   realm or domain the topology declares. The refusal names the label and the
+   scheme that does not hold it.
+2. **The claim arithmetic.** For `SURVIVES REALM LOSS`, for every realm: the
+   voters outside that realm still hold a majority of the membership. A cluster
+   that loses a realm must still elect. The refusal names the realm whose loss
+   breaks the claim and the voters it leaves against the majority it needs.
+3. **Copies span realms.** Every namespace kept on more than one node holds
+   copies in at least two realms — a claim of realm-loss survival with every
+   copy in one realm is a fiction. The refusal names the namespace and the
+   single realm holding all its copies.
+4. **Acknowledge fit.** A namespace at `ACKNOWLEDGE LOCAL MAJORITY` has voters
+   in the leader's region. This is the per-row refusal
+   (`LocalMajorityWithoutRegion`) elevated to a set-level check against the
+   declared realms; the refusal names the namespace and its region's voter
+   count.
+
+A namespace nobody asked about is not checked: the scheme checks what the
+operator **declared**, and never invents a claim. Like the failover policy, the
+row carries the leadership it was written under and which setting under that
+leadership it was, and a higher pair installs.
+
+**What the scheme deliberately does not do.** It does not move data, elect
+leaders, or gate writes. Placement stays `LEADS`, `LEADS PREFERRED` and
+`BALANCE LEADERSHIPS`; the acknowledge levels stay the shipped floor. The scheme
+reports the gap between the claim and the layout — the read-back says
+`satisfied: false` with the relation named — and the operator closes the gap
+with the shipped statements. Enforcement at write time would make the topology
+a second authority over leadership, and two authorities is how the split-brain
+the lease prevents arrives through the mechanism meant to prevent it — the
+failover policy's own argument, one layer up.
+
+The scheme amends by the realm and is dropped whole:
+
+```
+ALTER TOPOLOGY main ADD REALM 'dc-d' DOMAIN 'az-1';
+ALTER TOPOLOGY main DROP REALM 'dc-c';
+DROP TOPOLOGY main;
+```
+
+`ADD REALM` takes the same clause `DEFINE` does; `DROP REALM` refuses when the
+realm it names is not declared, and re-stating the realms always runs the
+structural checks — a topology with no realms declares nothing. `ALTER` and
+`DROP` name the scheme; amending a scheme nobody has declared is refused naming
+that. Dropping the scheme never touches member rows: their labels read as what
+they are — labels — until a new scheme declares them again.
+
+
 ### A peer certificate the cluster no longer accepts
 
 A node's peer certificate proves it is a member, and a certificate that leaked,

@@ -80,6 +80,14 @@ impl Parser<'_> {
             let change = self.replication_change()?;
             return Ok(StatementKind::AlterReplication { name, change });
         }
+        // The scheme a cluster is arranged over amends by the realm, the same
+        // one-clause discipline: `ADD REALM` takes the clause `DEFINE` does,
+        // `DROP REALM` names what leaves.
+        if self.eat_word("topology") {
+            let name = self.name()?;
+            let change = self.topology_change()?;
+            return Ok(StatementKind::AlterTopology { name, change });
+        }
         // ADR-0118. `STORE` is already a keyword; the other two are words, since
         // reserving them would take two names away from every table.
         if self.eat_keyword(Keyword::Store) {

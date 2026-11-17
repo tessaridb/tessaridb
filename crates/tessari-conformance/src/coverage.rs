@@ -106,6 +106,9 @@ forms! {
     AlterNamespace => "ALTER NAMESPACE",
     DefineNode => "DEFINE NODE",
     DefineFailover => "DEFINE FAILOVER",
+    DefineTopology => "DEFINE TOPOLOGY",
+    AlterTopology => "ALTER TOPOLOGY",
+    DropTopology => "DROP TOPOLOGY",
     RevokeCertificate => "REVOKE CERTIFICATE",
     CreateJoinToken => "CREATE JOIN TOKEN",
     DefineReplica => "DEFINE REPLICA",
@@ -305,6 +308,10 @@ mod tests {
              ALTER REPLICATION east PAUSED;\
              DROP REPLICATION east;\
              CREATE LINK TOKEN FOR REPLICATION east EXPIRES 10m;\
+             DEFINE TOPOLOGY main REALM 'dc-a' DOMAIN 'az-1', 'az-2' REALM 'dc-b' SURVIVES REALM LOSS;\
+             ALTER TOPOLOGY main ADD REALM 'dc-d' DOMAIN 'az-1';\
+             ALTER TOPOLOGY main DROP REALM 'dc-d';\
+             DROP TOPOLOGY main;\
              DROP DATABASE d;\
              DROP NAMESPACE n;\
              ALTER TABLE t SET SCHEMAFULL;\

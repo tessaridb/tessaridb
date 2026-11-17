@@ -666,6 +666,13 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // which is the file-beside-the-store problem in a different shape.
         | StatementKind::DefineNode { .. }
         | StatementKind::DefineFailover { .. }
+        // A scheme's names are written where they stand, for the
+        // revocation's-fingerprint reason: a realm or domain aimed by a
+        // parameter would be a layout arranged by whatever a caller happened
+        // to supply.
+        | StatementKind::DefineTopology { .. }
+        | StatementKind::AlterTopology { .. }
+        | StatementKind::DropTopology { .. }
         // A fingerprint is written where it stands: a revocation aimed by a
         // parameter would refuse whichever peer the caller happened to name.
         | StatementKind::RevokeCertificate { .. }

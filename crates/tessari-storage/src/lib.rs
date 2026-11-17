@@ -104,8 +104,8 @@ pub use catalog::{
     RECORD_LEVEL, Reach, ReplicaDefinition, ReplicationDefinition, Role, RollupCompute,
     RollupDeclaration, RollupFold, SYSTEM_DATABASE, SYSTEM_NAMESPACE, SearchCosts,
     SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration, SpaceLimit, StorageKind, StoredKind,
-    TableDefinition, TableExpiry, TableKind, TableShape, TopicDeclaration, UNIT_WEIGHT,
-    UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
+    TableDefinition, TableExpiry, TableKind, TableShape, TopicDeclaration, TopologyDefinition,
+    UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
     VectorDistance, Verb, ViewDeclaration, WordSet, WordSetKind, another_node_may_write, governing,
     names_a_peer, the_row_a_greeting_binds,
 };

@@ -1,0 +1,66 @@
+# The declared topology: the realm/domain scheme a cluster is arranged over.
+#
+# A `REGION` on a member row is a free-text label an acknowledge level counts;
+# the scheme is that knowledge as catalog data — which realms exist, what
+# failure domains they span, and whether the voters survive the loss the
+# operator is arranging against. The claim is checked as a set when the scheme
+# is written and on every write that changes what the check reads; what it
+# deliberately never does is move data, elect leaders, or gate writes.
+#
+# A corpus file is one session against one store, so these run in order.
+
+--- case: two realms with one name are refused, naming the realm
+DEFINE TOPOLOGY main REALM 'dc-a' REALM 'dc-a';
+--- expect: error TopologyRefused
+
+--- case: two domains with one name are refused, naming the domain
+DEFINE TOPOLOGY main REALM 'dc-a' DOMAIN 'az-1', 'az-1';
+--- expect: error TopologyRefused
+
+--- case: a scheme declares its realms, and the claim is optional
+DEFINE TOPOLOGY main REALM 'dc-a' DOMAIN 'az-1', 'az-2' REALM 'dc-b' SURVIVES REALM LOSS;
+--- expect: ok
+
+--- case: one scheme per cluster — a second declare is refused naming the held one
+DEFINE TOPOLOGY other REALM 'dc-c';
+--- expect: error TopologyAlreadyDeclared
+
+--- case: the refused declare left the held scheme alone
+ALTER TOPOLOGY main ADD REALM 'dc-d';
+--- expect: ok
+
+--- case: adding a realm the scheme holds is a structural refusal
+ALTER TOPOLOGY main ADD REALM 'dc-d';
+--- expect: error TopologyRefused
+
+--- case: a realm drops by its name
+ALTER TOPOLOGY main DROP REALM 'dc-d';
+--- expect: ok
+
+--- case: dropping a realm the scheme does not hold refuses, naming it
+ALTER TOPOLOGY main DROP REALM 'dc-x';
+--- expect: error Unknown
+
+--- case: amending under another name refuses, naming the name it was given
+ALTER TOPOLOGY nobody ADD REALM 'dc-e';
+--- expect: error Unknown
+
+--- case: a member row names its domain within its region
+DEFINE REPLICA n1 AT 'a:9001' ROLES coordinating, writable REPLICATES STORE REGION 'dc-a' DOMAIN 'az-1';
+--- expect: ok
+
+--- case: the domain moves the way the region does — one clause per statement
+ALTER REPLICA n1 DOMAIN 'az-2';
+--- expect: ok
+
+--- case: and clears alone, leaving the region alone
+ALTER REPLICA n1 DOMAIN NONE;
+--- expect: ok
+
+--- case: dropping the scheme leaves the member row's labels alone
+DROP TOPOLOGY main;
+--- expect: ok
+
+--- case: dropping a scheme nobody holds refuses, naming the name it was given
+DROP TOPOLOGY main;
+--- expect: error Unknown

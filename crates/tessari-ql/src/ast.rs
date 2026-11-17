@@ -304,6 +304,42 @@ pub enum ReplicaChange {
     KafkaAt(Option<String>),
     /// `REGION 'eu'`, or `REGION NONE` (G057 C3).
     Region(Option<String>),
+    /// `DOMAIN 'az-1'`, or `DOMAIN NONE` — which domain of the row's region
+    /// the member stands in. A domain is a position within a realm, so a row
+    /// that names no region names no domain either; that reading is the
+    /// execute side's, where the row as a whole is readable.
+    Domain(Option<String>),
+}
+
+/// One realm clause of a `DEFINE TOPOLOGY` statement, as written.
+///
+/// The names are text rather than identifiers for [`StatementKind::DefineReplica`]'s
+/// `REGION` reason: a realm is labelled with the same free text a member row
+/// carries, and `dc-a` is not an identifier wherever it is a good label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyRealm {
+    /// The realm's name — the same text a member row names with `REGION`.
+    pub name: String,
+    /// The domains within it, as written; empty when the clause named none.
+    pub domains: Vec<String>,
+}
+
+/// The one clause an `ALTER TOPOLOGY` changes, read by the readers
+/// `DEFINE TOPOLOGY` uses for the same clause.
+///
+/// Amended in place for [`ReplicaChange`]'s reason: the scheme is one unit and
+/// the statement says which part of it moves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TopologyChange {
+    /// `ADD REALM 'dc-d' [DOMAIN 'az-1', …]` — a realm the scheme did not hold.
+    AddRealm {
+        /// The realm's name, as written.
+        name: String,
+        /// The domains within it, as written.
+        domains: Vec<String>,
+    },
+    /// `DROP REALM 'dc-c'` — a realm the scheme held.
+    DropRealm(String),
 }
 
 /// The one clause an `ALTER REPLICATION` changes, read by the readers

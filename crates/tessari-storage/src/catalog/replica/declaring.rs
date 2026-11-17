@@ -30,6 +30,7 @@ impl Catalog<'_, '_> {
             releasing: false,
             preferred: false,
             region: None,
+            domain: None,
         })
         .await
     }

@@ -311,6 +311,11 @@ fn erase_statement(statement: &mut Statement) {
         // name at all. The arm exists so that adding a name to the statement
         // later cannot pass this helper silently.
         StatementKind::DefineFailover { .. } => {}
+        // Realm and domain names are text, not names; only the scheme's name
+        // is erased. The arms exist for `DefineFailover`'s reason.
+        StatementKind::DefineTopology { name, .. } => erase_name(name),
+        StatementKind::AlterTopology { name, .. } => erase_name(name),
+        StatementKind::DropTopology { name } => erase_name(name),
         StatementKind::FinalizeFormat => {}
         // A fingerprint is not a name.
         StatementKind::RevokeCertificate { .. } => {}
@@ -352,7 +357,8 @@ fn erase_statement(statement: &mut Statement) {
                 | crate::ReplicaChange::ClientsAt(_)
                 | crate::ReplicaChange::HttpAt(_)
                 | crate::ReplicaChange::KafkaAt(_)
-                | crate::ReplicaChange::Region(_) => {}
+                | crate::ReplicaChange::Region(_)
+                | crate::ReplicaChange::Domain(_) => {}
             }
         }
         StatementKind::DefineConsumer {
