@@ -24,6 +24,8 @@ pub(crate) mod oid {
     pub(crate) const INT4: u32 = 23;
     /// `text`
     pub(crate) const TEXT: u32 = 25;
+    /// `oid`; the catalog relations report their identities under it.
+    pub(crate) const OID: u32 = 26;
     /// a character string of unspecified length
     pub(crate) const VARCHAR: u32 = 1043;
     /// an undecorated literal, the type a bare string arrives as
@@ -126,7 +128,7 @@ pub(crate) fn value_of_text(
             "f" | "false" | "no" | "0" => Ok(Value::Bool(false)),
             _ => Err(invalid()),
         },
-        oid::INT2 | oid::INT4 | oid::INT8 => text
+        oid::INT2 | oid::INT4 | oid::INT8 | oid::OID => text
             .parse::<i64>()
             .map(|held| Value::Number(held.into()))
             .map_err(|_| invalid()),
@@ -178,8 +180,9 @@ const fn hex_value(digit: u8) -> Option<u8> {
 }
 
 /// The value a binary-format parameter reads as under the type it was
-/// declared with — the fixed-scalar subset, the only binary forms this build
-/// speaks. The text family decodes as UTF-8 text, which is what it is.
+/// declared with — the fixed-scalar subset, plus the instants and
+/// identifiers the dialect's clients bind. The text family decodes as UTF-8
+/// text, which is what it is.
 pub(crate) fn value_of_binary(
     type_oid: u32,
     bytes: &[u8],
@@ -229,6 +232,31 @@ pub(crate) fn value_of_binary(
             ))))
         }
         oid::BYTEA => Ok(Value::Bytes(bytes.to_vec())),
+        oid::OID => {
+            let word: [u8; 4] = take(4)?.try_into().map_err(|_| malformed())?;
+            Ok(Value::Number(i64::from(u32::from_be_bytes(word)).into()))
+        }
+        oid::TIMESTAMPTZ => {
+            // The dialect's 8 bytes are micros since its own epoch,
+            // 2000-01-01; the store counts seconds and nanos from Unix's.
+            let word: [u8; 8] = take(8)?.try_into().map_err(|_| malformed())?;
+            let micros = i64::from_be_bytes(word);
+            let unix_micros = micros
+                .checked_add(PG_EPOCH_UNIX_MICROS)
+                .ok_or_else(malformed)?;
+            let seconds = unix_micros.div_euclid(1_000_000);
+            let nanos = unix_micros
+                .rem_euclid(1_000_000)
+                .checked_mul(1_000)
+                .and_then(|held| u32::try_from(held).ok())
+                .ok_or_else(malformed)?;
+            let instant = tessari_types::Datetime::new(seconds, nanos).ok_or_else(malformed)?;
+            Ok(Value::Datetime(instant))
+        }
+        oid::UUID => {
+            let word: [u8; 16] = take(16)?.try_into().map_err(|_| malformed())?;
+            Ok(Value::Uuid(word))
+        }
         oid::TEXT | oid::VARCHAR | oid::UNKNOWN => String::from_utf8(bytes.to_vec())
             .map(Value::String)
             .map_err(|_| malformed()),
@@ -239,6 +267,9 @@ pub(crate) fn value_of_binary(
         )),
     }
 }
+
+/// The dialect's epoch (2000-01-01T00:00:00Z) as Unix micros.
+const PG_EPOCH_UNIX_MICROS: i64 = 946_684_800_000_000;
 
 /// The wire's float4 form: 32 big-endian bits. A value past f32's range
 /// narrows to infinity, which the dialect's own clients read without
@@ -286,6 +317,19 @@ pub(crate) fn binary_of(
             _ => Err(unsupported()),
         },
         Value::Bytes(bytes) if type_oid == oid::BYTEA => Ok(Some(bytes.clone())),
+        Value::Datetime(held) if type_oid == oid::TIMESTAMPTZ => {
+            // Seconds and nanos from Unix's epoch back to the dialect's
+            // micros since 2000-01-01; a range that does not fit refuses by
+            // name rather than wrapping.
+            let micros = held
+                .seconds()
+                .checked_sub(946_684_800)
+                .and_then(|seconds| seconds.checked_mul(1_000_000))
+                .and_then(|whole| whole.checked_add(i64::from(held.nanos()).checked_div(1_000)?))
+                .ok_or_else(unsupported)?;
+            Ok(Some(micros.to_be_bytes().to_vec()))
+        }
+        Value::Uuid(bytes) if type_oid == oid::UUID => Ok(Some(bytes.to_vec())),
         Value::String(text) if matches!(type_oid, oid::TEXT | oid::VARCHAR | oid::UNKNOWN) => {
             Ok(Some(text.as_bytes().to_vec()))
         }

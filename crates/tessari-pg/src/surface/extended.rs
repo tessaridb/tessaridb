@@ -14,7 +14,7 @@ use crate::error::Result;
 
 use super::connection::{Conn, answer};
 use super::errors::{Refused, code};
-use super::running::{Failed, Held};
+use super::running::{Held, run_refusal};
 use super::translate::{self, Columns};
 use super::types;
 
@@ -55,6 +55,12 @@ struct Portal {
     /// An Execute already drained the portal; the dialect answers a spent
     /// portal with an empty completion, never a re-run.
     done: bool,
+    /// The rows a Describe(portal) already evaluated for a catalog statement —
+    /// answered locally, never against the store.
+    catalog_rows: Option<Vec<Vec<Option<tessaridb::Value>>>>,
+    /// How many rows a row-limited Execute already answered, so the next
+    /// Execute resumes where it left (PortalSuspended).
+    served: usize,
 }
 
 impl Kitchen {
@@ -77,7 +83,9 @@ impl Kitchen {
         shared: &Arc<super::Shared>,
     ) -> Result<()> {
         match message {
-            Frontend::Parse { name, query, types } => self.parse(conn, &name, &query, &types).await,
+            Frontend::Parse { name, query, types } => {
+                self.parse(conn, held, shared, &name, &query, &types).await
+            }
             Frontend::Bind {
                 portal,
                 statement,
@@ -85,8 +93,20 @@ impl Kitchen {
                 values,
                 results,
             } => {
-                self.bind(conn, &portal, &statement, &formats, &values, &results)
-                    .await
+                if self.skipping {
+                    return Ok(());
+                }
+                match self.prepare_bind(&portal, &statement, &formats, &values, &results) {
+                    Ok(bound) => {
+                        self.portals.insert(portal, bound);
+                        conn.send(&codec::write::bind_complete()).await?;
+                    }
+                    // A Bind refusal is an error like any other while a block
+                    // is open: it aborts, and the engine-side block drops with
+                    // the state the readiness reports.
+                    Err(refused) => self.fail(conn, held, shared, &refused).await?,
+                }
+                Ok(())
             }
             Frontend::Describe { kind, name } => {
                 self.describe(conn, held, shared, kind, &name).await
@@ -94,8 +114,8 @@ impl Kitchen {
             Frontend::Execute { portal, rows } => {
                 self.execute(conn, held, shared, &portal, rows).await
             }
-            Frontend::Close { kind, name } => self.close(conn, kind, &name).await,
-            Frontend::Sync => self.sync(conn).await,
+            Frontend::Close { kind, name } => self.close(conn, held, shared, kind, &name).await,
+            Frontend::Sync => self.sync(conn, held).await,
             // Flush asks for delivery; this surface holds nothing back, so the
             // question answers itself — also while skipping.
             Frontend::Flush => Ok(()),
@@ -116,6 +136,8 @@ impl Kitchen {
     async fn parse(
         &mut self,
         conn: &mut Conn,
+        held: &mut Held,
+        shared: &Arc<super::Shared>,
         name: &str,
         query: &str,
         types: &[u32],
@@ -133,15 +155,67 @@ impl Kitchen {
                         format!("uses ${}, declared {}", translated.slots.len(), types.len()),
                     ))
                 } else if name.is_empty() || self.statements.len() < MAX_NAMED {
-                    self.statements.insert(
-                        name.to_owned(),
-                        Prepared {
-                            translated,
-                            types: types.to_vec(),
-                        },
-                    );
-                    conn.send(&codec::write::parse_complete()).await?;
-                    None
+                    let mut resolved = types.to_vec();
+                    if let Some(query) = translated
+                        .statements
+                        .first()
+                        .and_then(|shape| shape.catalog.as_ref())
+                    {
+                        for (index, inferred) in query.param_types.iter().enumerate() {
+                            if resolved.get(index).copied().unwrap_or(0) == 0 {
+                                resolved.resize(index.saturating_add(1).max(resolved.len()), 0);
+                                resolved[index] = *inferred;
+                            }
+                        }
+                    }
+                    // Store-side inference: a `column = $n` the Parse left
+                    // unspecified reads the column's type from the table's
+                    // own catalog, as the dialect's servers infer at Parse
+                    // time. A table the store refuses refuses the Parse in
+                    // the store's words, exactly where a real server fails.
+                    let unresolved = |index: usize| resolved.get(index).copied().unwrap_or(0) == 0;
+                    let first = translated.statements.first();
+                    let needs_inference = first.is_some_and(|shape| {
+                        shape.catalog.is_none()
+                            && shape.inference.iter().any(|(slot, _)| unresolved(*slot))
+                    });
+                    let inference = if needs_inference {
+                        let Some(shape) = first else {
+                            unreachable!("the check above names it");
+                        };
+                        infer_table_types(
+                            held,
+                            shared,
+                            &shape.inference,
+                            shape.table.as_deref(),
+                            &resolved,
+                        )
+                        .await
+                        .map(|filled| {
+                            for (index, oid) in filled {
+                                resolved.resize(index.saturating_add(1).max(resolved.len()), 0);
+                                if resolved[index] == 0 {
+                                    resolved[index] = oid;
+                                }
+                            }
+                        })
+                    } else {
+                        Ok(())
+                    };
+                    match inference {
+                        Err(refused) => Some(refused),
+                        Ok(()) => {
+                            self.statements.insert(
+                                name.to_owned(),
+                                Prepared {
+                                    translated,
+                                    types: resolved,
+                                },
+                            );
+                            conn.send(&codec::write::parse_complete()).await?;
+                            None
+                        }
+                    }
                 } else {
                     Some(Refused::surface(
                         code::LIMIT,
@@ -151,30 +225,7 @@ impl Kitchen {
             }
         };
         if let Some(refused) = refusal {
-            self.fail(conn, &refused).await?;
-        }
-        Ok(())
-    }
-
-    async fn bind(
-        &mut self,
-        conn: &mut Conn,
-        portal: &str,
-        statement: &str,
-        formats: &[u16],
-        values: &[Option<Vec<u8>>],
-        results: &[u16],
-    ) -> Result<()> {
-        if self.skipping {
-            return Ok(());
-        }
-        let refusal = self.prepare_bind(portal, statement, formats, values, results);
-        match refusal {
-            Ok(bound) => {
-                self.portals.insert(portal.to_owned(), bound);
-                conn.send(&codec::write::bind_complete()).await?;
-            }
-            Err(refused) => self.fail(conn, &refused).await?,
+            self.fail(conn, held, shared, &refused).await?;
         }
         Ok(())
     }
@@ -254,6 +305,8 @@ impl Kitchen {
             spent: None,
             described: false,
             done: false,
+            catalog_rows: None,
+            served: 0,
         })
     }
 
@@ -269,11 +322,13 @@ impl Kitchen {
             return Ok(());
         }
         match kind {
-            b'S' => self.describe_statement(conn, name).await,
+            b'S' => self.describe_statement(conn, held, shared, name).await,
             b'P' => self.describe_portal(conn, held, shared, name).await,
             other => {
                 self.fail(
                     conn,
+                    held,
+                    shared,
                     &Refused::with_detail(
                         code::PROTOCOL,
                         "Describe names a statement or a portal",
@@ -285,14 +340,26 @@ impl Kitchen {
         }
     }
 
-    /// Describe(statement): the parameter description the Parse owed, then the
-    /// projection's shape — or NoData when the projection cannot be named
-    /// without running, which a star is.
-    async fn describe_statement(&mut self, conn: &mut Conn, name: &str) -> Result<()> {
+    /// Describe(statement): the parameter description the Parse owed, then
+    /// the projection's shape — or NoData when the projection cannot be
+    /// named without running, which a star is. A plain column projection
+    /// reads the column types from the table's own catalog, as the
+    /// dialect's servers answer at statement time; a table the catalog does
+    /// not know leaves the columns text, and the Execute refuses in the
+    /// store's words where the read actually runs.
+    async fn describe_statement(
+        &mut self,
+        conn: &mut Conn,
+        held: &mut Held,
+        shared: &Arc<super::Shared>,
+        name: &str,
+    ) -> Result<()> {
         let Some(prepared) = self.statements.get(name) else {
             return self
                 .fail(
                     conn,
+                    held,
+                    shared,
                     &Refused::with_detail(
                         code::UNDEFINED_STATEMENT,
                         "the statement was not prepared on this connection",
@@ -304,7 +371,22 @@ impl Kitchen {
         let oids = described_types(prepared);
         conn.send(&codec::write::parameter_description(&oids))
             .await?;
-        match columns_of(&prepared.translated) {
+        let mut columns = columns_of(&prepared.translated);
+        if let Some(columns) = &mut columns
+            && let Some(shape) = prepared.translated.statements.first()
+            && let Some(table) = shape.table.as_deref()
+            && let Ok(fields) = table_fields(held, shared, table).await
+        {
+            for column in columns.iter_mut() {
+                if column.type_oid == types::oid::TEXT
+                    && let Some(oid) = fields.get(&column.name)
+                {
+                    column.type_oid = *oid;
+                    column.type_len = types::size_of(*oid);
+                }
+            }
+        }
+        match columns {
             Some(columns) => conn.send(&codec::write::row_description(&columns)).await?,
             None => conn.send(&codec::write::no_data()).await?,
         }
@@ -325,6 +407,8 @@ impl Kitchen {
             return self
                 .fail(
                     conn,
+                    held,
+                    shared,
                     &Refused::with_detail(
                         code::UNDEFINED_CURSOR,
                         "the portal is not open on this connection",
@@ -333,23 +417,70 @@ impl Kitchen {
                 )
                 .await;
         };
-        let outcomes = match held
-            .run(shared, &portal.translated.script, &portal.parameters)
-            .await
-        {
-            Ok(outcomes) => outcomes,
-            Err(failed) => {
-                let refused = run_refusal(failed);
-                return self.fail(conn, &refused).await;
+        let Some(query) = portal
+            .translated
+            .statements
+            .first()
+            .and_then(|shape| shape.catalog.clone())
+        else {
+            let outcomes = match held
+                .run(shared, &portal.translated.script, &portal.parameters)
+                .await
+            {
+                Ok(outcomes) => outcomes,
+                Err(failed) => {
+                    let refused = run_refusal(failed);
+                    return self.fail(conn, held, shared, &refused).await;
+                }
+            };
+            let mut described = describe_outcome(&outcomes, &portal.translated);
+            if let Some(columns) = &mut described
+                && let Ok(expanded) = super::expand_formats(&portal.formats, columns.len())
+            {
+                for (i, column) in columns.iter_mut().enumerate() {
+                    column.format = expanded[i];
+                }
             }
+            portal.spent = Some(outcomes);
+            portal.described = true;
+            match described {
+                Some(columns) => conn.send(&codec::write::row_description(&columns)).await?,
+                None => conn.send(&codec::write::no_data()).await?,
+            }
+            return Ok(());
         };
-        let described = describe_outcome(&outcomes, &portal.translated);
-        portal.spent = Some(outcomes);
+        // A catalog portal answers locally: evaluate once, the Execute replays.
+        let dynamic = match catalog_dynamic(
+            held,
+            shared,
+            &query,
+            &portal.translated.slots,
+            &portal.parameters,
+        )
+        .await
+        {
+            Ok(dynamic) => dynamic,
+            Err(refused) => return self.fail(conn, held, shared, &refused).await,
+        };
+        let rows = match translate::catalog::evaluate(
+            &query,
+            &portal.translated.slots,
+            &portal.parameters,
+            dynamic.as_ref(),
+            held.user(),
+        ) {
+            Ok(rows) => rows,
+            Err(refused) => return self.fail(conn, held, shared, &refused).await,
+        };
+        portal.catalog_rows = Some(rows);
         portal.described = true;
-        match described {
-            Some(columns) => conn.send(&codec::write::row_description(&columns)).await?,
-            None => conn.send(&codec::write::no_data()).await?,
+        let mut columns = query.columns();
+        if let Ok(expanded) = super::expand_formats(&portal.formats, columns.len()) {
+            for (i, column) in columns.iter_mut().enumerate() {
+                column.format = expanded[i];
+            }
         }
+        conn.send(&codec::write::row_description(&columns)).await?;
         Ok(())
     }
 
@@ -364,21 +495,12 @@ impl Kitchen {
         if self.skipping {
             return Ok(());
         }
-        if rows != 0 {
-            return self
-                .fail(
-                    conn,
-                    &Refused::surface(
-                        code::FEATURE,
-                        "row-limited portals are not spoken in this build",
-                    ),
-                )
-                .await;
-        }
         let Some(portal) = self.portals.get_mut(name) else {
             return self
                 .fail(
                     conn,
+                    held,
+                    shared,
                     &Refused::with_detail(
                         code::UNDEFINED_CURSOR,
                         "the portal is not open on this connection",
@@ -390,6 +512,75 @@ impl Kitchen {
         if portal.done {
             return conn.send(&codec::write::command_complete("SELECT 0")).await;
         }
+        if let Some(query) = portal
+            .translated
+            .statements
+            .first()
+            .and_then(|shape| shape.catalog.clone())
+        {
+            let catalog_rows = match portal.catalog_rows.take() {
+                Some(rows) => rows,
+                None => {
+                    let dynamic = match catalog_dynamic(
+                        held,
+                        shared,
+                        &query,
+                        &portal.translated.slots,
+                        &portal.parameters,
+                    )
+                    .await
+                    {
+                        Ok(dynamic) => dynamic,
+                        Err(refused) => return self.fail(conn, held, shared, &refused).await,
+                    };
+                    match translate::catalog::evaluate(
+                        &query,
+                        &portal.translated.slots,
+                        &portal.parameters,
+                        dynamic.as_ref(),
+                        held.user(),
+                    ) {
+                        Ok(rows) => rows,
+                        Err(refused) => return self.fail(conn, held, shared, &refused).await,
+                    }
+                }
+            };
+            let formats = portal.formats.clone();
+            if rows != 0 {
+                // A row ceiling: the window answers, the rest holds.
+                let start = portal.served.min(catalog_rows.len());
+                let end = start
+                    .saturating_add(usize::try_from(rows).unwrap_or(usize::MAX))
+                    .min(catalog_rows.len());
+                portal.served = end;
+                let window = &catalog_rows[start..end];
+                let described = true;
+                let answered =
+                    super::connection::answer_catalog(conn, &query, window, described, &formats)
+                        .await?;
+                if !answered {
+                    self.skipping = true;
+                    return Ok(());
+                }
+                if end < catalog_rows.len() {
+                    return conn.send(&codec::write::portal_suspended()).await;
+                }
+                portal.done = true;
+                return Ok(());
+            }
+            portal.done = true;
+            // Execute owes no RowDescription in the extended protocol —
+            // Describe answered it, or the client never asked.
+            let described = true;
+            let answered =
+                super::connection::answer_catalog(conn, &query, &catalog_rows, described, &formats)
+                    .await?;
+            if !answered {
+                self.skipping = true;
+                return Ok(());
+            }
+            return Ok(());
+        }
         let outcomes = match portal.spent.take() {
             Some(outcomes) => outcomes,
             None => match held
@@ -399,24 +590,68 @@ impl Kitchen {
                 Ok(outcomes) => outcomes,
                 Err(failed) => {
                     let refused = run_refusal(failed);
-                    return self.fail(conn, &refused).await;
+                    return self.fail(conn, held, shared, &refused).await;
                 }
             },
         };
-        portal.done = true;
         let shape = match portal.translated.statements.first() {
             Some(shape) => shape,
             None => {
                 return self
                     .fail(
                         conn,
+                        held,
+                        shared,
                         &Refused::surface(code::INTERNAL, "the portal holds no statement"),
                     )
                     .await;
             }
         };
         let shape = shape.clone();
-        let mut described = portal.described;
+        if rows != 0 {
+            // A row ceiling over the first records outcome: the window
+            // answers as rows, the rest holds for the next Execute — the
+            // count the completion names is the portal's, as the protocol
+            // counts runs.
+            if let Some(tessaridb::Outcome::Records { records, .. }) = outcomes.first() {
+                let (columns, all) = super::rows(
+                    records,
+                    &shape.columns,
+                    &shape.record_names,
+                    shape.table.as_deref(),
+                );
+                let start = portal.served.min(all.len());
+                let end = start
+                    .saturating_add(usize::try_from(rows).unwrap_or(usize::MAX))
+                    .min(all.len());
+                portal.served = end;
+                let window = &all[start..end];
+                let encoded = match super::encode(&columns, window, &portal.formats) {
+                    Ok(encoded) => encoded,
+                    Err(refused) => {
+                        conn.refuse_pending(&refused).await?;
+                        self.skipping = true;
+                        return Ok(());
+                    }
+                };
+                for row in &encoded {
+                    conn.send(&codec::write::data_row(row)).await?;
+                }
+                if end < all.len() {
+                    portal.spent = Some(outcomes);
+                    return conn.send(&codec::write::portal_suspended()).await;
+                }
+                portal.done = true;
+                return conn
+                    .send(&codec::write::command_complete(&shape.tag.completion(end)))
+                    .await;
+            }
+        }
+        portal.done = true;
+        // Execute owes no RowDescription in the extended protocol —
+        // Describe answered it, or the client never asked.
+        let suppress_description = true;
+        let mut described = suppress_description;
         for outcome in &outcomes {
             let answered =
                 answer(conn, outcome, &shape, described, &portal.formats.clone()).await?;
@@ -431,7 +666,14 @@ impl Kitchen {
         Ok(())
     }
 
-    async fn close(&mut self, conn: &mut Conn, kind: u8, name: &str) -> Result<()> {
+    async fn close(
+        &mut self,
+        conn: &mut Conn,
+        held: &mut Held,
+        shared: &Arc<super::Shared>,
+        kind: u8,
+        name: &str,
+    ) -> Result<()> {
         if self.skipping {
             return Ok(());
         }
@@ -446,6 +688,8 @@ impl Kitchen {
                 return self
                     .fail(
                         conn,
+                        held,
+                        shared,
                         &Refused::with_detail(
                             code::PROTOCOL,
                             "Close names a statement or a portal",
@@ -460,30 +704,51 @@ impl Kitchen {
 
     /// Sync: the batch ends. The readiness is owed, the skip state clears, and
     /// the unnamed portal closes — exactly one Ready answers one Sync, the
-    /// transaction state riding it.
-    async fn sync(&mut self, conn: &mut Conn) -> Result<()> {
+    /// transaction state riding it. The state is reconciled with what the
+    /// session actually holds: a portal run may have closed the block (a
+    /// string carrying its own `COMMIT`) or none on this connection may have
+    /// opened one yet, and the readiness answers the engine, not the hope.
+    async fn sync(&mut self, conn: &mut Conn, held: &Held) -> Result<()> {
         self.skipping = false;
         self.portals.remove("");
+        self.tx = match (self.tx, held.transaction_open()) {
+            (codec::write::Tx::InTx, false) => codec::write::Tx::Idle,
+            (codec::write::Tx::Idle, true) => codec::write::Tx::InTx,
+            (state, _) => state,
+        };
         conn.send(&codec::write::ready_for_query(self.tx)).await
     }
 
     /// An extended error: the refusal answers now, the readiness waits for the
     /// Sync, and every message until it is dropped. An error inside a
-    /// transaction block aborts it, as the dialect counts.
-    async fn fail(&mut self, conn: &mut Conn, refused: &Refused) -> Result<()> {
+    /// transaction block aborts it, as the dialect counts — the block the
+    /// session parked is dropped engine-side too, so nothing stays held
+    /// behind a Failed readiness.
+    async fn fail(
+        &mut self,
+        conn: &mut Conn,
+        held: &mut Held,
+        shared: &Arc<super::Shared>,
+        refused: &Refused,
+    ) -> Result<()> {
         conn.refuse_pending(refused).await?;
         self.skipping = true;
         if self.tx == codec::write::Tx::InTx {
             self.tx = codec::write::Tx::Failed;
+            // The discard's own refusal, should one arrive, changes nothing
+            // the client has not already been told.
+            let _discard = held
+                .run(shared, "CANCEL", &tessaridb::Parameters::new())
+                .await;
         }
         Ok(())
     }
 }
 
-/// The parameter types Describe(statement) answers: what the Parse declared,
-/// the unspecified ones left unspecified (zero) — the port does not invent a
-/// type it never resolved, and the dialect's clients read zero as "use your
-/// own inference", exactly as the protocol intends.
+/// The parameter types Describe(statement) answers: what the Parse declared
+/// or inferred, the unspecified ones left unspecified (zero) — the port does
+/// not invent a type it never resolved, and the dialect's clients read zero
+/// as "use your own inference", exactly as the protocol intends.
 fn described_types(prepared: &Prepared) -> Vec<u32> {
     let slots = prepared.translated.slots.len();
     let mut oids = Vec::with_capacity(slots);
@@ -493,10 +758,114 @@ fn described_types(prepared: &Prepared) -> Vec<u32> {
     oids
 }
 
+/// Parse-time type inference: the statement's `column = $n` comparisons name
+/// the columns the unspecified parameters ride on; the table's own catalog
+/// answer (`INFO FOR TABLE`) names each column's kind, which the one
+/// kind→oid map turns into the wire type. An explicit Parse oid always wins;
+/// a column the table does not declare stays unspecified, as before.
+async fn infer_table_types(
+    held: &mut Held,
+    shared: &Arc<super::Shared>,
+    inference: &[(usize, String)],
+    table: Option<&str>,
+    resolved: &[u32],
+) -> std::result::Result<Vec<(usize, u32)>, Refused> {
+    let Some(table) = table else {
+        return Err(Refused::surface(
+            code::INTERNAL,
+            "the inference lost its table",
+        ));
+    };
+    let fields = table_fields(held, shared, table).await?;
+    let mut filled = Vec::new();
+    for (slot, column) in inference {
+        if resolved.get(*slot).copied().unwrap_or(0) != 0 {
+            continue;
+        }
+        let key = column.rsplit('.').next().unwrap_or(column);
+        if let Some(oid) = fields.get(key) {
+            filled.push((*slot, *oid));
+        }
+    }
+    Ok(filled)
+}
+
+/// The table's declared fields under their wire types — the one catalog
+/// read both inferences ride on.
+async fn table_fields(
+    held: &mut Held,
+    shared: &Arc<super::Shared>,
+    table: &str,
+) -> std::result::Result<std::collections::BTreeMap<String, u32>, Refused> {
+    let outcomes = held
+        .run(
+            shared,
+            &format!("INFO FOR TABLE {table};"),
+            &Parameters::new(),
+        )
+        .await
+        .map_err(run_refusal)?;
+    let Some(Outcome::Value(tessaridb::Value::Object(report))) = outcomes.first() else {
+        return Err(Refused::surface(
+            code::INTERNAL,
+            "the store's table report did not read",
+        ));
+    };
+    Ok(match report.get("fields") {
+        Some(tessaridb::Value::Array(items)) => items
+            .iter()
+            .filter_map(|field| match field {
+                tessaridb::Value::Object(described) => {
+                    let name = match described.get("name") {
+                        Some(tessaridb::Value::String(name)) => name.clone(),
+                        _ => return None,
+                    };
+                    let kind = match described.get("type") {
+                        Some(tessaridb::Value::String(kind)) => kind.clone(),
+                        _ => String::new(),
+                    };
+                    Some((name, translate::catalog::dynamic::kind_oid(&kind)))
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => std::collections::BTreeMap::new(),
+    })
+}
+
+/// The user-table rows a catalog query names, introspected once per answer —
+/// `None` when the query reads the static relations alone.
+async fn catalog_dynamic(
+    held: &mut Held,
+    shared: &Arc<super::Shared>,
+    query: &translate::catalog::Query,
+    slots: &[Option<String>],
+    parameters: &Parameters,
+) -> std::result::Result<Option<translate::catalog::Dynamic>, Refused> {
+    if !translate::catalog::dynamic::needed(std::slice::from_ref(&query)) {
+        return Ok(None);
+    }
+    translate::catalog::dynamic::load(
+        held,
+        shared,
+        translate::catalog::dynamic::wants_attributes(std::slice::from_ref(&query)),
+        query.pinned_oid(slots, parameters),
+    )
+    .await
+}
+
 /// The columns a projection can name without running: the named ones, or
 /// nothing for a star, whose names only the records carry.
 fn columns_of(translated: &translate::Translated) -> Option<Vec<codec::write::Column>> {
     let shape = translated.statements.first()?;
+    if let Some(query) = &shape.catalog {
+        return Some(query.columns());
+    }
+    if shape.tag != translate::write::Tag::Select && shape.returning.is_none() {
+        // A write the client did not RETURN owes NoData: no row shape the
+        // Execute could describe.
+        return None;
+    }
     match &shape.columns {
         Columns::Named(names) => Some(
             names
@@ -525,20 +894,15 @@ fn describe_outcome(
             if records.is_empty() && matches!(shape.columns, Columns::Star) {
                 return None;
             }
-            let (columns, _) = super::rows(records, &shape.columns, shape.table.as_deref());
+            let (columns, _) = super::rows(
+                records,
+                &shape.columns,
+                &shape.record_names,
+                shape.table.as_deref(),
+            );
             Some(columns)
         }
         Outcome::Value(value) => Some(vec![super::value_column(value)]),
         _ => None,
-    }
-}
-
-/// A failed run, mapped the way the simple query path maps it.
-fn run_refusal(failed: Failed) -> Refused {
-    match failed {
-        Failed::Refused(refused) => Refused::store(&refused),
-        Failed::Carried(carried) => Refused::carried(carried.class, carried.message),
-        Failed::Busy => Refused::surface(code::UNAVAILABLE, "the node is busy; try again"),
-        Failed::Lost => Refused::surface(code::INTERNAL, "the session is lost"),
     }
 }

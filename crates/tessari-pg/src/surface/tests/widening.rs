@@ -136,7 +136,7 @@ async fn a_left_join_keeps_what_nothing_matched() {
 }
 
 #[tokio::test]
-async fn in_takes_the_subquery_and_refuses_the_value_list() {
+async fn in_takes_the_subquery_and_the_value_list() {
     let (address, _stop, _db) = serving_with(&format!("{} {}", super::SETUP, PEOPLE)).await;
     let mut client = Client::to(&address).await;
     client.start(None, "app.main", None).await;
@@ -153,11 +153,77 @@ async fn in_takes_the_subquery_and_refuses_the_value_list() {
         "{seen:?}"
     );
 
+    // The value list is exact as the OR-chain it expands to (D2), NULLs and
+    // all: `band IN (1, 3)` answers the same records `band = 1 OR band = 3`
+    // answers.
     let seen = client
-        .query("SELECT name FROM orders WHERE band IN (1, 3)")
+        .query("SELECT name FROM orders WHERE band IN (1, 3) ORDER BY name NULLS LAST")
         .await;
+    assert_eq!(
+        rows(&seen),
+        vec![
+            vec![Some("first".to_owned())],
+            vec![Some("third".to_owned())],
+            vec![None],
+        ],
+        "{seen:?}"
+    );
+
+    let seen = client
+        .query("SELECT name FROM orders WHERE band NOT IN (1) ORDER BY name NULLS LAST")
+        .await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("third".to_owned())], vec![None]],
+        "{seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn projection_arithmetic_computes_over_the_wire() {
+    let (address, _stop, _db) = serving_with(super::SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    let seen = client
+        .query("SELECT band + 10, band * 2 AS doubled FROM orders WHERE band = 1")
+        .await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("11".to_owned()), Some("2".to_owned())]],
+        "{seen:?}"
+    );
+    // The unnamed column answers under the dialect's own word.
+    assert!(
+        seen.iter().any(|m| matches!(m, Seen::RowDesc(cols) if cols.first() == Some("?column?".to_owned()).as_ref())),
+        "{seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn quoted_identifiers_reach_a_mixed_case_table() {
+    // The store's own language names a mixed-case table in a bare word —
+    // its lexer preserves case — and the port's quoted spelling reaches it
+    // verbatim, where the unquoted fold would not.
+    let setup = "DEFINE TABLE OrderLines SCHEMALESS; \
+         CREATE OrderLines:1 = { sku: 'a-1' };";
+    let (address, _stop, _db) = serving_with(&format!("{} {}", super::SETUP, setup)).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    let seen = client.query("SELECT sku FROM \"OrderLines\"").await;
+    assert_eq!(rows(&seen), vec![vec![Some("a-1".to_owned())]], "{seen:?}");
+    let seen = client.query("SELECT sku FROM orderlines").await;
     let (code, _) = super::refused(&seen).unwrap_or_default();
-    assert_eq!(code, "0A000", "a value list is not spoken: {seen:?}");
+    assert_eq!(code, "42601", "the folded name finds no table: {seen:?}");
+
+    // Contents the store's name grammar cannot hold refuse by name, and the
+    // session survives.
+    let seen = client.query("SELECT sku FROM \"order lines\"").await;
+    let (code, _) = super::refused(&seen).unwrap_or_default();
+    assert_eq!(code, "0A000", "the spaced name refuses: {seen:?}");
+    let seen = client.query("SELECT sku FROM \"OrderLines\"").await;
+    assert_eq!(rows(&seen), vec![vec![Some("a-1".to_owned())]], "{seen:?}");
 }
 
 #[tokio::test]

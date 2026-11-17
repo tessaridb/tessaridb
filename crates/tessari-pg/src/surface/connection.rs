@@ -275,7 +275,7 @@ async fn query_once(
             return Ok(());
         }
         Ok(Some(super::session::Session::Transaction(verb))) => {
-            transaction(conn, verb, tx).await?;
+            transaction(conn, verb, tx, held, shared).await?;
             return Ok(());
         }
         Ok(Some(super::session::Session::ShowNamespace)) => {
@@ -299,9 +299,7 @@ async fn query_once(
         }
         Ok(None) => {}
         Err(refused) => {
-            if *tx == codec::write::Tx::InTx {
-                *tx = codec::write::Tx::Failed;
-            }
+            fail_block(tx, held, shared).await;
             conn.refuse(&refused, *tx).await?;
             return Ok(());
         }
@@ -314,9 +312,7 @@ async fn query_once(
     let translated = match translate::translate_many(query) {
         Ok(translated) => translated,
         Err(refused) => {
-            if *tx == codec::write::Tx::InTx {
-                *tx = codec::write::Tx::Failed;
-            }
+            fail_block(tx, held, shared).await;
             conn.refuse(&refused, *tx).await?;
             return Ok(());
         }
@@ -332,22 +328,85 @@ async fn query_once(
         .await?;
         return Ok(());
     }
+    // Catalog statements answer locally, never against the store — except
+    // the user-table relations, which the store's own introspection builds
+    // for this caller (every row it names is one this connection may see).
+    // A batch that mixes catalog with store statements is refused by name:
+    // the two run on different engines, and one implicit block must not
+    // span both.
+    if translated.statements.iter().any(|s| s.catalog.is_some()) {
+        if !translated.statements.iter().all(|s| s.catalog.is_some()) {
+            conn.refuse(
+                &Refused::surface(
+                    code::FEATURE,
+                    "catalog statements run alone in this build; the batch mixes them with store reads",
+                ),
+                *tx,
+            )
+            .await?;
+            return Ok(());
+        }
+        let queries = translated
+            .statements
+            .iter()
+            .filter_map(|shape| shape.catalog.as_ref())
+            .collect::<Vec<_>>();
+        let dynamic = if translate::catalog::dynamic::needed(&queries) {
+            match translate::catalog::dynamic::load(
+                held,
+                shared,
+                translate::catalog::dynamic::wants_attributes(&queries),
+                queries
+                    .iter()
+                    .find_map(|query| query.pinned_oid(&translated.slots, &translated.parameters)),
+            )
+            .await
+            {
+                Ok(dynamic) => dynamic,
+                Err(refused) => {
+                    fail_block(tx, held, shared).await;
+                    conn.refuse(&refused, *tx).await?;
+                    return Ok(());
+                }
+            }
+        } else {
+            None
+        };
+        for shape in &translated.statements {
+            let Some(query) = &shape.catalog else {
+                continue;
+            };
+            let rows = match translate::catalog::evaluate(
+                query,
+                &translated.slots,
+                &translated.parameters,
+                dynamic.as_ref(),
+                held.user(),
+            ) {
+                Ok(rows) => rows,
+                Err(refused) => {
+                    fail_block(tx, held, shared).await;
+                    conn.refuse(&refused, *tx).await?;
+                    return Ok(());
+                }
+            };
+            answer_catalog(conn, query, &rows, false, &[]).await?;
+        }
+        conn.send(&codec::write::ready_for_query(*tx)).await?;
+        return Ok(());
+    }
     let outcomes = match held
         .run(shared, &translated.script, &translated.parameters)
         .await
     {
         Ok(outcomes) => outcomes,
         Err(Failed::Refused(refused)) => {
-            if *tx == codec::write::Tx::InTx {
-                *tx = codec::write::Tx::Failed;
-            }
+            fail_block(tx, held, shared).await;
             conn.refuse(&Refused::store(&refused), *tx).await?;
             return Ok(());
         }
         Err(Failed::Carried(carried)) => {
-            if *tx == codec::write::Tx::InTx {
-                *tx = codec::write::Tx::Failed;
-            }
+            fail_block(tx, held, shared).await;
             conn.refuse(&Refused::carried(carried.class, carried.message), *tx)
                 .await?;
             return Ok(());
@@ -362,39 +421,110 @@ async fn query_once(
         }
         Err(Failed::Lost) => return Err(Error::Malformed("the session is lost")),
     };
-    // The implicit block's BEGIN and COMMIT answer Done among the outcomes;
-    // the statements pair with their shapes in order, the Dones skipped.
-    let mut shapes = translated.statements.iter();
-    for outcome in &outcomes {
-        if matches!(outcome, tessaridb::Outcome::Done) {
-            continue;
+    // The statement string may have opened or closed the block itself (a
+    // transaction verb among its statements): the readiness rides what the
+    // session actually holds.
+    sync_block(tx, held);
+    // One outcome per store statement; one store statement per shape. The
+    // implicit block — several plain statements with no verb among them —
+    // answers two statements of its own around the shapes, which the pairing
+    // skips; explicit verbs carry their own shapes and pair one-to-one.
+    if outcomes.len() == translated.statements.len() {
+        let mut outcomes = outcomes.iter();
+        for shape in &translated.statements {
+            let Some(outcome) = outcomes.next() else {
+                break;
+            };
+            // An encoding refusal was already answered on the wire; the
+            // readiness below still arrives, as the simple protocol counts it.
+            let _answered = answer(conn, outcome, shape, false, &[]).await?;
         }
-        let Some(shape) = shapes.next() else {
-            break;
-        };
-        // An encoding refusal was already answered on the wire; the
-        // readiness below still arrives, as the simple protocol counts it.
-        let _answered = answer(conn, outcome, shape, false, &[]).await?;
+    } else {
+        let mut shapes = translated.statements.iter();
+        for outcome in &outcomes {
+            if matches!(outcome, tessaridb::Outcome::Done) {
+                continue;
+            }
+            let Some(shape) = shapes.next() else {
+                break;
+            };
+            let _answered = answer(conn, outcome, shape, false, &[]).await?;
+        }
+        for shape in shapes {
+            answer(conn, &tessaridb::Outcome::Done, shape, false, &[]).await?;
+        }
     }
     conn.send(&codec::write::ready_for_query(*tx)).await?;
     Ok(())
 }
 
-/// One transaction verb, walked through the connection's block state the way
-/// the dialect's own clients expect: COMMIT of an aborted block answers
-/// ROLLBACK, a verb outside any block refuses by name, and BEGIN inside one
-/// warns and changes nothing.
+/// A catalog statement's rows as the wire spells them: the projection's
+/// static column types, the values in text or the binary subset a Bind
+/// asked for. As [`answer`], `described` marks a portal Describe that
+/// already owed the row description.
+pub(crate) async fn answer_catalog(
+    conn: &mut Conn,
+    query: &translate::catalog::Query,
+    rows: &[Vec<Option<tessaridb::Value>>],
+    described: bool,
+    formats: &[u16],
+) -> Result<bool> {
+    let mut columns = query.columns();
+    let encoded = match super::encode(&columns, rows, formats) {
+        Ok(encoded) => encoded,
+        Err(refused) => {
+            conn.refuse_pending(&refused).await?;
+            return Ok(false);
+        }
+    };
+    if !described {
+        if let Ok(expanded) = super::expand_formats(formats, columns.len()) {
+            for (i, column) in columns.iter_mut().enumerate() {
+                column.format = expanded[i];
+            }
+        }
+        conn.send(&codec::write::row_description(&columns)).await?;
+    }
+    for row in &encoded {
+        conn.send(&codec::write::data_row(row)).await?;
+    }
+    conn.send(&codec::write::command_complete(&format!(
+        "SELECT {}",
+        rows.len()
+    )))
+    .await?;
+    Ok(true)
+}
+
+/// One transaction verb, driven through the store's own block: `BEGIN` parks
+/// an open transaction in the session, `COMMIT` lands it, `ROLLBACK` answers
+/// in the store's own word (`CANCEL`). What remains connection-local is the
+/// aborted state: a failure inside the block drops what the session held, so
+/// the two closing verbs of an aborted block answer here without touching the
+/// store — and `COMMIT` of a healthy block that the store refuses reports the
+/// refusal and closes, as the dialect counts.
 async fn transaction(
     conn: &mut Conn,
     verb: super::session::TxVerb,
     tx: &mut codec::write::Tx,
+    held: &mut super::running::Held,
+    shared: &Arc<Shared>,
 ) -> Result<()> {
     use super::session::TxVerb;
-    let (tag, reply): (&str, std::result::Result<(), Refused>) = match verb {
+    match verb {
         TxVerb::Begin => match tx {
             codec::write::Tx::Idle => {
-                *tx = codec::write::Tx::InTx;
-                ("BEGIN", Ok(()))
+                let reply = match held
+                    .run(shared, "BEGIN", &tessaridb::Parameters::new())
+                    .await
+                {
+                    Ok(_) => {
+                        *tx = codec::write::Tx::InTx;
+                        Ok("BEGIN")
+                    }
+                    Err(failed) => Err(super::running::run_refusal(failed)),
+                };
+                reply_tag(conn, reply).await?;
             }
             _ => {
                 conn.send(&codec::write::notice(
@@ -402,42 +532,83 @@ async fn transaction(
                     "there is already a transaction in progress",
                 ))
                 .await?;
-                ("BEGIN", Ok(()))
+                conn.send(&codec::write::command_complete("BEGIN")).await?;
             }
         },
         TxVerb::Commit => match tx {
             codec::write::Tx::InTx => {
-                *tx = codec::write::Tx::Idle;
-                ("COMMIT", Ok(()))
+                let reply = match held
+                    .run(shared, "COMMIT", &tessaridb::Parameters::new())
+                    .await
+                {
+                    Ok(_) => {
+                        *tx = codec::write::Tx::Idle;
+                        Ok("COMMIT")
+                    }
+                    Err(failed) => {
+                        // The store refused the commit; the block it held is
+                        // gone either way.
+                        *tx = codec::write::Tx::Idle;
+                        Err(super::running::run_refusal(failed))
+                    }
+                };
+                reply_tag(conn, reply).await?;
             }
             codec::write::Tx::Failed => {
                 *tx = codec::write::Tx::Idle;
-                ("ROLLBACK", Ok(()))
+                conn.send(&codec::write::command_complete("ROLLBACK"))
+                    .await?;
             }
-            codec::write::Tx::Idle => (
-                "COMMIT",
-                Err(Refused::surface(
-                    code::NO_TRANSACTION,
-                    "there is no transaction in progress",
-                )),
-            ),
+            codec::write::Tx::Idle => {
+                refuse_tag(
+                    conn,
+                    Refused::surface(code::NO_TRANSACTION, "there is no transaction in progress"),
+                )
+                .await?;
+            }
         },
         TxVerb::Rollback => match tx {
-            codec::write::Tx::InTx | codec::write::Tx::Failed => {
-                *tx = codec::write::Tx::Idle;
-                ("ROLLBACK", Ok(()))
+            codec::write::Tx::InTx => {
+                let reply = match held
+                    .run(shared, "CANCEL", &tessaridb::Parameters::new())
+                    .await
+                {
+                    Ok(_) => {
+                        *tx = codec::write::Tx::Idle;
+                        Ok("ROLLBACK")
+                    }
+                    Err(failed) => {
+                        if !held.transaction_open() {
+                            *tx = codec::write::Tx::Idle;
+                        }
+                        Err(super::running::run_refusal(failed))
+                    }
+                };
+                reply_tag(conn, reply).await?;
             }
-            codec::write::Tx::Idle => (
-                "ROLLBACK",
-                Err(Refused::surface(
-                    code::NO_TRANSACTION,
-                    "there is no transaction in progress",
-                )),
-            ),
+            codec::write::Tx::Failed => {
+                *tx = codec::write::Tx::Idle;
+                conn.send(&codec::write::command_complete("ROLLBACK"))
+                    .await?;
+            }
+            codec::write::Tx::Idle => {
+                refuse_tag(
+                    conn,
+                    Refused::surface(code::NO_TRANSACTION, "there is no transaction in progress"),
+                )
+                .await?;
+            }
         },
-    };
+    }
+    conn.send(&codec::write::ready_for_query(*tx)).await?;
+    Ok(())
+}
+
+/// A completion tag or a refusal as the wire spells it — the shared tail of
+/// the verb handler.
+async fn reply_tag(conn: &mut Conn, reply: std::result::Result<&str, Refused>) -> Result<()> {
     match reply {
-        Ok(()) => conn.send(&codec::write::command_complete(tag)).await?,
+        Ok(tag) => conn.send(&codec::write::command_complete(tag)).await?,
         Err(refused) => {
             conn.send(&codec::write::error(
                 refused.code,
@@ -447,8 +618,48 @@ async fn transaction(
             .await?;
         }
     }
-    conn.send(&codec::write::ready_for_query(*tx)).await?;
     Ok(())
+}
+
+/// A refusal with no tag to follow — the verb handler's refusal tail.
+async fn refuse_tag(conn: &mut Conn, refused: Refused) -> Result<()> {
+    conn.send(&codec::write::error(
+        refused.code,
+        &refused.message,
+        refused.detail.as_deref(),
+    ))
+    .await?;
+    Ok(())
+}
+
+/// Enter the aborted state: the block the connection was riding is dropped
+/// engine-side too, so nothing stays parked behind a Failed readiness. Runs
+/// before every refusal a statement can meet inside a block.
+async fn fail_block(
+    tx: &mut codec::write::Tx,
+    held: &mut super::running::Held,
+    shared: &Arc<Shared>,
+) {
+    if *tx == codec::write::Tx::InTx {
+        *tx = codec::write::Tx::Failed;
+        // The refusal aborts the block; the discard's own refusal, should one
+        // arrive, changes nothing the client has not already been told.
+        let _discard = held
+            .run(shared, "CANCEL", &tessaridb::Parameters::new())
+            .await;
+    }
+}
+
+/// After a statement ran, reconcile the connection's block state with what
+/// the session actually holds: a statement string that closed the block
+/// (a verb among its statements) drops the readiness to idle, one that opened
+/// one raises it.
+fn sync_block(tx: &mut codec::write::Tx, held: &super::running::Held) {
+    *tx = match (*tx, held.transaction_open()) {
+        (codec::write::Tx::InTx, false) => codec::write::Tx::Idle,
+        (codec::write::Tx::Idle, true) => codec::write::Tx::InTx,
+        (state, _) => state,
+    };
 }
 
 /// One statement's outcome as the wire spells it. `described` marks that a
@@ -471,6 +682,15 @@ pub(crate) async fn answer(
     use tessaridb::Outcome;
     match outcome {
         Outcome::Records { records, .. } => {
+            // A write the client did not RETURN owes only the count — no
+            // rows, no description, the tag naming how many.
+            if shape.tag != translate::write::Tag::Select && shape.returning.is_none() {
+                conn.send(&codec::write::command_complete(
+                    &shape.tag.completion(records.len()),
+                ))
+                .await?;
+                return Ok(true);
+            }
             let (mut columns, rows) = if records.is_empty()
                 && let translate::Columns::Named(names) = &shape.columns
             {
@@ -487,7 +707,12 @@ pub(crate) async fn answer(
                     .collect::<Vec<_>>();
                 (columns, Vec::new())
             } else {
-                super::rows(records, &shape.columns, shape.table.as_deref())
+                super::rows(
+                    records,
+                    &shape.columns,
+                    &shape.record_names,
+                    shape.table.as_deref(),
+                )
             };
             let encoded = match super::encode(&columns, &rows, formats) {
                 Ok(encoded) => encoded,
@@ -509,13 +734,18 @@ pub(crate) async fn answer(
             for row in &encoded {
                 conn.send(&codec::write::data_row(row)).await?;
             }
-            conn.send(&codec::write::command_complete(&format!(
-                "SELECT {}",
-                rows.len()
-            )))
+            conn.send(&codec::write::command_complete(
+                &shape.tag.completion(rows.len()),
+            ))
             .await?;
         }
         Outcome::Value(value) => {
+            // A write the store answers as one value (CREATE's RETURN AFTER):
+            // the tag names it, or the RETURNING projection answers under
+            // the record's own fields.
+            if shape.tag != translate::write::Tag::Select {
+                return answer_write_value(conn, shape, value, described, formats).await;
+            }
             let mut column = super::value_column(value);
             if let Ok(expanded) = super::expand_formats(formats, 1)
                 && let Some(format) = expanded.first()
@@ -544,7 +774,7 @@ pub(crate) async fn answer(
                 .await?;
         }
         Outcome::Done => {
-            conn.send(&codec::write::command_complete("SELECT 0"))
+            conn.send(&codec::write::command_complete(&shape.tag.completion(0)))
                 .await?;
         }
         other => {
@@ -557,6 +787,79 @@ pub(crate) async fn answer(
             return Ok(false);
         }
     }
+    Ok(true)
+}
+
+/// One write's single value as the wire spells it: no RETURNING owes the
+/// tag alone; RETURNING answers the value's fields under the projection —
+/// a star takes the record's own field order, a name list takes those.
+async fn answer_write_value(
+    conn: &mut Conn,
+    shape: &translate::Shaped,
+    value: &tessaridb::Value,
+    described: bool,
+    formats: &[u16],
+) -> Result<bool> {
+    if shape.returning.is_none() {
+        conn.send(&codec::write::command_complete(&shape.tag.completion(1)))
+            .await?;
+        return Ok(true);
+    }
+    let (columns, rows) = match (&shape.columns, value) {
+        (translate::Columns::Star, tessaridb::Value::Object(fields)) => {
+            let columns = fields
+                .keys()
+                .map(|name| codec::write::Column {
+                    name: name.clone(),
+                    type_oid: types::oid::TEXT,
+                    type_len: -1,
+                    format: 0,
+                })
+                .collect::<Vec<_>>();
+            let row = fields.values().map(|held| Some(held.clone())).collect();
+            (columns, vec![row])
+        }
+        (translate::Columns::Named(names), tessaridb::Value::Object(fields)) => {
+            let columns = names
+                .iter()
+                .map(|name| codec::write::Column {
+                    name: name.clone(),
+                    type_oid: types::oid::TEXT,
+                    type_len: -1,
+                    format: 0,
+                })
+                .collect::<Vec<_>>();
+            let row = names
+                .iter()
+                .map(|name| fields.get(name).cloned().or(Some(tessaridb::Value::None)))
+                .collect();
+            (columns, vec![row])
+        }
+        _ => (Vec::new(), vec![vec![Some(value.clone())]]),
+    };
+    let encoded = match super::encode(&columns, &rows, formats) {
+        Ok(encoded) => encoded,
+        Err(refused) => {
+            conn.refuse_pending(&refused).await?;
+            return Ok(false);
+        }
+    };
+    if !described {
+        let mut columns = columns;
+        if let Ok(expanded) = super::expand_formats(formats, columns.len()) {
+            for (i, column) in columns.iter_mut().enumerate() {
+                column.format = expanded[i];
+            }
+        }
+        conn.send(&codec::write::row_description(&columns)).await?;
+    }
+    for row in &encoded {
+        conn.send(&codec::write::data_row(row)).await?;
+    }
+    conn.send(&codec::write::command_complete(
+        &shape.tag.completion(rows.len()),
+    ))
+    .await?;
     Ok(true)
 }
 

@@ -134,7 +134,7 @@ async fn agree(setup: &str, sql: &str) {
     for outcome in &outcomes {
         if let tessaridb::Outcome::Records { records, .. } = outcome {
             let (_, values) =
-                super::super::rows(records, &super::super::translate::Columns::Star, None);
+                super::super::rows(records, &super::super::translate::Columns::Star, &[], None);
             for row in &values {
                 direct.push(
                     row.iter()

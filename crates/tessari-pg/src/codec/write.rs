@@ -146,6 +146,12 @@ pub(crate) fn command_complete(tag: &str) -> Vec<u8> {
     frame(b'C', &body)
 }
 
+/// An Execute with a row ceiling answered what fits and holds the rest —
+/// the readiness waits for the Sync, as the protocol counts.
+pub(crate) fn portal_suspended() -> Vec<u8> {
+    frame(b's', &Vec::new())
+}
+
 /// The query string held nothing but whitespace.
 pub(crate) fn empty_query() -> Vec<u8> {
     frame(b'I', &[])

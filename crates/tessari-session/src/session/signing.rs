@@ -204,6 +204,8 @@ impl<'a> Session<'a> {
             across_open: false,
             event_depth: 0,
             now: self.now,
+            // A probe answers one question and holds no block open.
+            held: None,
         };
         probe.acting_as(id).await?;
         Ok(probe)

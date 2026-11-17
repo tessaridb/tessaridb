@@ -123,6 +123,7 @@ const VERSION: &str = "13.0";
 pub(crate) fn rows(
     records: &[(tessaridb::RecordId, tessaridb::Value)],
     projection: &Columns,
+    record_names: &[Option<String>],
     table: Option<&str>,
 ) -> (
     Vec<codec::write::Column>,
@@ -139,12 +140,13 @@ pub(crate) fn rows(
             None => Vec::new(),
         },
     };
-    finish(records, names, table)
+    finish(records, names, record_names, table)
 }
 
 fn finish(
     records: &[(tessaridb::RecordId, tessaridb::Value)],
     names: Vec<String>,
+    record_names: &[Option<String>],
     table: Option<&str>,
 ) -> (
     Vec<codec::write::Column>,
@@ -168,7 +170,11 @@ fn finish(
             // which the dialect can ask for it.
             let value = match record {
                 tessaridb::Value::Object(fields) => {
-                    fields.get(&names[i]).cloned().unwrap_or_else(|| {
+                    let key = record_names
+                        .get(i)
+                        .and_then(|held| held.as_ref())
+                        .unwrap_or(&names[i]);
+                    fields.get(key).cloned().unwrap_or_else(|| {
                         if names[i] == "id" {
                             // The store holds the identity beside the record;
                             // the dialect reads it as the table and the key,

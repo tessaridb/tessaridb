@@ -34,6 +34,9 @@ pub struct Detached {
     at_rest: Option<Arc<tessari_vault::AtRestKey>>,
     budget: Option<Arc<dyn crate::throttle::Budget>>,
     certificates: Option<Arc<dyn crate::presented::Certificates>>,
+    /// The transaction a `run_holding` parked, riding to the next attach —
+    /// the block a connection opened stays open across the bridge call.
+    held: Option<(tessari_storage::Transaction<'static>, tessari_ql::Span)>,
 }
 
 impl Session<'_> {
@@ -52,6 +55,7 @@ impl Session<'_> {
             at_rest: self.at_rest,
             budget: self.budget,
             certificates: self.certificates,
+            held: self.held,
         }
     }
 }
@@ -73,6 +77,7 @@ impl Detached {
             at_rest: self.at_rest,
             budget: self.budget,
             certificates: self.certificates,
+            held: self.held,
             // A sink belongs to the request that streams, never to state
             // carried to a later one.
             sink: crate::backup_to::Sink::none(),
@@ -85,5 +90,12 @@ impl Detached {
             event_depth: 0,
             now: std::time::SystemTime::now(),
         }
+    }
+
+    /// Whether this state holds a transaction open across the bridge — what
+    /// an answering surface reports as the connection's block state.
+    #[must_use]
+    pub fn transaction_open(&self) -> bool {
+        self.held.is_some()
     }
 }

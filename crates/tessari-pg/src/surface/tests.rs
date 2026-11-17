@@ -12,14 +12,18 @@ use tokio_util::sync::CancellationToken;
 use crate::codec;
 
 /// The fixture every socket test reads: a table with a spread of fields and
-/// rows, one of them missing the optional one.
+/// rows, one of them missing the optional one. The fields are declared so
+/// the catalog the port reads at Parse time names their types.
 pub(crate) const SETUP: &str = "DEFINE TABLE orders SCHEMALESS; \
+     DEFINE FIELD band ON orders TYPE int; \
+     DEFINE FIELD name ON orders TYPE string; \
      CREATE orders:1 = { band: 1, name: 'first' }; \
      CREATE orders:2 = { band: 3, name: 'third' }; \
      CREATE orders:3 = { band: 3 };";
 
 mod agreement;
 mod binary;
+mod catalog;
 mod extended;
 mod matrix;
 mod queries;
@@ -80,6 +84,7 @@ pub(crate) enum Seen {
     CloseComplete,
     ParamDesc(Vec<u32>),
     NoData,
+    Suspended,
 }
 
 /// A connected client speaking the wire protocol by hand.
@@ -409,6 +414,7 @@ pub(crate) fn decode(kind: u8, body: &[u8]) -> Seen {
             Seen::DataRow(cells)
         }
         b'C' => Seen::Command(cstr(body)),
+        b's' => Seen::Suspended,
         b'I' => Seen::Empty,
         b'1' => Seen::ParseComplete,
         b'2' => Seen::BindComplete,
@@ -501,3 +507,4 @@ pub(crate) fn refused(seen: &[Seen]) -> Option<(String, String)> {
         _ => None,
     })
 }
+mod writes;

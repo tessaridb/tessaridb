@@ -84,7 +84,7 @@ impl Transaction<'_> {
             let placement = self.placement().await?;
             #[cfg(test)]
             if let Some(hook) = AFTER_PLACEMENT.with(|held| held.borrow_mut().take()) {
-                hook(self.store);
+                hook(&self.store);
             }
             let ranges = self.ranges_written(&placement)?;
             let placed = self
@@ -192,18 +192,19 @@ impl Transaction<'_> {
                 // both are read against the committed state this attempt builds on,
                 // and a schema that moved between attempts must be re-read rather
                 // than assumed.
-                crate::schema::validate(self.store, &record).await?;
+                crate::schema::validate(&self.store, &record).await?;
                 // A limited space's bound, against the same committed state and for
                 // the same reason: two commits adding different keys do not conflict,
                 // so only a count read here, per attempt, is exact (G036). The
                 // attempt writes the record with its evictions when there are any.
-                let mut evicted = crate::bounded::enforce(self.store, &record, identity.id).await?;
+                let mut evicted =
+                    crate::bounded::enforce(&self.store, &record, identity.id).await?;
                 // A topic admits its messages against the same committed state and at
                 // this transaction's clock: never a rewrite, never a deletion before
                 // its retention passed — judged as a reader would judge it — never a
                 // message over its size, and each new one carrying its expiry (G037).
                 if let Some(admitted) = crate::topic::admit(
-                    self.store,
+                    &self.store,
                     evicted.as_ref().unwrap_or(&record),
                     (self.clock(), identity.id),
                     &self.trims,
@@ -216,7 +217,7 @@ impl Transaction<'_> {
                 // here, on the same state and clock: kept, defaulted or cleared
                 // as the write said (ADR-0122 A3).
                 if let Some(admitted) = crate::lifetime::admit(
-                    self.store,
+                    &self.store,
                     evicted.as_ref().unwrap_or(&record),
                     self.clock(),
                     &self.lifetimes,
@@ -228,7 +229,7 @@ impl Transaction<'_> {
                 // A unique value an expired record still holds is released by
                 // deleting that record ahead of the write claiming it (Q-949).
                 if let Some(admitted) = crate::index::release_expired_holders(
-                    self.store,
+                    &self.store,
                     evicted.as_ref().unwrap_or(&record),
                     self.clock(),
                     identity.id,
@@ -274,7 +275,7 @@ impl Transaction<'_> {
                 // here as a follower's apply settles it, and an intent derives
                 // nothing until its resolution does (ADR-0112).
                 let written = crate::intents::settle(
-                    self.store,
+                    &self.store,
                     carried,
                     written,
                     commit_version,
@@ -386,42 +387,43 @@ impl Transaction<'_> {
         // Index entries are derived here rather than carried in the record,
         // and they are derived inside the loop because they depend on the
         // committed state this attempt is building on (see `crate::index`).
-        let batch = crate::index::maintain(self.store, carried, written, commit_version).await?;
+        let batch = crate::index::maintain(&self.store, carried, written, commit_version).await?;
         // And the columnar projection of a STORE COLUMN table, derived in the
         // same place and for the same reason: its chunks ride the commit's
         // batch, so a follower replaying the record rebuilds the same layout
         // (ADR-0137 — the projection has no writer of its own).
-        let batch = crate::columnar::maintain(self.store, carried, batch, commit_version).await?;
+        let batch = crate::columnar::maintain(&self.store, carried, batch, commit_version).await?;
         // Adjacency is derived in the same place and for the same reason: a
         // replica reaches its state by replaying this record, so entries the
         // leader merely added to its own batch would never exist on a
         // follower — a walk that finds nothing there while the leader is
         // correct, with nothing in an error state.
-        let batch = crate::adjacency::maintain(self.store, carried, batch).await?;
+        let batch = crate::adjacency::maintain(&self.store, carried, batch).await?;
         // And the record counts, in the same batch and for the third time
         // for the same reason: the planner on a follower must read the same
         // number as the planner on the leader, or one query takes two access
         // paths depending on which node answered it.
         let batch =
-            crate::cardinality::maintain(self.store, carried, batch, commit_version).await?;
+            crate::cardinality::maintain(&self.store, carried, batch, commit_version).await?;
         // And the catalog's id counters, past the ids this record hands
         // out, so a follower promoted to leader resumes after them.
         let batch =
-            crate::catalog::maintain_allocators(self.store, carried, batch, commit_version).await?;
+            crate::catalog::maintain_allocators(&self.store, carried, batch, commit_version)
+                .await?;
         // The expiry index, last and in the same batch as the records it
         // describes: an entry written anywhere else is an entry that can be
         // left behind (G035).
-        let batch = crate::lapse::maintain(self.store, carried, batch).await?;
+        let batch = crate::lapse::maintain(&self.store, carried, batch).await?;
         // And a limited space's modified-order index, which the evictions
         // above read on the next commit (G036).
-        let batch = crate::bounded::maintain(self.store, carried, batch, commit_version).await?;
+        let batch = crate::bounded::maintain(&self.store, carried, batch, commit_version).await?;
         // And a topic's positions, dense in commit order (G037).
-        let batch = crate::topic::maintain(self.store, carried, batch).await?;
+        let batch = crate::topic::maintain(&self.store, carried, batch).await?;
         // And what the record says about inbound links — in memory, beside the
         // batch, for the reason the registry's own header gives.
         self.store.replicated().maintain(carried)?;
         // And this node's format stamp, when the record finalizes it
         // (ADR-0118) — on the leader as on every follower.
-        crate::format_stamp::maintain(self.store, carried, batch, commit_version).await
+        crate::format_stamp::maintain(&self.store, carried, batch, commit_version).await
     }
 }

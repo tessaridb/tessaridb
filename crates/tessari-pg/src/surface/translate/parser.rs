@@ -13,7 +13,13 @@ pub(crate) struct Parser<'a> {
     pub(crate) at: usize,
     pub(crate) parameters: Parameters,
     next: usize,
+    /// The alias counter for unnamed arithmetic projections.
+    pub(crate) next_expr: usize,
     pub(crate) slots: Vec<Option<String>>,
+    /// The parameter inference the statement collected: each `$n` a
+    /// `column = $n` comparison names, with the column it compares against —
+    /// what Parse-time type inference asks the table catalog about.
+    pub(crate) inference: Vec<(usize, String)>,
     /// Subquery nesting guard: the wire's frame ceiling bounds the text, and
     /// this bounds the recursion the text could drive.
     pub(crate) depth: usize,
@@ -27,6 +33,17 @@ pub(crate) struct Parser<'a> {
 /// The deepest subquery nesting this parser reads before refusing by name.
 const MAX_DEPTH: usize = 64;
 
+/// The store lexer's first character of a bare name — the grammar a quoted
+/// identifier must fit while the store's lexer speaks bare words alone.
+const fn store_name_start(character: char) -> bool {
+    character.is_ascii_alphabetic() || character == '_'
+}
+
+/// The store lexer's continuation character of a bare name.
+const fn store_name_continue(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '_'
+}
+
 impl<'a> Parser<'a> {
     pub(crate) fn new(source: &'a str) -> Self {
         Self {
@@ -34,7 +51,9 @@ impl<'a> Parser<'a> {
             at: 0,
             parameters: Parameters::new(),
             next: 0,
+            next_expr: 0,
             slots: Vec::new(),
+            inference: Vec::new(),
             depth: 0,
             inline_literals: false,
         }
@@ -49,6 +68,21 @@ impl<'a> Parser<'a> {
             ));
         }
         Ok(())
+    }
+
+    /// The cursor, for a caller that must look ahead and put it back.
+    pub(crate) fn snapshot(&self) -> usize {
+        self.at
+    }
+
+    /// Put the cursor back where [`Self::snapshot`] held it.
+    pub(crate) fn restore(&mut self, at: usize) {
+        self.at = at;
+    }
+
+    /// How many placeholders the statement took.
+    pub(crate) fn slots_count(&self) -> usize {
+        self.slots.len()
     }
 
     /// One bound parameter, named and kept.
@@ -119,11 +153,16 @@ impl<'a> Parser<'a> {
             let rest = &self.source[self.at..];
             let end = rest.iter().position(|b| *b == b'\'')?;
             out.push_str(&String::from_utf8_lossy(&rest[..end]));
-            self.at = self.at.saturating_add(end).saturating_add(1);
-            // Two quotes are the dialect's one escaped quote.
-            if self.quote() {
+            let after = self.at.saturating_add(end).saturating_add(1);
+            if self.source.get(after) == Some(&b'\'') {
+                // Two quotes are the dialect's one escaped quote; the pair
+                // is consumed together and one quote carries on.
+                self.at = after.saturating_add(1);
                 out.push('\'');
             } else {
+                // A quote nothing doubles closes — `''` is the empty
+                // string, exactly as the dialect lexes it.
+                self.at = after;
                 return Some(out);
             }
         }
@@ -156,6 +195,58 @@ impl<'a> Parser<'a> {
         let name = format!("e{index}");
         self.slots[index.saturating_sub(1)] = Some(name.clone());
         Some(format!("${name}"))
+    }
+
+    /// The 0-based slot index a placeholder name stands for, when the name
+    /// is one this parser minted (`e{n}` from `$n+1`).
+    pub(crate) fn slot_of(name: &str) -> Option<usize> {
+        name.trim_start_matches('$')
+            .trim_start_matches('e')
+            .parse::<usize>()
+            .ok()
+            .map(|index| index.saturating_sub(1))
+    }
+
+    /// A double-quoted identifier at the cursor: the dialect's
+    /// case-preserving spelling. The contents read with the dialect's one
+    /// escape (two quotes are one), then ride verbatim into the store script
+    /// — the store names its identifiers in bare words and preserves case, so
+    /// a quoted name reaches a mixed-case table exactly. Contents the store's
+    /// own name grammar cannot hold refuse by name: pretending them bare
+    /// would change the name, and the store's lexer learning quoted names is
+    /// engine work the owner ruled out (2026-11-17) — this layer translates
+    /// what translates and names what does not. A spelling the store reserves
+    /// is not refused here even though the store's `name()` would refuse it
+    /// (`AS "Type"` names a wire column the catalog responder answers itself,
+    /// never a store script): where the name does reach the store, the store
+    /// voices the refusal at its own birth site, in its own words.
+    pub(crate) fn quoted_ident(&mut self) -> Option<String> {
+        let at = self.at;
+        self.skip_space();
+        if !self.byte(b'"') {
+            self.at = at;
+            return None;
+        }
+        let mut word = String::new();
+        loop {
+            let rest = &self.source[self.at..];
+            let end = rest.iter().position(|b| *b == b'"')?;
+            word.push_str(&String::from_utf8_lossy(&rest[..end]));
+            self.at = self.at.saturating_add(end).saturating_add(1);
+            if self.byte(b'"') {
+                word.push('"');
+            } else {
+                break;
+            }
+        }
+        let valid = word.chars().next().is_some_and(store_name_start)
+            && word.chars().all(store_name_continue);
+        if valid {
+            Some(word)
+        } else {
+            self.at = at;
+            None
+        }
     }
 
     /// A literal rendered into the text itself, re-escaped the way the store
@@ -229,6 +320,28 @@ impl<'a> Parser<'a> {
         Some(word.to_ascii_lowercase())
     }
 
+    /// A write statement ends here: trailing whitespace or one semicolon is
+    /// the dialect's own punctuation, nothing more — what follows another
+    /// statement is the caller's to accept or refuse.
+    pub(crate) fn end_write(&mut self) -> Result<(), Refused> {
+        self.skip_space();
+        if self.byte(b';') {
+            self.skip_space();
+        }
+        if self.at == self.source.len() {
+            return Ok(());
+        }
+        Err(Refused::with_detail(
+            code::SYNTAX,
+            "syntax error at or near the rest of the query",
+            format!(
+                "at byte {}: {:?}",
+                self.at,
+                String::from_utf8_lossy(&self.source[self.at..])
+            ),
+        ))
+    }
+
     /// A whole number for LIMIT.
     pub(crate) fn number(&mut self) -> Result<u64, Refused> {
         let word = self.digits();
@@ -252,6 +365,31 @@ impl<'a> Parser<'a> {
         } else {
             self.at = start;
             Err(())
+        }
+    }
+
+    /// The bare word opening at the cursor, looked at and not eaten — what
+    /// a dispatcher reads to choose the statement's translator before any
+    /// keyword is consumed.
+    pub(crate) fn peek_word(&self) -> Option<String> {
+        let mut at = self.at;
+        while let Some(byte) = self.source.get(at) {
+            if !byte.is_ascii_whitespace() {
+                break;
+            }
+            at = at.saturating_add(1);
+        }
+        let start = at;
+        while let Some(byte) = self.source.get(at) {
+            if !(byte.is_ascii_alphanumeric() || *byte == b'_') {
+                break;
+            }
+            at = at.saturating_add(1);
+        }
+        if at == start {
+            None
+        } else {
+            Some(String::from_utf8_lossy(&self.source[start..at]).to_ascii_lowercase())
         }
     }
 

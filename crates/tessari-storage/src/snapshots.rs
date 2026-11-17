@@ -57,7 +57,7 @@ struct Held {
 
 /// Where a snapshot was registered, to be handed back when it is released.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Slot(usize);
+pub(crate) struct Slot(pub(crate) usize);
 
 /// The snapshots currently being read from.
 ///

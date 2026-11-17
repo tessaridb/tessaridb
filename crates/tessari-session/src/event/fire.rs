@@ -162,6 +162,9 @@ impl<'a> Session<'a> {
             // The writer's statement is still running: its condition and its
             // body read the writer's instant.
             now: self.now,
+            // The body runs inside the writer's transaction and holds none of
+            // its own.
+            held: None,
         };
         // The record as the writer may read it: a read of it, authorized as the
         // writer's own would be, and then their field grant. A writer who may

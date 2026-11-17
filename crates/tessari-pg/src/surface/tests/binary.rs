@@ -3,6 +3,8 @@
 //! declared type's binary form, DataRow cells encode into it. The text
 //! family crosses unchanged: its binary form IS the text bytes.
 
+#![allow(clippy::panic)]
+
 use super::super::tests::Client;
 use super::{SETUP, Seen, serving_with};
 
@@ -108,13 +110,18 @@ async fn a_binary_float_and_bytea_round_trip() {
         .parse("", "SELECT weight, payload FROM blobs", &[701, 17])
         .await;
     client.bind("", "", &[], &[], &[1, 1]).await;
+    // The protocol owes the row description to a Describe, not an Execute:
+    // the client asks, the portal names the binary formats, the rows follow.
+    client.describe(b'P', "").await;
     client.execute("", 0).await;
     client.sync().await;
     client.message().await; // ParseComplete
     client.message().await; // BindComplete
-    // The row description names the binary formats before the rows.
     let (kind, body) = raw(&mut client).await;
-    assert_eq!(kind, b'T', "RowDescription first: {kind}");
+    assert_eq!(
+        kind, b'T',
+        "Describe(portal) answers RowDescription: {kind}"
+    );
     let format_at = body.len().saturating_sub(2);
     let format = u16::from_be_bytes(
         body[format_at..]
@@ -134,15 +141,16 @@ async fn a_binary_float_and_bytea_round_trip() {
 
 #[tokio::test]
 async fn a_type_outside_the_subset_refuses_by_name() {
-    let setup = "DEFINE TABLE moments SCHEMALESS; \
-         CREATE moments:1 = { at: datetime '2026-11-16T12:00:00Z' };";
+    let setup = "DEFINE TABLE docs SCHEMALESS; \
+         CREATE docs:1 = { body: { nested: true } };";
     let (address, _stop, _db) = serving_with(&format!("{SETUP} {setup}")).await;
     let mut client = Client::to(&address).await;
     client.start(None, "app.main", None).await;
 
-    // A binary parameter of a type the subset does not speak.
+    // A binary parameter of a type the subset does not speak: jsonb's
+    // binary form stays unspoken — its text form crosses unchanged.
     client
-        .parse("", "SELECT at FROM moments WHERE at = $1", &[1184])
+        .parse("", "SELECT body FROM docs WHERE body = $1", &[3802])
         .await;
     client.bind("", "", &[1], &[Some(vec![0; 8])], &[]).await;
     client.sync().await;
@@ -152,17 +160,11 @@ async fn a_type_outside_the_subset_refuses_by_name() {
         matches!(&error, Seen::Error(code, _) if code == "0A000"),
         "{error:?}"
     );
-
-    // A binary result over a column the subset does not speak.
-    client.parse("", "SELECT at FROM moments", &[]).await;
-    client.bind("", "", &[], &[], &[1]).await;
-    client.execute("", 0).await;
-    client.sync().await;
     client.message().await; // Ready, closing the first half's Sync
 
-    // A binary result over a column the subset does not speak refuses at
-    // encoding — before any row description, so nothing half-answered leaks.
-    client.parse("", "SELECT at FROM moments", &[]).await;
+    // A binary result over a jsonb column refuses at encoding — before any
+    // row description, so nothing half-answered leaks.
+    client.parse("", "SELECT body FROM docs", &[]).await;
     client.bind("", "", &[], &[], &[1]).await;
     client.execute("", 0).await;
     client.sync().await;
@@ -170,6 +172,88 @@ async fn a_type_outside_the_subset_refuses_by_name() {
     client.message().await; // BindComplete
     let (kind, body) = raw(&mut client).await;
     assert_eq!(kind, b'E', "the refusal names the type: {body:?}");
+}
+
+#[tokio::test]
+async fn timestamptz_binary_round_trips_over_the_wire() {
+    // The fixture instant, as micros from the dialect's 2000-01-01 epoch —
+    // the wire's 8 big-endian bytes, pinned here as the known vector.
+    const FIXTURE_MICROS: i64 = 848_145_600_000_000;
+    let setup = "DEFINE TABLE moments SCHEMALESS; \
+         DEFINE FIELD at ON moments TYPE datetime; \
+         CREATE moments:1 = { at: datetime '2026-11-16T12:00:00Z' };";
+    let (address, _stop, _db) = serving_with(&format!("{SETUP} {setup}")).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    // A binary result: the stored instant crosses as the 8 bytes.
+    client.parse("", "SELECT at FROM moments", &[]).await;
+    client.bind("", "", &[], &[], &[1]).await;
+    client.execute("", 0).await;
+    client.sync().await;
+    client.message().await; // ParseComplete
+    client.message().await; // BindComplete
+    let got = row_of(&mut client).await;
+    assert_eq!(got, vec![Some(FIXTURE_MICROS.to_be_bytes().to_vec())]);
+
+    // A binary parameter of the same bytes reads as the same instant and
+    // matches the row; the text form binds too.
+    for format in [1_u16, 0] {
+        let value = if format == 1 {
+            FIXTURE_MICROS.to_be_bytes().to_vec()
+        } else {
+            b"2026-11-16T12:00:00Z".to_vec()
+        };
+        client
+            .parse("", "SELECT at FROM moments WHERE at = $1", &[1184])
+            .await;
+        client.bind("", "", &[format], &[Some(value)], &[]).await;
+        client.execute("", 0).await;
+        client.sync().await;
+        client.message().await; // ParseComplete
+        client.message().await; // BindComplete
+        let got = row_of(&mut client).await;
+        assert_eq!(
+            got,
+            vec![Some(b"1794830400.000000000".to_vec())],
+            "the store's own datetime text form, format {format}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_uuid_binary_result_matches_the_text_form() {
+    let setup = "DEFINE TABLE locks SCHEMALESS; \
+         DEFINE FIELD ref ON locks TYPE uuid; \
+         CREATE locks:1 = { ref: rand::uuid() };";
+    let (address, _stop, _db) = serving_with(&format!("{SETUP} {setup}")).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    // The text form first — the fixture's own uuid, whatever it rolled.
+    let seen = client.query("SELECT ref FROM locks").await;
+    let text = super::rows(&seen)[0][0]
+        .clone()
+        .expect("the uuid text form");
+    let mut bytes = [0_u8; 16];
+    let hex: Vec<u8> = text.bytes().filter(|byte| *byte != b'-').collect();
+    assert_eq!(hex.len(), 32, "a hyphenated uuid: {text}");
+    for (index, slot) in bytes.iter_mut().enumerate() {
+        let high = (hex[index * 2] as char).to_digit(16).expect("hex");
+        let low = (hex[index * 2 + 1] as char).to_digit(16).expect("hex");
+        // Two hex digits are a byte: each digit carried four bits.
+        *slot = u8::try_from((high << 4) | low).expect("two hex digits are a byte");
+    }
+
+    // The binary result is those sixteen bytes, big-endian order kept.
+    client.parse("", "SELECT ref FROM locks", &[]).await;
+    client.bind("", "", &[], &[], &[1]).await;
+    client.execute("", 0).await;
+    client.sync().await;
+    client.message().await; // ParseComplete
+    client.message().await; // BindComplete
+    let got = row_of(&mut client).await;
+    assert_eq!(got, vec![Some(bytes.to_vec())], "the text form {text}");
 }
 
 #[tokio::test]

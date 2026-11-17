@@ -23,6 +23,25 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.47.0 — 2026-11-17
+
+A store written by 0.46.0 opens under 0.47.0 unchanged.
+
+- **The relational wire, widened.** Catalog introspection answers what the
+  dialect's clients ask: `psql`'s `\d` renders a table end to end — shape,
+  columns, types, defaults, collation — through catalog relations the store's
+  own introspection builds, and `\dt` lists the tables. Writes cross the wire
+  (`INSERT`/`UPDATE`/`DELETE` with `RETURNING` and honest counts,
+  `CREATE TABLE`/`DROP TABLE`), value-list `IN` answers exactly as the OR-chain
+  it is, projection arithmetic and quoted identifiers ride through, the
+  timestamptz and uuid binary formats join the fixed scalars, and row-limited
+  portals suspend and resume. Transaction verbs run the store's own block:
+  `BEGIN` holds one snapshot across however many statements follow,
+  `COMMIT` lands what they buffered, `ROLLBACK` undoes with the store's own
+  discard — the verbs inside one query string run as written, each under its
+  own tag. What the port does not speak still refuses by name; the defer list
+  v2 ships with the release.
+
 ## 0.46.0 — 2026-11-17
 
 A store written by 0.45.0 opens under 0.46.0 unchanged.

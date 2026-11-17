@@ -29,7 +29,9 @@ impl Parser<'_> {
     /// The simple query path: statements until the text ends, the whole held
     /// in one implicit transaction block when there is more than one — the
     /// dialect's own multi-statement semantics (§54.2.2.1), on the store's
-    /// own transaction boundary.
+    /// own transaction boundary. Strings carrying transaction verbs take the
+    /// `verbs` module's path instead, which dispatches every statement on one
+    /// parser — see [`super::verbs`].
     pub(crate) fn select_many(&mut self) -> Result<Translated, Refused> {
         self.depth_guard()?;
         if self.keyword("SELECT").is_err() {
@@ -70,6 +72,42 @@ impl Parser<'_> {
         })
     }
 
+    /// One transaction verb at the cursor, when one opens here: the
+    /// dialect's own words, run as the store's — `ROLLBACK` included, which
+    /// the store spells `CANCEL`. `Ok(None)` is not a verb: the caller reads
+    /// a query. Used by the `verbs` module, which drives strings mixing
+    /// verbs with the other statements on one parser.
+    pub(crate) fn transaction_verb(&mut self) -> Result<Option<Shaped>, Refused> {
+        use super::write::Tag;
+        let verb = if self.keyword("begin").is_ok() {
+            Some(("BEGIN;", Tag::Begin))
+        } else if self.keyword("start").is_ok() {
+            if self.keyword("transaction").is_err() {
+                return Err(Refused::surface(
+                    code::SYNTAX,
+                    "START wants TRANSACTION in this build",
+                ));
+            }
+            Some(("BEGIN;", Tag::Begin))
+        } else if self.keyword("commit").is_ok() || self.keyword("end").is_ok() {
+            Some(("COMMIT;", Tag::Commit))
+        } else if self.keyword("rollback").is_ok() || self.keyword("abort").is_ok() {
+            Some(("CANCEL;", Tag::Rollback))
+        } else {
+            None
+        };
+        Ok(verb.map(|(script, tag)| Shaped {
+            script: script.to_owned(),
+            columns: Columns::Named(Vec::new()),
+            table: None,
+            catalog: None,
+            inference: Vec::new(),
+            record_names: Vec::new(),
+            tag,
+            returning: None,
+        }))
+    }
+
     /// The SELECT is consumed; the rest of the shape follows. `IN (SELECT …)`
     /// recurses here, sharing the parameter and slot state with the outer
     /// query, so a literal in a subquery binds exactly where it stands.
@@ -79,6 +117,15 @@ impl Parser<'_> {
         let mut alias = None;
         let mut joins = String::new();
         if self.keyword("FROM").is_ok() {
+            let at = self.snapshot();
+            if let Some(word) = self.bare_ident()
+                && super::catalog::opens(&word)
+            {
+                // A catalog statement: the responder answers it locally,
+                // the projection's items become its column paths.
+                return super::catalog::rest(self, projection.items, &word);
+            }
+            self.restore(at);
             from = Some(self.table_source("a qualified name")?);
             if self.keyword("AS").is_ok() {
                 alias = Some(self.ident()?);
@@ -148,13 +195,18 @@ impl Parser<'_> {
                 "OFFSET is not spoken in this build",
             ));
         }
-        let (script, columns) = self.assemble(
+        let (script, columns, record_names) = self.assemble(
             projection, &from, alias, condition, group, having, order, limit, joins,
         )?;
         Ok(Shaped {
             script,
             columns,
             table: from,
+            catalog: None,
+            inference: std::mem::take(&mut self.inference),
+            record_names,
+            tag: super::write::Tag::Select,
+            returning: None,
         })
     }
 
@@ -173,7 +225,39 @@ impl Parser<'_> {
         order: Option<String>,
         limit: Option<u64>,
         joins: String,
-    ) -> Result<(String, Columns), Refused> {
+    ) -> Result<(String, Columns, Vec<Option<String>>), Refused> {
+        // Computed projections (CASE mappings, catalog function calls) are
+        // the catalog's own: the store speaks neither, so they refuse by
+        // name rather than half-running. A bare literal is the exception —
+        // it binds as a parameter, which the store speaks natively.
+        if projection
+            .items
+            .iter()
+            .any(|item| matches!(&item.computed, Some(c) if !matches!(c, super::Computed::Lit(_))))
+        {
+            return Err(Refused::surface(
+                code::FEATURE,
+                "computed projections are not spoken over the store in this build",
+            ));
+        }
+        // The store answers an unnamed arithmetic projection under the
+        // port's own alias (e1, e2…), which the wire names ?column? —
+        // the record name rides beside the client name.
+        let record_names = projection
+            .items
+            .iter()
+            .map(|item| {
+                if item.column == super::UNNAMED {
+                    item.text
+                        .rsplit(" AS ")
+                        .next()
+                        .filter(|name| name.starts_with('e'))
+                        .map(ToOwned::to_owned)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
         let (script, columns) = match from {
             Some(table) => {
                 let mut script = String::from("SELECT ");
@@ -226,7 +310,7 @@ impl Parser<'_> {
                 (script, Columns::Named(vec![UNNAMED.to_owned()]))
             }
         };
-        Ok((script, columns))
+        Ok((script, columns, record_names))
     }
 
     /// One table name, or a named refusal when what follows is the feature
@@ -325,7 +409,7 @@ impl Parser<'_> {
 
     /// Whether another statement follows the semicolon just eaten: `true`
     /// when text remains, `false` at the end of the query.
-    fn end_more(&mut self) -> Result<bool, Refused> {
+    pub(crate) fn end_more(&mut self) -> Result<bool, Refused> {
         self.skip_space();
         if self.byte(b';') {
             self.skip_space();
