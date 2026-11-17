@@ -592,7 +592,7 @@ fn the_loop_persists_the_confirmed_position_and_a_fresh_loop_resumes_from_it() {
 
     // Stop the loop before it has served a tick: the stop itself lands the cursor.
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-    let mut seen = ChannelSink::new();
+    let seen = ChannelSink::new();
     let task = std::future::poll_fn({
         let source = source.clone();
         move |_| {

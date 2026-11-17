@@ -306,7 +306,7 @@ async fn ship(store: &Store, link: &str, envelope: Envelope) -> Result<Sequence>
     };
     let stream = tokio::net::TcpStream::connect(endpoint.as_str())
         .await
-        .map_err(|why| Error::Io(why))?;
+        .map_err(Error::Io)?;
     if let Err(why) = stream.set_nodelay(true) {
         tracing::warn!(error = %why, "a link shipment could not turn off Nagle's algorithm");
     }

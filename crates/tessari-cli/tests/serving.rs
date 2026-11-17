@@ -2139,6 +2139,179 @@ fn a_six_of_rows(
     }
 }
 
+/// The two clusters of the 2-DC proof — 48068-48069, a band of its own, above
+/// every other band this suite holds (derived from the tree's own ports, the
+/// way the SG3 bands were). Two INDEPENDENT nodes: no peer doors, no cluster
+/// credentials — the link is the only seam between them.
+const LINK_PRIMARY: &str = "127.0.0.1:48068";
+const LINK_DR: &str = "127.0.0.1:48069";
+
+/// How many records the copy of `prod.shop.orders` holds, read as the operator.
+fn order_count_at(surface: &str) -> Result<usize, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    match client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; SELECT * FROM orders;",
+            Some(("operator", SECRET)),
+        )
+        .map_err(|why| why.to_string())?
+        .last()
+    {
+        Some(Answer::Records { records, .. }) => Ok(records.len()),
+        other => Err(format!("{other:?}")),
+    }
+}
+
+#[test]
+fn a_write_at_the_primary_reads_at_the_dr_over_the_link() {
+    // G090 SG4 W2's exit, live: two processes, one link, a write at the source
+    // reads at the destination. The DR comes up the deferred-D8 way — a
+    // snapshot of the primary, the source's replication row dropped, the
+    // inbound half declared over the restored database, and the token the
+    // pair binds by created there and carried to the primary's environment.
+    let directory = tempfile::tempdir().unwrap();
+    let primary_store = directory.path().join("primary/store");
+    let dr_store = directory.path().join("dr/store");
+    std::fs::create_dir_all(primary_store.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(dr_store.parent().unwrap()).unwrap();
+
+    // The primary: the schema, its data, and the outbound half. The link is
+    // declared before the user exists — the store is open until its first
+    // user is defined, and the link names no credential.
+    let schema = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                  USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+                  CREATE orders:1 = { item: 'book' }; \
+                  USE NAMESPACE prod DATABASE shop; \
+                  DEFINE REPLICATION east TO '127.0.0.1:48069' FOR DATABASE prod.shop; \
+                  DEFINE USER operator ROLE owner PASSWORD 'a long enough password';";
+    let db = tessaridb::Db::open(&primary_store).now().unwrap();
+    db.session()
+        .run_now(schema)
+        .unwrap_or_else(|why| panic!("the primary's schema: {why}\n{schema}"));
+    db.close().now().unwrap();
+
+    // The DR's bootstrap: the snapshot. The snapshot carried the primary's
+    // `east` row and the operator — the store is closed from its first
+    // statement, so its half of the link is configured over the wire, signed,
+    // once its node is up.
+    let backup = directory.path().join("backup.bin");
+    let taken = Command::new(TESSARIDB)
+        .arg(&primary_store)
+        .arg("--backup")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(taken.status.success(), "the backup: {taken:?}");
+    let restored = Command::new(TESSARIDB)
+        .arg(&dr_store)
+        .arg("--restore")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(
+        restored.status.success(),
+        "the restore: {:?}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    let dr = {
+        let log = directory.path().join("dr/node.log");
+        let writing = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .unwrap();
+        let child = Command::new(TESSARIDB)
+            .arg(&dr_store)
+            .args(["--serve", LINK_DR])
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(writing))
+            .spawn()
+            .unwrap();
+        Running(child)
+    };
+    assert!(listening(LINK_DR, Duration::from_secs(30)));
+
+    // The copy the snapshot built holds the pre-link record.
+    assert_eq!(
+        order_count_at(LINK_DR).expect("the restored copy reads"),
+        1,
+        "the snapshot's record is the copy's starting point"
+    );
+
+    // The DR's half: the source's row dropped — it names an endpoint this
+    // cluster must not serve — the inbound half declared over the restored
+    // database, and the token the pair binds by, created on this side and
+    // carried to the primary's operator by the test the way an operator
+    // carries it by hand.
+    let token = {
+        let mut client = Client::connect(LINK_DR).unwrap();
+        let answered = client
+            .run(
+                "DROP REPLICATION east; \
+                 DEFINE REPLICATION west FROM '127.0.0.1:48068' FOR DATABASE prod.shop; \
+                 CREATE LINK TOKEN FOR REPLICATION west EXPIRES 10m;",
+                Some(("operator", SECRET)),
+            )
+            .unwrap_or_else(|why| panic!("the DR's half of the link: {why}"));
+        match answered.last() {
+            Some(Answer::Value { value, .. }) => match value {
+                tessaridb::Value::String(held) => held.clone(),
+                other => panic!("the token is a string: {other:?}"),
+            },
+            other => panic!("the token statement answered: {other:?}"),
+        }
+    };
+
+    // The primary, the token in its environment — the secret enters through
+    // the environment, never the catalog.
+    let primary = {
+        let log = directory.path().join("primary/node.log");
+        let writing = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .unwrap();
+        let child = Command::new(TESSARIDB)
+            .arg(&primary_store)
+            .args(["--serve", LINK_PRIMARY])
+            .env("TESSARIDB_LINK_TOKEN_EAST", &token)
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(writing))
+            .spawn()
+            .unwrap();
+        Running(child)
+    };
+    assert!(listening(LINK_PRIMARY, Duration::from_secs(30)));
+    let _both = (primary, dr);
+
+    // A write made after both nodes came up crosses on the link's own cadence.
+    let mut client = Client::connect(LINK_PRIMARY).unwrap();
+    client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' };",
+            Some(("operator", SECRET)),
+        )
+        .unwrap();
+    let converged = paced_until(Duration::from_secs(30), POLL, || {
+        order_count_at(LINK_DR).is_ok_and(|count| count == 2)
+    });
+    assert!(converged, "the write at the primary reached the copy");
+
+    // And the copy stays read-only by its declaration: its own writer is the
+    // other cluster.
+    let mut reading = Client::connect(LINK_DR).unwrap();
+    let refused = reading
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:3 = { item: 'sneaky' };",
+            Some(("operator", SECRET)),
+        )
+        .expect_err("the copy refuses its own divergent writes");
+    assert!(
+        refused.to_string().contains("read-only"),
+        "the refusal names the read-only: {refused}"
+    );
+}
+
 /// [`item_ids_at`], signed as the operator — this exercise closes its store,
 /// and an unsigned read is a sign-in refusal, not an empty answer.
 fn signed_item_ids_at(surface: &str) -> Result<Vec<String>, String> {

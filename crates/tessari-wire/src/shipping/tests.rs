@@ -92,7 +92,6 @@ fn the_link_kind_is_tagged_beside_the_part_it_follows() {
     assert_eq!(frame::Kind::from_tag(40), Some(frame::Kind::Link));
     // The peer link's space is untouched — 39 is its StateEntries.
     assert_eq!(frame::Kind::from_tag(39), None);
-    assert!(frame::MINOR >= frame::LINKED);
 }
 
 #[test]
