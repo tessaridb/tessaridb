@@ -472,6 +472,7 @@ impl Session<'_> {
                 inbound: declared.inbound,
                 paused: false,
                 join: None,
+                position: None,
             })
             .await?;
         Ok(Outcome::Done)
