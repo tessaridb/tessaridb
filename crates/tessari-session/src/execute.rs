@@ -1044,19 +1044,23 @@ impl Session<'_> {
                         Catalog::new(transaction)
                             .set_auto_split(
                                 id,
-                                Some(tessari_storage::AutoSplit {
-                                    above: u64::from(policy.above),
-                                    writes_per_second: policy.writes_per_second.map(u64::from),
-                                    merge_below: u64::from(policy.merge_below),
-                                    min_shards: u64::from(policy.min_shards.unwrap_or(1)),
-                                    max_shards: policy.max_shards.map(u64::from),
-                                }),
+                                tessari_storage::AutoSplitSetting::Policy(
+                                    tessari_storage::AutoSplit {
+                                        above: u64::from(policy.above),
+                                        writes_per_second: policy.writes_per_second.map(u64::from),
+                                        merge_below: u64::from(policy.merge_below),
+                                        min_shards: u64::from(policy.min_shards.unwrap_or(1)),
+                                        max_shards: policy.max_shards.map(u64::from),
+                                    },
+                                ),
                             )
                             .await?;
                         return Ok(Outcome::Done);
                     }
                     TableChange::SplitManually => {
-                        Catalog::new(transaction).set_auto_split(id, None).await?;
+                        Catalog::new(transaction)
+                            .set_auto_split(id, tessari_storage::AutoSplitSetting::Off)
+                            .await?;
                         return Ok(Outcome::Done);
                     }
                     TableChange::Expire(expire) => {

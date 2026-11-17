@@ -152,10 +152,13 @@ pub struct TableDefinition {
     /// Whether a generated identity begins with a bucket (`IDENTITY uuid
     /// SPREAD`, ADR-0113 D1); written only when set.
     pub spread: bool,
-    /// When the store line's leader splits and merges the table's shards
-    /// itself (`ALTER TABLE … SPLIT AUTOMATICALLY`, ADR-0113 D2); written only
-    /// when set.
-    pub auto_split: Option<super::AutoSplit>,
+    /// How the table comes by its balancing policy, when it does
+    /// (`ALTER TABLE … SPLIT AUTOMATICALLY`, ADR-0113 D2). A policy is
+    /// written as its bounds, a stated `SPLIT MANUALLY` as a stored null, and
+    /// no row at all reads as [`super::AutoSplitSetting::Inherited`] — the
+    /// namespace's default decides, and while no namespace states one that
+    /// reading is the off every table has always known, byte for byte.
+    pub auto_split: super::AutoSplitSetting,
     /// What runs after each write of one of its records (ADR-0110), in name
     /// order; written only when there is one, so an entry without events is
     /// the bytes it always was.

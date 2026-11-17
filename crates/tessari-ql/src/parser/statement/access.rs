@@ -11,12 +11,13 @@ use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
 
 /// The split bound a bare `SPLIT AUTOMATICALLY` bakes: a shard holding more
-/// records than this is split.
-const BARE_ABOVE: u32 = 1_000_000;
+/// records than this is split. The number's home is `tessari_types`, so this
+/// fill and the balancer's inherited default cannot drift apart.
+const BARE_ABOVE: u32 = tessari_types::BARE_SPLIT_ABOVE_RECORDS;
 /// The merge bound a bare `SPLIT AUTOMATICALLY` bakes: neighbours under this
 /// together merge. A fifth of [`BARE_ABOVE`], the pairing the declare-time
 /// oscillation guard accepts with a 2.5× margin.
-const BARE_MERGE_BELOW: u32 = 200_000;
+const BARE_MERGE_BELOW: u32 = tessari_types::BARE_SPLIT_MERGE_RECORDS;
 
 impl Parser<'_> {
     /// `DEFINE USER ada ON prod.orders ROLE editor PASSWORD '…'`

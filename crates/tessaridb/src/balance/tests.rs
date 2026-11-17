@@ -569,6 +569,96 @@ fn one_bound_written_still_requires_the_pair() {
 }
 
 #[test]
+fn a_namespace_default_merges_what_its_inherited_tables_hold() {
+    // The baked policy an inherited table balances by, visible at a tiny
+    // scale: two neighbours under 200,000 records together merge.
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(
+            "DEFINE NAMESPACE prod SPLIT AUTOMATICALLY; \
+             USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+             DEFINE TABLE events (n int) IDENTITY uuid SPREAD SPLIT AT '5';",
+        )
+        .expect("the namespace states its default");
+    db.session()
+        .run_now(&format!(
+            "{TENANCY} CREATE events = {{ n: 1 }}; CREATE events = {{ n: 2 }};"
+        ))
+        .expect("the records write");
+    let (_, merged) = passes(&db, &mut ShardSamples::default());
+    assert!(
+        merged >= 1,
+        "the inherited default merged the two quiet neighbours"
+    );
+}
+
+#[test]
+fn a_tables_own_policy_beats_the_namespace_default() {
+    // An explicit declaration is the operator's answer and wins: a merge
+    // bound of 20 leaves two shards holding 25 records alone, where the
+    // inherited 200,000 would have merged them.
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(
+            "DEFINE NAMESPACE prod SPLIT AUTOMATICALLY; \
+             USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+             DEFINE TABLE events (n int) IDENTITY uuid SPREAD SPLIT AT '5'; \
+             ALTER TABLE events SPLIT AUTOMATICALLY ABOVE 100 RECORDS MERGE BELOW 20 RECORDS;",
+        )
+        .expect("the table declares its own bounds");
+    let creates = " CREATE events = { n: 1 };".repeat(25);
+    db.session()
+        .run_now(&format!("{TENANCY}{creates}"))
+        .expect("the records write");
+    let (_, merged) = passes(&db, &mut ShardSamples::default());
+    assert_eq!(merged, 0, "the explicit merge bound wins over the default");
+}
+
+#[test]
+fn a_stated_split_manually_beats_the_namespace_default() {
+    // Withdrawing is a stated off, and a stated off survives the default: two
+    // quiet shards stay two under a default-on namespace.
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(
+            "DEFINE NAMESPACE prod SPLIT AUTOMATICALLY; \
+             USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+             DEFINE TABLE events (n int) IDENTITY uuid SPREAD SPLIT AT '5'; \
+             ALTER TABLE events SPLIT MANUALLY;",
+        )
+        .expect("the opt-out states off");
+    db.session()
+        .run_now(&format!(
+            "{TENANCY} CREATE events = {{ n: 1 }}; CREATE events = {{ n: 2 }};"
+        ))
+        .expect("the records write");
+    let (_, merged) = passes(&db, &mut ShardSamples::default());
+    assert_eq!(merged, 0, "the stated off wins over the default");
+}
+
+#[test]
+fn the_bared_policy_is_the_stores_published_bounds() {
+    // The pair the allow-commented widening in `AutoSplit::BARED` stands on,
+    // pinned: the same numbers the parser fills a bare declaration with, and
+    // the pairing the declare-time oscillation guard accepts.
+    let bared = tessari_storage::AutoSplit::BARED;
+    assert_eq!(
+        bared.above,
+        u64::from(tessari_types::BARE_SPLIT_ABOVE_RECORDS)
+    );
+    assert_eq!(
+        bared.merge_below,
+        u64::from(tessari_types::BARE_SPLIT_MERGE_RECORDS)
+    );
+    assert_eq!(bared.min_shards, 1);
+    assert!(bared.max_shards.is_none());
+    assert!(
+        bared.merge_below.saturating_mul(2) < bared.above,
+        "the baked pair keeps the oscillation guard's margin"
+    );
+}
+
+#[test]
 fn a_policy_with_shard_count_bounds_round_trips_through_the_report_and_definition() {
     let db = Db::in_memory().now().unwrap();
     orders(

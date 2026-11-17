@@ -34,8 +34,8 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use tessari_storage::{
-    Catalog, LogId, SampledShard, SampledTable, ShardMap, ShardSpan, TableDefinition, Transaction,
-    Window,
+    AutoSplit, AutoSplitSetting, Catalog, LogId, SampledShard, SampledTable, ShardMap, ShardSpan,
+    TableDefinition, Transaction, Window,
 };
 use tessari_types::{Reach, RecordId, Sequence, ShardId, TableId};
 
@@ -127,7 +127,9 @@ impl Db {
         let rates = self.writes_since(&tables, samples).await?;
         let mut published = Vec::with_capacity(named.len());
         for (name, table) in named {
-            let (Some(policy), Some(map)) = (table.auto_split, table.shards.as_ref()) else {
+            let (AutoSplitSetting::Policy(policy), Some(map)) =
+                (table.auto_split, table.shards.as_ref())
+            else {
                 continue;
             };
             let above = usize::try_from(policy.above).unwrap_or(usize::MAX);
@@ -243,18 +245,31 @@ impl Db {
         let catalog = Catalog::new(&mut reading);
         let mut found = Vec::new();
         for namespace in catalog.namespaces().await? {
+            // The default the namespace states decides what its inherited
+            // tables balance by; an explicit policy or a stated `SPLIT
+            // MANUALLY` beats it either way.
+            let inherited = namespace
+                .auto_split_default
+                .unwrap_or(false)
+                .then_some(AutoSplitSetting::Policy(AutoSplit::BARED));
             for database in catalog.databases_in(namespace.id).await? {
                 found.extend(
                     catalog
                         .tables_in(namespace.id, database.id)
                         .await?
                         .into_iter()
-                        .filter(|table| table.auto_split.is_some() && table.shards.is_some())
-                        .map(|table| {
-                            (
-                                format!("{}.{}.{}", namespace.name, database.name, table.name),
-                                table,
-                            )
+                        .filter(|table| table.shards.is_some())
+                        .filter_map(|mut table| {
+                            if matches!(table.auto_split, AutoSplitSetting::Inherited) {
+                                table.auto_split = inherited?;
+                            }
+                            match table.auto_split {
+                                AutoSplitSetting::Policy(_) => Some((
+                                    format!("{}.{}.{}", namespace.name, database.name, table.name),
+                                    table,
+                                )),
+                                _ => None,
+                            }
                         }),
                 );
             }

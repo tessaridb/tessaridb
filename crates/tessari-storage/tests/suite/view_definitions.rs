@@ -66,7 +66,7 @@ fn view(id: u32, read: &str) -> TableDefinition {
         shards: None,
         partition: None,
         spread: false,
-        auto_split: None,
+        auto_split: tessari_storage::AutoSplitSetting::Inherited,
         expire: None,
         events: Vec::new(),
         feeds: Vec::new(),

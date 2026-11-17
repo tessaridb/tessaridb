@@ -72,9 +72,9 @@ pub(crate) use change::{CatalogChange, catalog_change, defined_analyzer, defined
 pub use consumer::{ConsumerDefinition, Feed, Mapped, OnFailure};
 pub(crate) use decoded::DecodedTables;
 pub use definition::{
-    AutoSplit, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, DatabaseDefinition, EdgeDeclaration,
-    EdgeOrder, EngineField, EngineMember, EventDeclaration, FeedDeclaration, GEO_FIELD,
-    HashPartitioning, IndexDefinition, IndexShape, NamespaceDefinition, QUEUE_ATTEMPTS,
+    AutoSplit, AutoSplitSetting, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, DatabaseDefinition,
+    EdgeDeclaration, EdgeOrder, EngineField, EngineMember, EventDeclaration, FeedDeclaration,
+    GEO_FIELD, HashPartitioning, IndexDefinition, IndexShape, NamespaceDefinition, QUEUE_ATTEMPTS,
     QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, RollupCompute,
     RollupDeclaration, RollupFold, SearchCosts, SeriesDeclaration, StorageKind, StoredKind,
     TableDefinition, TableExpiry, TableKind, TableShape, UNIT_WEIGHT, VECTOR_FIELD, VaultCustody,
@@ -312,11 +312,11 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// when a split's two halves would merge straight back;
     /// [`Error::AutoSplitMaxBelowMin`] when the maximum shard count is below
     /// the minimum.
-    pub async fn set_auto_split(&mut self, id: TableId, policy: Option<AutoSplit>) -> Result<bool> {
+    pub async fn set_auto_split(&mut self, id: TableId, setting: AutoSplitSetting) -> Result<bool> {
         let Some(mut definition) = self.table(id).await? else {
             return Ok(false);
         };
-        if let Some(policy) = policy {
+        if let AutoSplitSetting::Policy(policy) = setting {
             if definition.shards.is_none() {
                 return Err(Error::AutoSplitOnAnUnsplitTable {
                     table: definition.name,
@@ -345,7 +345,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 });
             }
         }
-        definition.auto_split = policy;
+        definition.auto_split = setting;
         self.write(system::TABLES, id.get(), &definition.to_value());
         Ok(true)
     }

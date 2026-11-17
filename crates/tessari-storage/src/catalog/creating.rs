@@ -284,7 +284,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             shards,
             partition: shape.partition,
             spread: shape.spread,
-            auto_split: None,
+            auto_split: super::definition::AutoSplitSetting::Inherited,
             events: Vec::new(),
             feeds: Vec::new(),
             expire: None,

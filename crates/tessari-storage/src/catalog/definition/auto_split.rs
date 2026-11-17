@@ -14,6 +14,24 @@ const MERGE_BELOW: &str = "merge_below";
 const MIN_SHARDS: &str = "min_shards";
 const MAX_SHARDS: &str = "max_shards";
 
+/// How a table comes by its balancing policy, when it does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoSplitSetting {
+    /// No policy row: the table inherits its namespace's default — off while
+    /// the namespace never stated one, which is what every table written
+    /// before this setting existed has always done, and on at
+    /// [`AutoSplit::BARED`] the day its namespace says `SPLIT AUTOMATICALLY`.
+    Inherited,
+    /// `SPLIT MANUALLY`, stated: off, and stated off survives a namespace
+    /// default. Encoded as a stored null, kept apart from [`Self::Inherited`]
+    /// for the reason the namespace's own stated-off is kept apart from
+    /// silence: withdrawing a default is a decision somebody took, and the
+    /// two must not report the same answer.
+    Off,
+    /// The bounds the declaration carries.
+    Policy(AutoSplit),
+}
+
 /// The bounds the store line's leader keeps a table's shards within.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AutoSplit {
@@ -34,6 +52,21 @@ pub struct AutoSplit {
 }
 
 impl AutoSplit {
+    /// The bounds a bare `SPLIT AUTOMATICALLY` declares and an inherited
+    /// namespace default resolves to — the same numbers, from the single
+    /// home in `tessari_types`, so the two paths cannot drift apart.
+    pub const BARED: Self = Self {
+        // bgv-allow(M18): u32→u64 widening is infallible and `u64::from` is
+        // not const-callable on this toolchain (E0658); the numbers' single
+        // home is the types constant on the right, and the balance suite
+        // pins the pair together.
+        above: tessari_types::BARE_SPLIT_ABOVE_RECORDS as u64,
+        writes_per_second: None,
+        merge_below: tessari_types::BARE_SPLIT_MERGE_RECORDS as u64,
+        min_shards: 1,
+        max_shards: None,
+    };
+
     /// As the definition stores it.
     pub(crate) fn to_value(self) -> Value {
         let number =

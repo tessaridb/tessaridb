@@ -462,7 +462,7 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
     write_retired_expiry(script, name, definition);
     // Its own statement, as an operator writes it: a table restored without it
     // would stop splitting itself with nothing in an error state (ADR-0113 D2).
-    if let Some(policy) = definition.auto_split {
+    if let tessari_storage::AutoSplitSetting::Policy(policy) = definition.auto_split {
         let _ = write!(
             script,
             "ALTER TABLE {name} SPLIT AUTOMATICALLY ABOVE {} RECORDS",

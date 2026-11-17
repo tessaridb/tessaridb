@@ -93,6 +93,70 @@ fn a_stored_table_claiming_two_kinds_is_refused_rather_than_read_as_one_of_them(
 }
 
 #[test]
+fn the_auto_split_setting_round_trips_and_keeps_the_old_bytes_reading() {
+    use super::super::{AutoSplit, AutoSplitSetting};
+    let base = TableDefinition {
+        id: TableId::new(11),
+        namespace: NamespaceId::new(7),
+        database: DatabaseId::new(3),
+        name: "events".to_owned(),
+        schemafull: false,
+        graph: None,
+        shards: None,
+        partition: None,
+        spread: false,
+        auto_split: AutoSplitSetting::Inherited,
+        expire: None,
+        events: Vec::new(),
+        feeds: Vec::new(),
+        kind: TableKind::Table,
+        identity: IdentityKind::Int,
+        conflict: None,
+        referenced_by: Vec::new(),
+        storage_kind: None,
+        partitions: None,
+    };
+    // No row at all: inherited — and the value is the exact object a
+    // definition written before the setting existed already encodes to.
+    let inherited = base.to_value();
+    let read_back = TableDefinition::from_value(&inherited).unwrap();
+    assert_eq!(
+        read_back,
+        base.clone(),
+        "absent reads as inherited, byte for byte"
+    );
+    // A stated off is a stored null, kept apart from the absent row.
+    let off = TableDefinition {
+        auto_split: AutoSplitSetting::Off,
+        ..base.clone()
+    };
+    let value = off.to_value();
+    let Value::Object(fields) = &value else {
+        panic!("the definition encodes as an object, {value:?}");
+    };
+    assert_eq!(
+        fields.get("auto_split"),
+        Some(&Value::Null),
+        "a stated off encodes as a stored null"
+    );
+    assert_eq!(TableDefinition::from_value(&value).unwrap(), off);
+    // The declared bounds encode as the object they always did, so a policy
+    // written before the setting existed still reads as that policy.
+    let policy = AutoSplit {
+        above: 100,
+        writes_per_second: None,
+        merge_below: 20,
+        min_shards: 1,
+        max_shards: None,
+    };
+    let on = TableDefinition {
+        auto_split: AutoSplitSetting::Policy(policy),
+        ..base
+    };
+    assert_eq!(TableDefinition::from_value(&on.to_value()).unwrap(), on);
+}
+
+#[test]
 fn an_edge_table_round_trips_its_endpoints_and_the_order_its_edges_are_held_in() {
     let table = TableDefinition {
         id: TableId::new(11),
@@ -104,7 +168,7 @@ fn an_edge_table_round_trips_its_endpoints_and_the_order_its_edges_are_held_in()
         shards: None,
         partition: None,
         spread: false,
-        auto_split: None,
+        auto_split: super::super::AutoSplitSetting::Inherited,
         expire: None,
         events: Vec::new(),
         feeds: Vec::new(),
@@ -171,7 +235,7 @@ fn a_vector_store_round_trips_its_width_and_its_distance() {
         shards: None,
         partition: None,
         spread: false,
-        auto_split: None,
+        auto_split: super::super::AutoSplitSetting::Inherited,
         expire: None,
         events: Vec::new(),
         feeds: Vec::new(),

@@ -29,7 +29,7 @@ use tessari_types::{
 
 use super::ShardMap;
 use crate::error::{Error, Result};
-pub use auto_split::AutoSplit;
+pub use auto_split::{AutoSplit, AutoSplitSetting};
 pub use declarations::{
     EdgeDeclaration, EdgeOrder, QueueDeclaration, SeriesDeclaration, VaultCustody,
     VaultDeclaration, VectorDeclaration, ViewDeclaration,
