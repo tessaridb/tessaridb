@@ -228,8 +228,13 @@ impl Parser<'_> {
     ) -> Result<(String, Columns, Vec<Option<String>>), Refused> {
         // Computed projections (CASE mappings, catalog function calls) are
         // the catalog's own: the store speaks neither, so they refuse by
-        // name rather than half-running.
-        if projection.items.iter().any(|item| item.computed.is_some()) {
+        // name rather than half-running. A bare literal is the exception —
+        // it binds as a parameter, which the store speaks natively.
+        if projection
+            .items
+            .iter()
+            .any(|item| matches!(&item.computed, Some(c) if !matches!(c, super::Computed::Lit(_))))
+        {
             return Err(Refused::surface(
                 code::FEATURE,
                 "computed projections are not spoken over the store in this build",

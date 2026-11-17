@@ -165,6 +165,13 @@ pub(crate) enum Computed {
         arms: Vec<(catalog::terms::Term, Expr)>,
         otherwise: Option<Expr>,
     },
+    /// A bare boolean the projection carries (`'d' = any(stxkind) AS
+    /// ndist_enabled`): a catalog term read as a truth value against the row.
+    Predicate(catalog::terms::Term),
+    /// A bare literal the projection carries (`false AS relhasoids`, `''`) —
+    /// the catalog answers it from itself; the store shape binds it as a
+    /// parameter like any other literal.
+    Lit(Value),
     /// `pg_catalog.pg_get_userbyid(<path>)` — answered from the connection's
     /// identity, not from the store.
     OwnerOf,
@@ -178,18 +185,40 @@ pub(crate) enum Computed {
     ScalarSubquery { query: catalog::Query },
 }
 
-/// One searched-CASE arm value: a literal, or a path carrying `::` casts.
+/// One searched-CASE arm value: a literal, a path carrying `::` casts, or a
+/// catalog function call (`array_to_string` over a role list).
 #[derive(Debug, Clone)]
 pub(crate) enum Expr {
     Lit(Value),
-    Path { path: String, casts: Vec<String> },
+    Path {
+        path: String,
+        casts: Vec<String>,
+    },
+    Call {
+        path: String,
+        args: Vec<CallArg>,
+    },
+    /// `<expr> = <literal>` read as the boolean it is — an ORDER BY key the
+    /// partition listing sorts on.
+    Eq {
+        left: Box<Expr>,
+        right: Value,
+    },
 }
 
-/// One catalog function argument: a column path or a literal.
+/// One catalog function argument: a column path, a literal, or a subquery —
+/// `array(SELECT …)` the policy listing folds a role list through.
 #[derive(Debug, Clone)]
 pub(crate) enum CallArg {
     Path(String),
     Lit(Value),
+    Subquery(Box<catalog::Query>),
+    /// A nested catalog call — `array(SELECT …)` the role-list fold hands
+    /// its outer function.
+    Call {
+        path: String,
+        args: Vec<CallArg>,
+    },
 }
 
 /// One projection, rendered and named, with the items it was built from —

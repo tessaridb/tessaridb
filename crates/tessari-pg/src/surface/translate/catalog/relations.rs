@@ -28,11 +28,21 @@ pub(crate) fn catalog_type_of(output: &str) -> (u32, String) {
 pub(crate) fn type_name_of(oid: i64) -> Option<String> {
     use crate::surface::types::oid as surface_oid;
     let name = match u32::try_from(oid).ok()? {
-        surface_oid::OID => "oid",
-        surface_oid::INT4 => "int4",
-        surface_oid::FLOAT8 => "float8",
-        surface_oid::BOOL => "bool",
-        surface_oid::TEXT => "text",
+        x if x == surface_oid::BOOL => "bool",
+        x if x == surface_oid::BYTEA => "bytea",
+        x if x == surface_oid::INT8 => "int8",
+        x if x == surface_oid::INT2 => "int2",
+        x if x == surface_oid::INT4 => "int4",
+        x if x == surface_oid::TEXT => "text",
+        x if x == surface_oid::OID => "oid",
+        x if x == surface_oid::FLOAT4 => "float4",
+        x if x == surface_oid::FLOAT8 => "float8",
+        x if x == surface_oid::VARCHAR => "varchar",
+        x if x == surface_oid::TIMESTAMPTZ => "timestamptz",
+        x if x == surface_oid::INTERVAL => "interval",
+        x if x == surface_oid::NUMERIC => "numeric",
+        x if x == surface_oid::UUID => "uuid",
+        x if x == surface_oid::JSONB => "jsonb",
         _ => return None,
     };
     Some(name.to_owned())
@@ -85,6 +95,7 @@ fn pg_type() -> Relation {
             "typbasetype",
             "typnamespace",
             "typrelid",
+            "typcollation",
         ],
         rows: ROWS
             .iter()
@@ -97,9 +108,58 @@ fn pg_type() -> Relation {
                     int(0),
                     int(11),
                     int(0),
+                    // The collatable types carry the default collation,
+                    // what the deep describe's collation subquery compares.
+                    int(if matches!(*oid, 25 | 1043) { 100 } else { 0 }),
                 ]
             })
             .collect(),
+    }
+}
+
+/// The listing relations this build holds empty: policies, roles, rewrite
+/// rules and inheritance — the dialect's `\d` asks after each, and an empty
+/// relation answers an empty listing, which is the truth of this build
+/// rather than a gap dressed as one.
+fn empty(name: &str) -> Relation {
+    let columns: &[&str] = match name {
+        "pg_policy" => &[
+            "oid",
+            "polname",
+            "polpermissive",
+            "polroles",
+            "polrelid",
+            "polqual",
+            "polwithcheck",
+            "polcmd",
+        ],
+        "pg_roles" => &["oid", "rolname"],
+        "pg_rewrite" => &["oid", "rulename", "ev_class"],
+        "pg_statistic_ext" => &[
+            "oid",
+            "stxrelid",
+            "stxnamespace",
+            "stxname",
+            "stxkeys",
+            "stxkind",
+            "stxstattarget",
+        ],
+        "pg_publication" => &["oid", "pubname", "puballtables"],
+        "pg_publication_rel" => &["oid", "prpubid", "prrelid"],
+        _ => &["oid", "inhrelid", "inhparent", "inhseqno"],
+    };
+    Relation {
+        columns,
+        rows: Vec::new(),
+    }
+}
+
+/// `pg_collation`: the one collation this build's text columns carry —
+/// the dialect's default, under its own well-known identity.
+fn pg_collation() -> Relation {
+    Relation {
+        columns: &["oid", "collname"],
+        rows: vec![vec![int(100), text("default")]],
     }
 }
 
@@ -129,6 +189,14 @@ fn relations() -> Vec<(&'static str, Relation)> {
         ("pg_namespace", pg_namespace()),
         ("pg_range", pg_range()),
         ("pg_am", pg_am()),
+        ("pg_collation", pg_collation()),
+        ("pg_policy", empty("pg_policy")),
+        ("pg_roles", empty("pg_roles")),
+        ("pg_rewrite", empty("pg_rewrite")),
+        ("pg_inherits", empty("pg_inherits")),
+        ("pg_statistic_ext", empty("pg_statistic_ext")),
+        ("pg_publication", empty("pg_publication")),
+        ("pg_publication_rel", empty("pg_publication_rel")),
     ]
 }
 

@@ -43,19 +43,39 @@ pub(crate) fn evaluate(
         if query
             .terms
             .iter()
-            .all(|held| term_holds(held, row, slots, parameters))
+            .all(|held| term_holds(held, row, None, slots, parameters))
         {
             let keys = query
                 .order
                 .iter()
-                .map(|key| key_value(key, query, row, user))
+                .map(|key| key_value(key, query, row, dynamic, user))
                 .collect::<Vec<_>>();
             let projected = query
                 .projection
                 .iter()
-                .map(|item| project(item, row, user))
+                .map(|item| {
+                    project(
+                        item,
+                        row,
+                        &Ctx {
+                            outer: None,
+                            dynamic,
+                            user,
+                        },
+                    )
+                })
                 .collect::<Vec<_>>();
             keyed.push((keys, projected));
+        }
+    }
+    // A compound leg rides behind: its rows answer in its own order, whole
+    // after the first ask. (The trailing ORDER BY the dialect writes after
+    // a UNION parses on the leg — the relations these queries ride are
+    // empty, and whole-compound ordering is the defer list's row, not a
+    // silent approximation here.)
+    if let Some(leg) = &query.union {
+        for row in evaluate(leg, slots, parameters, dynamic, user)? {
+            keyed.push((Vec::new(), row));
         }
     }
     if !query.order.is_empty() {
@@ -82,19 +102,54 @@ pub(crate) fn evaluate(
 
 /// One sort key's value for a row: an ordinal names a projection item (a
 /// computed item answers computed), a path looks its column up.
-fn key_value(key: &Order, query: &Query, row: &Row, user: Option<&str>) -> Option<Value> {
-    match (&key.ordinal, &key.path) {
-        (Some(n), _) => query
+fn key_value(
+    key: &Order,
+    query: &Query,
+    row: &Row,
+    dynamic: Option<&Dynamic>,
+    user: Option<&str>,
+) -> Option<Value> {
+    match &key.key {
+        super::OrderKey::Ordinal(n) => query
             .projection
             .get(n.saturating_sub(1))
-            .map(|item| project(item, row, user))
+            .map(|item| {
+                project(
+                    item,
+                    row,
+                    &Ctx {
+                        outer: None,
+                        dynamic,
+                        user,
+                    },
+                )
+            })
             .unwrap_or(None),
-        (None, Some(path)) => lookup(path, row).cloned(),
-        (None, None) => None,
+        super::OrderKey::Path(path) => lookup(path, row).cloned(),
+        super::OrderKey::Expr(expr) => arm_value(
+            expr,
+            row,
+            &Ctx {
+                outer: None,
+                dynamic,
+                user,
+            },
+        ),
     }
 }
 
 fn materialize(source: &Source, dynamic: Option<&Dynamic>) -> Result<Vec<Row>, Refused> {
+    // A set-returning function source answers no rows of its own: the
+    // relations the dialect's listings pair it with are empty in this build,
+    // so there is nothing to unnest. The spelling is parsed; the rows are
+    // the empty truth, not a fabricated set.
+    if let Some(function) = &source.function {
+        // The spelling is named in the answer path's diagnostics, not the
+        // rows: what it would read, held to what it reads.
+        tracing::debug!(function = %function.path, argument = %function.arg, "a function source answers empty");
+        let _ = &function.columns;
+        return Ok(Vec::new());
+    }
     let dynamic_rows = dynamic.and_then(|held| dynamic::materialize(source, held));
     let relation = relation(source.name);
     // `pg_class` and `pg_attribute` live only in the dynamic rows — the
@@ -136,16 +191,31 @@ fn join_rows(
 ) -> Result<Vec<Row>, Refused> {
     let right = materialize(&joined.source, dynamic)?;
     let mut out = Vec::new();
+    // The comma spelling's empty ON: every row of one with every row of
+    // the other — the WHERE is where a cross narrows.
+    if joined.terms.is_empty() {
+        for lrow in &left {
+            for rrow in &right {
+                let mut merged = lrow.clone();
+                merged.extend(rrow.iter().cloned());
+                out.push(merged);
+            }
+        }
+        return Ok(out);
+    }
     for lrow in &left {
         let mut matched = false;
         for rrow in &right {
-            // Each ON side resolves on whichever relation holds it — the
-            // dialect's clients write the equality both ways round.
-            let lval = lookup(&joined.left, lrow).or_else(|| lookup(&joined.left, rrow));
-            let rval = lookup(&joined.right, rrow).or_else(|| lookup(&joined.right, lrow));
-            if lval.is_some() && lval == rval {
-                let mut merged = lrow.clone();
-                merged.extend(rrow.iter().cloned());
+            // The ON's terms read the merged candidate — each side resolves
+            // on whichever relation holds it, which is how the dialect's
+            // clients write the equality both ways round.
+            let mut merged = lrow.clone();
+            merged.extend(rrow.iter().cloned());
+            if joined
+                .terms
+                .iter()
+                .all(|term| term_holds(term, &merged, None, &[], &tessaridb::Parameters::new()))
+            {
                 out.push(merged);
                 matched = true;
             }
@@ -164,15 +234,21 @@ fn join_rows(
 fn term_holds(
     term: &Term,
     row: &Row,
+    outer: Option<&Row>,
     slots: &[Option<String>],
     parameters: &tessaridb::Parameters,
 ) -> bool {
     match term {
         Term::Visible => true,
+        // What this build's user tables are: publishable. The predicate
+        // rides over relations the listing queries hold empty, so the
+        // answer steers nothing today — it is still the true word about the
+        // tables this store serves, not a shrug.
+        Term::Fn { path, .. } => path.ends_with("pg_relation_is_publishable"),
         Term::Bool { column } => {
             matches!(row_text(lookup(column, row)).as_deref(), Some("t" | "true"))
         }
-        Term::Not(inner) => !term_holds(inner, row, slots, parameters),
+        Term::Not(inner) => !term_holds(inner, row, outer, slots, parameters),
         Term::IsNull { column, negated } => {
             let absent = lookup(column, row)
                 .map(|value| matches!(value, Value::Null))
@@ -204,7 +280,24 @@ fn term_holds(
             // alias, until the subquery evaluation binds it) reading as no
             // match rather than as a guess.
             let expected = match operand {
-                super::terms::Operand::Col(path) => row_text(lookup(path, row)),
+                // A column operand is the correlation the deep describe's
+                // subqueries write: this row first, then the outer row —
+                // an alias neither holds reads as no match, not as a guess.
+                super::terms::Operand::Col(path) => row_text(lookup(path, row))
+                    .or_else(|| outer.and_then(|held| row_text(lookup(path, held)))),
+                // `= ANY (<column>)`: the cell holds an array, and the
+                // comparison reads membership in it — a non-array cell is
+                // nothing, and nothing does not hold the value.
+                super::terms::Operand::AnyCol(path) => {
+                    return match lookup(path, row)
+                        .or_else(|| outer.and_then(|held| lookup(path, held)))
+                    {
+                        Some(Value::Array(items)) => items
+                            .iter()
+                            .any(|item| types::text_of(item).as_deref() == held.as_deref()),
+                        _ => false,
+                    };
+                }
                 other => operand_text(other, slots, parameters),
             };
             let Some(expected) = expected else {
@@ -332,10 +425,27 @@ fn anchored(pattern: &str) -> Option<(String, bool)> {
     None
 }
 
-/// One projection cell: a computed item answers from the row and the
-/// connection's identity; a plain item looks its column path up.
-fn project(item: &super::super::Item, row: &Row, user: Option<&str>) -> Option<Value> {
+/// The surroundings one projection evaluates against: the outer row a
+/// correlated subquery resolves through, the dynamic rows the batch built,
+/// and the connection's identity.
+struct Ctx<'a> {
+    outer: Option<&'a Row>,
+    dynamic: Option<&'a Dynamic>,
+    user: Option<&'a str>,
+}
+
+/// One projection cell: a computed item answers from the row, the context,
+/// and the connection's identity; a plain item looks its column path up.
+fn project(item: &super::super::Item, row: &Row, ctx: &Ctx<'_>) -> Option<Value> {
     match &item.computed {
+        Some(super::super::Computed::Lit(value)) => Some(value.clone()),
+        Some(super::super::Computed::Predicate(term)) => Some(Value::Bool(term_holds(
+            term,
+            row,
+            ctx.outer,
+            &[],
+            &tessaridb::Parameters::new(),
+        ))),
         Some(super::super::Computed::Case {
             subject,
             arms,
@@ -351,41 +461,163 @@ fn project(item: &super::super::Item, row: &Row, user: Option<&str>) -> Option<V
         }
         Some(super::super::Computed::SearchedCase { arms, otherwise }) => {
             for (condition, arm) in arms {
-                if term_holds(condition, row, &[], &tessaridb::Parameters::new()) {
-                    return arm_value(arm, row);
+                if term_holds(
+                    condition,
+                    row,
+                    ctx.outer,
+                    &[],
+                    &tessaridb::Parameters::new(),
+                ) {
+                    return arm_value(arm, row, ctx);
                 }
             }
-            otherwise.as_ref().and_then(|arm| arm_value(arm, row))
+            otherwise.as_ref().and_then(|arm| arm_value(arm, row, ctx))
         }
-        Some(super::super::Computed::OwnerOf) => user.map(|name| Value::String(name.to_owned())),
-        Some(super::super::Computed::Call { path, .. }) => {
-            // `pg_get_userbyid` is the owner call in another spelling — the
-            // projection parser's two shapes meet here.
-            if path.ends_with("pg_get_userbyid") {
-                user.map(|name| Value::String(name.to_owned()))
-            } else {
-                // The deep describe's remaining functions are refused before
-                // evaluation reaches here (check_supported); a row that
-                // arrives anyway answers nothing rather than inventing.
-                None
-            }
+        Some(super::super::Computed::OwnerOf) => {
+            ctx.user.map(|name| Value::String(name.to_owned()))
         }
-        Some(super::super::Computed::ScalarSubquery { .. }) => None,
+        Some(super::super::Computed::Call { path, args }) => call_value(path, args, row, ctx),
+        Some(super::super::Computed::ScalarSubquery { query }) => subquery_value(query, row, ctx),
         None => lookup(lookup_path(item), row).cloned(),
     }
 }
 
+/// One catalog function's answer for a row: the identity pair from the
+/// connection, the type name `format_type` resolves through the static
+/// catalog (a typmod this build never sets carries no modifier), and
+/// `pg_get_expr` handing the stored default's own text back. A name the
+/// responder does not hold answers nothing — check_supported refuses it
+/// before a row is touched.
+fn call_value(
+    path: &str,
+    args: &[super::super::CallArg],
+    row: &Row,
+    ctx: &Ctx<'_>,
+) -> Option<Value> {
+    match path.rsplit('.').next() {
+        Some("pg_get_userbyid") => ctx.user.map(|name| Value::String(name.to_owned())),
+        Some("format_type") => match arg_value(args.first()?, row, ctx) {
+            Some(Value::Number(tessaridb::Number::Integer(oid))) => Some(Value::String(
+                type_name_of(oid).unwrap_or_else(|| oid.to_string()),
+            )),
+            _ => None,
+        },
+        Some("pg_get_expr") => arg_value(args.first()?, row, ctx),
+        // The definition texts (`pg_get_ruledef`, `pg_get_indexdef`,
+        // `pg_get_constraintdef`) and the role-list fold (`array_to_string`)
+        // are named by the dialect's listing queries over relations this
+        // build holds empty — they never evaluate, and a row that ever
+        // arrived would answer nothing rather than invent a definition.
+        Some(
+            "pg_get_ruledef"
+            | "pg_get_indexdef"
+            | "pg_get_constraintdef"
+            | "array_to_string"
+            | "string_agg"
+            | "quote_ident",
+        ) => None,
+        _ => None,
+    }
+}
+
+/// One function argument resolved: a literal as it stands, a path read from
+/// this row, then — the correlation a subquery's argument is written with —
+/// from the outer row.
+fn arg_value(arg: &super::super::CallArg, row: &Row, ctx: &Ctx<'_>) -> Option<Value> {
+    match arg {
+        super::super::CallArg::Lit(value) => Some(value.clone()),
+        super::super::CallArg::Path(path) => lookup(path, row)
+            .cloned()
+            .or_else(|| ctx.outer.and_then(|outer| lookup(path, outer).cloned())),
+        // `array(SELECT …)`: the subquery answers a one-column row set; the
+        // function folds it. The listings that write this shape ride over
+        // relations this build holds empty, so the fold answers the empty
+        // array rather than a fabricated list.
+        super::super::CallArg::Subquery(query) => subquery_array(query, row, ctx),
+        super::super::CallArg::Call { path, args } => call_value(path, args, row, ctx),
+    }
+}
+
+/// A subquery argument folded to the array the caller lists: every first
+/// cell of every row the subquery holds, in its order.
+fn subquery_array(query: &Query, row: &Row, ctx: &Ctx<'_>) -> Option<Value> {
+    let inner = Ctx {
+        outer: Some(row),
+        dynamic: ctx.dynamic,
+        user: ctx.user,
+    };
+    let mut rows = materialize(&query.from, inner.dynamic).ok()?;
+    for joined in &query.joins {
+        rows = join_rows(rows, joined, inner.dynamic).ok()?;
+    }
+    let mut folded = Vec::new();
+    for held in &rows {
+        let holds = query
+            .terms
+            .iter()
+            .all(|term| term_holds(term, held, inner.outer, &[], &tessaridb::Parameters::new()));
+        let first = query
+            .projection
+            .iter()
+            .map(|item| project(item, held, &inner))
+            .next()?;
+        if holds && let Some(value) = first {
+            folded.push(value);
+        }
+    }
+    Some(Value::Array(folded))
+}
+
+/// One scalar subquery evaluated against the outer row: its FROM materializes
+/// like a query of its own, its WHERE reads correlation through the outer
+/// row, and the first cell of the first row that holds answers — none
+/// matching is the dialect's NULL, not an error.
+fn subquery_value(query: &Query, outer_row: &Row, ctx: &Ctx<'_>) -> Option<Value> {
+    let inner = Ctx {
+        outer: Some(outer_row),
+        dynamic: ctx.dynamic,
+        user: ctx.user,
+    };
+    let mut rows = materialize(&query.from, inner.dynamic).ok()?;
+    for joined in &query.joins {
+        rows = join_rows(rows, joined, inner.dynamic).ok()?;
+    }
+    for row in &rows {
+        if query
+            .terms
+            .iter()
+            .all(|term| term_holds(term, row, inner.outer, &[], &tessaridb::Parameters::new()))
+        {
+            return query
+                .projection
+                .iter()
+                .map(|item| project(item, row, &inner))
+                .next()?;
+        }
+    }
+    None
+}
+
 /// One searched-CASE arm evaluated against the row: a literal answers as it
 /// stands; a path looks its column up and takes its casts left to right.
-fn arm_value(arm: &super::super::Expr, row: &Row) -> Option<Value> {
+fn arm_value(arm: &super::super::Expr, row: &Row, ctx: &Ctx<'_>) -> Option<Value> {
     match arm {
         super::super::Expr::Lit(value) => Some(value.clone()),
         super::super::Expr::Path { path, casts } => {
-            let mut value = lookup(path, row).cloned();
+            let mut value = lookup(path, row)
+                .cloned()
+                .or_else(|| ctx.outer.and_then(|outer| lookup(path, outer).cloned()));
             for cast in casts {
                 value = value.and_then(|held| apply_cast(&held, cast));
             }
             value
+        }
+        super::super::Expr::Call { path, args } => call_value(path, args, row, ctx),
+        super::super::Expr::Eq { left, right } => {
+            let held = arm_value(left, row, ctx).and_then(|value| types::text_of(&value));
+            Some(Value::Bool(
+                held.as_deref() == types::text_of(right).as_deref(),
+            ))
         }
     }
 }
@@ -420,21 +652,41 @@ fn apply_cast(value: &Value, cast: &str) -> Option<Value> {
 fn check_supported(query: &Query) -> Result<(), Refused> {
     for item in &query.projection {
         match &item.computed {
-            Some(super::super::Computed::Call { path, args })
-                if !path.ends_with("pg_get_userbyid") =>
-            {
-                return Err(Refused::with_detail(
-                    code::FEATURE,
-                    "this catalog function is not spoken in this build",
-                    format!("{path}({})", call_args_text(args)),
-                ));
+            Some(super::super::Computed::Call { path, args }) => {
+                let spoken = path.rsplit('.').next().is_some_and(|name| {
+                    matches!(
+                        name,
+                        "pg_get_userbyid"
+                            | "format_type"
+                            | "pg_get_expr"
+                            | "pg_get_ruledef"
+                            | "pg_get_indexdef"
+                            | "pg_get_constraintdef"
+                            | "array_to_string"
+                            | "string_agg"
+                            | "quote_ident"
+                    )
+                });
+                if !spoken {
+                    return Err(Refused::with_detail(
+                        code::FEATURE,
+                        "this catalog function is not spoken in this build",
+                        format!("{path}({})", call_args_text(args)),
+                    ));
+                }
             }
             Some(super::super::Computed::ScalarSubquery { query }) => {
-                return Err(Refused::with_detail(
-                    code::FEATURE,
-                    "a projection subquery is not spoken in this build",
-                    query.relations().collect::<Vec<_>>().join(", "),
-                ));
+                // The subquery is answered, not refused — and its own
+                // projection owes the same check this query's does.
+                check_supported(query)?;
+            }
+            Some(super::super::Computed::Predicate(term)) => {
+                if term_has_param(term) {
+                    return Err(Refused::surface(
+                        code::FEATURE,
+                        "a predicate wants a literal comparison in this build",
+                    ));
+                }
             }
             Some(super::super::Computed::SearchedCase { arms, .. }) => {
                 // The projection has no parameter bindings of its own: a `$n`
@@ -464,6 +716,8 @@ fn call_args_text(args: &[super::super::CallArg]) -> String {
             super::super::CallArg::Lit(value) => {
                 types::text_of(value).unwrap_or_else(|| "NULL".to_owned())
             }
+            super::super::CallArg::Subquery(_) => "SELECT …".to_owned(),
+            super::super::CallArg::Call { path, .. } => format!("{path}(…)"),
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -474,6 +728,9 @@ fn call_args_text(args: &[super::super::CallArg]) -> String {
 fn term_has_param(term: &Term) -> bool {
     match term {
         Term::Cmp { operand, .. } => matches!(operand, super::terms::Operand::Param(_)),
+        Term::Fn { args, .. } => args
+            .iter()
+            .any(|held| matches!(held, super::terms::Operand::Param(_))),
         Term::In { values, .. } => values
             .iter()
             .any(|held| matches!(held, super::terms::Operand::Param(_))),

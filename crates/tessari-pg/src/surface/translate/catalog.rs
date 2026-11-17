@@ -28,24 +28,48 @@ use terms::{Cmp, Operand, Term, operand_text, term};
 pub(crate) struct Source {
     name: &'static str,
     alias: String,
+    /// A set-returning function the dialect's listings place in FROM —
+    /// `unnest(stxkeys) s(attnum)`. This build holds the relations these
+    /// accompany empty, so the source answers no rows of its own; the
+    /// argument and column names ride through for the grammar's honesty.
+    pub(crate) function: Option<FunctionSource>,
 }
 
-/// One join leg: the relation, whether absent rows survive, and the two
-/// columns the equality names (`alias.column` on each side).
+/// One function source's spelling: the path, its argument, and the column
+/// names the alias pair bound.
+#[derive(Debug, Clone)]
+pub(crate) struct FunctionSource {
+    pub(crate) path: String,
+    pub(crate) arg: String,
+    pub(crate) columns: Vec<String>,
+}
+
+/// One join leg: the relation, whether absent rows survive, and the terms
+/// the pairing must hold — one equality in the common shape, a conjunction
+/// in the dialect's listing queries. No terms at all is the comma spelling's
+/// cross.
 #[derive(Debug, Clone)]
 struct Join {
     source: Source,
     outer: bool,
-    left: String,
-    right: String,
+    terms: Vec<terms::Term>,
 }
 
-/// One ORDER BY key: an output ordinal or a column path, and the direction.
+/// One ORDER BY key and the direction.
 #[derive(Debug, Clone)]
 struct Order {
-    ordinal: Option<usize>,
-    path: Option<String>,
+    key: OrderKey,
     desc: bool,
+}
+
+/// What an ORDER BY key reads: an output ordinal, a column path, or a
+/// scalar expression of the dialect's own — a catalog call compared to a
+/// literal, a casted path — the partition listing's shapes.
+#[derive(Debug, Clone)]
+enum OrderKey {
+    Ordinal(usize),
+    Path(String),
+    Expr(super::Expr),
 }
 
 /// One materialized row: the qualified columns it holds.
@@ -60,6 +84,10 @@ pub(crate) struct Query {
     terms: Vec<Term>,
     order: Vec<Order>,
     limit: Option<u64>,
+    /// A compound leg: `UNION ALL <query>` the publication listing folds two
+    /// asks into one. Rows concatenate; `ALL` keeps duplicates, the only
+    /// spelling this build speaks.
+    union: Option<Box<Query>>,
     /// The type each `$n` resolves to, from the column its term compares
     /// against — what Describe(statement) answers so the driver binds in the
     /// shape it asked about instead of guessing.
@@ -88,7 +116,8 @@ impl Query {
     /// must build: `pg_class` or `pg_attribute` in the source or a join.
     pub(crate) fn needs_dynamic(&self) -> bool {
         self.relations()
-            .any(|name| matches!(name, "pg_class" | "pg_attribute"))
+            .iter()
+            .any(|name| matches!(*name, "pg_class" | "pg_attribute" | "pg_attrdef"))
     }
 
     /// The projection items the query answers under, in order.
@@ -96,9 +125,15 @@ impl Query {
         &self.projection
     }
 
-    /// The relation names the query reads: the source, then every join.
-    pub(crate) fn relations(&self) -> impl Iterator<Item = &'static str> {
-        std::iter::once(self.from.name).chain(self.joins.iter().map(|join| join.source.name))
+    /// The relation names the query reads: the source, then every join,
+    /// then the compound leg's.
+    pub(crate) fn relations(&self) -> Vec<&'static str> {
+        let mut named = vec![self.from.name];
+        named.extend(self.joins.iter().map(|join| join.source.name));
+        if let Some(leg) = &self.union {
+            named.extend(leg.relations());
+        }
+        named
     }
 
     /// A term pinning an identity column (`oid`, `attrelid`) to exactly one
@@ -164,6 +199,24 @@ pub(crate) fn rest(
     while let Some(joined) = join(parser)? {
         joins.push(joined);
     }
+    // The dialect's comma spelling is a cross of everything it separates —
+    // `FROM a, b` pairs every row of one with every row of the other, and
+    // the WHERE is where the pairing narrows. An empty ON pair marks it.
+    while parser.comma().is_ok() {
+        let schema = parser.ident()?;
+        if !opens(&schema) {
+            return Err(Refused::surface(
+                code::FEATURE,
+                "a catalog cross serves catalog relations in this build",
+            ));
+        }
+        let added = source(parser, &schema)?;
+        joins.push(Join {
+            source: added,
+            outer: false,
+            terms: Vec::new(),
+        });
+    }
     let mut terms = Vec::new();
     if parser.keyword("WHERE").is_ok() {
         terms.push(term(parser)?);
@@ -188,6 +241,36 @@ pub(crate) fn rest(
     };
     let limit = if parser.keyword("LIMIT").is_ok() {
         Some(parser.number()?)
+    } else {
+        None
+    };
+    // A compound leg: `UNION ALL SELECT …`. The second ask is a catalog
+    // query of its own; the projection's SELECT is consumed here.
+    let union = if parser.keyword("UNION").is_ok() {
+        if parser.keyword("ALL").is_err() {
+            return Err(Refused::surface(
+                code::FEATURE,
+                "UNION wants ALL in this build; DISTINCT is not spoken",
+            ));
+        }
+        if parser.keyword("SELECT").is_err() {
+            return Err(Refused::surface(code::SYNTAX, "UNION wants SELECT"));
+        }
+        let leg_items = parser.projection()?.items;
+        if parser.keyword("FROM").is_err() {
+            return Err(Refused::surface(code::SYNTAX, "UNION wants FROM"));
+        }
+        let leg_schema = parser.ident()?;
+        if !opens(&leg_schema) {
+            return Err(Refused::surface(
+                code::FEATURE,
+                "a UNION leg serves catalog relations in this build",
+            ));
+        }
+        let leg = rest(parser, leg_items, &leg_schema)?;
+        Some(Box::new(leg.catalog.ok_or_else(|| {
+            Refused::surface(code::INTERNAL, "a UNION leg built no catalog query")
+        })?))
     } else {
         None
     };
@@ -217,6 +300,7 @@ pub(crate) fn rest(
             terms,
             order,
             limit,
+            union,
             param_types,
         }),
         inference: Vec::new(),
@@ -237,19 +321,18 @@ fn order_key(parser: &mut Parser<'_>) -> Result<Order, Refused> {
             .map_err(|_| Refused::surface(code::SYNTAX, "the ordinal does not fit"))?;
         let desc = desc_or_asc(parser)?;
         return Ok(Order {
-            ordinal: Some(ordinal),
-            path: None,
+            key: OrderKey::Ordinal(ordinal),
             desc,
         });
     }
     parser.restore(at);
-    let path = parser.ident_path()?;
+    let expr = parser.order_expr()?;
     let desc = desc_or_asc(parser)?;
-    Ok(Order {
-        ordinal: None,
-        path: Some(path),
-        desc,
-    })
+    let key = match expr {
+        super::Expr::Path { path, casts } if casts.is_empty() => OrderKey::Path(path),
+        other => OrderKey::Expr(other),
+    };
+    Ok(Order { key, desc })
 }
 
 fn desc_or_asc(parser: &mut Parser<'_>) -> Result<bool, Refused> {
@@ -271,6 +354,47 @@ fn source(parser: &mut Parser<'_>, schema: &str) -> Result<Source, Refused> {
         ));
     }
     let asked = parser.ident()?;
+    // A set-returning function in FROM: `unnest(stxkeys) s(attnum)`. The
+    // relations it accompanies are empty in this build, so the source
+    // answers no rows; the spelling is parsed, not faked.
+    if parser.open_paren() {
+        let arg = parser.ident_path()?;
+        parser.close_paren()?;
+        let name: &'static str = match asked.as_str() {
+            "unnest" => "unnest",
+            _ => {
+                return Err(Refused::with_detail(
+                    code::FEATURE,
+                    "this catalog function source is not spoken in this build",
+                    format!("{schema}.{asked}"),
+                ));
+            }
+        };
+        let alias = if parser.keyword("AS").is_ok() {
+            parser.ident()?
+        } else {
+            parser.bare_alias().unwrap_or_else(|| asked.clone())
+        };
+        let mut columns = Vec::new();
+        if parser.open_paren() {
+            loop {
+                columns.push(parser.ident()?);
+                if parser.comma().is_err() {
+                    break;
+                }
+            }
+            parser.close_paren()?;
+        }
+        return Ok(Source {
+            name,
+            alias,
+            function: Some(FunctionSource {
+                path: format!("{schema}.{asked}"),
+                arg,
+                columns,
+            }),
+        });
+    }
     let name = relation_name(&asked).ok_or_else(|| {
         Refused::with_detail(
             code::FEATURE,
@@ -283,7 +407,11 @@ fn source(parser: &mut Parser<'_>, schema: &str) -> Result<Source, Refused> {
     } else {
         parser.bare_alias().unwrap_or(asked)
     };
-    Ok(Source { name, alias })
+    Ok(Source {
+        name,
+        alias,
+        function: None,
+    })
 }
 
 /// The relations the responder serves: the static set, plus the two the
@@ -291,16 +419,26 @@ fn source(parser: &mut Parser<'_>, schema: &str) -> Result<Source, Refused> {
 fn relation_name(name: &str) -> Option<&'static str> {
     match name {
         "pg_type" | "pg_namespace" | "pg_range" | "pg_am" | "pg_class" | "pg_attribute"
-        | "pg_attrdef" | "pg_collation" => Some(match name {
-            "pg_namespace" => "pg_namespace",
-            "pg_range" => "pg_range",
-            "pg_am" => "pg_am",
-            "pg_class" => "pg_class",
-            "pg_attribute" => "pg_attribute",
-            "pg_attrdef" => "pg_attrdef",
-            "pg_collation" => "pg_collation",
-            _ => "pg_type",
-        }),
+        | "pg_attrdef" | "pg_collation" | "pg_policy" | "pg_roles" | "pg_rewrite"
+        | "pg_inherits" | "pg_statistic_ext" | "pg_publication" | "pg_publication_rel" => {
+            Some(match name {
+                "pg_namespace" => "pg_namespace",
+                "pg_range" => "pg_range",
+                "pg_am" => "pg_am",
+                "pg_class" => "pg_class",
+                "pg_attribute" => "pg_attribute",
+                "pg_attrdef" => "pg_attrdef",
+                "pg_collation" => "pg_collation",
+                "pg_policy" => "pg_policy",
+                "pg_roles" => "pg_roles",
+                "pg_rewrite" => "pg_rewrite",
+                "pg_inherits" => "pg_inherits",
+                "pg_statistic_ext" => "pg_statistic_ext",
+                "pg_publication" => "pg_publication",
+                "pg_publication_rel" => "pg_publication_rel",
+                _ => "pg_type",
+            })
+        }
         _ => None,
     }
 }
@@ -332,19 +470,22 @@ fn join(parser: &mut Parser<'_>) -> Result<Option<Join>, Refused> {
     if parser.keyword("ON").is_err() {
         return Err(Refused::surface(code::SYNTAX, "a join wants ON"));
     }
-    let left = parser.ident_path()?;
-    if !parser.operator("=") {
-        return Err(Refused::surface(
-            code::FEATURE,
-            "a catalog join speaks one equality in this build",
-        ));
+    // The dialect's clients parenthesise the condition — `(a.x = b.y)` —
+    // and the listing queries conjoin several: the parens ride through and
+    // every term must hold, changing nothing about the common single-equality
+    // shape, which is one term.
+    let grouped = parser.open_paren();
+    let mut conditions = vec![terms::term(parser)?];
+    while parser.keyword("AND").is_ok() {
+        conditions.push(terms::term(parser)?);
     }
-    let right = parser.ident_path()?;
+    if grouped {
+        parser.close_paren()?;
+    }
     Ok(Some(Join {
         source: joined,
         outer,
-        left,
-        right,
+        terms: conditions,
     }))
 }
 

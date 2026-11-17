@@ -33,6 +33,9 @@ pub(crate) enum Term {
     /// may see, so every row the responder holds is visible — the predicate
     /// folds to true for exactly the rows the query can name.
     Visible,
+    /// A catalog boolean function in a WHERE — `pg_relation_is_publishable(
+    /// <oid>)`: parsed with its arguments, answered by name.
+    Fn { path: String, args: Vec<Operand> },
 }
 
 /// One comparison operator the catalog terms speak.
@@ -58,6 +61,10 @@ pub(crate) enum Operand {
     Param(usize),
     Lit(String),
     Col(String),
+    /// `= ANY (<column>)` — the array membership the role-list subquery
+    /// writes; the column holds an array cell, and the membership is read
+    /// against it.
+    AnyCol(String),
 }
 
 /// One WHERE term: `NOT <term>`, a visibility predicate, a bare boolean
@@ -74,6 +81,17 @@ pub(crate) fn term(parser: &mut Parser<'_>) -> Result<Term, Refused> {
         let _ = parser.ident_path()?;
         parser.close_paren()?;
         return Ok(Term::Visible);
+    }
+    if parser.open_paren() {
+        let mut args = Vec::new();
+        loop {
+            args.push(operand(parser)?);
+            if parser.comma().is_err() {
+                break;
+            }
+        }
+        parser.close_paren()?;
+        return Ok(Term::Fn { path: column, args });
     }
     if parser.keyword("IS").is_ok() {
         let negated = parser.keyword("NOT").is_ok();
@@ -191,7 +209,7 @@ fn is_pattern_column(column: &str) -> bool {
 /// The comparison operator at the cursor, in longest-first order. Ordered
 /// comparisons speak numeric catalog columns alone — an ordered compare over
 /// a name refuses by name rather than inventing a collation.
-fn comparison(parser: &mut Parser<'_>, column: &str) -> Result<Cmp, Refused> {
+pub(crate) fn comparison(parser: &mut Parser<'_>, column: &str) -> Result<Cmp, Refused> {
     for (mark, op) in [
         ("!=", Cmp::Ne),
         ("<>", Cmp::Ne),
@@ -241,7 +259,7 @@ fn collate(parser: &mut Parser<'_>) -> Result<(), Refused> {
 }
 
 /// One comparison operand: a bound `$n` or a literal.
-fn operand(parser: &mut Parser<'_>) -> Result<Operand, Refused> {
+pub(crate) fn operand(parser: &mut Parser<'_>) -> Result<Operand, Refused> {
     if let Some(held) = parser.placeholder() {
         let digits = held
             .trim_start_matches('$')
@@ -255,6 +273,14 @@ fn operand(parser: &mut Parser<'_>) -> Result<Operand, Refused> {
         .map_err(|_| Refused::surface(code::SYNTAX, "a catalog literal did not read"))?
     {
         return Ok(Operand::Lit(types::text_of(&value).unwrap_or_default()));
+    }
+    if parser.keyword("ANY").is_ok() {
+        if !parser.open_paren() {
+            return Err(Refused::surface(code::SYNTAX, "ANY wants parentheses"));
+        }
+        let path = parser.ident_path()?;
+        parser.close_paren()?;
+        return Ok(Operand::AnyCol(path));
     }
     let at = parser.snapshot();
     if let Ok(path) = parser.ident_path() {
@@ -283,7 +309,7 @@ pub(crate) fn operand_text(
             .and_then(types::text_of),
         // A column resolves against the row, which this text-level helper
         // has no reach to; the evaluator resolves it where rows exist.
-        Operand::Col(_) => None,
+        Operand::Col(_) | Operand::AnyCol(_) => None,
     }
 }
 

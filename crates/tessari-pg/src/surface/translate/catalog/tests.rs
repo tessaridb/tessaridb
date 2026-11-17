@@ -48,10 +48,14 @@ fn dynamic() -> Dynamic {
             ClassRow {
                 oid: 7_777,
                 name: "orders".to_owned(),
+                hasindex: true,
+                hastriggers: false,
             },
             ClassRow {
                 oid: 8_888,
                 name: "bands".to_owned(),
+                hasindex: false,
+                hastriggers: true,
             },
         ],
         attributes: vec![
@@ -62,6 +66,7 @@ fn dynamic() -> Dynamic {
                 num: 1,
                 notnull: false,
                 hasdef: false,
+                default: None,
             },
             AttrRow {
                 relid: 7_777,
@@ -70,6 +75,7 @@ fn dynamic() -> Dynamic {
                 num: 2,
                 notnull: false,
                 hasdef: true,
+                default: Some("'ada'".to_owned()),
             },
         ],
     }
@@ -372,7 +378,7 @@ fn a_searched_case_arm_casts_through_regtype_to_text() {
         .expect("the casted arms answer");
     assert_eq!(rows.len(), 16);
     assert_eq!(rows[0][0], Some(Value::String("it is bool".to_owned())));
-    assert_eq!(rows[1][0], Some(Value::String("17".to_owned())));
+    assert_eq!(rows[1][0], Some(Value::String("bytea".to_owned())));
     assert_eq!(rows[4][0], Some(Value::String("int4".to_owned())));
     assert_eq!(rows[6][0], Some(Value::String("oid".to_owned())));
 }
@@ -391,4 +397,110 @@ fn the_deep_describes_functions_and_subqueries_refuse_by_name_until_their_wave()
     let refused = evaluate(&query, &[], &tessaridb::Parameters::new(), None, None)
         .expect_err("the subquery is not spoken yet");
     assert_eq!(refused.code, "0A000", "{refused:?}");
+}
+
+#[test]
+fn pg_class_carries_the_deep_describes_columns() {
+    let query = parse(
+        "SELECT c.relchecks, c.relkind, c.relhasindex, c.relhastriggers, c.relrowsecurity, false AS relhasoids, c.reltablespace, c.relpersistence, c.relreplident FROM pg_catalog.pg_class c WHERE c.oid = '7777'",
+    );
+    let slots = vec![];
+    let mut parameters = tessaridb::Parameters::new();
+    parameters.insert("e1".to_owned(), Value::Number(7_777.into()));
+    let rows = evaluate(&query, &slots, &parameters, Some(&dynamic()), None)
+        .expect("the deep describe's class row answers");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0], Some(Value::Number(0.into())));
+    assert_eq!(rows[0][1], Some(Value::String("r".to_owned())));
+    assert_eq!(rows[0][2], Some(Value::Bool(true)), "orders holds an index");
+    assert_eq!(rows[0][3], Some(Value::Bool(false)));
+    assert_eq!(rows[0][4], Some(Value::Bool(false)));
+    assert_eq!(rows[0][5], Some(Value::Bool(false)), "the literal rides");
+    assert_eq!(rows[0][6], Some(Value::Number(0.into())));
+    assert_eq!(rows[0][7], Some(Value::String("p".to_owned())));
+    assert_eq!(rows[0][8], Some(Value::String("d".to_owned())));
+}
+
+#[test]
+fn the_self_join_the_describe_writes_matches_nothing_honestly() {
+    // reltoastrelid is 0 for these tables; the LEFT JOIN against pg_class
+    // pads NULL rather than inventing a toast relation.
+    let query = parse(
+        "SELECT c.relname, tc.relname FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_class tc ON (c.reltoastrelid = tc.oid) WHERE c.oid = '7777'",
+    );
+    let rows = evaluate(
+        &query,
+        &[],
+        &tessaridb::Parameters::new(),
+        Some(&dynamic()),
+        None,
+    )
+    .expect("the self join answers");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0], Some(Value::String("orders".to_owned())));
+    assert_eq!(rows[0][1], None, "no toast relation: NULL, not a guess");
+}
+
+#[test]
+fn format_type_names_the_columns_type() {
+    let query = parse(
+        "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod) FROM pg_catalog.pg_attribute a WHERE a.attrelid = '7777'",
+    );
+    let rows = evaluate(
+        &query,
+        &[],
+        &tessaridb::Parameters::new(),
+        Some(&dynamic()),
+        None,
+    )
+    .expect("the type names answer");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0][1], Some(Value::String("int8".to_owned())));
+    assert_eq!(rows[1][1], Some(Value::String("text".to_owned())));
+}
+
+#[test]
+fn pg_get_expr_hands_the_stored_default_back() {
+    let query = parse(
+        "SELECT a.attname, (SELECT pg_catalog.pg_get_expr(d.adbin, d.adrelid, true) FROM pg_catalog.pg_attrdef d WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum) FROM pg_catalog.pg_attribute a WHERE a.attrelid = '7777'",
+    );
+    let rows = evaluate(
+        &query,
+        &[],
+        &tessaridb::Parameters::new(),
+        Some(&dynamic()),
+        None,
+    )
+    .expect("the default expressions answer");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0][0], Some(Value::String("band".to_owned())));
+    assert_eq!(rows[0][1], None, "no default: the dialect's NULL");
+    assert_eq!(rows[1][0], Some(Value::String("name".to_owned())));
+    assert_eq!(
+        rows[1][1],
+        Some(Value::String("'ada'".to_owned())),
+        "the stored default's own text"
+    );
+}
+
+#[test]
+fn the_collation_subquery_names_the_default_for_text_columns() {
+    let query = parse(
+        "SELECT a.attname, (SELECT c.collname FROM pg_catalog.pg_collation c WHERE c.oid = a.attcollation) FROM pg_catalog.pg_attribute a WHERE a.attrelid = '7777'",
+    );
+    let rows = evaluate(
+        &query,
+        &[],
+        &tessaridb::Parameters::new(),
+        Some(&dynamic()),
+        None,
+    )
+    .expect("the collation names answer");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0][1], None, "an int column carries no collation: NULL");
+    assert_eq!(
+        rows[1][1],
+        Some(Value::String("default".to_owned())),
+        "a text column names the default collation"
+    );
 }

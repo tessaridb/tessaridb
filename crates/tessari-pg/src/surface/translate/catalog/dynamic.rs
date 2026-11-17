@@ -27,11 +27,15 @@ pub(crate) struct Dynamic {
     pub(crate) attributes: Vec<AttrRow>,
 }
 
-/// One user table: its synthesized identity and name.
+/// One user table: its synthesized identity and name, with the deep
+/// describe's derived flags — whether the table holds indexes or events,
+/// read from its own report.
 #[derive(Debug)]
 pub(crate) struct ClassRow {
     pub(crate) oid: i64,
     pub(crate) name: String,
+    pub(crate) hasindex: bool,
+    pub(crate) hastriggers: bool,
 }
 
 /// One column of a user table, as the dialect's clients read
@@ -44,6 +48,9 @@ pub(crate) struct AttrRow {
     pub(crate) num: i64,
     pub(crate) notnull: bool,
     pub(crate) hasdef: bool,
+    /// The stored default's own text, what `pg_get_expr` answers back —
+    /// the catalog keeps the expression as written, not a parse of it.
+    pub(crate) default: Option<String>,
 }
 
 /// Whether any query in the batch names user-table rows.
@@ -53,9 +60,12 @@ pub(crate) fn needed(queries: &[&Query]) -> bool {
 
 /// Whether any query in the batch names attribute rows.
 pub(crate) fn wants_attributes(queries: &[&Query]) -> bool {
-    queries
-        .iter()
-        .any(|query| query.relations().any(|name| name == "pg_attribute"))
+    queries.iter().any(|query| {
+        query
+            .relations()
+            .iter()
+            .any(|name| matches!(*name, "pg_attribute" | "pg_attrdef"))
+    })
 }
 
 /// Build the user-table rows the batch's queries name, or `None` when no
@@ -88,6 +98,10 @@ pub(crate) async fn load(
         .map(|name| ClassRow {
             oid: synthesize_oid(&format!("{namespace}.{database}.{name}")),
             name,
+            // Filled from the table's own report below: the class list is
+            // built first, each row's flags after.
+            hasindex: false,
+            hastriggers: false,
         })
         .collect::<Vec<_>>();
     let mut attributes = Vec::new();
@@ -122,13 +136,18 @@ pub(crate) async fn load(
                     Some(Value::String(kind)) => kind.as_str(),
                     _ => "",
                 };
+                let default = match described.get("default") {
+                    Some(Value::String(text)) => Some(text.clone()),
+                    _ => None,
+                };
                 attributes.push(AttrRow {
                     relid: class.oid,
                     name: name.clone(),
                     type_oid: kind_oid(kind),
                     num: i64::try_from(index.saturating_add(1)).unwrap_or(i64::MAX),
                     notnull: matches!(described.get("required"), Some(Value::Bool(true))),
-                    hasdef: described.contains_key("default"),
+                    hasdef: default.is_some(),
+                    default,
                 });
             }
         }
@@ -220,6 +239,36 @@ pub(crate) fn materialize(source: &Source, dynamic: &Dynamic) -> Option<Vec<Row>
                             format!("{}.reltuples", source.alias),
                             Some(Value::Number(tessaridb::Number::float(0.0))),
                         ),
+                        (format!("{}.relchecks", source.alias), Some(int(0))),
+                        (
+                            format!("{}.relhasindex", source.alias),
+                            Some(Value::Bool(class.hasindex)),
+                        ),
+                        (
+                            format!("{}.relhasrules", source.alias),
+                            Some(Value::Bool(false)),
+                        ),
+                        (
+                            format!("{}.relhastriggers", source.alias),
+                            Some(Value::Bool(class.hastriggers)),
+                        ),
+                        (
+                            format!("{}.relrowsecurity", source.alias),
+                            Some(Value::Bool(false)),
+                        ),
+                        (
+                            format!("{}.relforcerowsecurity", source.alias),
+                            Some(Value::Bool(false)),
+                        ),
+                        (format!("{}.reloftype", source.alias), Some(int(0))),
+                        (format!("{}.reltoastrelid", source.alias), Some(int(0))),
+                        (
+                            format!("{}.relispartition", source.alias),
+                            Some(Value::Bool(false)),
+                        ),
+                        (format!("{}.reltablespace", source.alias), Some(int(0))),
+                        (format!("{}.relpersistence", source.alias), Some(text("p"))),
+                        (format!("{}.relreplident", source.alias), Some(text("d"))),
                     ]
                 })
                 .collect(),
@@ -249,7 +298,36 @@ pub(crate) fn materialize(source: &Source, dynamic: &Dynamic) -> Option<Vec<Row>
                             format!("{}.attisdropped", source.alias),
                             Some(Value::Bool(false)),
                         ),
+                        (format!("{}.atttypmod", source.alias), Some(int(-1))),
+                        (format!("{}.attidentity", source.alias), Some(text(""))),
+                        (format!("{}.attgenerated", source.alias), Some(text(""))),
+                        (
+                            format!("{}.attcollation", source.alias),
+                            Some(int(
+                                if matches!(attr.type_oid, types::oid::TEXT | types::oid::VARCHAR) {
+                                    100
+                                } else {
+                                    0
+                                },
+                            )),
+                        ),
                     ]
+                })
+                .collect(),
+        ),
+        // `pg_attrdef`: one row per column that declares a default, the
+        // expression kept as written — `pg_get_expr` answers it back.
+        "pg_attrdef" => Some(
+            dynamic
+                .attributes
+                .iter()
+                .filter_map(|attr| {
+                    let default = attr.default.as_ref()?;
+                    Some(vec![
+                        (format!("{}.adrelid", source.alias), Some(int(attr.relid))),
+                        (format!("{}.adnum", source.alias), Some(int(attr.num))),
+                        (format!("{}.adbin", source.alias), Some(text(default))),
+                    ])
                 })
                 .collect(),
         ),

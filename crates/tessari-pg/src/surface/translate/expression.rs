@@ -9,13 +9,16 @@ use super::{Refused, code};
 use super::parser::Parser;
 
 /// One parsed arithmetic term: its store-script text, the bare path it is
-/// when it is exactly one (what an unaliased item answers under), and
-/// whether any operator ran (the store wants a name on those).
+/// when it is exactly one (what an unaliased item answers under), whether
+/// any operator ran (the store wants a name on those), and the literal it
+/// is exactly, when it is one — the projection answers a bare literal from
+/// itself where no column lookup could.
 #[derive(Debug)]
 struct Term {
     text: String,
     path: Option<String>,
     arith: bool,
+    lit: Option<tessaridb::Value>,
 }
 
 impl Term {
@@ -24,6 +27,16 @@ impl Term {
             text,
             path,
             arith: false,
+            lit: None,
+        }
+    }
+
+    fn literal(text: String, value: tessaridb::Value) -> Self {
+        Self {
+            text,
+            path: None,
+            arith: false,
+            lit: Some(value),
         }
     }
 
@@ -32,6 +45,7 @@ impl Term {
             text,
             path: None,
             arith: true,
+            lit: None,
         }
     }
 }
@@ -113,6 +127,9 @@ impl Parser<'_> {
                 computed: None,
             });
         }
+        if let Some(item) = self.predicate_item()? {
+            return Ok(item);
+        }
         if let Some(call) = self.aggregate()? {
             let (text, column) = match self.alias()? {
                 Some(alias) => (format!("{call} AS {alias}"), alias),
@@ -128,6 +145,17 @@ impl Parser<'_> {
             });
         }
         let term = self.sum()?;
+        if let Some(literal) = term.lit {
+            let (text, column) = match self.alias()? {
+                Some(alias) => (format!("{} AS {alias}", term.text), alias),
+                None => (term.text, UNNAMED.to_owned()),
+            };
+            return Ok(Item {
+                text,
+                column,
+                computed: Some(Computed::Lit(literal)),
+            });
+        }
         let (text, column) = match self.alias()? {
             Some(alias) => (format!("{} AS {alias}", term.text), alias),
             None => match term.path {
@@ -215,12 +243,81 @@ impl Parser<'_> {
             self.at = at;
             return Ok(None);
         }
+        Ok(Some(self.finish_call(path, start)?))
+    }
+
+    /// A `SELECT <projection> FROM pg_catalog.<relation> …` subquery used as
+    /// a call argument, the cursor just after the SELECT.
+    fn subquery_argument(&mut self) -> Result<super::catalog::Query, Refused> {
+        let items = self.projection()?.items;
+        if self.keyword("FROM").is_err() {
+            return Err(Refused::surface(
+                code::SYNTAX,
+                "a subquery argument wants FROM",
+            ));
+        }
+        let schema = self.ident()?;
+        if !super::catalog::opens(&schema) {
+            return Err(Refused::surface(
+                code::FEATURE,
+                "a subquery argument serves catalog relations in this build",
+            ));
+        }
+        let shaped = super::catalog::rest(self, items, &schema)?;
+        shaped.catalog.ok_or_else(|| {
+            Refused::surface(code::INTERNAL, "a subquery argument built no catalog query")
+        })
+    }
+
+    /// The arguments and tail of a catalog call whose opening parenthesis
+    /// is consumed: each argument a bare `SELECT` subquery (the call's own
+    /// parenthesis wraps it), a parenthesised one, a nested catalog call
+    /// (`array(SELECT …)`), a literal, or a path.
+    fn finish_call(&mut self, path: String, start: usize) -> Result<Item, Refused> {
         let mut args = Vec::new();
         loop {
-            if let Some(literal) = self.literal()? {
-                args.push(super::CallArg::Lit(literal));
+            if self.keyword("SELECT").is_ok() {
+                args.push(super::CallArg::Subquery(Box::new(
+                    self.subquery_argument()?,
+                )));
             } else {
-                args.push(super::CallArg::Path(self.ident_path()?));
+                let at = self.at;
+                if self.open_paren() && self.keyword("SELECT").is_ok() {
+                    let query = self.subquery_argument()?;
+                    self.close_paren()?;
+                    args.push(super::CallArg::Subquery(Box::new(query)));
+                    if self.comma().is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                self.at = at;
+                if let Some(literal) = self.literal()? {
+                    args.push(super::CallArg::Lit(literal));
+                    if self.comma().is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                let at = self.at;
+                let inner = self.ident_path()?;
+                if self.open_paren() {
+                    // A nested call: `array(SELECT …)` the role-list fold
+                    // hands its outer function.
+                    let nested = self.finish_call(inner.clone(), at)?;
+                    if let Some(Computed::Call {
+                        path: inner_path,
+                        args: inner_args,
+                    }) = nested.computed
+                    {
+                        args.push(super::CallArg::Call {
+                            path: inner_path,
+                            args: inner_args,
+                        });
+                    }
+                } else {
+                    args.push(super::CallArg::Path(inner));
+                }
             }
             if self.comma().is_err() {
                 break;
@@ -233,11 +330,11 @@ impl Parser<'_> {
             Some(alias) => (format!("{text} {alias}"), alias),
             None => (text, name),
         };
-        Ok(Some(Item {
+        Ok(Item {
             text,
             column,
             computed: Some(Computed::Call { path, args }),
-        }))
+        })
     }
 
     /// `CASE WHEN <catalog term> THEN <arm> … [ELSE <arm>] END`: the
@@ -255,7 +352,7 @@ impl Parser<'_> {
             if self.keyword("THEN").is_err() {
                 return Err(Refused::surface(code::SYNTAX, "CASE WHEN wants THEN"));
             }
-            arms.push((condition, self.case_arm()?));
+            arms.push((condition, self.scalar_expr()?));
         }
         if arms.is_empty() {
             return Err(Refused::surface(
@@ -264,7 +361,7 @@ impl Parser<'_> {
             ));
         }
         let otherwise = if self.keyword("ELSE").is_ok() {
-            Some(self.case_arm()?)
+            Some(self.scalar_expr()?)
         } else {
             None
         };
@@ -286,10 +383,20 @@ impl Parser<'_> {
         })
     }
 
-    /// One searched-CASE arm: a literal, or a path carrying `::` casts.
-    fn case_arm(&mut self) -> Result<super::Expr, Refused> {
+    /// One scalar expression: a literal, a catalog function call, or a
+    /// path carrying `::` casts — the shape a searched-CASE arm and an
+    /// ORDER BY key share.
+    pub(crate) fn scalar_expr(&mut self) -> Result<super::Expr, Refused> {
         if let Some(literal) = self.literal()? {
             return Ok(super::Expr::Lit(literal));
+        }
+        let at = self.at;
+        if let Some(Item {
+            computed: Some(Computed::Call { path, args }),
+            ..
+        }) = self.catalog_call(at)?
+        {
+            return Ok(super::Expr::Call { path, args });
         }
         let path = self.ident_path()?;
         let mut casts = Vec::new();
@@ -297,6 +404,58 @@ impl Parser<'_> {
             casts.push(self.ident_path()?);
         }
         Ok(super::Expr::Path { path, casts })
+    }
+
+    /// One scalar expression, with the `= <literal>` comparison an ORDER BY
+    /// key may carry (`pg_get_expr(…) = 'DEFAULT'`).
+    pub(crate) fn order_expr(&mut self) -> Result<super::Expr, Refused> {
+        let left = self.scalar_expr()?;
+        if self.operator("=") {
+            let right = self
+                .literal()?
+                .ok_or_else(|| Refused::surface(code::SYNTAX, "ORDER BY = wants a literal"))?;
+            return Ok(super::Expr::Eq {
+                left: Box::new(left),
+                right,
+            });
+        }
+        Ok(left)
+    }
+
+    /// A bare boolean projection item — `'d' = any(stxkind) AS enabled`:
+    /// a literal one side of a catalog comparison, read as a truth value
+    /// against the row. `None` puts the cursor back.
+    fn predicate_item(&mut self) -> Result<Option<Item>, Refused> {
+        let at = self.at;
+        let Ok(left) = self.literal() else {
+            self.at = at;
+            return Ok(None);
+        };
+        // Only a comparison turns the literal into a predicate; a bare
+        // literal is the projection's own item shape, handled by the caller.
+        let Ok(op) = super::catalog::terms::comparison(self, "") else {
+            self.at = at;
+            return Ok(None);
+        };
+        let operand = super::catalog::terms::operand(self)?;
+        let term = super::catalog::terms::Term::Cmp {
+            column: left
+                .as_ref()
+                .and_then(crate::surface::types::text_of)
+                .unwrap_or_default(),
+            op,
+            operand,
+        };
+        let text = self.span_from(at);
+        let (text, column) = match self.alias()? {
+            Some(alias) => (format!("{text} {alias}"), alias),
+            None => (text, UNNAMED.to_owned()),
+        };
+        Ok(Some(Item {
+            text,
+            column,
+            computed: Some(Computed::Predicate(term)),
+        }))
     }
 
     /// The source text from `start` to the cursor: what the item rendered,
@@ -629,11 +788,11 @@ impl Parser<'_> {
         }
         if let Some(literal) = self.literal()? {
             let text = if self.inline_literals {
-                self.inline(literal)?
+                self.inline(literal.clone())?
             } else {
-                self.bind(literal)
+                self.bind(literal.clone())
             };
-            return self.cast_tail(Term::plain(text, None));
+            return self.cast_tail(Term::literal(text, literal));
         }
         let path = self.ident_path()?;
         self.cast_tail(Term::plain(path.clone(), Some(path)))
@@ -644,7 +803,12 @@ impl Parser<'_> {
     /// the catalog shape answers casts over a searched-CASE arm from the arm
     /// structure, not this text.
     fn cast_tail(&mut self, term: Term) -> Result<Term, Refused> {
-        let Term { text, path, arith } = term;
+        let Term {
+            text,
+            path,
+            arith,
+            lit,
+        } = term;
         let mut casted = text;
         let plain = casted.len();
         while self.operator("::") {
@@ -656,6 +820,7 @@ impl Parser<'_> {
                 text: casted,
                 path,
                 arith,
+                lit,
             })
         } else {
             Ok(Term::operated(casted))
