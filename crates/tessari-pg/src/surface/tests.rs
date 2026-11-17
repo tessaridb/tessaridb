@@ -84,6 +84,7 @@ pub(crate) enum Seen {
     CloseComplete,
     ParamDesc(Vec<u32>),
     NoData,
+    Suspended,
 }
 
 /// A connected client speaking the wire protocol by hand.
@@ -413,6 +414,7 @@ pub(crate) fn decode(kind: u8, body: &[u8]) -> Seen {
             Seen::DataRow(cells)
         }
         b'C' => Seen::Command(cstr(body)),
+        b's' => Seen::Suspended,
         b'I' => Seen::Empty,
         b'1' => Seen::ParseComplete,
         b'2' => Seen::BindComplete,

@@ -346,3 +346,62 @@ async fn describe_portal_runs_once_and_execute_replays() {
         "the second Execute finds the portal spent: {seen:?}"
     );
 }
+
+#[tokio::test]
+async fn a_row_limited_portal_suspends_and_resumes() {
+    let (address, _stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    client
+        .parse("stmt", "SELECT band FROM orders ORDER BY band", &[])
+        .await;
+    // A named portal: the unnamed one closes at Sync, a named one holds its
+    // window across them.
+    client.bind("p", "stmt", &[], &[], &[]).await;
+    // Two rows per Execute: the first window suspends, the next answers the
+    // rest and the count closes the portal.
+    client.execute("p", 2).await;
+    client.execute("p", 2).await;
+    client.execute("p", 2).await;
+    client.sync().await;
+    let mut seen = Vec::new();
+    for _ in 0..9 {
+        seen.push(client.message().await);
+    }
+    assert!(
+        seen.contains(&Seen::ParseComplete) && seen.contains(&Seen::BindComplete),
+        "{seen:?}"
+    );
+    assert_eq!(
+        rows(&seen),
+        vec![
+            vec![Some("1".to_owned())],
+            vec![Some("3".to_owned())],
+            vec![Some("3".to_owned())],
+        ],
+        "the windows resume where the last left: {seen:?}"
+    );
+    assert!(
+        seen.iter().filter(|m| matches!(m, Seen::Suspended)).count() == 1,
+        "the full window suspends once, the next completes: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "SELECT 3")),
+        "the completion names the portal's count: {seen:?}"
+    );
+
+    // A spent portal answers an empty completion, never a re-run.
+    client.execute("p", 2).await;
+    client.sync().await;
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        seen.push(client.message().await);
+    }
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "SELECT 0")),
+        "the spent portal answers empty: {seen:?}"
+    );
+}

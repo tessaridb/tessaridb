@@ -58,6 +58,9 @@ struct Portal {
     /// The rows a Describe(portal) already evaluated for a catalog statement —
     /// answered locally, never against the store.
     catalog_rows: Option<Vec<Vec<Option<tessaridb::Value>>>>,
+    /// How many rows a row-limited Execute already answered, so the next
+    /// Execute resumes where it left (PortalSuspended).
+    served: usize,
 }
 
 impl Kitchen {
@@ -313,6 +316,7 @@ impl Kitchen {
             described: false,
             done: false,
             catalog_rows: None,
+            served: 0,
         })
     }
 
@@ -495,17 +499,6 @@ impl Kitchen {
         if self.skipping {
             return Ok(());
         }
-        if rows != 0 {
-            return self
-                .fail(
-                    conn,
-                    &Refused::surface(
-                        code::FEATURE,
-                        "row-limited portals are not spoken in this build",
-                    ),
-                )
-                .await;
-        }
         let Some(portal) = self.portals.get_mut(name) else {
             return self
                 .fail(
@@ -527,7 +520,7 @@ impl Kitchen {
             .first()
             .and_then(|shape| shape.catalog.clone())
         {
-            let rows = match portal.catalog_rows.take() {
+            let catalog_rows = match portal.catalog_rows.take() {
                 Some(rows) => rows,
                 None => {
                     let dynamic = match catalog_dynamic(
@@ -554,13 +547,36 @@ impl Kitchen {
                     }
                 }
             };
+            let formats = portal.formats.clone();
+            if rows != 0 {
+                // A row ceiling: the window answers, the rest holds.
+                let start = portal.served.min(catalog_rows.len());
+                let end = start
+                    .saturating_add(usize::try_from(rows).unwrap_or(usize::MAX))
+                    .min(catalog_rows.len());
+                portal.served = end;
+                let window = &catalog_rows[start..end];
+                let described = true;
+                let answered =
+                    super::connection::answer_catalog(conn, &query, window, described, &formats)
+                        .await?;
+                if !answered {
+                    self.skipping = true;
+                    return Ok(());
+                }
+                if end < catalog_rows.len() {
+                    return conn.send(&codec::write::portal_suspended()).await;
+                }
+                portal.done = true;
+                return Ok(());
+            }
             portal.done = true;
             // Execute owes no RowDescription in the extended protocol —
             // Describe answered it, or the client never asked.
             let described = true;
-            let formats = portal.formats.clone();
             let answered =
-                super::connection::answer_catalog(conn, &query, &rows, described, &formats).await?;
+                super::connection::answer_catalog(conn, &query, &catalog_rows, described, &formats)
+                    .await?;
             if !answered {
                 self.skipping = true;
                 return Ok(());
@@ -580,10 +596,6 @@ impl Kitchen {
                 }
             },
         };
-        portal.done = true;
-        // Execute owes no RowDescription in the extended protocol —
-        // Describe answered it, or the client never asked.
-        let suppress_description = true;
         let shape = match portal.translated.statements.first() {
             Some(shape) => shape,
             None => {
@@ -596,6 +608,49 @@ impl Kitchen {
             }
         };
         let shape = shape.clone();
+        if rows != 0 {
+            // A row ceiling over the first records outcome: the window
+            // answers as rows, the rest holds for the next Execute — the
+            // count the completion names is the portal's, as the protocol
+            // counts runs.
+            if let Some(tessaridb::Outcome::Records { records, .. }) = outcomes.first() {
+                let (columns, all) = super::rows(
+                    records,
+                    &shape.columns,
+                    &shape.record_names,
+                    shape.table.as_deref(),
+                );
+                let start = portal.served.min(all.len());
+                let end = start
+                    .saturating_add(usize::try_from(rows).unwrap_or(usize::MAX))
+                    .min(all.len());
+                portal.served = end;
+                let window = &all[start..end];
+                let encoded = match super::encode(&columns, window, &portal.formats) {
+                    Ok(encoded) => encoded,
+                    Err(refused) => {
+                        conn.refuse_pending(&refused).await?;
+                        self.skipping = true;
+                        return Ok(());
+                    }
+                };
+                for row in &encoded {
+                    conn.send(&codec::write::data_row(row)).await?;
+                }
+                if end < all.len() {
+                    portal.spent = Some(outcomes);
+                    return conn.send(&codec::write::portal_suspended()).await;
+                }
+                portal.done = true;
+                return conn
+                    .send(&codec::write::command_complete(&shape.tag.completion(end)))
+                    .await;
+            }
+        }
+        portal.done = true;
+        // Execute owes no RowDescription in the extended protocol —
+        // Describe answered it, or the client never asked.
+        let suppress_description = true;
         let mut described = suppress_description;
         for outcome in &outcomes {
             let answered =
