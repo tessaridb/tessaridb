@@ -220,7 +220,24 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 id: database.get(),
             });
         }
-        let shards = shard::declared_for(name, &shape)?;
+        let mut shards = shard::declared_for(name, &shape)?;
+        // A table created under an inheriting default-on namespace is born
+        // split: the map exists before the first record, so every write is
+        // filed under a shard from the start (ADR-0095's invariant can only
+        // be honored at the birth). A declared `SPLIT AT` wins over the
+        // default, and an unsplit table that predates the namespace's
+        // default stays untouched — the act that would split it is refused
+        // by name, and the default does not do silently what the engine
+        // refuses to do.
+        if shards.is_none()
+            && self
+                .namespace(namespace)
+                .await?
+                .and_then(|held| held.auto_split_default)
+                .unwrap_or(false)
+        {
+            shards = Some(shard::ShardMap::whole());
+        }
         // A storage kind rides only on a plain record table or a series at
         // v1: kinds whose semantics are not record-shaped refuse the clause
         // (the design record, §10 — `StorageKindOnKind`; topics, queues and spaces

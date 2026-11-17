@@ -659,6 +659,101 @@ fn the_bared_policy_is_the_stores_published_bounds() {
 }
 
 #[test]
+#[test]
+fn a_table_born_under_a_default_splits_when_it_outgrows_the_bound() {
+    // D-SG5-4 as amended: the table is BORN split under an inheriting
+    // default-on namespace — one shard covering everything, so its records
+    // are filed under a shard from the first write (ADR-0095's filing
+    // invariant can only be honored at the birth) — and the ordinary split
+    // machinery does the rest once the shard outgrows the baked bound.
+    // Writes go in small transactions: a transaction is 3-4x faster per
+    // record, and a small buffer keeps the scanner linear.
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(
+            "DEFINE NAMESPACE prod SPLIT AUTOMATICALLY; \
+             USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+             DEFINE TABLE events (n int) IDENTITY uuid SPREAD;",
+        )
+        .expect("the inherited table defines, born split");
+    let born = table_named(&db, "events");
+    assert!(
+        born.shards.is_some(),
+        "a table born under the default holds a shard map"
+    );
+    for _ in 0..5_250 {
+        let creates = " CREATE events = { n: 1 };".repeat(200);
+        db.session()
+            .run_now(&format!("{TENANCY} BEGIN;{creates} COMMIT;"))
+            .expect("a batch lands");
+    }
+    let (split, _) = passes(&db, &mut ShardSamples::default());
+    assert!(
+        split >= 1,
+        "the born shard earned its first split past the bound"
+    );
+    let grown = table_named(&db, "events");
+    let held = grown.shards.map(|map| map.spans().count()).unwrap_or(0);
+    assert!(held >= 2, "the split left {held} shards");
+}
+
+#[test]
+fn a_born_split_table_under_the_bound_keeps_its_single_shard() {
+    // Below the bound the born shard is left exactly as born: one shard, no
+    // act.
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(
+            "DEFINE NAMESPACE prod SPLIT AUTOMATICALLY; \
+             USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+             DEFINE TABLE events (n int) IDENTITY uuid SPREAD;",
+        )
+        .expect("the inherited table defines, born split");
+    db.session()
+        .run_now(&format!(
+            "{TENANCY} CREATE events = {{ n: 1 }}; CREATE events = {{ n: 2 }};"
+        ))
+        .expect("the records write");
+    let (split, merged) = passes(&db, &mut ShardSamples::default());
+    assert_eq!(split, 0);
+    assert_eq!(merged, 0);
+    let held = table_named(&db, "events")
+        .shards
+        .map(|map| map.spans().count())
+        .unwrap_or(0);
+    assert_eq!(held, 1, "below the bound the born shard stays one");
+}
+
+#[test]
+fn a_table_that_predates_the_default_stays_unsplit() {
+    // The other arm of the amendment, measured: a table born before its
+    // namespace turned the default on is not retro-fitted — the act that
+    // would split it is refused by name (ADR-0095), and the default does
+    // not do silently what the engine refuses to do.
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(&format!(
+            "{DECLARED} DEFINE TABLE events (n int) IDENTITY uuid SPREAD;"
+        ))
+        .expect("the table defines, born unsplit");
+    db.session()
+        .run_now("ALTER NAMESPACE prod SPLIT AUTOMATICALLY;")
+        .expect("the namespace turns its default on");
+    db.session()
+        .run_now(&format!(
+            "{TENANCY} CREATE events = {{ n: 1 }}; CREATE events = {{ n: 2 }};"
+        ))
+        .expect("the records write");
+    let (split, merged) = passes(&db, &mut ShardSamples::default());
+    assert_eq!(split, 0);
+    assert_eq!(merged, 0);
+    assert!(
+        table_named(&db, "events").shards.is_none(),
+        "the pre-existing unsplit table stays untouched"
+    );
+}
+
+#[test]
 fn a_policy_with_shard_count_bounds_round_trips_through_the_report_and_definition() {
     let db = Db::in_memory().now().unwrap();
     orders(
