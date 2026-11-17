@@ -315,6 +315,28 @@ impl<'a> Parser<'a> {
         Some(word.to_ascii_lowercase())
     }
 
+    /// A write statement ends here: trailing whitespace or one semicolon is
+    /// the dialect's own punctuation, nothing more — what follows another
+    /// statement is the caller's to accept or refuse.
+    pub(crate) fn end_write(&mut self) -> Result<(), Refused> {
+        self.skip_space();
+        if self.byte(b';') {
+            self.skip_space();
+        }
+        if self.at == self.source.len() {
+            return Ok(());
+        }
+        Err(Refused::with_detail(
+            code::SYNTAX,
+            "syntax error at or near the rest of the query",
+            format!(
+                "at byte {}: {:?}",
+                self.at,
+                String::from_utf8_lossy(&self.source[self.at..])
+            ),
+        ))
+    }
+
     /// A whole number for LIMIT.
     pub(crate) fn number(&mut self) -> Result<u64, Refused> {
         let word = self.digits();

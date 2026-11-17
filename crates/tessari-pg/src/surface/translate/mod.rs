@@ -13,6 +13,7 @@ mod parser;
 mod shape;
 
 pub(crate) mod catalog;
+pub(crate) mod write;
 
 use tessaridb::{Parameters, Value};
 
@@ -49,6 +50,11 @@ pub(crate) const UNNAMED: &str = "?column?";
 /// Translate one statement — the extended protocol's Parse, which speaks
 /// exactly one. A refusal carries the wire code and the words a client shows.
 pub(crate) fn translate(query: &str) -> Result<Translated, Refused> {
+    if let Some(first) = query.split_whitespace().next()
+        && write::opens(first)
+    {
+        return write::translate(query);
+    }
     let mut parser = Parser::new(query);
     parser.select()
 }
@@ -57,6 +63,11 @@ pub(crate) fn translate(query: &str) -> Result<Translated, Refused> {
 /// statements: they run as one implicit transaction block, the store's own
 /// `BEGIN … COMMIT` wrapping them.
 pub(crate) fn translate_many(query: &str) -> Result<Translated, Refused> {
+    if let Some(first) = query.split_whitespace().next()
+        && write::opens(first)
+    {
+        return write::translate_many(query);
+    }
     let mut parser = Parser::new(query);
     parser.select_many()
 }
@@ -123,6 +134,11 @@ pub(crate) struct Shaped {
     /// store's shape (the port's own `eN` alias), `None` where the wire
     /// name and the record name are the same.
     pub(crate) record_names: Vec<Option<String>>,
+    /// The completion tag the wire answers the statement under.
+    pub(crate) tag: write::Tag,
+    /// A write's RETURNING projection — `None` where the wire owes only the
+    /// count.
+    pub(crate) returning: Option<Columns>,
 }
 
 /// A projection item the catalog answers by computing rather than looking a

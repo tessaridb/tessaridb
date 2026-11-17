@@ -435,6 +435,8 @@ async fn query_once(
     };
     // The implicit block's BEGIN and COMMIT answer Done among the outcomes;
     // the statements pair with their shapes in order, the Dones skipped.
+    // CREATE/DROP TABLE hold only definitions — every outcome is a Done —
+    // and answer here, under their own tag.
     let mut shapes = translated.statements.iter();
     for outcome in &outcomes {
         if matches!(outcome, tessaridb::Outcome::Done) {
@@ -446,6 +448,9 @@ async fn query_once(
         // An encoding refusal was already answered on the wire; the
         // readiness below still arrives, as the simple protocol counts it.
         let _answered = answer(conn, outcome, shape, false, &[]).await?;
+    }
+    for shape in shapes {
+        answer(conn, &tessaridb::Outcome::Done, shape, false, &[]).await?;
     }
     conn.send(&codec::write::ready_for_query(*tx)).await?;
     Ok(())
@@ -580,6 +585,15 @@ pub(crate) async fn answer(
     use tessaridb::Outcome;
     match outcome {
         Outcome::Records { records, .. } => {
+            // A write the client did not RETURN owes only the count — no
+            // rows, no description, the tag naming how many.
+            if shape.tag != translate::write::Tag::Select && shape.returning.is_none() {
+                conn.send(&codec::write::command_complete(
+                    &shape.tag.completion(records.len()),
+                ))
+                .await?;
+                return Ok(true);
+            }
             let (mut columns, rows) = if records.is_empty()
                 && let translate::Columns::Named(names) = &shape.columns
             {
@@ -623,13 +637,18 @@ pub(crate) async fn answer(
             for row in &encoded {
                 conn.send(&codec::write::data_row(row)).await?;
             }
-            conn.send(&codec::write::command_complete(&format!(
-                "SELECT {}",
-                rows.len()
-            )))
+            conn.send(&codec::write::command_complete(
+                &shape.tag.completion(rows.len()),
+            ))
             .await?;
         }
         Outcome::Value(value) => {
+            // A write the store answers as one value (CREATE's RETURN AFTER):
+            // the tag names it, or the RETURNING projection answers under
+            // the record's own fields.
+            if shape.tag != translate::write::Tag::Select {
+                return answer_write_value(conn, shape, value, described, formats).await;
+            }
             let mut column = super::value_column(value);
             if let Ok(expanded) = super::expand_formats(formats, 1)
                 && let Some(format) = expanded.first()
@@ -658,7 +677,7 @@ pub(crate) async fn answer(
                 .await?;
         }
         Outcome::Done => {
-            conn.send(&codec::write::command_complete("SELECT 0"))
+            conn.send(&codec::write::command_complete(&shape.tag.completion(0)))
                 .await?;
         }
         other => {
@@ -671,6 +690,79 @@ pub(crate) async fn answer(
             return Ok(false);
         }
     }
+    Ok(true)
+}
+
+/// One write's single value as the wire spells it: no RETURNING owes the
+/// tag alone; RETURNING answers the value's fields under the projection —
+/// a star takes the record's own field order, a name list takes those.
+async fn answer_write_value(
+    conn: &mut Conn,
+    shape: &translate::Shaped,
+    value: &tessaridb::Value,
+    described: bool,
+    formats: &[u16],
+) -> Result<bool> {
+    if shape.returning.is_none() {
+        conn.send(&codec::write::command_complete(&shape.tag.completion(1)))
+            .await?;
+        return Ok(true);
+    }
+    let (columns, rows) = match (&shape.columns, value) {
+        (translate::Columns::Star, tessaridb::Value::Object(fields)) => {
+            let columns = fields
+                .keys()
+                .map(|name| codec::write::Column {
+                    name: name.clone(),
+                    type_oid: types::oid::TEXT,
+                    type_len: -1,
+                    format: 0,
+                })
+                .collect::<Vec<_>>();
+            let row = fields.values().map(|held| Some(held.clone())).collect();
+            (columns, vec![row])
+        }
+        (translate::Columns::Named(names), tessaridb::Value::Object(fields)) => {
+            let columns = names
+                .iter()
+                .map(|name| codec::write::Column {
+                    name: name.clone(),
+                    type_oid: types::oid::TEXT,
+                    type_len: -1,
+                    format: 0,
+                })
+                .collect::<Vec<_>>();
+            let row = names
+                .iter()
+                .map(|name| fields.get(name).cloned().or(Some(tessaridb::Value::None)))
+                .collect();
+            (columns, vec![row])
+        }
+        _ => (Vec::new(), vec![vec![Some(value.clone())]]),
+    };
+    let encoded = match super::encode(&columns, &rows, formats) {
+        Ok(encoded) => encoded,
+        Err(refused) => {
+            conn.refuse_pending(&refused).await?;
+            return Ok(false);
+        }
+    };
+    if !described {
+        let mut columns = columns;
+        if let Ok(expanded) = super::expand_formats(formats, columns.len()) {
+            for (i, column) in columns.iter_mut().enumerate() {
+                column.format = expanded[i];
+            }
+        }
+        conn.send(&codec::write::row_description(&columns)).await?;
+    }
+    for row in &encoded {
+        conn.send(&codec::write::data_row(row)).await?;
+    }
+    conn.send(&codec::write::command_complete(
+        &shape.tag.completion(rows.len()),
+    ))
+    .await?;
     Ok(true)
 }
 

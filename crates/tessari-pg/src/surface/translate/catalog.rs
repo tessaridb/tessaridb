@@ -216,6 +216,8 @@ pub(crate) fn rest(
         }),
         inference: Vec::new(),
         record_names: Vec::new(),
+        tag: super::write::Tag::Select,
+        returning: None,
     })
 }
 

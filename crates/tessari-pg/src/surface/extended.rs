@@ -776,6 +776,11 @@ fn columns_of(translated: &translate::Translated) -> Option<Vec<codec::write::Co
     if let Some(query) = &shape.catalog {
         return Some(query.columns());
     }
+    if shape.tag != translate::write::Tag::Select && shape.returning.is_none() {
+        // A write the client did not RETURN owes NoData: no row shape the
+        // Execute could describe.
+        return None;
+    }
     match &shape.columns {
         Columns::Named(names) => Some(
             names

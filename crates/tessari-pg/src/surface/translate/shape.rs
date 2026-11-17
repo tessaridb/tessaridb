@@ -167,6 +167,8 @@ impl Parser<'_> {
             catalog: None,
             inference: std::mem::take(&mut self.inference),
             record_names,
+            tag: super::write::Tag::Select,
+            returning: None,
         })
     }
 
@@ -364,7 +366,7 @@ impl Parser<'_> {
 
     /// Whether another statement follows the semicolon just eaten: `true`
     /// when text remains, `false` at the end of the query.
-    fn end_more(&mut self) -> Result<bool, Refused> {
+    pub(crate) fn end_more(&mut self) -> Result<bool, Refused> {
         self.skip_space();
         if self.byte(b';') {
             self.skip_space();
