@@ -22,6 +22,8 @@
 use std::collections::BTreeMap;
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tessari_session::Now;
 use tessari_session::RunNow;
@@ -2009,6 +2011,359 @@ fn a_pooled_cluster_serves_every_tenant_on_every_node_and_the_seam_holds_everywh
     }
 }
 
+/// The three-realm exercise's band: six nodes in three (surface, peer) pairs,
+/// two nodes per realm. Derived for W3 (2026-11-17): clear of every band the
+/// suites hold.
+const SIX: [(&str, &str); 6] = [
+    ("127.0.0.1:47942", "127.0.0.1:47943"), // dc-a n1
+    ("127.0.0.1:47944", "127.0.0.1:47945"), // dc-a n2
+    ("127.0.0.1:47946", "127.0.0.1:47947"), // dc-b n1
+    ("127.0.0.1:47948", "127.0.0.1:47949"), // dc-b n2
+    ("127.0.0.1:47950", "127.0.0.1:47951"), // dc-c n1
+    ("127.0.0.1:47952", "127.0.0.1:47953"), // dc-c n2
+];
+
+/// [`a_cluster_of_rows`] for six members — the three-realm exercise's shape.
+/// The body is the three-node ceremony's verbatim, because everything it does
+/// (founding transaction, credentials, spawn, doors) is already `band.len()`-
+/// shaped; only the row count is fixed. A generalized harness would rename the
+/// world for one test; the clone keeps the three-node path untouched.
+fn a_six_of_rows(
+    band: &[(&'static str, &'static str)],
+    preamble: &str,
+    rows: [String; 6],
+) -> Three {
+    let directory = tempfile::tempdir().unwrap();
+    let minted = Minted::new();
+
+    let mut stores = Vec::new();
+    let mut ids = Vec::new();
+    let mut papers = Vec::new();
+    let mut fingerprints = Vec::new();
+    for index in 0..band.len() {
+        let home = directory.path().join(format!("n{index}"));
+        std::fs::create_dir_all(&home).unwrap();
+        let store = home.join("store");
+        let db = tessaridb::Db::open(&store).now().unwrap();
+        let id = db.store().node_identity().now().unwrap().id;
+        db.close().now().unwrap();
+        let (paper, fingerprint) = credentials_fingerprinted(&minted, id, &home);
+        papers.push(paper);
+        fingerprints.push(fingerprint);
+        ids.push(id);
+        stores.push(store);
+    }
+
+    // The whole membership, itself included, in one transaction per node — for
+    // the reasons `a_cluster_of_rows` gives at length: idempotent replication
+    // of the rows, the role written last so the write gate never meets a
+    // half-declared cluster.
+    for (index, store) in stores.iter().enumerate() {
+        let db = tessaridb::Db::open(store).now().unwrap();
+        let mut script = format!("BEGIN; {preamble}");
+        for other in 0..band.len() {
+            let named = tessari_types::RecordId::Uuid(ids[other]).to_string();
+            script.push_str(&format!(
+                " DEFINE REPLICA n{other} AT '{}' NODE '{named}' {};",
+                band[other].1, rows[other]
+            ));
+        }
+        let own = rows[index]
+            .strip_prefix("ROLES ")
+            .and_then(|rest| rest.split(" REPLICATES").next())
+            .unwrap();
+        script.push_str(&format!(" DEFINE NODE ROLES {own}; COMMIT;"));
+        db.session()
+            .run_now(&script)
+            .unwrap_or_else(|why| panic!("a cluster of six, declared: {why}\n{script}"));
+        db.close().now().unwrap();
+    }
+
+    let mut running: Vec<Option<Running>> = Vec::new();
+    let mut logs: Vec<std::path::PathBuf> = Vec::new();
+    let mut started_with = Vec::new();
+    for index in 0..band.len() {
+        let (leaf, key, authority) = &papers[index];
+        let log = directory.path().join(format!("n{index}")).join("node.log");
+        let seed = format!(
+            "{}@{}",
+            tessari_types::RecordId::Uuid(ids[the_next_node(band, index)]),
+            band[the_next_node(band, index)].1
+        );
+        let args: Vec<std::ffi::OsString> = [
+            stores[index].as_os_str(),
+            "--serve".as_ref(),
+            band[index].0.as_ref(),
+            "--cluster-credential".as_ref(),
+            leaf.as_ref(),
+            "--cluster-key".as_ref(),
+            key.as_ref(),
+            "--cluster-authority".as_ref(),
+            authority.as_ref(),
+            "--cluster-address".as_ref(),
+            band[index].1.as_ref(),
+            "--seed".as_ref(),
+            seed.as_ref(),
+        ]
+        .iter()
+        .map(|arg| (*arg).to_owned())
+        .collect();
+        running.push(Some(started(&args, &log)));
+        logs.push(log);
+        started_with.push(args);
+    }
+    for (client, peer) in band {
+        assert!(listening(client, Duration::from_secs(30)), "{client}");
+        assert!(listening(peer, Duration::from_secs(30)), "{peer}");
+    }
+    Three {
+        minted,
+        fingerprints,
+        _directory: directory,
+        running,
+        logs,
+        ids,
+        started_with,
+    }
+}
+
+/// [`item_ids_at`], signed as the operator — this exercise closes its store,
+/// and an unsigned read is a sign-in refusal, not an empty answer.
+fn signed_item_ids_at(surface: &str) -> Result<Vec<String>, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let read = "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM item;";
+    match client
+        .run(read, Some(("operator", SECRET)))
+        .map_err(|why| why.to_string())?
+        .last()
+    {
+        Some(Answer::Records { records, .. }) => Ok(records
+            .iter()
+            .map(|(id, _)| id.trim_matches('\'').to_owned())
+            .collect()),
+        other => Err(format!("{other:?}")),
+    }
+}
+
+#[test]
+fn three_realms_lose_one_mid_write_and_the_claim_holds() {
+    // G090 SG3 W3 — the 3-DC exercise and the realm-loss drill. Six same-host
+    // processes stand in for three DCs, two nodes each, named as such; what
+    // this proves is the MECHANISM — the claim's arithmetic (losing one realm
+    // leaves four of six voters, more than half), a re-election in the
+    // survivors, and the one load-bearing invariant: no acknowledged write is
+    // lost. What it does not prove is geography: no real partition, no real
+    // hardware, and the latency between these "DCs" is a loopback.
+    let rows: [String; 6] = std::array::from_fn(|index| {
+        let realm = char::from(b'a' + u8::try_from(index / 2).unwrap_or_default());
+        format!(
+            "ROLES serving, writable, coordinating REPLICATES STORE \
+             REGION 'dc-{realm}' DOMAIN 'n{}'",
+            index % 2 + 1
+        )
+    });
+    let mut cluster = a_six_of_rows(&SIX, "", rows);
+    let logs = cluster.logs.clone();
+    let _running = &mut cluster.running;
+
+    // Phase 1 — declare. The scheme and the protected namespace go through the
+    // elected leader in one transaction, unsigned: the founding left the store
+    // open and the schema's own last statement declares the operator, which
+    // closes it. The topology's relations run at the declare: six coordinating
+    // voters, two per realm — losing any realm leaves four of six, more than
+    // half, so the claimed scheme declares green against the membership that
+    // meets it.
+    let schema = "DEFINE TOPOLOGY main \
+                      REALM 'dc-a' DOMAIN 'n1', 'n2' \
+                      REALM 'dc-b' DOMAIN 'n1', 'n2' \
+                      REALM 'dc-c' DOMAIN 'n1', 'n2' \
+                      SURVIVES REALM LOSS; \
+                      DEFINE NAMESPACE prod REPLICATION FACTOR 3; \
+                      USE NAMESPACE prod; DEFINE DATABASE orders; \
+                      USE DATABASE orders; DEFINE COLLECTION item; \
+                      DEFINE USER operator ROLE owner \
+                      PASSWORD 'a long enough password';";
+    let schema_at = declared_through_the_leader(&SIX, schema, &logs);
+
+    // The scheme validates green on the node that took it, and the verdict the
+    // console renders — the same `INFO FOR TOPOLOGY` the table and tree draw
+    // from — says so per realm. Signed as the operator, at the schema node's
+    // own pace for the sign-in-throttle reason the pool test records.
+    let reported = paced_until(Duration::from_secs(90), Duration::from_secs(2), || {
+        asked(
+            SIX[schema_at].0,
+            "INFO FOR TOPOLOGY main;",
+            Some(("operator", SECRET)),
+        )
+        .is_ok_and(|answers| {
+            let Some(Answer::Value {
+                value: tessari_types::Value::Object(report),
+                ..
+            }) = answers.last()
+            else {
+                return false;
+            };
+            if report.get("satisfied") != Some(&tessari_types::Value::Bool(true)) {
+                return false;
+            }
+            let Some(tessari_types::Value::Array(realms)) = report.get("realms") else {
+                return false;
+            };
+            realms.len() == 3
+                && realms.iter().all(|realm| {
+                    let tessari_types::Value::Object(fields) = realm else {
+                        return false;
+                    };
+                    let Some(tessari_types::Value::Object(verdict)) = fields.get("loss") else {
+                        return false;
+                    };
+                    verdict.get("survived") == Some(&tessari_types::Value::Bool(true))
+                })
+        })
+    });
+    assert!(
+        reported,
+        "the scheme never validated green on the leader{}",
+        what_the_nodes_said(&SIX, &logs)
+    );
+
+    // Writes acknowledged at MAJORITY land and reach every node. Ten seeds
+    // through the leader; then every node answers the count, at the signed
+    // pace, until the log has carried them everywhere.
+    {
+        let mut client = Client::connect(SIX[schema_at].0).unwrap();
+        for held in 1..=10 {
+            client
+                .run(
+                    &into_item(&format!("seed{held:02}"), ""),
+                    Some(("operator", SECRET)),
+                )
+                .unwrap_or_else(|why| panic!("the seed {held} refused: {why}"));
+        }
+    }
+    let everywhere = paced_until(Duration::from_secs(120), Duration::from_secs(2), || {
+        SIX.iter().all(|(surface, _)| {
+            asked(
+                surface,
+                "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM item;",
+                Some(("operator", SECRET)),
+            )
+            .is_ok_and(|answers| match answers.last() {
+                Some(Answer::Records { records, .. }) => records.len() >= 10,
+                _ => false,
+            })
+        })
+    });
+    assert!(
+        everywhere,
+        "the seeds never reached every realm{}",
+        what_the_nodes_said(&SIX, &logs)
+    );
+
+    // Phase 2 — the drill. A writer signs in as the operator and writes
+    // through the leader while both of dc-c's processes are killed. Writes in
+    // flight at the kill are refused or land — the writer counts both, and
+    // U3's number is the pair, not a rounded sum.
+    let stop = Arc::new(AtomicBool::new(false));
+    let acknowledged: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let refused = Arc::new(AtomicUsize::new(0));
+    let writer = {
+        let stop = Arc::clone(&stop);
+        let acknowledged = Arc::clone(&acknowledged);
+        let refused = Arc::clone(&refused);
+        let on = SIX[schema_at].0;
+        std::thread::spawn(move || {
+            let mut client = Client::connect(on).unwrap();
+            let mut index = 0_u32;
+            while !stop.load(Ordering::Relaxed) {
+                index = index.saturating_add(1);
+                let key = format!("k{index:06}");
+                match client.run(&into_item(&key, ""), Some(("operator", SECRET))) {
+                    Ok(_) => acknowledged.lock().unwrap().push(key),
+                    Err(_) => {
+                        refused.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        })
+    };
+    std::thread::sleep(Duration::from_millis(1500));
+    // The realm loss: both processes of dc-c, killed — no lease is handed back
+    // cleanly, which is what a real DC loss looks like to the survivors.
+    drop(cluster.running[4].take());
+    drop(cluster.running[5].take());
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+    let acknowledged = acknowledged.lock().unwrap().clone();
+    let refused = refused.load(Ordering::Relaxed);
+
+    // R2's promise, measured: a leader re-elects among the four survivors, and
+    // every write it had acknowledged before the loss is still there — an
+    // acknowledged write is held by a majority, and the majority outlives any
+    // one realm.
+    // The store closed when the schema declared the operator, so the probe is
+    // a SIGNED write — and an UPSERT, because the probe that finds the leader
+    // runs more than once: a `CREATE` answered twice is a name-taken refusal,
+    // and the probe would miss the leader it found the pass before.
+    let survivors: Vec<&str> = (0..SIX.len() - 2).map(|index| SIX[index].0).collect();
+    let began = Instant::now();
+    let new_leader = loop {
+        let took = survivors.iter().find(|surface| {
+            Client::connect(surface).is_ok_and(|mut client| {
+                landed(&client.run(
+                    "USE NAMESPACE prod; USE DATABASE orders; \
+                     UPSERT item:'reelection-probe' SET n = 1;",
+                    Some(("operator", SECRET)),
+                ))
+            })
+        });
+        if let Some(surface) = took {
+            break *surface;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "nobody was elected after the realm died{}",
+            what_the_nodes_said(&SIX, &logs)
+        );
+        std::thread::sleep(POLL);
+    };
+    let held = signed_item_ids_at(new_leader).unwrap();
+    let missing = acknowledged
+        .iter()
+        .filter(|key| !held.contains(key))
+        .count();
+    assert!(
+        missing == 0,
+        "{missing} acknowledged writes vanished with the realm: {acknowledged:?}"
+    );
+
+    // The read-back still answers satisfied — the rows name six voters and the
+    // claim counts rows, not heartbeats; the measured truth of the drill is
+    // the writer's ledger: acknowledged vs refused, U3's pair.
+    let report = asked(
+        new_leader,
+        "INFO FOR TOPOLOGY main;",
+        Some(("operator", SECRET)),
+    )
+    .unwrap();
+    let Some(Answer::Value {
+        value: tessari_types::Value::Object(fields),
+        ..
+    }) = report.last()
+    else {
+        panic!("not a report: {report:?}");
+    };
+    assert_eq!(
+        fields.get("satisfied"),
+        Some(&tessari_types::Value::Bool(true))
+    );
+    println!(
+        "U3 realm loss: {} acknowledged writes held, {} in-flight refused",
+        acknowledged.len(),
+        refused
+    );
+}
+
 /// The noisy-neighbour exercise's band. Ports need not be contiguous — a band
 /// is three (surface, peer) pairs and nothing else — and the free ports near
 /// the pool's band are four, not six.
@@ -2294,7 +2649,7 @@ fn cluster_report(
 /// where it does not; and the exemption is the only thing that had been
 /// carrying them. Written this way it also survives a band gaining a fourth
 /// entry, which a hardcoded wrap would not.
-fn the_next_node(band: &Band, index: usize) -> usize {
+fn the_next_node(band: &[(&'static str, &'static str)], index: usize) -> usize {
     index
         .checked_add(1)
         .filter(|next| *next < band.len())
@@ -6143,7 +6498,11 @@ fn answered_at(surface: &str, read: &str) -> String {
 /// stream starts, and a write waiting for a majority waits for asks that come
 /// once a round. One transaction, so the whole schema lands in the store's log
 /// and none of it waits for copies of a namespace no follower holds yet.
-fn declared_through_the_leader(band: &Band, schema: &str, logs: &[std::path::PathBuf]) -> usize {
+fn declared_through_the_leader(
+    band: &[(&'static str, &'static str)],
+    schema: &str,
+    logs: &[std::path::PathBuf],
+) -> usize {
     let began = Instant::now();
     loop {
         let took = (0..band.len()).find(|index| {
