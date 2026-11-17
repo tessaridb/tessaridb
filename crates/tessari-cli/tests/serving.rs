@@ -2011,9 +2011,10 @@ fn a_pooled_cluster_serves_every_tenant_on_every_node_and_the_seam_holds_everywh
     }
 }
 
-/// The three-realm exercise's band: six nodes in three (surface, peer) pairs,
-/// two nodes per realm. Derived for W3 (2026-11-17): clear of every band the
-/// suites hold.
+/// The three-realm exercises' bands: six nodes in three (surface, peer)
+/// pairs, two nodes per realm — one band per drill, because the suite runs
+/// tests in parallel and two drills on one band would greet each other's
+/// nodes. Derived for W3 (2026-11-17): clear of every band the suites hold.
 const SIX: [(&str, &str); 6] = [
     ("127.0.0.1:47942", "127.0.0.1:47943"), // dc-a n1
     ("127.0.0.1:47944", "127.0.0.1:47945"), // dc-a n2
@@ -2021,6 +2022,17 @@ const SIX: [(&str, &str); 6] = [
     ("127.0.0.1:47948", "127.0.0.1:47949"), // dc-b n2
     ("127.0.0.1:47950", "127.0.0.1:47951"), // dc-c n1
     ("127.0.0.1:47952", "127.0.0.1:47953"), // dc-c n2
+];
+
+/// The LOCAL MAJORITY drill's own band — the MAJORITY drill's twin, on its own
+/// ports for the reason the band comment above states.
+const SIX_LOCAL: [(&str, &str); 6] = [
+    ("127.0.0.1:47954", "127.0.0.1:47955"), // dc-a n1
+    ("127.0.0.1:47956", "127.0.0.1:47957"), // dc-a n2
+    ("127.0.0.1:47958", "127.0.0.1:47959"), // dc-b n1
+    ("127.0.0.1:47960", "127.0.0.1:47961"), // dc-b n2
+    ("127.0.0.1:47962", "127.0.0.1:47963"), // dc-c n1
+    ("127.0.0.1:47964", "127.0.0.1:47965"), // dc-c n2
 ];
 
 /// [`a_cluster_of_rows`] for six members — the three-realm exercise's shape.
@@ -2143,6 +2155,226 @@ fn signed_item_ids_at(surface: &str) -> Result<Vec<String>, String> {
             .collect()),
         other => Err(format!("{other:?}")),
     }
+}
+
+#[test]
+fn local_majority_keeps_acknowledging_through_a_distant_realm_loss() {
+    // G090 SG3 W3 — the LOCAL MAJORITY variant of the realm-loss drill, and
+    // U3's honest second half. The level answers once a majority of the
+    // voters IN THE LEADER'S REGION hold the write; it is not promised across
+    // a failover (F2), and this drill says what that costs in numbers rather
+    // than in adjectives. The leader is elected wherever the cluster grants
+    // it, so the phases are computed from the realm it actually stands in —
+    // the test names realms by the leader's position, not by assumption.
+    let rows: [String; 6] = std::array::from_fn(|index| {
+        let realm = char::from(b'a' + u8::try_from(index / 2).unwrap_or_default());
+        format!(
+            "ROLES serving, writable, coordinating REPLICATES STORE \
+             REGION 'dc-{realm}' DOMAIN 'n{}'",
+            index % 2 + 1
+        )
+    });
+    let mut cluster = a_six_of_rows(&SIX_LOCAL, "", rows);
+    let logs = cluster.logs.clone();
+    let _running = &mut cluster.running;
+
+    let schema = "DEFINE TOPOLOGY main \
+                      REALM 'dc-a' DOMAIN 'n1', 'n2' \
+                      REALM 'dc-b' DOMAIN 'n1', 'n2' \
+                      REALM 'dc-c' DOMAIN 'n1', 'n2' \
+                      SURVIVES REALM LOSS; \
+                      DEFINE NAMESPACE prod REPLICATION FACTOR 3 \
+                      ACKNOWLEDGE LOCAL MAJORITY; \
+                      USE NAMESPACE prod; DEFINE DATABASE orders; \
+                      USE DATABASE orders; DEFINE COLLECTION item; \
+                      DEFINE USER operator ROLE owner \
+                      PASSWORD 'a long enough password';";
+    let schema_at = declared_through_the_leader(&SIX_LOCAL, schema, &logs);
+    // The realm indexes: pairs (0,1), (2,3), (4,5) are dc-a, dc-b, dc-c.
+    let leader_realm = schema_at / 2;
+    let distant = (leader_realm + 1) % 3;
+    let third = (leader_realm + 2) % 3;
+    let pair = |realm: usize| [realm * 2, realm * 2 + 1];
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let acknowledged: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let refused = Arc::new(AtomicUsize::new(0));
+    let writer = {
+        let stop = Arc::clone(&stop);
+        let acknowledged = Arc::clone(&acknowledged);
+        let refused = Arc::clone(&refused);
+        let on = SIX_LOCAL[schema_at].0;
+        std::thread::spawn(move || {
+            let mut client = Client::connect(on).unwrap();
+            let mut index = 0_u32;
+            while !stop.load(Ordering::Relaxed) {
+                index = index.saturating_add(1);
+                let key = format!("k{index:06}");
+                match client.run(&into_item(&key, ""), Some(("operator", SECRET))) {
+                    Ok(_) => acknowledged.lock().unwrap().push(key),
+                    Err(_) => {
+                        refused.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        })
+    };
+    std::thread::sleep(Duration::from_millis(1500));
+
+    // Phase A — a DISTANT realm dies. The leader's region is intact, the
+    // level's voters all live, and writes keep acknowledging; the refused
+    // count through the kill is the measurement, and every acknowledged write
+    // is held — a LOCAL MAJORITY write is held by the leader's region's
+    // voters, which the distant loss did not touch.
+    for index in pair(distant) {
+        drop(cluster.running[index].take());
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+    let acknowledged_a = acknowledged.lock().unwrap().clone();
+    let refused_a = refused.load(Ordering::Relaxed);
+    let held = signed_item_ids_at(SIX_LOCAL[schema_at].0).unwrap();
+    let missing_a = acknowledged_a
+        .iter()
+        .filter(|key| !held.contains(key))
+        .count();
+    assert!(
+        missing_a == 0,
+        "{missing_a} LOCAL MAJORITY writes a distant realm took with it: {acknowledged_a:?}"
+    );
+
+    // Phase A' — the distant realm RECOVERS: the same stores, the same
+    // processes restarted, and the log replays into them from origin (ref 11
+    // M21 — catching up is the ordinary replication path, not a restore).
+    for index in pair(distant) {
+        cluster.running[index] = Some(started(&cluster.started_with[index], &logs[index]));
+    }
+    for index in pair(distant) {
+        assert!(
+            listening(SIX_LOCAL[index].0, Duration::from_secs(30)),
+            "{} never came back",
+            SIX_LOCAL[index].0
+        );
+    }
+    // The recovery is proven by the acknowledged set reaching a restarted node:
+    // a node that answers with everything the leader acknowledged holds the
+    // log the whole way down.
+    let recovered = paced_until(Duration::from_secs(120), Duration::from_secs(2), || {
+        signed_item_ids_at(SIX_LOCAL[pair(distant)[0]].0)
+            .is_ok_and(|held| acknowledged_a.iter().all(|key| held.contains(key)))
+    });
+    assert!(
+        recovered,
+        "the recovered realm never caught the acknowledged set up{}",
+        what_the_nodes_said(&SIX_LOCAL, &logs)
+    );
+
+    // Phase B — the honest half: the LEADER's realm dies. The survivors (the
+    // distant realm, recovered, and the third) are four of six voters and
+    // re-elect; the level now answers at the new leader's region. The writes
+    // acknowledged BEFORE the kill were held by the dead realm's voters, and
+    // whether a survivor collected them is timing, not promise (F2) — the
+    // measurement is the pair printed below, not asserted, because the honest
+    // answer is a number that may be nonzero. What IS asserted is the promise
+    // the level actually makes: where the leader stands, it answers.
+    let before_b = acknowledged_a.len();
+    stop.store(false, Ordering::Relaxed);
+    let writer = {
+        let stop = Arc::clone(&stop);
+        let acknowledged = Arc::clone(&acknowledged);
+        let refused = Arc::clone(&refused);
+        let on = SIX_LOCAL[pair(third)[0]].0;
+        std::thread::spawn(move || {
+            let mut client = Client::connect(on).unwrap();
+            let mut index = 10_000_u32;
+            while !stop.load(Ordering::Relaxed) {
+                index = index.saturating_add(1);
+                let key = format!("k{index:06}");
+                match client.run(&into_item(&key, ""), Some(("operator", SECRET))) {
+                    Ok(_) => acknowledged.lock().unwrap().push(key),
+                    Err(_) => {
+                        refused.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        })
+    };
+    std::thread::sleep(Duration::from_millis(1500));
+    for index in pair(leader_realm) {
+        drop(cluster.running[index].take());
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+    let acknowledged_b = acknowledged.lock().unwrap().clone();
+    let refused_b = refused.load(Ordering::Relaxed) - refused_a;
+
+    let survivors: Vec<&str> = pair(distant)
+        .iter()
+        .chain(pair(third).iter())
+        .map(|index| SIX_LOCAL[*index].0)
+        .collect();
+    let began = Instant::now();
+    let new_leader = loop {
+        let took = survivors.iter().find(|surface| {
+            Client::connect(surface).is_ok_and(|mut client| {
+                landed(&client.run(
+                    "USE NAMESPACE prod; USE DATABASE orders; \
+                     UPSERT item:'reelection-probe' SET n = 1;",
+                    Some(("operator", SECRET)),
+                ))
+            })
+        });
+        if let Some(surface) = took {
+            break *surface;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "nobody was elected after the leader's realm died{}",
+            what_the_nodes_said(&SIX_LOCAL, &logs)
+        );
+        std::thread::sleep(POLL);
+    };
+    // The level keeps working WHERE THE LEADER STANDS: a batch written
+    // through the new leader at its own region's LOCAL MAJORITY lands and
+    // reads back. The writer above stopped when its window closed, before the
+    // election it could not know about — so this batch is written after the
+    // probe found the leader, not guessed from a still-open window.
+    {
+        let mut client = Client::connect(new_leader).unwrap();
+        for held in 1..=10 {
+            client
+                .run(
+                    &into_item(&format!("resumed{held:02}"), ""),
+                    Some(("operator", SECRET)),
+                )
+                .unwrap_or_else(|why| panic!("the resumed write {held} refused: {why}"));
+        }
+    }
+    let held_vec = signed_item_ids_at(new_leader).unwrap();
+    let lost_b = acknowledged_b[..before_b]
+        .iter()
+        .filter(|key| !held_vec.contains(key))
+        .count();
+    let resumed_b = (1..=10)
+        .filter(|held| held_vec.contains(&format!("resumed{held:02}")))
+        .count();
+    println!(
+        "U3 LOCAL MAJORITY: distant loss - {} acknowledged held, {} in-flight refused; \
+         leader's-realm loss - {} of {} pre-loss acknowledged survived, {} in-flight \
+         refused, {} post-re-election writes held",
+        acknowledged_a.len(),
+        refused_a,
+        before_b.saturating_sub(lost_b),
+        before_b,
+        refused_b,
+        resumed_b
+    );
+    assert!(
+        resumed_b > 0,
+        "writes at the new leader's LOCAL MAJORITY never landed"
+    );
 }
 
 #[test]
