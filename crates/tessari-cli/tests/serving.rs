@@ -1837,6 +1837,178 @@ fn a_node_dials_the_peer_its_catalog_declares() {
     );
 }
 
+/// The pooled cluster's band — the proof set of the SG2 worksheet exercised
+/// against three operating-system processes.
+///
+/// A band of its own for the reason every cluster test here carries one: two
+/// cluster tests sharing listeners fail on each other's ports, which reads as
+/// the cluster defect neither test is about.
+const POOLED: [(&str, &str); 3] = [
+    ("127.0.0.1:47910", "127.0.0.1:47911"),
+    ("127.0.0.1:47912", "127.0.0.1:47913"),
+    ("127.0.0.1:47914", "127.0.0.1:47915"),
+];
+
+/// The pool's schema, written once through whichever node leads — NOT into
+/// each node's founding transaction. A founding preamble that declared the
+/// tenant namespaces would give every node its OWN copies, allocated from its
+/// own id counter, and the store log would then refuse to collect into them
+/// (the `WouldReinterpret` guard: nothing is deleted, and the names would be
+/// re-read through the cluster's ids) — measured on this very test, where two
+/// nodes never advanced their copy for ninety seconds and said so in their
+/// logs. The operator is declared last: the first `DEFINE USER` closes the
+/// store, so anything that must run unsigned runs before it.
+const POOLED_SCHEMA: &str = "DEFINE NAMESPACE tenant_a REPLICATION FACTOR 3; USE NAMESPACE tenant_a; \
+     DEFINE DATABASE app; USE DATABASE app; DEFINE TABLE orders SCHEMALESS; \
+     CREATE orders:1 = { total: 10 }; \
+     DEFINE NAMESPACE tenant_b REPLICATION FACTOR 3; USE NAMESPACE tenant_b; \
+     DEFINE DATABASE app; USE DATABASE app; DEFINE TABLE payroll SCHEMALESS; \
+     CREATE payroll:1 = { salary: 99 }; \
+     DEFINE USER operator ROLE owner PASSWORD 'a long enough password';";
+
+/// Every pool member's row: the whole pool, subscribed whole. `REPLICATES
+/// STORE` is written deliberately here, not by default-sleeping: a node that
+/// may serve any tenant must hold every tenancy's data and credentials, and
+/// the seam is authority, not absence — `pooled_tenancy.rs` proves the same
+/// store serves one tenant's reader and refuses the other's. The NARROWER
+/// shape a blast-radius-conscious tenant wants — one node subscribed to a LIST
+/// of namespaces — does not parse today: a member row carries exactly one
+/// reach (`replicates: Option<ReachRef>`, `tessari-ql/src/ast/statement.rs`),
+/// and the second `REPLICATES` is a parse refusal. That gap is recorded in the
+/// SG2 worksheet as G-SG2-1 and is W4's decision, not this test's.
+const POOLED_ROW: &str = "ROLES serving, writable, coordinating REPLICATES STORE";
+
+#[test]
+fn a_pooled_cluster_serves_every_tenant_on_every_node_and_the_seam_holds_everywhere() {
+    // G090 SG2, proof rows P1–P3 over the wire. The in-process half of the set
+    // (`tessari-session/tests/suite/pooled_tenancy.rs`) proves the seam against
+    // one store holding every tenant; what only this can show is that the seam
+    // answers identically on three live nodes that EACH hold BOTH tenants —
+    // confinement as authority, not as placement, across real replication.
+    // Every cross-tenant attack begins at `USE`, because a record address
+    // resolves inside the selected tenancy, so the wire assertion is the seam
+    // itself and the prize it must not leak (`salary`).
+    let mut cluster = a_cluster_of_rows(
+        &POOLED,
+        "",
+        [
+            POOLED_ROW.to_owned(),
+            POOLED_ROW.to_owned(),
+            POOLED_ROW.to_owned(),
+        ],
+    );
+    let logs = cluster.logs.clone();
+    let _running = &mut cluster.running;
+
+    // The tenants, their data and the operator, once, through the leader — one
+    // transaction, so the log every follower collects names the namespaces
+    // from one counter and not three. Unsigned: the store is open until the
+    // schema's own last statement declares the operator, and an open store
+    // takes no sign-in — so this poll touches the guessing-throttle nowhere.
+    let schema_at = declared_through_the_leader(&POOLED, POOLED_SCHEMA, &logs);
+
+    // One application reader per tenant. Signed in as the operator, whose
+    // record exists only on the node that took the schema so far — so that
+    // node is asked FIRST, and a signed request is made at all only at a
+    // measured pace: the wire carries credentials per request, every request
+    // re-authenticates, and a sign-in for a user a node has not collected yet
+    // FAILS and feeds the store's guessing-throttle (three free failures, then
+    // doubling delays on too many recent ones). The pace keeps the failure
+    // count under the throttle's window; the poll below runs at the same pace
+    // for the same reason.
+    let declared = paced_until(Duration::from_secs(90), Duration::from_secs(2), || {
+        [
+            schema_at,
+            the_next_node(&POOLED, schema_at),
+            the_next_node(&POOLED, the_next_node(&POOLED, schema_at)),
+        ]
+        .into_iter()
+        .any(|index| {
+            asked(
+                &POOLED[index].0,
+                "BEGIN; \
+                 DEFINE USER a_app ON tenant_a.app AUTHORITIES read, write \
+                 PASSWORD 'a long enough password'; \
+                 DEFINE USER b_app ON tenant_b.app AUTHORITIES read, write \
+                 PASSWORD 'a long enough password'; \
+                 COMMIT;",
+                Some(("operator", SECRET)),
+            )
+            .is_ok_and(|answers: Vec<Answer>| landed(&Ok::<_, String>(answers)))
+        })
+    });
+    assert!(
+        declared,
+        "no node took the per-tenant readers{}",
+        what_the_nodes_said(&POOLED, &logs)
+    );
+
+    // The pool serves each tenant's own reader on every node. One poll round
+    // per two seconds: each probe is a signed request (see the pace above),
+    // and a reader that has not reached a node yet fails its sign-in there —
+    // a few spaced failures stay under the throttle's window, and once the
+    // record lands every sign-in succeeds and the polls become free. This is
+    // also the catch-up probe: the readers were declared after the data, the
+    // log applies in order, so a node that answers a reader holds everything
+    // the test wrote.
+    let served = paced_until(Duration::from_secs(120), Duration::from_secs(2), || {
+        POOLED.iter().all(|(surface, _)| {
+            says(
+                surface,
+                Some(("a_app", SECRET)),
+                "USE NAMESPACE tenant_a; USE DATABASE app; SELECT * FROM orders;",
+                "total",
+            ) && says(
+                surface,
+                Some(("b_app", SECRET)),
+                "USE NAMESPACE tenant_b; USE DATABASE app; SELECT * FROM payroll;",
+                "salary",
+            )
+        })
+    });
+    assert!(
+        served,
+        "the pool never served both tenants on every node{}",
+        what_the_nodes_said(&POOLED, &logs)
+    );
+
+    // The seam, on every node, in both directions: refused, naming what was
+    // asked, and never carrying the other tenancy's data. Over the wire the
+    // refusal's NAME is not carried (the class is), so the assertion pins the
+    // asked name and the absent prize rather than the variant.
+    for (surface, _) in POOLED {
+        let crossed = asked(
+            surface,
+            "USE NAMESPACE tenant_b; USE DATABASE app; SELECT * FROM payroll;",
+            Some(("a_app", SECRET)),
+        )
+        .unwrap_err();
+        assert!(
+            crossed.contains("tenant_b"),
+            "the seam on {surface} refused without naming what was asked: {crossed}"
+        );
+        assert!(
+            !crossed.contains("salary"),
+            "tenant_b's data crossed the seam on {surface}: {crossed}"
+        );
+
+        let back = asked(
+            surface,
+            "USE NAMESPACE tenant_a; USE DATABASE app; SELECT * FROM orders;",
+            Some(("b_app", SECRET)),
+        )
+        .unwrap_err();
+        assert!(
+            back.contains("tenant_a"),
+            "the seam on {surface} refused without naming what was asked: {back}"
+        );
+        assert!(
+            !back.contains("total"),
+            "tenant_a's data crossed the seam on {surface}: {back}"
+        );
+    }
+}
+
 /// A three-node cluster's addresses — a client surface and a peer door each.
 ///
 /// A named type rather than the array spelled out at four signatures, and a
@@ -2636,6 +2808,21 @@ fn until(within: Duration, mut question: impl FnMut() -> bool) -> bool {
             return true;
         }
         std::thread::sleep(POLL);
+    }
+    false
+}
+
+/// [`until`] at a slower, explicit pace — for questions that cost a SIGNED
+/// request each. The wire re-authenticates every request, and failed sign-ins
+/// feed the store's guessing-throttle, so a signed poll at `POLL` cadence would
+/// throttle itself into a refusal that outlives the wait it was polling for.
+fn paced_until(within: Duration, pace: Duration, mut question: impl FnMut() -> bool) -> bool {
+    let began = Instant::now();
+    while began.elapsed() < within {
+        if question() {
+            return true;
+        }
+        std::thread::sleep(pace);
     }
     false
 }

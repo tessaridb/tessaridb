@@ -136,6 +136,7 @@ mod passhash;
 mod phrase;
 mod plan_invariance;
 mod planner_statistics;
+mod pooled_tenancy;
 mod prefix;
 mod pruned_ranking;
 mod queue_claims;
