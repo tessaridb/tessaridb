@@ -67,14 +67,27 @@ impl Parser<'_> {
         })
     }
 
-    /// One projection item: a CASE mapping, a catalog function call, a
-    /// placeholder, an aggregate, an arithmetic expression, a field path or a
-    /// literal, each with its optional alias.
+    /// One projection item: a CASE mapping (simple or searched), a catalog
+    /// function call, a scalar subquery, a placeholder, an aggregate, an
+    /// arithmetic expression, a field path or a literal, each with its
+    /// optional alias.
     fn item(&mut self) -> Result<Item, Refused> {
         if self.keyword("CASE").is_ok() {
+            let at = self.at;
+            if self.keyword("WHEN").is_ok() {
+                self.at = at;
+                return self.searched_case_item();
+            }
+            self.at = at;
             return self.case_item();
         }
         let at = self.at;
+        if self.open_paren() {
+            if self.keyword("SELECT").is_ok() {
+                return self.subquery_item(at);
+            }
+            self.at = at;
+        }
         if let Some(call) = self.owner_call()? {
             let (text, column) = match self.alias()? {
                 Some(alias) => (format!("{call} AS {alias}"), alias),
@@ -86,7 +99,9 @@ impl Parser<'_> {
                 computed: Some(Computed::OwnerOf),
             });
         }
-        self.at = at;
+        if let Some(item) = self.catalog_call(at)? {
+            return Ok(item);
+        }
         if let Some(held) = self.placeholder() {
             let (text, column) = match self.alias()? {
                 Some(alias) => (format!("{held} AS {alias}"), alias),
@@ -135,6 +150,159 @@ impl Parser<'_> {
             column,
             computed: None,
         })
+    }
+
+    /// `(SELECT <projection> FROM pg_catalog.<relation> …)` at the cursor —
+    /// a scalar subquery in the projection, the deep describe's column
+    /// listing. Parsed as a catalog query of its own; the responder
+    /// evaluates it against the outer row, so a WHERE naming the outer
+    /// aliases is the query's own correlation, not a parse question.
+    /// `start` is the cursor at the opening parenthesis.
+    fn subquery_item(&mut self, start: usize) -> Result<Item, Refused> {
+        let items = self.projection()?.items;
+        if self.keyword("FROM").is_err() {
+            return Err(Refused::surface(
+                code::SYNTAX,
+                "a projection subquery wants FROM",
+            ));
+        }
+        // `rest` takes the cursor after the schema word, as the top-level
+        // shape leaves it.
+        let schema = self.ident()?;
+        if !super::catalog::opens(&schema) {
+            return Err(Refused::surface(
+                code::FEATURE,
+                "a projection subquery serves catalog relations in this build",
+            ));
+        }
+        let shaped = super::catalog::rest(self, items, &schema)?;
+        self.close_paren()?;
+        let Some(query) = shaped.catalog else {
+            return Err(Refused::surface(
+                code::INTERNAL,
+                "a catalog subquery built no catalog query",
+            ));
+        };
+        let column = query
+            .projection()
+            .first()
+            .map(|item| item.column.clone())
+            .unwrap_or_else(|| UNNAMED.to_owned());
+        let text = format!("({}) AS {}", self.span_from(start), column);
+        let (text, column) = match self.alias()? {
+            Some(alias) => (format!("{text} {alias}"), alias),
+            None => (text, column),
+        };
+        Ok(Item {
+            text,
+            column,
+            computed: Some(Computed::ScalarSubquery { query }),
+        })
+    }
+
+    /// `pg_catalog.<fn>(<path or literal>, …)` at the cursor: a catalog
+    /// function the responder answers from its own rows or the store's
+    /// introspection — `format_type`, `pg_get_expr`. `None` puts the cursor
+    /// back; `pg_get_userbyid` is the owner call above, answered from the
+    /// connection's identity.
+    fn catalog_call(&mut self, start: usize) -> Result<Option<Item>, Refused> {
+        let at = self.at;
+        let Ok(path) = self.ident_path() else {
+            self.at = at;
+            return Ok(None);
+        };
+        if !path.starts_with("pg_catalog.") || !self.open_paren() {
+            self.at = at;
+            return Ok(None);
+        }
+        let mut args = Vec::new();
+        loop {
+            if let Some(literal) = self.literal()? {
+                args.push(super::CallArg::Lit(literal));
+            } else {
+                args.push(super::CallArg::Path(self.ident_path()?));
+            }
+            if self.comma().is_err() {
+                break;
+            }
+        }
+        self.close_paren()?;
+        let name = path.rsplit('.').next().unwrap_or(&path).to_owned();
+        let text = format!("{} AS {}", self.span_from(start), name);
+        let (text, column) = match self.alias()? {
+            Some(alias) => (format!("{text} {alias}"), alias),
+            None => (text, name),
+        };
+        Ok(Some(Item {
+            text,
+            column,
+            computed: Some(Computed::Call { path, args }),
+        }))
+    }
+
+    /// `CASE WHEN <catalog term> THEN <arm> … [ELSE <arm>] END`: the
+    /// searched form. The conditions are the catalog's own term shape —
+    /// evaluated against the row exactly as a WHERE term is; the arms are
+    /// literals or paths carrying `::` casts.
+    fn searched_case_item(&mut self) -> Result<Item, Refused> {
+        let start = self.at;
+        let mut arms = Vec::new();
+        loop {
+            if self.keyword("WHEN").is_err() {
+                break;
+            }
+            let condition = super::catalog::terms::term(self)?;
+            if self.keyword("THEN").is_err() {
+                return Err(Refused::surface(code::SYNTAX, "CASE WHEN wants THEN"));
+            }
+            arms.push((condition, self.case_arm()?));
+        }
+        if arms.is_empty() {
+            return Err(Refused::surface(
+                code::SYNTAX,
+                "CASE wants at least one WHEN",
+            ));
+        }
+        let otherwise = if self.keyword("ELSE").is_ok() {
+            Some(self.case_arm()?)
+        } else {
+            None
+        };
+        if self.keyword("END").is_err() {
+            return Err(Refused::surface(code::SYNTAX, "CASE wants END"));
+        }
+        // The text rides verbatim: a store-bound statement carries it to the
+        // store, which answers in its own words; the catalog shape answers
+        // from the structure.
+        let text = format!("CASE {} END", self.span_from(start));
+        let (text, column) = match self.alias()? {
+            Some(alias) => (format!("{text} {alias}"), alias),
+            None => (text, UNNAMED.to_owned()),
+        };
+        Ok(Item {
+            text,
+            column,
+            computed: Some(Computed::SearchedCase { arms, otherwise }),
+        })
+    }
+
+    /// One searched-CASE arm: a literal, or a path carrying `::` casts.
+    fn case_arm(&mut self) -> Result<super::Expr, Refused> {
+        if let Some(literal) = self.literal()? {
+            return Ok(super::Expr::Lit(literal));
+        }
+        let path = self.ident_path()?;
+        let mut casts = Vec::new();
+        while self.operator("::") {
+            casts.push(self.ident_path()?);
+        }
+        Ok(super::Expr::Path { path, casts })
+    }
+
+    /// The source text from `start` to the cursor: what the item rendered,
+    /// kept verbatim where only the structure is load-bearing.
+    fn span_from(&self, start: usize) -> String {
+        String::from_utf8_lossy(&self.source[start..self.at]).into_owned()
     }
 
     /// `pg_catalog.pg_get_userbyid(<path>)` at the cursor, verbatim: the
@@ -443,20 +611,21 @@ impl Parser<'_> {
     }
 
     /// One arithmetic atom: a parenthesised expression, a placeholder, an
-    /// aggregate, a literal or a field path.
+    /// aggregate, a literal or a field path — with `::` casts riding the
+    /// atom postfix, the dialect's own spelling kept verbatim.
     fn atom(&mut self) -> Result<Term, Refused> {
         if self.open_paren() {
             let inner = self.sum()?;
             self.close_paren()?;
             let mut term = Term::plain(format!("({})", inner.text), inner.path);
             term.arith = inner.arith;
-            return Ok(term);
+            return self.cast_tail(term);
         }
         if let Some(held) = self.placeholder() {
-            return Ok(Term::plain(held, None));
+            return self.cast_tail(Term::plain(held, None));
         }
         if let Some(call) = self.aggregate()? {
-            return Ok(Term::plain(call, None));
+            return self.cast_tail(Term::plain(call, None));
         }
         if let Some(literal) = self.literal()? {
             let text = if self.inline_literals {
@@ -464,10 +633,33 @@ impl Parser<'_> {
             } else {
                 self.bind(literal)
             };
-            return Ok(Term::plain(text, None));
+            return self.cast_tail(Term::plain(text, None));
         }
         let path = self.ident_path()?;
-        Ok(Term::plain(path.clone(), Some(path)))
+        self.cast_tail(Term::plain(path.clone(), Some(path)))
+    }
+
+    /// Any `:: <type path>` casts following the atom: kept verbatim in the
+    /// text. The store answers a cast it does not speak in its own words;
+    /// the catalog shape answers casts over a searched-CASE arm from the arm
+    /// structure, not this text.
+    fn cast_tail(&mut self, term: Term) -> Result<Term, Refused> {
+        let Term { text, path, arith } = term;
+        let mut casted = text;
+        let plain = casted.len();
+        while self.operator("::") {
+            casted.push_str("::");
+            casted.push_str(&self.ident_path()?);
+        }
+        if casted.len() == plain {
+            Ok(Term {
+                text: casted,
+                path,
+                arith,
+            })
+        } else {
+            Ok(Term::operated(casted))
+        }
     }
 
     /// The port's own alias for an unnamed arithmetic projection — a bare

@@ -305,3 +305,72 @@ fn group_having_order_render_the_engines_shape() {
         "SELECT band, count(*) AS n FROM orders GROUP BY band HAVING count(*) > 1 ORDER BY band DESC;"
     );
 }
+
+#[test]
+fn boolean_literals_bind_in_the_projection() {
+    let (script, parameters, columns) = translated("SELECT false AS f, true AS t FROM orders");
+    assert_eq!(script, "SELECT $p1 AS f, $p2 AS t FROM orders;");
+    assert_eq!(
+        parameters,
+        vec![
+            ("p1".to_owned(), Value::Bool(false)),
+            ("p2".to_owned(), Value::Bool(true)),
+        ]
+    );
+    assert_eq!(
+        columns,
+        Columns::Named(vec!["f".to_owned(), "t".to_owned()])
+    );
+}
+
+#[test]
+fn casts_ride_verbatim_and_answer_under_the_ports_alias() {
+    let (script, _, columns) = translated("SELECT id::text FROM orders");
+    assert_eq!(script, "SELECT id::text AS e1 FROM orders;");
+    assert_eq!(columns, Columns::Named(vec![UNNAMED.to_owned()]));
+    // Chained casts over a qualified path, the deep describe's shape.
+    let (script, _, _) = translated("SELECT id::pg_catalog.regtype::pg_catalog.text FROM orders");
+    assert_eq!(
+        script,
+        "SELECT id::pg_catalog.regtype::pg_catalog.text AS e1 FROM orders;"
+    );
+}
+
+#[test]
+fn the_deep_describes_phase_two_shape_translates() {
+    let (script, _, columns) = translated(
+        "SELECT c.relchecks, CASE WHEN c.reloftype = 0 THEN '' ELSE c.reloftype::pg_catalog.regtype::pg_catalog.text END, false AS relhasoids FROM pg_catalog.pg_class c WHERE c.oid = '1'",
+    );
+    // A catalog shape answers locally: no store script, the projection's
+    // own names.
+    assert_eq!(script, "");
+    assert_eq!(
+        columns,
+        Columns::Named(vec![
+            "relchecks".to_owned(),
+            UNNAMED.to_owned(),
+            "relhasoids".to_owned(),
+        ])
+    );
+}
+
+#[test]
+fn catalog_function_calls_parse_with_path_and_literal_args() {
+    let (script, _, columns) = translated(
+        "SELECT pg_catalog.format_type(a.atttypid, a.atttypmod) FROM pg_catalog.pg_attribute a",
+    );
+    assert_eq!(script, "");
+    assert_eq!(columns, Columns::Named(vec!["format_type".to_owned()]));
+}
+
+#[test]
+fn projection_subqueries_parse_as_catalog_items() {
+    let (script, _, columns) = translated(
+        "SELECT a.attname, (SELECT pg_catalog.pg_get_expr(d.adbin, d.adrelid, true) FROM pg_catalog.pg_attrdef d WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum) FROM pg_catalog.pg_attribute a",
+    );
+    assert_eq!(script, "");
+    assert_eq!(
+        columns,
+        Columns::Named(vec!["attname".to_owned(), "pg_get_expr".to_owned()])
+    );
+}

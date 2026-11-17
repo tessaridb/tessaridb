@@ -91,6 +91,11 @@ impl Query {
             .any(|name| matches!(name, "pg_class" | "pg_attribute"))
     }
 
+    /// The projection items the query answers under, in order.
+    pub(crate) fn projection(&self) -> &[Item] {
+        &self.projection
+    }
+
     /// The relation names the query reads: the source, then every join.
     pub(crate) fn relations(&self) -> impl Iterator<Item = &'static str> {
         std::iter::once(self.from.name).chain(self.joins.iter().map(|join| join.source.name))
@@ -285,16 +290,17 @@ fn source(parser: &mut Parser<'_>, schema: &str) -> Result<Source, Refused> {
 /// store's introspection builds at answer time.
 fn relation_name(name: &str) -> Option<&'static str> {
     match name {
-        "pg_type" | "pg_namespace" | "pg_range" | "pg_am" | "pg_class" | "pg_attribute" => {
-            Some(match name {
-                "pg_namespace" => "pg_namespace",
-                "pg_range" => "pg_range",
-                "pg_am" => "pg_am",
-                "pg_class" => "pg_class",
-                "pg_attribute" => "pg_attribute",
-                _ => "pg_type",
-            })
-        }
+        "pg_type" | "pg_namespace" | "pg_range" | "pg_am" | "pg_class" | "pg_attribute"
+        | "pg_attrdef" | "pg_collation" => Some(match name {
+            "pg_namespace" => "pg_namespace",
+            "pg_range" => "pg_range",
+            "pg_am" => "pg_am",
+            "pg_class" => "pg_class",
+            "pg_attribute" => "pg_attribute",
+            "pg_attrdef" => "pg_attrdef",
+            "pg_collation" => "pg_collation",
+            _ => "pg_type",
+        }),
         _ => None,
     }
 }
@@ -345,6 +351,6 @@ fn join(parser: &mut Parser<'_>) -> Result<Option<Join>, Refused> {
 pub(crate) mod dynamic;
 mod evaluate;
 mod relations;
-mod terms;
+pub(crate) mod terms;
 #[cfg(test)]
 mod tests;

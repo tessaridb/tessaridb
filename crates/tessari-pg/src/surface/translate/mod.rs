@@ -157,9 +157,39 @@ pub(crate) enum Computed {
         arms: Vec<(Value, Value)>,
         otherwise: Option<Value>,
     },
+    /// `CASE WHEN <condition> THEN <expr> … [ELSE <expr>] END` — the
+    /// searched form the deep describe folds conditions through. The
+    /// conditions are the catalog's own term shape, evaluated against the
+    /// row like a WHERE; the arms are literals or casted paths.
+    SearchedCase {
+        arms: Vec<(catalog::terms::Term, Expr)>,
+        otherwise: Option<Expr>,
+    },
     /// `pg_catalog.pg_get_userbyid(<path>)` — answered from the connection's
     /// identity, not from the store.
     OwnerOf,
+    /// `pg_catalog.<fn>(<args>)` — a catalog function the responder answers
+    /// from its own rows or the store's introspection (`format_type`,
+    /// `pg_get_expr`).
+    Call { path: String, args: Vec<CallArg> },
+    /// `(SELECT … FROM pg_catalog.… WHERE …)` in the projection — a scalar
+    /// subquery the responder evaluates against the outer row (the WHERE may
+    /// name the outer aliases, as the deep describe's column listing does).
+    ScalarSubquery { query: catalog::Query },
+}
+
+/// One searched-CASE arm value: a literal, or a path carrying `::` casts.
+#[derive(Debug, Clone)]
+pub(crate) enum Expr {
+    Lit(Value),
+    Path { path: String, casts: Vec<String> },
+}
+
+/// One catalog function argument: a column path or a literal.
+#[derive(Debug, Clone)]
+pub(crate) enum CallArg {
+    Path(String),
+    Lit(Value),
 }
 
 /// One projection, rendered and named, with the items it was built from —

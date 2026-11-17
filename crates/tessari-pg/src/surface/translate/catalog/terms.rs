@@ -50,11 +50,14 @@ pub(crate) enum Cmp {
     NotMatch,
 }
 
-/// One comparison operand: a bound `$n` or a literal.
+/// One comparison operand: a bound `$n`, a literal, or a column — the
+/// correlation a projection subquery's WHERE is written with (`d.adrelid =
+/// a.attrelid`), resolved against the row the term evaluates against.
 #[derive(Debug, Clone)]
 pub(crate) enum Operand {
     Param(usize),
     Lit(String),
+    Col(String),
 }
 
 /// One WHERE term: `NOT <term>`, a visibility predicate, a bare boolean
@@ -253,9 +256,14 @@ fn operand(parser: &mut Parser<'_>) -> Result<Operand, Refused> {
     {
         return Ok(Operand::Lit(types::text_of(&value).unwrap_or_default()));
     }
+    let at = parser.snapshot();
+    if let Ok(path) = parser.ident_path() {
+        return Ok(Operand::Col(path));
+    }
+    parser.restore(at);
     Err(Refused::surface(
         code::FEATURE,
-        "a catalog comparison wants a parameter or a literal in this build",
+        "a catalog comparison wants a parameter, a literal or a column in this build",
     ))
 }
 
@@ -273,6 +281,9 @@ pub(crate) fn operand_text(
             .and_then(|slot| slot.as_ref())
             .and_then(|name| parameters.get(name))
             .and_then(types::text_of),
+        // A column resolves against the row, which this text-level helper
+        // has no reach to; the evaluator resolves it where rows exist.
+        Operand::Col(_) => None,
     }
 }
 

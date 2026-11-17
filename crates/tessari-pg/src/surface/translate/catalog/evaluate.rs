@@ -8,7 +8,7 @@ use crate::surface::types;
 
 use super::super::{Refused, code};
 use super::dynamic::{self, Dynamic};
-use super::relations::relation;
+use super::relations::{relation, type_name_of};
 use super::terms::{Cmp, Term, operand_text};
 use super::{Join, Order, Query, Row, Source};
 
@@ -32,6 +32,7 @@ pub(crate) fn evaluate(
     dynamic: Option<&Dynamic>,
     user: Option<&str>,
 ) -> Result<Vec<Vec<Option<Value>>>, Refused> {
+    check_supported(query)?;
     let mut rows = materialize(&query.from, dynamic)?;
     for joined in &query.joins {
         rows = join_rows(rows, joined, dynamic)?;
@@ -198,7 +199,15 @@ fn term_holds(
             operand,
         } => {
             let held = row_text(lookup(column, row));
-            let Some(expected) = operand_text(operand, slots, parameters) else {
+            // A column operand is the correlation the deep describe's
+            // subqueries write: resolved against this row, absent (an outer
+            // alias, until the subquery evaluation binds it) reading as no
+            // match rather than as a guess.
+            let expected = match operand {
+                super::terms::Operand::Col(path) => row_text(lookup(path, row)),
+                other => operand_text(other, slots, parameters),
+            };
+            let Some(expected) = expected else {
                 return false;
             };
             let Some(held) = held else {
@@ -340,8 +349,136 @@ fn project(item: &super::super::Item, row: &Row, user: Option<&str>) -> Option<V
             }
             otherwise.clone()
         }
+        Some(super::super::Computed::SearchedCase { arms, otherwise }) => {
+            for (condition, arm) in arms {
+                if term_holds(condition, row, &[], &tessaridb::Parameters::new()) {
+                    return arm_value(arm, row);
+                }
+            }
+            otherwise.as_ref().and_then(|arm| arm_value(arm, row))
+        }
         Some(super::super::Computed::OwnerOf) => user.map(|name| Value::String(name.to_owned())),
+        Some(super::super::Computed::Call { path, .. }) => {
+            // `pg_get_userbyid` is the owner call in another spelling — the
+            // projection parser's two shapes meet here.
+            if path.ends_with("pg_get_userbyid") {
+                user.map(|name| Value::String(name.to_owned()))
+            } else {
+                // The deep describe's remaining functions are refused before
+                // evaluation reaches here (check_supported); a row that
+                // arrives anyway answers nothing rather than inventing.
+                None
+            }
+        }
+        Some(super::super::Computed::ScalarSubquery { .. }) => None,
         None => lookup(lookup_path(item), row).cloned(),
+    }
+}
+
+/// One searched-CASE arm evaluated against the row: a literal answers as it
+/// stands; a path looks its column up and takes its casts left to right.
+fn arm_value(arm: &super::super::Expr, row: &Row) -> Option<Value> {
+    match arm {
+        super::super::Expr::Lit(value) => Some(value.clone()),
+        super::super::Expr::Path { path, casts } => {
+            let mut value = lookup(path, row).cloned();
+            for cast in casts {
+                value = value.and_then(|held| apply_cast(&held, cast));
+            }
+            value
+        }
+    }
+}
+
+/// One `::` cast over a catalog cell, the chains the deep describe writes.
+/// `::text` is the cell's own text form; `::regtype` resolves an oid the
+/// static catalog serves to the type's name, and answers any other oid as
+/// its number — a regtype this responder does not hold is not renamed by
+/// guess. An unspoken cast answers nothing rather than something wrong.
+fn apply_cast(value: &Value, cast: &str) -> Option<Value> {
+    match cast.rsplit('.').next() {
+        Some("text") => types::text_of(value).map(Value::String),
+        Some("regtype") => match value {
+            Value::Number(held) => Some(Value::String(match held {
+                tessaridb::Number::Integer(oid) => {
+                    type_name_of(*oid).unwrap_or_else(|| oid.to_string())
+                }
+                other => {
+                    types::text_of(&Value::Number(other.clone())).unwrap_or_else(|| "0".to_owned())
+                }
+            })),
+            _ => types::text_of(value).map(Value::String),
+        },
+        _ => None,
+    }
+}
+
+/// What this build computes and what it still refuses, checked before a row
+/// is touched: the deep describe's functions and scalar subqueries answer
+/// from the store's introspection in the wave that lands them, and until
+/// then a query naming one refuses by name — never answers a half-shape.
+fn check_supported(query: &Query) -> Result<(), Refused> {
+    for item in &query.projection {
+        match &item.computed {
+            Some(super::super::Computed::Call { path, args })
+                if !path.ends_with("pg_get_userbyid") =>
+            {
+                return Err(Refused::with_detail(
+                    code::FEATURE,
+                    "this catalog function is not spoken in this build",
+                    format!("{path}({})", call_args_text(args)),
+                ));
+            }
+            Some(super::super::Computed::ScalarSubquery { query }) => {
+                return Err(Refused::with_detail(
+                    code::FEATURE,
+                    "a projection subquery is not spoken in this build",
+                    query.relations().collect::<Vec<_>>().join(", "),
+                ));
+            }
+            Some(super::super::Computed::SearchedCase { arms, .. }) => {
+                // The projection has no parameter bindings of its own: a `$n`
+                // inside a CASE condition would read as false rather than as
+                // the caller's value, which is a silent lie — refused by name.
+                for (condition, _) in arms {
+                    if term_has_param(condition) {
+                        return Err(Refused::surface(
+                            code::FEATURE,
+                            "a CASE condition wants a literal comparison in this build",
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The argument spellings a refusal names the unspoken call with: paths as
+/// they stand, literals in their text form.
+fn call_args_text(args: &[super::super::CallArg]) -> String {
+    args.iter()
+        .map(|arg| match arg {
+            super::super::CallArg::Path(path) => path.clone(),
+            super::super::CallArg::Lit(value) => {
+                types::text_of(value).unwrap_or_else(|| "NULL".to_owned())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Whether a catalog term compares against a `$n` — what a projection
+/// evaluation cannot resolve.
+fn term_has_param(term: &Term) -> bool {
+    match term {
+        Term::Cmp { operand, .. } => matches!(operand, super::terms::Operand::Param(_)),
+        Term::In { values, .. } => values
+            .iter()
+            .any(|held| matches!(held, super::terms::Operand::Param(_))),
+        Term::Not(inner) => term_has_param(inner),
+        _ => false,
     }
 }
 

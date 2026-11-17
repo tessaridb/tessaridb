@@ -342,3 +342,53 @@ fn kind_oid_maps_the_store_kinds_to_the_wire() {
         "integers answer as the widest kind"
     );
 }
+
+#[test]
+fn a_searched_case_maps_rows_through_their_conditions() {
+    let query = parse(
+        "SELECT typname, CASE WHEN typtype = 'b' THEN 'base' ELSE 'other' END FROM pg_catalog.pg_type",
+    );
+    let rows = evaluate(&query, &[], &tessaridb::Parameters::new(), None, None)
+        .expect("the searched case answers");
+    assert!(!rows.is_empty());
+    for row in &rows {
+        assert_eq!(
+            row[1],
+            Some(Value::String("base".to_owned())),
+            "every static row is a base type: {row:?}"
+        );
+    }
+}
+
+#[test]
+fn a_searched_case_arm_casts_through_regtype_to_text() {
+    // bool's row takes the THEN arm; the other rows cast their oid through
+    // regtype to text — an oid the static catalog holds resolves to the
+    // type's name, the rest keep their number.
+    let query = parse(
+        "SELECT CASE WHEN oid = 16 THEN 'it is bool' ELSE oid::pg_catalog.regtype::pg_catalog.text END FROM pg_catalog.pg_type",
+    );
+    let rows = evaluate(&query, &[], &tessaridb::Parameters::new(), None, None)
+        .expect("the casted arms answer");
+    assert_eq!(rows.len(), 16);
+    assert_eq!(rows[0][0], Some(Value::String("it is bool".to_owned())));
+    assert_eq!(rows[1][0], Some(Value::String("17".to_owned())));
+    assert_eq!(rows[4][0], Some(Value::String("int4".to_owned())));
+    assert_eq!(rows[6][0], Some(Value::String("oid".to_owned())));
+}
+
+#[test]
+fn the_deep_describes_functions_and_subqueries_refuse_by_name_until_their_wave() {
+    let query =
+        parse("SELECT pg_catalog.format_type(atttypid, atttypmod) FROM pg_catalog.pg_attribute");
+    let refused = evaluate(&query, &[], &tessaridb::Parameters::new(), None, None)
+        .expect_err("the function is not spoken yet");
+    assert_eq!(refused.code, "0A000", "{refused:?}");
+
+    let query = parse(
+        "SELECT (SELECT d.adbin FROM pg_catalog.pg_attrdef d) FROM pg_catalog.pg_attribute a",
+    );
+    let refused = evaluate(&query, &[], &tessaridb::Parameters::new(), None, None)
+        .expect_err("the subquery is not spoken yet");
+    assert_eq!(refused.code, "0A000", "{refused:?}");
+}

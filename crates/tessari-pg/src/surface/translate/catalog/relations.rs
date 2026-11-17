@@ -22,6 +22,22 @@ pub(crate) fn catalog_type_of(output: &str) -> (u32, String) {
     (oid, name.to_owned())
 }
 
+/// The static type name an oid serves, the reverse of `catalog_type_of`'s
+/// identity columns: a `::regtype` cast resolves through it, and an oid it
+/// does not hold is not renamed by guess (the caller keeps the number).
+pub(crate) fn type_name_of(oid: i64) -> Option<String> {
+    use crate::surface::types::oid as surface_oid;
+    let name = match u32::try_from(oid).ok()? {
+        surface_oid::OID => "oid",
+        surface_oid::INT4 => "int4",
+        surface_oid::FLOAT8 => "float8",
+        surface_oid::BOOL => "bool",
+        surface_oid::TEXT => "text",
+        _ => return None,
+    };
+    Some(name.to_owned())
+}
+
 /// One relation: its columns and rows, a row column-ordered.
 pub(crate) struct Relation {
     pub(crate) columns: &'static [&'static str],
