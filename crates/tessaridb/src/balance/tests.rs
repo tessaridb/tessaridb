@@ -637,6 +637,66 @@ fn a_stated_split_manually_beats_the_namespace_default() {
 }
 
 #[test]
+fn skewed_traffic_splits_where_the_mass_sits_and_the_halves_are_uneven() {
+    // U2 (the dossier's open question): the load cut splits where the middle
+    // of the measured write keys sits, and under a skewed stream that point
+    // is not the record median — so the halves differ in size. Zipf writes:
+    // position k takes 40/k updates over forty positions, so the sample's
+    // median lands low and the measured spread below is the honest answer
+    // the worksheet records. The assertion is the design's guarantee (the
+    // traffic median of concentrated writes sits below the uniform one),
+    // not a number fitted to the run.
+    let db = Db::in_memory().now().unwrap();
+    hot_table(
+        &db,
+        "SPLIT AUTOMATICALLY ABOVE 100000 RECORDS OR 1 WRITES PER SECOND \
+         MERGE BELOW 2 RECORDS",
+    );
+    let mut samples = ShardSamples::default();
+    // The first pass only learns where each shard's log stands.
+    assert_eq!(db.balance_shards(&mut samples).now().unwrap().split, 0);
+    let writes: String = (1..=40_u32)
+        .map(|k| {
+            let count = (40 / k).max(1);
+            (0..count)
+                .map(|_| format!("UPDATE hot:uuid '{}' SET n = 100;", hot_id(k as u8)))
+                .collect::<String>()
+        })
+        .collect();
+    db.session()
+        .run_now(&format!("{TENANCY} {writes}"))
+        .unwrap();
+    assert_eq!(db.balance_shards(&mut samples).now().unwrap().split, 1);
+    let table = table_named(&db, "hot");
+    let map = table.shards.expect("the split left a map");
+    let outcomes = db
+        .session()
+        .run_now(&format!("{TENANCY} SELECT * FROM hot;"))
+        .unwrap();
+    let Some(Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("the table reads back");
+    };
+    let sizes: Vec<usize> = map
+        .spans()
+        .map(|span| {
+            records
+                .iter()
+                .filter(|(id, _)| map.shard_of(id) == span.id)
+                .count()
+        })
+        .collect();
+    // The declared boundary above the data leaves an empty third shard; the
+    // two populated halves are the measured answer.
+    println!("zipf halves, records per shard: {sizes:?}");
+    let populated: Vec<usize> = sizes.iter().copied().filter(|held| *held > 0).collect();
+    assert_eq!(populated.len(), 2, "one populated split: {sizes:?}");
+    assert!(
+        populated.first().is_some_and(|held| *held < 20),
+        "the traffic median cuts below the record median: {sizes:?}"
+    );
+}
+
+#[test]
 fn the_bared_policy_is_the_stores_published_bounds() {
     // The pair the allow-commented widening in `AutoSplit::BARED` stands on,
     // pinned: the same numbers the parser fills a bare declaration with, and

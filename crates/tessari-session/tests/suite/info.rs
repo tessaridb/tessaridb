@@ -1314,6 +1314,31 @@ fn a_namespace_states_its_split_default_and_withdraws_it() {
     assert_eq!(stated(&mut session), Value::from("manually"));
 }
 
+/// A table whose declaration is silent on balancing reports `inherited`
+/// when its namespace states the default — the effective answer an
+/// operator sees before the first pass — and nothing when the namespace
+/// never said.
+#[test]
+fn a_table_reports_the_default_it_inherits() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run_now(
+            "DEFINE NAMESPACE prod SPLIT AUTOMATICALLY;\
+             \nUSE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\
+             \nDEFINE TABLE events (n int) IDENTITY uuid SPREAD;",
+        )
+        .expect("the table defines under the default-on namespace");
+    let Value::Object(fields) = report(&mut session, "INFO FOR TABLE events;") else {
+        panic!("expected an object");
+    };
+    assert_eq!(
+        fields.get("auto_split"),
+        Some(&Value::from("inherited")),
+        "the report names the default the table inherits"
+    );
+}
+
 /// The `DEFINE` form carries the clause too, and `IF NOT EXISTS` still means
 /// *this statement did nothing*: a re-run definition must not quietly set (or
 /// withdraw) a default on a namespace it did not create.

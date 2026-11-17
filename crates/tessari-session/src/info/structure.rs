@@ -243,6 +243,23 @@ impl Session<'_> {
         indexes.retain(|index| readable_index(&visible, index));
         let whole = declared == (fields.len(), indexes.len());
         let mut report = shape_of(&definition);
+        // The split/merge default the table inherits, reported when the
+        // namespace states one and the table's own declaration is silent —
+        // the effective answer an operator sees before the first pass runs.
+        // Silence where the namespace never said, for the report's other
+        // keys' reason: a missing key and a key holding NONE are different
+        // statements, and here neither is worth making.
+        if matches!(
+            definition.auto_split,
+            tessari_storage::AutoSplitSetting::Inherited
+        ) && catalog
+            .namespace(definition.namespace)
+            .await?
+            .and_then(|held| held.auto_split_default)
+            .unwrap_or(false)
+        {
+            report.insert("auto_split".to_owned(), Value::from("inherited"));
+        }
         // The topic a spent record is moved to (ADR-0126 D2), by name, because
         // the declaration below cannot say it: the catalog holds its id.
         if let TableKind::Queue(declared) = &definition.kind

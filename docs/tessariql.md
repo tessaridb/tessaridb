@@ -2569,11 +2569,20 @@ change handled.
 ### A table that splits and merges itself: `ALTER TABLE … SPLIT AUTOMATICALLY`
 
 ```
+ALTER TABLE events SPLIT AUTOMATICALLY;
 ALTER TABLE events SPLIT AUTOMATICALLY ABOVE 100000 RECORDS
     OR 500 WRITES PER SECOND
     MERGE BELOW 20000 RECORDS
     MIN 2 SHARDS MAX 16 SHARDS;
 ALTER TABLE events SPLIT MANUALLY;
+```
+
+A namespace can ask for every table born into it:
+
+```
+DEFINE NAMESPACE app SPLIT AUTOMATICALLY;
+ALTER NAMESPACE app SPLIT AUTOMATICALLY;
+ALTER NAMESPACE app SPLIT MANUALLY;
 ```
 
 A split table can ask the cluster to keep its shards within bounds. The node
@@ -2588,7 +2597,20 @@ about half the measured load; and two neighbouring shards holding fewer than
 together are merged. At most one change per table per pass, and each is exactly
 the `ALTER TABLE … SPLIT AT` or `MERGE SHARD` an operator would type: it is in
 the log, every node applies it, a feed over the table ends with the usual refusal,
-and the node logs it. `SPLIT MANUALLY` stops it. It is off unless asked.
+and the node logs it. `SPLIT MANUALLY` stops it. It is off unless asked — or unless the
+namespace asked for it: a bare `SPLIT AUTOMATICALLY` bakes the store's
+published bounds (a shard splits past a million records, neighbours under
+two hundred thousand together merge, and no writes bound rides by default),
+and a table created under a default-on namespace is born with one shard
+covering it, so its records are filed under the map from the first write. A
+table that declared its own bounds keeps them; a stated `SPLIT MANUALLY`
+keeps its silence even under a default-on namespace; and a table that was
+unsplit before its namespace's default arrived is not retro-fitted — the
+filing a map needs can only happen at a table's birth, which is why the
+advice for splitting an existing unsplit table is to declare one and move
+the records. `INFO FOR NAMESPACE` reports the default as
+`auto_split_default`, and a silent table under a stated default reports
+`auto_split: inherited`.
 
 `MIN n SHARDS` and `MAX n SHARDS` bound how few and how many shards the
 balancing passes may leave the table with: a shard past its bounds is not
