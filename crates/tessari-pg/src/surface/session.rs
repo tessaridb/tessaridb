@@ -143,7 +143,7 @@ fn name_of(word: &str) -> Result<String, Refused> {
     if word.starts_with('"') {
         return Err(Refused::surface(
             code::FEATURE,
-            "quoted identifiers are not spoken in this build",
+            "a quoted setting name is not spoken in this build",
         ));
     }
     let mut chars = word.chars();

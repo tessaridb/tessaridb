@@ -214,7 +214,12 @@ impl<'a> Parser<'a> {
     /// a quoted name reaches a mixed-case table exactly. Contents the store's
     /// own name grammar cannot hold refuse by name: pretending them bare
     /// would change the name, and the store's lexer learning quoted names is
-    /// engine work, not this layer's.
+    /// engine work the owner ruled out (2026-11-17) — this layer translates
+    /// what translates and names what does not. A spelling the store reserves
+    /// is not refused here even though the store's `name()` would refuse it
+    /// (`AS "Type"` names a wire column the catalog responder answers itself,
+    /// never a store script): where the name does reach the store, the store
+    /// voices the refusal at its own birth site, in its own words.
     pub(crate) fn quoted_ident(&mut self) -> Option<String> {
         let at = self.at;
         self.skip_space();
