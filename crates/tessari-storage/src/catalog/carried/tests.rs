@@ -148,6 +148,7 @@ fn every_system_table_has_a_recorded_replication_class() {
                     replication: None,
                     class: None,
                     acknowledge: None,
+                    auto_split_default: None,
                 }
                 .to_value()
             )

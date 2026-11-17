@@ -274,6 +274,12 @@ pub enum NamespaceChange {
     Replication(tessari_types::Replication),
     /// `ACKNOWLEDGE MAJORITY [OR WEAKER]` (ADR-0106 D2).
     Acknowledge(tessari_types::Acknowledgement),
+    /// `SPLIT AUTOMATICALLY` — the tables born here inherit the store's baked
+    /// balancing bounds — or `SPLIT MANUALLY` — the default is withdrawn and
+    /// new tables come up unsplit unless their declaration says otherwise.
+    /// The same two words the table clause speaks, so the policy has one
+    /// vocabulary everywhere it is set.
+    AutoSplit(bool),
 }
 
 /// The one thing an [`AlterReplica`](StatementKind::AlterReplica) changes about

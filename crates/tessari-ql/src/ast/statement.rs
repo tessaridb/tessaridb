@@ -78,6 +78,11 @@ pub enum StatementKind {
         /// and whether a request may ask for fewer (ADR-0106 D2) — `None` when
         /// the statement said nothing, which is not a stated level.
         acknowledge: Option<Acknowledgement>,
+        /// Whether the tables born here inherit the store's baked balancing
+        /// bounds (`SPLIT AUTOMATICALLY`) — `None` when the statement said
+        /// nothing, which leaves new tables unsplit unless their own
+        /// declaration says otherwise.
+        auto_split: Option<bool>,
     },
     /// `DEFINE DATABASE orders`
     DefineDatabase {

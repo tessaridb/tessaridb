@@ -496,6 +496,79 @@ fn a_table_at_its_min_shard_count_is_not_merged_further() {
 }
 
 #[test]
+fn bare_split_automatically_takes_the_baked_bounds() {
+    // The bounds a bare declaration bakes: the merge bound at a fifth of the
+    // split bound, the pairing the declare-time oscillation guard accepts with
+    // margin, and no writes bound — the load question is measured separately
+    // before any default carries it.
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    orders(&db, "SPLIT AUTOMATICALLY", 0);
+    let outcomes = db
+        .session()
+        .run_now(&format!("{TENANCY} INFO FOR TABLE orders;"))
+        .expect("INFO FOR TABLE answers");
+    let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
+        unreachable!("INFO FOR TABLE answers a value");
+    };
+    let policy = fields.get("auto_split").cloned();
+    assert_eq!(
+        policy.map(|held| format!("{held:?}")),
+        Some(format!(
+            "{:?}",
+            Value::Object(
+                [
+                    ("above".to_owned(), Value::from(1_000_000_i64)),
+                    ("merge_below".to_owned(), Value::from(200_000_i64)),
+                ]
+                .into_iter()
+                .collect()
+            )
+        ))
+    );
+    let Some(Value::String(script)) = fields.get("definition") else {
+        unreachable!("a table reports its definition");
+    };
+    let copy = Db::in_memory().now().expect("an in-memory store opens");
+    copy.session()
+        .run_now(&format!("{DECLARED} {script}"))
+        .expect("the restored definition runs");
+    assert_eq!(table(&copy).auto_split, table(&db).auto_split);
+}
+
+#[test]
+fn bare_split_automatically_on_an_unsplit_table_is_refused_by_name() {
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(&format!(
+            "{DECLARED} DEFINE TABLE plain (n int) IDENTITY uuid SPREAD;"
+        ))
+        .expect("the table defines");
+    let refused = db
+        .session()
+        .run_now(&format!("{TENANCY} ALTER TABLE plain SPLIT AUTOMATICALLY;"));
+    assert!(
+        matches!(
+            refused,
+            Err(tessari_session::Error::Store(
+                tessari_storage::Error::AutoSplitOnAnUnsplitTable { .. }
+            ))
+        ),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn one_bound_written_still_requires_the_pair() {
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(&format!(
+            "{DECLARED} DEFINE TABLE plain (n int) IDENTITY uuid SPREAD SPLIT AT '80'; \
+             ALTER TABLE plain SPLIT AUTOMATICALLY ABOVE 100 RECORDS;"
+        ))
+        .unwrap_err();
+}
+
+#[test]
 fn a_policy_with_shard_count_bounds_round_trips_through_the_report_and_definition() {
     let db = Db::in_memory().now().unwrap();
     orders(

@@ -39,6 +39,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             class: None,
             // And again: [`Self::set_acknowledgement`].
             acknowledge: None,
+            // And again: [`Self::set_auto_split_default`].
+            auto_split_default: None,
         };
         self.write(system::NAMESPACES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
@@ -123,6 +125,35 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             });
         };
         definition.acknowledge = Some(acknowledge);
+        self.write(system::NAMESPACES, namespace.get(), &definition.to_value());
+        Ok(definition)
+    }
+
+    /// Set whether the tables born into a namespace inherit the store's baked
+    /// balancing bounds, or withdraw that default.
+    ///
+    /// The sibling of [`Self::set_acknowledgement`] and deliberately the same
+    /// shape, so the default cannot acquire a second write path the
+    /// acknowledgement level does not have. It moves between **stated**
+    /// values in both directions: turning the default on and withdrawing it
+    /// are both decisions, and either can be revisited.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoSuchParent`] when the namespace does not exist, and
+    /// the substrate or decoding failure otherwise.
+    pub async fn set_auto_split_default(
+        &mut self,
+        namespace: NamespaceId,
+        on: bool,
+    ) -> Result<NamespaceDefinition> {
+        let Some(mut definition) = self.namespace(namespace).await? else {
+            return Err(Error::NoSuchParent {
+                entity: "namespace",
+                id: namespace.get(),
+            });
+        };
+        definition.auto_split_default = Some(on);
         self.write(system::NAMESPACES, namespace.get(), &definition.to_value());
         Ok(definition)
     }

@@ -773,7 +773,13 @@ fn a_listing_carries_the_names_and_nothing_that_counts_what_was_dropped() {
         ("INFO FOR STORE;", vec!["format", "namespaces", "writes"]),
         (
             "INFO FOR NAMESPACE;",
-            vec!["acknowledge", "class", "databases", "replication"],
+            vec![
+                "acknowledge",
+                "auto_split_default",
+                "class",
+                "databases",
+                "replication",
+            ],
         ),
     ] {
         let Value::Object(fields) = report(&mut nina, statement) else {
@@ -1273,6 +1279,63 @@ fn a_definition_that_did_nothing_changes_no_policy() {
         panic!("expected an object");
     };
     assert_eq!(fields.get("replication"), Some(&Value::from(4_i64)));
+}
+
+/// The split/merge default a namespace states for the tables born into it.
+/// `SPLIT AUTOMATICALLY` is the same vocabulary the table clause speaks; the
+/// report answers `NONE` for a namespace nobody ever asked, `automatically`
+/// for one that turned the default on, and `manually` for one that withdrew
+/// it — the stated-on and stated-off readings stay apart, the way the
+/// replication report keeps a stated `NONE` apart from never-asked.
+#[test]
+fn a_namespace_states_its_split_default_and_withdraws_it() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run_now("DEFINE NAMESPACE prod; USE NAMESPACE prod;")
+        .expect("the namespace defines");
+    let stated = |session: &mut Session<'_>| {
+        let Value::Object(fields) = report(session, "INFO FOR NAMESPACE;") else {
+            panic!("expected an object");
+        };
+        fields
+            .get("auto_split_default")
+            .cloned()
+            .expect("the report names the default")
+    };
+    assert_eq!(stated(&mut session), Value::None);
+    session
+        .run_now("ALTER NAMESPACE prod SPLIT AUTOMATICALLY;")
+        .expect("the default turns on");
+    assert_eq!(stated(&mut session), Value::from("automatically"));
+    session
+        .run_now("ALTER NAMESPACE prod SPLIT MANUALLY;")
+        .expect("the default withdraws");
+    assert_eq!(stated(&mut session), Value::from("manually"));
+}
+
+/// The `DEFINE` form carries the clause too, and `IF NOT EXISTS` still means
+/// *this statement did nothing*: a re-run definition must not quietly set (or
+/// withdraw) a default on a namespace it did not create.
+#[test]
+fn a_definition_that_did_nothing_changes_no_split_default() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run_now(
+            "DEFINE NAMESPACE prod SPLIT AUTOMATICALLY;\n\
+             DEFINE NAMESPACE IF NOT EXISTS prod SPLIT MANUALLY;\n\
+             USE NAMESPACE prod;",
+        )
+        .expect("the definitions run");
+    let Value::Object(fields) = report(&mut session, "INFO FOR NAMESPACE;") else {
+        panic!("expected an object");
+    };
+    assert_eq!(
+        fields.get("auto_split_default"),
+        Some(&Value::from("automatically")),
+        "IF NOT EXISTS did nothing, and doing nothing changed no default"
+    );
 }
 
 // ---------------------------------------------------------------------------

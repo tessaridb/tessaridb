@@ -98,8 +98,19 @@ impl Session<'_> {
         // replication, and a derivation reported as a decision hides whether
         // anybody ever made one.
         let acknowledge = held
+            .as_ref()
             .and_then(|definition| definition.acknowledge)
             .map_or(Value::None, tessari_types::Acknowledgement::to_value);
+        // The split/merge default the namespace states for the tables born
+        // into it. `NONE` where nothing was declared, for its neighbours'
+        // reason — silence and a stated off are different answers to "did
+        // anybody decide this", and the report is where an operator sees
+        // which of the two they have.
+        let auto_split_default = held
+            .and_then(|definition| definition.auto_split_default)
+            .map_or(Value::None, |on| {
+                Value::from(if on { "automatically" } else { "manually" })
+            });
         let mut names = Vec::new();
         for database in Catalog::new(transaction).databases_in(namespace).await? {
             if own.is_some_and(|id| id != database.id) {
@@ -112,6 +123,7 @@ impl Session<'_> {
             ("replication".to_owned(), replication),
             ("class".to_owned(), class),
             ("acknowledge".to_owned(), acknowledge),
+            ("auto_split_default".to_owned(), auto_split_default),
         ]))
     }
 

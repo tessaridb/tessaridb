@@ -141,12 +141,13 @@ impl Session<'_> {
                 replication,
                 class,
                 acknowledge,
+                auto_split,
             } => {
                 self.define_namespace(
                     transaction,
                     name,
                     *if_not_exists,
-                    (*replication, *class, *acknowledge),
+                    (*replication, *class, *acknowledge, *auto_split),
                 )
                 .await
             }
