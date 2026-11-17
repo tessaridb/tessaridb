@@ -332,9 +332,12 @@ async fn query_once(
         .await?;
         return Ok(());
     }
-    // Catalog statements answer locally, never against the store. A batch
-    // that mixes them with store statements is refused by name: the two run
-    // on different engines, and one implicit block must not span both.
+    // Catalog statements answer locally, never against the store — except
+    // the user-table relations, which the store's own introspection builds
+    // for this caller (every row it names is one this connection may see).
+    // A batch that mixes catalog with store statements is refused by name:
+    // the two run on different engines, and one implicit block must not
+    // span both.
     if translated.statements.iter().any(|s| s.catalog.is_some()) {
         if !translated.statements.iter().all(|s| s.catalog.is_some()) {
             conn.refuse(
@@ -347,6 +350,34 @@ async fn query_once(
             .await?;
             return Ok(());
         }
+        let queries = translated
+            .statements
+            .iter()
+            .filter_map(|shape| shape.catalog.as_ref())
+            .collect::<Vec<_>>();
+        let dynamic = if translate::catalog::dynamic::needed(&queries) {
+            match translate::catalog::dynamic::load(
+                held,
+                shared,
+                translate::catalog::dynamic::wants_attributes(&queries),
+                queries
+                    .iter()
+                    .find_map(|query| query.pinned_oid(&translated.slots, &translated.parameters)),
+            )
+            .await
+            {
+                Ok(dynamic) => dynamic,
+                Err(refused) => {
+                    if *tx == codec::write::Tx::InTx {
+                        *tx = codec::write::Tx::Failed;
+                    }
+                    conn.refuse(&refused, *tx).await?;
+                    return Ok(());
+                }
+            }
+        } else {
+            None
+        };
         for shape in &translated.statements {
             let Some(query) = &shape.catalog else {
                 continue;
@@ -355,6 +386,8 @@ async fn query_once(
                 query,
                 &translated.slots,
                 &translated.parameters,
+                dynamic.as_ref(),
+                held.user(),
             ) {
                 Ok(rows) => rows,
                 Err(refused) => {
@@ -563,7 +596,12 @@ pub(crate) async fn answer(
                     .collect::<Vec<_>>();
                 (columns, Vec::new())
             } else {
-                super::rows(records, &shape.columns, shape.table.as_deref())
+                super::rows(
+                    records,
+                    &shape.columns,
+                    &shape.record_names,
+                    shape.table.as_deref(),
+                )
             };
             let encoded = match super::encode(&columns, &rows, formats) {
                 Ok(encoded) => encoded,

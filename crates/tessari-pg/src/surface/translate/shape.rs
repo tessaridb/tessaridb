@@ -157,7 +157,7 @@ impl Parser<'_> {
                 "OFFSET is not spoken in this build",
             ));
         }
-        let (script, columns) = self.assemble(
+        let (script, columns, record_names) = self.assemble(
             projection, &from, alias, condition, group, having, order, limit, joins,
         )?;
         Ok(Shaped {
@@ -165,6 +165,8 @@ impl Parser<'_> {
             columns,
             table: from,
             catalog: None,
+            inference: std::mem::take(&mut self.inference),
+            record_names,
         })
     }
 
@@ -183,7 +185,34 @@ impl Parser<'_> {
         order: Option<String>,
         limit: Option<u64>,
         joins: String,
-    ) -> Result<(String, Columns), Refused> {
+    ) -> Result<(String, Columns, Vec<Option<String>>), Refused> {
+        // Computed projections (CASE mappings, catalog function calls) are
+        // the catalog's own: the store speaks neither, so they refuse by
+        // name rather than half-running.
+        if projection.items.iter().any(|item| item.computed.is_some()) {
+            return Err(Refused::surface(
+                code::FEATURE,
+                "computed projections are not spoken over the store in this build",
+            ));
+        }
+        // The store answers an unnamed arithmetic projection under the
+        // port's own alias (e1, e2…), which the wire names ?column? —
+        // the record name rides beside the client name.
+        let record_names = projection
+            .items
+            .iter()
+            .map(|item| {
+                if item.column == super::UNNAMED {
+                    item.text
+                        .rsplit(" AS ")
+                        .next()
+                        .filter(|name| name.starts_with('e'))
+                        .map(ToOwned::to_owned)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
         let (script, columns) = match from {
             Some(table) => {
                 let mut script = String::from("SELECT ");
@@ -236,7 +265,7 @@ impl Parser<'_> {
                 (script, Columns::Named(vec![UNNAMED.to_owned()]))
             }
         };
-        Ok((script, columns))
+        Ok((script, columns, record_names))
     }
 
     /// One table name, or a named refusal when what follows is the feature

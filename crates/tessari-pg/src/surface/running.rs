@@ -22,12 +22,30 @@ pub(crate) enum Failed {
     Lost,
 }
 
+/// A failed run mapped the way the answering paths answer it.
+pub(crate) fn run_refusal(failed: Failed) -> super::errors::Refused {
+    match failed {
+        Failed::Refused(refused) => super::errors::Refused::store(&refused),
+        Failed::Carried(carried) => super::errors::Refused::carried(carried.class, carried.message),
+        Failed::Busy => super::errors::Refused::surface(
+            super::errors::code::UNAVAILABLE,
+            "the node is busy; try again",
+        ),
+        Failed::Lost => {
+            super::errors::Refused::surface(super::errors::code::INTERNAL, "the session is lost")
+        }
+    }
+}
+
 /// A connection's hold on the store: its session and the tenancy every
 /// statement runs under, chosen when the wire session started.
 pub(crate) struct Held {
     session: Option<Detached>,
     namespace: String,
     database: String,
+    /// The user the connection signed in as, when the startup named one —
+    /// what the catalog's owner answers ride on.
+    user: Option<String>,
 }
 
 impl Held {
@@ -37,6 +55,7 @@ impl Held {
             session: Some(shared.db.session().detach()),
             namespace: namespace.to_owned(),
             database: database.to_owned(),
+            user: None,
         }
     }
 
@@ -53,6 +72,17 @@ impl Held {
     /// and what `SET search_path` changes.
     pub(crate) fn namespace(&self) -> &str {
         &self.namespace
+    }
+
+    /// The database the connection reads under — the synthesis salt for the
+    /// user-table identities.
+    pub(crate) fn database(&self) -> &str {
+        &self.database
+    }
+
+    /// The user the connection signed in as, when the startup named one.
+    pub(crate) fn user(&self) -> Option<&str> {
+        self.user.as_deref()
     }
 
     /// Move the connection to another namespace; the next statement's tenancy
@@ -126,18 +156,20 @@ impl Held {
         let fresh = shared.db.session().detach();
         let db = Arc::clone(&shared.db);
         let user = user.to_owned();
+        let signed = user.clone();
         let password = zeroize::Zeroizing::new(password.to_owned());
         let bridged = shared
             .bridge
             .call_here(fresh, move |held: Detached| async move {
                 let mut attached = held.attach(db.store());
-                let answer = attached.sign_in(&user, &password).await;
+                let answer = attached.sign_in(&signed, &password).await;
                 (attached.detach(), answer)
             })
             .await;
         match bridged {
             Bridged::Answered((session, Ok(()))) => {
                 self.session = Some(session);
+                self.user = Some(user);
                 Ok(())
             }
             Bridged::Answered((_, Err(refused))) => Err(Failed::Refused(refused)),

@@ -14,7 +14,7 @@ mod shape;
 
 pub(crate) mod catalog;
 
-use tessaridb::Parameters;
+use tessaridb::{Parameters, Value};
 
 pub(crate) use super::errors::{Refused, code};
 use parser::Parser;
@@ -96,6 +96,13 @@ fn is_keyword(word: &str) -> bool {
             | "last"
             | "distinct"
             | "in"
+            | "case"
+            | "when"
+            | "then"
+            | "else"
+            | "end"
+            | "collate"
+            | "operator"
     )
 }
 
@@ -108,6 +115,29 @@ pub(crate) struct Shaped {
     /// A catalog statement's local form: answered by the responder, never
     /// sent to the store (`script` stays empty).
     pub(crate) catalog: Option<catalog::Query>,
+    /// The parameter inference the statement collected: `(slot index,
+    /// column path)` for every `column = $n` comparison — what Parse-time
+    /// type inference asks the table catalog about.
+    pub(crate) inference: Vec<(usize, String)>,
+    /// The record field each unnamed arithmetic column answers under in the
+    /// store's shape (the port's own `eN` alias), `None` where the wire
+    /// name and the record name are the same.
+    pub(crate) record_names: Vec<Option<String>>,
+}
+
+/// A projection item the catalog answers by computing rather than looking a
+/// column up; over the store these refuse by name.
+#[derive(Debug, Clone)]
+pub(crate) enum Computed {
+    /// `CASE <path> WHEN <literal> THEN <literal> … [ELSE <literal>] END`.
+    Case {
+        subject: String,
+        arms: Vec<(Value, Value)>,
+        otherwise: Option<Value>,
+    },
+    /// `pg_catalog.pg_get_userbyid(<path>)` — answered from the connection's
+    /// identity, not from the store.
+    OwnerOf,
 }
 
 /// One projection, rendered and named, with the items it was built from —
@@ -123,6 +153,9 @@ pub(crate) struct Projection {
 pub(crate) struct Item {
     pub(crate) text: String,
     pub(crate) column: String,
+    /// What the catalog computes instead of looking up, when this item is
+    /// not a plain column path.
+    pub(crate) computed: Option<Computed>,
 }
 
 #[cfg(test)]

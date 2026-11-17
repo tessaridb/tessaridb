@@ -14,7 +14,7 @@ use crate::error::Result;
 
 use super::connection::{Conn, answer};
 use super::errors::{Refused, code};
-use super::running::{Failed, Held};
+use super::running::{Held, run_refusal};
 use super::translate::{self, Columns};
 use super::types;
 
@@ -80,7 +80,9 @@ impl Kitchen {
         shared: &Arc<super::Shared>,
     ) -> Result<()> {
         match message {
-            Frontend::Parse { name, query, types } => self.parse(conn, &name, &query, &types).await,
+            Frontend::Parse { name, query, types } => {
+                self.parse(conn, held, shared, &name, &query, &types).await
+            }
             Frontend::Bind {
                 portal,
                 statement,
@@ -119,6 +121,8 @@ impl Kitchen {
     async fn parse(
         &mut self,
         conn: &mut Conn,
+        held: &mut Held,
+        shared: &Arc<super::Shared>,
         name: &str,
         query: &str,
         types: &[u32],
@@ -149,15 +153,53 @@ impl Kitchen {
                             }
                         }
                     }
-                    self.statements.insert(
-                        name.to_owned(),
-                        Prepared {
-                            translated,
-                            types: resolved,
-                        },
-                    );
-                    conn.send(&codec::write::parse_complete()).await?;
-                    None
+                    // Store-side inference: a `column = $n` the Parse left
+                    // unspecified reads the column's type from the table's
+                    // own catalog, as the dialect's servers infer at Parse
+                    // time. A table the store refuses refuses the Parse in
+                    // the store's words, exactly where a real server fails.
+                    let unresolved = |index: usize| resolved.get(index).copied().unwrap_or(0) == 0;
+                    let inference = if translated.statements.first().is_some_and(|shape| {
+                        shape.catalog.is_none()
+                            && shape.inference.iter().any(|(slot, _)| unresolved(*slot))
+                    }) {
+                        let shape = translated
+                            .statements
+                            .first()
+                            .expect("the check above names it");
+                        infer_table_types(
+                            held,
+                            shared,
+                            &shape.inference,
+                            shape.table.as_deref(),
+                            &resolved,
+                        )
+                        .await
+                        .map(|filled| {
+                            for (index, oid) in filled {
+                                resolved.resize(index.saturating_add(1).max(resolved.len()), 0);
+                                if resolved[index] == 0 {
+                                    resolved[index] = oid;
+                                }
+                            }
+                        })
+                    } else {
+                        Ok(())
+                    };
+                    match inference {
+                        Err(refused) => Some(refused),
+                        Ok(()) => {
+                            self.statements.insert(
+                                name.to_owned(),
+                                Prepared {
+                                    translated,
+                                    types: resolved,
+                                },
+                            );
+                            conn.send(&codec::write::parse_complete()).await?;
+                            None
+                        }
+                    }
                 } else {
                     Some(Refused::surface(
                         code::LIMIT,
@@ -286,7 +328,7 @@ impl Kitchen {
             return Ok(());
         }
         match kind {
-            b'S' => self.describe_statement(conn, name).await,
+            b'S' => self.describe_statement(conn, held, shared, name).await,
             b'P' => self.describe_portal(conn, held, shared, name).await,
             other => {
                 self.fail(
@@ -302,10 +344,20 @@ impl Kitchen {
         }
     }
 
-    /// Describe(statement): the parameter description the Parse owed, then the
-    /// projection's shape — or NoData when the projection cannot be named
-    /// without running, which a star is.
-    async fn describe_statement(&mut self, conn: &mut Conn, name: &str) -> Result<()> {
+    /// Describe(statement): the parameter description the Parse owed, then
+    /// the projection's shape — or NoData when the projection cannot be
+    /// named without running, which a star is. A plain column projection
+    /// reads the column types from the table's own catalog, as the
+    /// dialect's servers answer at statement time; a table the catalog does
+    /// not know leaves the columns text, and the Execute refuses in the
+    /// store's words where the read actually runs.
+    async fn describe_statement(
+        &mut self,
+        conn: &mut Conn,
+        held: &mut Held,
+        shared: &Arc<super::Shared>,
+        name: &str,
+    ) -> Result<()> {
         let Some(prepared) = self.statements.get(name) else {
             return self
                 .fail(
@@ -321,7 +373,22 @@ impl Kitchen {
         let oids = described_types(prepared);
         conn.send(&codec::write::parameter_description(&oids))
             .await?;
-        match columns_of(&prepared.translated) {
+        let mut columns = columns_of(&prepared.translated);
+        if let Some(columns) = &mut columns
+            && let Some(shape) = prepared.translated.statements.first()
+            && let Some(table) = shape.table.as_deref()
+            && let Ok(fields) = table_fields(held, shared, table).await
+        {
+            for column in columns.iter_mut() {
+                if column.type_oid == types::oid::TEXT
+                    && let Some(oid) = fields.get(&column.name)
+                {
+                    column.type_oid = *oid;
+                    column.type_len = types::size_of(*oid);
+                }
+            }
+        }
+        match columns {
             Some(columns) => conn.send(&codec::write::row_description(&columns)).await?,
             None => conn.send(&codec::write::no_data()).await?,
         }
@@ -383,10 +450,24 @@ impl Kitchen {
             return Ok(());
         };
         // A catalog portal answers locally: evaluate once, the Execute replays.
+        let dynamic = match catalog_dynamic(
+            held,
+            shared,
+            &query,
+            &portal.translated.slots,
+            &portal.parameters,
+        )
+        .await
+        {
+            Ok(dynamic) => dynamic,
+            Err(refused) => return self.fail(conn, &refused).await,
+        };
         let rows = match translate::catalog::evaluate(
             &query,
             &portal.translated.slots,
             &portal.parameters,
+            dynamic.as_ref(),
+            held.user(),
         ) {
             Ok(rows) => rows,
             Err(refused) => return self.fail(conn, &refused).await,
@@ -448,14 +529,30 @@ impl Kitchen {
         {
             let rows = match portal.catalog_rows.take() {
                 Some(rows) => rows,
-                None => match translate::catalog::evaluate(
-                    &query,
-                    &portal.translated.slots,
-                    &portal.parameters,
-                ) {
-                    Ok(rows) => rows,
-                    Err(refused) => return self.fail(conn, &refused).await,
-                },
+                None => {
+                    let dynamic = match catalog_dynamic(
+                        held,
+                        shared,
+                        &query,
+                        &portal.translated.slots,
+                        &portal.parameters,
+                    )
+                    .await
+                    {
+                        Ok(dynamic) => dynamic,
+                        Err(refused) => return self.fail(conn, &refused).await,
+                    };
+                    match translate::catalog::evaluate(
+                        &query,
+                        &portal.translated.slots,
+                        &portal.parameters,
+                        dynamic.as_ref(),
+                        held.user(),
+                    ) {
+                        Ok(rows) => rows,
+                        Err(refused) => return self.fail(conn, &refused).await,
+                    }
+                }
             };
             portal.done = true;
             // Execute owes no RowDescription in the extended protocol —
@@ -563,10 +660,10 @@ impl Kitchen {
     }
 }
 
-/// The parameter types Describe(statement) answers: what the Parse declared,
-/// the unspecified ones left unspecified (zero) — the port does not invent a
-/// type it never resolved, and the dialect's clients read zero as "use your
-/// own inference", exactly as the protocol intends.
+/// The parameter types Describe(statement) answers: what the Parse declared
+/// or inferred, the unspecified ones left unspecified (zero) — the port does
+/// not invent a type it never resolved, and the dialect's clients read zero
+/// as "use your own inference", exactly as the protocol intends.
 fn described_types(prepared: &Prepared) -> Vec<u32> {
     let slots = prepared.translated.slots.len();
     let mut oids = Vec::with_capacity(slots);
@@ -574,6 +671,102 @@ fn described_types(prepared: &Prepared) -> Vec<u32> {
         oids.push(prepared.types.get(index).copied().unwrap_or(0));
     }
     oids
+}
+
+/// Parse-time type inference: the statement's `column = $n` comparisons name
+/// the columns the unspecified parameters ride on; the table's own catalog
+/// answer (`INFO FOR TABLE`) names each column's kind, which the one
+/// kind→oid map turns into the wire type. An explicit Parse oid always wins;
+/// a column the table does not declare stays unspecified, as before.
+async fn infer_table_types(
+    held: &mut Held,
+    shared: &Arc<super::Shared>,
+    inference: &[(usize, String)],
+    table: Option<&str>,
+    resolved: &[u32],
+) -> std::result::Result<Vec<(usize, u32)>, Refused> {
+    let Some(table) = table else {
+        return Err(Refused::surface(
+            code::INTERNAL,
+            "the inference lost its table",
+        ));
+    };
+    let fields = table_fields(held, shared, table).await?;
+    let mut filled = Vec::new();
+    for (slot, column) in inference {
+        if resolved.get(*slot).copied().unwrap_or(0) != 0 {
+            continue;
+        }
+        let key = column.rsplit('.').next().unwrap_or(column);
+        if let Some(oid) = fields.get(key) {
+            filled.push((*slot, *oid));
+        }
+    }
+    Ok(filled)
+}
+
+/// The table's declared fields under their wire types — the one catalog
+/// read both inferences ride on.
+async fn table_fields(
+    held: &mut Held,
+    shared: &Arc<super::Shared>,
+    table: &str,
+) -> std::result::Result<std::collections::BTreeMap<String, u32>, Refused> {
+    let outcomes = held
+        .run(
+            shared,
+            &format!("INFO FOR TABLE {table};"),
+            &Parameters::new(),
+        )
+        .await
+        .map_err(run_refusal)?;
+    let Some(Outcome::Value(tessaridb::Value::Object(report))) = outcomes.first() else {
+        return Err(Refused::surface(
+            code::INTERNAL,
+            "the store's table report did not read",
+        ));
+    };
+    Ok(match report.get("fields") {
+        Some(tessaridb::Value::Array(items)) => items
+            .iter()
+            .filter_map(|field| match field {
+                tessaridb::Value::Object(described) => {
+                    let name = match described.get("name") {
+                        Some(tessaridb::Value::String(name)) => name.clone(),
+                        _ => return None,
+                    };
+                    let kind = match described.get("type") {
+                        Some(tessaridb::Value::String(kind)) => kind.clone(),
+                        _ => String::new(),
+                    };
+                    Some((name, translate::catalog::dynamic::kind_oid(&kind)))
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => std::collections::BTreeMap::new(),
+    })
+}
+
+/// The user-table rows a catalog query names, introspected once per answer —
+/// `None` when the query reads the static relations alone.
+async fn catalog_dynamic(
+    held: &mut Held,
+    shared: &Arc<super::Shared>,
+    query: &translate::catalog::Query,
+    slots: &[Option<String>],
+    parameters: &Parameters,
+) -> std::result::Result<Option<translate::catalog::Dynamic>, Refused> {
+    if !translate::catalog::dynamic::needed(std::slice::from_ref(&query)) {
+        return Ok(None);
+    }
+    translate::catalog::dynamic::load(
+        held,
+        shared,
+        translate::catalog::dynamic::wants_attributes(std::slice::from_ref(&query)),
+        query.pinned_oid(slots, parameters),
+    )
+    .await
 }
 
 /// The columns a projection can name without running: the named ones, or
@@ -611,20 +804,15 @@ fn describe_outcome(
             if records.is_empty() && matches!(shape.columns, Columns::Star) {
                 return None;
             }
-            let (columns, _) = super::rows(records, &shape.columns, shape.table.as_deref());
+            let (columns, _) = super::rows(
+                records,
+                &shape.columns,
+                &shape.record_names,
+                shape.table.as_deref(),
+            );
             Some(columns)
         }
         Outcome::Value(value) => Some(vec![super::value_column(value)]),
         _ => None,
-    }
-}
-
-/// A failed run, mapped the way the simple query path maps it.
-fn run_refusal(failed: Failed) -> Refused {
-    match failed {
-        Failed::Refused(refused) => Refused::store(&refused),
-        Failed::Carried(carried) => Refused::carried(carried.class, carried.message),
-        Failed::Busy => Refused::surface(code::UNAVAILABLE, "the node is busy; try again"),
-        Failed::Lost => Refused::surface(code::INTERNAL, "the session is lost"),
     }
 }

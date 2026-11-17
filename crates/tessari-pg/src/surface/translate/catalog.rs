@@ -1,18 +1,27 @@
 //! The catalog responder: the small static relation set the dialect's clients
-//! interrogate — `pg_type`, `pg_namespace`, `pg_range` for this wave — answered
-//! locally, never against the store's own tables.
+//! interrogate — `pg_type`, `pg_namespace`, `pg_range`, `pg_am` — plus the
+//! user-table relations `pg_class` and `pg_attribute`, answered from the
+//! store's own introspection (the dynamic rows a query names are built at
+//! answer time, never ahead of it).
 //!
-//! The subset is deliberately narrow and refuses everything else by name (code
-//! `0A000`): a projection of column paths, INNER/LEFT joins on one equality,
-//! a WHERE of `=` / `IS NULL` terms, a LIMIT. The relations hold what this
-//! build emits; user tables and the wider introspection family arrive in the
-//! next wave.
+//! The subset stays deliberately narrow and refuses everything else by name
+//! (code `0A000`): a projection of column paths, INNER/LEFT joins on one
+//! equality, a WHERE of equality, ordered comparison over numeric catalog
+//! columns, `IN` value lists, anchored-literal pattern matches, `IS NULL`,
+//! the visibility predicate the dialect's clients fold on, a CASE mapping in
+//! the projection, and an ORDER BY. Everything the dialect allows but this
+//! build does not speak is refused by name, never approximated.
 
 use tessaridb::Value;
 
 use super::super::types;
 use super::parser::Parser;
 use super::{Columns, Item, Refused, Shaped, code};
+
+pub(crate) use dynamic::Dynamic;
+pub(crate) use evaluate::evaluate;
+use relations::catalog_type_of;
+use terms::{Cmp, Operand, Term, operand_text, term};
 
 /// One relation reference: its name and the alias the query bound it under.
 #[derive(Debug, Clone)]
@@ -31,21 +40,16 @@ struct Join {
     right: String,
 }
 
-/// One WHERE term; the terms conjoin.
+/// One ORDER BY key: an output ordinal or a column path, and the direction.
 #[derive(Debug, Clone)]
-enum Term {
-    /// `column = operand`
-    Eq { column: String, operand: Operand },
-    /// `column IS [NOT] NULL`
-    IsNull { column: String, negated: bool },
+struct Order {
+    ordinal: Option<usize>,
+    path: Option<String>,
+    desc: bool,
 }
 
-/// One comparison operand: a bound `$n` or a literal.
-#[derive(Debug, Clone)]
-enum Operand {
-    Param(usize),
-    Lit(String),
-}
+/// One materialized row: the qualified columns it holds.
+type Row = Vec<(String, Option<Value>)>;
 
 /// A parsed catalog statement over the recognized subset.
 #[derive(Debug, Clone)]
@@ -54,6 +58,7 @@ pub(crate) struct Query {
     from: Source,
     joins: Vec<Join>,
     terms: Vec<Term>,
+    order: Vec<Order>,
     limit: Option<u64>,
     /// The type each `$n` resolves to, from the column its term compares
     /// against — what Describe(statement) answers so the driver binds in the
@@ -77,6 +82,55 @@ impl Query {
                 }
             })
             .collect()
+    }
+
+    /// Whether answering names user-table rows the store's introspection
+    /// must build: `pg_class` or `pg_attribute` in the source or a join.
+    pub(crate) fn needs_dynamic(&self) -> bool {
+        self.relations()
+            .any(|name| matches!(name, "pg_class" | "pg_attribute"))
+    }
+
+    /// The relation names the query reads: the source, then every join.
+    pub(crate) fn relations(&self) -> impl Iterator<Item = &'static str> {
+        std::iter::once(self.from.name).chain(self.joins.iter().map(|join| join.source.name))
+    }
+
+    /// A term pinning an identity column (`oid`, `attrelid`) to exactly one
+    /// value — which user table a query asks about, so the introspection
+    /// reads only that table's shape.
+    pub(crate) fn pinned_oid(
+        &self,
+        slots: &[Option<String>],
+        parameters: &tessaridb::Parameters,
+    ) -> Option<i64> {
+        let identity = |column: &str| {
+            matches!(
+                column.rsplit('.').next().unwrap_or(column),
+                "oid" | "attrelid"
+            )
+        };
+        for term in &self.terms {
+            let Term::Cmp {
+                column,
+                op: Cmp::Eq,
+                operand,
+            } = term
+            else {
+                continue;
+            };
+            if !identity(column) {
+                continue;
+            }
+            let held = match operand_text(operand, slots, parameters) {
+                Some(held) => held,
+                None => continue,
+            };
+            if let Ok(parsed) = held.parse::<i64>() {
+                return Some(parsed);
+            }
+        }
+        None
     }
 }
 
@@ -112,18 +166,34 @@ pub(crate) fn rest(
             terms.push(term(parser)?);
         }
     }
+    let order = if parser.keyword("ORDER").is_ok() {
+        if parser.keyword("BY").is_err() {
+            return Err(Refused::surface(code::SYNTAX, "ORDER wants BY"));
+        }
+        let mut keys = Vec::new();
+        loop {
+            keys.push(order_key(parser)?);
+            if parser.comma().is_err() {
+                break;
+            }
+        }
+        keys
+    } else {
+        Vec::new()
+    };
     let limit = if parser.keyword("LIMIT").is_ok() {
         Some(parser.number()?)
     } else {
         None
     };
-    // What follows — GROUP BY, ORDER BY, another statement — is the caller's
-    // to end or refuse; rest() stops at its own clauses.
+    // What follows — another statement — is the caller's to end or refuse;
+    // rest() stops at its own clauses.
     let columns = Columns::Named(items.iter().map(|item| item.column.clone()).collect());
     let mut param_types = vec![0_u32; parser.slots_count()];
     for held in &terms {
-        if let Term::Eq {
+        if let Term::Cmp {
             column,
+            op: Cmp::Eq,
             operand: Operand::Param(index),
         } = held
             && let Some(slot) = param_types.get_mut(*index)
@@ -140,10 +210,49 @@ pub(crate) fn rest(
             from,
             joins,
             terms,
+            order,
             limit,
             param_types,
         }),
+        inference: Vec::new(),
+        record_names: Vec::new(),
     })
+}
+
+/// One ORDER BY key: a 1-based output ordinal or a column path, and the
+/// direction the absence of ASC/DESC leaves as ascending.
+fn order_key(parser: &mut Parser<'_>) -> Result<Order, Refused> {
+    let at = parser.snapshot();
+    let digits = parser.digits();
+    if !digits.is_empty() {
+        let ordinal = digits
+            .parse::<usize>()
+            .map_err(|_| Refused::surface(code::SYNTAX, "the ordinal does not fit"))?;
+        let desc = desc_or_asc(parser)?;
+        return Ok(Order {
+            ordinal: Some(ordinal),
+            path: None,
+            desc,
+        });
+    }
+    parser.restore(at);
+    let path = parser.ident_path()?;
+    let desc = desc_or_asc(parser)?;
+    Ok(Order {
+        ordinal: None,
+        path: Some(path),
+        desc,
+    })
+}
+
+fn desc_or_asc(parser: &mut Parser<'_>) -> Result<bool, Refused> {
+    if parser.keyword("DESC").is_ok() {
+        return Ok(true);
+    }
+    if parser.keyword("ASC").is_ok() {
+        return Ok(false);
+    }
+    Ok(false)
 }
 
 /// One relation source after the schema word: the dot, the name, the alias.
@@ -154,30 +263,38 @@ fn source(parser: &mut Parser<'_>, schema: &str) -> Result<Source, Refused> {
             "the catalog wants a relation after its schema",
         ));
     }
-    let name = parser.ident()?;
-    let known = relations()
-        .into_iter()
-        .map(|(held, _)| held)
-        .collect::<Vec<_>>();
-    if !known.contains(&name.as_str()) {
-        return Err(Refused::with_detail(
+    let asked = parser.ident()?;
+    let name = relation_name(&asked).ok_or_else(|| {
+        Refused::with_detail(
             code::FEATURE,
             "this catalog relation is not spoken in this build",
-            format!("{schema}.{name}"),
-        ));
-    }
+            format!("{schema}.{asked}"),
+        )
+    })?;
     let alias = if parser.keyword("AS").is_ok() {
         parser.ident()?
     } else {
-        parser.bare_alias().unwrap_or_else(|| name.clone())
+        parser.bare_alias().unwrap_or(asked)
     };
-    Ok(Source {
-        name: known
-            .into_iter()
-            .find(|held| *held == name)
-            .unwrap_or("pg_type"),
-        alias,
-    })
+    Ok(Source { name, alias })
+}
+
+/// The relations the responder serves: the static set, plus the two the
+/// store's introspection builds at answer time.
+fn relation_name(name: &str) -> Option<&'static str> {
+    match name {
+        "pg_type" | "pg_namespace" | "pg_range" | "pg_am" | "pg_class" | "pg_attribute" => {
+            Some(match name {
+                "pg_namespace" => "pg_namespace",
+                "pg_range" => "pg_range",
+                "pg_am" => "pg_am",
+                "pg_class" => "pg_class",
+                "pg_attribute" => "pg_attribute",
+                _ => "pg_type",
+            })
+        }
+        _ => None,
+    }
 }
 
 /// One join leg, or `None` when no join follows.
@@ -223,287 +340,9 @@ fn join(parser: &mut Parser<'_>) -> Result<Option<Join>, Refused> {
     }))
 }
 
-/// One WHERE term: `col = $n | literal`, or `col IS [NOT] NULL`.
-fn term(parser: &mut Parser<'_>) -> Result<Term, Refused> {
-    let column = parser.ident_path()?;
-    if parser.keyword("IS").is_ok() {
-        let negated = parser.keyword("NOT").is_ok();
-        parser
-            .keyword("NULL")
-            .map_err(|_| Refused::surface(code::SYNTAX, "IS wants NULL in this build"))?;
-        return Ok(Term::IsNull { column, negated });
-    }
-    if !parser.operator("=") {
-        return Err(Refused::surface(
-            code::FEATURE,
-            "a catalog WHERE speaks equality and IS NULL in this build",
-        ));
-    }
-    let operand = if let Some(held) = parser.placeholder() {
-        let digits = held
-            .trim_start_matches("$e")
-            .parse::<usize>()
-            .map_err(|_| Refused::surface(code::INTERNAL, "a placeholder lost its number"))?;
-        Operand::Param(digits.saturating_sub(1))
-    } else if let Some(value) = parser
-        .literal()
-        .map_err(|_| Refused::surface(code::SYNTAX, "a catalog literal did not read"))?
-    {
-        Operand::Lit(types::text_of(&value).unwrap_or_default())
-    } else {
-        return Err(Refused::surface(
-            code::FEATURE,
-            "a catalog comparison wants a parameter or a literal in this build",
-        ));
-    };
-    Ok(Term::Eq { column, operand })
-}
-
-/// Evaluate the query against the static relations: joins, terms, projection,
-/// limit — answering value rows in projection order. `slots` and `parameters`
-/// are the placeholder names and the values a Bind bound (the simple path's
-/// translation carries both in one; the extended path's portal keeps the
-/// values beside the statement's translation).
-pub(crate) fn evaluate(
-    query: &Query,
-    slots: &[Option<String>],
-    parameters: &tessaridb::Parameters,
-) -> Result<Vec<Vec<Option<Value>>>, Refused> {
-    let mut rows = materialize(&query.from)?;
-    for joined in &query.joins {
-        rows = join_rows(rows, joined)?;
-    }
-    let mut out: Vec<Vec<Option<Value>>> = Vec::new();
-    for row in &rows {
-        if query
-            .terms
-            .iter()
-            .all(|held| term_holds(held, row, slots, parameters))
-        {
-            let projected = query
-                .projection
-                .iter()
-                .map(|item| lookup(&item.text, row).cloned())
-                .collect::<Vec<_>>();
-            out.push(projected);
-        }
-        if let Some(limit) = query.limit
-            && u64::try_from(out.len()).unwrap_or(u64::MAX) >= limit
-        {
-            break;
-        }
-    }
-    Ok(out)
-}
-
-/// One materialized row: the qualified columns it holds.
-type Row = Vec<(String, Option<Value>)>;
-
-fn materialize(source: &Source) -> Result<Vec<Row>, Refused> {
-    let relation = relation(source.name).ok_or_else(|| {
-        Refused::with_detail(
-            code::FEATURE,
-            "this catalog relation is not spoken in this build",
-            source.name.to_owned(),
-        )
-    })?;
-    Ok(relation
-        .rows
-        .iter()
-        .map(|cells| {
-            relation
-                .columns
-                .iter()
-                .zip(cells.iter())
-                .map(|(column, value)| {
-                    (format!("{}.{}", source.alias, column), Some(value.clone()))
-                })
-                .collect()
-        })
-        .collect())
-}
-
-fn join_rows(left: Vec<Row>, joined: &Join) -> Result<Vec<Row>, Refused> {
-    let right = materialize(&joined.source)?;
-    let mut out = Vec::new();
-    for lrow in &left {
-        let lval = lookup(&joined.left, lrow);
-        let mut matched = false;
-        for rrow in &right {
-            if lval.is_some() && lval == lookup(&joined.right, rrow).cloned().as_ref() {
-                let mut merged = lrow.clone();
-                merged.extend(rrow.iter().cloned());
-                out.push(merged);
-                matched = true;
-            }
-        }
-        if !matched && joined.outer {
-            let mut padded = lrow.clone();
-            for (key, _) in &right.clone().into_iter().next().unwrap_or_default() {
-                padded.push((key.clone(), None));
-            }
-            out.push(padded);
-        }
-    }
-    Ok(out)
-}
-
-fn term_holds(
-    term: &Term,
-    row: &Row,
-    slots: &[Option<String>],
-    parameters: &tessaridb::Parameters,
-) -> bool {
-    match term {
-        Term::Eq { column, operand } => {
-            let held = lookup(column, row);
-            if held.is_none() {
-                return false;
-            }
-            let expected: Option<String> = match operand {
-                Operand::Lit(text) => Some(text.clone()),
-                Operand::Param(index) => slots
-                    .get(*index)
-                    .and_then(|slot| slot.as_ref())
-                    .and_then(|name| parameters.get(name))
-                    .and_then(types::text_of),
-            };
-            expected.is_some_and(|wanted| held.and_then(types::text_of).as_ref() == Some(&wanted))
-        }
-        Term::IsNull { column, negated } => {
-            let absent = lookup(column, row)
-                .map(|value| matches!(value, Value::Null))
-                .unwrap_or(true);
-            // IS NULL holds where the column is absent; IS NOT NULL elsewhere.
-            absent != *negated
-        }
-    }
-}
-
-/// A qualified `alias.column`, or a bare column resolved when unambiguous.
-fn lookup<'a>(path: &str, row: &'a Row) -> Option<&'a Value> {
-    if let Some((_, value)) = row.iter().find(|(key, _)| key == path) {
-        return value.as_ref();
-    }
-    let suffix = format!(".{path}");
-    let mut found = row
-        .iter()
-        .filter(|(key, _)| key.ends_with(&suffix))
-        .filter_map(|(_, value)| value.as_ref());
-    let first = found.next();
-    first.filter(|_| found.next().is_none())
-}
-
-/// The static type of a catalog column by its output name: the oid the
-/// surface reports it under, and the name it answers with.
-fn catalog_type_of(output: &str) -> (u32, String) {
-    let name = output.rsplit('.').next().unwrap_or(output);
-    let oid = match name {
-        "oid" | "typelem" | "typbasetype" | "typrelid" | "rngtypid" | "rngsubtype"
-        | "typnamespace" => types::oid::OID,
-        "attnum" => types::oid::INT4,
-        "reltuples" => types::oid::FLOAT8,
-        "attnotnull" | "atthasdef" => types::oid::BOOL,
-        _ => types::oid::TEXT,
-    };
-    (oid, name.to_owned())
-}
-
-/// One relation: its columns and rows, a row column-ordered.
-struct Relation {
-    columns: &'static [&'static str],
-    rows: Vec<Vec<Value>>,
-}
-
-/// `pg_namespace`: the catalog schema, named for the clients that ask.
-fn pg_namespace() -> Relation {
-    Relation {
-        columns: &["oid", "nspname"],
-        rows: vec![
-            vec![int(11), text("pg_catalog")],
-            vec![int(13000), text("information_schema")],
-        ],
-    }
-}
-
-/// `pg_type`: exactly the types this build emits, under the dialect's oids.
-fn pg_type() -> Relation {
-    const ROWS: &[(u32, &str)] = &[
-        (16, "bool"),
-        (17, "bytea"),
-        (20, "int8"),
-        (21, "int2"),
-        (23, "int4"),
-        (25, "text"),
-        (26, "oid"),
-        (700, "float4"),
-        (701, "float8"),
-        (705, "unknown"),
-        (1043, "varchar"),
-        (1184, "timestamptz"),
-        (1186, "interval"),
-        (1700, "numeric"),
-        (2950, "uuid"),
-        (3802, "jsonb"),
-    ];
-    Relation {
-        columns: &[
-            "oid",
-            "typname",
-            "typtype",
-            "typelem",
-            "typbasetype",
-            "typnamespace",
-            "typrelid",
-        ],
-        rows: ROWS
-            .iter()
-            .map(|(oid, name)| {
-                vec![
-                    int(i64::from(*oid)),
-                    text(name),
-                    text("b"),
-                    int(0),
-                    int(0),
-                    int(11),
-                    int(0),
-                ]
-            })
-            .collect(),
-    }
-}
-
-/// `pg_range`: this build emits no range types; the LEFT JOIN answers NULLs.
-fn pg_range() -> Relation {
-    Relation {
-        columns: &["rngtypid", "rngsubtype"],
-        rows: Vec::new(),
-    }
-}
-
-/// The static relations by name.
-fn relations() -> Vec<(&'static str, Relation)> {
-    vec![
-        ("pg_type", pg_type()),
-        ("pg_namespace", pg_namespace()),
-        ("pg_range", pg_range()),
-    ]
-}
-
-fn relation(name: &str) -> Option<Relation> {
-    relations()
-        .into_iter()
-        .find(|(held, _)| *held == name)
-        .map(|(_, rel)| rel)
-}
-
-fn int(held: i64) -> Value {
-    Value::Number(held.into())
-}
-
-fn text(held: &str) -> Value {
-    Value::String(held.to_owned())
-}
-
+pub(crate) mod dynamic;
+mod evaluate;
+mod relations;
+mod terms;
 #[cfg(test)]
 mod tests;

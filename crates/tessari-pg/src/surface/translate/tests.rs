@@ -4,6 +4,14 @@
 use super::{Columns, UNNAMED, translate};
 use tessaridb::Value;
 
+/// The refusal a test expects, printed whole when the code alone mismatches.
+fn unwrap_refused(answer: Result<super::Translated, super::Refused>) -> super::Refused {
+    match answer {
+        Err(refused) => refused,
+        Ok(_) => panic!("expected a refusal, got a translation"),
+    }
+}
+
 fn translated(query: &str) -> (String, Vec<(String, Value)>, Columns) {
     let answer = translate(query).expect("the query should translate");
     let parameters = answer
@@ -36,11 +44,111 @@ fn fields_aliases_and_case_folding() {
 }
 
 #[test]
-fn quoted_names_refuse_by_name() {
-    let refused = translate("SELECT \"Camel\" FROM t").expect_err("quoted idents");
+fn quoted_names_keep_their_case_and_refuse_what_the_store_cannot_hold() {
+    // The dialect's quoted spelling preserves case and rides verbatim —
+    // the store's lexer names bare words and keeps case, so `"Camel"`
+    // reaches a mixed-case table exactly.
+    let (script, _, columns) = translated("SELECT \"Camel\" FROM \"MyTable\"");
+    assert_eq!(script, "SELECT Camel FROM MyTable;");
+    assert_eq!(columns, Columns::Named(vec!["Camel".to_owned()]));
+    // A quoted alias answers under its own spelling.
+    let (script, _, columns) = translated("SELECT id AS \"OrderId\" FROM t");
+    assert_eq!(script, "SELECT id AS OrderId FROM t;");
+    assert_eq!(columns, Columns::Named(vec!["OrderId".to_owned()]));
+    // Contents the store's name grammar cannot hold refuse by name rather
+    // than silently changing the name.
+    let refused = translate("SELECT \"has space\" FROM t").expect_err("a spaced name");
     assert_eq!(refused.code, super::super::errors::code::FEATURE);
-    let refused = translate("SELECT id FROM \"MyTable\"").expect_err("quoted table");
+    let refused = translate("SELECT id FROM \"9lives\"").expect_err("a digit-led name");
     assert_eq!(refused.code, super::super::errors::code::FEATURE);
+}
+
+#[test]
+fn value_list_in_expands_to_the_exact_or_chain() {
+    let (script, parameters, _) = translated("SELECT id FROM orders WHERE band IN (1, 3, 5)");
+    assert_eq!(
+        script,
+        "SELECT id FROM orders WHERE (band = $p1 OR band = $p2 OR band = $p3);"
+    );
+    assert_eq!(parameters.len(), 3);
+    let (script, parameters, _) =
+        translated("SELECT id FROM orders WHERE band IN (1, $1) AND name = 'x'");
+    assert_eq!(
+        script,
+        "SELECT id FROM orders WHERE (band = $p1 OR band = $e1) AND name = $p2;"
+    );
+    assert_eq!(parameters.len(), 2);
+    let (script, _, _) = translated("SELECT id FROM orders WHERE band NOT IN (2)");
+    assert_eq!(script, "SELECT id FROM orders WHERE NOT (band = $p1);");
+    let refused = translate("SELECT id FROM orders WHERE band IN ()").expect_err("empty list");
+    assert_eq!(refused.code, super::super::errors::code::SYNTAX);
+    // The IN (SELECT …) form stays the engine's own.
+    let (script, _, _) = translated("SELECT id FROM orders WHERE band IN (SELECT band FROM bands)");
+    assert_eq!(
+        script,
+        "SELECT id FROM orders WHERE band IN (SELECT band FROM bands);"
+    );
+}
+
+#[test]
+fn projection_arithmetic_renders_with_precedence_and_an_unnamed_alias() {
+    let (script, parameters, columns) =
+        translated("SELECT band + 1, band * 2 AS doubled, (band + 2) * 3 FROM orders");
+    assert_eq!(
+        script,
+        "SELECT band + $p1 AS e1, band * $p2 AS doubled, (band + $p3) * $p4 AS e2 FROM orders;"
+    );
+    assert_eq!(parameters.len(), 4);
+    assert_eq!(
+        columns,
+        Columns::Named(vec![
+            UNNAMED.to_owned(),
+            "doubled".to_owned(),
+            UNNAMED.to_owned()
+        ])
+    );
+    // Arithmetic rides the WHERE layer too, and `<>` is the dialect's `!=`.
+    let (script, parameters, _) =
+        translated("SELECT id FROM orders WHERE band * 2 >= 4 AND name <> 'x'");
+    assert_eq!(
+        script,
+        "SELECT id FROM orders WHERE band * $p1 >= $p2 AND name != $p3;"
+    );
+    assert_eq!(parameters.len(), 3);
+}
+
+#[test]
+fn case_and_catalog_functions_refuse_over_the_store_by_name() {
+    let refused = unwrap_refused(translate(
+        "SELECT CASE band WHEN 1 THEN 'low' END FROM orders",
+    ));
+    assert_eq!(
+        refused.code,
+        super::super::errors::code::FEATURE,
+        "{refused:?}"
+    );
+    assert!(refused.message.contains("computed projections"));
+    let refused = unwrap_refused(translate(
+        "SELECT pg_catalog.pg_get_userbyid(c.relowner) FROM orders",
+    ));
+    assert_eq!(
+        refused.code,
+        super::super::errors::code::FEATURE,
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn the_translator_collects_parameter_inference() {
+    let answer = translate("SELECT id FROM orders WHERE band = $1 AND name = $2 AND band = $1")
+        .expect("the query translates");
+    assert_eq!(
+        answer.statements[0].inference,
+        vec![(0_usize, "band".to_owned()), (1_usize, "name".to_owned())]
+    );
+    // A placeholder without a column comparison collects nothing.
+    let answer = translate("SELECT id FROM orders WHERE $1 = 3").expect("the query translates");
+    assert!(answer.statements[0].inference.is_empty());
 }
 
 #[test]

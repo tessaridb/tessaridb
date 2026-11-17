@@ -1,9 +1,12 @@
-//! The catalog responder's unit rows: the static relations, the recognized
-//! subset, and the refusals that keep the subset honest.
+//! The catalog responder's unit rows: the static relations, the dynamic
+//! user-table rows, the widened recognized subset, and the refusals that
+//! keep the subset honest.
 
 use tessaridb::Value;
 
-use super::{Operand, Term, evaluate};
+use super::dynamic::{AttrRow, ClassRow, Dynamic};
+use super::evaluate;
+use super::terms::{Operand, Term};
 use crate::surface::translate::parser::Parser;
 
 /// The captured driver query (defer list §1): joins, a bound parameter, the
@@ -36,11 +39,47 @@ fn bound(oid: &str) -> (Vec<Option<String>>, tessaridb::Parameters) {
     (vec![Some("e1".to_owned())], parameters)
 }
 
+/// One user table and two columns, as the store's introspection would build
+/// it for the tests.
+fn dynamic() -> Dynamic {
+    Dynamic {
+        namespace: ("app".to_owned(), 4_242),
+        classes: vec![
+            ClassRow {
+                oid: 7_777,
+                name: "orders".to_owned(),
+            },
+            ClassRow {
+                oid: 8_888,
+                name: "bands".to_owned(),
+            },
+        ],
+        attributes: vec![
+            AttrRow {
+                relid: 7_777,
+                name: "band".to_owned(),
+                type_oid: crate::surface::types::oid::INT8,
+                num: 1,
+                notnull: false,
+                hasdef: false,
+            },
+            AttrRow {
+                relid: 7_777,
+                name: "name".to_owned(),
+                type_oid: crate::surface::types::oid::TEXT,
+                num: 2,
+                notnull: false,
+                hasdef: true,
+            },
+        ],
+    }
+}
+
 #[test]
 fn the_captured_query_answers_the_text_row() {
     let query = parse(CAPTURED);
     let (slots, parameters) = bound("25");
-    let rows = evaluate(&query, &slots, &parameters).expect("the query answers");
+    let rows = evaluate(&query, &slots, &parameters, None, None).expect("the query answers");
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
     let cells: Vec<Option<String>> = row
@@ -64,7 +103,8 @@ fn the_captured_query_answers_the_text_row() {
 #[test]
 fn an_unbound_type_answers_no_row() {
     let query = parse(CAPTURED);
-    let rows = evaluate(&query, &[], &tessaridb::Parameters::new()).expect("the query answers");
+    let rows = evaluate(&query, &[], &tessaridb::Parameters::new(), None, None)
+        .expect("the query answers");
     assert!(rows.is_empty(), "no oid, no row");
 }
 
@@ -74,7 +114,8 @@ fn the_terms_conjoin_and_limit_binds() {
         "SELECT t.typname FROM pg_catalog.pg_type t \
          WHERE t.typtype = 'b' AND t.typnamespace = 11 LIMIT 3",
     );
-    let rows = evaluate(&query, &[], &tessaridb::Parameters::new()).expect("the query answers");
+    let rows = evaluate(&query, &[], &tessaridb::Parameters::new(), None, None)
+        .expect("the query answers");
     assert_eq!(rows.len(), 3, "the limit binds");
 }
 
@@ -85,7 +126,8 @@ fn is_null_terms_read_the_left_join_padding() {
          LEFT OUTER JOIN pg_catalog.pg_range r ON r.rngtypid = t.oid \
          WHERE r.rngsubtype IS NULL LIMIT 1",
     );
-    let rows = evaluate(&query, &[], &tessaridb::Parameters::new()).expect("the query answers");
+    let rows = evaluate(&query, &[], &tessaridb::Parameters::new(), None, None)
+        .expect("the query answers");
     assert_eq!(rows.len(), 1, "every type lacks a range");
 }
 
@@ -104,11 +146,199 @@ fn placeholder_slots_map_bound_values() {
     assert!(
         matches!(
             query.terms.first(),
-            Some(Term::Eq {
+            Some(Term::Cmp {
                 operand: Operand::Param(0),
                 ..
             })
         ),
         "the placeholder took slot one"
+    );
+}
+
+/// The `\dt` shape over the dynamic rows: value-list IN, `<>` and anchored
+/// prefix exclusions, the visibility fold, a CASE mapping, the owner
+/// function, a quoted alias, and ordinal ordering — the captured psql
+/// query, answered.
+#[test]
+fn the_listing_query_answers_over_user_tables() {
+    let query = parse(
+        "SELECT n.nspname as \"Schema\", c.relname as \"Name\", \
+         CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view' END as \"Type\", \
+         pg_catalog.pg_get_userbyid(c.relowner) as \"Owner\" \
+         FROM pg_catalog.pg_class c \
+         LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         LEFT JOIN pg_catalog.pg_am am ON am.oid = c.relam \
+         WHERE c.relkind IN ('r','p','') \
+         AND n.nspname <> 'pg_catalog' \
+         AND n.nspname !~ '^pg_toast' \
+         AND n.nspname <> 'information_schema' \
+         AND pg_catalog.pg_table_is_visible(c.oid) \
+         ORDER BY 1, 2",
+    );
+    assert!(query.needs_dynamic());
+    let rows = evaluate(
+        &query,
+        &[],
+        &tessaridb::Parameters::new(),
+        Some(&dynamic()),
+        Some("matrix"),
+    )
+    .expect("the listing answers");
+    let cells: Vec<Vec<Option<String>>> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.as_ref().and_then(crate::surface::types::text_of))
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        cells,
+        vec![
+            vec![
+                Some("app".to_owned()),
+                Some("bands".to_owned()),
+                Some("table".to_owned()),
+                Some("matrix".to_owned())
+            ],
+            vec![
+                Some("app".to_owned()),
+                Some("orders".to_owned()),
+                Some("table".to_owned()),
+                Some("matrix".to_owned())
+            ],
+        ],
+        "alphabetical by the ordinal keys, the owner from the connection"
+    );
+}
+
+/// The `\d <table>` lookup: the anchored `^(name)$` pattern reads as
+/// equality, the namespace join reports the table's schema.
+#[test]
+fn the_describe_lookup_answers_the_oid_and_schema() {
+    let query = parse(
+        "SELECT c.oid, n.nspname, c.relname FROM pg_catalog.pg_class c \
+         LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relname OPERATOR(pg_catalog.~) '^(orders)$' COLLATE pg_catalog.default \
+         AND pg_catalog.pg_table_is_visible(c.oid) ORDER BY 2, 3",
+    );
+    let rows = evaluate(
+        &query,
+        &[],
+        &tessaridb::Parameters::new(),
+        Some(&dynamic()),
+        None,
+    )
+    .expect("the lookup answers");
+    assert_eq!(rows.len(), 1, "one table matches the anchored name");
+    let cells: Vec<Option<String>> = rows[0]
+        .iter()
+        .map(|cell| cell.as_ref().and_then(crate::surface::types::text_of))
+        .collect();
+    assert_eq!(
+        cells,
+        vec![
+            Some("7777".to_owned()),
+            Some("app".to_owned()),
+            Some("orders".to_owned())
+        ]
+    );
+}
+
+/// The attribute listing: a pinned `attrelid` restricts the introspection
+/// (the caller reads one table's columns), the ordered comparison and the
+/// boolean fold ride, the path ORDER BY sorts numerically.
+#[test]
+fn the_attribute_listing_reads_the_pinned_table() {
+    let query = parse(
+        "SELECT a.attname, a.atttypid, a.attnotnull, a.attnum, a.atthasdef, a.attisdropped \
+         FROM pg_catalog.pg_attribute a \
+         WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum",
+    );
+    assert!(query.needs_dynamic());
+    let (slots, parameters) = bound("7777");
+    assert_eq!(
+        query.pinned_oid(&slots, &parameters),
+        Some(7_777),
+        "the bound identity pins one table"
+    );
+    let rows =
+        evaluate(&query, &slots, &parameters, Some(&dynamic()), None).expect("the columns answer");
+    let cells: Vec<Vec<Option<String>>> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.as_ref().and_then(crate::surface::types::text_of))
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        cells,
+        vec![
+            vec![
+                Some("band".to_owned()),
+                Some("20".to_owned()),
+                Some("f".to_owned()),
+                Some("1".to_owned()),
+                Some("f".to_owned()),
+                Some("f".to_owned())
+            ],
+            vec![
+                Some("name".to_owned()),
+                Some("25".to_owned()),
+                Some("f".to_owned()),
+                Some("2".to_owned()),
+                Some("t".to_owned()),
+                Some("f".to_owned())
+            ],
+        ],
+        "in attnum order, the store's kinds under the wire oids"
+    );
+}
+
+#[test]
+fn unanchored_patterns_refuse_by_name() {
+    let query = parse("SELECT c.oid FROM pg_catalog.pg_class c WHERE c.relname ~ 'ord.r'");
+    let refused = evaluate(
+        &query,
+        &[],
+        &tessaridb::Parameters::new(),
+        Some(&dynamic()),
+        None,
+    )
+    .expect_err("a pattern outside the anchored shapes refuses");
+    assert_eq!(refused.code, crate::surface::errors::code::FEATURE);
+    assert!(refused.detail.is_some_and(|d| d.contains("ord.r")));
+}
+
+#[test]
+fn ordered_comparison_over_a_name_refuses_by_name() {
+    let refused =
+        super::super::translate("SELECT c.oid FROM pg_catalog.pg_class c WHERE c.relname > 'a'")
+            .expect_err("names do not order here");
+    assert_eq!(refused.code, crate::surface::errors::code::FEATURE);
+    assert!(refused.message.contains("numeric columns"));
+}
+
+#[test]
+fn kind_oid_maps_the_store_kinds_to_the_wire() {
+    use super::dynamic::kind_oid;
+    use crate::surface::types::oid;
+    assert_eq!(kind_oid("bool"), oid::BOOL);
+    assert_eq!(kind_oid("int"), oid::INT8);
+    assert_eq!(kind_oid("float"), oid::FLOAT8);
+    assert_eq!(kind_oid("decimal"), oid::NUMERIC);
+    assert_eq!(kind_oid("number"), oid::NUMERIC);
+    assert_eq!(kind_oid("string"), oid::TEXT);
+    assert_eq!(kind_oid("datetime"), oid::TIMESTAMPTZ);
+    assert_eq!(kind_oid("duration"), oid::INTERVAL);
+    assert_eq!(kind_oid("uuid"), oid::UUID);
+    assert_eq!(kind_oid("bytes"), oid::BYTEA);
+    assert_eq!(kind_oid("object"), oid::TEXT, "the honest fallback");
+    // The falsification arm: a planted drift must move a row.
+    assert_ne!(
+        kind_oid("int"),
+        oid::INT4,
+        "integers answer as the widest kind"
     );
 }

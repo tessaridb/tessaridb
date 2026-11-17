@@ -12,8 +12,11 @@ use tokio_util::sync::CancellationToken;
 use crate::codec;
 
 /// The fixture every socket test reads: a table with a spread of fields and
-/// rows, one of them missing the optional one.
+/// rows, one of them missing the optional one. The fields are declared so
+/// the catalog the port reads at Parse time names their types.
 pub(crate) const SETUP: &str = "DEFINE TABLE orders SCHEMALESS; \
+     DEFINE FIELD band ON orders TYPE int; \
+     DEFINE FIELD name ON orders TYPE string; \
      CREATE orders:1 = { band: 1, name: 'first' }; \
      CREATE orders:2 = { band: 3, name: 'third' }; \
      CREATE orders:3 = { band: 3 };";

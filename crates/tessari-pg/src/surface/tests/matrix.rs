@@ -46,35 +46,22 @@ async fn tokio_postgres_connects_and_reads() {
     assert_eq!(names, vec!["third".to_owned()]);
 
     // Extended protocol, a bound parameter — the driver speaks it by default.
-    // The catalog answers the driver's type-resolution query (G089 W1, the
-    // responder + parameter-type inference for catalog statements), but the
-    // driver asks it about the user query's UNRESOLVED parameter (oid 0):
-    // real servers infer `band`'s type at Parse time from the table's
-    // catalog, and the port's store-side inference is the next wave (W2).
-    // Until then this row documents the measured finding instead of
-    // pretending it away.
-    match client
+    // Parse-time inference answers the parameter's type from `band`'s
+    // declared field and the statement columns from the table catalog (W2),
+    // so the driver binds in the inferred shape and reads the rows back.
+    let rows = client
         .query(
-            "SELECT band, name FROM orders WHERE band = $1 ORDER BY name",
+            "SELECT band, name FROM orders WHERE band = $1 ORDER BY name NULLS LAST",
             &[&3_i64],
         )
         .await
-    {
-        Ok(rows) => {
-            let got: Vec<(i64, Option<String>)> =
-                rows.iter().map(|row| (row.get(0), row.get(1))).collect();
-            assert_eq!(
-                got,
-                vec![(3, Some("third".to_owned())), (3, None)],
-                "the fixture's third row holds band 3 with no name"
-            );
-        }
-        Err(why) => {
-            eprintln!(
-                "matrix finding — the Rust driver's extended row: {why}                  (the catalog answers; the driver asks it about oid 0 —                  store-side parameter inference, the W2 item)"
-            );
-        }
-    }
+        .expect("the inferred statement answers");
+    let got: Vec<(i64, Option<String>)> = rows.iter().map(|row| (row.get(0), row.get(1))).collect();
+    assert_eq!(
+        got,
+        vec![(3, Some("third".to_owned())), (3, None)],
+        "the fixture's third row holds band 3 with no name"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
