@@ -79,6 +79,15 @@ impl Parser<'_> {
         let mut alias = None;
         let mut joins = String::new();
         if self.keyword("FROM").is_ok() {
+            let at = self.snapshot();
+            if let Some(word) = self.bare_ident()
+                && super::catalog::opens(&word)
+            {
+                // A catalog statement: the responder answers it locally,
+                // the projection's items become its column paths.
+                return super::catalog::rest(self, projection.items, &word);
+            }
+            self.restore(at);
             from = Some(self.table_source("a qualified name")?);
             if self.keyword("AS").is_ok() {
                 alias = Some(self.ident()?);
@@ -155,6 +164,7 @@ impl Parser<'_> {
             script,
             columns,
             table: from,
+            catalog: None,
         })
     }
 

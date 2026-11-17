@@ -46,9 +46,13 @@ async fn tokio_postgres_connects_and_reads() {
     assert_eq!(names, vec!["third".to_owned()]);
 
     // Extended protocol, a bound parameter — the driver speaks it by default.
-    // The dialect's clients resolve a parameter the server left unspecified
-    // through pg_catalog.pg_type; the catalog is the defer list's head, so
-    // this row documents the finding instead of pretending it away.
+    // The catalog answers the driver's type-resolution query (G089 W1, the
+    // responder + parameter-type inference for catalog statements), but the
+    // driver asks it about the user query's UNRESOLVED parameter (oid 0):
+    // real servers infer `band`'s type at Parse time from the table's
+    // catalog, and the port's store-side inference is the next wave (W2).
+    // Until then this row documents the measured finding instead of
+    // pretending it away.
     match client
         .query(
             "SELECT band, name FROM orders WHERE band = $1 ORDER BY name",
@@ -67,7 +71,7 @@ async fn tokio_postgres_connects_and_reads() {
         }
         Err(why) => {
             eprintln!(
-                "matrix finding — tokio-postgres extended row: {why}                  (the driver resolves unspecified parameters through pg_catalog;                  the catalog is the defer list's head)"
+                "matrix finding — the Rust driver's extended row: {why}                  (the catalog answers; the driver asks it about oid 0 —                  store-side parameter inference, the W2 item)"
             );
         }
     }

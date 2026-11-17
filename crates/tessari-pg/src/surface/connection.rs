@@ -332,6 +332,44 @@ async fn query_once(
         .await?;
         return Ok(());
     }
+    // Catalog statements answer locally, never against the store. A batch
+    // that mixes them with store statements is refused by name: the two run
+    // on different engines, and one implicit block must not span both.
+    if translated.statements.iter().any(|s| s.catalog.is_some()) {
+        if !translated.statements.iter().all(|s| s.catalog.is_some()) {
+            conn.refuse(
+                &Refused::surface(
+                    code::FEATURE,
+                    "catalog statements run alone in this build; the batch mixes them with store reads",
+                ),
+                *tx,
+            )
+            .await?;
+            return Ok(());
+        }
+        for shape in &translated.statements {
+            let Some(query) = &shape.catalog else {
+                continue;
+            };
+            let rows = match translate::catalog::evaluate(
+                query,
+                &translated.slots,
+                &translated.parameters,
+            ) {
+                Ok(rows) => rows,
+                Err(refused) => {
+                    if *tx == codec::write::Tx::InTx {
+                        *tx = codec::write::Tx::Failed;
+                    }
+                    conn.refuse(&refused, *tx).await?;
+                    return Ok(());
+                }
+            };
+            answer_catalog(conn, query, &rows, false, &[]).await?;
+        }
+        conn.send(&codec::write::ready_for_query(*tx)).await?;
+        return Ok(());
+    }
     let outcomes = match held
         .run(shared, &translated.script, &translated.parameters)
         .await
@@ -378,6 +416,44 @@ async fn query_once(
     }
     conn.send(&codec::write::ready_for_query(*tx)).await?;
     Ok(())
+}
+
+/// A catalog statement's rows as the wire spells them: the projection's
+/// static column types, the values in text or the binary subset a Bind
+/// asked for. As [`answer`], `described` marks a portal Describe that
+/// already owed the row description.
+pub(crate) async fn answer_catalog(
+    conn: &mut Conn,
+    query: &translate::catalog::Query,
+    rows: &[Vec<Option<tessaridb::Value>>],
+    described: bool,
+    formats: &[u16],
+) -> Result<bool> {
+    let mut columns = query.columns();
+    let encoded = match super::encode(&columns, rows, formats) {
+        Ok(encoded) => encoded,
+        Err(refused) => {
+            conn.refuse_pending(&refused).await?;
+            return Ok(false);
+        }
+    };
+    if !described {
+        if let Ok(expanded) = super::expand_formats(formats, columns.len()) {
+            for (i, column) in columns.iter_mut().enumerate() {
+                column.format = expanded[i];
+            }
+        }
+        conn.send(&codec::write::row_description(&columns)).await?;
+    }
+    for row in &encoded {
+        conn.send(&codec::write::data_row(row)).await?;
+    }
+    conn.send(&codec::write::command_complete(&format!(
+        "SELECT {}",
+        rows.len()
+    )))
+    .await?;
+    Ok(true)
 }
 
 /// One transaction verb, walked through the connection's block state the way

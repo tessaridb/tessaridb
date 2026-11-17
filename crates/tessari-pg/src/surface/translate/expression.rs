@@ -15,14 +15,17 @@ impl Parser<'_> {
             return Ok(Projection {
                 text: "*".to_owned(),
                 columns: Columns::Star,
+                items: Vec::new(),
             });
         }
         let mut text = String::new();
         let mut columns = Vec::new();
+        let mut items = Vec::new();
         loop {
             let item = self.item()?;
             text.push_str(&item.text);
-            columns.push(item.column);
+            columns.push(item.column.clone());
+            items.push(item);
             if self.comma().is_err() {
                 break;
             }
@@ -31,6 +34,7 @@ impl Parser<'_> {
         Ok(Projection {
             text,
             columns: Columns::Named(columns),
+            items,
         })
     }
 

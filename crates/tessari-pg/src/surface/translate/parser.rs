@@ -51,6 +51,21 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// The cursor, for a caller that must look ahead and put it back.
+    pub(crate) fn snapshot(&self) -> usize {
+        self.at
+    }
+
+    /// Put the cursor back where [`Self::snapshot`] held it.
+    pub(crate) fn restore(&mut self, at: usize) {
+        self.at = at;
+    }
+
+    /// How many placeholders the statement took.
+    pub(crate) fn slots_count(&self) -> usize {
+        self.slots.len()
+    }
+
     /// One bound parameter, named and kept.
     pub(crate) fn bind(&mut self, value: Value) -> String {
         self.next = self.next.saturating_add(1);

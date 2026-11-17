@@ -67,7 +67,12 @@ async fn bind_values_feed_the_condition() {
     let mut client = Client::to(&address).await;
     client.start(None, "app.main", None).await;
 
-    for (value, want) in [("1", "first"), ("3", "third")] {
+    for (value, want) in [
+        ("1", vec![vec![Some("first".to_owned())]]),
+        // The fixture's third row holds band 3 with no name: the condition's
+        // two matches are the named row and the NULL one.
+        ("3", vec![vec![Some("third".to_owned())], vec![None]]),
+    ] {
         client
             .parse("", "SELECT name FROM orders WHERE band = $1", &[20])
             .await;
@@ -78,11 +83,7 @@ async fn bind_values_feed_the_condition() {
         for _ in 0..5 {
             seen.push(client.message().await);
         }
-        assert_eq!(
-            rows(&seen),
-            vec![vec![Some(want.to_owned())]],
-            "band = {value}: {seen:?}"
-        );
+        assert_eq!(rows(&seen), want, "band = {value}: {seen:?}");
     }
 }
 
@@ -154,7 +155,7 @@ async fn a_named_statement_survives_sync_and_closes_by_name() {
     client.execute("", 0).await;
     client.sync().await;
     let mut seen = Vec::new();
-    for _ in 0..5 {
+    for _ in 0..4 {
         seen.push(client.message().await);
     }
     assert_eq!(rows(&seen), vec![vec![Some("first".to_owned())]]);

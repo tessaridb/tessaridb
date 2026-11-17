@@ -55,6 +55,9 @@ struct Portal {
     /// An Execute already drained the portal; the dialect answers a spent
     /// portal with an empty completion, never a re-run.
     done: bool,
+    /// The rows a Describe(portal) already evaluated for a catalog statement —
+    /// answered locally, never against the store.
+    catalog_rows: Option<Vec<Vec<Option<tessaridb::Value>>>>,
 }
 
 impl Kitchen {
@@ -133,11 +136,24 @@ impl Kitchen {
                         format!("uses ${}, declared {}", translated.slots.len(), types.len()),
                     ))
                 } else if name.is_empty() || self.statements.len() < MAX_NAMED {
+                    let mut resolved = types.to_vec();
+                    if let Some(query) = translated
+                        .statements
+                        .first()
+                        .and_then(|shape| shape.catalog.as_ref())
+                    {
+                        for (index, inferred) in query.param_types.iter().enumerate() {
+                            if resolved.get(index).copied().unwrap_or(0) == 0 {
+                                resolved.resize(index.saturating_add(1).max(resolved.len()), 0);
+                                resolved[index] = *inferred;
+                            }
+                        }
+                    }
                     self.statements.insert(
                         name.to_owned(),
                         Prepared {
                             translated,
-                            types: types.to_vec(),
+                            types: resolved,
                         },
                     );
                     conn.send(&codec::write::parse_complete()).await?;
@@ -254,6 +270,7 @@ impl Kitchen {
             spent: None,
             described: false,
             done: false,
+            catalog_rows: None,
         })
     }
 
@@ -333,23 +350,56 @@ impl Kitchen {
                 )
                 .await;
         };
-        let outcomes = match held
-            .run(shared, &portal.translated.script, &portal.parameters)
-            .await
-        {
-            Ok(outcomes) => outcomes,
-            Err(failed) => {
-                let refused = run_refusal(failed);
-                return self.fail(conn, &refused).await;
+        let Some(query) = portal
+            .translated
+            .statements
+            .first()
+            .and_then(|shape| shape.catalog.clone())
+        else {
+            let outcomes = match held
+                .run(shared, &portal.translated.script, &portal.parameters)
+                .await
+            {
+                Ok(outcomes) => outcomes,
+                Err(failed) => {
+                    let refused = run_refusal(failed);
+                    return self.fail(conn, &refused).await;
+                }
+            };
+            let mut described = describe_outcome(&outcomes, &portal.translated);
+            if let Some(columns) = &mut described
+                && let Ok(expanded) = super::expand_formats(&portal.formats, columns.len())
+            {
+                for (i, column) in columns.iter_mut().enumerate() {
+                    column.format = expanded[i];
+                }
             }
+            portal.spent = Some(outcomes);
+            portal.described = true;
+            match described {
+                Some(columns) => conn.send(&codec::write::row_description(&columns)).await?,
+                None => conn.send(&codec::write::no_data()).await?,
+            }
+            return Ok(());
         };
-        let described = describe_outcome(&outcomes, &portal.translated);
-        portal.spent = Some(outcomes);
+        // A catalog portal answers locally: evaluate once, the Execute replays.
+        let rows = match translate::catalog::evaluate(
+            &query,
+            &portal.translated.slots,
+            &portal.parameters,
+        ) {
+            Ok(rows) => rows,
+            Err(refused) => return self.fail(conn, &refused).await,
+        };
+        portal.catalog_rows = Some(rows);
         portal.described = true;
-        match described {
-            Some(columns) => conn.send(&codec::write::row_description(&columns)).await?,
-            None => conn.send(&codec::write::no_data()).await?,
+        let mut columns = query.columns();
+        if let Ok(expanded) = super::expand_formats(&portal.formats, columns.len()) {
+            for (i, column) in columns.iter_mut().enumerate() {
+                column.format = expanded[i];
+            }
         }
+        conn.send(&codec::write::row_description(&columns)).await?;
         Ok(())
     }
 
@@ -390,6 +440,36 @@ impl Kitchen {
         if portal.done {
             return conn.send(&codec::write::command_complete("SELECT 0")).await;
         }
+        if let Some(query) = portal
+            .translated
+            .statements
+            .first()
+            .and_then(|shape| shape.catalog.clone())
+        {
+            let rows = match portal.catalog_rows.take() {
+                Some(rows) => rows,
+                None => match translate::catalog::evaluate(
+                    &query,
+                    &portal.translated.slots,
+                    &portal.parameters,
+                ) {
+                    Ok(rows) => rows,
+                    Err(refused) => return self.fail(conn, &refused).await,
+                },
+            };
+            portal.done = true;
+            // Execute owes no RowDescription in the extended protocol —
+            // Describe answered it, or the client never asked.
+            let described = true;
+            let formats = portal.formats.clone();
+            let answered =
+                super::connection::answer_catalog(conn, &query, &rows, described, &formats).await?;
+            if !answered {
+                self.skipping = true;
+                return Ok(());
+            }
+            return Ok(());
+        }
         let outcomes = match portal.spent.take() {
             Some(outcomes) => outcomes,
             None => match held
@@ -404,6 +484,9 @@ impl Kitchen {
             },
         };
         portal.done = true;
+        // Execute owes no RowDescription in the extended protocol —
+        // Describe answered it, or the client never asked.
+        let suppress_description = true;
         let shape = match portal.translated.statements.first() {
             Some(shape) => shape,
             None => {
@@ -416,7 +499,7 @@ impl Kitchen {
             }
         };
         let shape = shape.clone();
-        let mut described = portal.described;
+        let mut described = suppress_description;
         for outcome in &outcomes {
             let answered =
                 answer(conn, outcome, &shape, described, &portal.formats.clone()).await?;
@@ -497,6 +580,9 @@ fn described_types(prepared: &Prepared) -> Vec<u32> {
 /// nothing for a star, whose names only the records carry.
 fn columns_of(translated: &translate::Translated) -> Option<Vec<codec::write::Column>> {
     let shape = translated.statements.first()?;
+    if let Some(query) = &shape.catalog {
+        return Some(query.columns());
+    }
     match &shape.columns {
         Columns::Named(names) => Some(
             names

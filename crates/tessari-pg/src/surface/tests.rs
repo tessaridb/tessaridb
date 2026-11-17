@@ -20,6 +20,7 @@ pub(crate) const SETUP: &str = "DEFINE TABLE orders SCHEMALESS; \
 
 mod agreement;
 mod binary;
+mod catalog;
 mod extended;
 mod matrix;
 mod queries;

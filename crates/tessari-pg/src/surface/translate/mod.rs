@@ -12,6 +12,8 @@ mod expression;
 mod parser;
 mod shape;
 
+pub(crate) mod catalog;
+
 use tessaridb::Parameters;
 
 pub(crate) use super::errors::{Refused, code};
@@ -103,15 +105,21 @@ pub(crate) struct Shaped {
     pub(crate) script: String,
     pub(crate) columns: Columns,
     pub(crate) table: Option<String>,
+    /// A catalog statement's local form: answered by the responder, never
+    /// sent to the store (`script` stays empty).
+    pub(crate) catalog: Option<catalog::Query>,
 }
 
-/// One projection, rendered and named.
+/// One projection, rendered and named, with the items it was built from —
+/// the catalog path answers from the items directly.
 pub(crate) struct Projection {
     pub(crate) text: String,
     pub(crate) columns: Columns,
+    pub(crate) items: Vec<Item>,
 }
 
 /// One projection item, rendered and named.
+#[derive(Debug, Clone)]
 pub(crate) struct Item {
     pub(crate) text: String,
     pub(crate) column: String,

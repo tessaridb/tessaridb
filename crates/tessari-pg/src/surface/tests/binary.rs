@@ -108,13 +108,18 @@ async fn a_binary_float_and_bytea_round_trip() {
         .parse("", "SELECT weight, payload FROM blobs", &[701, 17])
         .await;
     client.bind("", "", &[], &[], &[1, 1]).await;
+    // The protocol owes the row description to a Describe, not an Execute:
+    // the client asks, the portal names the binary formats, the rows follow.
+    client.describe(b'P', "").await;
     client.execute("", 0).await;
     client.sync().await;
     client.message().await; // ParseComplete
     client.message().await; // BindComplete
-    // The row description names the binary formats before the rows.
     let (kind, body) = raw(&mut client).await;
-    assert_eq!(kind, b'T', "RowDescription first: {kind}");
+    assert_eq!(
+        kind, b'T',
+        "Describe(portal) answers RowDescription: {kind}"
+    );
     let format_at = body.len().saturating_sub(2);
     let format = u16::from_be_bytes(
         body[format_at..]

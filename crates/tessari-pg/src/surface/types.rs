@@ -24,6 +24,8 @@ pub(crate) mod oid {
     pub(crate) const INT4: u32 = 23;
     /// `text`
     pub(crate) const TEXT: u32 = 25;
+    /// `oid`; the catalog relations report their identities under it.
+    pub(crate) const OID: u32 = 26;
     /// a character string of unspecified length
     pub(crate) const VARCHAR: u32 = 1043;
     /// an undecorated literal, the type a bare string arrives as
@@ -126,7 +128,7 @@ pub(crate) fn value_of_text(
             "f" | "false" | "no" | "0" => Ok(Value::Bool(false)),
             _ => Err(invalid()),
         },
-        oid::INT2 | oid::INT4 | oid::INT8 => text
+        oid::INT2 | oid::INT4 | oid::INT8 | oid::OID => text
             .parse::<i64>()
             .map(|held| Value::Number(held.into()))
             .map_err(|_| invalid()),
@@ -229,6 +231,10 @@ pub(crate) fn value_of_binary(
             ))))
         }
         oid::BYTEA => Ok(Value::Bytes(bytes.to_vec())),
+        oid::OID => {
+            let word: [u8; 4] = take(4)?.try_into().map_err(|_| malformed())?;
+            Ok(Value::Number(i64::from(u32::from_be_bytes(word)).into()))
+        }
         oid::TEXT | oid::VARCHAR | oid::UNKNOWN => String::from_utf8(bytes.to_vec())
             .map(Value::String)
             .map_err(|_| malformed()),
