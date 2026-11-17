@@ -85,6 +85,12 @@ impl Parser<'_> {
             // never half-eats the singular.
             _ if self.eat_word("replications") => InfoSubject::Replications,
             _ if self.eat_word("replication") => InfoSubject::Replication(self.name()?),
+            // Plural first, as with `REPLICATIONS` above: reading these arms in
+            // order tells you which of the two a bare word reaches. The scheme
+            // is asked about by the same operator who declares it, and read
+            // whole so no subject is half-eaten.
+            _ if self.eat_word("topologies") => InfoSubject::Topologies,
+            _ if self.eat_word("topology") => InfoSubject::Topology(self.name()?),
             // Plural first, as with `USERS` above, so that reading this arm in
             // order tells you which of the two a bare word reaches.
             _ if self.eat_word("kafka") => {

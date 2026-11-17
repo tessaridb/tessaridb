@@ -744,6 +744,33 @@ impl Session<'_> {
         let Some(topology) = stated.or(held.as_ref().map(|held| &held.topology)) else {
             return Ok(());
         };
+        let (members, namespaces, leader_region) = self.membership_views(transaction).await?;
+        tessari_storage::check_topology(topology, &members, &namespaces, leader_region.as_deref())
+            .map_err(|why| Error::TopologyRefused {
+                reason: why.to_string(),
+                span,
+            })
+    }
+
+    /// The membership and the namespaces as the topology relations and the
+    /// read-back both read them: one view per member row plus the node this
+    /// runs on, and one view per tenancy namespace.
+    ///
+    /// Shared by the checked relations and `INFO FOR TOPOLOGY` so the answer a
+    /// refusal names and the answer a report renders can never be two
+    /// assemblies that drift. The node the call runs on holds the namespaces
+    /// it leads — on the write path the store line; when its own row is not
+    /// declared it is still its own electorate, which is what a store with no
+    /// membership genuinely holds.
+    pub(crate) async fn membership_views(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<(
+        Vec<tessari_storage::MemberView>,
+        Vec<tessari_storage::NamespaceView>,
+        Option<String>,
+    )> {
+        let catalog = Catalog::new(transaction);
         let identity = self.store.node_identity().await?;
         let rows = catalog.replicas().await?;
         let mut members = Vec::with_capacity(rows.len().saturating_add(1));
@@ -762,10 +789,6 @@ impl Session<'_> {
                 members.push(view);
             }
         }
-        // The node the check runs on holds the namespaces it leads, which on
-        // the write path is the store line; when its own row is not declared it
-        // is still its own electorate, which is what a store with no
-        // membership genuinely holds.
         let (leader_region, own) = match own {
             Some(view) => (view.region.clone(), view),
             None => (
@@ -797,11 +820,7 @@ impl Session<'_> {
                 }
             })
             .collect::<Vec<_>>();
-        tessari_storage::check_topology(topology, &members, &namespaces, leader_region.as_deref())
-            .map_err(|why| Error::TopologyRefused {
-                reason: why.to_string(),
-                span,
-            })
+        Ok((members, namespaces, leader_region))
     }
 
     /// Declare a consumer, after checking everything it names actually exists.

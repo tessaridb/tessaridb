@@ -226,6 +226,12 @@ impl Needs {
             StatementKind::Info {
                 subject: InfoSubject::Replication(_) | InfoSubject::Replications,
             } => Self::OPERATE_STORE,
+            // The scheme's report is topology about the whole membership —
+            // the same answer in a different key as the replication report,
+            // named here for its reason.
+            StatementKind::Info {
+                subject: InfoSubject::Topology(_) | InfoSubject::Topologies,
+            } => Self::OPERATE_STORE,
             // Configuring the node is administering it. Not `Write`, which is
             // where the other `DEFINE`s sit: an `editor` is expected to shape
             // the data they own, and neither what this machine is for nor which

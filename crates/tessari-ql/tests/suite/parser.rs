@@ -1810,6 +1810,25 @@ fn a_topology_amends_by_the_realm_and_drops_whole() {
 }
 
 #[test]
+fn the_scheme_is_asked_about_by_name_and_in_the_plural() {
+    // `docs/tessariql.md` § The layout a cluster is arranged over. The plural
+    // is read first, as with `REPLICATIONS`, so no subject is half-eaten.
+    let StatementKind::Info {
+        subject: tessari_ql::InfoSubject::Topology(name),
+    } = one("INFO FOR TOPOLOGY main;")
+    else {
+        panic!("INFO FOR TOPOLOGY did not parse as INFO FOR TOPOLOGY");
+    };
+    assert_eq!(name.text, "main");
+    assert!(matches!(
+        one("INFO FOR TOPOLOGIES;"),
+        StatementKind::Info {
+            subject: tessari_ql::InfoSubject::Topologies,
+        }
+    ));
+}
+
+#[test]
 fn a_member_row_names_its_domain_within_its_region() {
     // The DOMAIN clause on a member row: optional, last — every declaration
     // written before it reads as it did — and a position within the region,

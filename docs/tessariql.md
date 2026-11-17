@@ -11134,6 +11134,22 @@ structural checks — a topology with no realms declares nothing. `ALTER` and
 that. Dropping the scheme never touches member rows: their labels read as what
 they are — labels — until a new scheme declares them again.
 
+**The read-back.** `INFO FOR TOPOLOGY main` answers the scheme, its realms with
+their domains, the member rows assigned to each realm, and the survival verdict
+computed live against the membership as it stands — per realm, `loss.survived`
+with the voters it leaves against the majority it needs. The namespaces the
+relations check report their fit: how many realms the copies span, and, for
+`LOCAL MAJORITY`, how many voters the leader's region holds. `satisfied` is the
+claim against the membership right now, and when it is `false`, `relation` names
+which one does not hold — the scheme reports the gap between the claim and the
+layout, it does not close it: a member row's removal is not re-checked, and the
+read-back says what the removal cost. The answer is `null` when nobody has
+declared a scheme — an empty object would read as a scheme that declares
+nothing, which is a different fact from a scheme that never arrived.
+`INFO FOR TOPOLOGIES` lists the declared schemes by name. The console's cluster
+view — the table and the tree, the per-server drill-down — renders from this
+answer and nothing else.
+
 
 ### A peer certificate the cluster no longer accepts
 

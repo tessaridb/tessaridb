@@ -483,6 +483,212 @@ fn r4_a_local_majority_namespace_needs_a_majority_where_the_leader_stands() {
 }
 
 #[test]
+fn info_for_topology_answers_null_when_nobody_declared_one() {
+    // The M17 rule: built-in nothing is not a policy. `null` is the answer,
+    // not an empty report — an empty object would read as a scheme that
+    // declares nothing, which is a different fact from a scheme that never
+    // arrived.
+    let store = closed(&backend());
+    match owner(&store)
+        .run_now("INFO FOR TOPOLOGY main;")
+        .unwrap()
+        .first()
+    {
+        Some(tessari_session::Outcome::Value(tessari_types::Value::Null)) => {}
+        other => panic!("expected null, got {other:?}"),
+    }
+    match owner(&store)
+        .run_now("INFO FOR TOPOLOGIES;")
+        .unwrap()
+        .first()
+    {
+        Some(tessari_session::Outcome::Value(tessari_types::Value::Object(fields))) => {
+            assert!(
+                matches!(
+                    fields.get("topologies"),
+                    Some(tessari_types::Value::Array(names)) if names.is_empty()
+                ),
+                "no schemes, an empty list: {fields:?}"
+            );
+        }
+        other => panic!("expected a report, got {other:?}"),
+    }
+}
+
+#[test]
+fn info_for_topology_reports_the_scheme_and_its_live_verdicts() {
+    let store = closed(&backend());
+    owner(&store)
+        .run_now(
+            "DEFINE REPLICA n1 AT 'a:9001' ROLES coordinating, writable \
+             REPLICATES STORE REGION 'dc-a';",
+        )
+        .unwrap();
+    owner(&store)
+        .run_now(
+            "DEFINE REPLICA n2 AT 'b:9001' ROLES coordinating, writable \
+             REPLICATES STORE REGION 'dc-b';",
+        )
+        .unwrap();
+    owner(&store)
+        .run_now(
+            "DEFINE TOPOLOGY main REALM 'dc-a' DOMAIN 'az-1' REALM 'dc-b' \
+             SURVIVES REALM LOSS;",
+        )
+        .unwrap();
+    owner(&store)
+        .run_now("DEFINE NAMESPACE prod REPLICATION FACTOR 2;")
+        .unwrap();
+
+    let Some(tessari_session::Outcome::Value(tessari_types::Value::Object(report))) = owner(&store)
+        .run_now("INFO FOR TOPOLOGY main;")
+        .unwrap()
+        .first()
+        .cloned()
+    else {
+        panic!("not a report")
+    };
+    assert_eq!(
+        report.get("name"),
+        Some(&tessari_types::Value::from("main"))
+    );
+    assert_eq!(
+        report.get("satisfied"),
+        Some(&tessari_types::Value::Bool(true))
+    );
+    assert_eq!(
+        report.get("survives_realm_loss"),
+        Some(&tessari_types::Value::Bool(true))
+    );
+    let Some(tessari_types::Value::Array(realms)) = report.get("realms") else {
+        panic!("no realms in {report:?}");
+    };
+    assert_eq!(realms.len(), 2);
+    let Some(tessari_types::Value::Object(dc_a)) = realms.first() else {
+        panic!("no realm in {realms:?}");
+    };
+    assert_eq!(dc_a.get("name"), Some(&tessari_types::Value::from("dc-a")));
+    // The claim's arithmetic, live: losing dc-a leaves two of three voters —
+    // the two peers outside it plus this node, which no realm claims.
+    let Some(tessari_types::Value::Object(loss)) = dc_a.get("loss") else {
+        panic!("no loss verdict in {dc_a:?}");
+    };
+    assert_eq!(
+        loss.get("survived"),
+        Some(&tessari_types::Value::Bool(true))
+    );
+    assert_eq!(
+        loss.get("voters_left"),
+        Some(&tessari_types::Value::from(2))
+    );
+    assert_eq!(
+        loss.get("voters_needed"),
+        Some(&tessari_types::Value::from(2))
+    );
+    // The member assignment a console renders its table and tree from.
+    let Some(tessari_types::Value::Array(members)) = dc_a.get("members") else {
+        panic!("no members in {dc_a:?}");
+    };
+    assert_eq!(members.len(), 1);
+    // The namespace fit: copies spanning the two realms the holders stand in.
+    let Some(tessari_types::Value::Array(namespaces)) = report.get("namespaces") else {
+        panic!("no namespaces in {report:?}");
+    };
+    assert_eq!(namespaces.len(), 1);
+    let Some(tessari_types::Value::Object(prod)) = namespaces.first() else {
+        panic!("no namespace in {namespaces:?}");
+    };
+    assert_eq!(prod.get("name"), Some(&tessari_types::Value::from("prod")));
+    let Some(tessari_types::Value::Object(copies_in)) = prod.get("copies_in") else {
+        panic!("no copies_in in {prod:?}");
+    };
+    assert_eq!(
+        copies_in.get("realms"),
+        Some(&tessari_types::Value::from(2))
+    );
+
+    // The plural names the scheme.
+    match owner(&store)
+        .run_now("INFO FOR TOPOLOGIES;")
+        .unwrap()
+        .first()
+    {
+        Some(tessari_session::Outcome::Value(tessari_types::Value::Object(fields))) => assert!(
+            matches!(
+                fields.get("topologies"),
+                Some(tessari_types::Value::Array(names))
+                    if names == &vec![tessari_types::Value::from("main")]
+            ),
+            "the scheme, listed: {fields:?}"
+        ),
+        other => panic!("expected a report, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_report_names_the_relation_the_layout_broke() {
+    // The scheme reports the gap; it does not enforce it at write time. A
+    // member row's removal is not re-checked — dropping the second realm's
+    // holder leaves every copy in one realm, and the read-back says so with
+    // the relation named.
+    let store = closed(&backend());
+    owner(&store)
+        .run_now(
+            "DEFINE REPLICA n1 AT 'a:9001' ROLES coordinating, writable \
+             REPLICATES STORE REGION 'dc-a';",
+        )
+        .unwrap();
+    owner(&store)
+        .run_now(
+            "DEFINE REPLICA n2 AT 'b:9001' ROLES coordinating, writable \
+             REPLICATES STORE REGION 'dc-b';",
+        )
+        .unwrap();
+    owner(&store)
+        .run_now("DEFINE TOPOLOGY main REALM 'dc-a' REALM 'dc-b';")
+        .unwrap();
+    owner(&store)
+        .run_now("DEFINE NAMESPACE prod REPLICATION FACTOR 2;")
+        .unwrap();
+    owner(&store).run_now("DROP REPLICA n2;").unwrap();
+
+    let Some(tessari_session::Outcome::Value(tessari_types::Value::Object(report))) = owner(&store)
+        .run_now("INFO FOR TOPOLOGY main;")
+        .unwrap()
+        .first()
+        .cloned()
+    else {
+        panic!("not a report")
+    };
+    assert_eq!(
+        report.get("satisfied"),
+        Some(&tessari_types::Value::Bool(false))
+    );
+    assert_eq!(
+        report.get("relation"),
+        Some(&tessari_types::Value::from("copies span realms"))
+    );
+}
+
+#[test]
+fn reading_the_scheme_is_the_operators_not_an_editors() {
+    let store = closed(&backend());
+    owner(&store)
+        .run_now("DEFINE TOPOLOGY main REALM 'dc-a';")
+        .unwrap();
+    owner(&store)
+        .run_now(&format!(
+            "DEFINE USER app ROLE editor PASSWORD '{PASSWORD}';"
+        ))
+        .unwrap();
+    let refused = format!(
+        "{:?}",
+        signed_in(&store, "app").run_now("INFO FOR TOPOLOGY main;")
+    );
+    assert!(refused.contains("RoleForbids"), "{refused}");
+}
+
+#[test]
 fn declaring_the_scheme_is_the_operators_not_an_editors() {
     let store = closed(&backend());
     owner(&store)
