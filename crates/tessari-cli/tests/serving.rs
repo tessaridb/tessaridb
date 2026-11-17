@@ -2312,6 +2312,863 @@ fn a_write_at_the_primary_reads_at_the_dr_over_the_link() {
     );
 }
 
+/// The 2-DC exercise's bands — two three-node regions on twelve ports derived
+/// from the tree the way the SG3 bands were: everything through 48070 is taken
+/// (the W2 pair sits at the top), so the exercise owns 48071-48082. Each entry
+/// is one node's (client door, peer door).
+const PRIMARY_DC: [(&str, &str); 3] = [
+    ("127.0.0.1:48071", "127.0.0.1:48072"), // primary n1
+    ("127.0.0.1:48073", "127.0.0.1:48074"), // primary n2
+    ("127.0.0.1:48075", "127.0.0.1:48076"), // primary n3
+];
+const DR_DC: [(&str, &str); 3] = [
+    ("127.0.0.1:48077", "127.0.0.1:48078"), // dr n1
+    ("127.0.0.1:48079", "127.0.0.1:48080"), // dr n2
+    ("127.0.0.1:48081", "127.0.0.1:48082"), // dr n3
+];
+
+/// How many orders the primary seeds before the backup the DR restores from.
+const SEEDED: usize = 5;
+
+/// The exercise's poll interval for SIGNED questions. The wire re-authenticates
+/// every request (`paced_until`'s reason), and a faster cadence would feed the
+/// guessing throttle between the sampler's own reads.
+const SIGNED_POLL: Duration = Duration::from_millis(500);
+
+/// A region declared but not yet started — the exercise's harness shape.
+/// Splitting the declaration from the spawn is what lets the exercise take the
+/// primary's backup, and restore it into the DR's stores, while every store is
+/// still a file no process holds.
+struct Declared {
+    directory: tempfile::TempDir,
+    minted: Minted,
+    stores: Vec<std::path::PathBuf>,
+    ids: Vec<[u8; 16]>,
+    papers: Vec<(String, String, String)>,
+    fingerprints: Vec<String>,
+}
+
+/// Declare a three-node region: learn each store's identity, optionally
+/// restore a membership-free backup over EVERY store, then the founding
+/// transaction on every store — the whole membership in ONE transaction, roles
+/// written last, for the reasons `a_cluster_of_rows` gives at length.
+///
+/// # Every store restores, and the followers' collect is the known cost
+///
+/// The backup is restored into all three stores: every node holds the data
+/// and no election can seat an empty leader (the two empty stores of a
+/// one-restored-node shape can grant each other a majority, and the leader
+/// they seat holds nothing — measured at W3). What the engine then refuses is
+/// the FOLLOWERS' collect: a node holding namespaces of its own may not
+/// collect, the id-allocation guard says, so the followers' copies stay at
+/// the restored state and a read at one gathers from the leader. The
+/// exercise kills the primary region, never the DR, and aims its reads at the
+/// leaders; a failover INSIDE the DR would need the followers emptied first,
+/// which is the shape the guard's own message prescribes. The backup must
+/// carry no membership of its own: a backup of a clustered store carries its
+/// peer rows, and the write gate (ADR-0069) then refuses the founding
+/// transaction — a store that wakes naming peers in committed membership and
+/// holding no leadership may not write, not even the drop of the stale rows.
+fn declare_region(band: &Band, restore: Option<&std::path::Path>) -> Declared {
+    let directory = tempfile::tempdir().unwrap();
+    let minted = Minted::new();
+    let mut stores = Vec::new();
+    let mut ids = Vec::new();
+    let mut papers = Vec::new();
+    let mut fingerprints = Vec::new();
+    for index in 0..band.len() {
+        let home = directory.path().join(format!("n{index}"));
+        std::fs::create_dir_all(&home).unwrap();
+        let store = home.join("store");
+        // The identity is generated on first open, and a backup never carries
+        // it (ADR-0018 §1: it lives in the META keyspace precisely so that
+        // restoring onto a fresh machine produces a different node rather than
+        // a second claimant to the first one's id).
+        let db = tessaridb::Db::open(&store).now().unwrap();
+        ids.push(db.store().node_identity().now().unwrap().id);
+        db.close().now().unwrap();
+        if let Some(backup) = restore {
+            let restored = Command::new(TESSARIDB)
+                .arg(&store)
+                .arg("--restore")
+                .arg(backup)
+                .output()
+                .unwrap();
+            assert!(
+                restored.status.success(),
+                "the restore into n{index}: {:?}",
+                String::from_utf8_lossy(&restored.stderr)
+            );
+        }
+        let (paper, fingerprint) = credentials_fingerprinted(&minted, ids[index], &home);
+        papers.push(paper);
+        fingerprints.push(fingerprint);
+        stores.push(store);
+    }
+    // Every store declares the whole membership in one transaction
+    // (ADR-0069, roles last), over its restored copy: all three hold the
+    // seed, so whoever the election seats holds the data. The known costs,
+    // chosen over the alternatives measured at W3: a node holding namespaces
+    // of its own is refused the collect, so the followers' copies stay at
+    // the restored state — a read at one gathers from the leader, and the
+    // namespace runs REPLICATION FACTOR 1, its own majority, so writes never
+    // wait for copies the followers cannot hold. (Two empty voters can grant
+    // each other a majority and seat a leader with nothing; one voter stands
+    // for nothing at all; and a copy-hungry replication factor starves
+    // waiting for acknowledgements the refused collect can never send.)
+    for store in &stores {
+        let db = tessaridb::Db::open(store).now().unwrap();
+        let mut script = String::from("BEGIN;");
+        for other in 0..band.len() {
+            let named = tessari_types::RecordId::Uuid(ids[other]).to_string();
+            script.push_str(&format!(
+                " DEFINE REPLICA r{other} AT '{}' NODE '{named}' ROLES serving, writable, coordinating REPLICATES STORE;",
+                band[other].1
+            ));
+        }
+        script.push_str(" DEFINE NODE ROLES serving, writable, coordinating; COMMIT;");
+        db.session()
+            .run_now(&script)
+            .unwrap_or_else(|why| panic!("a region of three, declared: {why}\n{script}"));
+        db.close().now().unwrap();
+    }
+    Declared {
+        directory,
+        minted,
+        stores,
+        ids,
+        papers,
+        fingerprints,
+    }
+}
+
+impl Declared {
+    /// Start every node of the region, one process per store, and wait for
+    /// every door. The spawn shape is the ceremony's verbatim, for its reasons.
+    fn start(self, band: &Band) -> Three {
+        let mut running = Vec::new();
+        let mut logs = Vec::new();
+        let mut started_with = Vec::new();
+        for index in 0..band.len() {
+            let (leaf, key, authority) = &self.papers[index];
+            let log = self
+                .directory
+                .path()
+                .join(format!("n{index}"))
+                .join("node.log");
+            let seed = format!(
+                "{}@{}",
+                tessari_types::RecordId::Uuid(self.ids[the_next_node(band, index)]),
+                band[the_next_node(band, index)].1
+            );
+            let args: Vec<std::ffi::OsString> = [
+                self.stores[index].as_os_str(),
+                "--serve".as_ref(),
+                band[index].0.as_ref(),
+                "--cluster-credential".as_ref(),
+                leaf.as_ref(),
+                "--cluster-key".as_ref(),
+                key.as_ref(),
+                "--cluster-authority".as_ref(),
+                authority.as_ref(),
+                "--cluster-address".as_ref(),
+                band[index].1.as_ref(),
+                "--seed".as_ref(),
+                seed.as_ref(),
+            ]
+            .iter()
+            .map(|arg| (*arg).to_owned())
+            .collect();
+            running.push(Some(started(&args, &log)));
+            logs.push(log);
+            started_with.push(args);
+        }
+        for (client, peer) in band {
+            assert!(listening(client, Duration::from_secs(30)), "{client}");
+            assert!(listening(peer, Duration::from_secs(30)), "{peer}");
+        }
+        Three {
+            minted: self.minted,
+            fingerprints: self.fingerprints,
+            _directory: self.directory,
+            running,
+            logs,
+            ids: self.ids,
+            started_with,
+        }
+    }
+}
+
+/// Kill node `index` of `cluster` and start it again on its own store, with
+/// `env` added. The only way a link token reaches a region's shipper is the
+/// process environment, which is read at start — binding a pair restarts the
+/// region with the token in its environment. This is the operator's restart,
+/// scripted.
+fn respawn(cluster: &mut Three, index: usize, client: &str, env: &[(&str, &str)]) {
+    cluster.running[index] = None;
+    let writing = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&cluster.logs[index])
+        .unwrap();
+    let mut command = Command::new(TESSARIDB);
+    command
+        .args(&cluster.started_with[index])
+        .envs(env.iter().copied())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(writing));
+    cluster.running[index] = Some(Running(command.spawn().unwrap()));
+    assert!(listening(client, Duration::from_secs(30)), "{client}");
+}
+
+/// The `cluster.leaders` rows of `surface`'s `INFO FOR NODE` — (range, node
+/// id) pairs, the read an operator makes before aiming anything at the node
+/// leading a range.
+fn leaders_at(
+    surface: &str,
+    who: Option<(&str, &str)>,
+) -> Result<Vec<(String, [u8; 16], i64)>, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let answers = client
+        .run("INFO FOR NODE;", who)
+        .map_err(|why| why.to_string())?;
+    let Some(Answer::Value {
+        value: tessari_types::Value::Object(report),
+        ..
+    }) = answers.last()
+    else {
+        return Err(format!("not a report: {answers:?}"));
+    };
+    let Some(tessari_types::Value::Object(cluster)) = report.get("cluster") else {
+        return Err(format!("no cluster group: {report:?}"));
+    };
+    let Some(tessari_types::Value::Array(rows)) = cluster.get("leaders") else {
+        return Err(format!("no leaders in the cluster group: {cluster:?}"));
+    };
+    rows.iter()
+        .map(|row| match row {
+            tessari_types::Value::Object(fields) => {
+                let range = match fields.get("range") {
+                    Some(tessari_types::Value::String(spelled)) => spelled.clone(),
+                    other => return Err(format!("a leader's range: {other:?}")),
+                };
+                let node = match fields.get("node") {
+                    Some(tessari_types::Value::Uuid(id)) => *id,
+                    other => return Err(format!("a leader's node: {other:?}")),
+                };
+                let epoch = match fields.get("epoch") {
+                    Some(tessari_types::Value::Number(tessari_types::Number::Integer(at))) => *at,
+                    other => return Err(format!("a leader's epoch: {other:?}")),
+                };
+                Ok((range, node, epoch))
+            }
+            other => Err(format!("a leader row: {other:?}")),
+        })
+        .collect()
+}
+
+/// Which node of `band` leads `range`, or `None` while no majority has
+/// granted the epoch yet. The range is spelled the report spells it — "STORE"
+/// for the store line: prod carries no placement, so its writer is the store
+/// line's leader, and that is the node a link aims at.
+/// Which node of `band` leads `range`, and under which epoch — the row with
+/// the HIGHEST epoch any node reports. A restarted node can wake with a
+/// leaders table naming a leadership the election has already replaced; the
+/// newest epoch is the one that stands.
+fn leader_of(
+    band: &Band,
+    ids: &[[u8; 16]],
+    range: &str,
+    who: Option<(&str, &str)>,
+) -> Option<(usize, i64)> {
+    let mut found: Option<(usize, i64)> = None;
+    for (surface, _) in band {
+        if let Ok(leaders) = leaders_at(surface, who) {
+            for (held, node, epoch) in leaders {
+                if held != range {
+                    continue;
+                }
+                if let Some(at) = ids.iter().position(|id| *id == node) {
+                    if found.is_none_or(|(_, seen)| epoch > seen) {
+                        found = Some((at, epoch));
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Whether the region has settled: the store line's leader and epoch are the
+/// same across a gap. A renewal keeps its epoch, so a stable leader reads
+/// constant; the seconds after a (re)start ratchet the epoch while the
+/// election re-resolves, and a writer let in that window meets a lease that
+/// may lapse mid-batch — which re-elects the region and re-epochs the link's
+/// unconfirmed tail, and the copy's divergence check then refuses what is
+/// honestly a fork of the source.
+fn settled(band: &Band, ids: &[[u8; 16]], who: Option<(&str, &str)>) -> bool {
+    let Some(first) = leader_of(band, ids, "STORE", who) else {
+        return false;
+    };
+    std::thread::sleep(Duration::from_secs(2));
+    leader_of(band, ids, "STORE", who) == Some(first)
+}
+
+/// `INFO FOR REPLICATION <name>` at `surface`, as the object it answers.
+fn replication_at(
+    surface: &str,
+    name: &str,
+    who: Option<(&str, &str)>,
+) -> Result<BTreeMap<String, tessari_types::Value>, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let answers = client
+        .run(&format!("INFO FOR REPLICATION {name};"), who)
+        .map_err(|why| why.to_string())?;
+    match answers.last() {
+        Some(Answer::Value {
+            value: tessari_types::Value::Object(report),
+            ..
+        }) => Ok(report.clone()),
+        other => Err(format!("not a replication report: {other:?}")),
+    }
+}
+
+/// The `declared.direction` of a link's report — "outbound" or "inbound".
+fn report_direction(report: &BTreeMap<String, tessari_types::Value>) -> String {
+    match report.get("declared") {
+        Some(tessari_types::Value::Object(declared)) => match declared.get("direction") {
+            Some(tessari_types::Value::String(held)) => held.clone(),
+            other => panic!("the direction: {other:?}"),
+        },
+        other => panic!("the declared group: {other:?}"),
+    }
+}
+
+/// The link's own confirmed position for the `prod.shop` log — the `served`
+/// group, live from the in-memory registry (it dies with the process by
+/// design and is empty until the link serves again).
+fn confirmed_for_prod_at(surface: &str, name: &str, who: Option<(&str, &str)>) -> Option<i64> {
+    let report = replication_at(surface, name, who).ok()?;
+    let Some(tessari_types::Value::Object(served)) = report.get("served") else {
+        return None;
+    };
+    let Some(tessari_types::Value::Array(rows)) = served.get("confirmed") else {
+        return None;
+    };
+    rows.iter().find_map(|row| match row {
+        tessari_types::Value::Object(fields)
+            if matches!(fields.get("log"), Some(tessari_types::Value::String(spelled)) if spelled == "DATABASE prod.shop") =>
+        {
+            match fields.get("confirmed") {
+                Some(tessari_types::Value::Number(tessari_types::Number::Integer(at))) => Some(*at),
+                _ => None,
+            }
+        }
+        _ => None,
+    })
+}
+
+/// How many orders the copy holds, asked without credentials: the restored
+/// follower's store never collected the user row (its collect is refused, the
+/// region's guard), so it stays open and answers whoever asks — gathering
+/// what it does not hold from the leader, which is the read the shape owes.
+fn unsigned_order_count_at(surface: &str) -> Result<usize, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    match client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; SELECT * FROM orders;",
+            None,
+        )
+        .map_err(|why| why.to_string())?
+        .last()
+    {
+        Some(Answer::Records { records, .. }) => Ok(records.len()),
+        other => Err(format!("{other:?}")),
+    }
+}
+
+/// The load writer: batches of twenty orders until `acked` reaches `target`,
+/// stopping early when the connection dies (the region was killed mid-batch).
+/// Record ids come from the shared counter so a second writer continues where
+/// the first stopped. Each batch is aimed at the node leading the store line
+/// AS OF THAT BATCH: a restarted node can wake with a leaders table naming a
+/// leadership the election has already replaced, and the refusal that names
+/// `holds no leadership` is the signal to re-discover and re-aim, which is
+/// what a client of a re-pointing deployment does.
+fn order_writer(
+    band: Band,
+    ids: Arc<Vec<[u8; 16]>>,
+    target: &Arc<AtomicUsize>,
+    acked: &Arc<AtomicUsize>,
+    next: &Arc<AtomicUsize>,
+) -> std::thread::JoinHandle<()> {
+    let target = Arc::clone(target);
+    let acked = Arc::clone(acked);
+    let next = Arc::clone(next);
+    std::thread::spawn(move || {
+        let mut client: Option<Client> = None;
+        while acked.load(Ordering::Relaxed) < target.load(Ordering::Relaxed) {
+            if client.is_none() {
+                let Some((leader, _)) = leader_of(&band, &ids, "STORE", Some(("operator", SECRET)))
+                else {
+                    std::thread::sleep(SIGNED_POLL);
+                    continue;
+                };
+                client = Client::connect(band[leader].0).ok();
+            }
+            let mut script = String::from("BEGIN; USE NAMESPACE prod DATABASE shop;");
+            for _ in 0..20 {
+                let at = next.fetch_add(1, Ordering::Relaxed);
+                script.push_str(&format!(" CREATE orders:{at} = {{ item: 'load' }};"));
+            }
+            script.push_str(" COMMIT;");
+            let Some(connection) = client.as_mut() else {
+                break;
+            };
+            match connection.run(&script, Some(("operator", SECRET))) {
+                Ok(_) => {
+                    acked.fetch_add(20, Ordering::Relaxed);
+                }
+                Err(why) if why.to_string().contains("holds no leadership") => {
+                    client = None;
+                }
+                Err(why) if why.to_string().contains("no longer accepting writes") => {
+                    // The lease lapsed between one batch and the next — the
+                    // region re-elected, and the writer re-learns its aim the
+                    // way a client of a re-pointing deployment does.
+                    client = None;
+                }
+                Err(why) if why.to_string().contains("is committed on this node") => {
+                    // ADR-0106 D4: the batch IS committed — visible on the
+                    // leader from that moment — and only the answer waited
+                    // out the followers' collect. The record crosses the
+                    // link; the exercise measures the seam, not the
+                    // intra-region acknowledgement timing. One transaction,
+                    // so the count is exact. This is the answer `landed`
+                    // reads the same way.
+                    acked.fetch_add(20, Ordering::Relaxed);
+                }
+                Err(why) => {
+                    println!("[2DC] the writer stopped: {why}");
+                    break;
+                }
+            }
+            // A breath between batches: back-to-back transactions starve the
+            // leader's renewal cadence on a debug build, and a lapsed lease
+            // re-elects the region, which re-epochs the link's unconfirmed
+            // tail. The load is still two hundred writes over about a
+            // minute; the sampler keeps measuring while they land.
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    })
+}
+
+/// Run `script` at the node currently leading `range`, re-discovering and
+/// re-aiming when the refusal says the leadership moved between the read that
+/// chose the node and the write that lands.
+fn at_the_leader(
+    band: &Band,
+    ids: &[[u8; 16]],
+    range: &str,
+    who: Option<(&str, &str)>,
+    script: &str,
+) -> Vec<Answer> {
+    for _ in 0..8 {
+        let Some((leader, _)) = leader_of(band, ids, range, who) else {
+            std::thread::sleep(SIGNED_POLL);
+            continue;
+        };
+        match Client::connect(band[leader].0).unwrap().run(script, who) {
+            Ok(answers) => return answers,
+            Err(why) if why.to_string().contains("holds no leadership") => {
+                std::thread::sleep(SIGNED_POLL);
+            }
+            Err(why) => panic!("the leader's write was refused: {why}"),
+        }
+    }
+    panic!("no node leading {range} took the write");
+}
+
+#[test]
+#[ignore = "parked on the worksheet's named gaps: a clustered region around a              restored store is refused by shipped machinery six ways (W3,              D-SG4-13) — the guard's collect refusal, the write gate, the              election race, the acknowledgement starvation, the lease churn              under load, the line-log divergence across clusters. Runs green              the day the gaps close."]
+fn two_regions_hold_one_database_over_a_link_and_fail_over_and_back() {
+    // G090 SG4 W3 — the exercise, live: two three-node regions, one protected
+    // database, the measured lag, the failover and the fail-back rehearsed.
+    // The receiving side aims at the node leading the copy — the intake fills
+    // one node, and the region's own per-log collect fans the copy out from
+    // its leader — so the DR's leader for prod is discovered from the report
+    // before the link is declared (the deployment convention the page records).
+    let directory = tempfile::tempdir().unwrap();
+
+    // The data both regions bootstrap from. A standalone store holds the
+    // schema and the seed and NOTHING else: a backup of a clustered store
+    // would carry its peer rows, and the write gate would then refuse each
+    // restored store's founding transaction — a store that wakes naming peers
+    // in committed membership and holding no leadership may not write, not
+    // even the drop of the stale rows. The snapshot a region restores must
+    // carry the data alone. No user, no link row: the snapshot predates both,
+    // which leaves every restored store open for its founding transaction.
+    // A stretched failover policy rides the snapshot into both regions: the
+    // lease the default policy holds is outlived by a renewal canvass against
+    // a busy debug build, and a lapsed lease re-elects the region, which
+    // re-epochs the link's unconfirmed tail. The lease is the shipped knob
+    // for exactly this; the seam is the exercise's subject, not the tuning.
+    let seeding = "DEFINE NAMESPACE prod REPLICATION FACTOR 1; USE NAMESPACE prod; \
+                   DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+                   CREATE orders:1 = { item: 'book' }; CREATE orders:2 = { item: 'map' }; \
+                   CREATE orders:3 = { item: 'lamp' }; CREATE orders:4 = { item: 'rope' }; \
+                   CREATE orders:5 = { item: 'tin' }; USE NAMESPACE prod DATABASE shop; \
+                   DEFINE FAILOVER AWARENESS 3s COLLECTION 2s ROUND 1s CAMPAIGN 2s LEASE 10s;";
+    let builder = directory.path().join("builder/store");
+    std::fs::create_dir_all(builder.parent().unwrap()).unwrap();
+    {
+        let db = tessaridb::Db::open(&builder).now().unwrap();
+        db.session()
+            .run_now(seeding)
+            .unwrap_or_else(|why| panic!("the seed data: {why}\n{seeding}"));
+        db.close().now().unwrap();
+    }
+    let backup = directory.path().join("prod.backup");
+    let taken = Command::new(TESSARIDB)
+        .arg(&builder)
+        .arg("--backup")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(taken.status.success(), "the backup: {taken:?}");
+
+    // Both regions restore the same membership-free snapshot: each node its
+    // own identity, the data at the same ids on both sides — which is what
+    // the link's `FOR DATABASE prod.shop` resolves to, everywhere.
+    let primary = declare_region(&PRIMARY_DC, Some(&backup));
+    let dr = declare_region(&DR_DC, Some(&backup));
+    let mut dr = dr.start(&DR_DC);
+    let mut primary = primary.start(&PRIMARY_DC);
+
+    // The DR's store-line leader — unsigned while the restored store is open.
+    // prod carries no placement: its writer is the store line's leader, and
+    // that is the node the link aims at.
+    let elected = until(Duration::from_secs(90), || {
+        leader_of(&DR_DC, &dr.ids, "STORE", None).is_some()
+    });
+    assert!(
+        elected,
+        "the DR region elected no store-line leader{}",
+        what_the_nodes_said(&DR_DC, &dr.logs)
+    );
+    let dr_leader = leader_of(&DR_DC, &dr.ids, "STORE", None)
+        .expect("the DR's leader")
+        .0;
+
+    // The primary's store-line leader — the write that declares the link has
+    // to land somewhere, and only the node a majority granted takes it.
+    let elected = until(Duration::from_secs(90), || {
+        leader_of(&PRIMARY_DC, &primary.ids, "STORE", None).is_some()
+    });
+    assert!(
+        elected,
+        "the primary region elected no store-line leader{}",
+        what_the_nodes_said(&PRIMARY_DC, &primary.logs)
+    );
+    let primary_leader_at = leader_of(&PRIMARY_DC, &primary.ids, "STORE", None)
+        .expect("the primary's leader")
+        .0;
+
+    // The halves of the link. At the primary: the outbound row, then the user
+    // — one unsigned script; the store is open until its own last statement.
+    // At the DR: the inbound row on the node leading the copy, the token the
+    // pair binds by, then the DR's own operator.
+    let east = format!(
+        "DEFINE REPLICATION east TO '{}' FOR DATABASE prod.shop; \
+         DEFINE USER operator ROLE owner PASSWORD '{SECRET}';",
+        DR_DC[dr_leader].0
+    );
+    Client::connect(PRIMARY_DC[primary_leader_at].0)
+        .unwrap()
+        .run(&east, None)
+        .unwrap_or_else(|why| panic!("the primary's half of the link: {why}"));
+    let west = format!(
+        "DEFINE REPLICATION west FROM '{}' FOR DATABASE prod.shop; \
+         CREATE LINK TOKEN FOR REPLICATION west EXPIRES 10m; \
+         DEFINE USER operator ROLE owner PASSWORD '{SECRET}';",
+        PRIMARY_DC[0].0
+    );
+    let token = {
+        let answered = Client::connect(DR_DC[dr_leader].0)
+            .unwrap()
+            .run(&west, None)
+            .unwrap_or_else(|why| panic!("the DR's half of the link: {why}"));
+        match answered.get(1) {
+            Some(Answer::Value {
+                value: tessaridb::Value::String(held),
+                ..
+            }) => held.clone(),
+            other => panic!("the token is the second statement's answer: {other:?}"),
+        }
+    };
+
+    // The token reaches every primary node's shipper through the environment,
+    // which is read at process start — binding the pair restarts the region.
+    for (index, (client, _)) in PRIMARY_DC.iter().enumerate() {
+        respawn(
+            &mut primary,
+            index,
+            client,
+            &[("TESSARIDB_LINK_TOKEN_EAST", token.as_str())],
+        );
+    }
+    // The region settles before the writer is let in: the seconds after the
+    // restart ratchet the store line's epoch while the election re-resolves,
+    // and a writer that meets a lapsing lease re-epochs the link's tail.
+    let settled_down = until(Duration::from_secs(90), || {
+        settled(&PRIMARY_DC, &primary.ids, Some(("operator", SECRET)))
+    });
+    assert!(
+        settled_down,
+        "the primary region settled no store-line leadership{}",
+        what_the_nodes_said(&PRIMARY_DC, &primary.logs)
+    );
+    let primary_leader = leader_of(
+        &PRIMARY_DC,
+        &primary.ids,
+        "STORE",
+        Some(("operator", SECRET)),
+    )
+    .expect("the primary's leader")
+    .0;
+
+    // Phase 1 — the link. The copy holds the seed and refuses its own writes,
+    // the report carries the direction on both sides, and the link itself
+    // confirms the seed's positions.
+    assert_eq!(
+        order_count_at(DR_DC[dr_leader].0).expect("the copy reads"),
+        SEEDED,
+        "the restored copy is the link's starting point"
+    );
+    let refused = Client::connect(DR_DC[dr_leader].0)
+        .unwrap()
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:6 = { item: 'sneaky' };",
+            Some(("operator", SECRET)),
+        )
+        .expect_err("the copy refuses its own divergent writes");
+    assert!(
+        refused.to_string().contains("read-only"),
+        "the refusal names the read-only: {refused}"
+    );
+    let east_report = replication_at(
+        PRIMARY_DC[primary_leader].0,
+        "east",
+        Some(("operator", SECRET)),
+    )
+    .expect("the east report reads");
+    assert_eq!(report_direction(&east_report), "outbound");
+    let west_report = replication_at(DR_DC[dr_leader].0, "west", Some(("operator", SECRET)))
+        .expect("the west report reads");
+    assert_eq!(report_direction(&west_report), "inbound");
+    // The seed never crosses: the snapshot carried it and the link starts at
+    // the snapshot's edge (the row has no cursor; log_start is the restored
+    // position plus one). The count above is the seed's proof; the link's
+    // first confirmation arrives with the first live write, in phase 2.
+
+    // Phase 2 — the lag under load. A writer at the primary's leader; a
+    // sampler asking the DR how much it holds. Acknowledged minus visible is
+    // the lag in records, live; the wall clock from the last acknowledged
+    // write to its visibility is the crossing.
+    let target = Arc::new(AtomicUsize::new(0));
+    let acked = Arc::new(AtomicUsize::new(0));
+    let next = Arc::new(AtomicUsize::new(SEEDED + 1));
+    target.store(200, Ordering::Relaxed);
+    let ids = Arc::new(primary.ids.clone());
+    let writer = order_writer(PRIMARY_DC, Arc::clone(&ids), &target, &acked, &next);
+    let mut max_lag = 0_usize;
+    let mut confirmed_moving = 0_i64;
+    while !writer.is_finished() {
+        let acked_now = acked.load(Ordering::Relaxed);
+        if let Ok(held) = order_count_at(DR_DC[dr_leader].0) {
+            let lag = acked_now.saturating_sub(held.saturating_sub(SEEDED));
+            max_lag = max_lag.max(lag);
+        }
+        if let Some(at) = confirmed_for_prod_at(
+            PRIMARY_DC[primary_leader].0,
+            "east",
+            Some(("operator", SECRET)),
+        ) {
+            confirmed_moving = confirmed_moving.max(at);
+        }
+        std::thread::sleep(SIGNED_POLL);
+    }
+    writer.join().unwrap();
+    assert_eq!(
+        acked.load(Ordering::Relaxed),
+        200,
+        "the writer wrote its load\nprimary:{}",
+        what_the_nodes_said(&PRIMARY_DC, &primary.logs)
+    );
+    let quiesced_at = Instant::now();
+    let crossed = paced_until(Duration::from_secs(30), SIGNED_POLL, || {
+        order_count_at(DR_DC[dr_leader].0).is_ok_and(|count| count == SEEDED + 200)
+    });
+    assert!(
+        crossed,
+        "the load crossed the link\nprimary:{}\nDR:{}",
+        what_the_nodes_said(&PRIMARY_DC, &primary.logs),
+        what_the_nodes_said(&DR_DC, &dr.logs)
+    );
+    let crossing = quiesced_at.elapsed();
+    let confirmed_rest = confirmed_for_prod_at(
+        PRIMARY_DC[primary_leader].0,
+        "east",
+        Some(("operator", SECRET)),
+    )
+    .unwrap_or(0);
+    assert!(
+        confirmed_moving > 0 && confirmed_rest >= (SEEDED + 200) as i64,
+        "the link's report advanced live and rests at the tail: \
+         moving={confirmed_moving} rest={confirmed_rest}"
+    );
+    println!(
+        "[2DC] lag_records_max={max_lag} crossing_ms={} confirmed_at_rest={confirmed_rest}",
+        crossing.as_millis()
+    );
+
+    // Phase 3 — the failover. The region dies mid-write: the writer keeps
+    // going and the primary's processes are killed with its next batch in
+    // flight. What the DR holds against what the primary acknowledged is the
+    // honest RPO, in records, at the cut.
+    target.store(300, Ordering::Relaxed);
+    let writer = order_writer(PRIMARY_DC, Arc::clone(&ids), &target, &acked, &next);
+    let reached = paced_until(Duration::from_secs(30), SIGNED_POLL, || {
+        acked.load(Ordering::Relaxed) >= 260
+    });
+    assert!(reached, "the writer reached the kill point");
+    // One breath: everything acknowledged a breath ago has crossed (the
+    // shipper ticks in milliseconds), so only the in-flight batch can be lost.
+    std::thread::sleep(SIGNED_POLL);
+    let acknowledged = SEEDED + acked.load(Ordering::Relaxed);
+    primary.running[0] = None;
+    primary.running[1] = None;
+    primary.running[2] = None;
+    writer.join().unwrap();
+    std::thread::sleep(SIGNED_POLL * 2);
+    let visible = order_count_at(DR_DC[dr_leader].0).expect("the DR reads after the kill");
+    let rpo_loss = acknowledged.saturating_sub(visible);
+    assert!(
+        rpo_loss <= 20,
+        "only the in-flight batch can be lost: acknowledged={acknowledged} visible={visible}"
+    );
+    println!(
+        "[2DC] acknowledged_at_cut={acknowledged} visible_at_cut={visible} rpo_loss_records={rpo_loss}"
+    );
+
+    // The cut: the inbound link drops, the read-only lifts, and the DR takes
+    // the write — which fans out across the region on its own log.
+    at_the_leader(
+        &DR_DC,
+        &dr.ids,
+        "STORE",
+        Some(("operator", SECRET)),
+        "USE NAMESPACE prod DATABASE shop; DROP REPLICATION west; \
+         CREATE orders:cut = { item: 'dr' };",
+    );
+    let dr_other = (dr_leader + 1) % DR_DC.len();
+    let fanned = paced_until(Duration::from_secs(30), SIGNED_POLL, || {
+        unsigned_order_count_at(DR_DC[dr_other].0).is_ok_and(|count| count == visible + 1)
+    });
+    assert!(
+        fanned,
+        "a read at another DR node gathered the leader's write{}",
+        what_the_nodes_said(&DR_DC, &dr.logs)
+    );
+
+    // Phase 4 — the fail-back. The primary comes back EMPTY OF AUTHORITY: the
+    // stores it died holding carried a forked tail — records past the cut the
+    // DR never confirmed — and a forked tail is not a merge the seam offers;
+    // the records lost at the cut stay lost the moment the DR becomes the
+    // authority. The region is rebuilt from the membership-free baseline: a
+    // strict prefix of the DR's history, so when the DR ships its line back,
+    // the prefix is identical-bytes no-ops and the positions meet
+    // continuously.
+    drop(primary);
+    let primary = declare_region(&PRIMARY_DC, Some(&backup));
+    let primary = primary.start(&PRIMARY_DC);
+    let settled_down = until(Duration::from_secs(90), || {
+        settled(&PRIMARY_DC, &primary.ids, Some(("operator", SECRET)))
+    });
+    assert!(
+        settled_down,
+        "the rebuilt primary settled no store-line leadership{}",
+        what_the_nodes_said(&PRIMARY_DC, &primary.logs)
+    );
+    let primary_leader = leader_of(
+        &PRIMARY_DC,
+        &primary.ids,
+        "STORE",
+        Some(("operator", SECRET)),
+    )
+    .expect("the primary's leader")
+    .0;
+    // The dead east link drops; the primary declares the inbound half and
+    // offers the token the DR's outbound half will present.
+    let north = format!(
+        "USE NAMESPACE prod DATABASE shop; DROP REPLICATION east; \
+         DEFINE REPLICATION north FROM '{}' FOR DATABASE prod.shop; \
+         CREATE LINK TOKEN FOR REPLICATION north EXPIRES 10m;",
+        DR_DC[0].0
+    );
+    let token2 = {
+        let answered = at_the_leader(
+            &PRIMARY_DC,
+            &primary.ids,
+            "STORE",
+            Some(("operator", SECRET)),
+            &north,
+        );
+        match answered.get(2) {
+            Some(Answer::Value {
+                value: tessaridb::Value::String(held),
+                ..
+            }) => held.clone(),
+            other => panic!("the token is the third statement's answer: {other:?}"),
+        }
+    };
+    let south = format!(
+        "USE NAMESPACE prod DATABASE shop; \
+         DEFINE REPLICATION south TO '{}' FOR DATABASE prod.shop;",
+        PRIMARY_DC[primary_leader].0
+    );
+    at_the_leader(&DR_DC, &dr.ids, "STORE", Some(("operator", SECRET)), &south);
+    for (index, (client, _)) in DR_DC.iter().enumerate() {
+        respawn(
+            &mut dr,
+            index,
+            client,
+            &[("TESSARIDB_LINK_TOKEN_SOUTH", token2.as_str())],
+        );
+    }
+    let caught_up = paced_until(Duration::from_secs(60), SIGNED_POLL, || {
+        order_count_at(PRIMARY_DC[primary_leader].0).is_ok_and(|count| count == visible + 1)
+    });
+    assert!(caught_up, "the primary caught the DR's write up");
+
+    // Authority home: the inbound link drops at the primary, the write lands
+    // there, and the exercise reads it back where it was written.
+    at_the_leader(
+        &PRIMARY_DC,
+        &primary.ids,
+        "STORE",
+        Some(("operator", SECRET)),
+        "USE NAMESPACE prod DATABASE shop; DROP REPLICATION north; \
+         CREATE orders:home = { item: 'primary' };",
+    );
+    assert_eq!(
+        order_count_at(PRIMARY_DC[primary_leader].0).expect("the primary reads"),
+        visible + 2,
+        "the write landed back home"
+    );
+    let _both = (primary, dr);
+}
+
 /// [`item_ids_at`], signed as the operator — this exercise closes its store,
 /// and an unsigned read is a sign-in refusal, not an empty answer.
 fn signed_item_ids_at(surface: &str) -> Result<Vec<String>, String> {

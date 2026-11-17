@@ -721,6 +721,113 @@ fn a_batch_applied_twice_leaves_the_copy_unchanged() {
 }
 
 #[test]
+fn a_shipped_empty_record_at_an_applied_position_is_a_noop_not_a_divergence() {
+    // D-SG4-12, in miniature: a clustered receiving side holds its OWN record
+    // at position 1 of the line log — every cluster writes its membership and
+    // its leadership renewals there — while the shipment offers the source's
+    // record at the same position filtered to nothing, because the record is
+    // outside the link's reach. Both records say the reach has no content at
+    // this position; the copy's own record stands and the confirmation moves.
+    let target = Store::open(backend()).now().unwrap();
+    let mut session = Session::new(&target);
+    session
+        .run_now("DEFINE NAMESPACE own; DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders SCHEMALESS;")
+        .unwrap();
+    let line = target
+        .logs()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|log| log.home == Reach::Store)
+        .expect("the store's own store log");
+    let envelope = Envelope {
+        origin: [7_u8; 16],
+        log: line,
+        from: Sequence::new(1),
+        records: vec![(
+            Sequence::new(1),
+            tessari_encoding::LogRecord::new(Vec::new()),
+        )],
+    };
+    let applied = intake(&target, envelope).now().unwrap();
+    assert_eq!(
+        applied,
+        Sequence::new(1),
+        "the confirmation answers the position"
+    );
+    let mut reading = Session::new(&target);
+    let outcomes = reading
+        .run_now("USE NAMESPACE own; INFO FOR NAMESPACE;")
+        .unwrap();
+    assert!(
+        matches!(
+            outcomes.last(),
+            Some(tessari_session::Outcome::Value { .. })
+        ),
+        "the copy's own record at that position stands — the namespace resolves: {outcomes:?}"
+    );
+}
+
+#[test]
+fn a_shipped_empty_record_at_a_fresh_position_keeps_the_arithmetic() {
+    // The other half of D-SG4-12: skipping is only for already-applied
+    // positions. An empty marker at a fresh position still extends the log —
+    // positions are arithmetic, and the record after it must not read as a gap.
+    let target = Store::open(backend()).now().unwrap();
+    let mut session = Session::new(&target);
+    session
+        .run_now("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+    let line = target
+        .logs()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|log| {
+            log.home == Reach::Database(NamespaceId::new(1), tessari_types::DatabaseId::new(1))
+        })
+        .expect("the store's own database log");
+    let write = |at: u64, text: &str| {
+        tessari_encoding::LogRecord::new(vec![tessari_encoding::Mutation {
+            namespace: NamespaceId::new(1),
+            database: tessari_types::DatabaseId::new(1),
+            table: tessari_types::TableId::new(1),
+            id: tessari_types::RecordId::from(format!("orders:{at}")),
+            shard: None,
+            value: tessari_encoding::StampedValue::new(tessari_encoding::RecordValue::Present(
+                tessari_encoding::encode_payload(&tessari_types::Value::from(text)).into_bytes(),
+            )),
+        }])
+    };
+    let envelope = Envelope {
+        origin: [7_u8; 16],
+        log: line,
+        from: Sequence::new(2),
+        records: vec![
+            (
+                Sequence::new(2),
+                tessari_encoding::LogRecord::new(Vec::new()),
+            ),
+            (Sequence::new(3), write(2, "shipped")),
+        ],
+    };
+    let applied = intake(&target, envelope).now().unwrap();
+    assert_eq!(
+        applied,
+        Sequence::new(3),
+        "the empty marker extended the log, no gap"
+    );
+    let mut reading = Session::new(&target);
+    let outcomes = reading
+        .run_now("USE NAMESPACE prod DATABASE shop; SELECT * FROM orders;")
+        .unwrap();
+    let Some(tessari_session::Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("the SELECT did not answer records");
+    };
+    assert_eq!(records.len(), 2, "the record after the marker landed");
+}
+
+#[test]
 fn dropping_the_link_stops_the_stream_between_passes() {
     let source = store_with_a_link();
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);

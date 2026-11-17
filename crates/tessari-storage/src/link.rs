@@ -334,9 +334,34 @@ impl Replicated {
 /// was pruned, a divergence from a record the copy already holds, or a
 /// substrate failure. The source keeps the batch and re-reads it when the
 /// refusal is retryable; a divergence is not, and is the operator's question.
+/// A shipped record the reach emptied to nothing is a position marker, and at
+/// a position the copy already holds it is a no-op, not a divergence: on a
+/// clustered receiving side the coarser logs ride the same line log every
+/// cluster writes its own local rows into — membership, leadership renewals —
+/// so at one position the copy holds its own unfiltered record while the
+/// shipment offers the source's record filtered to nothing. Both say the
+/// reach has no content at this position; the copy's own record stands. The
+/// empty marker still extends the log at a fresh position, because positions
+/// are arithmetic; a record with mutations keeps the full divergence check.
+///
+/// Returns the position applied through — the confirmation the source's
+/// at-least-once boundary is drawn at.
+///
+/// # Errors
+///
+/// Returns an error when the batch cannot be applied — a gap where a position
+/// was pruned, a divergence from a record the copy already holds, or a
+/// substrate failure. The source keeps the batch and re-reads it when the
+/// refusal is retryable; a divergence is not, and is the operator's question.
 pub async fn intake(store: &Store, envelope: Envelope) -> Result<Sequence> {
     let mut applied = envelope.from;
     for (at, record) in envelope.records {
+        if record.mutations().is_empty()
+            && at.get() <= store.committed_tail(envelope.log).await?.get()
+        {
+            applied = at;
+            continue;
+        }
         store.apply_shipped(envelope.log, at, &record).await?;
         applied = at;
     }
